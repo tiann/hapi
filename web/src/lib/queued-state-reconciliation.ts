@@ -3,6 +3,7 @@ import {
     getQueuedReconcileCandidateLocalIds,
     markMessagesConsumed,
     markMessagesIndeterminate,
+    markMessagesRequeued,
     reconcileQueuedLocalIds,
     syncTailMessages,
 } from './message-window-store'
@@ -37,6 +38,9 @@ export async function reconcileQueuedStateAfterConnect(
     for (const [invokedAt, localIds] of invokedByTimestamp) {
         markMessagesConsumed(sessionId, localIds, invokedAt)
     }
+    // Clear force-dismiss holds for rows that returned to ordinary FIFO while
+    // SSE was down (#1839 queueDismissed).
+    markMessagesRequeued(sessionId, queuedLocalIds)
     markMessagesIndeterminate(sessionId, indeterminateLocalIds)
     reconcileQueuedLocalIds(sessionId, candidateLocalIds, [...queuedLocalIds, ...indeterminateLocalIds])
 }

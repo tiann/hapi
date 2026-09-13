@@ -60,12 +60,11 @@ final class ChatModel {
     private(set) var jumpToLatestToken = 0
     private(set) var isJumpingToLatest = false
     private(set) var hasTrimmedTail = false
-    var expandedToolGroups: [String: Bool] = [:]
     let toolInspection = ToolInspectionState()
     private(set) var visibleSurfaces = Set<String>()
     var isInspectingContent: Bool {
-        toolInspection.selection != nil || visibleSurfaces.contains {
-            $0.hasPrefix("process:") || $0.hasPrefix("message:")
+        toolInspection.owner != nil || visibleSurfaces.contains {
+            $0.hasPrefix("process:") || $0.hasPrefix("message:") || $0.hasPrefix("inspector:")
         }
     }
 
@@ -168,6 +167,14 @@ final class ChatModel {
         jumpTask = nil
         isJumpingToLatest = false
         readingViewportChanged(followsTail: false, needsOlder: false)
+    }
+
+    @discardableResult
+    func inspectToolGroup(_ id: String, owner: String) -> Bool {
+        guard toolInspection.openGroup(id, owner: owner) else { return false }
+        beginContentInspection()
+        retainSurface("inspector:\(owner)")
+        return true
     }
 
     func start() {
@@ -457,6 +464,7 @@ final class ChatModel {
                     switch value {
                     case .agentText(let text): return [text.text]
                     case .agentReasoning(let text): return [text.text]
+                    case .toolCall(let block): return planProposalMarkdown(block.tool).map { [$0] } ?? []
                     default: return []
                     }
                 })
@@ -513,9 +521,6 @@ final class ChatModel {
                 }
             }
             presentationState.prune(to: liveIDs)
-            for key in expandedToolGroups.keys where !liveIDs.contains(key) {
-                expandedToolGroups.removeValue(forKey: key)
-            }
         }
         header = Self.buildHeader(
             sessionId: sessionId,

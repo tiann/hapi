@@ -5,6 +5,7 @@ vi.mock('./message-window-store', () => ({
     getQueuedReconcileCandidateLocalIds: vi.fn(),
     markMessagesConsumed: vi.fn(),
     markMessagesIndeterminate: vi.fn(),
+    markMessagesRequeued: vi.fn(),
     reconcileQueuedLocalIds: vi.fn(),
     syncTailMessages: vi.fn(),
 }))
@@ -13,6 +14,7 @@ import {
     getQueuedReconcileCandidateLocalIds,
     markMessagesConsumed,
     markMessagesIndeterminate,
+    markMessagesRequeued,
     reconcileQueuedLocalIds,
     syncTailMessages,
 } from './message-window-store'
@@ -22,6 +24,7 @@ const mockSyncTailMessages = vi.mocked(syncTailMessages)
 const mockGetCandidates = vi.mocked(getQueuedReconcileCandidateLocalIds)
 const mockMarkMessagesConsumed = vi.mocked(markMessagesConsumed)
 const mockMarkMessagesIndeterminate = vi.mocked(markMessagesIndeterminate)
+const mockMarkMessagesRequeued = vi.mocked(markMessagesRequeued)
 const mockReconcileQueuedLocalIds = vi.mocked(reconcileQueuedLocalIds)
 
 function createMockApi(
@@ -86,6 +89,7 @@ describe('reconcileQueuedStateAfterConnect', () => {
         await reconcileQueuedStateAfterConnect(createMockApi(getQueuedState), 'session-B')
 
         expect(getQueuedState).toHaveBeenCalledWith('session-B', candidateLocalIds)
+        expect(mockMarkMessagesRequeued).toHaveBeenCalledWith('session-B', ['local-2'])
         expect(mockReconcileQueuedLocalIds).toHaveBeenCalledWith(
             'session-B',
             candidateLocalIds,

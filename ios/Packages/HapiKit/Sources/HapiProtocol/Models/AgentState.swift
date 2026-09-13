@@ -29,6 +29,7 @@ public struct AgentStateRequest: Codable, Equatable, Sendable {
 /// Mirrors `AgentStateCompletedRequestSchema` (`shared/src/schemas.ts`).
 public struct AgentStateCompletedRequest: Codable, Equatable, Sendable {
     public enum Status: String, Codable, Sendable {
+        case resolved
         case canceled
         case denied
         case approved

@@ -1,7 +1,14 @@
 # Native transcript scrolling
 
-Native-only presentation policy. No Web, Hub, REST/SSE format, or generated
-fixture changes. iOS and Android still reduce the same protocol messages.
+Native-only presentation policy. No Web, Hub or REST/SSE format changes.
+iOS and Android still reduce the same protocol messages; golden fixtures pin
+that contract, not the native view appearance.
+
+Plan proposals are an exception to compact tool summaries: both native clients
+show the complete input document as Markdown by default, before approvals.
+Android retains explicit manual folding; iOS retains its separate inspector.
+Plan text joins off-main Markdown preparation before transcript publication;
+stable tool IDs and normal self-sizing/anchor compensation remain unchanged.
 
 ## Behavior
 
@@ -67,20 +74,28 @@ belong to the row. Dynamic heights still use UIKit self-sizing; no frozen-height
 or measurement-result cache is introduced.
 
 `ChatPresentationState` keeps expansion/form state outside recycled cells,
-pruned to retained message/request IDs. Expanded tool groups become individual
-display rows, without changing protocol groups. The per-chat Markdown cache
+pruned to retained message/request IDs. Tool groups remain one summary display
+row, without changing protocol groups. The per-chat Markdown cache
 prepares new sources off-main before publication; image decoding/display
 preparation also runs off-main.
 
-iOS tool groups now flatten only lightweight summary rows. Ordinary output
-opens in a large native sheet, while sidechain processes use a navigation page.
-The screen-level presenter resolves live tool IDs rather than storing a sheet
-inside a recycled cell. `isInspectionPresented` freezes tail-follow intent and
-suppresses hidden history demand, retaining the normal ID/offset anchor through
+iOS tool groups open a large native sheet with a lazy list of summary rows;
+tool details push within that sheet. Each new presentation starts at the latest
+tool, but streaming never initiates another scroll. Returning from details
+retains the list position; **Latest tool** explicitly scrolls to the end. Group
+summary equality excludes member results, avoiding redundant transcript cell
+reconfiguration. Sidechain processes continue to use a navigation page.
+The screen-level presenter resolves live group/tool IDs rather than storing a
+sheet inside a recycled cell. A group root owns inspection without requiring a
+selected tool; its lease lasts through dismissal. `isInspectionPresented` freezes
+tail-follow intent and suppresses hidden history demand, retaining the normal ID/offset anchor through
 streaming and dismissal; closing alone never forces a jump to latest. Navigation
 surfaces share one chat pipeline/SSE lifetime; a covered composer cancels recording.
-Normal retention/epoch rules still apply: a tool trimmed from the window can be
-read as a labeled last snapshot, not mistaken for a live record.
+Normal retention/epoch rules still apply: a tool or group trimmed from the window
+can be read as a labeled last snapshot, not mistaken for a live record. Missing
+groups retain their last membership rather than switching to another group.
+Partially loaded groups identify incomplete history without issuing hidden
+history requests from the inspector.
 
 ### Android
 
@@ -97,9 +112,21 @@ observed through `snapshotFlow` only while following; corrections are queued
 outside measurement/placement to avoid reentrant layout. Row heights use
 size-change callbacks, not callbacks on every global-position change, and
 unchanged viewport demand is not repeatedly sent to the coordinator.
-Group expansion flags are saved with them: the flattened children must exist
-before restoring an index/offset within a group. Removed groups' flags are
-pruned rather than retained indefinitely.
+`ChatHost` hoists the list and reading state above a nested Navigation Compose
+host. Groups remain one summary row; tool/group/message/process inspectors use
+full-screen native destinations. Opening inspection disables tail following,
+cancels hidden history demand and dictation, and hides the IME. Back/Close alone
+never jumps to latest. Session events and SSE remain owned by the conversation
+host/holder, including while an inspector covers the thread and across rotation.
+
+`ChatInspectionState` resolves live IDs and retains only selected snapshots for
+trimmed tools/messages/groups. A missing group keeps its previous membership;
+epoch invalidation clears selections and returns to the thread. Group browsing
+starts at the latest tool once, then uses explicit navigation to latest. No
+hidden history request originates in the browser. `TranscriptProjection` omits
+member payloads and ordinary tool results from the transcript, retaining summary
+identity through output-only updates without changing protocol groups or detail
+data. Inline plan proposals retain results so diagnostics and Source stay live.
 
 The history coordinator uses a dedicated queued Main scope sharing the
 holder's lifetime, independent of its Default worker scope. Lifecycle,
@@ -107,8 +134,8 @@ viewport/layout callbacks, store observation, request completion and retry
 transitions are main-thread serialized. Network/store work and the chat/
 Markdown pipeline stay on workers; only the before-apply veto is atomic.
 
-An explicitly pruned `SaveableStateHolder` retains recycled row interactions,
-including collapsed group children. Markdown ASTs are prepared on the pipeline
+An explicitly pruned `SaveableStateHolder` retains recycled row interactions.
+Markdown ASTs are prepared on the pipeline
 dispatcher and cached per chat; misses parse off-main. Images retain the
 existing asynchronous, cached Coil loader.
 
@@ -125,6 +152,11 @@ existing asynchronous, cached Coil loader.
 - Markdown caches: 800 entries and approximately 8 MiB source/AST cost budget
   each. Oversized documents render on demand but are not retained in cache.
 - Not an offline archive; no cross-launch reading-position persistence.
+- Android user text: inline through 8,000 graphemes / 120 source lines, otherwise
+  a 2,000 / 24 preview. The full reader mounts one 4,000 / 80 page. Tool source
+  mounts one 20,000 / 400 page. Paging never accumulates visited text layouts;
+  original source remains available for copy/export. These are layout budgets,
+  not a limit on payload bytes or the size of a single Unicode grapheme.
 
 ## Automated checks
 
@@ -136,7 +168,7 @@ ios/scripts/test-transcript.sh
 
 cd android
 ./gradlew :core:protocol:test :core:data:testDebugUnitTest :app:testDebugUnitTest
-./gradlew :app:assembleDebug :app:assembleDebugAndroidTest
+./gradlew :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug
 # Run on a dedicated test emulator; avoid installing into a personal device.
 ./gradlew :app:connectedDebugAndroidTest
 ```
@@ -160,7 +192,11 @@ after tail sync; Compose tests cover saved-screen and saved-instance-state
 restoration with consumed and new jump tokens.
 Android also tests Default workers against a separate UI executor across 20
 acknowledged pages (including acknowledgement before request completion),
-and restores expanded child-row anchors across navigation and saved state.
+and restores group-summary anchors across navigation and saved state. API 29/36
+instrumentation covers grapheme preservation, single-page long-message layout
+at 200% font scale, reader restoration, and explicit-only group following.
+Unit tests cover retained snapshots, output-only summary reuse, hidden history
+cancellation with a late HTTP response, and the shared subscription lifetime.
 
 These are deterministic layout regressions, not proof of release-device FPS.
 
@@ -192,15 +228,15 @@ Use a release/profile build on iOS 17 and a recent iPhone (60/120 Hz), plus
 Android API 26 and a recent Android device, including a lower-end device.
 
 1. Replay a 10,000+ message session with mixed Markdown, long code/diffs,
-   images, permissions, and expanded tool groups. Traverse well beyond the
-   800-message window repeatedly.
+   images, permissions, and tool groups in both platforms' inspectors.
+   Traverse well beyond the 800-message window repeatedly.
 2. Test slow dragging, fast upward flings, reversing direction during a
    request, and a response arriving during deceleration. No forced animation,
    cancelled momentum, or unexplained reading-position jump.
 3. Under 200 ms / 1 s / 3 s latency, packet loss, and offline/reconnect, verify
    serial paging, bounded retries, manual recovery, and no “beginning” lie.
-4. Stream into the tail while reading a partial tall row. Expand/collapse
-   tools, load images, rotate, change text size, show/hide the keyboard, and
+4. Stream into the tail while reading a partial tall row. Open/close tool
+   inspectors, load images, rotate, change text size, show/hide the keyboard, and
    open/close a media overlay. Text/forms/expansion must survive recycling.
 5. Return to latest after history trimming, both online and offline. A failed
    refresh must not silently claim that an old retained row is the live tail.
@@ -212,3 +248,9 @@ Android API 26 and a recent Android device, including a lower-end device.
 Static prepend anchor regression tolerance: 1 point on iOS / 1 pixel in the
 Compose test. Fling continuity, real keyboard/accessibility interactions, and
 release-device frame/memory measurements remain manual acceptance checks.
+
+Android's opt-in `ChatFrameProfileTest` additionally probes long user-message
+previews and a 200-tool group's output updates at 10 Hz, with Java/native heap
+samples and `dumpsys meminfo` alongside frame metrics. Run in the profile build
+on representative 60/120 Hz devices. A software emulator can validate behavior;
+it cannot establish frame-rate or memory acceptance on those devices.

@@ -18,7 +18,6 @@ import {
 } from '@/lib/codexStatusLabels'
 import * as Popover from '@radix-ui/react-popover'
 import { isFastServiceTier } from './codexFastMode'
-import { CodexUsage } from './CodexUsage'
 import { useTranslation } from '@/lib/use-translation'
 import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
 import { ContextDetailsDialog } from './ContextDetailsDialog'

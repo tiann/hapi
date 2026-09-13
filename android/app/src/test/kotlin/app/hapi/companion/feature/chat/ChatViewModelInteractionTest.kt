@@ -218,6 +218,8 @@ private class RecordingChatApi : ChatSessionApi {
         configCalls.value = configCalls.value + "abort:$sessionId"
     }
 
+    override suspend fun clearConversation(sessionId: String): ResumeSessionResponse = error("Unexpected clear")
+
     override suspend fun resumeSession(sessionId: String, permissionMode: String?): ResumeSessionResponse {
         resumeCalls.value = resumeCalls.value + (sessionId to permissionMode)
         return resumeResult ?: throw RuntimeException("resume not scripted")

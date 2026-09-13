@@ -509,6 +509,30 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         return c.json(outcome, status)
     })
 
+    app.post('/sessions/:id/clear', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+        const session = requireSessionFromParam(c, engine)
+        if (session instanceof Response) return session
+        if (!session.session.metadata?.capabilities?.concurrentClients) return c.json({ error: 'Shared session required' }, 409)
+        let sessionId = session.sessionId
+        const namespace = c.get('namespace')
+        if (!session.session.active) {
+            // All clients intercept /clear and /new. Resume here so they share
+            // the normal Runner lifecycle instead of reimplementing it.
+            const result = await engine.resumeSession(sessionId, namespace, { permissionMode: session.session.permissionMode })
+            if (result.type === 'error') {
+                const status = result.code === 'no_machine_online' ? 503
+                    : result.code === 'access_denied' ? 403
+                        : result.code === 'session_not_found' ? 404
+                            : result.code === 'resume_unavailable' ? 409 : 500
+                return c.json({ error: result.message, code: result.code }, status)
+            }
+            sessionId = result.sessionId
+        }
+        return c.json(await engine.clearConversation(sessionId, namespace))
+    })
+
     app.post('/sessions/:id/switch', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
@@ -520,6 +544,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return sessionResult
         }
 
+        if (sessionResult.session.metadata?.capabilities?.concurrentClients) return c.json({ error: 'Shared sessions do not switch modes', code: 'control_mode_not_applicable' }, 409)
         await engine.switchSession(sessionResult.sessionId, 'remote')
         return c.json({ ok: true })
     })
@@ -552,7 +577,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (!isPermissionModeAllowedForFlavor(mode, flavor)) {
             return c.json({ error: 'Invalid permission mode for session flavor' }, 400)
         }
-        if (flavor === 'opencode' && mode === 'plan' && sessionResult.session.agentState?.controlledByUser === true) {
+        if (flavor === 'opencode' && mode === 'plan' && sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
             return c.json({ error: 'OpenCode plan mode is only supported for remote sessions' }, 409)
         }
 
@@ -580,7 +605,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (flavor !== 'codex') {
             return c.json({ error: 'Collaboration mode is only supported for Codex sessions' }, 400)
         }
-        if (sessionResult.session.agentState?.controlledByUser === true) {
+        if (sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
             return c.json({ error: 'Collaboration mode can only be changed for remote Codex sessions' }, 409)
         }
 
@@ -614,7 +639,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (flavor !== 'copilot') {
             return c.json({ error: 'Copilot agent mode is only supported for Copilot sessions' }, 400)
         }
-        if (sessionResult.session.agentState?.controlledByUser === true) {
+        if (sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
             return c.json({ error: 'Copilot agent mode can only be changed for remote Copilot sessions' }, 409)
         }
 
@@ -654,7 +679,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (!supportsModelChange(flavor)) {
             return c.json({ error: 'Model selection is not supported for this session' }, 400)
         }
-        if (sessionResult.session.agentState?.controlledByUser === true) {
+        if (sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
             if (flavor === 'codex') {
                 return c.json({ error: 'Model selection can only be changed for remote Codex sessions' }, 409)
             }
@@ -690,7 +715,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (flavor !== 'codex' && flavor !== 'opencode') {
             return c.json({ error: 'Model reasoning effort is only supported for Codex and OpenCode sessions' }, 400)
         }
-        if (sessionResult.session.agentState?.controlledByUser === true) {
+        if (sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
             return c.json({ error: 'Model reasoning effort can only be changed for remote sessions' }, 409)
         }
 
@@ -732,7 +757,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (!supportsEffort(flavor)) {
             return c.json({ error: 'Effort selection is not supported for this session type' }, 400)
         }
-        if (flavor === 'grok' && sessionResult.session.agentState?.controlledByUser === true) {
+        if (flavor === 'grok' && sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
             return c.json({ error: 'Effort can only be changed for remote Grok sessions' }, 409)
         }
 
@@ -760,7 +785,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (flavor !== 'codex') {
             return c.json({ error: 'Fast mode is only supported for Codex sessions' }, 400)
         }
-        if (sessionResult.session.agentState?.controlledByUser === true) {
+        if (sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
             return c.json({ error: 'Fast mode can only be changed for remote sessions' }, 409)
         }
 

@@ -1,4 +1,5 @@
 import java.util.Properties
+import groovy.json.JsonSlurper
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -16,7 +17,23 @@ plugins {
 // drop in their own (see ../README.md "Firebase / push"); everyone else builds
 // without it — Firebase then never initializes and PushBinding reports push as
 // unavailable, so every push code path no-ops cleanly.
-if (file("google-services.json").exists()) {
+val officialBuild = providers.gradleProperty("hapiOfficialBuild").map(String::toBooleanStrict).orElse(false).get()
+val googleServicesFile = file("google-services.json")
+if (officialBuild) {
+    require(googleServicesFile.isFile) { "Official builds require app/google-services.json" }
+    val expectedProject = providers.gradleProperty("hapiFirebaseProjectId").orNull?.trim()
+    require(!expectedProject.isNullOrBlank()) { "Official builds require -PhapiFirebaseProjectId=<official relay project>" }
+    val firebase = JsonSlurper().parse(googleServicesFile) as? Map<*, *>
+    val project = firebase?.get("project_info") as? Map<*, *>
+    require(project?.get("project_id") == expectedProject) { "Firebase project must match the official relay project" }
+    val clients = firebase?.get("client") as? List<*>
+    require(clients?.any { client ->
+        val info = (client as? Map<*, *>)?.get("client_info") as? Map<*, *>
+        val android = info?.get("android_client_info") as? Map<*, *>
+        android?.get("package_name") == "run.hapi.companion"
+    } == true) { "Official Firebase configuration must include run.hapi.companion" }
+}
+if (googleServicesFile.exists()) {
     apply(plugin = "com.google.gms.google-services")
 }
 
@@ -44,6 +61,13 @@ fun signingSecret(property: String, env: String): String? =
 val uploadKeystorePath = signingSecret("hapiUploadKeystore", "HAPI_UPLOAD_KEYSTORE")
     ?.replaceFirst(Regex("^~"), System.getProperty("user.home"))
 
+if (officialBuild) {
+    require(uploadKeystorePath != null && file(uploadKeystorePath).isFile) { "Official builds require a release signing keystore" }
+    require(signingSecret("hapiUploadKeystorePassword", "HAPI_UPLOAD_KEYSTORE_PASSWORD") != null) {
+        "Official builds require a release signing password"
+    }
+}
+
 android {
     namespace = "app.hapi.companion"
     compileSdk = 36
@@ -52,9 +76,11 @@ android {
         applicationId = "run.hapi.companion"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
+        versionCode = providers.gradleProperty("hapiVersionCode").map { value ->
+            value.toInt().also { require(it > 0) { "hapiVersionCode must be positive" } }
+        }.orElse(1).get()
         // Tracks the hapi CLI/hub release train.
-        versionName = "0.28.0"
+        versionName = providers.gradleProperty("hapiVersionName").orElse("0.28.0").get()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

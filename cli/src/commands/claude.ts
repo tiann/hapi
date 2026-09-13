@@ -1,5 +1,4 @@
 import chalk from 'chalk'
-import { execFileSync } from 'node:child_process'
 import { z } from 'zod'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
 import type { StartOptions } from '@/claude/runClaude'
@@ -11,31 +10,25 @@ import { logger } from '@/ui/logger'
 import { initializeToken } from '@/ui/tokenInit'
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
-import { withBunRuntimeEnv } from '@/utils/bunRuntime'
 import { extractErrorInfo } from '@/utils/errorUtils'
 import type { CommandDefinition } from './types'
 
 export const claudeCommand: CommandDefinition = {
-    name: 'default',
+    name: 'claude',
     requiresRuntimeAssets: true,
     run: async ({ commandArgs }) => {
         const args = [...commandArgs]
 
-        if (args.length > 0 && args[0] === 'claude') {
-            args.shift()
-        }
-
         const options: StartOptions = {}
-        let showHelp = false
         const unknownArgs: string[] = []
         let hasExplicitPermissionMode = false
 
         for (let i = 0; i < args.length; i++) {
             const arg = args[i]
 
-            if (arg === '-h' || arg === '--help') {
-                showHelp = true
-                unknownArgs.push(arg)
+            if (arg === '--') {
+                unknownArgs.push(...args.slice(i))
+                break
             } else if (arg === '--hapi-starting-mode') {
                 options.startingMode = z.enum(['local', 'remote']).parse(args[++i])
             } else if (arg === '--permission-mode') {
@@ -88,64 +81,6 @@ export const claudeCommand: CommandDefinition = {
 
         if (unknownArgs.length > 0) {
             options.claudeArgs = [...(options.claudeArgs || []), ...unknownArgs]
-        }
-
-        if (showHelp) {
-            console.log(`
-${chalk.bold('hapi')} - Claude Code On the Go
-
-${chalk.bold('Usage:')}
-  hapi [options]         Start Claude with Telegram control (direct-connect)
-  hapi auth              Manage authentication
-  hapi codex             Start Codex mode
-  hapi cursor            Start Cursor Agent mode
-  hapi opencode          Start OpenCode ACP mode
-  hapi dsh               Start DeepSeek Harness ACP mode
-  hapi resume [id]       Resume an existing HAPI session locally
-  hapi mcp               Start MCP stdio bridge
-  hapi connect           (not available in direct-connect mode)
-  hapi notify            (not available in direct-connect mode)
-  hapi hub               Start the API + web hub
-  hapi hub --relay       Start with public relay
-  hapi server            Alias for hapi hub
-  hapi runner            Manage background service that allows
-                            to spawn new sessions away from your computer
-  hapi doctor            System diagnostics & troubleshooting
-
-${chalk.bold('Examples:')}
-  hapi                    Start session (will prompt for token if not set)
-  hapi auth login         Configure CLI_API_TOKEN interactively
-  hapi --yolo             Start with bypassing permissions
-                            hapi sugar for --dangerously-skip-permissions
-  hapi auth status        Show direct-connect status
-  hapi doctor             Run diagnostics
-
-${chalk.bold('hapi supports ALL Claude options!')}
-  Use any claude flag with hapi as you would with claude. Our favorite:
-
-  hapi --resume
-
-${chalk.gray('─'.repeat(60))}
-${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
-`)
-
-            try {
-                const claudeHelp = execFileSync(
-                    'claude',
-                    ['--help'],
-                    {
-                        encoding: 'utf8',
-                        env: withBunRuntimeEnv(),
-                        shell: process.platform === 'win32',
-                        windowsHide: process.platform === 'win32'
-                    }
-                )
-                console.log(claudeHelp)
-            } catch {
-                console.log(chalk.yellow('Could not retrieve claude help. Make sure claude is installed.'))
-            }
-
-            process.exit(0)
         }
 
         await initializeToken()

@@ -1,11 +1,4 @@
 export default {
-  'codexUsage.title': 'Codex Usage',
-  'codexUsage.ordinary': 'Ordinary usage',
-  'codexUsage.unknown': 'Unknown',
-  'codexUsage.remaining': '{percent}% remaining',
-  'codexUsage.window': '{minutes} min window',
-  'codexUsage.resets': 'Resets {time}',
-
   // Loading states
   'loading': 'Loading…',
   'authorizing': 'Authorizing…',
@@ -596,6 +589,7 @@ export default {
   'tool.question': 'Question',
   'tool.selectOption': 'Please select at least one option or type an answer.',
   'tool.waitingForApproval': 'Waiting for approval…',
+  'tool.resolved': 'Resolved in Codex',
   'tool.canceled': 'Canceled',
   'tool.approvedForSession': 'Approved For Session',
   'tool.aborted': 'Aborted',
@@ -669,6 +663,7 @@ export default {
   'composer.scheduleErrorTooFar': 'Maximum schedule time is 7 days.',
   'queuedMessages.scheduledFor': 'Scheduled for {time}',
   'queuedMessages.editAlreadyInvoked': "Message already sent — it can't be edited",
+  'queuedMessages.editBusyNotRestored': 'Delivery still unresolved — draft not restored (may still be in flight)',
   'queuedMessages.editCurrentDraftKept': 'Queued message cancelled — current draft and schedule were kept.',
   'queuedMessages.steer': 'Deliver into the running turn now',
   'queuedMessages.steerFailed': 'Steer failed — message stays queued',

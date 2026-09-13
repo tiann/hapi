@@ -66,6 +66,7 @@ function createApp(session: Session, opts?: {
     getCursorChatStoreStatus?: SyncEngine['getCursorChatStoreStatus']
     listCodexModelsForSession?: SyncEngine['listCodexModelsForSession']
     forkConversation?: SyncEngine['forkConversation']
+    clearConversation?: SyncEngine['clearConversation']
     rewindConversation?: SyncEngine['rewindConversation']
     suggestSessionTitle?: SyncEngine['suggestSessionTitle']
     updateSessionSummary?: SyncEngine['updateSessionSummary']
@@ -162,6 +163,7 @@ function createApp(session: Session, opts?: {
             commands: []
         })),
         forkConversation: opts?.forkConversation ?? (async () => ({ type: 'success', sessionId: 'child-1' })),
+        clearConversation: opts?.clearConversation,
         rewindConversation: opts?.rewindConversation ?? (async () => ({ type: 'success' })),
         suggestSessionTitle: opts?.suggestSessionTitle ?? (async () => 'Generated title'),
         updateSessionSummary: opts?.updateSessionSummary ?? (async () => {})
@@ -178,6 +180,41 @@ function createApp(session: Session, opts?: {
 }
 
 describe('sessions routes', () => {
+    it.each([true, false])('clears shared sessions after resuming only when inactive (active: %s)', async active => {
+        const calls: string[] = []
+        const { app } = createApp(createSession({ active, permissionMode: 'read-only', metadata: {
+            path: '/tmp/project', host: 'localhost', flavor: 'codex', capabilities: { concurrentClients: true }
+        } }), {
+            resumeSession: async (id, namespace, opts) => {
+                calls.push('resume')
+                expect([id, namespace, opts]).toEqual(['session-1', 'default', { permissionMode: 'read-only' }])
+                return { type: 'success', sessionId: 'resumed-session' }
+            },
+            clearConversation: async (id, namespace) => {
+                calls.push('clear')
+                expect([id, namespace]).toEqual([active ? 'session-1' : 'resumed-session', 'default'])
+                return { sessionId: 'new-root' }
+            }
+        })
+        const response = await app.request('/api/sessions/session-1/clear', { method: 'POST' })
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ sessionId: 'new-root' })
+        expect(calls).toEqual(active ? ['clear'] : ['resume', 'clear'])
+    })
+
+    it('does not clear or retry when resume fails', async () => {
+        let clears = 0
+        const { app } = createApp(createSession({ active: false, metadata: {
+            path: '/tmp/project', host: 'localhost', flavor: 'codex', capabilities: { concurrentClients: true }
+        } }), {
+            resumeSession: async () => ({ type: 'error', code: 'no_machine_online', message: 'No Runner online' }),
+            clearConversation: async () => { clears++; return { sessionId: 'unexpected' } }
+        })
+        const response = await app.request('/api/sessions/session-1/clear', { method: 'POST' })
+        expect(response.status).toBe(503)
+        expect(await response.json()).toEqual({ error: 'No Runner online', code: 'no_machine_online' })
+        expect(clears).toBe(0)
+    })
     it('generates a title suggestion without changing session metadata', async () => {
         const suggest = async (sessionId: string) => {
             expect(sessionId).toBe('session-1')
