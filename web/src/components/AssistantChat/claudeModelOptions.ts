@@ -200,6 +200,33 @@ function concreteFamilyValueFor(
     return twin?.value ?? modelValue
 }
 
+/**
+ * Identifier to persist for a picked catalog row.
+ *
+ * The row's own value is a release pin -- today's catalog publishes Fable as
+ * `claude-fable-5-1[1m]` -- and a pin stops matching the moment the catalog
+ * renames it. Where the row's family is a known preset and the catalog carries
+ * a single row for it, the alias is stored instead: it means "whatever that
+ * family currently is" and survives the rename. Two rows mean the user chose
+ * between them and an alias cannot say which, so the row value is kept.
+ *
+ * Both surfaces that write a Claude selection call this, so the persisted form
+ * does not depend on which picker the user went through.
+ */
+export function resolveClaudeModelValueToPersist(
+    rowValue: string,
+    availableModels: ClaudeModelSummary[]
+): string {
+    const family = resolveClaudeModelFamily(rowValue)
+    if (!family || !isClaudeModelPreset(family)) {
+        return rowValue
+    }
+    const familyRowCount = availableModels.filter((candidate) => (
+        candidate.value !== 'default' && resolveClaudeModelFamily(candidate.value) === family
+    )).length
+    return familyRowCount > 1 ? rowValue : family
+}
+
 export function resolveClaudeSupportedEffortLevels(
     modelValue: string | null | undefined,
     availableModels: ClaudeModelSummary[]
@@ -268,8 +295,7 @@ function buildDynamicClaudeComposerOptions(
     // Guarantee an unpin/"Default" option exists even if the live catalog
     // omits a `default` row -- the control-protocol schema doesn't promise
     // one, and without it the picker would have no way to unpin a model, and
-    // NewSession's initial 'auto' state would have no matching option
-    //.
+    // NewSession's initial 'auto' state would have no matching option.
     if (!options.some((option) => option.value === null)) {
         options.unshift({ value: null, label: 'Default' })
     }

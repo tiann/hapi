@@ -4,7 +4,7 @@ import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, PiL
 import type { CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
 import { CLAUDE_EFFORT_LABELS, type ClaudeEffortLevel, isClaudeModelPreset, resolveClaudeModelFamily } from '@hapi/protocol'
 import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
-import { findCatalogRowFor, getClaudeComposerModelOptions, resolveClaudeSupportedEffortLevels } from '@/components/AssistantChat/claudeModelOptions'
+import { findCatalogRowFor, getClaudeComposerModelOptions, resolveClaudeModelValueToPersist, resolveClaudeSupportedEffortLevels } from '@/components/AssistantChat/claudeModelOptions'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
 import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
@@ -42,8 +42,7 @@ import {
     saveNewSessionFormDraft,
     shouldRestoreNewSessionFormDraft
 } from './newSessionFormDraft'
-import { isOpencodeReasoningEffortValid } from './types'
-import { MODEL_OPTIONS } from './types'
+import { isOpencodeReasoningEffortValid, MODEL_OPTIONS } from './types'
 import type { AgentType, LaunchEffort, CodexReasoningEffort, NewSessionServiceTier, SessionType } from './types'
 import { ActionButtons } from './ActionButtons'
 import { AgentSelector } from './AgentSelector'
@@ -718,15 +717,7 @@ export function NewSession(props: {
     // take the first and spawn the other generation. Those, and rows whose
     // family is not a known preset, are stored exactly as they came.
     const handleClaudeModelChange = useCallback((next: string) => {
-        const family = resolveClaudeModelFamily(next)
-        if (!family || !isClaudeModelPreset(family)) {
-            setModel(next)
-            return
-        }
-        const familyRowCount = claudeModelsState.availableModels.filter((candidate) => (
-            candidate.value !== 'default' && resolveClaudeModelFamily(candidate.value) === family
-        )).length
-        setModel(familyRowCount > 1 ? next : family)
+        setModel(resolveClaudeModelValueToPersist(next, claudeModelsState.availableModels))
     }, [claudeModelsState.availableModels])
 
     const claudeEffortOptions = useMemo(() => {

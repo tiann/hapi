@@ -110,7 +110,7 @@ import { useOpencodeModels } from '@/hooks/queries/useOpencodeModels'
 import { useGrokModels } from '@/hooks/queries/useGrokModels'
 import { useCopilotModels } from '@/hooks/queries/useCopilotModels'
 import { useClaudeModelsForCwd } from '@/hooks/queries/useClaudeModelsForCwd'
-import { findCatalogRowFor, getClaudeComposerModelOptions, resolveClaudeComposerWireValue, resolveClaudeModelChangeEffortClear, resolveClaudeSupportedEffortLevels } from '@/components/AssistantChat/claudeModelOptions'
+import { findCatalogRowFor, getClaudeComposerModelOptions, resolveClaudeComposerWireValue, resolveClaudeModelValueToPersist, resolveClaudeModelChangeEffortClear, resolveClaudeSupportedEffortLevels } from '@/components/AssistantChat/claudeModelOptions'
 import { CLAUDE_EFFORT_LABELS, type ClaudeEffortLevel } from '@hapi/protocol'
 import { useGrokReasoningEffortOptions } from '@/hooks/queries/useGrokReasoningEffortOptions'
 import { usePiModels } from '@/hooks/queries/usePiModels'
@@ -1146,23 +1146,13 @@ function SessionChatInner(props: SessionChatProps) {
             ? resolveClaudeComposerWireValue(props.session.model, claudeModelsState.availableModels)
             : props.session.model
     ), [agentFlavor, claudeModelsState.availableModels, props.session.model])
-    // Same "which catalog row is selected" lookup NewSession/index.tsx uses
-    // for its effort gating, driven off
-    // the wire value above so it agrees with what the composer/StatusBar
-    // actually show as selected.
-    const claudeSelectedModelSummary = useMemo(
-        () => agentFlavor === 'claude'
-            ? findCatalogRowFor(claudeComposerModelValue, claudeModelsState.availableModels)
-            : undefined,
-        [agentFlavor, claudeComposerModelValue, claudeModelsState.availableModels]
-    )
     // haiku (and any future model the catalog reports without
     // supportedEffortLevels) has no valid --effort value at all, so this can
     // legitimately resolve to an empty array once the catalog has loaded --
     // that's different from "no data yet", which HappyComposer's gate must
-    // fall back from instead of rendering zero options as an empty picker
-    //. resolveClaudeSupportedEffortLevels handles the round-4
-    // correction to that: a single row's absence of the field is ambiguous
+    // fall back from instead of rendering zero options as an empty picker.
+    // resolveClaudeSupportedEffortLevels distinguishes the two: a single row's
+    // absence of the field is ambiguous
     // by itself (haiku's real zero-support vs. an older CLI that doesn't
     // report the field for any model), so it checks the whole catalog
     // first and only returns a row's own levels (possibly `[]`) once some
@@ -1648,7 +1638,15 @@ function SessionChatInner(props: SessionChatProps) {
     }, [setCopilotAgentMode, props.onRefresh, haptic])
 
     // Model mode change handler
-    const handleModelChange = useCallback(async (model: SessionModelSelection) => {
+    const handleModelChange = useCallback(async (selection: SessionModelSelection) => {
+        // Persist the family alias rather than the catalog row's own id, the same
+        // way New Session does -- a row id is a pin to one release (today's
+        // catalog publishes Fable as `claude-fable-5-1[1m]`) and stops matching
+        // once the catalog renames it. The CLI resolves the alias itself, so the
+        // session still runs the row the user picked.
+        const model: SessionModelSelection = agentFlavor === 'claude' && typeof selection === 'string'
+            ? resolveClaudeModelValueToPersist(selection, claudeModelsState.availableModels)
+            : selection
         const previousModelReasoningEffort = props.session.modelReasoningEffort
         const shouldClearReasoningEffort = shouldClearReasoningEffortForModelChange({
             agentFlavor,
@@ -1658,16 +1656,19 @@ function SessionChatInner(props: SessionChatProps) {
         })
 
         // Fold an effort clear into the SAME model request when the target
-        // model doesn't support the effort this session currently has
-        // pinned, instead of leaving that to the separate reconciliation
-        // effect above: that effect only fires after the model RPC has
-        // already landed and the store has refreshed, so a prompt sent in
-        // that window could reach the CLI with the old effort attached to
-        // the new model, and a failed second (effort-clear) request would
-        // leave it stranded. resolveClaudeModelChangeEffortClear returns
-        // undefined (send nothing) when the catalog hasn't confirmed
-        // support either way -- the reconciliation effect still covers
-        // that case once it does.
+        // model doesn't support the effort this session currently has pinned.
+        // A second, separate effort request could fail on its own and leave
+        // the session on the new model with a level it does not accept, and a
+        // prompt sent between the two would carry the stale pair.
+        //
+        // resolveClaudeModelChangeEffortClear returns undefined (send nothing)
+        // when capability is unconfirmed -- an older CLI, or a model neither
+        // the catalog nor the static table can place. Nothing reconciles that
+        // afterwards: there is deliberately no composer-side reconciliation
+        // effect (see the note further down for why one must not be added), so
+        // the session keeps its pinned level until the user changes it. The CLI
+        // accepts an effort the model does not advertise, so that is a stale
+        // display value rather than a failing turn.
         const claudeEffortClear = agentFlavor === 'claude'
             ? resolveClaudeModelChangeEffortClear({
                 currentEffort: props.session.effort,

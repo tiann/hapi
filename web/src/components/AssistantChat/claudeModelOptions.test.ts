@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { catalogReportsEffortLevels, findCatalogRowFor, getClaudeComposerModelOptions, getNextClaudeComposerModel, resolveClaudeComposerWireValue, resolveClaudeModelChangeEffortClear, resolveClaudeSupportedEffortLevels } from './claudeModelOptions'
+import { catalogReportsEffortLevels, findCatalogRowFor, getClaudeComposerModelOptions, getNextClaudeComposerModel, resolveClaudeComposerWireValue, resolveClaudeModelChangeEffortClear, resolveClaudeSupportedEffortLevels,
+    resolveClaudeModelValueToPersist
+} from './claudeModelOptions'
 
 const LIVE_CATALOG = [
     { value: 'default', displayName: 'Default (recommended)', resolvedModel: 'claude-opus-5[1m]', supportsFastMode: true, supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
@@ -240,6 +242,33 @@ describe('catalogReportsEffortLevels', () => {
 
     it('is false for an empty catalog', () => {
         expect(catalogReportsEffortLevels([])).toBe(false)
+    })
+})
+
+describe('resolveClaudeModelValueToPersist', () => {
+    // Today's catalog publishes Fable only as a release-pinned id.
+    const CATALOG = [
+        { value: 'default', displayName: 'Default (recommended)', resolvedModel: 'claude-opus-5[1m]' },
+        { value: 'claude-fable-5-1[1m]', displayName: 'Fable', resolvedModel: 'claude-fable-5-1' },
+        { value: 'sonnet', displayName: 'Sonnet', resolvedModel: 'claude-sonnet-5' }
+    ]
+
+    it('stores the family alias for a single-row family', () => {
+        expect(resolveClaudeModelValueToPersist('claude-fable-5-1[1m]', CATALOG)).toBe('fable')
+        expect(resolveClaudeModelValueToPersist('sonnet', CATALOG)).toBe('sonnet')
+    })
+
+    it('keeps the row value when a family offers more than one', () => {
+        const twoRows = [
+            { value: 'sonnet', displayName: 'Sonnet', resolvedModel: 'claude-sonnet-5' },
+            { value: 'claude-sonnet-4-5-20250929', displayName: 'Sonnet 4.5', resolvedModel: 'claude-sonnet-4-5-20250929' }
+        ]
+        expect(resolveClaudeModelValueToPersist('claude-sonnet-4-5-20250929', twoRows))
+            .toBe('claude-sonnet-4-5-20250929')
+    })
+
+    it('keeps a value whose family the offer list does not carry', () => {
+        expect(resolveClaudeModelValueToPersist('claude-opusplan-1', CATALOG)).toBe('claude-opusplan-1')
     })
 })
 
