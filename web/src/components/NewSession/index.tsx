@@ -711,11 +711,8 @@ export function NewSession(props: {
     // loaded the picker is the only place a family appears, so this is the
     // ordinary way a preference is created. claudeSelectedRowValue turns the
     // alias back into the concrete row for the select and the spawn.
-    //
-    // Only when the family has a single row, though. Two rows mean the user
-    // chose between them, and an alias cannot say which: the derivation would
-    // take the first and spawn the other generation. Those, and rows whose
-    // family is not a known preset, are stored exactly as they came.
+    // resolveClaudeModelValueToPersist owns when that substitution is sound;
+    // its doc states the precondition and the cases it declines.
     const handleClaudeModelChange = useCallback((next: string) => {
         setModel(resolveClaudeModelValueToPersist(next, claudeModelsState.availableModels))
     }, [claudeModelsState.availableModels])

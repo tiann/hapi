@@ -42,11 +42,13 @@ function normalizeClaudeComposerModel(model?: string | null): string | null {
  * The identity contract this priority order serves, enforced across New
  * Session and the composer:
  *
- *   - persisted  the user's own identifier -- the alias when the family is a
- *                known preset and the catalog carries a single row for it,
- *                since `fable` means "whatever Fable is now". Two rows mean
- *                the user chose between them and an alias cannot say which,
- *                so the row's own value is kept
+ *   - persisted  the alias, but only when the picked value is itself the
+ *                catalog's sole row for a known preset family -- `fable` then
+ *                means "whatever Fable is now" and survives a rename. The row
+ *                value is kept otherwise: when the family has several rows the
+ *                user chose between them, when the catalog does not list the
+ *                value it cannot speak for it, and when there is no catalog it
+ *                confirms nothing
  *   - wire       the catalog row's value, which is what a spawn or a model
  *                change submits
  *   - display    the same row value, so a select's value matches its options
@@ -205,10 +207,14 @@ function concreteFamilyValueFor(
  *
  * The row's own value is a release pin -- today's catalog publishes Fable as
  * `claude-fable-5-1[1m]` -- and a pin stops matching the moment the catalog
- * renames it. Where the row's family is a known preset and the catalog carries
- * a single row for it, the alias is stored instead: it means "whatever that
- * family currently is" and survives the rename. Two rows mean the user chose
- * between them and an alias cannot say which, so the row value is kept.
+ * renames it. The alias is stored instead when the picked value IS the
+ * catalog's sole row for a known preset family: only then does the alias name
+ * the same thing the click did.
+ *
+ * The row value is kept in every other case -- several rows for the family (the
+ * user chose between them), a value the catalog does not list (the composer
+ * folds a dropped pin back in, and reselecting it must reselect that model),
+ * and no catalog at all (nothing is confirmed).
  *
  * Both surfaces that write a Claude selection call this, so the persisted form
  * does not depend on which picker the user went through.
@@ -221,10 +227,12 @@ export function resolveClaudeModelValueToPersist(
     if (!family || !isClaudeModelPreset(family)) {
         return rowValue
     }
-    const familyRowCount = availableModels.filter((candidate) => (
-        candidate.value !== 'default' && resolveClaudeModelFamily(candidate.value) === family
-    )).length
-    return familyRowCount > 1 ? rowValue : family
+    // resolveClaudeModelFamily returns null for the `default` sentinel, so the
+    // family comparison alone already drops that row.
+    const familyRows = availableModels.filter((candidate) => (
+        resolveClaudeModelFamily(candidate.value) === family
+    ))
+    return familyRows.length === 1 && familyRows[0]?.value === rowValue ? family : rowValue
 }
 
 export function resolveClaudeSupportedEffortLevels(

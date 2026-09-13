@@ -267,6 +267,45 @@ describe('resolveClaudeModelValueToPersist', () => {
             .toBe('claude-sonnet-4-5-20250929')
     })
 
+    it('keeps an explicit id the catalog no longer lists', () => {
+        // The composer folds a pinned older id back in as its own row. Clicking
+        // that row must reselect that model, not silently move the session to
+        // the family's current generation.
+        expect(resolveClaudeModelValueToPersist('claude-sonnet-4-5-20250929', CATALOG))
+            .toBe('claude-sonnet-4-5-20250929')
+    })
+
+    it('keeps the value when only the default row stands for the family', () => {
+        // Populated catalog, but nothing concrete names sonnet -- the default
+        // row's own family is null -- so the alias would be asserting more than
+        // the catalog says. Distinct from the empty-catalog case.
+        expect(resolveClaudeModelValueToPersist('claude-sonnet-5', DEFAULT_ONLY_CATALOG))
+            .toBe('claude-sonnet-5')
+    })
+
+    it('round-trips the folded row a pinned older id gets in the picker', () => {
+        // The picker folds the pin in as its own row, so the value the user can
+        // click is the pin itself. Clicking it must persist that same id, and
+        // the row must still resolve back for display.
+        const pinned = 'claude-sonnet-4-5-20250929'
+        const options = getClaudeComposerModelOptions(pinned, CATALOG)
+        const clickable = options.find((option) => option.value === pinned)
+        expect(clickable).toBeDefined()
+        expect(resolveClaudeModelValueToPersist(pinned, CATALOG)).toBe(pinned)
+        // No catalog row represents it, which is why the fold exists; the
+        // select's value comes from the wire resolver, not from a row.
+        expect(findCatalogRowFor(pinned, CATALOG)).toBeUndefined()
+        expect(resolveClaudeComposerWireValue(pinned, CATALOG)).toBe(pinned)
+    })
+
+    it('keeps the value when discovery is unavailable', () => {
+        // An empty catalog confirms nothing, so a count of zero is not evidence
+        // that the family has a single row.
+        expect(resolveClaudeModelValueToPersist('claude-fable-5-1[1m]', [])).toBe('claude-fable-5-1[1m]')
+        // Alias-shaped too: the old rule turned this into bare `opus`.
+        expect(resolveClaudeModelValueToPersist('opus[1m]', [])).toBe('opus[1m]')
+    })
+
     it('keeps a value whose family the offer list does not carry', () => {
         expect(resolveClaudeModelValueToPersist('claude-opusplan-1', CATALOG)).toBe('claude-opusplan-1')
     })
