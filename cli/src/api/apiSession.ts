@@ -1,3 +1,4 @@
+type QueueCancelResult = boolean | 'in-flight' | 'indeterminate' | 'consumed'
 import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import { io, type Socket } from 'socket.io-client'
@@ -36,7 +37,7 @@ import type {
 import { AgentStateSchema, CliMessagesResponseSchema, MetadataSchema, UserMessageSchema } from './types'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers'
-import { cleanupUploadDir } from '../modules/common/handlers/uploads'
+import { cleanupUploadDir, preserveUploadDirOnExit } from '../modules/common/handlers/uploads'
 import { TerminalManager } from '@/terminal/TerminalManager'
 import { applyVersionedAck } from './versionedUpdate'
 import { buildHubRequestHeaders, buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
@@ -234,6 +235,8 @@ function hasSameJsonValue(left: unknown, right: unknown): boolean {
 }
 
 export class ApiSessionClient extends EventEmitter {
+    private reconnectHandler: (() => void) | null = null
+    onReconnect(handler: (() => void) | null): void { this.reconnectHandler = handler }
     private readonly token: string
     readonly sessionId: string
     private metadata: Metadata | null
@@ -249,8 +252,8 @@ export class ApiSessionClient extends EventEmitter {
     private readonly materializingLocalIdCounts = new Map<string, number>()
     private readonly cancelledMaterializingLocalIds = new Set<string>()
     private readonly cancelledIncomingMessageIds = new Set<string>()
-    private cancelQueuedMessageCallback: ((localId: string) => boolean | 'in-flight' | 'indeterminate' | 'consumed') | null = null
-    private retryQueuedMessageCallback: ((localId: string) => boolean) | null = null
+    private cancelQueuedMessageCallback: ((localId: string) => QueueCancelResult | Promise<QueueCancelResult>) | null = null
+    private retryQueuedMessageCallback: ((localId: string) => boolean | Promise<boolean>) | null = null
     private readonly incomingFilter = new IncomingMessageFilter()
     private readonly deferredLiveMessages: Array<{
         id?: string
@@ -351,6 +354,7 @@ export class ApiSessionClient extends EventEmitter {
             }
             void this.backfillIfNeeded()
             this.hasConnectedOnce = true
+            this.reconnectHandler?.()
             this.socket.emit('session-alive', {
                 sid: this.sessionId,
                 time: Date.now(),
@@ -439,7 +443,7 @@ export class ApiSessionClient extends EventEmitter {
             this.agentTerminalActive = false
         }))
 
-        this.socket.on('update', (data: Update, ack?: (response: { removed: boolean; inFlight?: boolean; indeterminate?: boolean; accepted?: boolean; consumed?: boolean }) => void) => {
+        this.socket.on('update', async (data: Update, ack?: (response: { removed: boolean; inFlight?: boolean; indeterminate?: boolean; accepted?: boolean; consumed?: boolean }) => void) => {
             try {
                 if (!data.body) return
 
@@ -459,10 +463,11 @@ export class ApiSessionClient extends EventEmitter {
                     // reservation and bypass the normal message-id dedup.
                     let accepted = true
                     if (data.body.localId && this.cancelQueuedMessageCallback) {
-                        const cancelled = this.cancelQueuedMessageCallback(data.body.localId)
+                        const cancellation = this.cancelQueuedMessageCallback(data.body.localId)
+                        const cancelled = cancellation instanceof Promise ? await cancellation : cancellation
                         accepted = cancelled !== 'in-flight' && cancelled !== 'consumed'
                         if (cancelled === 'indeterminate') {
-                            accepted = this.retryQueuedMessageCallback?.(data.body.localId) === true
+                            accepted = await this.retryQueuedMessageCallback?.(data.body.localId) === true
                         }
                         if (cancelled === 'consumed') {
                             ack?.({ removed: false, accepted: false, consumed: true })
@@ -494,9 +499,10 @@ export class ApiSessionClient extends EventEmitter {
                         this.cancelledMaterializingLocalIds.add(localId)
                         removed = true
                     }
-                    const result = (localId && this.cancelQueuedMessageCallback)
+                    const cancellation = (localId && this.cancelQueuedMessageCallback)
                         ? this.cancelQueuedMessageCallback(localId)
                         : false
+                    const result = cancellation instanceof Promise ? await cancellation : cancellation
                     removed = removed || result === true
                     // 'in-flight' = the row is inside an async steer: not
                     // removed, but also NOT consumed — the hub must neither
@@ -547,6 +553,11 @@ export class ApiSessionClient extends EventEmitter {
                 this.emit('message', data.body)
             } catch (error) {
                 logger.debug('[SOCKET] [UPDATE] [ERROR] Error handling update', { error })
+                // A failed asynchronous native cancellation is not permission
+                // for the hub's best-effort path to delete a possibly live row.
+                if (data.body?.t === 'cancel-queued-message' || data.body?.t === 'retry-queued-message') {
+                    ack?.({ removed: false, accepted: false, indeterminate: true })
+                }
             }
         })
 
@@ -752,11 +763,11 @@ export class ApiSessionClient extends EventEmitter {
         }
     }
 
-    onCancelQueuedMessage(callback: (localId: string) => boolean | 'in-flight' | 'indeterminate' | 'consumed'): void {
+    onCancelQueuedMessage(callback: (localId: string) => QueueCancelResult | Promise<QueueCancelResult>): void {
         this.cancelQueuedMessageCallback = callback
     }
 
-    onRetryQueuedMessage(callback: (localId: string) => boolean): void {
+    onRetryQueuedMessage(callback: (localId: string) => boolean | Promise<boolean>): void {
         this.retryQueuedMessageCallback = callback
     }
 
@@ -942,7 +953,12 @@ export class ApiSessionClient extends EventEmitter {
             // User messages mirrored from a local agent transcript are history,
             // not new remote input. Keep them in the incoming filter above so
             // reconnect backfill still advances and deduplicates correctly.
-            if (userMessage.meta?.sentFrom === 'cli') return
+            if (userMessage.meta?.sentFrom === 'cli'
+                && !(userMessage.meta.isNativeQueuedMessage === true
+                    && this.metadata?.capabilities?.concurrentClients === true
+                    && message.localId)) {
+                return
+            }
             this.enqueueUserMessage(userMessage, message.localId ?? undefined)
             return
         }
@@ -1219,7 +1235,7 @@ export class ApiSessionClient extends EventEmitter {
         })
     }
 
-    sendUserMessage(text: string, meta?: MessageMeta): void {
+    sendUserMessage(text: string, meta?: MessageMeta, localId?: string): void {
         if (!text) {
             return
         }
@@ -1239,17 +1255,23 @@ export class ApiSessionClient extends EventEmitter {
         this.emitOrQueue(() => {
             this.socket.emit('message', {
                 sid: this.sessionId,
-                message: content
+                message: content,
+                localId
             })
+            if (localId) this.socket.emit('messages-consumed', { sid: this.sessionId, localIds: [localId] })
         })
         this.notifyUserActivity()
+    }
+
+    syncNativeQueuedMessage(localId: string, text: string | null): void {
+        this.emitOrQueue(() => this.socket.emit('native-queue-message', { sid: this.sessionId, localId, text }))
     }
 
     notifyUserActivity(): void {
         void this.materialize()
     }
 
-    sendAgentMessage(body: unknown): void {
+    sendAgentMessage(body: unknown, localId?: string): void {
         const content = {
             role: 'agent',
             content: {
@@ -1263,8 +1285,10 @@ export class ApiSessionClient extends EventEmitter {
         this.emitOrQueue(() => {
             this.socket.emit('message', {
                 sid: this.sessionId,
-                message: content
+                message: content,
+                localId
             })
+            if (localId) this.socket.emit('messages-consumed', { sid: this.sessionId, localIds: [localId] })
         })
     }
 
@@ -1386,7 +1410,7 @@ export class ApiSessionClient extends EventEmitter {
 
     keepAlive(
         thinking: boolean,
-        mode: 'local' | 'remote',
+        mode: 'local' | 'remote' | undefined,
         runtime?: {
             permissionMode?: SessionPermissionMode
             model?: SessionModel
@@ -1470,9 +1494,10 @@ export class ApiSessionClient extends EventEmitter {
         }))
     }
 
-    sendSessionDeath(reason?: SessionEndReason): void {
+    sendSessionDeath(reason?: SessionEndReason, options?: { preserveUploads?: boolean }): void {
         if (this.state === 'active') {
-            void cleanupUploadDir(this.sessionId)
+            if (options?.preserveUploads) preserveUploadDirOnExit(this.sessionId)
+            else void cleanupUploadDir(this.sessionId)
         }
         void this.attachmentMaterializer.close()
         this.emitOrQueue(() => {

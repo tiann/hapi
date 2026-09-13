@@ -22,6 +22,20 @@ internal fun toolSourceInput(input: JsonElement?, keys: List<String>): String? =
 
 private fun JsonElement?.textValue(): String? = (this as? JsonPrimitive)?.takeIf { it.isString }?.content
 
+internal fun isPlanProposalTool(name: String): Boolean = name == "ExitPlanMode" || name == "exit_plan_mode"
+
+/** A proposal is input.plan Markdown, not update_plan's checklist or a result. */
+internal fun planProposalMarkdown(tool: ChatToolCall): String? =
+    if (isPlanProposalTool(tool.name)) (tool.input as? JsonObject)?.get("plan").textValue()?.takeIf { it.isNotBlank() }
+    else null
+
+internal fun planProposalShowsResult(tool: ChatToolCall): Boolean {
+    if (tool.state == "error") return true
+    val result = tool.result ?: return false
+    if (result is JsonNull) return false
+    return result.textValue()?.isNotBlank() ?: true
+}
+
 /** Mixed content stays JSON, rather than silently discarding images/resources. */
 internal fun extractResultText(result: JsonElement, depth: Int = 0): String? {
     if (depth > 4) return null

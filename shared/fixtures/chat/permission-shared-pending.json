@@ -1,0 +1,190 @@
+{
+    "description": "requestUserInput without a native transcript item: CLI persists one question, permission state attaches without duplicating it.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "shared-user",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Choose an option."
+            },
+            {
+                "createdAt": 1755000001000,
+                "id": "call",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "call",
+                    "input": {
+                        "itemId": "call",
+                        "questions": [
+                            {
+                                "header": "Choose",
+                                "id": "choice",
+                                "options": [
+                                    {
+                                        "description": "A",
+                                        "label": "A"
+                                    },
+                                    {
+                                        "description": "B",
+                                        "label": "B"
+                                    }
+                                ],
+                                "question": "Which?"
+                            }
+                        ],
+                        "threadId": "thread",
+                        "turnId": "turn"
+                    },
+                    "name": "request_user_input",
+                    "permission": {
+                        "status": "pending"
+                    },
+                    "state": "running"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "shared-user",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Choose an option."
+            },
+            {
+                "createdAt": 1755000001000,
+                "id": "call",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "call",
+                    "input": {
+                        "itemId": "call",
+                        "questions": [
+                            {
+                                "header": "Choose",
+                                "id": "choice",
+                                "options": [
+                                    {
+                                        "description": "A",
+                                        "label": "A"
+                                    },
+                                    {
+                                        "description": "B",
+                                        "label": "B"
+                                    }
+                                ],
+                                "question": "Which?"
+                            }
+                        ],
+                        "threadId": "thread",
+                        "turnId": "turn"
+                    },
+                    "name": "request_user_input",
+                    "permission": {
+                        "status": "pending"
+                    },
+                    "state": "running"
+                }
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": {
+            "requests": {
+                "runtime:thread:number:1": {
+                    "arguments": {
+                        "itemId": "call",
+                        "questions": [
+                            {
+                                "header": "Choose",
+                                "id": "choice",
+                                "options": [
+                                    {
+                                        "description": "A",
+                                        "label": "A"
+                                    },
+                                    {
+                                        "description": "B",
+                                        "label": "B"
+                                    }
+                                ],
+                                "question": "Which?"
+                            }
+                        ],
+                        "threadId": "thread",
+                        "turnId": "turn"
+                    },
+                    "createdAt": 1755000001100,
+                    "tool": "request_user_input",
+                    "toolCallId": "call"
+                }
+            }
+        },
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Choose an option.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "shared-user",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "call",
+                            "id": "codex:thread:question:call:start",
+                            "input": {
+                                "itemId": "call",
+                                "questions": [
+                                    {
+                                        "header": "Choose",
+                                        "id": "choice",
+                                        "options": [
+                                            {
+                                                "description": "A",
+                                                "label": "A"
+                                            },
+                                            {
+                                                "description": "B",
+                                                "label": "B"
+                                            }
+                                        ],
+                                        "question": "Which?"
+                                    }
+                                ],
+                                "threadId": "thread",
+                                "turnId": "turn"
+                            },
+                            "name": "request_user_input",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000001000,
+                "id": "shared-question",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "permission-shared-pending"
+}

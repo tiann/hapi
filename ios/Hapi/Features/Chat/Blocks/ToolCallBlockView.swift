@@ -4,11 +4,10 @@ import HapiUI
 import SwiftUI
 
 /// A bounded activity summary. Ordinary tools open the shared inspector;
-/// sidechains open their own transcript. Only approvals keep actions inline.
+/// sidechains open their own transcript. Questions, plans and approvals stay inline.
 struct ToolCallBlockView: View {
     let block: ToolCallBlock
     let basePath: String?
-    var compact = false
 
     @Environment(\.hapiTheme) private var theme
     @Environment(\.hapiTypography) private var typography
@@ -16,9 +15,23 @@ struct ToolCallBlockView: View {
     @Environment(\.openChatTool) private var openTool
 
     var body: some View {
+        if isQuestionDetailsTool(block.tool.name) {
+            QuestionToolCard(block: block)
+        } else {
+            activityCard
+        }
+    }
+
+    @ViewBuilder
+    private var activityCard: some View {
         let presentation = toolSummaryPresentation(block.tool, basePath: basePath)
         VStack(alignment: .leading, spacing: 0) {
             headerRow(presentation)
+            if let plan = planProposalMarkdown(block.tool) {
+                PlanProposalContent(markdown: plan)
+                    .padding(12)
+                    .accessibilityIdentifier("plan-proposal-\(block.id)")
+            }
             if let permission = block.tool.permission {
                 if permission.status == .pending, let interactions {
                     pendingApprovalSection(permission: permission, interactions: interactions)
@@ -42,7 +55,7 @@ struct ToolCallBlockView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(compact ? Color.clear : theme.surface)
+        .background(theme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
@@ -58,15 +71,13 @@ struct ToolCallBlockView: View {
                 .foregroundStyle(.orange)
                 .padding(.horizontal, 10)
                 .padding(.top, 6)
-            if !isAskUserQuestionToolName(block.tool.name) && !isRequestUserInputToolName(block.tool.name) {
-                Button { openTool?(block) } label: {
-                    Label("View full input", systemImage: "arrow.up.right.square")
-                        .font(typography.toolSubtitleFont)
-                        .frame(minHeight: 44)
-                }
-                .padding(.horizontal, 10)
+            Button { openTool?(block) } label: {
+                Label("View full input", systemImage: "arrow.up.right.square")
+                    .font(typography.toolSubtitleFont)
+                    .frame(minHeight: 44)
             }
-            PendingPermissionFooter(
+            .padding(.horizontal, 10)
+            PermissionActionsRow(
                 tool: block.tool,
                 requestId: permission.id,
                 interactions: interactions
@@ -77,9 +88,24 @@ struct ToolCallBlockView: View {
     }
 
     private func headerRow(_ presentation: ToolCardPresentation) -> some View {
-        Button {
-            openTool?(block)
-        } label: {
+        ToolSummaryRow(presentation: presentation, state: block.tool.state) { openTool?(block) }
+            .accessibilityHint(opensToolProcess(block)
+                ? String(localized: "View agent process") : String(localized: "View tool details"))
+            .accessibilityIdentifier("tool-summary-\(block.id)")
+    }
+}
+
+/// Lightweight, read-only row shared by the conversation and group browser.
+/// Tool output and approval controls are deliberately not part of this view.
+struct ToolSummaryRow: View {
+    let presentation: ToolCardPresentation
+    let state: ToolCallState
+    let action: () -> Void
+    @Environment(\.hapiTheme) private var theme
+    @Environment(\.hapiTypography) private var typography
+
+    var body: some View {
+        Button(action: action) {
             let layout = typography.usesStackedToolLayout
                 ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
                 : AnyLayout(HStackLayout(spacing: 8))
@@ -109,8 +135,8 @@ struct ToolCallBlockView: View {
                 }
                 if !typography.usesStackedToolLayout { Spacer(minLength: 8) }
                 HStack(spacing: 8) {
-                    if block.tool.state != .completed {
-                        ToolStatusIndicator(state: block.tool.state)
+                    if state != .completed {
+                        ToolStatusIndicator(state: state)
                     }
                     Image(systemName: "chevron.right")
                         .font(typography.captionFont)
@@ -123,12 +149,8 @@ struct ToolCallBlockView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityValue(block.tool.state == .completed ? String(localized: "Completed") : "")
-        .accessibilityHint(opensToolProcess(block)
-            ? String(localized: "View agent process") : String(localized: "View tool details"))
-        .accessibilityIdentifier("tool-summary-\(block.id)")
+        .accessibilityValue(state == .completed ? String(localized: "Completed") : "")
     }
-
 }
 
 // MARK: - Status
@@ -194,6 +216,8 @@ struct PermissionStateRow: View {
                 text: String(localized: "✕ Denied") + (permission.reason.map { " · \($0)" } ?? ""),
                 isError: true
             )
+        case .resolved:
+            PermissionLine(text: String(localized: "Resolved in Codex"))
         case .canceled:
             PermissionLine(text: String(localized: "— Canceled"))
         }

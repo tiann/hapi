@@ -71,6 +71,7 @@ func getPermissions(_ agentState: AgentState?) -> PermissionMap {
             let entry = completed[id]!
             let status: ToolPermissionStatus = {
                 switch entry.status {
+                case .resolved: return .resolved
                 case .canceled: return .canceled
                 case .denied: return .denied
                 case .approved: return .approved

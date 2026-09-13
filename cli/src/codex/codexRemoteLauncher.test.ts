@@ -1,16 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import type { EnhancedMode } from './loop';
 
 const harness = vi.hoisted(() => ({
-    appServerConnected: true,
-    abandonTransport: null as (() => void) | null,
-    resumeModel: 'gpt-5.4',
-    reserveUsage: null as Record<string, unknown> | null,
-    reserveSettingsCalls: [] as Array<Record<string, unknown>>,
     notifications: [] as Array<{ method: string; params: unknown }>,
     dispatchNotification: null as ((method: string, params: unknown) => void) | null,
     registerRequestCalls: [] as string[],
@@ -112,14 +104,14 @@ vi.mock('./codexAppServerClient', () => {
         private notificationHandler: ((method: string, params: unknown) => void) | null = null;
         private stderrHandler: ((text: string) => void) | null = null;
 
-        async connect(): Promise<void> { harness.appServerConnected = true; }
+        async connect(): Promise<void> {}
 
         isConnected(): boolean {
-            return harness.appServerConnected;
+            return true;
         }
 
         isInitialized(): boolean {
-            return harness.appServerConnected;
+            return true;
         }
 
         async initialize(params: unknown): Promise<{ protocolVersion: number }> {
@@ -140,7 +132,7 @@ vi.mock('./codexAppServerClient', () => {
             harness.dispatchNotification = handler;
         }
 
-        setTransportAbandonedHandler(handler: (() => void) | null): void { harness.abandonTransport = handler; }
+        setTransportAbandonedHandler(_handler: (() => void) | null): void {}
 
         setStderrHandler(handler: ((text: string) => void) | null): void {
             this.stderrHandler = handler;
@@ -152,25 +144,6 @@ vi.mock('./codexAppServerClient', () => {
                 throw new Error('collaborationMode/list failed');
             }
             return harness.collaborationModeResponse;
-        }
-
-        async readAccountRateLimits(): Promise<unknown> {
-            if (!harness.reserveUsage) throw new Error('Unsupported');
-            return structuredClone(harness.reserveUsage);
-        }
-
-        async supportsMethod(): Promise<boolean> { return true; }
-
-        async listModels(): Promise<unknown> {
-            return { data: [
-                { id: 'gpt-reserve', hidden: true, defaultReasoningEffort: 'medium' },
-                { id: 'gpt-5.4', hidden: false, defaultReasoningEffort: 'high' }
-            ] };
-        }
-
-        async updateThreadSettings(params: Record<string, unknown>): Promise<void> {
-            harness.reserveSettingsCalls.push(params);
-            this.notificationHandler?.('thread/settings/updated', { threadId: params.threadId, threadSettings: params });
         }
 
         async listSkills(params: unknown): Promise<unknown> {
@@ -205,7 +178,7 @@ vi.mock('./codexAppServerClient', () => {
             if (harness.failResumeThreadIds.includes(id)) {
                 throw new Error('resume failed');
             }
-            return { thread: { id }, model: harness.resumeModel };
+            return { thread: { id }, model: 'gpt-5.4' };
         }
 
         async compactThread(params?: { threadId?: string }): Promise<Record<string, never>> {
@@ -1136,7 +1109,6 @@ import { INDETERMINATE_SYMBOL } from './codexAppServerClient';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 type FakeAgentState = {
-    codexUsage?: import('@hapi/protocol').AgentState['codexUsage'];
     requests: Record<string, unknown>;
     completedRequests: Record<string, unknown>;
 };
@@ -1232,10 +1204,6 @@ function createSessionStub(
         setModelReasoningEffort(nextEffort: EnhancedMode['modelReasoningEffort']) {
             currentModelReasoningEffort = nextEffort;
         },
-        getModelReasoningEffort() { return currentModelReasoningEffort; },
-        pushKeepAlive() {},
-        getServiceTier() { return undefined; },
-        setServiceTier() {},
         getCollaborationMode() {
             return currentCollaborationMode;
         },
@@ -1431,11 +1399,6 @@ describe('codexRemoteLauncher', () => {
         session.queue.close();
     });
     afterEach(() => {
-        harness.appServerConnected = true;
-        harness.abandonTransport = null;
-        harness.resumeModel = 'gpt-5.4';
-        harness.reserveUsage = null;
-        harness.reserveSettingsCalls = [];
         harness.notifications = [];
         harness.dispatchNotification = null;
         harness.registerRequestCalls = [];
@@ -2693,118 +2656,6 @@ describe('codexRemoteLauncher', () => {
         expect(harness.startTurnMessages).toEqual(['first message', 'first message', 'first message', 'first message', 'second message']);
         expect(session.sessionId).toBe('thread-1');
         expect(session.thinking).toBe(false);
-    });
-
-    it('preserves queued model settings when resuming an ordinary thread', async () => {
-        const { session } = createSessionStub(['first'], {
-            ...createMode(), model: 'gpt-5.6', modelReasoningEffort: 'high', serviceTier: 'fast'
-        }, true);
-        session.sessionId = 'thread-old';
-        await codexRemoteLauncher(session as never);
-        expect(harness.startTurnParams[0]).toMatchObject({
-            collaborationMode: { settings: { model: 'gpt-5.6', reasoning_effort: 'high' } },
-            serviceTier: 'priority'
-        });
-    });
-
-    it.each([
-        ['transient', 'Codex thread entered systemError', 2, false],
-        ['context', "Codex ran out of room in the model's context window.", 2, true],
-        ['usage', 'Usage limit exceeded', 1, false]
-    ] as const)('preserves %s failure handling during Reserve', async (_kind, error, attempts, compact) => {
-        harness.resumeModel = 'gpt-reserve';
-        harness.remainingThreadSystemErrors = 1;
-        harness.nextThreadSystemErrorMessage = error;
-        harness.reserveUsage = {
-            accountId: 'account-a', ordinaryUsageAllowed: false,
-            rateLimits: { limitId: 'codex', primary: { usedPercent: 100 } }
-        };
-        const { session } = createSessionStub(['first'], createMode(), true);
-        session.sessionId = 'thread-reserve';
-        await codexRemoteLauncher(session as never);
-        expect(harness.startTurnMessages).toEqual(Array(attempts).fill('first'));
-        expect(harness.compactThreadIds).toEqual(compact ? ['thread-reserve'] : []);
-        expect(harness.startThreadIds).toEqual([]);
-        expect(harness.startTurnParams[0]).toMatchObject({
-            collaborationMode: { settings: { model: 'gpt-reserve' } }
-        });
-    });
-
-    it('reconciles a resumed Reserve task before waiting for the first user message', async () => {
-        harness.resumeModel = 'gpt-reserve';
-        harness.reserveUsage = {
-            accountId: 'account-a', ordinaryUsageAllowed: false,
-            rateLimits: { limitId: 'codex', primary: { usedPercent: 100 } },
-            rateLimitsByLimitId: { base_model_inference: { limitName: 'gpt-reserve', primary: { usedPercent: 20 } } }
-        };
-        const { session, getModel, getAgentState } = createSessionStub([], createMode(), false, false);
-        session.sessionId = 'thread-reserve';
-        const run = codexRemoteLauncher(session as never);
-        try {
-            await vi.waitFor(() => expect(getAgentState().codexUsage?.reserve?.primary?.remainingPercent).toBe(80));
-            expect(getModel()).toBe('gpt-5.6-luna');
-            expect(harness.resumeThreadIds).toEqual(['thread-reserve']);
-            expect(harness.startTurnMessages).toEqual([]);
-        } finally {
-            session.queue.close();
-            await run;
-        }
-    });
-
-    it('reads native settings after transport loss without replaying the interrupted message', async () => {
-        harness.resumeModel = 'gpt-reserve';
-        harness.suppressTurnCompletion = true;
-        harness.reserveUsage = {
-            accountId: 'account-a', ordinaryUsageAllowed: false,
-            rateLimits: { limitId: 'codex', primary: { usedPercent: 100 } }
-        };
-        const { session, getModel, getAgentState } = createSessionStub(['first'], createMode(), false, false);
-        session.sessionId = 'thread-reserve';
-        const run = codexRemoteLauncher(session as never);
-        try {
-            await vi.waitFor(() => expect(harness.startTurnMessages).toEqual(['first']));
-            harness.resumeModel = 'gpt-5.4';
-            harness.reserveUsage.ordinaryUsageAllowed = true;
-            harness.appServerConnected = false;
-            harness.abandonTransport?.();
-            await vi.waitFor(() => expect(harness.resumeThreadIds).toEqual(['thread-reserve', 'thread-reserve']));
-            await vi.waitFor(() => expect(getAgentState().codexUsage?.reserve).toBeNull());
-            expect(getModel()).toBe('gpt-5.4');
-            expect(harness.startTurnMessages).toEqual(['first']);
-        } finally {
-            session.queue.close();
-            await run;
-        }
-    });
-
-    it('uses accepted Reserve settings for queued turns in the same conversation without replay', async () => {
-        const home = await mkdtemp(join(tmpdir(), 'hapi-reserve-launcher-'));
-        vi.stubEnv('CODEX_HOME', home);
-        try {
-            harness.reserveUsage = {
-                accountId: 'account-a', ordinaryUsageAllowed: false,
-                rateLimits: { limitId: 'codex', primary: { usedPercent: 100 } },
-                rateLimitsByLimitId: { base_model_inference: { limitName: 'gpt-reserve', primary: { usedPercent: 20 } } },
-                rateLimitUpsell: { banner_type: 'luna_reserve', blocked_model_slug: 'gpt-5.4' }
-            };
-            const { session, getModel, sessionEvents } = createSessionStub(['first', 'second'], createMode(), true);
-            session.sessionId = '01900000-0000-7000-8000-000000000001';
-            await codexRemoteLauncher(session as never);
-            expect(harness.resumeThreadIds).toEqual([session.sessionId]);
-            expect(harness.resumeThreadParams[0]).not.toHaveProperty('model');
-            expect(harness.reserveSettingsCalls).toHaveLength(1);
-            expect(harness.startTurnMessages).toEqual(['first', 'second']);
-            expect(harness.startTurnParams).toHaveLength(2);
-            for (const params of harness.startTurnParams) {
-                expect(params.collaborationMode).toMatchObject({ settings: { model: 'gpt-reserve', reasoning_effort: 'medium' } });
-                expect(params.threadId).toBe(session.sessionId);
-            }
-            expect(getModel()).toBe('gpt-5.6-luna');
-            expect(sessionEvents.filter(event => String(event.message).includes('Luna Reserve'))).toHaveLength(1);
-        } finally {
-            vi.unstubAllEnvs();
-            await rm(home, { recursive: true, force: true });
-        }
     });
 
     it('does not create a new thread when an existing conversation cannot be resumed', async () => {

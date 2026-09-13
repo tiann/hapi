@@ -3,19 +3,17 @@ import HapiProtocol
 import HapiUI
 import SwiftUI
 
-/// Presentation-only flattening; protocol groups and their semantics stay intact.
+/// Tool groups contribute only their displayed summary to transcript diffs.
 enum TranscriptRow: Identifiable, Equatable {
     case history(ChatHistoryPagingState.Phase, Bool)
     case message(VisibleChatBlock)
-    case groupedTool(ToolCallBlock, groupID: String, isLast: Bool)
-    case group(ToolGroupBlock, Bool)
+    case group(ToolGroupPresentation)
 
     static let historyID = "chat-history-control"
     var role: TranscriptRowRole {
         switch self {
         case .history: .history
         case .group: .tool
-        case .groupedTool: .tool
         case .message(.toolGroup): .tool
         case .message(.block(.userText)): .user
         case .message(.block(.toolCall)): .tool
@@ -26,21 +24,11 @@ enum TranscriptRow: Identifiable, Equatable {
         switch self {
         case .history: Self.historyID
         case .message(let block): block.stableId
-        case .group(let group, _): group.id
-        case .groupedTool(let block, _, _): block.id
-        }
-    }
-
-    var groupID: String? {
-        switch self {
-        case .group(let block, _): block.id
-        case .groupedTool(_, let groupID, _): groupID
-        default: nil
+        case .group(let group): group.id
         }
     }
 
     func spacing(after previous: TranscriptRow?) -> CGFloat {
-        if case .groupedTool = self, let previous, previous.groupID == groupID { return 0 }
         return role.spacing(after: previous?.role)
     }
 }
@@ -52,13 +40,7 @@ struct ChatTranscriptView: View {
         var rows: [TranscriptRow] = [.history(model.historyPaging.phase, model.hasMore)]
         for block in model.blocks {
             if case .toolGroup(let group) = block {
-                let expanded = model.expandedToolGroups[group.id] ?? group.defaultOpen
-                rows.append(.group(group, expanded))
-                if expanded {
-                    rows.append(contentsOf: group.tools.map {
-                        .groupedTool($0, groupID: group.id, isLast: $0.id == group.tools.last?.id)
-                    })
-                }
+                rows.append(.group(ToolGroupPresentation(group)))
             } else {
                 rows.append(.message(block))
             }
@@ -131,15 +113,8 @@ struct ChatTranscriptView: View {
             .accessibilityIdentifier("chat-history")
         case .message(let block):
             ChatBlockCard(block: block, basePath: model.basePath)
-        case .groupedTool(let block, _, let isLast):
-            ToolGroupChildRow(block: block, basePath: model.basePath, isLast: isLast)
-        case .group(let group, let expanded):
-            ToolGroupBlockView(
-                block: group,
-                basePath: model.basePath,
-                expansion: Binding(get: { expanded }, set: { model.expandedToolGroups[group.id] = $0 }),
-                showsTools: false
-            )
+        case .group(let presentation):
+            ToolGroupBlockView(presentation: presentation)
         }
     }
 }

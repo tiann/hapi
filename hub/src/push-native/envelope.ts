@@ -4,15 +4,14 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
  * End-to-end encrypted push envelope (PUSH SPEC v1).
  *
  * The hub encrypts the notification plaintext (the exact FCM data-contract
- * JSON, canonicalized) with a per-device 32-byte key that only the iOS app
- * and the hub know. APNs and the optional relay only ever see ciphertext;
- * the device's Notification Service Extension decrypts and replaces the
- * generic "New activity" alert.
+ * JSON, canonicalized) with a per-device 32-byte key known to the app and
+ * the hub. The relay and push providers only forward ciphertext; native
+ * clients decrypt locally before displaying notifications.
  *
  * Envelope layout: base64( nonce(12) || ciphertext || tag(16) )
  * Cipher: AES-256-GCM, AAD = ASCII "hapi-push-v1".
  *
- * Golden vector: shared/fixtures/push/envelope-v1.json (iOS ports must
+ * Golden vector: shared/fixtures/push/envelope-v1.json (native ports must
  * reproduce it byte-for-byte).
  */
 

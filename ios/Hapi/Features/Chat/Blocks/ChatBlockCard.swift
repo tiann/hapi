@@ -9,7 +9,7 @@ import UIKit
 extension VisibleChatBlock {
     /// Stable list key: block ids are reducer-stable and tool-group ids are
     /// pinned across recomputes via `previousGroups`, so scroll anchoring
-    /// and expansion state survive pipeline re-runs.
+    /// and inspection state survive pipeline re-runs.
     var stableId: String {
         switch self {
         case .block(let block): return block.id
@@ -158,7 +158,7 @@ struct ChatBlockCard: View {
     var body: some View {
         switch block {
         case .toolGroup(let group):
-            ToolGroupBlockView(block: group, basePath: basePath)
+            ToolGroupBlockView(presentation: ToolGroupPresentation(group))
         case .block(let chatBlock):
             ChatSubBlockView(block: chatBlock, basePath: basePath)
         }

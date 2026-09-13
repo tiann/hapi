@@ -121,9 +121,9 @@ HAPI supports push notifications to alert you when agents need attention.
 | Ready | Agent finished and awaits input |
 | Task completed / Task failed | A background task finishes (success or failure) |
 
-### Native Push via FCM
+### Native Android Push
 
-In addition to Web Push, the hub can send notifications through Firebase Cloud Messaging (FCM) to native companion apps on Android and Wear OS. When FCM is configured and a native device is registered for your namespace, the companion app is treated as the canonical notification surface — if FCM already delivered a notification, the hub skips the Web Push duplicate so you only get one alert. See the [native companion API contract](../api/native-companion-contract.md) for setup details.
+In addition to Web Push, the hub can send notifications through Firebase Cloud Messaging (FCM) to native companion apps on Android and Wear OS. Official Android phone builds use the encrypted push relay by default, so a current hub needs no Firebase setup. Hubs with private Firebase credentials retain direct phone/Wear delivery. When a native device is registered for your namespace, the companion app is treated as the canonical notification surface — if the native push provider accepted a notification, the hub skips the Web Push duplicate so you only get one alert. See the [native companion API contract](../api/native-companion-contract.md) for setup details.
 
 ::: tip
 If push notifications don't work in your region (e.g., FCM unavailable), use [Telegram integration](./notifications.md#telegram-setup) instead.

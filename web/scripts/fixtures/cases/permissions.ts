@@ -19,6 +19,32 @@ const localQuestionMessages = [
 ]
 const localRequest = { tool: 'AskUserQuestion', toolCallId: 'toolu_local_question', arguments: localQuestionInput, createdAt: T0 + 1_100 }
 
+// Shared Codex provides a server request, not a transcript tool_use. These
+// messages are the lifecycle persisted by SharedCodexPermissions itself.
+const sharedQuestionInput = { threadId: 'thread', turnId: 'turn', itemId: 'call', questions: [{ id: 'choice', header: 'Choose', question: 'Which?', options: [
+    { label: 'A', description: 'A' }, { label: 'B', description: 'B' }
+] }] }
+const sharedRequest = { tool: 'request_user_input', toolCallId: 'call', arguments: sharedQuestionInput, createdAt: T0 + 1_100 }
+const sharedQuestionMessages = [
+    wireMessage({ id: 'shared-user', seq: 1, createdAt: T0, content: {
+        role: 'user', content: { type: 'text', text: 'Choose an option.' }
+    } }),
+    wireMessage({ id: 'shared-question', seq: 2, createdAt: T0 + 1_000, content: {
+        role: 'agent', content: { type: 'codex', data: {
+            type: 'tool-call', name: 'request_user_input', callId: 'call', input: sharedQuestionInput,
+            id: 'codex:thread:question:call:start'
+        } }
+    } })
+]
+const sharedQuestionResult = (status: 'resolved' | 'canceled') => wireMessage({
+    id: `shared-${status}`, seq: 3, createdAt: T0 + 5_000, content: {
+        role: 'agent', content: { type: 'codex', data: {
+            type: 'tool-call-result', callId: 'call', output: { status }, is_error: false,
+            id: `codex:thread:question:call:${status}`
+        } }
+    }
+})
+
 /**
  * Permission requests are NOT messages: they live in session.agentState
  * (requests → completedRequests). A pending request whose tool_use message is
@@ -28,6 +54,28 @@ const localRequest = { tool: 'AskUserQuestion', toolCallId: 'toolu_local_questio
  * the oldest loaded message (web/src/chat/reducer.ts).
  */
 export const permissionCases: FixtureCase[] = [
+    {
+        name: 'permission-shared-pending',
+        description: 'requestUserInput without a native transcript item: CLI persists one question, permission state attaches without duplicating it.',
+        messages: sharedQuestionMessages,
+        agentState: { requests: { 'runtime:thread:number:1': sharedRequest } }
+    },
+    {
+        name: 'permission-shared-resolved',
+        description: 'Codex shared request resolved elsewhere: withdraw input, preserve neutral resolved status, never invent the winner or answers.',
+        messages: [...sharedQuestionMessages, sharedQuestionResult('resolved')],
+        agentState: { requests: {}, completedRequests: {
+            'runtime:thread:number:1': { ...sharedRequest, status: 'resolved', completedAt: T0 + 5_000 }
+        } }
+    },
+    {
+        name: 'permission-shared-canceled',
+        description: 'Disconnect withdraws a request-only shared question without claiming it was answered or losing its history.',
+        messages: [...sharedQuestionMessages, sharedQuestionResult('canceled')],
+        agentState: { requests: {}, completedRequests: {
+            'runtime:thread:number:1': { ...sharedRequest, status: 'canceled', completedAt: T0 + 5_000 }
+        } }
+    },
     {
         name: 'permission-local-question-pending',
         description: 'A local permission has an independent request ID: attach to the existing native toolCallId, but submit answers using permission.id. Do not synthesize a duplicate card.',
