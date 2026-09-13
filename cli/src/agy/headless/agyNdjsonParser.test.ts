@@ -42,7 +42,20 @@ describe('parseAgyNdjsonLine', () => {
 
     it('parses a FAILURE result envelope', () => {
         const event = parseAgyNdjsonLine('{"event":"result","result":{"conversation_id":"abc","status":"FAILURE","response":""}}');
-        expect(event).toEqual({ kind: 'result', conversationId: 'abc', status: 'FAILURE', response: '' });
+        expect(event).toEqual({ kind: 'result', conversationId: 'abc', status: 'FAILURE', response: '', error: null });
+    });
+
+    it('carries the failure reason from a failed envelope', () => {
+        // agy reports why the turn failed in `error`; `response` stays the
+        // answer field (empty here, since the turn produced no answer).
+        const event = parseAgyNdjsonLine('{"event":"result","result":{"conversation_id":"abc","status":"ERROR","response":"","error":"timeout waiting for response","duration_seconds":2.4}}');
+        expect(event).toEqual({
+            kind: 'result',
+            conversationId: 'abc',
+            status: 'ERROR',
+            response: '',
+            error: 'timeout waiting for response',
+        });
     });
 
     it('parses the result envelope', () => {
@@ -52,6 +65,7 @@ describe('parseAgyNdjsonLine', () => {
             conversationId: 'abc',
             status: 'SUCCESS',
             response: 'OK\n',
+            error: null,
         });
     });
 
