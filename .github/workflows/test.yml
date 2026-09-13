@@ -9,6 +9,8 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v4
+            - name: Test PR review automation
+              run: node --test .github/scripts/pr-review.test.cjs
             - uses: oven-sh/setup-bun@v2
             - run: bun install --frozen-lockfile
             - run: bun typecheck
