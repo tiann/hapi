@@ -276,9 +276,11 @@ public func buildSessionConfigState(
     return SessionConfigState(
         flavor: flavor,
         active: detail?.active ?? summary?.active ?? false,
-        controlledByUser: detail?.agentState?.controlledByUser == true,
+        controlledByUser: detail?.agentState?.controlledByUser == true && detail?.metadata?.capabilities?.concurrentClients != true,
         permissionMode: detail?.permissionMode,
-        permissionModes: permissionModeOptions(forFlavor: flavor),
+        permissionModes: permissionModeOptions(forFlavor: flavor).filter {
+            detail?.metadata?.capabilities?.concurrentClients != true || $0.mode.rawValue != "safe-yolo"
+        },
         model: model,
         modelOptions: modelOptions,
         modelOptionsLoading: modelOptionsLoading,

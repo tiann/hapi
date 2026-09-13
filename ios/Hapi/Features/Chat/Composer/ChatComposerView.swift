@@ -1,5 +1,6 @@
 import AVFAudio
 import HapiClient
+import HapiUI
 import PhotosUI
 import SwiftUI
 import UIKit
@@ -11,6 +12,7 @@ import UniformTypeIdentifiers
 /// otherwise Send (long-press offers "Send & steer" during a turn). The card
 /// also hosts dictation and attachment controls.
 struct ChatComposerView: View {
+    @Environment(\.hapiTypography) private var typography
     let interactor: ChatInteractor
     /// nil ⇒ dictation unavailable (no controller wired) — mic button hidden.
     var dictation: DictationController?
@@ -59,6 +61,7 @@ struct ChatComposerView: View {
                     .padding(.top, 8)
                 }
                 TextField("Message the agent…", text: text, axis: .vertical)
+                    .font(typography.bodyFont)
                     .lineLimit(1...6)
                     .textFieldStyle(.plain)
                     .padding(.horizontal, 12)
@@ -67,7 +70,7 @@ struct ChatComposerView: View {
                 HStack(spacing: 2) {
                     addAttachmentButton
                     Spacer()
-                    if let dictation {
+                    if let dictation, dictation.isAvailable {
                         micButton(dictation)
                     }
                     primaryActionButton(composer, attachments: attachments)
@@ -82,10 +85,13 @@ struct ChatComposerView: View {
                     .fill(composerSurfaceColor)
             )
             .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
+            .shadow(color: .black.opacity(0.06), radius: 6, y: 2)
         }
-        .padding(.horizontal, 12)
+        .hapiReadingColumn()
         .padding(.vertical, 8)
+        .task(id: dictation.map { ObjectIdentifier($0) }) {
+            await dictation?.refreshAvailability()
+        }
         .confirmationDialog("Attach", isPresented: $attachDialogOpen, titleVisibility: .visible) {
             Button("Photo library") {
                 photosPickerOpen = true
@@ -204,7 +210,7 @@ struct ChatComposerView: View {
                 foreground: AnyShapeStyle(.secondary)
             ) {
                 Image(systemName: "plus")
-                    .font(.subheadline.weight(.medium))
+                    .font(.system(size: 15, weight: .medium))
             }
         }
         .buttonStyle(.plain)
@@ -233,7 +239,7 @@ struct ChatComposerView: View {
                         .controlSize(.small)
                 } else {
                     Image(systemName: recording ? "stop.fill" : "mic.fill")
-                        .font(.subheadline)
+                        .font(.system(size: 15))
                 }
             }
         }
@@ -310,7 +316,7 @@ struct ChatComposerView: View {
                     foreground: AnyShapeStyle(.white)
                 ) {
                     Image(systemName: "stop.fill")
-                        .font(.subheadline)
+                        .font(.system(size: 15))
                 }
             }
             .buttonStyle(.plain)
@@ -348,10 +354,12 @@ struct ChatComposerView: View {
             foreground: enabled ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary)
         ) {
             Image(systemName: "arrow.up")
-                .font(.subheadline.weight(.semibold))
+                .font(.system(size: 15, weight: .semibold))
         }
     }
 
+    // Icon-only controls keep their 38pt visuals / 44pt hit areas. Their
+    // symbols use fixed sizes; editable text remains fully Dynamic Type.
     private func actionCircle<Content: View>(
         background: AnyShapeStyle,
         foreground: AnyShapeStyle,

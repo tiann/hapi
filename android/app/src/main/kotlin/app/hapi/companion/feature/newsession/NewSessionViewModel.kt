@@ -79,10 +79,13 @@ class NewSessionStrings(
 
 /** Which permission control the current flavor renders (web `PermissionField`). */
 sealed interface PermissionUi {
-    /** Native permission-mode picker (grok + codex-family). */
+    /**
+     * Native permission-mode picker (claude, grok, codex-family —
+     * [NewSessionLogic.usesNativePermissionSelect]).
+     */
     data class NativeSelect(val options: List<OptionItem>) : PermissionUi
 
-    /** HAPI YOLO toggle (claude/agy/cursor) with the native mode it maps to. */
+    /** HAPI YOLO toggle (agy/cursor) with the native mode it maps to. */
     data class YoloToggle(val nativeModeLabel: String?) : PermissionUi
 
     /** Pi: the agent manages its own permissions. */
@@ -802,7 +805,7 @@ class NewSessionViewModel(
         val permission: PermissionUi = when {
             agent == "pi" || agent == "dsh" -> PermissionUi.Managed
             usesNativePermissionSelect(agent) -> PermissionUi.NativeSelect(
-                PermissionModes.forFlavor(agent).map { OptionItem(it.wireId, it.label) },
+                PermissionModes.forLaunch(agent).map { OptionItem(it.wireId, it.label) },
             )
             else -> PermissionUi.YoloToggle(hapiYoloNativeMode(agent)?.label)
         }

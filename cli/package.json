@@ -1,6 +1,6 @@
 {
   "name": "@twsxtd/hapi",
-  "version": "0.29.0",
+  "version": "0.30.2",
   "description": "App for agentic coding - access coding agent anywhere",
   "author": "Kirill Dubovitskiy & weishu",
   "license": "AGPL-3.0-only",
@@ -26,11 +26,11 @@
     }
   },
   "optionalDependencies": {
-    "@twsxtd/hapi-darwin-arm64": "0.29.0",
-    "@twsxtd/hapi-darwin-x64": "0.29.0",
-    "@twsxtd/hapi-linux-arm64": "0.29.0",
-    "@twsxtd/hapi-linux-x64": "0.29.0",
-    "@twsxtd/hapi-win32-x64": "0.29.0"
+    "@twsxtd/hapi-darwin-arm64": "0.30.2",
+    "@twsxtd/hapi-darwin-x64": "0.30.2",
+    "@twsxtd/hapi-linux-arm64": "0.30.2",
+    "@twsxtd/hapi-linux-x64": "0.30.2",
+    "@twsxtd/hapi-win32-x64": "0.30.2"
   },
   "scripts": {
     "postinstall": "node -e \"try{require('fs').chmodSync(require('path').join(__dirname,'bin','hapi.cjs'),0o755)}catch(e){}\"",
@@ -54,27 +54,29 @@
   },
   "dependencies": {
     "@hapi/protocol": "workspace:*",
-    "hapi-hub": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "@types/cross-spawn": "^6.0.6",
     "@types/ps-list": "^6.2.1",
     "@types/react": "^19.2.7",
-    "axios": "^1.13.2",
+    "axios": "^1.20.0",
     "chalk": "^5.6.2",
     "cross-spawn": "^7.0.6",
     "fastify": "^5.6.2",
     "fastify-type-provider-zod": "6.1.0",
+    "hapi-hub": "workspace:*",
     "ink": "^6.6.0",
     "ps-list": "^9.0.0",
     "react": "^19.2.3",
     "socket.io-client": "^4.8.3",
     "tar": "^7.5.2",
     "vscode-jsonrpc": "8.2.0",
+    "ws": "8.18.3",
     "yaml": "^2.8.2",
     "zod": "^4.2.1"
   },
   "devDependencies": {
     "@types/node": "26.3.0",
+    "@types/ws": "8.18.1",
     "bun-types": "1.4.0",
     "dotenv": "^17.2.3",
     "typescript": "^5",

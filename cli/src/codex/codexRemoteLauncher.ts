@@ -21,6 +21,12 @@ import {
     buildTurnStartParams,
     type CodexContextManagementConfig
 } from './utils/appServerConfig';
+import {
+    extractCodexMcpServers,
+    mergeCodexMcpServers,
+    type CodexMcpServersConfig
+} from './utils/codexMcpServers';
+import { prepareCodexMcpServers } from './utils/codexMcpProxy';
 import type { SkillMetadata, ThreadGoal, ThreadGoalStatus } from './appServerTypes';
 import { shouldIgnoreTerminalEvent } from './utils/terminalEventGuard';
 import { parseCodexSpecialCommand } from './codexSpecialCommands';
@@ -232,6 +238,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
     private reasoningProcessor: ReasoningProcessor | null = null;
     private diffProcessor: DiffProcessor | null = null;
     private happyServer: HappyServer | null = null;
+    private mcpProxyCleanup: (() => Promise<void>) | null = null;
     private abortController: AbortController = new AbortController();
     /** Invalidates queued-message steer handlers after abort or cleanup. */
     private steerEpoch = 0;
@@ -3234,6 +3241,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 const threadId = eventThreadId ?? this.currentThreadId;
                 session.sendAgentMessage({
                     ...addCodexEventScope(msg, 'parent', threadId),
+                    flavor: 'codex',
                     model: asString(msg.model) ?? usageModel,
                     id: randomUUID()
                 });
@@ -3528,7 +3536,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             failPendingAgentStartsForSpawnArgumentError(spawnAgentError);
         });
 
-        const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
+        const { server: happyServer, mcpServers: hapiMcpServers } = await buildHapiMcpBridge(session.client, {
             // In app-server/collab mode, child agents share this MCP bridge.
             // If the MCP handler writes the title directly, child title calls
             // leak into the parent HAPI session. Defer the side effect until
@@ -3537,6 +3545,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             emitTitleSummary: false
         });
         this.happyServer = happyServer;
+        let mcpServers: CodexMcpServersConfig = hapiMcpServers;
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
@@ -3576,6 +3585,22 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 cwd: session.path,
                 includeLayers: false
             })).config;
+            try {
+                const userMcpServers = extractCodexMcpServers(effectiveConfig);
+                const preparedMcpServers = await prepareCodexMcpServers(userMcpServers);
+                this.mcpProxyCleanup = preparedMcpServers.cleanup;
+                mcpServers = mergeCodexMcpServers(preparedMcpServers.servers, hapiMcpServers);
+                if (Object.keys(userMcpServers).length > 0) {
+                    logger.debug(`[Codex] Loaded ${Object.keys(userMcpServers).length} user MCP server(s)`);
+                }
+                if (preparedMcpServers.proxiedServerNames.length > 0) {
+                    logger.debug(
+                        `[Codex] Added stdio compatibility proxy for ${preparedMcpServers.proxiedServerNames.length} Windows MCP server(s)`
+                    );
+                }
+            } catch (error) {
+                logger.warn(`[Codex] Failed to merge user MCP servers; using HAPI bridge only: ${errorMessage(error)}`);
+            }
             const modelContextWindow = effectiveConfig.model_context_window;
             const modelAutoCompactTokenLimit = effectiveConfig.model_auto_compact_token_limit;
             contextManagementConfig = {
@@ -4330,6 +4355,15 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         if (this.happyServer) {
             this.happyServer.stop();
             this.happyServer = null;
+        }
+
+        if (this.mcpProxyCleanup) {
+            try {
+                await this.mcpProxyCleanup();
+            } catch (error) {
+                logger.debug('[codex-remote]: Error cleaning MCP proxy specs', error);
+            }
+            this.mcpProxyCleanup = null;
         }
 
         this.permissionHandler?.reset();

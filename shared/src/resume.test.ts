@@ -81,6 +81,18 @@ describe('resume schemas', () => {
         }).success).toBe(true)
     })
 
+    it('accepts rewind details on messages-invalidated events', () => {
+        expect(SyncEventSchema.parse({
+            type: 'messages-invalidated',
+            sessionId: 'session-1',
+            reason: 'rewind',
+            truncateFromLocalId: 'user-message-1'
+        })).toMatchObject({
+            reason: 'rewind',
+            truncateFromLocalId: 'user-message-1'
+        })
+    })
+
     it('validates structured session and machine update patches', () => {
         expect(SyncEventSchema.safeParse({
             type: 'session-updated',

@@ -1,15 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
     applyGlobalSelectAll,
+    buildAgyComposerModelOptions,
     applyModelChangeWithReasoningRollback,
     buildGoalStateMessages,
     isScratchlistHotkeyBlockedTarget,
     isScratchlistToggleHotkey,
     isSelectAllTargetBlocked,
     mergeStagedAttachmentsInOrder,
+    opencodeEffortOptionsInvalidationKey,
     resolvePiContextWindow,
     resolveLatestCompletedBoundaryIdForView,
     shouldAutoClearPendingSchedule,
+    shouldClearReasoningEffortForModelChange,
     shouldRouteToScratchlist,
     isRewindForkFallbackError,
 } from './SessionChat'
@@ -69,6 +72,42 @@ describe('applyModelChangeWithReasoningRollback', () => {
         expect(setModelReasoningEffort).toHaveBeenCalledOnce()
         expect(setModelReasoningEffort).toHaveBeenCalledWith(null)
         expect(setModel).toHaveBeenCalledWith('gpt-next')
+    })
+})
+
+describe('shouldClearReasoningEffortForModelChange', () => {
+    it('preserves an OpenCode effort for backend validation and rollback', () => {
+        expect(shouldClearReasoningEffortForModelChange({
+            agentFlavor: 'opencode',
+            previousModelReasoningEffort: 'high',
+            codexModels: [],
+            model: 'provider/model-b'
+        })).toBe(false)
+    })
+
+    it('does not clear an unset OpenCode effort', () => {
+        expect(shouldClearReasoningEffortForModelChange({
+            agentFlavor: 'opencode',
+            previousModelReasoningEffort: null,
+            codexModels: [],
+            model: 'provider/model-b'
+        })).toBe(false)
+    })
+})
+
+describe('opencodeEffortOptionsInvalidationKey', () => {
+    it('returns the effort options query key for opencode sessions', () => {
+        expect(opencodeEffortOptionsInvalidationKey('opencode', 'session-1')).toEqual([
+            'session-opencode-reasoning-effort-options',
+            'session-1',
+        ])
+    })
+
+    it('returns null for other flavors and missing flavor', () => {
+        expect(opencodeEffortOptionsInvalidationKey('codex', 'session-1')).toBeNull()
+        expect(opencodeEffortOptionsInvalidationKey('grok', 'session-1')).toBeNull()
+        expect(opencodeEffortOptionsInvalidationKey(null, 'session-1')).toBeNull()
+        expect(opencodeEffortOptionsInvalidationKey(undefined, 'session-1')).toBeNull()
     })
 })
 
@@ -525,5 +564,21 @@ describe('buildGoalStateMessages', () => {
 
         expect(buildGoalStateMessages([futureQueued, matureQueued, invokedScheduled]).map((message) => message.id))
             .toEqual(['invoked'])
+    })
+})
+
+describe('buildAgyComposerModelOptions', () => {
+    it('maps the machine catalog into composer options and keeps the id when agy sent no label', () => {
+        expect(buildAgyComposerModelOptions([
+            { modelId: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)' },
+            { modelId: 'gemini-9.9-experimental' }
+        ])).toEqual([
+            { value: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
+            { value: 'gemini-9.9-experimental', label: 'gemini-9.9-experimental' }
+        ])
+    })
+
+    it('signals "no catalog yet" rather than an empty picker while the machine is still answering', () => {
+        expect(buildAgyComposerModelOptions([])).toBeUndefined()
     })
 })

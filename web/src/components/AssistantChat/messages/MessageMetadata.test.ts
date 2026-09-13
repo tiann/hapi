@@ -54,6 +54,11 @@ describe('buildMessageMetadataLabels', () => {
         expect(parts).toContain('Duration: 0.0s')
     })
 
+    it('uses compact units for long legacy durations', () => {
+        expect(buildMessageMetadataLabels({ durationMs: 60_000 })).toContain('Duration: 1m')
+        expect(buildMessageMetadataLabels({ durationMs: 3_600_000 })).toContain('Duration: 1h')
+    })
+
     // Proof of Invariance — single-turn inputs (turnCount omitted, or < 2)
     // must produce byte-identical output to the pre-aggregate footer so
     // existing single-turn cards do not regress visually.
@@ -144,8 +149,39 @@ describe('buildMessageMetadataLabels', () => {
         expect(parts).toEqual([
             'Models: claude-opus-5, claude-haiku-4-5',
             'Tokens: 100.6k (100.1k in · 500 out)',
-            'Cache read: 99.9% of input · API-rate est.: $0.028',
-            'Round: 8.2s · 9 internal turns'
+            'Cached input: 99.9% · Cost: $0.028',
+            'Round: 8.2s · 9 turns'
+        ])
+    })
+
+    it('formats long round durations with minutes and hours', () => {
+        const summary = (durationMs: number) => buildMessageMetadataLabels({
+            roundSummary: {
+                modelUsage: {},
+                durationMs,
+                numTurns: 1
+            }
+        })
+
+        expect(summary(59_900)).toContain('Round: 59.9s · 1 turn')
+        expect(summary(60_000)).toContain('Round: 1m · 1 turn')
+        expect(summary(537_000)).toContain('Round: 8m 57s · 1 turn')
+        expect(summary(3_661_000)).toContain('Round: 1h 1m 1s · 1 turn')
+    })
+
+    it('labels a top-level Codex turn with Round', () => {
+        expect(buildMessageMetadataLabels({
+            roundSummary: {
+                provider: 'codex',
+                modelUsage: {
+                    'gpt-5.4': { inputTokens: 100, outputTokens: 10 }
+                },
+                numTurns: 1
+            }
+        })).toEqual([
+            'Model: gpt-5.4',
+            'Tokens: 110 (100 in · 10 out)',
+            'Round: 1 turn'
         ])
     })
 
@@ -175,7 +211,7 @@ describe('buildMessageMetadataLabels', () => {
         })).toEqual([
             'Models: claude-opus-5, claude-haiku-4-5, claude-empty-5',
             'Tokens: 24 (10 in · 14 out)',
-            'API-rate est.: <$0.0001',
+            'Cost: <$0.0001',
             'Round: 0.0s'
         ])
     })

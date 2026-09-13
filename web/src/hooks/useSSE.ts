@@ -21,6 +21,7 @@ import type {
     SyncEvent
 } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
+import { applyAgyCatalogAnnouncement } from '@/lib/agyCatalogAnnouncement'
 import { clearMessageWindow, getMessageWindowState, ingestIncomingMessages, markMessagesConsumed, markMessagesIndeterminate, markMessagesRequeued, removeOptimisticMessage, updateMessageStatus } from '@/lib/message-window-store'
 import { applySessionDetailPatch } from '@/lib/sessionPatch'
 
@@ -762,6 +763,10 @@ export function useSSE(options: {
                         queueSessionListInvalidation()
                     }
                 }
+            }
+
+            if (event.type === 'machine-agy-models-updated') {
+                void applyAgyCatalogAnnouncement(queryClient, event.machineId)
             }
 
             if (event.type === 'machine-updated') {

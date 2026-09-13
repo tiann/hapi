@@ -11,11 +11,14 @@ import HapiProtocol
 public actor MessageWindowControllers {
     private let provider: any MessagesProviding
     private let snapshots: WindowSnapshotStore?
+    private let historyRetentionLimit: Int
     private var controllers: [String: MessageWindowController] = [:]
 
-    public init(provider: any MessagesProviding, snapshots: WindowSnapshotStore? = nil) {
+    public init(provider: any MessagesProviding, snapshots: WindowSnapshotStore? = nil,
+                historyRetentionLimit: Int = MessageWindowConstants.historyWindowSize) {
         self.provider = provider
         self.snapshots = snapshots
+        self.historyRetentionLimit = historyRetentionLimit
     }
 
     /// The session's controller, hydrating from its snapshot on first open.
@@ -30,7 +33,8 @@ public actor MessageWindowControllers {
             sessionId: sessionId,
             provider: provider,
             snapshots: snapshots,
-            initialState: hydrated
+            initialState: hydrated,
+            historyRetentionLimit: historyRetentionLimit
         )
         controllers[sessionId] = controller
         return controller

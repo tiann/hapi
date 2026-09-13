@@ -393,17 +393,57 @@ export class AcpSdkBackend implements AgentBackend {
         // exposed as `unstable_setSessionModel` but the JSON-RPC method on the wire
         // is unprefixed). Errors (including JSON-RPC 'method not found') propagate
         // as rejections from the transport; the launcher's catch block handles them.
-        const response = await this.transport.sendRequest('session/set_model', {
-            sessionId,
-            modelId
-        });
+        let configOptionResponse: unknown;
+        let usedConfigOption = false;
+        if (opts?.flavor === 'opencode') {
+            // OpenCode's `session/set_model` response only carries an opaque
+            // `_meta` block with no `configOptions`, so the per-session
+            // thought_level options captured at session/new go stale after an
+            // inline switch. `session/set_config_option` with configId "model"
+            // (OpenCode's fixed id for the model picker) echoes fresh
+            // `configOptions` including thought_level for the new model.
+            try {
+                configOptionResponse = await this.transport.sendRequest('session/set_config_option', {
+                    sessionId,
+                    configId: 'model',
+                    value: modelId
+                });
+                usedConfigOption = true;
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                // Older OpenCode builds predate set_config_option — fall back to
+                // the legacy set_model path below. Any other error propagates to
+                // the launcher's existing catch handling.
+                if (!/method not found/i.test(message)) {
+                    throw error;
+                }
+            }
+        }
 
-        if (opts?.flavor === 'opencode' || opts?.flavor === 'grok') {
+        const response = usedConfigOption
+            ? configOptionResponse
+            : await this.transport.sendRequest('session/set_model', {
+                sessionId,
+                modelId
+            });
+
+        if (usedConfigOption) {
+            this.captureSessionMetadata(sessionId, response);
+        } else if (opts?.flavor === 'opencode' || opts?.flavor === 'grok') {
             // OpenCode's set_model response only carries an opaque `_meta` block,
             // not `availableModels`/`currentModelId`. Optimistically update the
             // cached currentModelId (the call succeeded, so the agent has switched)
             // while preserving the availableModels list captured from session/new.
             this.updateCurrentModelOptimistic(sessionId, modelId);
+            if (opts.flavor === 'opencode') {
+                const options = this.sessionConfigOptions.get(sessionId);
+                if (options) {
+                    this.sessionConfigOptions.set(
+                        sessionId,
+                        options.filter((option) => option.category !== 'thought_level')
+                    );
+                }
+            }
         } else {
             // For other flavors (e.g. Gemini), if the response carries metadata,
             // capture it. Missing fields are silently ignored.

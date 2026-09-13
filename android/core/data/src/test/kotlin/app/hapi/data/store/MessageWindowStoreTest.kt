@@ -4,6 +4,10 @@ import app.hapi.data.api.MessagesApi
 import app.hapi.data.api.MessagesQuery
 import app.hapi.protocol.window.MessageStatus
 import app.hapi.protocol.window.MessageWindowLogic
+import app.hapi.protocol.window.MessageWindowState
+import app.hapi.protocol.window.MessageViewMode
+import app.hapi.protocol.window.MessagePosition
+import app.hapi.protocol.window.OlderLoadOutcome
 import app.hapi.protocol.window.PersistedMessageWindow
 import app.hapi.protocol.window.asWindowMessage
 import app.hapi.protocol.window.buildOptimisticMessage
@@ -126,6 +130,111 @@ class MessageWindowStoreTest {
     }
 
     // ------------------------------------------------------------ tail sync --
+
+    @Test fun `native history retains 800 rows across SSE and preserves policy on clear`() = runTest {
+        val initial = MessageWindowState(
+            sessionId = "history", viewMode = MessageViewMode.History, epoch = 1,
+            messages = (1L..800L).map { agentRow("a-$it", it, it * 1000).asWindowMessage() },
+        )
+        val api = GatedMessagesApi()
+        val store = MessageWindowStore("history", api, backgroundScope,
+            initialState = initial, historyRetentionLimit = 800)
+        store.ingestSseMessages(listOf(agentRow("new", 801, 801000).asWindowMessage()))
+        assertEquals(800, store.state.value.messages.size)
+        assertEquals("a-1", store.state.value.messages.first().id)
+        assertTrue(store.state.value.requiresLatestReset)
+        val history = store.state.value
+        api.release(latestPage(listOf(agentRow("new", 801, 801000)), epoch = 1))
+        store.reconcileQueuedState()
+        assertEquals(listOf<MessagesQuery>(MessagesQuery.Latest(limit = 200)), api.requests)
+        val validated = store.state.value
+        assertEquals(history.syncGeneration + 1, validated.syncGeneration)
+        assertEquals(history.messages, validated.messages)
+        assertEquals(history.oldestPosition, validated.oldestPosition)
+        assertEquals(history.newestPosition, validated.newestPosition)
+        assertEquals(history.hasMore, validated.hasMore)
+        assertEquals(history.historyVersion, validated.historyVersion)
+        assertTrue(validated.requiresLatestReset)
+        assertEquals(false, validated.isSyncingTail)
+        store.setViewMode(MessageViewMode.Tail)
+        assertEquals(400, store.state.value.messages.size)
+        assertNull(store.state.value.epoch)
+        store.clear()
+        assertEquals(800, store.state.value.historyRetentionLimit)
+    }
+
+    @Test fun `gap recovery replaces truncated history on epoch change or explicit reset`() = runTest {
+        for ((epoch, reset) in listOf(2L to false, 1L to true)) {
+            val api = GatedMessagesApi()
+            val store = MessageWindowStore("history", api, backgroundScope, initialState = MessageWindowState(
+                sessionId = "history", viewMode = MessageViewMode.History, epoch = 1,
+                requiresLatestReset = true, hasMore = true,
+                oldestPosition = MessagePosition(1000, 1), newestPosition = MessagePosition(1000, 1),
+                messages = listOf(agentRow("obsolete", 1, 1000).asWindowMessage()),
+            ))
+            // Empty authoritative latest also covers deleted history.
+            api.release(latestPage(emptyList(), epoch = epoch, reset = reset))
+            store.reconcileQueuedState()
+            assertEquals(1, api.requests.size)
+            assertEquals(epoch, store.state.value.epoch)
+            assertTrue(store.state.value.messages.isEmpty())
+            assertEquals(false, store.state.value.requiresLatestReset)
+            assertEquals(false, store.state.value.hasMore)
+        }
+    }
+
+    @Test fun `gap recovery drains a fresh epoch check while truncated history sync is in flight`() = runTest {
+        val api = GatedMessagesApi()
+        val store = MessageWindowStore("history", api, backgroundScope, initialState = MessageWindowState(
+            sessionId = "history", viewMode = MessageViewMode.History, epoch = 1,
+            requiresLatestReset = true, messages = listOf(agentRow("obsolete", 1, 1000).asWindowMessage()),
+        ))
+        val first = launch { store.syncTail() }
+        runCurrent()
+        val recovery = launch { store.reconcileQueuedState() }
+        runCurrent()
+        assertEquals(1, api.requests.size)
+        api.release(latestPage(emptyList(), epoch = 1))
+        first.join()
+        runCurrent()
+        assertEquals(listOf<MessagesQuery>(MessagesQuery.Latest(200), MessagesQuery.Latest(200)), api.requests)
+        assertEquals(listOf("obsolete"), store.state.value.messages.map { it.id })
+        assertEquals(false, recovery.isCompleted)
+        api.release(latestPage(listOf(agentRow("replacement", 2, 2000)), epoch = 2))
+        recovery.join()
+        assertEquals(2L, store.state.value.epoch)
+        assertEquals(listOf("replacement"), store.state.value.messages.map { it.id })
+    }
+
+    @Test fun `older cursor stall is paused without applying an empty page`() = runTest {
+        val api = GatedMessagesApi()
+        val initial = MessageWindowState("history", hasMore = true, epoch = 1,
+            oldestPosition = MessagePosition(1000, 1))
+        api.release(MessagesResponse(emptyList(), MessagesPage(
+            direction = "before", limit = 200, epoch = 1, reset = false,
+            nextBeforeAt = 1000, nextBeforeSeq = 1, nextAfterAt = null, nextAfterSeq = null,
+            snapshotHeadAt = null, snapshotHeadSeq = null, hasMore = true,
+        )))
+        val store = MessageWindowStore("history", api, backgroundScope, initialState = initial)
+        assertEquals(OlderLoadOutcome.Stopped(OlderLoadOutcome.StopReason.CursorDidNotAdvance), store.fetchOlder())
+        assertEquals(0, store.state.value.messages.size)
+        assertTrue(store.state.value.hasMore)
+        assertEquals(false, store.state.value.isLoadingMore)
+    }
+
+    @Test fun `cancelled fetch releases reservation and cannot overwrite a new request`() = runTest {
+        val api = GatedMessagesApi()
+        val store = MessageWindowStore("history", api, backgroundScope,
+            initialState = MessageWindowState("history", hasMore = true, epoch = 1,
+                oldestPosition = MessagePosition(1000, 1)))
+        val request = backgroundScope.launch { store.fetchOlder() }
+        runCurrent()
+        assertTrue(store.state.value.isLoadingMore)
+        assertEquals(OlderLoadOutcome.Stopped(OlderLoadOutcome.StopReason.Busy), store.fetchOlder())
+        request.cancel()
+        request.join()
+        assertEquals(false, store.state.value.isLoadingMore)
+    }
 
     @Test
     fun `concurrent syncTail calls coalesce into a single run`() = runTest {

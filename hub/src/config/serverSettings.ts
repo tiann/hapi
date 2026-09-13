@@ -19,6 +19,7 @@ const OLD_SETTINGS_FIELDS = ['webappHost', 'webappPort', 'webappUrl'] as const
  */
 const PUSH_SETTING_KEYS = [
     ['fcmServiceAccountPath', 'FCM_SERVICE_ACCOUNT_PATH'],
+    ['androidPushMode', 'HAPI_ANDROID_PUSH'],
     ['iosPushMode', 'HAPI_IOS_PUSH'],
     ['iosPushRelayUrl', 'HAPI_PUSH_RELAY_URL'],
     ['apnsKeyP8Path', 'APNS_KEY_P8_PATH'],
@@ -41,6 +42,7 @@ export interface ServerSettings {
     publicUrl: string
     corsOrigins: string[]
     titleProvider: TitleProviderSettings
+    androidPushMode: string | null
     fcmServiceAccountPath: string | null
     iosPushMode: string | null
     iosPushRelayUrl: string | null
@@ -147,6 +149,7 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             listenPort: 'default',
             publicUrl: 'default',
             corsOrigins: 'default',
+            androidPushMode: 'default',
             fcmServiceAccountPath: 'default',
             iosPushMode: 'default',
             iosPushRelayUrl: 'default',
@@ -294,6 +297,7 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
         // Push settings: env > file > null, env persisted on first sight —
         // one loop instead of nine copies of the per-field block above.
         const push: Record<PushSettingKey, string | null> = {
+            androidPushMode: null,
             fcmServiceAccountPath: null,
             iosPushMode: null,
             iosPushRelayUrl: null,
