@@ -225,10 +225,13 @@ internal fun ToolGroupBrowser(
             }
         },
     ) { padding ->
-        ReadingColumn(Modifier.padding(padding)) {
-            Column {
+        ReadingColumn(Modifier.padding(padding).fillMaxSize()) {
+            Column(Modifier.fillMaxSize()) {
                 InspectionNotice(inspected.stale, group.needsOlderHistory)
-                LazyColumn(state = list, modifier = Modifier.fillMaxSize().testTag("inspection-tools")) {
+                LazyColumn(
+                    state = list,
+                    modifier = Modifier.weight(1f).fillMaxWidth().testTag("inspection-tools"),
+                ) {
                     items(group.tools, key = { it.id }, contentType = { "tool-summary" }) { block ->
                         val presentation = remember(block.tool.name, block.tool.input, block.tool.description, basePath, resources) {
                             toolSummaryPresentation(block.tool, basePath, resources)
