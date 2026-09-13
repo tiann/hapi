@@ -5,10 +5,15 @@ import {
     CreateOrLoadSessionRequestSchema,
     ClearOpencodeSessionCallbackRequestSchema,
     CursorMigrateToAcpRequestSchema,
-    PROTOCOL_VERSION
+    PROTOCOL_VERSION,
+    SetExternalRefsRequestSchema,
+    UpsertExternalRefRequestSchema,
+    upsertGithubPrIntoExternalRefs
 } from '@hapi/protocol'
 import { getConfiguration } from '../../configuration'
 import { readSessionSummaryContractEnabled } from '../../config/sessionSummaryContract'
+import { stripExternalRefsWhenAwarenessDisabled, externalRefsInMetadataValid } from '../../sync/externalRefsPolicy'
+import { mapExternalRefRouteError } from '../../sync/externalRefErrors'
 import { constantTimeEquals } from '../../utils/crypto'
 import { parseAccessToken } from '../../utils/accessToken'
 import type { Machine, Session, SyncEngine } from '../../sync/syncEngine'
@@ -119,9 +124,16 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         }
 
         try {
+            const metadata = stripExternalRefsWhenAwarenessDisabled(
+                parsed.data.metadata,
+                getConfiguration().githubPrAwareness
+            )
+            if (!externalRefsInMetadataValid(metadata)) {
+                return c.json({ error: 'Invalid metadata.externalRefs' }, 400)
+            }
             const session = engine.getOrCreateSession(
                 parsed.data.tag,
-                parsed.data.metadata,
+                metadata,
                 parsed.data.agentState ?? null,
                 namespace,
                 parsed.data.model,
@@ -283,6 +295,151 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
             now: Date.now()
         })
         return c.json({ messages })
+    })
+
+    app.get('/features', (c) => {
+        const configuration = getConfiguration()
+        return c.json({
+            githubPrAwareness: {
+                enabled: configuration.githubPrAwareness,
+                source: configuration.sources.githubPrAwareness
+            }
+        })
+    })
+
+    app.get('/sessions/:id/external-refs', async (c) => {
+        const configuration = getConfiguration()
+        if (!configuration.githubPrAwareness) {
+            return c.json({
+                error: 'GitHub PR awareness is disabled',
+                code: 'github_pr_awareness_disabled'
+            }, 403)
+        }
+
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+
+        const sessionId = c.req.param('id')
+        const namespace = c.get('namespace')
+        const resolved = resolveSessionForNamespace(engine, sessionId, namespace)
+        if (!resolved.ok) {
+            return c.json({ error: resolved.error }, resolved.status)
+        }
+
+        const externalRefs = resolved.session.metadata?.externalRefs ?? []
+        return c.json({ externalRefs })
+    })
+
+    app.put('/sessions/:id/external-refs', async (c) => {
+        const configuration = getConfiguration()
+        if (!configuration.githubPrAwareness) {
+            return c.json({
+                error: 'GitHub PR awareness is disabled',
+                code: 'github_pr_awareness_disabled'
+            }, 403)
+        }
+
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+
+        const sessionId = c.req.param('id')
+        const namespace = c.get('namespace')
+        const resolved = resolveSessionForNamespace(engine, sessionId, namespace)
+        if (!resolved.ok) {
+            return c.json({ error: resolved.error }, resolved.status)
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = SetExternalRefsRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body: externalRefs is required' }, 400)
+        }
+
+        try {
+            await engine.setSessionExternalRefs(resolved.sessionId, parsed.data.externalRefs)
+            return c.json({ ok: true, externalRefs: parsed.data.externalRefs })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to update external refs'
+            if (message.includes('concurrently') || message.includes('version')) {
+                return c.json({ error: message }, 409)
+            }
+            return c.json({ error: message }, 500)
+        }
+    })
+
+    app.post('/sessions/:id/external-refs/upsert', async (c) => {
+        const configuration = getConfiguration()
+        if (!configuration.githubPrAwareness) {
+            return c.json({
+                error: 'GitHub PR awareness is disabled',
+                code: 'github_pr_awareness_disabled'
+            }, 403)
+        }
+
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+
+        const sessionId = c.req.param('id')
+        const namespace = c.get('namespace')
+        const resolved = resolveSessionForNamespace(engine, sessionId, namespace)
+        if (!resolved.ok) {
+            return c.json({ error: resolved.error }, resolved.status)
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = UpsertExternalRefRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body: ref is required' }, 400)
+        }
+
+        const ref = parsed.data.ref
+        try {
+            const externalRefs = await engine.mutateSessionExternalRefs(resolved.sessionId, (current) =>
+                upsertGithubPrIntoExternalRefs(current, ref)
+            )
+            return c.json({ ok: true, externalRefs })
+        } catch (error) {
+            const mapped = mapExternalRefRouteError(error, 'Failed to upsert external ref')
+            return c.json({ error: mapped.message }, mapped.status)
+        }
+    })
+
+    app.post('/sessions/:id/external-refs/remove-primary', async (c) => {
+        const configuration = getConfiguration()
+        if (!configuration.githubPrAwareness) {
+            return c.json({
+                error: 'GitHub PR awareness is disabled',
+                code: 'github_pr_awareness_disabled'
+            }, 403)
+        }
+
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+
+        const sessionId = c.req.param('id')
+        const namespace = c.get('namespace')
+        const resolved = resolveSessionForNamespace(engine, sessionId, namespace)
+        if (!resolved.ok) {
+            return c.json({ error: resolved.error }, resolved.status)
+        }
+
+        try {
+            const externalRefs = await engine.mutateSessionExternalRefs(resolved.sessionId, (current) =>
+                current.filter((candidate) => candidate.kind !== 'github_pr' || candidate.role !== 'primary')
+            )
+            return c.json({ ok: true, externalRefs })
+        } catch (error) {
+            const mapped = mapExternalRefRouteError(error, 'Failed to remove primary external ref')
+            return c.json({ error: mapped.message }, mapped.status)
+        }
     })
 
     app.post('/sessions/:id/migrate-to-acp', async (c) => {

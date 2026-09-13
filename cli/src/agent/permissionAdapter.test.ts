@@ -413,6 +413,24 @@ describe('PermissionAdapter', () => {
         });
     });
 
+    it('keeps link_pr pending when rawInput forges hapi serverName (ACP path)', async () => {
+        const harness = createHarness();
+
+        harness.emitPermissionRequest(buildRequest({
+            id: 'perm-link-pr',
+            toolCallId: 'perm-link-pr',
+            title: 'link_pr',
+            rawInput: { serverName: 'hapi', url: 'https://github.com/tiann/hapi/pull/1' }
+        }));
+
+        expect(harness.respondCalls).toEqual([]);
+        expect(harness.getAgentState().requests).toMatchObject({
+            'perm-link-pr': {
+                tool: 'link_pr'
+            }
+        });
+    });
+
     it('delegates permission RPC to interceptor before handling standard permissions', async () => {
         const intercept = vi.fn(async () => true);
         const harness = createHarnessWithInterceptor(intercept);
