@@ -30,7 +30,7 @@ type RuntimeSettings = NonNullable<Parameters<ApiSessionClient['keepAlive']>[2]>
 export type RootHost = {
     directory: string; generation: string; endpoint: string; token?: string;
     settingsFor(threadId: string): Record<string, unknown> | undefined;
-    create(method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot): Promise<SharedCodexRoot>;
+    create(method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot, options?: SharedLaunchOptions): Promise<SharedCodexRoot>;
     end(root: SharedCodexRoot, nativeArchive?: boolean): Promise<void>;
 };
 const SettingsSchema = z.object({
@@ -510,8 +510,7 @@ export class SharedCodexRoot {
             if (messageLocalId && !beforeTurnId) throw new Error('No native history point for this message');
             if (messageLocalId) await this.assertBoundary(messageLocalId, beforeTurnId!);
             const child = await this.host.create('thread/fork', { ...this.freshParams(), threadId: this.threadId,
-                ...(beforeTurnId ? { beforeTurnId } : {}) }, this);
-            await child.initialSettings({ collaborationMode: this.settings.collaborationMode });
+                ...(beforeTurnId ? { beforeTurnId } : {}) }, this, { collaborationMode: this.settings.collaborationMode });
             return { nativeSessionId: child.threadId, sessionId: child.session.sessionId };
         });
         rpc.registerHandler(RPC_METHODS.RewindConversation, async () => {
@@ -536,8 +535,7 @@ export class SharedCodexRoot {
     }
     private notice(message: string): void { this.session.sendSessionEvent({ type: 'message', message }); }
     private async newConversation(): Promise<SharedCodexRoot> {
-        const child = await this.host.create('thread/start', this.freshParams());
-        await child.initialSettings({ collaborationMode: this.settings.collaborationMode }); return child;
+        return this.host.create('thread/start', this.freshParams(), undefined, { collaborationMode: this.settings.collaborationMode });
     }
     private async command(text: string): Promise<string | null> {
         const command = text.trim();

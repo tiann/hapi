@@ -63,6 +63,7 @@ async function fixture(pending?: Metadata['codexForkRequest']) {
     const updateState = vi.fn((fn: (value: AgentState) => AgentState) => { state = fn(state); });
     const rpc = new Map<string, (raw: unknown) => Promise<unknown>>();
     const send = vi.fn();
+    const create = vi.fn<RootHost['create']>(async () => { throw new Error('Unexpected root creation'); });
     const session = {
         sessionId: 'sid', getMetadata: () => metadata,
         updateMetadata: (fn: (value: Metadata) => Metadata) => { metadata = fn(metadata); },
@@ -76,7 +77,7 @@ async function fixture(pending?: Metadata['codexForkRequest']) {
     } as unknown as ApiSessionClient;
     const root = new SharedCodexRoot({ session, workingDirectory: directory, sessionInfo: { metadata: bootstrapMetadata } } as SessionBootstrapResult, {
         directory, generation: 'test', endpoint: 'mock', settingsFor: () => undefined,
-        create: async () => { throw new Error('Unexpected root creation'); },
+        create,
         end: async () => { throw new Error('Unexpected root archive'); }
     } satisfies RootHost);
     cleanups.push(async () => { await root.close(false); await rm(directory, { recursive: true, force: true }); });
@@ -89,10 +90,18 @@ async function fixture(pending?: Metadata['codexForkRequest']) {
         notify(method: string, params: unknown): void;
         abandoned(): void;
     };
-    return { root, native, rpc, send, metadata: () => metadata, state: () => state, updateState, reconnect: () => reconnect?.() };
+    return { root, native, rpc, send, create, metadata: () => metadata, state: () => state, updateState, reconnect: () => reconnect?.() };
 }
 
 describe('pending fork activation', () => {
+    it.each([RPC_METHODS.ForkConversation, RPC_METHODS.ClearConversation])('passes inherited settings into creation before %s can admit native clients', async method => {
+        const f = await fixture(); await f.root.activate({ collaborationMode: 'plan' });
+        const child = { threadId: 'child-thread', session: { sessionId: 'child' }, initialSettings: vi.fn(async () => {}) };
+        f.create.mockResolvedValue(child as unknown as SharedCodexRoot);
+        await f.rpc.get(method)!({});
+        expect(f.create.mock.calls[0][3]).toEqual({ collaborationMode: 'plan' });
+        expect(child.initialSettings).not.toHaveBeenCalled();
+    });
     it('keeps the source anchor until settings succeed, then confirms the atomic child binding before admission', async () => {
         const request = { sourceThreadId: 'source', beforeTurnId: 'turn-b' };
         const f = await fixture(request);

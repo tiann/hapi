@@ -191,19 +191,46 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             const pending = new MockSession(cwd);
             pending.metadata = { ...pending.metadata, codexSessionId: initial, codexForkRequest: { sourceThreadId: initial }, forkedFrom: sessionId };
             state.sessions.set(pending.sessionId, pending);
+            let release!: (confirmed: boolean) => void;
+            const flush = vi.spyOn(pending, 'flushMetadata').mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
             const childAbort = new AbortController();
             let childReady!: (ready: import('./runtime').RuntimeReady) => void;
             const childReadiness = new Promise<import('./runtime').RuntimeReady>(resolve => { childReady = resolve; });
-            const childRunning = runSharedRuntime({ workingDirectory: cwd, existingSessionId: pending.sessionId, resumeSessionId: initial }, childReady, childAbort.signal);
+            const childRunning = runSharedRuntime({ workingDirectory: cwd, existingSessionId: pending.sessionId, resumeSessionId: initial, collaborationMode: 'plan' }, childReady, childAbort.signal);
             try {
+                await vi.waitFor(() => expect(flush).toHaveBeenCalledOnce());
+                const { readRuntimes } = await import('./registry');
+                const reserved = (await readRuntimes()).find(r => r.sessions[pending.sessionId]?.active)!;
+                const threadId = reserved.sessions[pending.sessionId].threadId;
+                const frontends = await Promise.all([0, 1].map(async () => {
+                    const client = new CodexAppServerClient({ endpoint: reserved.endpoint, token: reserved.token });
+                    client.setServerRequestHandler(() => {}); clients.push(client); await initializeSharedClient(client); return client;
+                }));
+                for (const client of frontends) {
+                    await expect(client.request('hapi/attach', { sessionId: pending.sessionId })).rejects.toThrow(/activat/i);
+                    await expect(client.request('thread/resume', { threadId })).rejects.toThrow(/activat/i);
+                    for (const method of ['turn/start', 'turn/steer', 'thread/queue/add', 'thread/queue/start', 'thread/settings/update', 'thread/goal/set', 'thread/fork', 'thread/archive']) {
+                        await expect(client.request(method, { threadId, ephemeral: true, input: [{ type: 'text', text: 'NOT ADMITTED', text_elements: [] }] })).rejects.toThrow(/activat/i);
+                    }
+                }
+                expect(record(await frontends[0].request('thread/queue/list', { threadId })).data).toEqual([]);
+                release(true);
                 const child = await Promise.race([childReadiness, childRunning.then(() => { throw new Error('Pending fork stopped before ready'); })]);
+                for (const client of frontends) {
+                    expect(await client.request('hapi/attach', { sessionId: pending.sessionId })).toEqual({ threadId });
+                    expect(record(record(await client.request('thread/resume', { threadId })).thread).id).toBe(threadId);
+                }
+                const queued = record(record(await frontends[1].request('thread/queue/add', { threadId, clientUserMessageId: 'after-ack',
+                    input: [{ type: 'text', text: 'AFTER ACK', text_elements: [] }] })).queuedSubmission);
+                expect(queued.id).toBeTruthy();
+                await frontends[1].request('thread/queue/delete', { threadId, queuedSubmissionId: queued.id });
                 expect(child.sessionId).toBe(pending.sessionId);
                 expect(pending.metadata.codexSessionId).not.toBe(initial);
                 expect(pending.metadata.codexForkRequest).toBeUndefined();
                 expect(web.metadata.codexSessionId).toBe(initial); expect(web.dead).toBe(false);
                 pending.user?.({ content: { text: 'PENDING CHILD' } }, 'pending-1');
                 await vi.waitFor(() => expect(pending.consumed).toContain('pending-1'), { timeout: 15_000 });
-            } finally { childAbort.abort(); await childRunning; }
+            } finally { release?.(false); childAbort.abort(); await childRunning.catch(() => {}); flush.mockRestore(); }
             expect(pending.dead).toBe(true); expect(web.dead).toBe(false);
             const newResponse = record(await first.request('thread/start', { cwd }));
             const next = String(record(newResponse.thread).id); roots.push(next);
@@ -220,6 +247,23 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 expect(usageModels).toContain('mock-model');
                 expect(usageModels).toContain('second-mock');
             }, { timeout: 15_000 });
+            const priorIds = new Set(state.sessions.keys());
+            const failedFlush = vi.spyOn(MockSession.prototype, 'flush').mockResolvedValueOnce(false);
+            try {
+                await expect(first.request('thread/start', { cwd })).rejects.toThrow(/activat/i);
+                const failed = [...state.sessions.values()].find(session => !priorIds.has(session.sessionId))!;
+                const threadId = failed.metadata.codexSessionId;
+                await expect(second.request('hapi/attach', { sessionId: failed.sessionId })).rejects.toThrow(/activat/i);
+                await expect(second.request('thread/resume', { threadId })).rejects.toThrow(/activat/i);
+                await expect(second.request('turn/start', { threadId, input: [{ type: 'text', text: 'FAILED ACTIVATION', text_elements: [] }] })).rejects.toThrow(/activat/i);
+                expect(failed.consumed).toEqual([]);
+                // Cleanup may still stop a root whose activation never completed.
+                await second.request('hapi/stopSession', { sessionId: failed.sessionId });
+                await vi.waitFor(() => expect(failed.dead).toBe(true));
+            } finally { failedFlush.mockRestore(); }
+            const ephemeral = record(record(await first.request('thread/start', { cwd, ephemeral: true })).thread).id;
+            await expect(second.request('turn/start', { threadId: ephemeral,
+                input: [{ type: 'text', text: 'UNBOUND INPUT', text_elements: [] }] })).rejects.toThrow(/activat/i);
             await first.disconnect(); expect(web.dead).toBe(false);
             await second.request('thread/archive', { threadId: initial }); roots = [];
             await running;

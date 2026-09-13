@@ -38,6 +38,15 @@ afterEach(() => {
     }
 });
 describe('shared frontend execution ownership', () => {
+    it('does not attach a second frontend to a discovered pending fork', async () => {
+        state.existing = true;
+        state.metadata = { codexSessionId: 'source', codexForkRequest: { sourceThreadId: 'source' } };
+        state.spawn.mockImplementation(() => {
+            const child = new EventEmitter(); setTimeout(() => child.emit('exit', 0), 0); return child;
+        });
+        await expect(runSharedCodex({ existingSessionId: 'sid', workingDirectory: '/work' })).rejects.toThrow(/fork/i);
+        expect(state.spawn).not.toHaveBeenCalled(); expect(state.run).not.toHaveBeenCalled();
+    });
     it.each(['cleanup', 'source', 'boundary'])('rejects invalid pending fork %s before runtime launch', async invalid => {
         state.metadata = { codexSessionId: 'source', codexForkRequest: { sourceThreadId: 'source' } };
         if (invalid === 'cleanup') state.metadata.codexForkCleanup = { sourceSessionId: 'parent', machineId: 'machine' };

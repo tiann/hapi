@@ -74,6 +74,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     const done = new Promise<void>(resolve => { finish = resolve; });
     const ending = new Set<SharedCodexRoot>();
     const roots = new Map<string, SharedCodexRoot>();
+    // Registry bindings reserve ownership before activation; they are not admission.
+    const admitted = new Set<SharedCodexRoot>();
     const prepared = new Set<SharedCodexRoot>();
     const reservations = new Map<string, Reservation>();
     const runtime: CodexRuntimeRecord = { id, pid: process.pid, marker: getProcessStartMarker(process.pid) ?? '',
@@ -81,6 +83,12 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     if (!runtime.marker) throw new Error('Cannot verify the runtime process generation');
     let writes = Promise.resolve();
     const persist = () => { writes = writes.catch(() => {}).then(() => saveRuntime(runtime)); return writes; };
+    const assertAdmitted = (root: SharedCodexRoot) => {
+        const metadata = root.session.getMetadata();
+        if (!admitted.has(root) || ending.has(root) || metadata?.codexForkRequest || metadata?.codexForkCleanup) {
+            throw new Error('Codex activation is not confirmed; retry when the session is ready');
+        }
+    };
     const control = new CodexAppServerClient({ endpoint: upstream, token: upstreamToken, cwd: launch.cwd });
     control.setServerRequestHandler(() => {});
     // An independent observer preserves settings when a root's side-client
@@ -159,6 +167,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         ending.add(root);
         try { if (nativeArchive) await root.client.request('thread/archive', { threadId: root.threadId }); } catch (error) { ending.delete(root); throw error; }
         roots.delete(root.threadId);
+        admitted.delete(root);
         runtime.sessions[root.session.sessionId].active = false; await persist();
         // Let the RPC acknowledgement leave both gateway and hub sockets before detach.
         setTimeout(() => {
@@ -209,9 +218,12 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         // new-thread subscription. Subscribe once without changing settings.
         await control.request('thread/resume', { threadId });
         await root.activate(initialOptions);
-        await root.session.flush();
+        if (!await root.session.flush()) throw new Error('Codex activation metadata was not confirmed');
         await persist();
         await notifyRunnerSessionStarted(root.session.sessionId, root.session.getMetadata() ?? root.bootstrap.metadata);
+        assertRunning();
+        if (ending.has(root) || roots.get(threadId) !== root) throw new Error('Codex activation was canceled');
+        admitted.add(root);
     };
     const create = (method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot, initialOptions?: SharedLaunchOptions): Promise<SharedCodexRoot> => operation(async () => {
         const root = await prepare(string(params.cwd) ?? launch.cwd, initialOptions?.existingSessionId, parent);
@@ -247,12 +259,20 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         if (['thread/revert', 'thread/rollback'].includes(request.method ?? '')) {
             throw new Error('In-place rewind is unavailable with concurrent HAPI clients. Use /fork or Fork at message instead.');
         }
-        if (!['thread/start', 'thread/resume', 'thread/fork'].includes(request.method ?? '') || params.ephemeral === true) return request;
-        if (request.id === undefined) throw new Error('Lifecycle operations require a JSON-RPC request ID');
-        if (params.history || params.path) throw new Error('Use a native thread ID to resume through HAPI');
+        const lifecycle = ['thread/start', 'thread/resume', 'thread/fork'].includes(request.method ?? '');
         const threadId = string(params.threadId);
+        // Read-only inspection does not grant input admission. Internal root/control
+        // initialization goes directly to the private engine, never through this gate.
+        if (!lifecycle && (!threadId || ['thread/read', 'thread/turns/list', 'thread/queue/list', 'thread/goal/get'].includes(request.method ?? ''))) return request;
+        if (lifecycle && request.id === undefined) throw new Error('Lifecycle operations require a JSON-RPC request ID');
+        if (lifecycle && (params.history || params.path)) throw new Error('Use a native thread ID to resume through HAPI');
         let existing = threadId ? roots.get(threadId) : undefined;
         if (threadId && !existing) {
+            if (Object.values(runtime.sessions).some(binding => binding.active && binding.threadId === threadId)
+                || [...prepared].some(root => root.threadId === threadId && ending.has(root))
+                || runtime.pendingCreations?.length) {
+                throw new Error('Codex activation is not confirmed; retry when the session is ready');
+            }
             let candidate = threadId; const visited = new Set<string>();
             for (;;) {
                 if (visited.has(candidate)) throw new Error('Invalid native thread ancestry'); visited.add(candidate);
@@ -266,6 +286,12 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             }
             if (candidate !== threadId && !existing) throw new Error('Resume the parent HAPI session before attaching a child agent');
         }
+        if (existing) assertAdmitted(existing);
+        if (!lifecycle) {
+            if (threadId && !existing) throw new Error('Codex activation is not confirmed; resume the thread before sending input');
+            return request;
+        }
+        if (params.ephemeral === true) return request;
         if (request.method === 'thread/resume' && existing) return { ...request, params: existing.config(params) };
         if (threadId) await withThreadOwnership(home, threadId, id, async () => {});
         const cwd = string(params.cwd) ?? existing?.bootstrap.workingDirectory ?? launch.cwd;
@@ -346,7 +372,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 const sid = string(record(params).sessionId); const root = [...roots.values()].find(root => root.session.sessionId === sid);
                 if (!root) throw new Error('Shared session not found');
                 if (method === 'hapi/stopSession') { await end(root); return { stopped: true }; }
-                if (method === 'hapi/attach') return { threadId: root.threadId };
+                if (method === 'hapi/attach') { assertAdmitted(root); return { threadId: root.threadId }; }
                 throw new Error('Unknown runtime control');
             }) } });
         if (stopping) { await gateway.close(); assertRunning(); }

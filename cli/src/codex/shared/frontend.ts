@@ -20,6 +20,7 @@ export async function runtimeControl(runtime: CodexRuntimeRecord, method: string
 
 export async function attachSharedSession(runtime: CodexRuntimeRecord, sessionId: string, args: string[] = [], signal?: AbortSignal): Promise<void> {
     const session = await (await ApiClient.create()).getSession(sessionId);
+    if (session.metadata?.codexForkRequest || session.metadata?.codexForkCleanup) throw new Error('Codex fork is still pending');
     if (runtime.sessions[sessionId]?.namespace !== session.namespace) throw new Error('Shared runtime namespace mismatch');
     const { threadId } = z.object({ threadId: z.string() }).parse(await runtimeControl(runtime, 'hapi/attach', sessionId));
     if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error(`Native Codex attachment needs a terminal: ${sessionId}`);
