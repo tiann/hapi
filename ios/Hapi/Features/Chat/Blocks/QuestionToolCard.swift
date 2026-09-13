@@ -184,11 +184,13 @@ struct QuestionAnswerFormView: View {
                     QuestionSelectionRow(
                         option: field.options[optionIndex],
                         selected: draft.selections[index]?.contains(optionIndex) == true,
-                        multiple: field.multiple
+                        multiple: field.multiple,
+                        isOther: field.isOtherOption(optionIndex)
                     ) {
                         guard enabled, !submitting else { return }
                         textFocused = false
                         draft.select(optionIndex, at: index, in: form)
+                        if field.isOtherOption(optionIndex) { textFocused = true }
                     }
                     .disabled(!enabled || submitting)
                     .accessibilityIdentifier("question-\(index)-choice-\(optionIndex)")
@@ -251,15 +253,17 @@ struct QuestionAnswerFormView: View {
                 .accessibilityIdentifier("question-previous")
             }
             if !form.fields[index].options.isEmpty {
+                let expanded = draft.showsText(at: index, in: form)
                 Button {
                     draft.toggleText(at: index, in: form)
                     textFocused = draft.showsText(at: index, in: form)
                 } label: {
                     Label {
-                        Text(verbatim: textTitle(index: index))
+                        Text(verbatim: expanded && !form.fields[index].allowsCustomAnswer
+                             ? String(localized: "Hide note") : textTitle(index: index))
                             .fixedSize(horizontal: false, vertical: true)
                     } icon: {
-                        Image(systemName: draft.showsText(at: index, in: form) ? "chevron.up" : "plus")
+                        Image(systemName: expanded ? "chevron.up" : "plus")
                     }
                     .font(typography.captionFont)
                     .frame(minHeight: 44)
@@ -304,6 +308,7 @@ private struct QuestionSelectionRow: View {
     let option: AskOption
     let selected: Bool
     let multiple: Bool
+    let isOther: Bool
     let action: () -> Void
     @Environment(\.hapiTheme) private var theme
     @Environment(\.hapiTypography) private var typography
@@ -318,8 +323,8 @@ private struct QuestionSelectionRow: View {
                     .padding(.top, 2)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
-                    QuestionOptionLabel(label: option.label)
-                    if let description = option.description {
+                    QuestionOptionLabel(label: isOther ? String(localized: "None of the above") : option.label)
+                    if let description = isOther ? String(localized: "Optionally, add details in notes.") : option.description {
                         // Inline markdown keeps the caption metrics instead of
                         // promoting supporting text to full-size body paragraphs.
                         Text(.init(description))

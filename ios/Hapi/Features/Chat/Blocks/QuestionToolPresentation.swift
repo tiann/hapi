@@ -24,6 +24,7 @@ struct QuestionOptionDetail: Equatable, Sendable {
     let label: String
     let description: String?
     let selected: Bool
+    var isOther = false
 }
 
 func isQuestionDetailsTool(_ name: String) -> Bool {
@@ -101,13 +102,14 @@ private func requestQuestionDetails(
     _ questions: [RequestUserInputQuestion], answers: [String: [String]]
 ) -> [QuestionDetail] {
     questions.map { question in
+        let options = question.answerOptions
         var selected: Set<String> = []
         var other: [String] = []
         var note: String?
         for value in answers[question.id] ?? [] {
             let trimmed = trimQuestionAnswer(value)
             // An actual option named "user_note: ..." is not metadata.
-            if let option = question.options.first(where: { $0.label == trimmed }) {
+            if let option = options.first(where: { $0.label == trimmed }) {
                 selected.insert(option.label)
             } else if value.hasPrefix("user_note: ") {
                 let text = String(value.dropFirst("user_note: ".count))
@@ -124,8 +126,9 @@ private func requestQuestionDetails(
         }
         return QuestionDetail(
             header: question.header, question: question.question, multiple: question.multiple,
-            options: question.options.map {
-                QuestionOptionDetail(label: $0.label, description: $0.description, selected: selected.contains($0.label))
+            options: options.enumerated().map { index, option in
+                QuestionOptionDetail(label: option.label, description: option.description,
+                                     selected: selected.contains(option.label), isOther: question.isOtherOption(at: index))
             },
             otherAnswers: other, note: note
         )

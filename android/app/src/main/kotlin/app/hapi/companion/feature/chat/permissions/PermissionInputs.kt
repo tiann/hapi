@@ -101,6 +101,9 @@ fun parseAskUserQuestions(input: JsonElement?, cursorDialect: Boolean): List<Ask
     return questions
 }
 
+/** Codex wire value; UI translations must never replace it in answers. */
+const val REQUEST_USER_INPUT_OTHER = "None of the above"
+
 data class RequestUserInputQuestion(
     val id: String,
     val question: String,
@@ -110,7 +113,22 @@ data class RequestUserInputQuestion(
     val placeholder: String?,
     val prefill: String?,
     val inputType: String? = null,
-)
+    val isOther: Boolean = false,
+) {
+    val answerOptions: List<AskOption>
+        get() = if (isOther && options.isNotEmpty()) {
+            options + AskOption(id = null, label = REQUEST_USER_INPUT_OTHER, description = null)
+        } else options
+
+    fun isOtherOption(index: Int): Boolean = isOther && options.isNotEmpty() && index == options.size
+}
+
+fun selectRequestUserInputOption(question: RequestUserInputQuestion, selected: Set<String>, index: Int): Set<String> {
+    val option = question.answerOptions.getOrNull(index) ?: return selected
+    if (question.isOtherOption(index) || !question.multiple) return setOf(option.label)
+    val current = if (question.isOther) selected - REQUEST_USER_INPUT_OTHER else selected
+    return if (option.label in current) current - option.label else current + option.label
+}
 
 /** `parseRequestUserInputInput` (the URL-confirmation flow is web-only). */
 fun parseRequestUserInputQuestions(input: JsonElement?): List<RequestUserInputQuestion> {
@@ -144,6 +162,7 @@ fun parseRequestUserInputQuestions(input: JsonElement?): List<RequestUserInputQu
             placeholder = obj["placeholder"].stringOrNull,
             prefill = obj["prefill"].stringOrNull,
             inputType = obj["inputType"].stringOrNull?.takeIf { it == "editor" },
+            isOther = obj["isOther"].boolOrNull == true,
         )
     }
     return questions

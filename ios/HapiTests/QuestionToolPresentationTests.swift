@@ -3,6 +3,38 @@ import XCTest
 import HapiProtocol
 
 final class QuestionToolPresentationTests: XCTestCase {
+    func testOtherAndNotesShowFromRecordedAnswersWithoutChangingRawInput() throws {
+        for flag in [#", "isOther":true"#, ""] {
+            let input = "{\"questions\":[{\"id\":\"choice\"\(flag),\"options\":[{\"label\":\"A\"}]}]}"
+            for note in ["", #", "user_note: 自定义\n说明""#] {
+                let source = "{\"answers\":{\"choice\":{\"answers\":[\"None of the above\"\(note)]}}}"
+                for result in [try json(source), JSONValue.string(source)] {
+                    let call = try tool("request_user_input", input: input, result: result)
+                    let details = questionToolDetails(call)
+                    XCTAssertTrue(details.hasAnswers)
+                    XCTAssertFalse(details.showResult)
+                    if flag.isEmpty {
+                        XCTAssertEqual(details.questions[0].otherAnswers, ["None of the above"])
+                    } else {
+                        XCTAssertEqual(details.questions[0].options.map(\.selected), [false, true])
+                        XCTAssertTrue(details.questions[0].options[1].isOther)
+                        XCTAssertEqual(details.questions[0].otherAnswers, [])
+                    }
+                    XCTAssertEqual(details.questions[0].note, note.isEmpty ? nil : "自定义\n说明")
+                    XCTAssertEqual(call.input, try json(input))
+                }
+            }
+        }
+        let input = #"{"questions":[{"id":"choice","isOther":true,"options":[{"label":"A"}]}]}"#
+        let call = try tool("request_user_input", input: input,
+                            answers: #"{"choice":{"answers":["None of the above","user_note: live"]}}"#,
+                            result: json(#"{"answers":{"choice":{"answers":["A","user_note: stale"]}}}"#))
+        XCTAssertEqual(questionToolDetails(call).questions[0].options.map(\.selected), [false, true])
+        XCTAssertEqual(questionToolDetails(call).questions[0].note, "live")
+        let resolved = try tool("request_user_input", input: input, result: json(#"{"status":"resolved"}"#))
+        XCTAssertFalse(questionToolDetails(resolved).hasAnswers)
+    }
+
     private let askInput = #"{"questions":[{"header":"Storage","question":"Choose **storage**","multiSelect":true,"options":[{"label":"SQLite","description":"Local file"},{"label":"Postgres"}]},{"question":"Anything else?","options":[]}]}"#
     private let requestInput = #"{"questions":[{"id":"target","question":"Deploy where?","multiple":true,"options":[{"label":"staging","description":"Safe"},{"label":"production"}]},{"id":"comment","question":"Comment","prefill":"Not an answer"}]}"#
 

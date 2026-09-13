@@ -23,7 +23,8 @@ struct QuestionDetailsView: View {
                     }
                     ForEach(Array(question.options.enumerated()), id: \.offset) { optionIndex, option in
                         QuestionAnswerCard(
-                            text: option.label, description: option.description, markdown: true,
+                            text: option.isOther ? String(localized: "None of the above") : option.label,
+                            description: option.description, markdown: true,
                             selected: option.selected, multiple: question.multiple, showControl: question.hasAnswers
                         )
                         .accessibilityIdentifier("question-\(index)-option-\(optionIndex)")

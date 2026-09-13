@@ -28,6 +28,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
@@ -41,6 +44,7 @@ import app.hapi.companion.feature.chat.permissions.isRequestUserInputAnswered
 import app.hapi.companion.feature.chat.permissions.parseAskUserQuestions
 import app.hapi.companion.feature.chat.permissions.parseRequestUserInputQuestions
 import app.hapi.companion.feature.chat.permissions.requestUserInputAnswerValues
+import app.hapi.companion.feature.chat.permissions.selectRequestUserInputOption
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.ChatToolCall
@@ -427,6 +431,7 @@ private fun RequestUserInputFooter(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         questions.forEach { question ->
+            val noteFocusRequester = remember(tool.id, question.id) { FocusRequester() }
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (question.question.isNotEmpty()) {
                     Text(
@@ -438,7 +443,8 @@ private fun RequestUserInputFooter(
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
-                question.options.forEach { option ->
+                question.answerOptions.forEachIndexed { optionIndex, option ->
+                    val isOther = question.isOtherOption(optionIndex)
                     val checked = option.label in (selected.value[question.id] ?: emptySet())
                     Surface(
                         shape = RoundedCornerShape(10.dp),
@@ -451,15 +457,12 @@ private fun RequestUserInputFooter(
                             .fillMaxWidth()
                             .selectable(selected = checked, enabled = !resolving, onClick = {
                                 val current = selected.value[question.id] ?: emptySet()
-                                val next = when {
-                                    question.multiple ->
-                                        if (option.label in current) current - option.label
-                                        else current + option.label
-                                    else -> setOf(option.label)
-                                }
+                                val next = selectRequestUserInputOption(question, current, optionIndex)
                                 selected.value = selected.value + (question.id to next)
                                 validationError = null
-                            }),
+                                if (isOther) noteFocusRequester.requestFocus()
+                            })
+                            .testTag("request-input-${question.id}-option-$optionIndex"),
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -471,8 +474,12 @@ private fun RequestUserInputFooter(
                                 RadioButton(selected = checked, onClick = null, enabled = !resolving)
                             }
                             Column(modifier = Modifier.padding(start = 6.dp)) {
-                                Text(text = option.label, style = MaterialTheme.typography.bodyMedium)
-                                option.description?.let { description ->
+                                Text(
+                                    text = if (isOther) stringResource(R.string.chat_perm_none_of_the_above) else option.label,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                val description = if (isOther) stringResource(R.string.chat_perm_other_note_optional) else option.description
+                                description?.let {
                                     Text(
                                         text = description,
                                         style = MaterialTheme.typography.labelSmall,
@@ -491,7 +498,9 @@ private fun RequestUserInputFooter(
                     },
                     enabled = !resolving,
                     placeholder = { Text(question.placeholder ?: stringResource(R.string.chat_perm_add_note)) },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth()
+                        .focusRequester(noteFocusRequester)
+                        .testTag("request-input-${question.id}-note"),
                 )
             }
         }

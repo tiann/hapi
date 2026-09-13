@@ -79,6 +79,12 @@ fun ToolCallBlockView(block: ToolCallBlock, basePath: String?, modifier: Modifie
                 )
             }
 
+            if (planProposalMarkdown(tool) != null) {
+                LocalChatInteractions.current?.let { interactions ->
+                    CodexPlanActionsView(planId = tool.id, interactions = interactions)
+                }
+            }
+
             tool.permission?.let { permission ->
                 val interactions = LocalChatInteractions.current
                 if (permission.status == "pending" && interactions != null) {

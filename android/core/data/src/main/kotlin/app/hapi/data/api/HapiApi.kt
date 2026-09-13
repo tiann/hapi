@@ -284,6 +284,15 @@ class HapiApi internal constructor(
     override suspend fun clearConversation(sessionId: String): ResumeSessionResponse =
         request("POST", url("api", "sessions", sessionId, "clear").build(), EMPTY_JSON)
 
+    /** CLI validates the proposal, switches to Default, then queues implementation. */
+    override suspend fun implementCodexPlan(sessionId: String, planId: String) {
+        request<Unit>(
+            "POST",
+            url("api", "sessions", sessionId, "codex", "plan", "implement").build(),
+            jsonBody(buildJsonObject { put("planId", planId) }),
+        )
+    }
+
     /** `POST /api/sessions/:id/abort` — active sessions only. */
     override suspend fun abortSession(sessionId: String) {
         request<Unit>("POST", url("api", "sessions", sessionId, "abort").build(), EMPTY_JSON)

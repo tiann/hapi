@@ -313,6 +313,12 @@ Plan proposals (`ExitPlanMode` / `exit_plan_mode`) are reading documents, not
 activity summaries: their complete `input.plan` Markdown stays visible in the
 conversation, before any approval controls. The same renderer is used in the
 inspector; null output does not show a misleading "No output" placeholder.
+Shared Codex proposals expose **Implement plan** and **Continue planning** only
+when the active session's `agentState.codexPlanProposalId` matches the tool-call
+id. Implementation uses the dedicated plan endpoint, not permission approval;
+continue only focuses the composer, preserving its draft. Pending/error state
+survives row recycling. Withdrawn, historical and child proposals stay read-only
+(an outstanding operation/error can still be shown).
 Plans are prewarmed in the chat Markdown cache and never use the ordinary
 tool-output preview/paging budget. The inspector retains raw fields under Source.
 
@@ -345,6 +351,11 @@ question**. **Previous question** retains all choices and notes; the last step
 always requires **Submit answer**. Recommended labels are display-only badges,
 never default selections or rewritten wire values. Other-answer/note fields
 expand on demand; text-only questions and prefilled drafts show them immediately.
+Codex choice questions with `isOther: true` also offer **None of the above**.
+Selecting it stays on the current question and focuses optional notes; empty
+notes are valid. Its wire value remains `None of the above` in every language,
+and recorded answers/notes appear in summaries and details. Requests without
+`isOther` (including Pi and MCP forms) keep their existing choices.
 All form state survives transcript-cell recycling for the retained request.
 Successful records collapse to answer summaries; missing recorded answers are
 shown as handled, not inferred from local drafts. Ordinary approvals retain their approval footer.
@@ -360,8 +371,10 @@ TEST_RUNNER_HAPI_QUESTION_CAPTURE=/tmp/hapi-question-review \
 
 Inspection pauses transcript tail-following and hidden history paging, without
 opening another SSE subscription. Closing returns to the reading anchor;
-**Back to latest** explicitly resumes following. Trimmed records remain visible
-as labeled, read-only snapshots; missing groups retain their last membership,
+opening/closing at bottom does not itself show **Back to latest**. The button
+appears when the transcript is far enough from bottom (or the live tail has been
+trimmed), and explicitly resumes following. Trimmed records remain visible as
+labeled, read-only snapshots; missing groups retain their last membership,
 without switching to another group. Incomplete history is labeled and can be
 loaded from the conversation after closing the inspector. Large text is loaded
 in 20,000-character parts and can be copied in full; large diffs use paged source

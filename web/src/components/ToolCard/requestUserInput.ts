@@ -1,8 +1,12 @@
 import { isObject } from '@hapi/protocol'
 
+// Codex's wire value, never a localized display label.
+export const REQUEST_USER_INPUT_OTHER = 'None of the above'
+
 export type RequestUserInputOption = {
     label: string
     description: string | null
+    isOther?: boolean
 }
 
 export type RequestUserInputQuestion = {
@@ -10,6 +14,7 @@ export type RequestUserInputQuestion = {
     question: string
     required: boolean
     multiple: boolean
+    isOther: boolean
     options: RequestUserInputOption[]
     placeholder?: string
     prefill?: string
@@ -92,6 +97,7 @@ export function parseRequestUserInputInput(input: unknown): ParsedRequestUserInp
             question,
             required: raw.required !== false,
             multiple: raw.multiple === true,
+            isOther: raw.isOther === true,
             options,
             ...(typeof raw.placeholder === 'string' ? { placeholder: raw.placeholder } : {}),
             ...(typeof raw.prefill === 'string' ? { prefill: raw.prefill } : {}),
@@ -100,6 +106,24 @@ export function parseRequestUserInputInput(input: unknown): ParsedRequestUserInp
     }
 
     return { questions, url }
+}
+
+/** Derived choices only; keep the original request/options unchanged. */
+export function requestUserInputOptions(question: RequestUserInputQuestion): RequestUserInputOption[] {
+    if (!question.isOther || question.options.length === 0) return question.options
+    return [...question.options, { label: REQUEST_USER_INPUT_OTHER, description: null, isOther: true }]
+}
+
+export function selectRequestUserInputOption(
+    question: RequestUserInputQuestion,
+    selected: string[],
+    option: RequestUserInputOption
+): string[] {
+    if (option.isOther || !question.multiple) return [option.label]
+    const current = question.isOther ? selected.filter((value) => value !== REQUEST_USER_INPUT_OTHER) : selected
+    return current.includes(option.label)
+        ? current.filter((value) => value !== option.label)
+        : [...current, option.label]
 }
 
 export function isRequestUserInputUrlConfirmed(

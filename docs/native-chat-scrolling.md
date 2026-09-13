@@ -64,10 +64,13 @@ upward drags keep their reading offset without immediately showing the button.
 It appears at 80pt from the retained bottom and hides at 24pt, retaining its
 previous visibility between those thresholds. Hiding never resumes following;
 the actual-bottom tolerance remains 1pt. The collection reports a hysteretic
-Boolean rather than publishing per-frame distances. A trimmed live tail,
-in-flight latest navigation, or an inspection pause awaiting explicit resume
-keeps the action available regardless of proximity. Failed catch-up retains
-the retry action. Thresholds do not change history demand or retention.
+Boolean rather than publishing per-frame distances. A trimmed live tail or
+in-flight latest navigation keeps the action available regardless of proximity.
+Inspection alone does not: opening/closing a sheet at bottom leaves the action
+hidden, including output updates that do not resize transcript rows. New visible
+content can reveal it through the same distance thresholds without moving the
+reading anchor. Failed catch-up retains the retry action. Thresholds do not
+change history demand or retention.
 
 Visible-rectangle queries binary-search the ordered frame array, then visit
 only intersecting rows (`O(log n + visible rows)`). Height changes update the

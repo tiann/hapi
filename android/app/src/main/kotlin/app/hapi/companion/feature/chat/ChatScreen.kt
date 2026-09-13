@@ -117,6 +117,7 @@ internal fun ChatScreen(
     val jumpToken by viewModel.jumpToken.collectAsState()
     val jumpingLatest by viewModel.jumpingLatest.collectAsState()
     val composerState by viewModel.composer.collectAsState()
+    val codexPlanActions by viewModel.codexPlanActions.collectAsState()
     val queuedRows by viewModel.queuedRows.collectAsState()
     val configState by viewModel.config.collectAsState()
     val toolbarHeight = maxOf(64.dp, with(LocalDensity.current) { 24.sp.toDp() + 16.sp.toDp() } + 16.dp)
@@ -257,12 +258,15 @@ internal fun ChatScreen(
         if (granted) launchCamera() else cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
     }
 
-    val interactions = remember(state.flavor, state.permissionOverrides, viewModel) {
+    val interactions = remember(state.flavor, state.permissionOverrides, codexPlanActions, viewModel) {
         ChatInteractions(
             flavor = state.flavor,
             permissionOverrides = state.permissionOverrides,
             resolvePermission = viewModel::resolvePermission,
             retryFailedMessage = viewModel::retryFailedMessage,
+            codexPlanActions = codexPlanActions,
+            implementCodexPlan = viewModel::implementCodexPlan,
+            continueCodexPlan = viewModel::continueCodexPlan,
         )
     }
 

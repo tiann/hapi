@@ -307,6 +307,13 @@ conversation, rendering the complete `input.plan` Markdown before approval
 controls. Tapping the header folds the card. Plan documents are prewarmed in the
 chat Markdown cache and do not use the ordinary tool-output paging budget; raw
 input/result remains under Source.
+Shared Codex proposals also show **Implement plan** and **Continue planning**
+when the active session's `agentState.codexPlanProposalId` matches the tool-call
+id. Implementation uses the dedicated plan endpoint, not permission approval;
+continue only focuses the composer, preserving its draft. The menu stays visible
+when the document is folded; pending/error state survives row recycling.
+Withdrawn, historical and child proposals remain read-only (an outstanding
+operation/error can still be shown).
 
 Details recognize namespaced command/script/patch calls, unwrap common
 nested result envelopes, and keep command exit/status metadata visible. File
@@ -315,7 +322,12 @@ reveals the original input/result, including fields omitted from the preview.
 Mixed text/media results stay JSON instead of dropping non-text blocks.
 
 Question details show recorded selections, custom answers and notes with
-Markdown questions/options. `request_user_input` also restores answers from
+Markdown questions/options. Codex choice questions with `isOther: true` add
+**None of the above** and focus optional notes when selected; empty notes are
+valid. Translations never change the submitted `None of the above` wire value.
+Pi/MCP forms without `isOther` keep their existing choices. Recorded other
+answers and notes are also shown in question details.
+`request_user_input` also restores answers from
 historical results; live permission answers take precedence. Answered cards
 avoid duplicate results, but retain errors and the full input/result/answers
 under **Source**. Pending questions are answered in the conversation.

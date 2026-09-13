@@ -950,6 +950,17 @@
         }
       }
     },
+    "Applying changes…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在应用更改…"
+          }
+        }
+      }
+    },
     "Archive" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1408,6 +1419,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "继续加载历史"
+          }
+        }
+      }
+    },
+    "Continue planning" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "继续规划"
           }
         }
       }
@@ -2424,6 +2446,28 @@
         }
       }
     },
+    "Hide note" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "收起备注"
+          }
+        }
+      }
+    },
+    "High risk" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "高风险"
+          }
+        }
+      }
+    },
     "Hub" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -2519,6 +2563,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "图片压缩后仍然过大"
+          }
+        }
+      }
+    },
+    "Implement plan" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "执行计划"
           }
         }
       }
@@ -3139,6 +3194,17 @@
         }
       }
     },
+    "No settings available for this session." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此会话没有可用设置。"
+          }
+        }
+      }
+    },
     "No storage data reported." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -3190,6 +3256,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此范围内没有记录到 Token 用量。"
+          }
+        }
+      }
+    },
+    "None of the above" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "以上都不是"
           }
         }
       }
@@ -3370,6 +3447,17 @@
         }
       }
     },
+    "Optionally, add details in notes." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可在备注中补充说明（可选）。"
+          }
+        }
+      }
+    },
     "Options" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -3531,6 +3619,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "权限模式"
+          }
+        }
+      }
+    },
+    "Permission modes control how the agent requests approval. Behavior varies by agent." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "权限模式控制代理请求审批的方式，具体行为因代理而异。"
           }
         }
       }

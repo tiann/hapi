@@ -31,6 +31,9 @@ struct ToolCallBlockView: View {
                 PlanProposalContent(markdown: plan)
                     .padding(12)
                     .accessibilityIdentifier("plan-proposal-\(block.id)")
+                if let interactions {
+                    CodexPlanActionsView(planId: block.tool.id, interactions: interactions)
+                }
             }
             if let permission = block.tool.permission {
                 if permission.status == .pending, let interactions {

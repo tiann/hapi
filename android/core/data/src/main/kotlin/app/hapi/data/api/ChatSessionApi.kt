@@ -45,6 +45,9 @@ interface ChatSessionApi : MessagesApi, AttachmentUploadApi {
     /** Shared root creation; only the initiating client navigates. */
     suspend fun clearConversation(sessionId: String): ResumeSessionResponse
 
+    /** Shared Codex client action, separate from permissions. Never auto-retry an unconfirmed result. */
+    suspend fun implementCodexPlan(sessionId: String, planId: String)
+
     /** `POST /api/sessions/:id/messages` — `{ok:true}`; the row arrives via SSE. */
     suspend fun sendMessage(sessionId: String, message: SendMessageRequest)
 

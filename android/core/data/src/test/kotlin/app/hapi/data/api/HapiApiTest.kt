@@ -117,6 +117,26 @@ class HapiApiTest {
 
     // ------------------------------------------------------ request shapes --
 
+    @Test fun `Codex implementation uses a dedicated endpoint and exact plan id`() = runBlocking {
+        server.enqueue(ok("""{"ok":true}"""))
+        session.api.implementCodexPlan("session/1", "plan:thread:turn:item")
+        val request = server.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/api/sessions/session%2F1/codex/plan/implement", request.path)
+        assertEquals("Bearer $jwt", request.getHeader("Authorization"))
+        assertEquals("""{"planId":"plan:thread:turn:item"}""", request.body.readUtf8())
+    }
+
+    @Test fun `uncertain plan implementation reports its error without automatic resubmission`() = runBlocking {
+        for ((status, code) in listOf(409 to "stale_plan", 409 to "unavailable", 502 to "failed", 503 to "indeterminate")) {
+            server.enqueue(MockResponse().setResponseCode(status).setBody("""{"ok":false,"code":"$code","error":"Not confirmed"}"""))
+            val error = assertFailsWith<ApiError> { session.api.implementCodexPlan("session", "proposal") }
+            assertEquals(status, error.status)
+            assertEquals(code, error.code)
+        }
+        assertEquals(4, server.requestCount)
+    }
+
     @Test
     fun `messages page sends compound cursor and epoch as query params`() {
         server.enqueue(

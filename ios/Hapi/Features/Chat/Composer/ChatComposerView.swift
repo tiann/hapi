@@ -24,6 +24,7 @@ struct ChatComposerView: View {
     @State private var photoSelection: [PhotosPickerItem] = []
     @State private var cameraOpen = false
     @State private var filePickerOpen = false
+    @FocusState private var textFocused: Bool
 
     private var text: Binding<String> {
         Binding(
@@ -61,6 +62,7 @@ struct ChatComposerView: View {
                     .padding(.top, 8)
                 }
                 TextField("Message the agent…", text: text, axis: .vertical)
+                    .focused($textFocused)
                     .font(typography.bodyFont)
                     .lineLimit(1...6)
                     .textFieldStyle(.plain)
@@ -89,6 +91,9 @@ struct ChatComposerView: View {
         }
         .hapiReadingColumn()
         .padding(.vertical, 8)
+        .onChange(of: interactor.composerFocusRequest) {
+            textFocused = true
+        }
         .task(id: dictation.map { ObjectIdentifier($0) }) {
             await dictation?.refreshAvailability()
         }

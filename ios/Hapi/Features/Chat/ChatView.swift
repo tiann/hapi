@@ -115,7 +115,7 @@ struct ChatView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $configSheetOpen) {
-            SessionConfigView(interactor: model.interactor)
+            SessionConfigView(interactor: model.interactor, notice: model.notice)
         }
         .navigationDestination(isPresented: $filesOpen) {
             FilesView(session: session, sessionId: sessionId)

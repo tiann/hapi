@@ -18,6 +18,22 @@ function fixture() {
     return { permissions, request, respond, handlers, send, state: () => state };
 }
 describe('shared request arbitration', () => {
+    it.each([{ notes: [] }, { notes: ['user_note: custom answer'] }])('preserves isOther and canonical other answers (%j) without claiming a winner', async ({ notes }) => {
+        const f = fixture();
+        const request = { ...f.request, params: { ...f.request.params, isBlocking: true,
+            questions: f.request.params.questions.map(question => ({ ...question, isOther: true })) } };
+        f.permissions.receive(request);
+        const [id, pending] = Object.entries(f.state().requests ?? {})[0]!;
+        expect(pending.arguments).toEqual(request.params);
+        const answers = { choice: { answers: ['None of the above', ...notes] } };
+        await f.handlers.get('permission')!({ id, approved: true, answers });
+        await vi.waitFor(() => expect(f.respond).toHaveBeenCalledWith(1, { answers }));
+        expect(f.state().completedRequests).toBeUndefined();
+        f.permissions.resolved('thread', request.id);
+        expect(f.state().completedRequests?.[id]).toMatchObject({ status: 'resolved' });
+        expect(f.state().completedRequests?.[id]).not.toHaveProperty('answers');
+    });
+
     it('withdrawal on disconnect is canceled, not a claim that a native answer won', () => {
         const f = fixture(); f.permissions.receive(f.request); f.permissions.close();
         expect(Object.values(f.state().completedRequests ?? {})[0]?.status).toBe('canceled');

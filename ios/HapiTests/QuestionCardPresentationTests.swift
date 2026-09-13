@@ -94,6 +94,40 @@ final class QuestionCardPresentationTests: XCTestCase {
                      permission: ToolPermission(id: "reply", status: .pending))
     }
 
+    func testOtherNotesStayOnTheCurrentQuestionAndRenderRecordedAnswers() async throws {
+        let source = #"{"questions":[{"id":"choice","header":"选择","question":"请选择一项","isOther":true,"options":[{"label":"Alpha"},{"label":"Beta"}]},{"id":"last","question":"Next question","options":[{"label":"Finish"}]}]}"#
+        for (name, theme, size, width) in [("light", HapiTheme.light, DynamicTypeSize.large, CGFloat(390)),
+                                          ("large-type", .dark, .accessibility3, 320)] {
+            let driver = Driver(tool: try makeTool(source))
+            let (window, _) = try host(Specimen(driver: driver, theme: theme, typeSize: size), width: width)
+            defer { window.isHidden = true }
+            try await settle { driver.height > 100 }
+            let initialHeight = driver.height
+            let form = QuestionAnswerForm(tool: driver.tool)
+            driver.draft.select(2, at: 0, in: form)
+            XCTAssertEqual(driver.draft.page, 0)
+            XCTAssertTrue(driver.draft.isAnswered(at: 0, in: form))
+            try await settle { driver.height > initialHeight }
+            driver.draft.setText("自定义\n说明", at: 0, in: form)
+            driver.tool.description = "Unrelated SSE update"
+            try await Task.sleep(for: .milliseconds(150))
+            XCTAssertEqual(driver.draft.selections[0], [2])
+            XCTAssertEqual(driver.draft.text(at: 0, in: form), "自定义\n说明")
+            XCTAssertFalse(questionToolDetails(driver.tool).hasAnswers)
+            try capture(window, name: "other-notes-\(name)")
+            driver.tool.state = .completed
+            driver.tool.permission = ToolPermission(id: "reply", status: .resolved)
+            XCTAssertFalse(questionToolDetails(driver.tool).hasAnswers, "Resolution does not prove which answer won")
+            driver.tool.result = .object(["answers": .object(["choice": .object([
+                "answers": .array([.string("None of the above"), .string("user_note: 自定义\n说明")]),
+            ])])])
+            try await settle { driver.height < initialHeight }
+            let details = questionToolDetails(driver.tool)
+            XCTAssertEqual(details.questions[0].options.map(\.selected), [false, false, true])
+            XCTAssertEqual(details.questions[0].note, "自定义\n说明")
+        }
+    }
+
     func testQuestionCardsFitThemesAndTypeSizesAndCollapseOnlyWithRecordedAnswers() async throws {
         for (name, theme, size, width) in [
             ("light", HapiTheme.light, DynamicTypeSize.large, CGFloat(390)),

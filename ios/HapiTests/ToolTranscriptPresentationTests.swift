@@ -80,6 +80,7 @@ final class ToolTranscriptPresentationTests: XCTestCase {
                 if size == .large { XCTAssertLessThanOrEqual(summary.frame.height, 100) }
             }
             try capture(window, name: name)
+            XCTAssertFalse(model.showsJumpToLatest)
             let cell = try XCTUnwrap(collection.visibleCells
                 .filter { $0.accessibilityIdentifier != "chat-row-chat-history-control" }
                 .sorted { $0.frame.minY < $1.frame.minY }.first)
@@ -89,7 +90,7 @@ final class ToolTranscriptPresentationTests: XCTestCase {
             try await eventually { host.presentedViewController != nil && !model.followsTail }
             try await Task.sleep(for: .milliseconds(600))
             XCTAssertTrue(model.isInspectingContent)
-            XCTAssertTrue(model.showsJumpToLatest, "Viewport proximity must not hide an inspection's resume action")
+            XCTAssertFalse(model.showsJumpToLatest, "Opening a sheet is not a departure from the bottom")
             XCTAssertNil(model.toolInspection.selection, "Group root must pause following without a selected tool")
             XCTAssertEqual(collection.numberOfItems(inSection: 0), 6)
             let presented = try XCTUnwrap(host.presentedViewController)
@@ -126,9 +127,90 @@ final class ToolTranscriptPresentationTests: XCTestCase {
             let restored = try XCTUnwrap(collection.visibleCells.first { $0.accessibilityIdentifier == anchorID })
             XCTAssertEqual(restored.frame.minY - collection.contentOffset.y, anchorY, accuracy: 1)
             XCTAssertFalse(model.followsTail)
-            XCTAssertTrue(model.showsJumpToLatest, "The real transcript must retain its resume action after dismissal")
+            XCTAssertFalse(model.showsJumpToLatest, "Output-only updates must not create a latest action at bottom")
             XCTAssertEqual(collection.numberOfItems(inSection: 0), 6)
         }
+    }
+
+    func testToolSheetLatestVisibilityTracksActualBottomDistance() async throws {
+        let credentials = InMemoryCredentialStore()
+        let payload = Data(#"{"uid":1,"exp":4102444800,"ns":"test"}"#.utf8).base64EncodedString()
+        try credentials.store(HubCredentials(hubUrl: "http://127.0.0.1:1", accessToken: "test", jwt: "e30.\(payload).test"))
+        let hub = try XCTUnwrap(HubSession(hubUrl: "http://127.0.0.1:1/inspection-latest-\(UUID().uuidString)",
+                                         credentialStore: credentials, performer: ToolTranscriptHTTP()))
+        let model = ChatModel(session: hub, sessionId: "inspection-latest")
+        defer { model.stop(); hub.shutdown() }
+        model.start()
+        try await eventually { !model.blocks.isEmpty && !model.isSyncingTail }
+        let group = try XCTUnwrap(model.blocks.compactMap { block -> ToolGroupBlock? in
+            if case .toolGroup(let group) = block { return group }
+            return nil
+        }.last)
+        let tool = try XCTUnwrap(group.tools.first)
+        let controller = await hub.windows.open(sessionId: model.sessionId)
+        await controller.syncTail(ensureAfterCurrent: true)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        let host = UIHostingController(rootView: Harness(model: model, session: hub, theme: .light, size: .large))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        host.view.layoutIfNeeded()
+        let collection = try XCTUnwrap(findCollection(host.view))
+        try await eventually { collection.numberOfItems(inSection: 0) == 6 }
+        try await Task.sleep(for: .milliseconds(250))
+        let bottomOffset = max(-collection.adjustedContentInset.top,
+                               collection.contentSize.height - collection.bounds.height + collection.adjustedContentInset.bottom)
+        XCTAssertEqual(collection.contentOffset.y, bottomOffset, accuracy: 1)
+        XCTAssertFalse(model.showsJumpToLatest)
+
+        // Repeated group and single-tool round trips with no arriving data.
+        for opensGroup in [true, false, true] {
+            let offset = collection.contentOffset.y
+            if opensGroup {
+                XCTAssertTrue(model.inspectToolGroup(group.id, owner: "chat"))
+            } else {
+                model.beginContentInspection()
+                model.retainSurface("inspector:chat")
+                model.toolInspection.open(tool, owner: "chat")
+            }
+            try await eventually { host.presentedViewController != nil && !model.followsTail }
+            XCTAssertFalse(model.showsJumpToLatest)
+            model.toolInspection.dismiss(owner: "chat")
+            try await eventually { host.presentedViewController == nil && !model.isInspectingContent }
+            XCTAssertEqual(collection.contentOffset.y, offset, accuracy: 1)
+            XCTAssertFalse(model.showsJumpToLatest, "Dismissal alone must not reveal Back to latest")
+            XCTAssertFalse(model.followsTail, "Hiding the action must not change reading intent")
+        }
+
+        // New visible content, unlike inspection itself, creates real distance.
+        let offset = collection.contentOffset.y
+        XCTAssertTrue(model.inspectToolGroup(group.id, owner: "chat"))
+        try await eventually { host.presentedViewController != nil }
+        let seq = (await controller.state.newestSeq ?? 0) + 1
+        let message = DecryptedMessage(id: "new-tail", seq: seq,
+            content: ["role": "agent", "content": ["type": "codex", "data": [
+                "type": "message", "message": .string(String(repeating: "New visible tail content.\n\n", count: 20)),
+            ]]], createdAt: seq * 1000, invokedAt: seq * 1000)
+        await controller.onMessageEvent(.messageReceived(namespace: nil, sessionId: model.sessionId, message: message))
+        try await eventually { collection.numberOfItems(inSection: 0) == 7 && model.showsJumpToLatest }
+        model.toolInspection.dismiss(owner: "chat")
+        try await eventually { host.presentedViewController == nil && !model.isInspectingContent }
+        XCTAssertEqual(collection.contentOffset.y, offset, accuracy: 1)
+        XCTAssertTrue(model.showsJumpToLatest)
+        XCTAssertFalse(model.followsTail)
+
+        // Already browsing history: reopening the sheet retains the action.
+        XCTAssertTrue(model.inspectToolGroup(group.id, owner: "chat"))
+        try await eventually { host.presentedViewController != nil }
+        model.toolInspection.dismiss(owner: "chat")
+        try await eventually { host.presentedViewController == nil && !model.isInspectingContent }
+        XCTAssertEqual(collection.contentOffset.y, offset, accuracy: 1)
+        XCTAssertTrue(model.showsJumpToLatest)
+        let jump = model.jumpToLatestToken
+        model.jumpToLatest()
+        try await eventually { model.jumpToLatestToken > jump && model.followsTail && !model.showsJumpToLatest }
     }
 
     func testPlanPublicationUpdatesRecyclingAndInspectorPreserveTheDocumentAndAnchor() async throws {

@@ -58,6 +58,18 @@ public struct QueuedMessageRow: Equatable, Sendable, Identifiable {
     }
 }
 
+// MARK: - Codex plan client actions
+
+/// A shared Codex proposal's client-action footer, independent of permissions.
+public struct CodexPlanActionState: Equatable, Sendable {
+    public let available: Bool
+    public let pending: Bool
+    public let canAct: Bool
+    public let error: String?
+
+    public var isVisible: Bool { available || pending || error != nil }
+}
+
 // MARK: - Permissions
 
 /// Optimistic-permission UI state layered over the reduced blocks.

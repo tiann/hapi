@@ -68,6 +68,21 @@ extension APIClient {
         try await request(.post, "/api/sessions/\(encodePathComponent(id))/clear", body: EmptyRequestBody())
     }
 
+    /// Shared Codex client action, NOT a tool approval. The CLI
+    /// validates the proposal, switches to Default and queues implementation.
+    /// Never emulate this with separate config/message requests or auto-retry
+    /// an unconfirmed result.
+    public func implementCodexPlan(sessionId: String, planId: String) async throws {
+        struct ImplementPlanRequest: Encodable {
+            let planId: String
+        }
+        try await requestVoid(
+            .post,
+            "/api/sessions/\(encodePathComponent(sessionId))/codex/plan/implement",
+            body: ImplementPlanRequest(planId: planId)
+        )
+    }
+
     /// `POST /api/sessions/:id/abort` (active sessions only).
     public func abortSession(id: String) async throws {
         try await requestVoid(

@@ -601,6 +601,8 @@ export default {
   'tool.requestUserInput.textPlaceholder': '输入您的答案…',
   'tool.requestUserInput.noteLabel': '补充说明（可选）',
   'tool.requestUserInput.notePlaceholder': '添加备注…',
+  'tool.requestUserInput.otherLabel': '以上都不是',
+  'tool.requestUserInput.otherDescription': '可在备注中补充说明（可选）。',
   'tool.requestUserInput.popupBlocked': '无法打开登录页面。请允许弹出窗口后重试。',
   'toolGroup.title': '工具活动',
   'toolGroup.friendly.inspectTarget': '检查 {target}',
