@@ -123,7 +123,7 @@ private func requestQuestionDetails(
             }
         }
         return QuestionDetail(
-            header: nil, question: question.question, multiple: question.multiple,
+            header: question.header, question: question.question, multiple: question.multiple,
             options: question.options.map {
                 QuestionOptionDetail(label: $0.label, description: $0.description, selected: selected.contains($0.label))
             },

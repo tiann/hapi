@@ -356,7 +356,19 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 const root = await prepare(launch.cwd, existing);
                 await reserveRecord(root, threadId); return root;
             });
-            const response = record(await root.client.request('thread/resume', root.config({ ...launch.threadParams, threadId })));
+            const params = root.config({ ...launch.threadParams, threadId });
+            let response: Record<string, unknown>;
+            try {
+                response = record(await root.client.request('thread/resume', params));
+            } catch (error) {
+                // Reopening a HAPI binding also restores its native archive.
+                // Only retry an explicit archived rejection, never a transport
+                // failure whose resume outcome may be unknown.
+                if (!options.existingSessionId || !(error instanceof Error)
+                    || !error.message.startsWith(`session ${threadId} is archived.`)) throw error;
+                await root.client.request('thread/unarchive', { threadId });
+                response = record(await root.client.request('thread/resume', params));
+            }
             await bind(root, response, false, options);
         } else root = await create('thread/start', { ...launch.threadParams, cwd: launch.cwd }, undefined, options);
         assertRunning();

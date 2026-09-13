@@ -1,11 +1,4 @@
 export default {
-  'codexUsage.title': 'Codex Usage',
-  'codexUsage.ordinary': 'Ordinary usage',
-  'codexUsage.unknown': 'Unknown',
-  'codexUsage.remaining': '{percent}% remaining',
-  'codexUsage.window': '{minutes} min window',
-  'codexUsage.resets': 'Resets {time}',
-
   // Loading states
   'loading': 'Loading…',
   'authorizing': 'Authorizing…',
@@ -569,6 +562,8 @@ export default {
   'tool.rejected': 'Rejected',
   'tool.cancel': 'Cancel',
   'tool.exitPlan': 'Exit Plan Mode',
+  'tool.plan.implement': 'Implement plan',
+  'tool.plan.continue': 'Continue planning',
   'tool.patch': 'Patch',
   'tool.input': 'Input',
   'tool.trace': 'Trace',
@@ -670,6 +665,7 @@ export default {
   'composer.scheduleErrorTooFar': 'Maximum schedule time is 7 days.',
   'queuedMessages.scheduledFor': 'Scheduled for {time}',
   'queuedMessages.editAlreadyInvoked': "Message already sent — it can't be edited",
+  'queuedMessages.editBusyNotRestored': 'Delivery still unresolved — draft not restored (may still be in flight)',
   'queuedMessages.editCurrentDraftKept': 'Queued message cancelled — current draft and schedule were kept.',
   'queuedMessages.steer': 'Deliver into the running turn now',
   'queuedMessages.steerFailed': 'Steer failed — message stays queued',
@@ -762,6 +758,7 @@ export default {
   'toast.ready.title': 'Ready for input',
   'toast.ready.body': '{agent} is waiting in {session}',
   'toast.permission.title': 'Permission Request',
+  'toast.input.title': '{agent} needs your input',
   'toast.task.completed': 'Task completed',
   'toast.task.failed': 'Task failed',
 

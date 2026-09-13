@@ -8,6 +8,8 @@ public struct TranscriptViewport: Equatable {
     public let followsTail: Bool
     public let needsOlder: Bool
     public let isAtBottom: Bool
+    /// Hysteretic button affordance, not a tail-following threshold.
+    public let isAwayFromBottom: Bool
 }
 
 /// SwiftUI owns message content; UIKit owns scrolling, recycling and layout
@@ -279,6 +281,7 @@ public final class TranscriptCollectionController<Item: Identifiable & Equatable
     private var lastJumpToken = 0
     private var reportScheduled = false
     private var lastViewport: TranscriptViewport?
+    private var bottomProximity = TranscriptBottomProximity()
     private let content = TranscriptContent<Item>()
     #if DEBUG
     private(set) var cellConfigurationCount = 0
@@ -457,10 +460,12 @@ public final class TranscriptCollectionController<Item: Identifiable & Equatable
         let top = max(0, collection.contentOffset.y + collection.adjustedContentInset.top)
         let bottomDistance = layout.bottomOffset(collection) - collection.contentOffset.y
         let short = layout.collectionViewContentSize.height <= height + 1
+        bottomProximity.update(bottomDistance: Double(bottomDistance), followsTail: layout.followsTail)
         let viewport = TranscriptViewport(
             followsTail: layout.followsTail,
             needsOlder: configuration?.isInspectionPresented != true && (short || (!layout.followsTail && top <= height)),
-            isAtBottom: bottomDistance <= 1
+            isAtBottom: bottomDistance <= 1,
+            isAwayFromBottom: bottomProximity.isAwayFromBottom
         )
         guard viewport != lastViewport else { return }
         lastViewport = viewport

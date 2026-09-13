@@ -6,7 +6,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,14 +14,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.MoreVert
@@ -33,7 +31,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -57,11 +54,12 @@ import androidx.compose.runtime.setValue
 import android.content.Context
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import app.hapi.companion.R
 import app.hapi.companion.feature.chat.composer.DictationErrorKind
@@ -77,11 +75,9 @@ import app.hapi.companion.feature.chat.composer.QueuedMessagesBar
 import app.hapi.companion.feature.files.FolderGlyph
 import app.hapi.companion.feature.sessions.DeleteSessionDialog
 import app.hapi.companion.feature.sessions.RenameSessionDialog
-import app.hapi.companion.ui.components.AgentFlavorIcon
 import app.hapi.companion.ui.markdown.LocalMarkdownRenderCache
 import app.hapi.companion.ui.markdown.LocalMarkdownLinkHandler
 import app.hapi.companion.ui.theme.hapi
-import app.hapi.protocol.chat.VisibleChatBlock
 import java.io.File
 import kotlinx.coroutines.launch
 
@@ -95,37 +91,15 @@ private val CameraCaptureSaver = listSaver<CameraCapture?, String>(
     },
 )
 
-/**
- * The chat screen: `LazyColumn(reverseLayout = true)` over the reduced
- * [VisibleChatBlock]s — newest at the bottom, stable ids as keys so scroll
- * position survives pipeline re-runs, auto-stick to the tail only while
- * already there (reverse-layout index-0 anchoring), a "new messages" pill
- * otherwise, and a top-edge sentinel that pages older history in.
- *
- * B-M3ab adds the interaction chrome: composer + queued bar (bottom),
- * permission actions (via [LocalChatInteractions]), the session config sheet
- * (top-bar gear), and one-shot [ChatEvent] handling (supersede renavigation +
- * snackbar notices).
- *
- * B-M3ce adds voice dictation (mic button, RECORD_AUDIO request, transcript
- * append), the slash-command dropdown, and session ops: a top-bar overflow
- * menu (Rename / Reopen / Delete) plus an inactive-session affordance bar
- * above the composer (send already auto-resumes; Reopen is the explicit path).
- *
- * B-M3f adds composer attachments: the "+" sheet (photo library / camera /
- * files), pick preparation ([AttachmentPreparer]: ContentResolver read +
- * image downscale + 50 MB reject) feeding the ViewModel's upload tray, and
- * the camera scratch capture (FileProvider Uri, `rememberSaveable` across
- * rotation while the camera app is up).
- */
+/** Conversation destination. ChatHost owns the shared session and reader navigation. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(
+internal fun ChatScreen(
     viewModel: ChatViewModel,
     media: ChatMedia,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
-    onNavigateToSession: (String) -> Unit = {},
+    snackbarHostState: SnackbarHostState = remember { SnackbarHostState() },
     /** null ⇒ mic button hidden (tests / previews without a controller). */
     dictation: DictationController? = null,
     /** Top-bar folder icon → session files browser (B-M4c). */
@@ -134,35 +108,28 @@ fun ChatScreen(
     onOpenFile: (path: String, line: Int?) -> Unit = { _, _ -> },
     /** null ⇒ no scratchlist top-bar entry (tests / previews). */
     onOpenScratchlist: (() -> Unit)? = null,
+    transcriptList: androidx.compose.foundation.lazy.LazyListState = androidx.compose.foundation.lazy.rememberLazyListState(),
+    readingState: TranscriptReadingState = rememberTranscriptReadingState(viewModel.sessionId),
 ) {
     val state by viewModel.uiState.collectAsState()
+    val reconnecting by viewModel.reconnecting.collectAsState()
     val historyPaging by viewModel.historyPaging.collectAsState()
     val jumpToken by viewModel.jumpToken.collectAsState()
     val jumpingLatest by viewModel.jumpingLatest.collectAsState()
     val composerState by viewModel.composer.collectAsState()
     val queuedRows by viewModel.queuedRows.collectAsState()
     val configState by viewModel.config.collectAsState()
-    val snackbarHostState = remember { SnackbarHostState() }
+    val toolbarHeight = maxOf(64.dp, with(LocalDensity.current) { 24.sp.toDp() + 16.sp.toDp() } + 16.dp)
     var configSheetOpen by remember { mutableStateOf(false) }
     var renameDialogOpen by remember { mutableStateOf(false) }
     var deleteDialogOpen by remember { mutableStateOf(false) }
 
     DisposableEffect(viewModel) {
-        viewModel.start()
-        onDispose { viewModel.stop() }
+        viewModel.setTranscriptVisible(true)
+        onDispose { viewModel.setTranscriptVisible(false) }
     }
 
     val context = LocalContext.current
-    LaunchedEffect(viewModel, context) {
-        viewModel.events.collect { event ->
-            when (event) {
-                is ChatEvent.SessionSuperseded -> onNavigateToSession(event.sessionId)
-                ChatEvent.SessionDeleted -> onBack()
-                is ChatEvent.Notice -> snackbarHostState.showSnackbar(chatNoticeText(context, event.notice))
-            }
-        }
-    }
-
     // ------------------------------------------------------------ dictation --
     val dictationState = dictation?.state?.collectAsState()?.value ?: DictationState.Idle
     val dictationAvailable = dictation?.isAvailable?.collectAsState()?.value ?: false
@@ -303,12 +270,13 @@ fun ChatScreen(
         modifier = modifier.fillMaxSize(),
         topBar = {
             TopAppBar(
+                expandedHeight = toolbarHeight,
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.chat_back))
                     }
                 },
-                title = { ChatTitle(state.header) },
+                title = { ChatTitle(state.header, reconnecting, viewModel::retry) },
                 actions = {
                     // Two icons max (device feedback: four icons squeezed the
                     // title out) — gear for the frequent config switches,
@@ -338,41 +306,43 @@ fun ChatScreen(
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
-            // Edge-to-edge (enforced by targetSdk 35+): the bar owns its own
-            // system insets — nav-bar padding when the keyboard is closed,
-            // IME padding when open (inset consumption prevents doubling).
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .imePadding(),
-            ) {
-                if (!state.header.active && !state.isInitialLoading && !state.loadFailed) {
-                    InactiveSessionBar(onReopen = viewModel::reopenSession)
+            app.hapi.companion.ui.theme.ReadingColumn {
+                // Edge-to-edge (enforced by targetSdk 35+): the bar owns its own
+                // system insets — nav-bar padding when the keyboard is closed,
+                // IME padding when open (inset consumption prevents doubling).
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .imePadding(),
+                ) {
+                    if (!state.header.active && !state.isInitialLoading && !state.loadFailed) {
+                        InactiveSessionBar(onReopen = viewModel::reopenSession)
+                    }
+                    QueuedMessagesBar(
+                        rows = queuedRows,
+                        onSteer = viewModel::steerQueuedMessage,
+                        onRetry = viewModel::retryIndeterminateMessage,
+                        onEdit = viewModel::editQueuedMessage,
+                        onCancel = viewModel::cancelQueuedMessage,
+                    )
+                    ChatComposer(
+                        state = composerState,
+                        onTextChange = viewModel::setComposerText,
+                        onSend = { viewModel.sendMessage() },
+                        onSendSteer = { viewModel.sendMessage(steer = true) },
+                        onAbort = viewModel::abortSession,
+                        attachments = attachmentItems,
+                        onAddAttachment = { attachmentSheetOpen = true },
+                        onAttachmentRetry = viewModel.attachments::retry,
+                        onAttachmentRemove = viewModel.attachments::remove,
+                        slashSuggestions = slashSuggestions,
+                        onSlashCommandSelected = viewModel::selectSlashCommand,
+                        dictation = if (dictationAvailable) dictationState else null,
+                        onDictationToggle = onDictationToggle,
+                        onDictationCancel = { dictation?.cancel() },
+                    )
                 }
-                QueuedMessagesBar(
-                    rows = queuedRows,
-                    onSteer = viewModel::steerQueuedMessage,
-                    onRetry = viewModel::retryIndeterminateMessage,
-                    onEdit = viewModel::editQueuedMessage,
-                    onCancel = viewModel::cancelQueuedMessage,
-                )
-                ChatComposer(
-                    state = composerState,
-                    onTextChange = viewModel::setComposerText,
-                    onSend = { viewModel.sendMessage() },
-                    onSendSteer = { viewModel.sendMessage(steer = true) },
-                    onAbort = viewModel::abortSession,
-                    attachments = attachmentItems,
-                    onAddAttachment = { attachmentSheetOpen = true },
-                    onAttachmentRetry = viewModel.attachments::retry,
-                    onAttachmentRemove = viewModel.attachments::remove,
-                    slashSuggestions = slashSuggestions,
-                    onSlashCommandSelected = viewModel::selectSlashCommand,
-                    dictation = if (dictationAvailable) dictationState else null,
-                    onDictationToggle = onDictationToggle,
-                    onDictationCancel = { dictation?.cancel() },
-                )
             }
         },
     ) { padding ->
@@ -387,9 +357,6 @@ fun ChatScreen(
                     .fillMaxSize()
                     .padding(padding),
             ) {
-                state.warning?.let { warning ->
-                    DegradedBanner(warning = warning, onRetry = viewModel::retry)
-                }
                 Box(modifier = Modifier.weight(1f)) {
                     when {
                         state.isInitialLoading -> InitialLoading()
@@ -402,7 +369,13 @@ fun ChatScreen(
                             onLayout = viewModel::historyLaidOut,
                             onRetryHistory = viewModel::loadOlder,
                             onJumpToLatest = viewModel::jumpToLatest,
+                            listState = transcriptList, readingState = readingState,
                         )
+                    }
+                    if (!state.loadFailed) state.warning?.let { warning ->
+                        Box(Modifier.align(Alignment.TopCenter).padding(8.dp)) {
+                            DegradedBanner(warning, viewModel::retry)
+                        }
                     }
                 }
             }
@@ -565,54 +538,18 @@ private fun InactiveSessionBar(onReopen: () -> Unit) {
 }
 
 @Composable
-private fun ChatTitle(header: ChatHeaderUi) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        StatusDot(active = header.active, thinking = header.thinking)
-        Spacer(modifier = Modifier.width(8.dp))
-        Column {
-            Text(
-                text = header.title,
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            header.subtitle?.let { subtitle ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    header.flavor?.let { flavor ->
-                        // Hint-colored like the meta text (web: currentColor
-                        // under --app-hint); color variants ignore the tint.
-                        CompositionLocalProvider(
-                            LocalContentColor provides MaterialTheme.colorScheme.onSurfaceVariant,
-                        ) {
-                            AgentFlavorIcon(flavor, modifier = Modifier.size(14.dp))
-                        }
-                        Spacer(modifier = Modifier.width(4.dp))
-                    }
-                    Text(
-                        text = subtitle,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-        }
+private fun ChatTitle(header: ChatHeaderUi, reconnecting: Boolean, retry: () -> Unit) {
+    Column(Modifier.heightIn(min = 48.dp).then(if (reconnecting) Modifier.clickable(onClick = retry) else Modifier),
+        verticalArrangement = Arrangement.Center) {
+        Text(header.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        // Always reserve the subtitle slot; reconnect phases never resize the transcript.
+        Text(
+            if (reconnecting) stringResource(R.string.chat_reconnecting_retry) else header.subtitle.orEmpty(),
+            style = app.hapi.companion.ui.theme.HapiTypography.caption,
+            color = if (reconnecting) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1, overflow = TextOverflow.Ellipsis,
+        )
     }
-}
-
-@Composable
-private fun StatusDot(active: Boolean, thinking: Boolean) {
-    val color = when {
-        thinking -> Color(0xFF34C759).copy(alpha = 0.6f)
-        active -> Color(0xFF34C759)
-        else -> MaterialTheme.colorScheme.outlineVariant
-    }
-    Box(
-        modifier = Modifier
-            .size(9.dp)
-            .background(color, CircleShape),
-    )
 }
 
 @Composable

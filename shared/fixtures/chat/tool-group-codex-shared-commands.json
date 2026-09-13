@@ -1,0 +1,591 @@
+{
+    "description": "Shared Codex unknown/mixed command actions select the default group, not a grouping boundary. Keep commands, patches and legacy hook calls together, preserve live/error state, and keep exploration groups separate.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "explore-before",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "explore-before",
+                    "input": {
+                        "command": "cat README.md",
+                        "command_actions": [
+                            {
+                                "command": "cat README.md",
+                                "name": "README.md",
+                                "path": "/repo/README.md",
+                                "type": "read"
+                            }
+                        ],
+                        "command_source": "agent"
+                    },
+                    "name": "CodexBash",
+                    "result": "Readme",
+                    "state": "completed"
+                }
+            },
+            {
+                "createdAt": 1755000002000,
+                "id": "shared-command",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "shared-command",
+                    "input": {
+                        "call_id": "shared-command",
+                        "command": "/bin/zsh -lc \"git diff --stat\"",
+                        "command_actions": [
+                            {
+                                "command": "git diff --stat",
+                                "type": "unknown"
+                            }
+                        ],
+                        "command_source": "unifiedExecStartup",
+                        "cwd": "/repo",
+                        "type": "exec_command_begin"
+                    },
+                    "name": "CodexBash",
+                    "result": {
+                        "exit_code": 0,
+                        "stdout": "1 file changed"
+                    },
+                    "state": "completed"
+                }
+            },
+            {
+                "createdAt": 1755000004000,
+                "id": "patch",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "patch",
+                    "input": {
+                        "changes": {
+                            "/repo/main.ts": {
+                                "type": "update",
+                                "unified_diff": "-old\n+new"
+                            }
+                        }
+                    },
+                    "name": "CodexPatch",
+                    "result": {
+                        "success": true
+                    },
+                    "state": "completed"
+                }
+            },
+            {
+                "createdAt": 1755000006000,
+                "id": "mixed-command",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "mixed-command",
+                    "input": {
+                        "command": "cat package.json && bun test",
+                        "commandActions": [
+                            {
+                                "command": "cat package.json",
+                                "name": "package.json",
+                                "path": "/repo/package.json",
+                                "type": "read"
+                            },
+                            {
+                                "command": "bun test",
+                                "type": "unknown"
+                            }
+                        ],
+                        "commandSource": "unifiedExecStartup"
+                    },
+                    "name": "CodexBash",
+                    "result": {
+                        "exit_code": 1,
+                        "stdout": "Test failed"
+                    },
+                    "state": "error"
+                }
+            },
+            {
+                "createdAt": 1755000008000,
+                "id": "legacy-command",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "legacy-command",
+                    "input": {
+                        "command": "git status",
+                        "source": "codex-hook"
+                    },
+                    "name": "CodexBash",
+                    "state": "running"
+                }
+            },
+            {
+                "createdAt": 1755000009000,
+                "id": "explore-after",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "explore-after",
+                    "input": {
+                        "command": "ls src",
+                        "command_actions": [
+                            {
+                                "command": "ls src",
+                                "path": "/repo/src",
+                                "type": "listFiles"
+                            }
+                        ]
+                    },
+                    "name": "CodexBash",
+                    "result": "main.ts",
+                    "state": "completed"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "firstToolId": "explore-before",
+                "id": "tool-group:explore-before",
+                "kind": "tool-group",
+                "lastToolId": "explore-before",
+                "tools": [
+                    {
+                        "createdAt": 1755000000000,
+                        "id": "explore-before",
+                        "kind": "tool-call",
+                        "localId": null,
+                        "tool": {
+                            "id": "explore-before",
+                            "input": {
+                                "command": "cat README.md",
+                                "command_actions": [
+                                    {
+                                        "command": "cat README.md",
+                                        "name": "README.md",
+                                        "path": "/repo/README.md",
+                                        "type": "read"
+                                    }
+                                ],
+                                "command_source": "agent"
+                            },
+                            "name": "CodexBash",
+                            "result": "Readme",
+                            "state": "completed"
+                        }
+                    }
+                ]
+            },
+            {
+                "createdAt": 1755000002000,
+                "firstToolId": "shared-command",
+                "id": "tool-group:shared-command",
+                "kind": "tool-group",
+                "lastToolId": "legacy-command",
+                "tools": [
+                    {
+                        "createdAt": 1755000002000,
+                        "id": "shared-command",
+                        "kind": "tool-call",
+                        "localId": null,
+                        "tool": {
+                            "id": "shared-command",
+                            "input": {
+                                "call_id": "shared-command",
+                                "command": "/bin/zsh -lc \"git diff --stat\"",
+                                "command_actions": [
+                                    {
+                                        "command": "git diff --stat",
+                                        "type": "unknown"
+                                    }
+                                ],
+                                "command_source": "unifiedExecStartup",
+                                "cwd": "/repo",
+                                "type": "exec_command_begin"
+                            },
+                            "name": "CodexBash",
+                            "result": {
+                                "exit_code": 0,
+                                "stdout": "1 file changed"
+                            },
+                            "state": "completed"
+                        }
+                    },
+                    {
+                        "createdAt": 1755000004000,
+                        "id": "patch",
+                        "kind": "tool-call",
+                        "localId": null,
+                        "tool": {
+                            "id": "patch",
+                            "input": {
+                                "changes": {
+                                    "/repo/main.ts": {
+                                        "type": "update",
+                                        "unified_diff": "-old\n+new"
+                                    }
+                                }
+                            },
+                            "name": "CodexPatch",
+                            "result": {
+                                "success": true
+                            },
+                            "state": "completed"
+                        }
+                    },
+                    {
+                        "createdAt": 1755000006000,
+                        "id": "mixed-command",
+                        "kind": "tool-call",
+                        "localId": null,
+                        "tool": {
+                            "id": "mixed-command",
+                            "input": {
+                                "command": "cat package.json && bun test",
+                                "commandActions": [
+                                    {
+                                        "command": "cat package.json",
+                                        "name": "package.json",
+                                        "path": "/repo/package.json",
+                                        "type": "read"
+                                    },
+                                    {
+                                        "command": "bun test",
+                                        "type": "unknown"
+                                    }
+                                ],
+                                "commandSource": "unifiedExecStartup"
+                            },
+                            "name": "CodexBash",
+                            "result": {
+                                "exit_code": 1,
+                                "stdout": "Test failed"
+                            },
+                            "state": "error"
+                        }
+                    },
+                    {
+                        "createdAt": 1755000008000,
+                        "id": "legacy-command",
+                        "kind": "tool-call",
+                        "localId": null,
+                        "tool": {
+                            "id": "legacy-command",
+                            "input": {
+                                "command": "git status",
+                                "source": "codex-hook"
+                            },
+                            "name": "CodexBash",
+                            "state": "running"
+                        }
+                    }
+                ]
+            },
+            {
+                "createdAt": 1755000009000,
+                "firstToolId": "explore-after",
+                "id": "tool-group:explore-after",
+                "kind": "tool-group",
+                "lastToolId": "explore-after",
+                "tools": [
+                    {
+                        "createdAt": 1755000009000,
+                        "id": "explore-after",
+                        "kind": "tool-call",
+                        "localId": null,
+                        "tool": {
+                            "id": "explore-after",
+                            "input": {
+                                "command": "ls src",
+                                "command_actions": [
+                                    {
+                                        "command": "ls src",
+                                        "path": "/repo/src",
+                                        "type": "listFiles"
+                                    }
+                                ]
+                            },
+                            "name": "CodexBash",
+                            "result": "main.ts",
+                            "state": "completed"
+                        }
+                    }
+                ]
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "explore-before",
+                            "input": {
+                                "command": "cat README.md",
+                                "command_actions": [
+                                    {
+                                        "command": "cat README.md",
+                                        "name": "README.md",
+                                        "path": "/repo/README.md",
+                                        "type": "read"
+                                    }
+                                ],
+                                "command_source": "agent"
+                            },
+                            "name": "CodexBash",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "shared-group-0",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "explore-before",
+                            "output": "Readme",
+                            "type": "tool-call-result"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000001000,
+                "id": "shared-group-1",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "shared-command",
+                            "input": {
+                                "call_id": "shared-command",
+                                "command": "/bin/zsh -lc \"git diff --stat\"",
+                                "command_actions": [
+                                    {
+                                        "command": "git diff --stat",
+                                        "type": "unknown"
+                                    }
+                                ],
+                                "command_source": "unifiedExecStartup",
+                                "cwd": "/repo",
+                                "type": "exec_command_begin"
+                            },
+                            "name": "CodexBash",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002000,
+                "id": "shared-group-2",
+                "localId": null,
+                "seq": 3
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "shared-command",
+                            "output": {
+                                "exit_code": 0,
+                                "stdout": "1 file changed"
+                            },
+                            "type": "tool-call-result"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000003000,
+                "id": "shared-group-3",
+                "localId": null,
+                "seq": 4
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "patch",
+                            "input": {
+                                "changes": {
+                                    "/repo/main.ts": {
+                                        "type": "update",
+                                        "unified_diff": "-old\n+new"
+                                    }
+                                }
+                            },
+                            "name": "CodexPatch",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000004000,
+                "id": "shared-group-4",
+                "localId": null,
+                "seq": 5
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "patch",
+                            "output": {
+                                "success": true
+                            },
+                            "type": "tool-call-result"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000005000,
+                "id": "shared-group-5",
+                "localId": null,
+                "seq": 6
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "mixed-command",
+                            "input": {
+                                "command": "cat package.json && bun test",
+                                "commandActions": [
+                                    {
+                                        "command": "cat package.json",
+                                        "name": "package.json",
+                                        "path": "/repo/package.json",
+                                        "type": "read"
+                                    },
+                                    {
+                                        "command": "bun test",
+                                        "type": "unknown"
+                                    }
+                                ],
+                                "commandSource": "unifiedExecStartup"
+                            },
+                            "name": "CodexBash",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000006000,
+                "id": "shared-group-6",
+                "localId": null,
+                "seq": 7
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "mixed-command",
+                            "is_error": true,
+                            "output": {
+                                "exit_code": 1,
+                                "stdout": "Test failed"
+                            },
+                            "type": "tool-call-result"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000007000,
+                "id": "shared-group-7",
+                "localId": null,
+                "seq": 8
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "legacy-command",
+                            "input": {
+                                "command": "git status",
+                                "source": "codex-hook"
+                            },
+                            "name": "CodexBash",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000008000,
+                "id": "shared-group-8",
+                "localId": null,
+                "seq": 9
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "explore-after",
+                            "input": {
+                                "command": "ls src",
+                                "command_actions": [
+                                    {
+                                        "command": "ls src",
+                                        "path": "/repo/src",
+                                        "type": "listFiles"
+                                    }
+                                ]
+                            },
+                            "name": "CodexBash",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000009000,
+                "id": "shared-group-9",
+                "localId": null,
+                "seq": 10
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "explore-after",
+                            "output": "main.ts",
+                            "type": "tool-call-result"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000010000,
+                "id": "shared-group-10",
+                "localId": null,
+                "seq": 11
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "tool-group-codex-shared-commands"
+}

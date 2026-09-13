@@ -9,7 +9,7 @@
   "hero": {
     "version": "{{version}} 现已发布",
     "title": "Vibe Coding <br/> <span class=\"text-primary\">随时随地，自由编程</span>",
-    "subtitle": "去徒步，去喝咖啡，或者只是放松一下。你的 AI 代理在后台为你工作。只有在需要你确认时，我们才会通过你喜欢的即时通讯应用通知你。",
+    "subtitle": "去远足、喝杯咖啡，或者放松一下。你的 AI 代理在后台工作，需要你输入时，通过原生 App 或消息应用通知你。",
     "startBtn": "开启自由之旅",
     "githubBtn": "查看 GitHub",
     "notification": {
@@ -27,7 +27,7 @@
     },
     "remoteControl": {
       "title": "远程控制",
-      "desc": "通过 PWA 或即时通讯应用访问一切。零延迟体验。"
+      "desc": "通过 iOS/Android 原生 App、PWA 或 Telegram 小程序继续会话。"
     },
     "modeSwitch": {
       "title": "自由切换",
@@ -48,7 +48,7 @@
       },
       "fullTerminal": {
         "title": "全功能终端",
-        "desc": "远程执行命令，完全掌控你的开发环境。"
+        "desc": "通过网页版终端远程执行命令，管理你的开发环境。"
       },
       "powerfulCommands": {
         "title": "强大指令",
@@ -90,7 +90,7 @@
     },
     "terminal": {
       "title": "全功能终端访问",
-      "desc": "需要介入？你的口袋里就有一个全功能终端。修复问题，然后忘掉它。"
+      "desc": "在手机浏览器或桌面网页版中打开终端，直接在工作机器上执行命令。"
     }
   },
   "howItWorks": {
@@ -101,7 +101,7 @@
     },
     "step2": {
       "title": "2. 移动连接",
-      "desc": "打开 PWA 或小程序。你现在完全掌控了本地开发环境。"
+      "desc": "将 iOS/Android 原生 App 与 Hub 配对，或打开 PWA、小程序来控制会话。"
     },
     "step3": {
       "title": "3. Vibe Code",

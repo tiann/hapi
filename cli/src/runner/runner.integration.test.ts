@@ -174,6 +174,17 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
     expect(sessions).toEqual([]);
   });
 
+  it('preserves shared Codex support after a runner heartbeat', async () => {
+    const initial = await readRunnerState();
+    expect(initial?.sharedCodexRuntime).toBe(true);
+
+    await waitFor(async () => Boolean((await readRunnerState())?.lastHeartbeat), 35_000);
+
+    const afterHeartbeat = await readRunnerState();
+    expect(afterHeartbeat?.pid).toBe(initial?.pid);
+    expect(afterHeartbeat?.sharedCodexRuntime).toBe(true);
+  }, 40_000);
+
   it('should track session-started webhook from terminal session', async () => {
     // Simulate a terminal-started session reporting to runner
     const mockMetadata: Metadata = {
@@ -259,6 +270,7 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
   it('should track both runner-spawned and terminal sessions', async () => {
     // Spawn a real hapi process that looks like it was started from terminal
     const terminalHappyProcess = spawnHappyCLI([
+      'claude',
       '--hapi-starting-mode', 'remote',
       '--started-by', 'terminal'
     ], {
@@ -544,6 +556,7 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
    */
   it('regression: registered detached child is reaped even when the test body never reaches its own cleanup', async () => {
     const child = spawnHappyCLI([
+      'claude',
       '--hapi-starting-mode', 'remote',
       '--started-by', 'terminal'
     ], {

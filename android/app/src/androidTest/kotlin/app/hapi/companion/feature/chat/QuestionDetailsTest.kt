@@ -54,6 +54,9 @@ class QuestionDetailsTest {
         compose.onNodeWithText("after tests").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("duplicate result").assertDoesNotExist()
         compose.onNodeWithText("Source").performScrollTo().performClick()
+        // Source JSON prepares off-main; wait for the content above Answers
+        // to acquire its final height before checking scroll-to visibility.
+        compose.waitUntil(10_000) { compose.onAllNodesWithText("\"questions\"", substring = true).fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Answers").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Source").performScrollTo().performClick()
         compose.runOnIdle { tool.value = tool.value.copy(state = "error", result = JsonPrimitive("answer delivery failed")) }

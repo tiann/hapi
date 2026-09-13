@@ -11,6 +11,8 @@ function userMessage(partial: Partial<DecryptedMessage> & { id: string }): Decry
         invokedAt: partial.invokedAt ?? null,
         status: partial.status,
         steered: partial.steered,
+        deliveryState: partial.deliveryState,
+        queueDismissed: partial.queueDismissed,
         content: { role: 'user', content: [{ type: 'text', text: 'hi' }] },
     }
 }
@@ -61,6 +63,26 @@ describe('mergeMessages', () => {
         const merged = mergeMessages(existing, incoming)
         expect(merged).toHaveLength(1)
         expect(merged[0]?.steered).toBe(true)
+    })
+
+    it('preserves queueDismissed across a refetch of an indeterminate row (#1839)', () => {
+        const existing = [userMessage({
+            id: 'server-d',
+            localId: 'local-d',
+            invokedAt: null,
+            deliveryState: 'indeterminate',
+            queueDismissed: true,
+        })]
+        const incoming = [userMessage({
+            id: 'server-d',
+            localId: 'local-d',
+            invokedAt: null,
+            deliveryState: 'indeterminate',
+        })]
+
+        const merged = mergeMessages(existing, incoming)
+        expect(merged).toHaveLength(1)
+        expect(merged[0]?.queueDismissed).toBe(true)
     })
 
     it('normalizes a stuck queued status on an invoked message', () => {

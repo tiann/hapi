@@ -5,13 +5,13 @@ import { NATIVE_CONTRACT_VERSION, NativeNotificationComposer, type ComposedNativ
 import type { Store } from '../store'
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
-import type { FcmSendPayload, FcmService } from './fcmService'
+import type { FcmSendPayload, AndroidPushSender } from './fcmService'
 
 export class FcmNotificationChannel implements NotificationChannel {
     private readonly composer: NativeNotificationComposer
 
     constructor(
-        private readonly fcmService: FcmService,
+        private readonly fcmService: AndroidPushSender,
         private readonly sseManager: SSEManager,
         private readonly visibilityTracker: VisibilityTracker,
         private readonly store?: Store

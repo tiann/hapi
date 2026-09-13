@@ -105,7 +105,7 @@ private struct FindingRow: View {
             HStack(spacing: 6) {
                 if let priority = finding.priority {
                     let value = Int(priority.rounded())
-                    Text("P\(value)")
+                    Text(verbatim: "P\(value)")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(value <= 1 ? Color.red : Color.secondary)
                         .padding(.horizontal, 4)

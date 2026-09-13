@@ -330,6 +330,21 @@ class HapiApiTest {
         assertEquals("fcm-token", Json.parseToJsonElement(request.body.readUtf8()).jsonObject.getValue("token").jsonPrimitive.content)
     }
 
+    @Test
+    fun `register device sends the persisted encryption key along with the install id`() {
+        server.enqueue(ok("""{"ok":true}"""))
+        val key = java.util.Base64.getEncoder().encodeToString(ByteArray(32))
+        runBlocking { session.api.registerDevice(token = "FCM:MixedCase", deviceId = "install", pushKey = key) }
+        val request = server.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/api/devices/register", request.path)
+        val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+        assertEquals("FCM:MixedCase", body.getValue("token").jsonPrimitive.content)
+        assertEquals("phone", body.getValue("platform").jsonPrimitive.content)
+        assertEquals("install", body.getValue("deviceId").jsonPrimitive.content)
+        assertEquals(key, body.getValue("pushKey").jsonPrimitive.content)
+    }
+
     // --------------------------------------------------- health & binaries --
 
     @Test

@@ -22,7 +22,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
@@ -31,8 +30,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.saveable.mapSaver
-import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
@@ -42,9 +39,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
-import app.hapi.companion.feature.chat.blocks.ToolGroupBlockView
 import app.hapi.data.store.ChatHistoryPagingState
-import app.hapi.protocol.chat.ToolGroupBlock
 import app.hapi.protocol.chat.VisibleChatBlock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
@@ -52,16 +47,7 @@ import kotlinx.coroutines.withContext
 
 private const val HISTORY_KEY = "chat-history-control"
 
-private val GroupExpansionSaver = mapSaver(
-    save = { expanded: SnapshotStateMap<String, Boolean> -> expanded.toMap() },
-    restore = { saved ->
-        mutableStateMapOf<String, Boolean>().apply {
-            saved.forEach { (id, expanded) -> put(id, expanded as Boolean) }
-        }
-    },
-)
-
-private data class TranscriptItem(val block: VisibleChatBlock, val expanded: Boolean? = null) {
+private data class TranscriptItem(val block: VisibleChatBlock) {
     val id: String get() = block.stableId
 }
 
@@ -79,27 +65,11 @@ internal fun ChatTranscript(
     onJumpToLatest: () -> Unit,
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
+    readingState: TranscriptReadingState = rememberTranscriptReadingState(state.sessionId),
 ) {
-    // These flags determine the flattened list's indices, not just row UI.
-    // Restore them before LazyListState restores a position among the children.
-    val expandedGroups = rememberSaveable(state.sessionId, saver = GroupExpansionSaver) {
-        mutableStateMapOf<String, Boolean>()
-    }
     val rowState = rememberSaveableStateHolder()
     val stateKeys = remember(state.sessionId) { mutableSetOf<String>() }
-    val rows = remember(state.blocks, expandedGroups.toMap()) {
-        buildList {
-            for (block in state.blocks) {
-                if (block is ToolGroupBlock) {
-                    val expanded = expandedGroups[block.id] ?: block.defaultOpen
-                    add(TranscriptItem(block, expanded))
-                    if (expanded) block.tools.forEach { add(TranscriptItem(it)) }
-                } else {
-                    add(TranscriptItem(block))
-                }
-            }
-        }
-    }
+    val rows = remember(state.blocks) { state.blocks.map(::TranscriptItem) }
     val heights = remember(state.sessionId) { mutableMapOf<String, Int>() }
     val density = LocalDensity.current
     val estimatedHeight = with(density) { 100.dp.roundToPx() }
@@ -108,7 +78,7 @@ internal fun ChatTranscript(
     val isDragged by listState.interactionSource.collectIsDraggedAsState()
     // Restore intent with LazyListState, otherwise the first tail effect
     // overwrites a saved history position on navigation/activity recreation.
-    var followsTail by rememberSaveable(state.sessionId) { mutableStateOf(true) }
+    var followsTail by readingState::followsTail
     var consumedJumpToken by rememberSaveable(state.sessionId) { mutableLongStateOf(0) }
     var correctingTail by remember(state.sessionId) { mutableStateOf(false) }
     var renderedHistoryVersion by remember(state.sessionId) { mutableLongStateOf(-1) }
@@ -239,13 +209,8 @@ internal fun ChatTranscript(
     LaunchedEffect(rows) {
         val live = rows.mapTo(mutableSetOf()) { it.id }
         heights.keys.retainAll(live)
-        expandedGroups.keys.retainAll(state.blocks.filterIsInstance<ToolGroupBlock>().map { it.id }.toSet())
-        // Keep collapsed group children's state too, but evict messages that
-        // have actually left the bounded protocol window.
-        val retained = state.blocks.flatMap { block ->
-            if (block is ToolGroupBlock) listOf(block.id) + block.tools.map { it.id }
-            else listOf(block.stableId)
-        }.toSet()
+        // Inspectors own their state; only retained transcript rows need leases here.
+        val retained = live
         (stateKeys - retained).forEach(rowState::removeState)
         stateKeys.retainAll(retained)
         stateKeys.addAll(retained)
@@ -265,7 +230,7 @@ internal fun ChatTranscript(
                     renderedHistoryVersion = version
                 }
             },
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+            contentPadding = PaddingValues(vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.Bottom),
         ) {
             item(key = HISTORY_KEY, contentType = HISTORY_KEY) {
@@ -276,16 +241,8 @@ internal fun ChatTranscript(
                     val rowModifier = Modifier
                         .onSizeChanged { heights[row.id] = it.height }
                         .testTag("chat-row-" + row.id)
-                    val group = row.block as? ToolGroupBlock
-                    if (group != null) {
-                        ToolGroupBlockView(
-                            block = group, basePath = state.basePath, modifier = rowModifier,
-                            expandedOverride = row.expanded,
-                            onExpandedChange = { expandedGroups[group.id] = it },
-                            showsTools = false,
-                        )
-                    } else {
-                        ChatBlockCard(block = row.block, basePath = state.basePath, modifier = rowModifier)
+                    app.hapi.companion.ui.theme.ReadingColumn(modifier = rowModifier) {
+                        ChatBlockCard(block = row.block, basePath = state.basePath, processSteps = state.processSteps[row.id])
                     }
                 }
             }

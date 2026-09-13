@@ -873,6 +873,17 @@
         }
       }
     },
+    "Answered" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已回答"
+          }
+        }
+      }
+    },
     "Answers" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1012,6 +1023,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "等待审批"
+          }
+        }
+      }
+    },
+    "Awaiting response" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等待回答"
           }
         }
       }
@@ -1775,6 +1797,17 @@
         }
       }
     },
+    "Delivery outcome unknown" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发送结果未知"
+          }
+        }
+      }
+    },
     "Denied" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1804,6 +1837,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "游离 HEAD"
+          }
+        }
+      }
+    },
+    "Details" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "详情"
           }
         }
       }
@@ -1903,6 +1947,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "草稿已存入草稿夹"
+          }
+        }
+      }
+    },
+    "Earlier calls aren't loaded. Close this view and load older messages in the conversation." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更早的工具调用尚未加载。请关闭此视图，在对话中加载更早的消息。"
           }
         }
       }
@@ -2545,6 +2600,17 @@
         }
       }
     },
+    "Latest tool" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最新工具"
+          }
+        }
+      }
+    },
     "Launch Agent" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -2904,6 +2970,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "下一部分"
+          }
+        }
+      }
+    },
+    "Next question" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "下一题"
           }
         }
       }
@@ -3282,6 +3359,17 @@
         }
       }
     },
+    "Optional" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可选"
+          }
+        }
+      }
+    },
     "Options" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -3289,6 +3377,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "选项"
+          }
+        }
+      }
+    },
+    "Other answer" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "其他答案"
           }
         }
       }
@@ -3579,6 +3678,17 @@
         }
       }
     },
+    "Previous question" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "上一题"
+          }
+        }
+      }
+    },
     "Previous tool" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -3689,6 +3799,50 @@
         }
       }
     },
+    "Question %lld of %lld" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "第 %1$lld 题，共 %2$lld 题"
+          }
+        }
+      }
+    },
+    "Question canceled" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "问题已取消"
+          }
+        }
+      }
+    },
+    "Question failed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "问题处理失败"
+          }
+        }
+      }
+    },
+    "Question handled" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已处理"
+          }
+        }
+      }
+    },
     "Questions & Answers" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -3773,6 +3927,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "思考中…"
+          }
+        }
+      }
+    },
+    "Recommended" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "推荐"
           }
         }
       }
@@ -4162,6 +4327,17 @@
         }
       }
     },
+    "Select all that apply" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可多选"
+          }
+        }
+      }
+    },
     "Selected" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -4437,6 +4613,17 @@
         }
       }
     },
+    "Showing the last available group. Live group updates are unavailable." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在显示工具组的最后可用记录，工具组已无法实时更新。"
+          }
+        }
+      }
+    },
     "Showing the last available record. Live updates are unavailable for this tool." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -4664,6 +4851,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "提交"
+          }
+        }
+      }
+    },
+    "Submit answer" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "提交回答"
+          }
+        }
+      }
+    },
+    "Submitting answer…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在提交回答…"
           }
         }
       }
@@ -4906,6 +5115,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此笔记的附件配额已用完"
+          }
+        }
+      }
+    },
+    "This question could not be displayed. Open details to inspect the request." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法显示这个问题。请打开详情查看原始请求。"
           }
         }
       }
@@ -5262,6 +5482,17 @@
         }
       }
     },
+    "View full questions and answers" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查看完整问题与回答"
+          }
+        }
+      }
+    },
     "View image" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -5291,6 +5522,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "查看工具详情"
+          }
+        }
+      }
+    },
+    "View tool group" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查看工具组"
           }
         }
       }
@@ -5412,6 +5654,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "预写日志"
+          }
+        }
+      }
+    },
+    "Your answer" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你的回答"
           }
         }
       }

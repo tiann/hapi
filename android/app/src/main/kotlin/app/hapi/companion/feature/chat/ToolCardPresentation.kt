@@ -434,3 +434,34 @@ fun toolCardPresentation(
         subtitle?.takeIf { it != title }?.let { truncate(it, 80) },
     )
 }
+
+
+/** Transcript labels have a layout budget independent of recorded input size. */
+internal fun toolSummaryPresentation(tool: ChatToolCall, basePath: String?, res: Resources): ToolCardPresentation {
+    val name = toolPresentationName(tool.name)
+    val fileAction = when (name) {
+        "Read", "NotebookRead" -> R.string.tool_read_file
+        "Edit", "MultiEdit", "NotebookEdit" -> R.string.tool_edit_file
+        "Write" -> R.string.tool_write_file
+        "LS" -> R.string.tool_list_files
+        "view_image", "mcp__hapi__display_image", "hapi__display_image", "hapi_display_image" -> R.string.chat_show_image
+        else -> null
+    }
+    if (fileAction != null) {
+        val path = getInputStringAny(tool.input, listOf("file_path", "path", "file", "notebook_path", "image_path"))
+        return ToolCardPresentation(if (name in setOf("Edit", "MultiEdit", "NotebookEdit", "Write")) ToolIcons.EDIT else ToolIcons.READ,
+            res.getString(fileAction) + (path?.let { " · " + basename(it.takeLast(240)) } ?: ""), null)
+    }
+    // Bound all textual preview inputs BEFORE title parsing (shell splitting, regexes,
+    // question descriptions). The inspector always uses the original tool instead.
+    fun bounded(value: JsonElement?, depth: Int = 0): JsonElement? = when {
+        depth > 3 -> null
+        value is JsonPrimitive && value.isString -> JsonPrimitive(value.content.take(240))
+        value is JsonObject -> JsonObject(value.entries.take(32).mapNotNull { (key, item) -> bounded(item, depth + 1)?.let { key to it } }.toMap())
+        value is JsonArray -> JsonArray(value.take(8).mapNotNull { bounded(it, depth + 1) })
+        else -> value
+    }
+    val presentation = toolCardPresentation(tool.copy(input = bounded(tool.input), description = tool.description?.take(240), result = null), basePath, res)
+    return presentation.copy(title = presentation.title.take(240),
+        subtitle = presentation.subtitle?.take(240)?.split(Regex("\\s+"))?.joinToString(" ")?.takeIf { it != presentation.title })
+}

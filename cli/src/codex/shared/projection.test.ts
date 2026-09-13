@@ -1,8 +1,47 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { SharedCodexProjection, inputText } from './projection';
+import { codexPlanProposalId } from './plan';
 
 describe('shared history projection', () => {
+    it.each([undefined, 'root'])('persists proposals without approval and replays the same IDs (parent: %s)', async parentThreadId => {
+        const send = vi.fn();
+        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {}, parentThreadId);
+        const item = { id: 'plan', type: 'plan', text: '# Final plan' };
+        const params = { threadId: 'thread', turnId: 'turn', item };
+        await projection.notification('item/completed', { ...params, item: { id: 'before', type: 'agentMessage', text: 'Preface' } });
+        await projection.notification('item/started', params);
+        await projection.notification('item/plan/delta', { ...params, itemId: 'plan', delta: '# Provisional' });
+        await projection.notification('item/completed', params);
+        await projection.notification('item/completed', params);
+        await projection.notification('item/completed', { ...params, item: { id: 'after', type: 'agentMessage', text: 'Postscript' } });
+        expect(send).toHaveBeenCalledTimes(4);
+        const bodies = send.mock.calls.map(([body]) => parentThreadId ? body.message : body);
+        const callId = codexPlanProposalId('thread', 'turn', 'plan');
+        expect(bodies).toEqual([
+            expect.objectContaining({ type: 'message', message: 'Preface' }),
+            expect.objectContaining({ type: 'tool-call', name: 'ExitPlanMode', callId, input: { plan: '# Final plan' } }),
+            expect.objectContaining({ type: 'tool-call-result', callId, output: null }),
+            expect.objectContaining({ type: 'message', message: 'Postscript' })
+        ]);
+        const original = send.mock.calls.slice(1, 3);
+        projection.reset(); send.mockClear();
+        await projection.history({ turns: [{ id: 'turn', status: 'completed', items: [item] }] });
+        expect(send.mock.calls).toEqual(original);
+    });
+
+    it('waits for final proposal content after an active snapshot', async () => {
+        const send = vi.fn();
+        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {});
+        await projection.history({ turns: [{ id: 'turn', status: 'inProgress', items: [{ id: 'plan', type: 'plan', text: 'partial' }] }] });
+        expect(send).not.toHaveBeenCalled();
+        await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item: { id: 'plan', type: 'plan', text: 'final' } });
+        expect(send.mock.calls[0][0]).toMatchObject({ input: { plan: 'final' } });
+        expect(send.mock.calls[1][0]).toMatchObject({ output: null });
+    });
+
     it.each([undefined, 'root'])('emits canonical error flags for tools (parent: %s)', async parentThreadId => {
         const send = vi.fn();
         const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;

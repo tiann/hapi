@@ -11,6 +11,16 @@ describe('RelayClient', () => {
         globalThis.fetch = originalFetch
     })
 
+    it('explicitly routes Android envelopes without changing the opaque token', async () => {
+        let body = ''
+        globalThis.fetch = mock(async (_url: unknown, init?: RequestInit) => {
+            body = String(init?.body)
+            return Response.json({ ok: true })
+        }) as unknown as typeof fetch
+        expect(await new RelayClient('https://relay', 'android').send({ token: 'AbC:123_-', envelope: 'encrypted' })).toBe('sent')
+        expect(JSON.parse(body)).toEqual({ platform: 'android', token: 'AbC:123_-', envelope: 'encrypted' })
+    })
+
     it('POSTs the spec-shaped body to {relayUrl}/v1/push and maps 200 to sent', async () => {
         let capturedUrl = ''
         let capturedInit: RequestInit | undefined
@@ -20,7 +30,7 @@ describe('RelayClient', () => {
             return new Response('{"ok":true}', { status: 200 })
         }) as unknown as typeof fetch
 
-        const client = new RelayClient('https://push.hapi.run')
+        const client = new RelayClient('https://push.hapi.run', 'ios')
         const outcome = await client.send({
             token: 'a1b2c3',
             envelope: 'RU5DUllQVEVE',
@@ -48,7 +58,7 @@ describe('RelayClient', () => {
             return new Response('{"ok":true}', { status: 200 })
         }) as unknown as typeof fetch
 
-        await new RelayClient('https://push.hapi.run').send({ token: 't', envelope: 'e' })
+        await new RelayClient('https://push.hapi.run', 'ios').send({ token: 't', envelope: 'e' })
         expect(JSON.parse(capturedBody)).toEqual({ platform: 'ios', token: 't', envelope: 'e' })
     })
 
@@ -59,7 +69,7 @@ describe('RelayClient', () => {
             return new Response('{"ok":true}', { status: 200 })
         }) as unknown as typeof fetch
 
-        await new RelayClient('https://relay.example.com/').send({ token: 't', envelope: 'e' })
+        await new RelayClient('https://relay.example.com/', 'ios').send({ token: 't', envelope: 'e' })
         expect(capturedUrl).toBe('https://relay.example.com/v1/push')
     })
 
@@ -67,33 +77,41 @@ describe('RelayClient', () => {
         globalThis.fetch = mock(async () =>
             new Response('{"ok":false,"code":"unregistered"}', { status: 410 })
         ) as unknown as typeof fetch
-        expect(await new RelayClient('https://r').send({ token: 't', envelope: 'e' })).toBe('invalid')
+        expect(await new RelayClient('https://r', 'ios').send({ token: 't', envelope: 'e' })).toBe('invalid')
+    })
+
+    it('does not acknowledge or prune devices on unrelated proxy/endpoint responses', async () => {
+        for (const [status, body] of [[200, '<html>proxy page</html>'], [200, '{"ok":false}'],
+            [410, '<html>gone</html>'], [410, '{"ok":false,"code":"upstream"}']] as const) {
+            globalThis.fetch = mock(async () => new Response(body, { status })) as unknown as typeof fetch
+            expect(await new RelayClient('https://r', 'android').send({ token: 't', envelope: 'e' })).toBe('failed')
+        }
     })
 
     it('maps 413 payload-too-large to failed (transient, no prune)', async () => {
         globalThis.fetch = mock(async () =>
             new Response('{"ok":false,"code":"payload_too_large"}', { status: 413 })
         ) as unknown as typeof fetch
-        expect(await new RelayClient('https://r').send({ token: 't', envelope: 'e' })).toBe('failed')
+        expect(await new RelayClient('https://r', 'ios').send({ token: 't', envelope: 'e' })).toBe('failed')
     })
 
     it('maps 429 rate-limit to failed (transient, no prune)', async () => {
         globalThis.fetch = mock(async () =>
             new Response('{"ok":false,"code":"rate_limited"}', { status: 429 })
         ) as unknown as typeof fetch
-        expect(await new RelayClient('https://r').send({ token: 't', envelope: 'e' })).toBe('failed')
+        expect(await new RelayClient('https://r', 'ios').send({ token: 't', envelope: 'e' })).toBe('failed')
     })
 
     it('maps 5xx to failed', async () => {
         globalThis.fetch = mock(async () => new Response('oops', { status: 502 })) as unknown as typeof fetch
-        expect(await new RelayClient('https://r').send({ token: 't', envelope: 'e' })).toBe('failed')
+        expect(await new RelayClient('https://r', 'ios').send({ token: 't', envelope: 'e' })).toBe('failed')
     })
 
     it('maps a network throw to failed', async () => {
         globalThis.fetch = mock(async () => {
             throw new Error('ECONNREFUSED')
         }) as unknown as typeof fetch
-        expect(await new RelayClient('https://r').send({ token: 't', envelope: 'e' })).toBe('failed')
+        expect(await new RelayClient('https://r', 'ios').send({ token: 't', envelope: 'e' })).toBe('failed')
     })
 
     it('sets an abort timeout on the request', async () => {
@@ -103,7 +121,7 @@ describe('RelayClient', () => {
             return new Response('{"ok":true}', { status: 200 })
         }) as unknown as typeof fetch
 
-        await new RelayClient('https://r').send({ token: 't', envelope: 'e' })
+        await new RelayClient('https://r', 'ios').send({ token: 't', envelope: 'e' })
         expect(signal).toBeDefined()
         expect(signal).not.toBeNull()
     })

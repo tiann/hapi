@@ -1,216 +1,56 @@
 # AGENTS.md
 
-Work style: telegraph; noun-phrases ok; drop grammar;
+HAPI is a local-first platform for running coding agents with remote control via web/phone.
+CLI wraps agents → hub (Socket.IO) → web/native clients (REST + SSE).
 
-Short guide for AI agents in this repo. Prefer progressive loading: start with the root README, then package READMEs as needed.
+## Task boundaries
 
-## What is HAPI?
+- Complete the requested deliverable and relevant verification; do not stop at the first implementation unless the user requested a review checkpoint.
+- Fix causes within the task's scope. Report unrelated problems rather than turning them into refactors or additional features.
+- Make reasonable, reversible choices and continue. Ask when missing information materially affects correctness, an action needs additional authorization, or progress requires overwriting someone else's changes. Continue unaffected work.
+- Preserve existing user/agent changes. Editing or generating files does not imply permission to commit, push, or release.
+- Keep communication concise and clear; report results, checks performed, and remaining limitations.
 
-Local-first platform for running AI coding agents (Claude Code, Codex, Gemini) with remote control via web/phone. CLI wraps agents and connects to hub; hub serves web app and handles real-time sync.
+## Find context when needed
 
-## Repo layout
+Start with the task's files; read only relevant sections of these references, not a fixed sequence of READMEs.
 
-```
-cli/             - CLI binary, agent wrappers, runner daemon
-hub/             - HTTP API + Socket.IO + SSE + Telegram bot
-web/             - React PWA for remote control
-ios/             - Native SwiftUI app (in development)
-android/         - Native Kotlin Compose app (in development)
-shared/          - Common types, schemas, utilities
-shared/fixtures/ - Golden chat fixtures, generated from web pipeline (never hand-edit)
-docs/            - VitePress documentation site
-website/         - Marketing site
-```
+| Task area | Entry points |
+|-----------|--------------|
+| Product, setup, supported agents | [README.md](README.md), [agent guide](docs/guide/agents.md) |
+| Agent wrappers, CLI commands, runner | [cli/README.md](cli/README.md); for bootstrap/handoff changes, [session lifecycle invariants](cli/README.md#session-lifecycle-invariants) |
+| Hub APIs, auth, sync, notifications | [hub/README.md](hub/README.md) |
+| Web routes, components, data fetching | [web/README.md](web/README.md); for optional feature discovery, [FUE](web/README.md#first-user-experience-fue) |
+| Shared wire types and validation | `shared/src/types.ts`, `schemas.ts`, `socket.ts`, `modes.ts` |
+| Native API contract, chat conformance | [client contract](docs/api/client-contract/index.md), [iOS](ios/README.md), [Android](android/README.md) |
+| Encrypted native push relay | [relay/README.md](relay/README.md) |
+| User docs / marketing site | `docs/` (VitePress) / `website/` |
 
-Bun workspaces; `shared` consumed by cli, hub, web. `ios`/`android` outside workspaces (Xcode / Gradle toolchains).
+## Repository conventions
 
-## Architecture overview
+- Bun workspaces: `cli`, `shared`, `hub`, `web`, `website`, `docs`, `relay`. Run workspace scripts from the root; package-scoped commands may use `bun run --cwd <package> ...` or that package's directory. iOS and Android use separate toolchains.
+- TypeScript strict; keep code typed. Prefer 4-space indentation. `@/*` resolves to a package's `src/*`.
+- Shared protocol is `@hapi/protocol`; runtime schemas live in `shared/src/schemas.ts` (Zod).
+- No backward compatibility required for formats changed by the task; do not add compatibility layers or change unrelated formats.
 
-```
-┌─────────┐  Socket.IO   ┌─────────┐   SSE/REST   ┌─────────┐
-│   CLI   │ ──────────── │   Hub   │ ──────────── │   Web   │
-│ (agent) │              │ (server)│              │  (PWA)  │
-└─────────┘              └─────────┘              └─────────┘
-     │                        │                        │
-     ├─ Wraps Claude/Codex    ├─ SQLite persistence   ├─ TanStack Query
-     ├─ Socket.IO client      ├─ Session cache        ├─ SSE for updates
-     └─ RPC handlers          ├─ RPC gateway          └─ assistant-ui
-                              └─ Telegram bot
-```
+## Cross-component invariants
 
-**Data flow:**
-1. CLI spawns agent (claude/codex/gemini), connects to hub via Socket.IO
-2. Agent events → CLI → hub (socket `message` event) → DB + SSE broadcast
-3. Web subscribes to SSE `/api/events`, receives live updates
-4. User actions → Web → hub REST API → RPC to CLI → agent
+- CLI↔hub uses Socket.IO `/cli` with the CLI access token. Web terminals use `/terminal` with a client JWT; ordinary web/native updates use REST + SSE. Preserve namespace isolation (`CLI_API_TOKEN:<namespace>`).
+- Metadata/state updates are versioned; preserve stale-update rejection. Permission controls use per-flavor catalogs in `shared/src/modes.ts`, further constrained by session capabilities.
+- `shared/fixtures/**` is generated from the web chat pipeline, the source of truth for native conformance. Never hand-edit fixtures. For changes to fixture inputs or generation (paths in [.github/workflows/fixtures.yml](.github/workflows/fixtures.yml)), run `bun run gen:fixtures` and include any generated changes in the deliverable. CI checks drift and runs native conformance on fixture changes.
 
-## Reference docs
+## Verification and completion
 
-- `README.md` - User overview, quick start
-- `cli/README.md` - CLI commands, config, runner
-- `hub/README.md` - Hub config, HTTP API, Socket.IO events
-- `web/README.md` - Routes, components, hooks
-- `docs/guide/` - User guides (installation, how-it-works, FAQ)
+Choose checks by the change's impact, not by the number of workflow steps:
 
-## Shared rules
+| Change | Verification |
+|--------|--------------|
+| Documentation only | Check edited content, local links, and diff; no code test suite. |
+| Package-local code | Relevant tests and the package's typecheck where available; add regression coverage when needed. |
+| Shared contracts, dependencies, broad cross-package behavior | `bun typecheck && bun run test`, plus affected integration/conformance checks. |
+| Native code | Relevant checks from the iOS/Android README using available toolchains. |
 
-- No backward compatibility: breaking old formats freely
-- Prioritize Pragmatism, and Avoid Overengineering.
-- Write necessary tests ONLY.
-- TypeScript strict; no untyped code
-- Bun workspaces; run `bun` commands from repo root
-- Path alias `@/*` maps to `./src/*` per package
-- Prefer 4-space indentation
-- Zod for runtime validation (schemas in `shared/src/schemas.ts`)
-
-## Common commands (repo root)
-
-```bash
-bun typecheck           # All packages
-bun run test            # cli + hub + web + shared tests
-bun run dev             # hub + web concurrently
-bun run build:single-exe # All-in-one binary
-bun run gen:fixtures    # Regenerate shared/fixtures/ from web pipeline
-cd android && ./gradlew :core:protocol:test  # Android protocol conformance
-```
-
-iOS tests run in CI (`ios.yml`: macOS `swift test`); no local Xcode/Swift toolchain assumed.
-
-## Key source dirs
-
-### CLI (`cli/src/`)
-- `api/` - Hub connection (Socket.IO client, auth)
-- `claude/` - Claude Code integration (wrapper, hooks)
-- `codex/` - Codex mode integration
-- `agent/` - Multi-agent support (Gemini via ACP)
-- `runner/` - Background daemon for remote spawn
-- `commands/` - CLI subcommands (auth, runner, doctor)
-- `modules/` - Tool implementations (ripgrep, difftastic, git)
-- `ui/` - Terminal UI (Ink components)
-
-### Hub (`hub/src/`)
-- `web/routes/` - REST API endpoints
-- `socket/` - Socket.IO setup
-- `socket/handlers/cli/` - CLI event handlers (session, terminal, machine, RPC)
-- `sync/` - Core logic (sessionCache, messageService, rpcGateway)
-- `store/` - SQLite persistence (better-sqlite3)
-- `sse/` - Server-Sent Events manager
-- `telegram/` - Bot commands, callbacks
-- `notifications/` - Push (VAPID) and Telegram notifications
-- `config/` - Settings loading, token generation
-- `visibility/` - Client visibility tracking
-
-### Web (`web/src/`)
-- `routes/` - TanStack Router pages
-- `routes/sessions/` - Session views (chat, files, terminal)
-- `components/` - Reusable UI (SessionList, SessionChat, NewSession/)
-- `hooks/queries/` - TanStack Query hooks
-- `hooks/mutations/` - Mutation hooks
-- `hooks/useSSE.ts` - SSE subscription
-- `api/client.ts` - API client wrapper
-
-### Shared (`shared/src/`)
-- `types.ts` - Core types (Session, Message, Machine)
-- `schemas.ts` - Zod schemas for validation
-- `socket.ts` - Socket.IO event types
-- `messages.ts` - Message parsing utilities
-- `modes.ts` - Permission/model mode definitions
-
-### iOS (`ios/`)
-- `Packages/HapiKit/` - local SPM package: `HapiProtocol` (wire models + chat pipeline, fixtures-verified), `HapiClient` (API/auth/SSE/stores)
-- `Hapi/` + `Hapi.xcodeproj` - thin SwiftUI app target
-
-### Android (`android/`)
-- `:core:protocol` - pure JVM wire types + chat pipeline (fixtures-verified)
-- `:core:data` - transport (OkHttp/SSE), auth, stores
-- `:app` - Compose UI, navigation, deep links, FCM
-
-## Protocol conformance (native apps)
-
-- `shared/fixtures/**` machine-generated from the web chat pipeline (source of truth). NEVER hand-edit; edit `web/scripts/fixtures/cases/` + regenerate.
-- Changing `web/src/chat/**`, `web/src/lib/message-window-store.ts`, or `web/src/lib/sessionPatch.ts`: run `bun run gen:fixtures`, commit the diff. CI enforces (`.github/workflows/fixtures.yml`); fixture diffs auto-trigger iOS/Android conformance suites (`ios.yml`/`android.yml`).
-- Native client contract docs: `docs/api/client-contract/` (auth, rest, sse, pagination, messages, errors).
-- Tracks: `ios/` (SwiftUI, iOS 17+) + `android/` (Kotlin Compose, minSdk 26) — independent codebases, share only contract + fixtures. Plan: `~/.claude/plans/web-pwa-abundant-yeti.md`.
-
-## Pre-push self-review (agents)
-
-Before commit/push/PR: use the **`pre-push-review`** skill (`~/.cursor/skills/pre-push-review/`).
-
-1. **Mechanical:** `bun typecheck && bun run test` (matches `.github/workflows/test.yml`)
-2. **Logic:** skim `git diff origin/main...HEAD`; apply `.github/prompts/codex-pr-review.md` as a local Major checklist (no Codex required)
-3. **Style:** optional
-
-## Testing
-
-- Test framework: Vitest (via `bun run test`)
-- Test files: `*.test.ts` next to source
-- Run: `bun run test` (from root) or `bun run test` (from package)
-- Hub tests: `hub/src/**/*.test.ts`
-- CLI tests: `cli/src/**/*.test.ts`
-- Web tests: `web/src/**/*.test.{ts,tsx}` (fixtures self-check: `web/src/chat/fixtures.test.ts`)
-
-## Common tasks
-
-| Task | Key files |
-|------|-----------|
-| Add CLI command | `cli/src/commands/`, `cli/src/index.ts` |
-| Add API endpoint | `hub/src/web/routes/`, register in `hub/src/web/index.ts` |
-| Add Socket.IO event | `hub/src/socket/handlers/cli/`, `shared/src/socket.ts` |
-| Add web route | `web/src/routes/`, `web/src/router.tsx` |
-| Add web component | `web/src/components/` |
-| Modify session logic | `hub/src/sync/sessionCache.ts`, `hub/src/sync/syncEngine.ts` |
-| Modify message handling | `hub/src/sync/messageService.ts` |
-| Add notification type | `hub/src/notifications/` |
-| Add shared type | `shared/src/types.ts`, `shared/src/schemas.ts` |
-
-## Important patterns
-
-- **RPC**: CLI registers handlers (`rpc-register`), hub routes requests via `rpcGateway.ts`
-- **Versioned updates**: CLI sends `update-metadata`/`update-state` with version; hub rejects stale
-- **Session modes**: `local` (terminal) vs `remote` (web-controlled); switchable mid-session
-- **Permission modes**: `default`, `acceptEdits`, `auto`, `bypassPermissions`, `plan`
-- **Namespaces**: Multi-user isolation via `CLI_API_TOKEN:<namespace>` suffix
-
-## Adding new web features — consider an FUE
-
-When you ship a non-essential feature (the 20% of sessions, not the 80%), consider wrapping its affordance in the generic First-User-Experience primitive so existing users discover it without a giant always-visible UI block.
-
-- **Hook**: `web/src/lib/use-fue.ts` — `useFue(featureId)` returns `{ status, engage, dismiss }`. Storage namespace `hapi.fue.v1.<featureId>` (one localStorage key per feature, isolated from any upstream onboarding flow).
-- **Components**: `web/src/components/Fue.tsx` — `<FueDot>` (small pulsing badge for the affordance) and `<FueCallout>` (portal-rendered popover with title/body + "Got it" affirmative-action dismiss).
-
-Pattern (~10 lines around the affordance):
-
-```tsx
-const fue = useFue('my-feature')
-const buttonRef = useRef<HTMLButtonElement>(null)
-return (
-    <>
-        <button ref={buttonRef} onClick={() => { fue.engage(); doThing() }}>
-            <Icon />
-            {fue.status !== 'acknowledged' ? <FueDot pulsing={fue.status === 'unseen'} /> : null}
-        </button>
-        {fue.status === 'engaging' ? (
-            <FueCallout
-                title={t('myFeature.fueTitle')}
-                body={t('myFeature.fueBody')}
-                onDismiss={fue.dismiss}
-                anchorRef={buttonRef}
-            />
-        ) : null}
-    </>
-)
-```
-
-Rules:
-- Affirmative action only: there is no auto-timeout — user dismisses by clicking "Got it" (reading speed varies).
-- The FUE dot and any feature-specific badge (e.g. an entry counter) should be **mutually exclusive**: onboarding signal beats inventory signal until acknowledged.
-- Storage is opt-in per-feature; if upstream ships its own onboarding for a feature, just don't wrap that affordance.
-
-Canonical example: scratchlist toggle in `web/src/components/AssistantChat/ComposerButtons.tsx` (`ScratchlistToggleButton`).
-
-## Critical Thinking
-
-1. Fix root cause (not band-aid).
-2. Unsure: read more code; if still stuck, ask w/ short options.
-3. Conflicts: call out; pick safer path.
-4. Unrecognized changes: assume other agent; keep going; focus your changes. If it causes issues, stop + ask user.
+- Root scripts: `bun run test:<package>` for `cli`, `hub`, `web`, `shared`, `relay`; `bun run typecheck:<package>` for `cli`, `hub`, `web`, `relay`. Shared types are checked through consumers. CLI/web tests use Vitest; hub/shared/relay use Bun test. Use file filters for focused runs.
+- Within existing permissions, run and retry relevant local checks without asking at each step. Fix failures caused by the task; report unrelated failures. If tools or permissions are unavailable, complete other work and state what remains unverified; do not bootstrap native toolchains or wait on CI unless the task requires it.
+- Reuse passing checks when code, dependencies, and environment are unchanged; commit/push/PR transitions alone do not require reruns. Run repository-wide checks when explicitly requested as well.
+- Review this task's changes for correctness, security, and regressions. For local work, inspect unstaged/staged diffs (`git diff`, `git diff --cached`) and new files; for a branch/PR review, use the actual target branch's merge-base diff. Local self-review does not require a GitHub event, remote review, or posting comments.

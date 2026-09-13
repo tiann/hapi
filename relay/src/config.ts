@@ -19,8 +19,8 @@ export const DEFAULT_RELAY_PORT = 8790
  * Maximum accepted `envelope` size, measured on the base64 string as
  * transmitted (base64 is ASCII, so string length === byte length).
  * 3200 base64 chars ~= 2400 bytes of ciphertext; together with the fixed
- * `aps` wrapper this stays comfortably under APNs' 4096-byte payload cap.
- * Must match the hub-side cap in hub/src/apns/ (work package P1).
+ * APNs/FCM wrapper this stays below their 4096-byte payload caps.
+ * Must match the hub-side caps in push-ios/ and fcm/androidRelayService.ts.
  */
 export const MAX_ENVELOPE_BYTES = 3200
 
@@ -30,7 +30,7 @@ export const TOKEN_RATE_LIMIT = { capacity: 30, refillPerMinute: 30 }
 /** Per-client-IP budget: 300 pushes/minute, burst 300. */
 export const IP_RATE_LIMIT = { capacity: 300, refillPerMinute: 300 }
 
-export type RelayConfig = {
+export type RelayApnsConfig = {
     /** Path to the APNs auth key (.p8, PKCS#8 PEM) on disk. */
     apnsKeyP8Path: string
     /** APNs key id (the 10-char id shown in the developer portal). */
@@ -41,6 +41,11 @@ export type RelayConfig = {
     apnsBundleId: string
     /** Which APNs endpoint to talk to. */
     apnsEnv: ApnsEnvironment
+}
+
+export type RelayConfig = {
+    apns: RelayApnsConfig | null
+    fcm: { serviceAccountPath: string; packageName: string } | null
     /** TCP port for the relay's own HTTP server. */
     port: number
     /**
@@ -81,12 +86,25 @@ export function loadConfigFromEnv(
     const trustProxyRaw = env.RELAY_TRUST_PROXY?.trim().toLowerCase()
     const trustProxy = trustProxyRaw === '1' || trustProxyRaw === 'true'
 
-    return {
+    const apnsKeys = ['RELAY_APNS_KEY_P8_PATH', 'RELAY_APNS_KEY_ID', 'RELAY_APNS_TEAM_ID', 'RELAY_APNS_BUNDLE_ID']
+    const apns = apnsKeys.some(key => env[key]?.trim()) ? {
         apnsKeyP8Path: requireEnv(env, 'RELAY_APNS_KEY_P8_PATH'),
         apnsKeyId: requireEnv(env, 'RELAY_APNS_KEY_ID'),
         apnsTeamId: requireEnv(env, 'RELAY_APNS_TEAM_ID'),
         apnsBundleId: requireEnv(env, 'RELAY_APNS_BUNDLE_ID'),
-        apnsEnv: apnsEnvRaw,
+        apnsEnv: apnsEnvRaw as ApnsEnvironment
+    } : null
+    const fcmPath = env.RELAY_FCM_SERVICE_ACCOUNT_PATH?.trim()
+    if (!apns && !fcmPath) {
+        throw new Error('Configure APNs credentials or RELAY_FCM_SERVICE_ACCOUNT_PATH')
+    }
+    const packageName = env.RELAY_FCM_PACKAGE_NAME?.trim() || 'run.hapi.companion'
+    if (!/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/.test(packageName)) {
+        throw new Error('RELAY_FCM_PACKAGE_NAME must be an Android application ID')
+    }
+    return {
+        apns,
+        fcm: fcmPath ? { serviceAccountPath: fcmPath, packageName } : null,
         port,
         trustProxy
     }

@@ -72,7 +72,7 @@ private struct QuestionAnswerCard: View {
                     Text(verbatim: caption).font(typography.captionFont).foregroundStyle(theme.textSecondary)
                 }
                 if markdown {
-                    QuestionMarkdown(text: text)
+                    QuestionOptionLabel(label: text)
                 } else if text.count > toolTextPageSize {
                     ToolTextContent(language: nil, code: text)
                 } else {
@@ -95,7 +95,7 @@ private struct QuestionAnswerCard: View {
     }
 }
 
-private struct QuestionMarkdown: View {
+struct QuestionMarkdown: View {
     let text: String
     var body: some View {
         if text.count > toolTextPageSize {

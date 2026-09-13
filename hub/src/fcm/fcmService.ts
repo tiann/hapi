@@ -16,7 +16,7 @@ export type FcmDataPayload = {
      * later. Independent of `type` because `task-notification` is one
      * type that splits across success and failure outcomes.
      *
-     *  - `info`     ready / ambient ('no action needed') -> blue
+     *  - `info`     ready / input request                -> blue
      *  - `success`  task completed                       -> green
      *  - `warning`  permission request                   -> amber
      *  - `error`    task failed / aborted                -> red
@@ -38,10 +38,14 @@ export type FcmSendPayload = {
     data: FcmDataPayload
 }
 
-type FcmSendResult = {
+export type FcmSendResult = {
     sent: number
     failed: number
     invalidTokens: string[]
+}
+
+export interface AndroidPushSender {
+    sendToNamespace(namespace: string, payload: FcmSendPayload): Promise<FcmSendResult>
 }
 
 /**
@@ -70,7 +74,9 @@ export class FcmService {
     constructor(
         private readonly projectId: string,
         private readonly serviceAccount: ServiceAccount,
-        private readonly store: Store
+        private readonly store: Store,
+        /** Injectable for unit tests — avoids process-wide `mock.module('./fcmAuth')`. */
+        private readonly getAccessToken: typeof getFcmAccessToken = getFcmAccessToken
     ) {}
 
     /**
@@ -116,7 +122,7 @@ export class FcmService {
 
         let accessToken: string
         try {
-            accessToken = await getFcmAccessToken(this.serviceAccount)
+            accessToken = await this.getAccessToken(this.serviceAccount)
         } catch (e) {
             // Token-fetch failure (expired service account key, OAuth
             // outage, network) - count one health-failure (not one per

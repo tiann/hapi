@@ -60,12 +60,17 @@ final class ChatModel {
     private(set) var jumpToLatestToken = 0
     private(set) var isJumpingToLatest = false
     private(set) var hasTrimmedTail = false
-    var expandedToolGroups: [String: Bool] = [:]
+    private var isAwayFromBottom = false
+    private var resumeAfterInspection = false
+    var showsJumpToLatest: Bool {
+        isJumpingToLatest || hasTrimmedTail
+            || (!followsTail && (isAwayFromBottom || resumeAfterInspection))
+    }
     let toolInspection = ToolInspectionState()
     private(set) var visibleSurfaces = Set<String>()
     var isInspectingContent: Bool {
-        toolInspection.selection != nil || visibleSurfaces.contains {
-            $0.hasPrefix("process:") || $0.hasPrefix("message:")
+        toolInspection.owner != nil || visibleSurfaces.contains {
+            $0.hasPrefix("process:") || $0.hasPrefix("message:") || $0.hasPrefix("inspector:")
         }
     }
 
@@ -167,7 +172,18 @@ final class ChatModel {
         jumpTask?.cancel()
         jumpTask = nil
         isJumpingToLatest = false
-        readingViewportChanged(followsTail: false, needsOlder: false)
+        // Closing an inspector must leave an explicit resume action even
+        // when no content has arrived and the reading anchor is at bottom.
+        resumeAfterInspection = true
+        readingViewportChanged(followsTail: false, needsOlder: false, isAwayFromBottom: isAwayFromBottom)
+    }
+
+    @discardableResult
+    func inspectToolGroup(_ id: String, owner: String) -> Bool {
+        guard toolInspection.openGroup(id, owner: owner) else { return false }
+        beginContentInspection()
+        retainSurface("inspector:\(owner)")
+        return true
     }
 
     func start() {
@@ -267,11 +283,13 @@ final class ChatModel {
 
     // MARK: - Actions
 
-    func readingViewportChanged(followsTail: Bool, needsOlder: Bool) {
+    func readingViewportChanged(followsTail: Bool, needsOlder: Bool, isAwayFromBottom: Bool) {
         let followsTail = isInspectingContent ? false : followsTail
         let needsOlder = isInspectingContent ? false : needsOlder
         let changedMode = self.followsTail != followsTail
         self.followsTail = followsTail
+        self.isAwayFromBottom = !followsTail && isAwayFromBottom
+        if followsTail && !hasTrimmedTail { resumeAfterInspection = false }
         viewportNeedsOlder = needsOlder
         if changedMode, !isJumpingToLatest, let controller = chat.windowController {
             if followsTail && hasTrimmedTail { jumpToLatest(); return }
@@ -400,6 +418,8 @@ final class ChatModel {
             await controller.setViewMode(.tail)
             guard !Task.isCancelled, self.chat === chat else { return }
             self.followsTail = true
+            self.isAwayFromBottom = false
+            self.resumeAfterInspection = false
             self.jumpToLatestToken += 1
         }
     }
@@ -457,6 +477,7 @@ final class ChatModel {
                     switch value {
                     case .agentText(let text): return [text.text]
                     case .agentReasoning(let text): return [text.text]
+                    case .toolCall(let block): return planProposalMarkdown(block.tool).map { [$0] } ?? []
                     default: return []
                     }
                 })
@@ -513,9 +534,6 @@ final class ChatModel {
                 }
             }
             presentationState.prune(to: liveIDs)
-            for key in expandedToolGroups.keys where !liveIDs.contains(key) {
-                expandedToolGroups.removeValue(forKey: key)
-            }
         }
         header = Self.buildHeader(
             sessionId: sessionId,

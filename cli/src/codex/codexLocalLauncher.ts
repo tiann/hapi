@@ -48,7 +48,7 @@ function extractTurnContextModel(event: CodexSessionEvent): string | null | unde
     const model = (event.payload as Record<string, unknown>).model;
     if (model === null) return null;
     if (typeof model !== 'string' || !model.trim()) return undefined;
-    return model.trim() === 'gpt-reserve' ? 'gpt-5.6-luna' : model.trim();
+    return model.trim();
 }
 
 export async function codexLocalLauncher(session: CodexSession): Promise<'switch' | 'exit'> {
@@ -445,7 +445,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
             await codexLocal({
                 path: session.path,
                 sessionId: resumeSessionId,
-                modelReasoningEffort: resumeSessionId ? undefined : (session.getModelReasoningEffort() ?? undefined) as ReasoningEffort | undefined,
+                modelReasoningEffort: (session.getModelReasoningEffort() ?? undefined) as ReasoningEffort | undefined,
                 onSessionFound: handleSessionFound,
                 abort: abortSignal,
                 codexArgs,

@@ -51,6 +51,16 @@ replayed; resume restores durable history, not the old process's memory.
 
 ## Messages and questions
 
+Completed Plan-mode proposals remain visible in chat, including after terminal
+actions, refresh and resume. The current proposal offers **Implement plan** and
+**Continue planning** in Web. Implement switches the native thread to Default
+and queues `Implement the plan.`; Continue focuses the composer in Plan mode.
+These are client actions, not tool approvals. Codex's terminal-only "stay in Plan
+mode" selection does not broadcast a decision to other clients. A new native
+turn or mode change withdraws outdated Web controls while retaining the plan.
+Codex 0.154 can leave its local confirmation menu open after Web execution;
+press **Esc** before entering another terminal command.
+
 Ordinary HAPI messages enter **Codex's native queue**. There is no competing
 HAPI queue drainer. Settings are read when a submission executes, not frozen
 when it is enqueued. Explicit **Steer** targets the currently observed turn;

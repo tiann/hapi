@@ -11,13 +11,15 @@ private struct ToolPresentationHost: ViewModifier {
     let session: HubSession
     let owner: String
     let openFile: (String) -> Void
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var processRoute: ToolProcessRoute?
     @State private var pendingFile: String?
+    @State private var pendingProcess: ToolCallBlock?
 
     func body(content: Content) -> some View {
         // Read in the host's observation scope, not solely inside Binding's
         // escaping getter (which SwiftUI may evaluate in the sheet's scope).
-        let inspectorPresented = model.toolInspection.selection?.owner == owner
+        let inspectorPresented = model.toolInspection.owner == owner
         content
             .environment(\.openChatTool, { block in
                 model.beginContentInspection()
@@ -32,22 +34,35 @@ private struct ToolPresentationHost: ViewModifier {
                     model.toolInspection.open(block, owner: owner)
                 }
             })
+            .environment(\.openChatToolGroup, { id in
+                guard model.inspectToolGroup(id, owner: owner) else { return }
+                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+            })
             .sheet(isPresented: Binding(
                 get: { inspectorPresented },
                 set: { if !$0 { model.toolInspection.dismiss(owner: owner) } }
             ), onDismiss: {
                 model.toolInspection.dismiss(owner: owner)
+                if let pendingProcess {
+                    model.retainSurface("process:\(pendingProcess.id)")
+                    processRoute = ToolProcessRoute(block: pendingProcess)
+                    self.pendingProcess = nil
+                }
                 model.releaseSurface("inspector:\(owner)")
                 if let pendingFile {
                     openFile(pendingFile)
                     self.pendingFile = nil
                 }
             }) {
-                ToolDetailSheet(inspection: model.toolInspection, basePath: model.basePath,
-                                isReconnecting: model.isReconnecting) { path in
+                ToolInspectionSheet(inspection: model.toolInspection, basePath: model.basePath,
+                                    isReconnecting: model.isReconnecting, openProcess: { block in
+                    pendingProcess = block
+                    model.toolInspection.dismiss(owner: owner)
+                }) { path in
                     pendingFile = path
                     model.toolInspection.dismiss(owner: owner)
                 }
+                .environment(\.dynamicTypeSize, dynamicTypeSize)
             }
             .navigationDestination(item: $processRoute) { route in
                 ToolProcessView(model: model, session: session, initialBlock: route.block)
@@ -58,6 +73,7 @@ private struct ToolPresentationHost: ViewModifier {
             }
             .onChange(of: model.toolInspection.invalidation) {
                 pendingFile = nil
+                pendingProcess = nil
                 processRoute = nil
             }
             .onAppear { model.retainSurface(owner) }
@@ -83,25 +99,90 @@ private struct ToolProcessRoute: Identifiable, Hashable {
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
-struct ToolDetailSheet: View {
+struct ToolInspectionSheet: View {
     let inspection: ToolInspectionState
     let basePath: String?
     var isReconnecting = false
+    let openProcess: ((ToolCallBlock) -> Void)?
     let openFile: (String) -> Void
     @Environment(\.dismiss) private var dismiss
-    @State private var lastBlock: ToolCallBlock?
+    @State private var lastGroup: ToolGroupBlock?
+    @State private var showsGroupTool = false
 
     init(inspection: ToolInspectionState, basePath: String?, isReconnecting: Bool = false,
+         openProcess: ((ToolCallBlock) -> Void)? = nil,
          openFile: @escaping (String) -> Void) {
         self.inspection = inspection
         self.basePath = basePath
         self.isReconnecting = isReconnecting
+        self.openProcess = openProcess
         self.openFile = openFile
-        _lastBlock = State(initialValue: inspection.selection?.block)
+        _lastGroup = State(initialValue: inspection.groupSelection?.block)
+        _showsGroupTool = State(initialValue: inspection.groupSelection != nil && inspection.selection != nil)
     }
 
     var body: some View {
         NavigationStack {
+            if let group = inspection.groupSelection?.block ?? lastGroup {
+                ToolGroupBrowser(group: group, basePath: basePath, isStale: inspection.isGroupStale,
+                                 isReconnecting: isReconnecting,
+                                 selectTool: { id in
+                    if let block = inspection.groupTool(id), opensToolProcess(block), let openProcess {
+                        openProcess(block)
+                    } else {
+                        inspection.selectGroupTool(id)
+                    }
+                }, close: { dismiss() })
+                    .navigationDestination(isPresented: $showsGroupTool) {
+                        detail(isInGroup: true)
+                    }
+            } else {
+                detail(isInGroup: false)
+            }
+        }
+        .hapiTypography()
+        .onChange(of: inspection.groupSelection?.block) { _, latest in
+            if let latest { lastGroup = latest }
+        }
+        .onChange(of: inspection.selection?.block.id) { _, id in
+            // Do not pop the detail during the sheet's dismissal animation.
+            if inspection.groupSelection != nil { showsGroupTool = id != nil }
+        }
+        .onChange(of: showsGroupTool) { _, shown in
+            if !shown { inspection.returnToGroup() }
+        }
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func detail(isInGroup: Bool) -> some View {
+        ToolInspectorDetail(inspection: inspection, basePath: basePath, isReconnecting: isReconnecting,
+                            isInGroup: isInGroup, openFile: openFile, close: { dismiss() })
+    }
+}
+
+private struct ToolInspectorDetail: View {
+    let inspection: ToolInspectionState
+    let basePath: String?
+    let isReconnecting: Bool
+    let isInGroup: Bool
+    let openFile: (String) -> Void
+    let close: () -> Void
+    @State private var lastBlock: ToolCallBlock?
+
+    init(inspection: ToolInspectionState, basePath: String?, isReconnecting: Bool,
+         isInGroup: Bool, openFile: @escaping (String) -> Void, close: @escaping () -> Void) {
+        self.inspection = inspection
+        self.basePath = basePath
+        self.isReconnecting = isReconnecting
+        self.isInGroup = isInGroup
+        self.openFile = openFile
+        self.close = close
+        _lastBlock = State(initialValue: inspection.selection?.block)
+    }
+
+    var body: some View {
+        Group {
             if let block = inspection.selection?.block ?? lastBlock {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
@@ -122,11 +203,12 @@ struct ToolDetailSheet: View {
                 .navigationTitle("Tool details")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Close", systemImage: "xmark") { dismiss() }
-                    }
                     ToolbarItem(placement: .primaryAction) {
                         ToolCopyMenu(tool: block.tool)
+                    }
+                    ToolbarItem(placement: isInGroup ? .topBarTrailing : .cancellationAction) {
+                        Button("Close", systemImage: "xmark", action: close)
+                            .accessibilityIdentifier("tool-inspector-close")
                     }
                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -134,12 +216,9 @@ struct ToolDetailSheet: View {
                 }
             }
         }
-        .hapiTypography()
         .onChange(of: inspection.selection?.block) { _, latest in
             if let latest { lastBlock = latest }
         }
-        .presentationDetents([.large])
-        .presentationDragIndicator(.visible)
     }
 
     private var siblingNavigation: some View {
@@ -150,7 +229,7 @@ struct ToolDetailSheet: View {
             }
             .disabled((inspection.selectedIndex ?? 0) == 0)
             Spacer()
-            Text("\((inspection.selectedIndex ?? 0) + 1) / \(inspection.siblingIDs.count)")
+            Text(verbatim: "\((inspection.selectedIndex ?? 0) + 1) / \(inspection.siblingIDs.count)")
                 .font(.footnote.monospacedDigit())
                 .accessibilityLabel(String(format: String(localized: "Tool %lld of %lld"),
                                            Int64((inspection.selectedIndex ?? 0) + 1), Int64(inspection.siblingIDs.count)))
@@ -178,16 +257,23 @@ private struct ToolDetailHeader: View {
         VStack(alignment: .leading, spacing: 10) {
             Label(presentation.title, systemImage: presentation.icon)
                 .font(.headline).textSelection(.enabled)
-            HStack(spacing: 8) {
-                ToolStatusIndicator(state: block.tool.state)
-                Text(statusLabel).font(.footnote).foregroundStyle(.secondary)
-            }
-            if let permission = block.tool.permission {
-                PermissionStateRow(permission: permission)
-                if permission.status == .pending && !permissionActionsInline {
-                    Text("Close details to approve or answer in the conversation.")
-                        .font(.footnote).foregroundStyle(.secondary)
+            if isQuestionDetailsTool(block.tool.name) {
+                let state = QuestionCardState(tool: block.tool, details: questionToolDetails(block.tool), override: nil)
+                Label(state.title, systemImage: state.icon)
+                    .font(.footnote)
+                    .foregroundStyle(state == .failed ? Color.red : .secondary)
+            } else {
+                HStack(spacing: 8) {
+                    ToolStatusIndicator(state: block.tool.state)
+                    Text(statusLabel).font(.footnote).foregroundStyle(.secondary)
                 }
+                if let permission = block.tool.permission {
+                    PermissionStateRow(permission: permission)
+                }
+            }
+            if block.tool.permission?.status == .pending && !permissionActionsInline {
+                Text("Close details to approve or answer in the conversation.")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
             if let path = toolFilePath(block.tool) {
                 Text(path).font(.footnote.monospaced()).textSelection(.enabled)

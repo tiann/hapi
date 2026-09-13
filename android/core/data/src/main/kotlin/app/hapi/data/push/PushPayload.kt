@@ -12,6 +12,7 @@ import kotlinx.serialization.Serializable
 enum class PushType(val wire: String) {
     READY("ready"),
     PERMISSION_REQUEST("permission-request"),
+    INPUT_REQUEST("input-request"),
     TASK_NOTIFICATION("task-notification");
 
     companion object {
@@ -70,7 +71,7 @@ data class PushPayload(
     val url: String?,
     val title: String?,
     val body: String?,
-    /** Permission requests only: the id for approve/deny. */
+    /** Pending request id: approve/deny for permissions, correlation only for input requests. */
     val requestId: String?,
     val severity: PushSeverity?,
     val contractVersion: String?,
@@ -94,12 +95,13 @@ data class PushPayload(
     val supportsActions: Boolean
         get() = isKnownContractVersion && when (type) {
             PushType.PERMISSION_REQUEST -> requestId != null
+            PushType.INPUT_REQUEST -> false // Answer in the session, not via approval or message Reply.
             PushType.READY, PushType.TASK_NOTIFICATION -> true
             null -> false
         }
 
     /**
-     * Notification channel routing: `permission_requests` (HIGH) /
+     * Notification channel routing: `permission_requests` / `input_requests` (HIGH) /
      * `ready` (DEFAULT) / `task_notifications` (DEFAULT). Unknown types and
      * unknown contract versions land in the default-importance
      * `task_notifications` bucket — never in the heads-up channel.
@@ -108,6 +110,7 @@ data class PushPayload(
         get() = when {
             !isKnownContractVersion -> CHANNEL_TASK_NOTIFICATIONS
             type == PushType.PERMISSION_REQUEST -> CHANNEL_PERMISSION_REQUESTS
+            type == PushType.INPUT_REQUEST -> CHANNEL_INPUT_REQUESTS
             type == PushType.READY -> CHANNEL_READY
             else -> CHANNEL_TASK_NOTIFICATIONS
         }
@@ -150,6 +153,7 @@ data class PushPayload(
         const val CONTRACT_VERSION = "1"
 
         const val CHANNEL_PERMISSION_REQUESTS = "permission_requests"
+        const val CHANNEL_INPUT_REQUESTS = "input_requests"
         const val CHANNEL_READY = "ready"
         const val CHANNEL_TASK_NOTIFICATIONS = "task_notifications"
 

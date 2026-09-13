@@ -19,6 +19,29 @@ func toolSourceInput(_ input: JSONValue?, keys: [String]) -> String? {
     input?.chatString ?? chatInputString(input, keys)
 }
 
+func isPlanProposalTool(_ name: String) -> Bool {
+    name == "ExitPlanMode" || name == "exit_plan_mode"
+}
+
+/// Plans are documents in input.plan, not update_plan's checklist or a tool result.
+func planProposalMarkdown(_ tool: ChatToolCall) -> String? {
+    guard isPlanProposalTool(tool.name),
+          let plan = tool.input?[chatKey: "plan"]?.chatString,
+          !plan.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+    return plan
+}
+
+/// A synthesized Codex proposal completes with null output. Keep diagnostics,
+/// but don't suggest that its visible document is still waiting for output.
+func planProposalShowsResult(_ tool: ChatToolCall) -> Bool {
+    if tool.state == .error { return true }
+    guard let result = tool.result, result != .null else { return false }
+    if let text = result.chatString {
+        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    return true
+}
+
 /// Bounded wrapper traversal; mixed/non-text blocks deliberately retain their
 /// JSON representation rather than silently dropping images or resources.
 func extractResultText(_ result: JSONValue, depth: Int = 0) -> String? {

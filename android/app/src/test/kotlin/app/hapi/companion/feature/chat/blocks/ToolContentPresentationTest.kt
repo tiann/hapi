@@ -6,8 +6,10 @@ import app.hapi.protocol.wire.HapiJson
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -28,6 +30,33 @@ class ToolContentPresentationTest {
         assertEquals(source, toolSourceInput(JsonPrimitive(source), listOf("code")))
         assertEquals("*** Begin Patch\n", toolSourceInput(json("""{"patch":"*** Begin Patch\n"}"""), listOf("patch")))
         assertNull(toolSourceInput(json("""{"unknown":true}"""), listOf("patch")))
+    }
+
+    @Test fun planProposalsReadInputAndPreserveTheCompleteDocument() {
+        val plan = "\n# 计划 👩🏽‍💻\n\n" + "- Inspect **input.plan**  \n".repeat(1_000) + "last  \n"
+        for (name in listOf("ExitPlanMode", "exit_plan_mode")) {
+            val input = JsonObject(mapOf("plan" to JsonPrimitive(plan), "extra" to JsonPrimitive(true)))
+            val call = tool(name, input, JsonNull)
+            assertTrue(isPlanProposalTool(name))
+            assertEquals(plan, planProposalMarkdown(call))
+            assertEquals(input, call.input)
+            assertFalse(planProposalShowsResult(call))
+            for (result in listOf(JsonPrimitive("Approved"), json("""{"error":"Failed"}"""))) {
+                assertTrue(planProposalShowsResult(tool(name, input, result)))
+            }
+            for (result in listOf(null, JsonNull, JsonPrimitive(" \n"))) {
+                assertFalse(planProposalShowsResult(tool(name, input, result)))
+            }
+            assertTrue(planProposalShowsResult(tool(name, input, state = "error")))
+            for (value in listOf("null", "[]", "{}", """{"plan":null}""", """{"plan":42}""",
+                """{"plan":[]}""", """{"plan":"  \n"}""", """"a raw string"""")) {
+                assertNull(planProposalMarkdown(tool(name, json(value))), value)
+            }
+        }
+        val input = JsonObject(mapOf("plan" to JsonPrimitive(plan)))
+        assertNull(planProposalMarkdown(tool("update_plan", input)))
+        assertNull(planProposalMarkdown(tool("mcp__server__ExitPlanMode", input)))
+        assertNull(planProposalMarkdown(tool("update_plan", json("""{"plan":[{"step":"Inspect","status":"completed"}]}"""))))
     }
 
     @Test fun resultEnvelopesAndWhitespace() {

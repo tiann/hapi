@@ -8,11 +8,11 @@ import { listSlashCommands } from '@/modules/common/slashCommands';
 import { normalizeCodexModel } from '@/modules/common/codexModels';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
-import { CodexAppServerClient } from '../codexAppServerClient';
+import { ImplementCodexPlanRequestSchema, type ImplementCodexPlanResult } from '@hapi/protocol/apiTypes';
+import { CodexAppServerClient, isIndeterminateError } from '../codexAppServerClient';
 import { buildHapiMcpBridge, type HapiMcpBridge } from '../utils/buildHapiMcpBridge';
 import { buildUserInputFromMessage } from '../utils/appServerConfig';
 import { resolveCodexPermissionModeConfig } from '../utils/permissionModeConfig';
-import { LunaReserve } from '../utils/lunaReserve';
 import { resolveCodexSlashCommand } from '../utils/slashCommands';
 import { parseReasoningEffortValue } from '../utils/reasoningEffort';
 import { SharedCodexPermissions } from './permissions';
@@ -22,6 +22,7 @@ import { getCodexSystemPrompt } from '../utils/systemPrompt';
 import { record, string } from './gateway';
 import { initializeSharedClient, type SharedLaunchOptions } from './launch';
 import { inheritedSandbox, settingsMatch } from './settings';
+import { planImplementationMessageId, planProposalForItem, planProposalForTurn } from './plan';
 
 type RuntimeSettings = NonNullable<Parameters<ApiSessionClient['keepAlive']>[2]>;
 export type RootHost = {
@@ -49,12 +50,13 @@ export class SharedCodexRoot {
     private projection!: SharedCodexProjection;
     private readonly children = new Map<string, SharedCodexProjection>();
     private readonly ancestry = new Map<string, string | null>();
-    private readonly reserve: LunaReserve;
     private heartbeat?: ReturnType<typeof setInterval>;
-    private usageTimer?: ReturnType<typeof setInterval>;
     private work: Promise<unknown> = Promise.resolve();
     private notifications = Promise.resolve();
     private currentTurn: string | undefined;
+    private latestTurn?: { id: string; status: string; planId?: string };
+    private publishedPlanId: string | null | undefined;
+    private submittingPlan = false;
     private steeringActive: boolean | undefined;
     private turnRevision = 0;
     private settingsRevision = 0;
@@ -75,9 +77,6 @@ export class SharedCodexRoot {
     constructor(readonly bootstrap: SessionBootstrapResult, private readonly host: RootHost) {
         this.session = bootstrap.session;
         this.client = new CodexAppServerClient({ endpoint: host.endpoint, token: host.token, cwd: bootstrap.workingDirectory });
-        this.reserve = new LunaReserve(this.client,
-            (model, effort, serviceTier) => { this.settings = { ...this.settings, model, modelReasoningEffort: effort, serviceTier }; },
-            codexUsage => this.session.updateAgentState(state => ({ ...state, codexUsage })), message => this.notice(message));
         this.client.setNotificationHandler((method, params) => {
             if (method === 'serverRequest/resolved') {
                 this.permissions?.resolved(string(record(params).threadId) ?? '', record(params).requestId); return;
@@ -86,12 +85,27 @@ export class SharedCodexRoot {
             if (record(params).threadId === this.threadId) {
                 if (method === 'turn/started') {
                     this.turnRevision++; this.currentTurn = string(record(record(params).turn).id); this.interrupted = false;
+                    if (this.currentTurn) this.latestTurn = { id: this.currentTurn, status: 'inProgress' };
                     this.publishSteering();
                 }
                 if (method === 'turn/completed' && (!this.currentTurn || record(record(params).turn).id === this.currentTurn)) {
                     this.turnRevision++; this.currentTurn = undefined; this.interrupted = record(record(params).turn).status === 'interrupted';
                     this.publishSteering();
                 }
+                const p = record(params);
+                if (method === 'item/completed' && this.latestTurn && this.latestTurn.id === p.turnId) {
+                    const planId = planProposalForItem(this.threadId, this.latestTurn.id, p.item);
+                    if (planId) { this.turnRevision++; this.latestTurn.planId = planId; }
+                }
+                if (method === 'turn/completed') {
+                    const turn = record(p.turn);
+                    const id = string(turn.id);
+                    if (id && (!this.latestTurn || this.latestTurn.id === id)) {
+                        this.latestTurn = { id, status: string(turn.status) ?? 'unknown',
+                            planId: planProposalForTurn(this.threadId, turn) ?? this.latestTurn?.planId };
+                    }
+                }
+                this.publishPlan();
             }
             const modelAtReceipt = record(params).threadId === this.threadId ? this.settings.model ?? undefined : undefined;
             this.notifications = this.notifications.then(() => this.notification(method, params, modelAtReceipt)).catch(error => logger.debug('[Codex shared] projection', error));
@@ -105,7 +119,6 @@ export class SharedCodexRoot {
                 const text = formatMessageWithAttachments(message.content.text, message.content.attachments);
                 const resolved = text.trim().startsWith('/') ? await this.queue.command(id, () => this.command(text)) : text;
                 if (resolved === null) { this.session.emitMessagesConsumed([id], { clearQueuedThinkingGrace: true }); return; }
-                await this.refreshUsage();
                 await this.queue.enqueue(id, buildUserInputFromMessage(resolved), this.interrupted);
             }).catch(error => this.notice(`Message not confirmed: ${error instanceof Error ? error.message : error}. Inspect the queue before retrying.`));
         });
@@ -123,6 +136,7 @@ export class SharedCodexRoot {
             // Replay final native history with stable IDs after every reconnect.
             this.projection?.reset();
             this.steeringActive = undefined;
+            this.publishedPlanId = undefined;
             void this.refresh().then(() => this.refreshChildren(false)).then(() => this.queue.replay())
                 .catch(error => logger.debug('[Codex shared] hub resync', error));
         });
@@ -181,12 +195,12 @@ export class SharedCodexRoot {
             // advertise a destructive operation we cannot make atomic yet.
             conversationHistory: { forkCurrent: true, forkAtMessage: true, rewindToMessage: false }
         } }));
-        this.session.updateAgentState(state => ({ ...state, controlledByUser: false, startingMode: undefined, requests: {},
+        this.session.updateAgentState(state => ({ ...state, controlledByUser: false, startingMode: undefined, codexPlanProposalId: null, requests: {},
             completedRequests: { ...state.completedRequests, ...Object.fromEntries(Object.entries(state.requests ?? {}).map(([id, request]) =>
                 [id, { ...request, completedAt: Date.now(), status: 'canceled' as const }])) }
         }));
         if (subscribe) response = record(await this.client.request('thread/resume', { threadId }));
-        this.acceptSettings(response); this.acceptSettings(this.host.settingsFor(threadId) ?? {}); this.reserve.attach(threadId, response);
+        this.acceptSettings(response); this.acceptSettings(this.host.settingsFor(threadId) ?? {});
         await this.projection.history(response.thread); await this.refresh(); await this.refreshChildren(true);
     }
     async activate(options: SharedLaunchOptions = {}): Promise<void> {
@@ -195,8 +209,6 @@ export class SharedCodexRoot {
         if (this.stopping) throw new Error('Codex execution is stopping');
         this.registerControls(); this.ready();
         this.heartbeat = setInterval(() => this.alive(), 2_000); this.alive(); this.session.emitSessionReady();
-        void this.reserve.initialize().catch(error => logger.debug('[Codex shared] usage initialization', error));
-        this.usageTimer = setInterval(() => { void this.refreshUsage(); }, 60_000);
     }
     private publishSteering(): void {
         const active = Boolean(this.currentTurn) && !this.stopping && !this.closed && !this.reconnecting && this.client.isInitialized();
@@ -206,7 +218,21 @@ export class SharedCodexRoot {
     }
     private alive(): void {
         this.publishSteering();
+        this.publishPlan();
         if (!this.closed) this.session.keepAlive(Boolean(this.currentTurn), undefined, this.settings);
+    }
+    private availablePlanId(): string | null {
+        if (this.currentTurn || this.latestTurn?.status !== 'completed' || this.settings.collaborationMode !== 'plan'
+            || this.stopping || this.closed || this.reconnecting || this.submittingPlan || !this.client.isInitialized()) return null;
+        const id = this.latestTurn.planId;
+        // An uncertain/accepted submission must never become a fresh Execute button after reconnect.
+        return id && !this.queue?.owns(planImplementationMessageId(id)) ? id : null;
+    }
+    private publishPlan(): void {
+        const id = this.availablePlanId();
+        if (id === this.publishedPlanId) return;
+        this.publishedPlanId = id;
+        this.session.updateAgentState(state => ({ ...state, codexPlanProposalId: id }));
     }
     acceptSettings(value: Record<string, unknown>): void {
         if (typeof value.model !== 'string') return;
@@ -220,8 +246,8 @@ export class SharedCodexRoot {
             ...('serviceTier' in value ? { serviceTier: value.serviceTier === 'priority' ? 'fast' : 'standard' } : {}),
             ...('collaborationMode' in value ? { collaborationMode: record(value.collaborationMode).mode === 'plan' ? 'plan' as const : 'default' as const } : {})
         };
-        this.reserve.onSettings(this.threadId, value);
         for (const listener of this.settingsListeners) listener();
+        this.publishPlan();
     }
     private async notification(method: string, params: unknown, modelAtReceipt?: string): Promise<void> {
         if (!this.threadId || this.closed) return;
@@ -272,6 +298,9 @@ export class SharedCodexRoot {
         if (revision === this.turnRevision) {
             this.currentTurn = string(turns.find(turn => turn.status === 'inProgress')?.id);
             this.interrupted = turns.at(-1)?.status === 'interrupted';
+            const last = turns.at(-1);
+            const id = string(last?.id);
+            this.latestTurn = id && last ? { id, status: string(last.status) ?? 'unknown', planId: planProposalForTurn(this.threadId, last) } : undefined;
         }
         await this.projection.history(thread); await this.queue.reconcile(); this.alive();
     }
@@ -303,11 +332,6 @@ export class SharedCodexRoot {
             } catch (error) { logger.debug('[Codex shared] child history unavailable', { id, error }); }
         }
     }
-    private refreshUsage(): Promise<void> {
-        return this.reserve.refresh({ permissionMode: this.settings.permissionMode === 'yolo' ? 'yolo' : 'default',
-            collaborationMode: this.settings.collaborationMode ?? 'default', model: this.settings.model ?? undefined },
-        () => !this.closed && !this.currentTurn);
-    }
     nativeQueueDeleted(nativeId: string): Promise<void> { return this.queue.deleted(nativeId); }
     replaySettings(): Array<{ method: string; params: unknown }> {
         return this.settingsNotification ? [{ method: 'thread/settings/updated', params: {
@@ -316,7 +340,7 @@ export class SharedCodexRoot {
     }
     private async reconnect(): Promise<void> {
         if (this.closed || this.stopping || this.reconnecting || !this.threadId) return;
-        this.reconnecting = true; this.publishSteering(); this.permissions.close();
+        this.reconnecting = true; this.publishSteering(); this.publishPlan(); this.permissions.close();
         try {
             while (!this.closed && !this.stopping) {
                 try {
@@ -336,7 +360,7 @@ export class SharedCodexRoot {
                     logger.debug('[Codex shared] reconnect', error); await new Promise(resolve => setTimeout(resolve, 1_000));
                 }
             }
-        } finally { this.reconnecting = false; this.publishSteering(); }
+        } finally { this.reconnecting = false; this.publishSteering(); this.publishPlan(); }
     }
     async applySettings(raw: unknown): Promise<{ applied: RuntimeSettings }> {
         const config = SettingsSchema.parse(raw);
@@ -386,6 +410,35 @@ export class SharedCodexRoot {
     async initialSettings(options: SharedLaunchOptions): Promise<void> {
         if (options.collaborationMode) await this.applySettings({ collaborationMode: options.collaborationMode });
     }
+    private async implementPlan(planId: string): Promise<ImplementCodexPlanResult> {
+        const unavailable = (): ImplementCodexPlanResult => ({ ok: false, code: 'unavailable', error: 'Codex is disconnected or stopping. Reconnect before implementing the plan.' });
+        const stale = (): ImplementCodexPlanResult => ({ ok: false, code: 'stale_plan', error: 'This plan is no longer actionable. Refresh the conversation.' });
+        const localId = planImplementationMessageId(planId);
+        if (this.closed || this.stopping || this.reconnecting || !this.client.isInitialized()) return unavailable();
+        try {
+            // A reconnect snapshot may have started before this action arrived.
+            await this.refreshing;
+            await this.refresh();
+            const prior = this.queue.state(localId);
+            if (prior === 'queued' || prior === 'consumed') return { ok: true };
+            if (prior) return { ok: false, code: 'indeterminate', error: 'This implementation was already submitted. Check the queue and conversation before sending again.' };
+            const before = await this.queue.list();
+            if (this.availablePlanId() !== planId || before.length) return stale();
+            const revision = this.turnRevision;
+            this.submittingPlan = true; this.publishPlan();
+            await this.applySettings({ collaborationMode: 'default' });
+            const queued = await this.queue.list();
+            if (this.closed || this.stopping || this.reconnecting || !this.client.isInitialized()) return unavailable();
+            if (this.turnRevision !== revision || this.currentTurn || this.latestTurn?.planId !== planId
+                || this.settings.collaborationMode !== 'default' || queued.length) return stale();
+            await this.queue.enqueue(localId, buildUserInputFromMessage('Implement the plan.'));
+            return { ok: true };
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            return { ok: false, code: isIndeterminateError(error) || this.queue.state(localId) === 'unknown' ? 'indeterminate' : 'failed',
+                error: `Plan implementation was not confirmed: ${detail}. Check the mode, queue and conversation before retrying.` };
+        } finally { this.submittingPlan = false; this.publishPlan(); }
+    }
     private registerControls(): void {
         const rpc = { registerHandler: (method: string, handler: (raw: unknown) => Promise<unknown>) => {
             this.session.rpcHandlerManager.registerHandler(method, async (raw: unknown) => {
@@ -410,6 +463,12 @@ export class SharedCodexRoot {
         });
         rpc.registerHandler(RPC_METHODS.KillSession, async () => { await this.host.end(this); return { success: true }; });
         rpc.registerHandler(RPC_METHODS.SetSessionConfig, raw => this.applySettings(raw));
+        rpc.registerHandler(RPC_METHODS.ImplementCodexPlan, raw => {
+            const { planId } = ImplementCodexPlanRequestSchema.parse(raw);
+            const work = this.work.catch(() => {}).then(() => this.implementPlan(planId));
+            this.work = work;
+            return work;
+        });
         rpc.registerHandler(RPC_METHODS.SteerQueuedMessage, async raw => {
             const { localId } = z.object({ localId: z.string().min(1) }).parse(raw);
             const expectedTurnId = this.currentTurn;
@@ -482,9 +541,10 @@ export class SharedCodexRoot {
         return slash.kind === 'replace' ? slash.text : null;
     }
     stopAccepting(): void {
-        this.stopping = true; this.ready(); clearInterval(this.usageTimer);
+        this.stopping = true; this.ready();
         this.publishSteering();
-        this.session.onReconnect(null); this.client.setTransportAbandonedHandler(null); this.reserve.dispose();
+        this.publishPlan();
+        this.session.onReconnect(null); this.client.setTransportAbandonedHandler(null);
     }
     async suspend(): Promise<void> {
         this.stopAccepting();

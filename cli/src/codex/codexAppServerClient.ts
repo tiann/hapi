@@ -5,7 +5,6 @@ import { logger } from '@/ui/logger';
 import { JsonLineParser } from '@/utils/jsonLineParser';
 import { killProcessByChildProcess } from '@/utils/process';
 import type {
-    ThreadSettingsUpdateParams,
     CollaborationModeListResponse,
     InitializeParams,
     InitializeResponse,
@@ -354,14 +353,6 @@ export class CodexAppServerClient extends JsonLineParser {
     async readConfig(params: ConfigReadParams): Promise<ConfigReadResponse> {
         const response = await this.sendRequest('config/read', params, { timeoutMs: 30_000 });
         return response as ConfigReadResponse;
-    }
-
-    async readAccountRateLimits(supportsLunaReserve = false): Promise<unknown> {
-        return this.sendRequest('account/rateLimits/read', supportsLunaReserve ? { supportsLunaReserve: true } : null, { timeoutMs: 30_000 });
-    }
-
-    async updateThreadSettings(params: ThreadSettingsUpdateParams): Promise<void> {
-        await this.sendRequest('thread/settings/update', params, { timeoutMs: 30_000 });
     }
 
     async listModels(params?: ModelListParams): Promise<ModelListResponse> {

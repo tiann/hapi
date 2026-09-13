@@ -62,26 +62,6 @@ describe('CodexAppServerClient process cwd', () => {
         spawnMock.mockReset();
     });
 
-    it('uses null for legacy usage reads and opts in only when Reserve is supported', async () => {
-        const child = fakeChild();
-        child.stdin.write = vi.fn((_data: unknown, callback?: (error?: Error | null) => void) => {
-            callback?.();
-            return true;
-        });
-        spawnMock.mockReturnValue(child);
-        const client = new CodexAppServerClient({ cwd: '/neutral-home' });
-        await client.connect();
-        for (const supported of [false, true]) {
-            const pending = client.readAccountRateLimits(supported);
-            const request = JSON.parse(child.stdin.write.mock.lastCall![0] as string);
-            expect(request.method).toBe('account/rateLimits/read');
-            expect(request.params).toEqual(supported ? { supportsLunaReserve: true } : null);
-            child.stdout.emit('data', Buffer.from(JSON.stringify({ id: request.id, result: { rateLimits: {} } }) + '\n'));
-            await expect(pending).resolves.toEqual({ rateLimits: {} });
-        }
-        await client.disconnect();
-    });
-
     it('passes an explicit neutral cwd to the app-server process', async () => {
         spawnMock.mockReturnValue(fakeChild());
         const client = new CodexAppServerClient({ cwd: '/neutral-home' });

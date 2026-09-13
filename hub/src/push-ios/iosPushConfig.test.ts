@@ -4,7 +4,8 @@ import { homedir, tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 
 import { APNS_PRODUCTION_HOST, APNS_SANDBOX_HOST } from './apnsClient'
-import { DEFAULT_PUSH_RELAY_URL, resolveIosPushConfig, type IosPushSettings } from './iosPushConfig'
+import { resolveIosPushConfig, type IosPushSettings } from './iosPushConfig'
+import { DEFAULT_PUSH_RELAY_URL } from '../push-native/relayClient'
 
 const tempDirs: string[] = []
 afterEach(() => {

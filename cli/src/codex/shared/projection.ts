@@ -3,6 +3,7 @@ import type { ApiSessionClient } from '@/api/apiSession';
 import { registerGeneratedImageFromPath } from '@/modules/common/generatedImages';
 import { AppServerEventConverter } from '../utils/appServerEventConverter';
 import { record, string } from './gateway';
+import { codexPlanProposalId } from './plan';
 
 export function inputText(input: unknown): string {
     if (!Array.isArray(input)) return '';
@@ -95,6 +96,11 @@ export class SharedCodexProjection {
             } else if (event.type === 'token_count' || event.type === 'context_compacted' || event.type.startsWith('thread_goal_')) {
                 const model = event.type === 'token_count' && turnId ? this.turnModels.get(turnId) : undefined;
                 this.send({ ...event, ...(model ? { model } : {}), flavor: 'codex', scope: { role: 'parent', threadId: this.threadId }, scope_role: 'parent', thread_id: this.threadId }, key);
+            } else if (event.type === 'proposed_plan' && turnId && itemId) {
+                const planId = codexPlanProposalId(this.threadId, turnId, itemId);
+                this.send({ type: 'tool-call', name: 'ExitPlanMode', callId: planId, input: { plan: event.plan } }, key);
+                // A proposal is durable content, not a native approval request.
+                this.send({ type: 'tool-call-result', callId: planId, output: null }, `${key}:result`);
             } else if (event.type === 'plan_update') {
                 this.send({ type: 'tool-call', name: 'update_plan', callId: 'codex-plan-state', input: { plan: event.plan, source: 'codex' } }, key);
                 this.send({ type: 'tool-call-result', callId: 'codex-plan-state', output: { plan: event.plan, source: 'codex', status: 'updated' } }, `${key}:result`);

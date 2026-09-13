@@ -20,6 +20,8 @@
  *   know which file/cmd/url is at stake.
  */
 
+import { formatInputRequestPreview, isInputRequestTool } from './inputRequest'
+
 const DEFAULT_DETAIL_MAX_ARG_LENGTH = 150
 
 function truncate(text: string, maxLen: number): string {
@@ -40,8 +42,9 @@ export function formatToolArgumentsDetailed(
     args: unknown,
     opts: { maxArgLength?: number } = {}
 ): string {
-    if (!args || typeof args !== 'object') return ''
     const maxLen = opts.maxArgLength ?? DEFAULT_DETAIL_MAX_ARG_LENGTH
+    if (isInputRequestTool(tool)) return formatInputRequestPreview(args, maxLen)
+    if (!args || typeof args !== 'object') return ''
     const a = args as Record<string, unknown>
 
     try {
@@ -110,6 +113,7 @@ export function formatToolArgumentsDetailed(
  * useful summary to show beyond the tool name itself.
  */
 export function formatToolArgumentsCompact(tool: string, args: unknown): string {
+    if (isInputRequestTool(tool)) return formatInputRequestPreview(args, 60).replace(/\n/g, ' ')
     if (!args || typeof args !== 'object') return ''
     const a = args as Record<string, unknown>
 

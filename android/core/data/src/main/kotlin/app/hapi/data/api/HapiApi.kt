@@ -744,11 +744,11 @@ class HapiApi internal constructor(
     // ------------------------------------------------------------- devices --
 
     /** `POST /api/devices/register` (upsert) — FCM contract (`native-companion-contract.md`). */
-    suspend fun registerDevice(token: String, deviceId: String, platform: String = "phone") {
+    suspend fun registerDevice(token: String, deviceId: String, pushKey: String, platform: String = "phone") {
         request<Unit>(
             "POST",
             url("api", "devices", "register").build(),
-            RegisterDeviceRequest(token = token, platform = platform, deviceId = deviceId).toJsonBody(),
+            RegisterDeviceRequest(token = token, platform = platform, deviceId = deviceId, pushKey = pushKey).toJsonBody(),
         )
     }
 

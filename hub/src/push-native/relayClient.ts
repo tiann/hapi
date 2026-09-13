@@ -1,10 +1,11 @@
-import type { IosPushRequest, IosPushSendOutcome, IosPushTransport } from './transport'
+import type { EncryptedPushRequest, NativePushSendOutcome, EncryptedPushTransport, NativePushPlatform } from './transport'
 
 export const RELAY_REQUEST_TIMEOUT_MS = 10_000
+export const DEFAULT_PUSH_RELAY_URL = 'https://push.hapi.run'
 
 /**
  * Relay transport: POST `{relayUrl}/v1/push` with the encrypted envelope.
- * The relay owns the APNs credentials for the official app; it forwards
+ * The relay owns the APNs/FCM credentials for the official apps; it forwards
  * ciphertext only (see envelope.ts - the relay cannot decrypt).
  *
  * Response contract (PUSH SPEC v1):
@@ -14,16 +15,20 @@ export const RELAY_REQUEST_TIMEOUT_MS = 10_000
  *   429 rate limited                     -> failed (transient; do not prune)
  *   anything else / network error        -> failed
  */
-export class RelayClient implements IosPushTransport {
+export class RelayClient implements EncryptedPushTransport {
     private readonly pushUrl: string
 
-    constructor(relayUrl: string, private readonly requestTimeoutMs: number = RELAY_REQUEST_TIMEOUT_MS) {
+    constructor(
+        relayUrl: string,
+        private readonly platform: NativePushPlatform,
+        private readonly requestTimeoutMs: number = RELAY_REQUEST_TIMEOUT_MS
+    ) {
         this.pushUrl = `${relayUrl.replace(/\/+$/, '')}/v1/push`
     }
 
-    async send(request: IosPushRequest): Promise<IosPushSendOutcome> {
+    async send(request: EncryptedPushRequest): Promise<NativePushSendOutcome> {
         const body: Record<string, unknown> = {
-            platform: 'ios',
+            platform: this.platform,
             token: request.token,
             envelope: request.envelope
         }
@@ -42,19 +47,22 @@ export class RelayClient implements IosPushTransport {
                 body: JSON.stringify(body),
                 signal: AbortSignal.timeout(this.requestTimeoutMs)
             })
-        } catch (e) {
-            console.error('[RelayClient] Send threw:', e instanceof Error ? e.message : e)
+        } catch {
+            console.error('[RelayClient] Send failed:', this.platform, 'network')
             return 'failed'
         }
 
-        if (response.ok) {
+        const result: unknown = await response.json().catch(() => null)
+        const reply = typeof result === 'object' && result !== null && !Array.isArray(result)
+            ? result as Record<string, unknown> : null
+        if (response.status === 200 && reply?.ok === true) {
             return 'sent'
         }
-        if (response.status === 410) {
+        if (response.status === 410 && reply?.ok === false && reply.code === 'unregistered') {
             return 'invalid'
         }
-        const text = await response.text().catch(() => '')
-        console.error('[RelayClient] Send failed (transient):', response.status, text.slice(0, 200))
+        // Upstream bodies may echo a device token or other request data.
+        console.error('[RelayClient] Send failed:', this.platform, response.status)
         return 'failed'
     }
 }

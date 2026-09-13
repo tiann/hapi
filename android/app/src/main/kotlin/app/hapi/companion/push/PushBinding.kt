@@ -20,11 +20,9 @@ import kotlinx.coroutines.suspendCancellableCoroutine
  * Firebase isn't configured — a config-less self-build behaves exactly like
  * pre-M4a, just without push.
  *
- * v1.x path (planned, per the native-clients plan): bind Firebase at runtime
- * from hub-provided config instead — `FirebaseApp.initializeApp(context,
- * FirebaseOptions.Builder()…)` with values the hub serves alongside pairing.
- * That lands entirely behind this object: [isAvailable] flips true once the
- * runtime init succeeds, and nothing else in the app changes.
+ * Official builds bundle the maintainer's client config. The paired hub
+ * selects encrypted relay or private direct FCM; the app never receives
+ * service-account credentials and does not provision Firebase at runtime.
  */
 object PushBinding {
 

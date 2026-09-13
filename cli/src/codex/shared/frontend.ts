@@ -78,7 +78,6 @@ export async function runSharedCodex(raw: SharedLaunchOptions): Promise<void> {
     let attachment: Promise<void> | undefined;
     try {
         const runtime = await Promise.race([readiness, running.then(() => { throw new Error('Codex stopped before startup completed'); })]);
-        console.log(`HAPI shared session: ${runtime.sessionId}\nExiting this terminal stops this execution. Web can resume it through Runner.`);
         attachment = attachSharedSession(runtime.runtime, runtime.sessionId, launch.tuiArgs, stop.signal);
         await Promise.race([attachment, running]);
     } finally {

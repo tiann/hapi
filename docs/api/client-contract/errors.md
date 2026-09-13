@@ -35,6 +35,7 @@ When no `code` is present, branch on status alone and treat the failure generica
 | 409 | `resume_unavailable` | `sessions.ts` resume/reopen result mapping | Session can't be resumed (e.g. unsupported state) |
 | 409 | `metadata_conflict` | `sessions.ts` reopen result mapping | Refetch session, retry once at most |
 | 409 | `runner_upgrade_required` | `machines.ts` Agent availability | Upgrade and restart the runner; disable session creation |
+| 409 | `control_mode_not_applicable` | `sessions.ts` switch | Concurrent clients do not use ownership switching; hide takeover controls |
 | 409 | — (version conflict) | `sessions.ts` PATCH rename/summary, `machines.ts` PATCH rename — message mentions `version`/`concurrently`; **no code** | Concurrent edit — refetch and reapply |
 | 409 | — | `sessions.ts` delete-while-active, archive of plain inactive row, fork/rewind refusals, remote-only config on terminal-controlled sessions (`controlledByUser`) | Surface message; refresh session state |
 | 413 | — | `sessions.ts` upload (> 50 MB decoded), export too large (`{error, count, limit}`); `voice.ts` transcription (`Audio file too large`, 25 MB audio / ~26 MB body) | Reduce payload |
@@ -56,7 +57,10 @@ Many endpoints do not answer from hub state — the hub relays the request over 
 2. **CLI offline / handler missing** → depends on the route: the model-catalog routes in `machines.ts` map `RpcTargetMissingError` to **503 `rpc_target_missing`**; `git.ts`-style routes fold it into the 200 `{success: false}` envelope; resume/reopen surface **503 `no_machine_online`**.
 3. **Hub subsystems not up** → **503 `Not connected`** from `requireSyncEngine` (brief startup/shutdown window).
 
-Practical rule: treat `success: false`, 503 `rpc_target_missing`, and 503 `no_machine_online` as the same user-facing condition — "the computer running this session is not reachable" — with the raw `error` string available in a details view.
+Explicit `rpc_target_missing` / `no_machine_online` failures mean the execution
+host or handler is unavailable. Do not infer that from `success: false` alone:
+a reachable CLI can report a command, path, permission, or validation failure.
+Preserve that error for display; HTTP success is not operation success.
 
 One route qualifies that rule. `GET /api/machines/:id/agy-models` keeps serving the last catalog the machine got out of `agy models` while the CLI re-checks in the background, so it can answer `success: true` **and** carry an `error`: the list is usable, and `error` says why it may be stale (typically the machine's agy sign-in has lapsed). Render it beside the catalog rather than instead of it, and offer `?refresh=true` as the way to ask again — a plain repeat is answered from the same cache.
 
@@ -68,5 +72,5 @@ When that background re-check lands a different listing, the machine says so ove
 |-------|--------|
 | 400 / 403 / 404 / 409 / 413 / 422 | No (fix input, refresh state, or hide surface) |
 | 401 (middleware) | Once, after silent re-auth ([Auth](./auth.md#silent-re-auth-401-handling)) |
-| 429 / 502 / 503 | Yes, with backoff |
-| 200 `{success: false}` | Manual retry only (user-initiated) — the CLI answered and said no |
+| 429 / 502 / 503 | Reads: retry with backoff. Mutations: follow the endpoint's recovery contract; do not replay a write whose outcome is unknown |
+| 200 `{success: false}` | Inspect the error and endpoint contract; manual retry only when safe. This envelope can also represent a missing RPC target or timeout |
