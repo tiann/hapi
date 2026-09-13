@@ -11,7 +11,7 @@ import { registerLocalHandoffHandler } from '@/agent/localHandoff';
 import { createModeChangeHandler, createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle';
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
 import { PermissionModeSchema } from '@hapi/protocol/schemas';
-import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
+import { formatUserMessageForAgent } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { resolveKimiRuntimeConfig } from './utils/config';
 
@@ -98,7 +98,11 @@ export async function runKimi(opts: {
     };
 
     session.onUserMessage((message, localId) => {
-        const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
+        const formattedText = formatUserMessageForAgent(
+            message.content.text,
+            message.content.attachments,
+            message.meta
+        );
         const mode: KimiMode = {
             permissionMode: currentPermissionMode,
             model: resolvedModel

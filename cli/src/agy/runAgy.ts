@@ -10,7 +10,7 @@ import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFacto
 import { registerLocalHandoffHandler } from '@/agent/localHandoff';
 import { createModeChangeHandler, createRunnerLifecycle } from '@/agent/runnerLifecycle';
 import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc';
-import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
+import { formatUserMessageForAgent } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import type { SessionEffort, SessionModel } from '@/api/types';
 
@@ -96,7 +96,11 @@ export async function runAgy(opts: {
         };
 
         session.onUserMessage((message, localId) => {
-            const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
+            const formattedText = formatUserMessageForAgent(
+                message.content.text,
+                message.content.attachments,
+                message.meta
+            );
             // Snapshot the spawn config at ENQUEUE time: a prompt queued while the
             // session runs on model A must not run on B if the user switches the
             // live session model before dequeue.

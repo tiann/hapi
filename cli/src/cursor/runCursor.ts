@@ -12,7 +12,7 @@ import {
     resolveNullableSessionModel,
     resolveSessionConfigPermissionMode
 } from '@/agent/sessionConfigRpc';
-import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
+import { formatUserMessageForAgent } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { enqueueCursorUserMessage } from './cursorUserMessageQueue';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
@@ -103,7 +103,11 @@ export async function runCursor(opts: {
             permissionMode: currentPermissionMode ?? 'default',
             model: queuedModel
         };
-        const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
+        const formattedText = formatUserMessageForAgent(
+            message.content.text,
+            message.content.attachments,
+            message.meta
+        );
         enqueueCursorUserMessage(messageQueue, formattedText, enhancedMode, localId);
     });
 

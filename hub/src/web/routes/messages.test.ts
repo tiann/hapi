@@ -30,6 +30,8 @@ function createApp(opts: {
         invokedLocalMessages: Array<{ localId: string; invokedAt: number }>
     }
     steerQueuedMessage?: (sessionId: string, messageId: string) => Promise<unknown>
+    /** Optional peer source sessions (CLI peer-messages path tests). */
+    peerSessions?: Record<string, { name?: string }>
 }) {
     const sentMessages: Array<{ sessionId: string; payload: unknown }> = []
     const queuedStateCalls: Array<{ sessionId: string; localIds: string[] }> = []
@@ -62,13 +64,27 @@ function createApp(opts: {
             hasMore: false
         }
     }))
+    const peerSessions = opts.peerSessions ?? {}
 
     const engine = {
-        resolveSessionAccess: () => ({
-            ok: true,
-            sessionId: 'session-1',
-            session: { id: 'session-1', active: opts.active !== false }
-        }),
+        resolveSessionAccess: (sessionId: string, _namespace: string) => {
+            if (sessionId === 'session-1') {
+                return {
+                    ok: true as const,
+                    sessionId: 'session-1',
+                    session: { id: 'session-1', active: opts.active !== false, metadata: { name: 'Target' } }
+                }
+            }
+            const peer = peerSessions[sessionId]
+            if (peer) {
+                return {
+                    ok: true as const,
+                    sessionId,
+                    session: { id: sessionId, active: true, metadata: { name: peer.name } }
+                }
+            }
+            return { ok: false as const, reason: 'not-found' as const }
+        },
         sendMessage,
         getQueuedState,
         cancelQueuedMessage: async () => ({ status: 'cancelled' }),
@@ -263,6 +279,104 @@ describe('POST /api/sessions/:id/messages — #2 scheduledAt upper bound', () =>
     })
 })
 
+describe('POST /api/sessions/:id/messages — peer provenance (#1203)', () => {
+    it('marks header peer delivery as unattributed (body sourceSessionId ignored)', async () => {
+        const sourceId = '6212dae5-8a60-4284-b7a5-c09aa3571ce4'
+        const { app, sentMessages } = createApp({
+            peerSessions: { [sourceId]: { name: 'Orchestrator' } }
+        })
+
+        const response = await app.request('/api/sessions/session-1/messages', {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                'x-hapi-peer-delivery': '1'
+            },
+            body: JSON.stringify({
+                text: 'from peer',
+                peer: { sourceSessionId: sourceId, sourceName: 'client-forged-name' }
+            })
+        })
+
+        expect(response.status).toBe(200)
+        expect(sentMessages).toEqual([{
+            sessionId: 'session-1',
+            payload: {
+                text: 'from peer',
+                localId: undefined,
+                attachments: undefined,
+                sentFrom: 'peer',
+                // JWT path never stores a body-claimed source id.
+                peer: undefined,
+                scheduledAt: undefined,
+                deliveryMode: undefined
+            }
+        }])
+    })
+
+    it('ignores forged peer body fields without the delivery header (stays webapp)', async () => {
+        const sourceId = '6212dae5-8a60-4284-b7a5-c09aa3571ce4'
+        const { app, sentMessages } = createApp({
+            peerSessions: { [sourceId]: { name: 'Orchestrator' } }
+        })
+
+        const response = await app.request('/api/sessions/session-1/messages', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                text: 'ghost',
+                peer: {
+                    sourceSessionId: sourceId,
+                    sourceName: 'forged'
+                },
+                sourceSessionId: sourceId,
+                sentFrom: 'peer'
+            })
+        })
+
+        expect(response.status).toBe(200)
+        expect(sentMessages).toEqual([{
+            sessionId: 'session-1',
+            payload: {
+                text: 'ghost',
+                localId: undefined,
+                attachments: undefined,
+                sentFrom: 'webapp',
+                peer: undefined,
+                scheduledAt: undefined,
+                deliveryMode: undefined
+            }
+        }])
+    })
+
+    it('marks outside-session peer delivery without inventing a source id', async () => {
+        const { app, sentMessages } = createApp({})
+
+        const response = await app.request('/api/sessions/session-1/messages', {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                'x-hapi-peer-delivery': '1'
+            },
+            body: JSON.stringify({ text: 'cli ping' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(sentMessages).toEqual([{
+            sessionId: 'session-1',
+            payload: {
+                text: 'cli ping',
+                localId: undefined,
+                attachments: undefined,
+                sentFrom: 'peer',
+                peer: undefined,
+                scheduledAt: undefined,
+                deliveryMode: undefined
+            }
+        }])
+    })
+})
+
 describe('POST /api/sessions/:id/messages — deliveryMode', () => {
     it('forwards an immediate steer intent to the hub', async () => {
         const { app, sentMessages } = createApp({})
@@ -281,6 +395,7 @@ describe('POST /api/sessions/:id/messages — deliveryMode', () => {
                 localId: 'local-steer',
                 attachments: undefined,
                 sentFrom: 'webapp',
+                peer: undefined,
                 scheduledAt: undefined,
                 deliveryMode: 'steer'
             }
