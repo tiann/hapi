@@ -10,7 +10,8 @@ import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 type NativeTurn = { id: string; status: string; items: unknown[] };
 
 const sharedHarness = vi.hoisted(() => ({
-    skills: [{ name: 'find-docs', description: 'Find docs', path: '/tmp/SKILL.md', scope: 'user', enabled: true }]
+    skills: [{ name: 'find-docs', description: 'Find docs', path: '/tmp/SKILL.md', scope: 'user', enabled: true }],
+    mcpInventoryArgs: undefined as readonly string[] | undefined
 }));
 
 vi.mock('../codexAppServerClient', () => ({
@@ -59,7 +60,10 @@ vi.mock('@/modules/common/slashCommands', () => ({
     listSlashCommands: async () => [{ name: '/compact' }]
 }));
 vi.mock('../utils/codexMcpInventory', () => ({
-    listConfiguredCodexMcpServers: async () => [],
+    listConfiguredCodexMcpServers: async (_cwd: string, args?: readonly string[]) => {
+        sharedHarness.mcpInventoryArgs = args;
+        return [];
+    },
     mergeCodexMcpInventories: (...inventories: Array<Array<unknown>>) => inventories.flat(),
     parseCodexMcpStatusResponse: (value: unknown) => value && typeof value === 'object' && 'data' in value
         ? (value as { data: unknown[] }).data
@@ -93,6 +97,7 @@ async function fixture() {
     } as unknown as ApiSessionClient;
     const root = new SharedCodexRoot({ session, workingDirectory: directory } as SessionBootstrapResult, {
         directory, generation: 'test', endpoint: 'mock', settingsFor: () => undefined,
+        codexInventoryArgs: ['-c', 'mcp_servers.qmd.enabled=false'],
         create: async () => { throw new Error('Unexpected root creation'); },
         end: async () => { throw new Error('Unexpected root archive'); }
     } satisfies RootHost);
@@ -311,6 +316,17 @@ describe('shared steering availability', () => {
                 mcpServers: [{ name: 'hapi', toolNames: ['change_title'] }]
             }
         }));
+    });
+
+    it('passes effective launch configuration to shared MCP discovery', async () => {
+        sharedHarness.mcpInventoryArgs = undefined;
+        const f = await fixture();
+
+        await f.root.activate();
+
+        await vi.waitFor(() => expect(sharedHarness.mcpInventoryArgs).toEqual([
+            '-c', 'mcp_servers.qmd.enabled=false'
+        ]));
     });
 
     it('refreshes shared skills on skills/changed and preserves them on failure', async () => {

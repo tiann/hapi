@@ -34,6 +34,7 @@ import { planImplementationMessageId, planProposalForItem, planProposalForTurn }
 type RuntimeSettings = NonNullable<Parameters<ApiSessionClient['keepAlive']>[2]>;
 export type RootHost = {
     directory: string; generation: string; endpoint: string; token?: string;
+    codexInventoryArgs?: readonly string[];
     settingsFor(threadId: string): Record<string, unknown> | undefined;
     create(method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot): Promise<SharedCodexRoot>;
     end(root: SharedCodexRoot, nativeArchive?: boolean): Promise<void>;
@@ -281,7 +282,7 @@ export class SharedCodexRoot {
             })
             .catch(error => logger.debug('[Codex shared] slash command inventory', error));
         void this.refreshContextSkills().catch(error => logger.debug('[Codex shared] skill inventory', error));
-        void listConfiguredCodexMcpServers(cwd)
+        void listConfiguredCodexMcpServers(cwd, this.host.codexInventoryArgs)
             .then(inventory => {
                 if (this.closed || this.stopping || inventory === undefined) return;
                 this.configuredMcpServerInventory = inventory;
