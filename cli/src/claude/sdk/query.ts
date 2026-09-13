@@ -213,8 +213,7 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
             // for the specific subtype this method sent, matching the
             // request/response pair with its own named interfaces
             // (GetContextUsageRequest/GetContextUsageResponsePayload)
-            // instead of the untyped `as unknown as {...}` this replaced
-            //.
+            // instead of the untyped `as unknown as {...}` this replaced.
             const payload = controlResponse.response as GetContextUsageResponsePayload | undefined
             if (!payload || typeof payload.maxTokens !== 'number') {
                 return null
@@ -523,8 +522,8 @@ export function query(config: {
     // `!childStdin?.writable` checks in handleControlRequest below are not
     // enough on their own: the child can die between that check and the
     // write). Mirrors the identical fix already applied to the separate
-    // model-discovery probe process in claudeModels.ts; this is the same contract for the process this class owns
-    //.
+    // model-discovery probe process in claudeModels.ts; this is the same
+    // contract for the process this class owns.
     child.stdin.on('error', () => {})
 
     // Handle stdin
