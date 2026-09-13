@@ -15,7 +15,7 @@ The hub's base token (`CLI_API_TOKEN`) is auto-generated on first run (32 random
 
 ## Pairing
 
-Source of truth: `hub/src/startHub.ts` (lines ~317–366), `web/src/components/settings/CompanionPairing.tsx`.
+Source of truth: `hub/src/startHub.ts`, `web/src/components/settings/CompanionPairing.tsx`.
 
 The hub terminal (when started with `--relay`) prints two QR codes; the web app's Settings → Companion pairing screen renders the second one as well:
 
@@ -119,10 +119,10 @@ Clients should hide the usage/storage screens entirely when the paired namespace
 
 - Store the **access token** in platform-secure storage: iOS Keychain, Android `EncryptedSharedPreferences` (behind an interface so the mechanism can be swapped). Never plain files, never logs.
 - Key credentials **per hub base URL** (normalized), since a client can pair with several hubs. Web reference: localStorage key `hapi_access_token::<baseUrl>` (`web/src/hooks/useAuth.ts`, `web/src/components/settings/CompanionPairing.tsx`).
-- The JWT is a cache, not a secret worth keeping: it is fine to hold it in memory only and re-exchange on cold start. If persisted (to save one round-trip at launch), store it alongside the access token with the same protection.
-- On unpair/sign-out: delete both credentials, and unregister FCM (`DELETE /api/devices/register`) first while you still hold a valid JWT.
+- The JWT is a sensitive bearer credential, but need not be persisted: hold it in memory and re-exchange on cold start. If persisted (to save one round-trip at launch), store it alongside the access token with the same protection.
+- On unpair/sign-out: delete both credentials, and unregister native push (`DELETE /api/devices/register`) first while you still hold a valid JWT.
 
-## 401 error bodies
+## 401 error bodies {#401-error-bodies}
 
 All are JSON with an `error` string; none carry a `code` field except Telegram's `not_bound` (which reuses `error` as the discriminator — natives never see it):
 

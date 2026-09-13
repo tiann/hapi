@@ -4,20 +4,13 @@ import HapiProtocol
 import Observation
 import SwiftUI
 
-/// A pairing that awaits user confirmation — from a deep link, a scanned QR,
-/// or manual entry. Drives the confirm sheet.
-struct PendingPairing: Identifiable, Hashable {
-    enum Source: Hashable {
-        case deepLink
-        case qrScan
-        case manual
-    }
-
+/// A pairing that awaits user confirmation — from a deep link. Drives the
+/// confirm sheet.
+struct PendingPairing: Identifiable {
     let id = UUID()
-    /// Hub URL as carried by the link/entry (normalized during `pair`).
+    /// Hub URL as carried by the link (normalized during `pair`).
     let hubUrl: String
     let accessToken: String
-    let source: Source
 }
 
 /// Root application state: which hubs are paired, which one is active, and
@@ -184,8 +177,7 @@ final class AppModel {
         showAddHub = false
         pendingPairing = PendingPairing(
             hubUrl: link.hubUrl,
-            accessToken: link.accessToken,
-            source: .deepLink
+            accessToken: link.accessToken
         )
         return true
     }

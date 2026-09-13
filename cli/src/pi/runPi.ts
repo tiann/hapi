@@ -7,6 +7,7 @@ import { registerLocalHandoffHandler } from '@/agent/localHandoff';
 import { createRunnerLifecycle, createModeChangeHandler, setControlledByUser } from '@/agent/runnerLifecycle';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { PiTransport } from './piTransport';
+import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 import { PiSession } from './session';
 import { PiConversationHistory, PiHistoryRestoreError } from './conversationHistory';
 import { parsePiModels, parsePiCommands, PiRpcTimeoutError, sendPiRpcAndWait, wireTransportEvents } from './loop';
@@ -16,6 +17,7 @@ import type { PiImageContent, PiThinkingLevel } from './types';
 import { parsePiSpecialCommand, parseLeadingSlashName, type PiSpecialCommand } from './specialCommands';
 import { PiPromptQueue, isPiSpecialQueued, type PiPreparedPrompt } from './promptQueue';
 import { PiSteerDispatcher } from './steerDispatcher';
+import { materializePiTitleExtension } from './titleExtension';
 import { getBuiltinSlashCommands, mergeSlashCommands } from '@hapi/protocol/slashCommands';
 import type { ListPiModelsResponse, PiCommandSummary, PiModelSummary, SlashCommand, SlashCommandsResponse } from '@hapi/protocol/apiTypes';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
@@ -238,15 +240,16 @@ export async function runPi(opts: {
         expectedNativeSessionId: opts.resumeSessionId,
     });
 
-    const transportArgs = ['--mode', 'rpc'];
+    const titleExtensionPath = await materializePiTitleExtension();
+    const transportArgs = ['--mode', 'rpc', '--extension', titleExtensionPath];
     if (opts.resumeSessionId) {
         transportArgs.push('--session', opts.resumeSessionId);
     }
     const transport = new PiTransport({
-        command: 'pi',
+        command: getAgentLaunchCommand('pi'),
         args: transportArgs,
         cwd: workingDirectory,
-        env: { ...process.env, PI_RPC_EMIT_TITLE: '1' },
+        env: process.env,
     });
     const conversationHistory = new PiConversationHistory(
         piSession,

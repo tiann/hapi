@@ -6,6 +6,7 @@
  */
 
 import { AsyncLock } from '@/utils/lock';
+import { isClaudeChatVisibleMessage } from './chatVisibility';
 
 interface QueueItem {
     id: number;                    // Incremental ID for ordering
@@ -121,7 +122,7 @@ export class OutgoingMessageQueue {
             
             // Send if not already sent
             if (!item.sent) {
-                if (item.logMessage.type !== 'system' && !item.logMessage.isMeta && !item.logMessage.isCompactSummary) {
+                if (isClaudeChatVisibleMessage(item.logMessage) && !item.logMessage.isMeta && !item.logMessage.isCompactSummary) {
                     this.sendFunction(item.logMessage);
                 }
                 item.sent = true;

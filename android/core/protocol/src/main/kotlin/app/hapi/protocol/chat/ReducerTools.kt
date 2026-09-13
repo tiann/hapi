@@ -19,7 +19,7 @@ fun getPermissions(agentState: AgentState?): LinkedHashMap<String, PermissionEnt
     val completed = agentState?.completedRequests
     if (completed != null) {
         for ((id, entry) in completed) {
-            map[id] = PermissionEntry(
+            map[entry.toolCallId ?: id] = PermissionEntry(
                 toolName = entry.tool,
                 input = entry.arguments,
                 permission = ToolPermission(
@@ -41,8 +41,8 @@ fun getPermissions(agentState: AgentState?): LinkedHashMap<String, PermissionEnt
     val requests = agentState?.requests
     if (requests != null) {
         for ((id, request) in requests) {
-            if (map.containsKey(id)) continue
-            map[id] = PermissionEntry(
+            if (completed?.containsKey(id) == true) continue
+            map[request.toolCallId ?: id] = PermissionEntry(
                 toolName = request.tool,
                 input = request.arguments,
                 permission = ToolPermission(

@@ -40,6 +40,10 @@ describe('getPermissionModesForFlavor', () => {
         ])
     })
 
+    test("returns no HAPI mode selector for DSH's server-owned permission policy", () => {
+        expect(getPermissionModesForFlavor('dsh')).toEqual([])
+    })
+
     test("returns [] for flavor 'pi' (RPC mode has no runtime permission switching)", () => {
         expect(getPermissionModesForFlavor('pi')).toEqual([])
     })
@@ -72,6 +76,8 @@ describe('isPermissionModeAllowedForFlavor', () => {
         expect(isPermissionModeAllowedForFlavor('acceptEdits', 'grok')).toBe(false)
         expect(isPermissionModeAllowedForFlavor('auto', 'grok')).toBe(true)
         expect(isPermissionModeAllowedForFlavor('yolo', 'grok')).toBe(false)
+        expect(isPermissionModeAllowedForFlavor('read-only', 'dsh')).toBe(false)
+        expect(isPermissionModeAllowedForFlavor('plan', 'dsh')).toBe(false)
     })
 
     test("no mode is allowed for pi", () => {

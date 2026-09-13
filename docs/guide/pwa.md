@@ -121,13 +121,17 @@ HAPI supports push notifications to alert you when agents need attention.
 | Ready | Agent finished and awaits input |
 | Task completed / Task failed | A background task finishes (success or failure) |
 
-### Native Push via FCM
+### Native Android Push
 
-In addition to Web Push, the hub can send notifications through Firebase Cloud Messaging (FCM) to native companion apps on Android and Wear OS. When FCM is configured and a native device is registered for your namespace, the companion app is treated as the canonical notification surface — if FCM already delivered a notification, the hub skips the Web Push duplicate so you only get one alert. See the [native companion API contract](../api/native-companion-contract.md) for setup details.
+In addition to Web Push, the hub can send notifications through Firebase Cloud Messaging (FCM) to native companion apps on Android and Wear OS. Official Android phone builds use the encrypted push relay by default, so a current hub needs no Firebase setup. Hubs with private Firebase credentials retain direct phone/Wear delivery. When a native device is registered for your namespace, the companion app is treated as the canonical notification surface — if the native push provider accepted a notification, the hub skips the Web Push duplicate so you only get one alert. See the [native companion API contract](../api/native-companion-contract.md) for setup details.
 
 ::: tip
 If push notifications don't work in your region (e.g., FCM unavailable), use [Telegram integration](./notifications.md#telegram-setup) instead.
 :::
+
+### Windows taskbar badge
+
+When HAPI is installed as a PWA from Microsoft Edge or Chrome on Windows, users can show the number of sessions with activity newer than the local last-seen watermark on its taskbar icon. The setting is disabled by default because some Edge/Windows configurations render the same host badge as overlapping layers, with one layer offset and clipped by the taskbar. Use Settings > Display > Session list > Taskbar unread badge to opt in or out for this PWA. The badge is updated while the PWA has a current session snapshot; it is not shown for a normal browser tab, and the read state remains local to that browser/PWA profile.
 
 ## Managing Your PWA
 

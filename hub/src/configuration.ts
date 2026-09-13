@@ -23,7 +23,8 @@
  * - FCM_SERVICE_ACCOUNT_PATH: Firebase service-account JSON for Android push (settings: fcmServiceAccountPath;
  *   the project id comes from the JSON itself)
  * - HAPI_IOS_PUSH: iOS push transport apns|relay|off (default: relay; settings: iosPushMode)
- * - HAPI_PUSH_RELAY_URL: iOS push relay URL (settings: iosPushRelayUrl)
+ * - HAPI_ANDROID_PUSH: Android push transport auto|relay|fcm|off (default: auto; settings: androidPushMode)
+ * - HAPI_PUSH_RELAY_URL: shared native push relay URL (settings: iosPushRelayUrl)
  * - APNS_KEY_P8_PATH, APNS_KEY_ID, APNS_TEAM_ID, APNS_BUNDLE_ID, APNS_ENV:
  *   direct-APNs credentials (settings: apnsKeyP8Path, apnsKeyId, apnsTeamId, apnsBundleId, apnsEnv)
  * - HAPI_HOME: Data directory (default: ~/.hapi)
@@ -50,6 +51,7 @@ export interface ConfigSources {
     listenPort: ConfigSource
     publicUrl: ConfigSource
     corsOrigins: ConfigSource
+    androidPushMode: ConfigSource
     fcmServiceAccountPath: ConfigSource
     iosPushMode: ConfigSource
     iosPushRelayUrl: ConfigSource
@@ -112,6 +114,7 @@ class Configuration {
 
     // Push delivery (FCM + iOS/APNs) — nullable strings interpreted by
     // fcm/fcmConfig.ts and push-ios/iosPushConfig.ts.
+    public readonly androidPushMode: string | null
     public readonly fcmServiceAccountPath: string | null
     public readonly iosPushMode: string | null
     public readonly iosPushRelayUrl: string | null
@@ -146,6 +149,7 @@ class Configuration {
         this.listenPort = serverSettings.listenPort
         this.publicUrl = serverSettings.publicUrl
         this.corsOrigins = serverSettings.corsOrigins
+        this.androidPushMode = serverSettings.androidPushMode
         this.fcmServiceAccountPath = serverSettings.fcmServiceAccountPath
         this.iosPushMode = serverSettings.iosPushMode
         this.iosPushRelayUrl = serverSettings.iosPushRelayUrl

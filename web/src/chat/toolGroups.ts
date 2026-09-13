@@ -1,5 +1,5 @@
-import type { ChatBlock, ToolCallBlock } from '@/chat/types'
-import { getCodexCommandActions, isCodexExplorationTool } from '@/chat/codexCommandPresentation'
+import type { ChatBlock, RoundSummary, ToolCallBlock } from '@/chat/types'
+import { isCodexExplorationTool } from '@/chat/codexCommandPresentation'
 import { isSubagentToolName } from '@/chat/subagentTool'
 import { isAskUserQuestionToolName } from '@/components/ToolCard/askUserQuestion'
 import { isRequestUserInputToolName } from '@/components/ToolCard/requestUserInput'
@@ -33,6 +33,7 @@ export type ToolGroupBlock = {
     needsOlderHistory: boolean
     activityTitle?: string | null
     presentationMode?: 'default' | 'codex-exploration'
+    roundSummary?: RoundSummary
     summary: ToolGroupSummary
 }
 
@@ -226,9 +227,10 @@ export function isEligibleForToolGrouping(block: ToolCallBlock): boolean {
     if (PLAN_TOOL_NAMES.has(block.tool.name)) return false
     if (MILESTONE_TOOL_NAMES.has(block.tool.name)) return false
     if (isInteractiveToolBlock(block)) return false
-    if (block.tool.name === 'CodexBash' && getCodexCommandActions(block).length > 0) {
-        return isCodexExplorationTool(block)
-    }
+    // Command classification selects the group family, not eligibility.
+    // Shared Codex reports ordinary agent commands as `unknown` actions.
+    if (block.tool.name === 'CodexBash'
+        && getInputStringAny(block.tool.input, ['command_source', 'commandSource'])?.toLowerCase() === 'usershell') return false
     return true
 }
 
@@ -314,6 +316,7 @@ export function buildVisibleChatBlocks(
             needsOlderHistory,
             activityTitle,
             presentationMode: groupingFamily,
+            roundSummary: tools[0].roundSummary,
             summary: summarizeToolGroup(tools)
         })
         index = cursor - 1

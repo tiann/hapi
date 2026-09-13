@@ -1,13 +1,14 @@
 import HapiClient
 import HapiProtocol
+import HapiUI
 import SwiftUI
 
 /// The session list (A-M2a) — standalone screen: navigation and hub chrome
 /// stay outside; taps surface through `onOpenSession`.
 ///
 /// Inventory (mirrors the web sidebar semantics via the Android port):
-/// - offline state over snapshot data, machine filter chips (≥ 2 machines),
-///   pull-to-refresh, empty/loading states;
+/// - an active-filter summary, pull-to-refresh, empty/loading states;
+///   home owns the filter menu and connection notice;
 /// - pinned section first (the sort already puts globalPinned/pinned rows on
 ///   top; a header makes the boundary visible);
 /// - per row: flavor brand icon + title, spinner while a turn is in flight,
@@ -18,13 +19,9 @@ import SwiftUI
 /// - long-press context menu → pin (none/project/global) + archive with
 ///   optimistic store updates; failures land in an alert.
 struct SessionListView: View {
-    @State private var model: SessionListModel
-    private let onOpenSession: (String) -> Void
-
-    init(session: HubSession, onOpenSession: @escaping (String) -> Void) {
-        _model = State(initialValue: SessionListModel(session: session))
-        self.onOpenSession = onOpenSession
-    }
+    @Environment(\.hapiTheme) private var theme
+    let model: SessionListModel
+    let onOpenSession: (String) -> Void
 
     var body: some View {
         // Minute-tick timeline keeps the relative-age labels honest without
@@ -33,18 +30,12 @@ struct SessionListView: View {
             sessionList(now: context.date)
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            VStack(spacing: 0) {
-                if model.isOffline && model.hasLoaded {
-                    offlineBanner
-                }
-                if model.showMachineFilterBar {
-                    MachineFilterBar(
-                        filters: model.machineFilters,
-                        activeFilter: model.activeMachineFilter,
-                        onSelect: { model.machineFilter = $0 }
-                    )
-                }
+            if let summary = model.filterSummary {
+                SessionFilterSummary(summary: summary, onClear: model.clearFilters)
             }
+        }
+        .onChange(of: model.machineFilterIds, initial: true) { _, _ in
+            model.reconcileFilters()
         }
         .task {
             // Explicit fetch on entry: the snapshot may be stale and a
@@ -111,6 +102,10 @@ struct SessionListView: View {
             }
         }
         .listStyle(.plain)
+        // An explicit filter change starts at the top. SSE/count/name changes
+        // keep this identity (and the reading position), as does chat return.
+        .id(model.filters)
+        .accessibilityIdentifier("home.sessions")
         .overlay {
             if rows.isEmpty {
                 emptyState
@@ -125,8 +120,14 @@ struct SessionListView: View {
             onOpenSession(row.id)
         } label: {
             SessionRowView(row: row, now: now)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // Plain buttons otherwise ignore the label's empty space.
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // Default separator color reads heavy against these rows; the theme
+        // divider is the WeChat-style faint hairline.
+        .listRowSeparatorTint(theme.divider)
         .contextMenu {
             contextMenuActions(row)
         }
@@ -164,15 +165,6 @@ struct SessionListView: View {
     }
 
     // MARK: - Chrome
-
-    private var offlineBanner: some View {
-        Text("Offline — showing cached sessions")
-            .font(.footnote)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-            .background(.orange.opacity(0.15))
-            .foregroundStyle(.orange)
-    }
 
     @ViewBuilder
     private var emptyState: some View {
@@ -227,12 +219,15 @@ struct SessionRowView: View {
     }
 
     private var titleLine: some View {
+        // Spinner/dot pinned to the trailing edge next to the timestamp
+        // (Android row order), so they don't drift with the title length.
         HStack(spacing: 6) {
             AgentFlavorIconView(flavor: row.flavor)
             Text(row.title)
                 .font(.body)
                 .fontWeight(row.unread ? .semibold : .regular)
                 .lineLimit(1)
+            Spacer(minLength: 4)
             if row.summary.active && row.summary.thinking {
                 ProgressView()
                     .scaleEffect(0.7)
@@ -246,7 +241,6 @@ struct SessionRowView: View {
                     .frame(width: 8, height: 8)
                     .accessibilityLabel("Unread")
             }
-            Spacer(minLength: 4)
             Text(formatRelativeAge(now: now, thenEpochMs: row.summary.updatedAt))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -286,34 +280,6 @@ struct SessionRowView: View {
             }
             .padding(.top, 2)
         }
-    }
-}
-
-/// Solid green for active (pulsing while thinking), muted gray when idle.
-/// Chat-header use only — list rows express liveness by dimming instead
-/// (web parity: no per-row presence dot).
-struct StatusDot: View {
-    let active: Bool
-    let thinking: Bool
-
-    var body: some View {
-        let dot = Circle()
-            .fill(active ? Color.green : Color.gray.opacity(0.45))
-            .frame(width: 10, height: 10)
-        Group {
-            if thinking {
-                dot.phaseAnimator([1.0, 0.25]) { view, opacity in
-                    view.opacity(opacity)
-                } animation: { _ in
-                    .easeInOut(duration: 0.7)
-                }
-            } else {
-                dot
-            }
-        }
-        .accessibilityLabel(active
-            ? (thinking ? String(localized: "Thinking") : String(localized: "Active"))
-            : String(localized: "Inactive"))
     }
 }
 
@@ -359,36 +325,7 @@ struct TodoChip: View {
     }
 }
 
-// MARK: - Machine filter
-
-struct MachineFilterBar: View {
-    let filters: [MachineFilterUI]
-    let activeFilter: String?
-    let onSelect: (String?) -> Void
-
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                FilterChip(label: String(localized: "All"), selected: activeFilter == nil) {
-                    onSelect(nil)
-                }
-                ForEach(filters) { filter in
-                    let label = filter.label.isEmpty ? String(localized: "Unknown machine") : filter.label
-                    FilterChip(
-                        label: "\(label) · \(filter.sessionCount)",
-                        selected: activeFilter == filter.id
-                    ) {
-                        // Tapping the active chip toggles back to All.
-                        onSelect(activeFilter == filter.id ? nil : filter.id)
-                    }
-                }
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 6)
-        }
-        .background(.bar)
-    }
-}
+// MARK: - Recent-directory chip (used by NewSessionView)
 
 struct FilterChip: View {
     let label: String

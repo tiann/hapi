@@ -10,9 +10,10 @@
         "docs",
         "relay"
     ],
+    "packageManager": "bun@1.4.0",
     "scripts": {
         "build:site": "bun run --cwd website build && bun run --cwd docs docs:build && cp -r docs/.vitepress/dist website/dist/public/docs",
-        "dev": "concurrently \"bun run dev:hub\" \"bun run dev:web\" --kill-others-on-exit",
+        "dev": "bun run --parallel dev:hub dev:web",
         "build": "bun run build:cli && bun run build:web && (cd hub && bun run generate:embedded-web-assets) && bun run build:hub",
         "build:cli": "bun run typecheck:cli",
         "build:single-exe": "bun run download:tunwg && bun run build:web && (cd hub && bun run generate:embedded-web-assets) && (cd cli && bun run build:exe:allinone)",
@@ -22,7 +23,7 @@
         "build:web": "cd web && bun run build",
         "dev:hub": "cd hub && bun run dev",
         "dev:web": "cd web && bun run dev",
-        "typecheck": "bun run typecheck:cli && bun run typecheck:web && bun run typecheck:hub && bun run typecheck:relay",
+        "typecheck": "bun run --parallel typecheck:cli typecheck:web typecheck:hub typecheck:relay",
         "typecheck:cli": "cd cli && bun run typecheck",
         "typecheck:hub": "cd hub && bun run typecheck",
         "typecheck:relay": "cd relay && bun run typecheck",
@@ -45,7 +46,6 @@
     },
     "devDependencies": {
         "@playwright/test": "^1.61.0",
-        "concurrently": "^9.2.1",
         "playwright": "1.61.0",
         "react-devtools-core": "^7.0.1",
         "vite-plugin-pwa": "^1.2.0"

@@ -1,19 +1,18 @@
 import AVFAudio
 import HapiClient
+import HapiUI
 import PhotosUI
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-/// The chat input bar (A-M3a, extended in A-M3f): multiline text field
-/// (return = newline, the mobile default), a send button whose long-press
-/// offers "Send & steer" while a turn is active (`messageDelivery.ts` —
-/// queue is always the default), an abort button during thinking, a mic
-/// button for press-to-toggle dictation (recording chip with elapsed time +
-/// cancel while capturing), and the attachment tray: a "+" button opening
-/// the source dialog (photo library / camera / files) plus per-attachment
-/// chips (uploading spinner → thumbnail / failed tap-to-retry, ✕ removes).
+/// The chat input card (A-M3a, extended in A-M3f): attachments and the
+/// multiline text field grow above a fixed bottom action row. The trailing
+/// primary action is stateful: Stop while a turn runs with an empty draft,
+/// otherwise Send (long-press offers "Send & steer" during a turn). The card
+/// also hosts dictation and attachment controls.
 struct ChatComposerView: View {
+    @Environment(\.hapiTypography) private var typography
     let interactor: ChatInteractor
     /// nil ⇒ dictation unavailable (no controller wired) — mic button hidden.
     var dictation: DictationController?
@@ -33,38 +32,66 @@ struct ChatComposerView: View {
         )
     }
 
+    /// Elevated iOS surface: white in light mode, lifted charcoal in dark
+    /// mode. `secondarySystemBackground` made the whole composer read like a
+    /// grouped form cell instead of a floating iOS control.
+    private var composerSurfaceColor: Color {
+        Color(uiColor: UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(white: 0.12, alpha: 1)
+                : .white
+        })
+    }
+
     var body: some View {
         let composer = interactor.composer
         let attachments = interactor.attachments.items
-        VStack(spacing: 6) {
-            if !attachments.isEmpty {
-                attachmentsRow(attachments)
-            }
-            if let dictation, case .recording(let startedAtMs) = dictation.state {
-                RecordingChipView(startedAtMs: startedAtMs) {
-                    dictation.cancel()
+        VStack(spacing: 0) {
+            VStack(spacing: 0) {
+                if !attachments.isEmpty {
+                    attachmentsRow(attachments)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 8)
                 }
-            }
-            HStack(alignment: .bottom, spacing: 8) {
-                addAttachmentButton
+                if let dictation, case .recording(let startedAtMs) = dictation.state {
+                    RecordingChipView(startedAtMs: startedAtMs) {
+                        dictation.cancel()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
+                }
                 TextField("Message the agent…", text: text, axis: .vertical)
+                    .font(typography.bodyFont)
                     .lineLimit(1...6)
                     .textFieldStyle(.plain)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .background(.fill.tertiary, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                if let dictation {
-                    micButton(dictation)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 12)
+                    .padding(.bottom, 4)
+                HStack(spacing: 2) {
+                    addAttachmentButton
+                    Spacer()
+                    if let dictation, dictation.isAvailable {
+                        micButton(dictation)
+                    }
+                    primaryActionButton(composer, attachments: attachments)
                 }
-                if composer.canSteer {
-                    abortButton
-                }
-                sendButton(composer, attachments: attachments)
+                // 44 pt touch slot with a centered 38 pt circle:
+                // 9 + 3 = the shared 12 pt visual inset.
+                .padding(.horizontal, 9)
+                .padding(.bottom, 4)
             }
+            .background(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(composerSurfaceColor)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .shadow(color: .black.opacity(0.06), radius: 6, y: 2)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(.bar)
+        .hapiReadingColumn()
+        .padding(.vertical, 8)
+        .task(id: dictation.map { ObjectIdentifier($0) }) {
+            await dictation?.refreshAvailability()
+        }
         .confirmationDialog("Attach", isPresented: $attachDialogOpen, titleVisibility: .visible) {
             Button("Photo library") {
                 photosPickerOpen = true
@@ -178,11 +205,13 @@ struct ChatComposerView: View {
         Button {
             attachDialogOpen = true
         } label: {
-            Image(systemName: "plus")
-                .font(.subheadline.weight(.medium))
-                .frame(width: 38, height: 38)
-                .background(.fill.tertiary, in: Circle())
-                .foregroundStyle(.secondary)
+            actionCircle(
+                background: AnyShapeStyle(.fill.tertiary),
+                foreground: AnyShapeStyle(.secondary)
+            ) {
+                Image(systemName: "plus")
+                    .font(.system(size: 15, weight: .medium))
+            }
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Add attachment")
@@ -199,21 +228,20 @@ struct ChatComposerView: View {
         return Button {
             toggleDictation(dictation)
         } label: {
-            Group {
+            actionCircle(
+                background: recording
+                    ? AnyShapeStyle(.red.opacity(0.15))
+                    : AnyShapeStyle(.fill.tertiary),
+                foreground: recording ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary)
+            ) {
                 if busy {
                     ProgressView()
                         .controlSize(.small)
                 } else {
                     Image(systemName: recording ? "stop.fill" : "mic.fill")
-                        .font(.subheadline)
+                        .font(.system(size: 15))
                 }
             }
-            .frame(width: 38, height: 38)
-            .background(
-                recording ? AnyShapeStyle(.red.opacity(0.15)) : AnyShapeStyle(.fill.tertiary),
-                in: Circle()
-            )
-            .foregroundStyle(recording ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
         }
         .buttonStyle(.plain)
         .disabled(busy)
@@ -247,71 +275,109 @@ struct ChatComposerView: View {
 
     // MARK: - Buttons
 
-    private var abortButton: some View {
-        Button {
-            interactor.abortSession()
-        } label: {
-            Image(systemName: "stop.fill")
-                .font(.subheadline)
-                .frame(width: 38, height: 38)
-                .background(.red.opacity(0.15), in: Circle())
-                .foregroundStyle(.red)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Stop the current turn")
-    }
-
     @ViewBuilder
-    private func sendButton(_ composer: ComposerState, attachments: [ComposerAttachmentUI]) -> some View {
+    private func primaryActionButton(_ composer: ComposerState, attachments: [ComposerAttachmentUI]) -> some View {
         let hasText = !composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasDraft = hasText || !attachments.isEmpty
         // Attachments gate the send like the web: every chip must settle
         // Ready (uploading waits, failed must be retried or removed); a ready
         // tray allows an attachments-only send (wire: text or attachments).
         let attachmentsBusy = attachments.contains { $0.status != .ready }
         let attachmentsReady = !attachments.isEmpty && !attachmentsBusy
-        let enabled = (hasText || attachmentsReady) && !attachmentsBusy && !composer.isSending
-        let label = sendLabel(composer, enabled: enabled)
-        if composer.canSteer && enabled {
-            // Tap sends (queue); long-press opens the deliberate steer intent.
-            Menu {
-                Button("Send & steer into current turn") {
-                    interactor.sendMessage(steer: true)
-                }
-            } label: {
-                label
-            } primaryAction: {
-                interactor.sendMessage()
-            }
-            .accessibilityLabel("Send — long-press to steer")
+        let canSubmit = (hasText || attachmentsReady) && !attachmentsBusy && !composer.isSending
+        let action: ComposerPrimaryAction = if composer.isSending {
+            .sending
+        } else if composer.canSteer && !hasDraft {
+            .stop
         } else {
-            Button {
-                interactor.sendMessage()
-            } label: {
-                label
+            .send(enabled: canSubmit)
+        }
+
+        switch action {
+        case .sending:
+            Button {} label: {
+                actionCircle(
+                    background: AnyShapeStyle(.fill.tertiary),
+                    foreground: AnyShapeStyle(.secondary)
+                ) {
+                    ProgressView()
+                        .controlSize(.small)
+                }
             }
             .buttonStyle(.plain)
-            .disabled(!enabled)
+            .disabled(true)
             .accessibilityLabel("Send")
+        case .stop:
+            Button {
+                interactor.abortSession()
+            } label: {
+                actionCircle(
+                    background: AnyShapeStyle(.red),
+                    foreground: AnyShapeStyle(.white)
+                ) {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 15))
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Stop the current turn")
+        case .send(let enabled):
+            let label = sendLabel(enabled: enabled)
+            if composer.canSteer && enabled {
+                // Tap sends (queue); long-press opens the deliberate steer intent.
+                Menu {
+                    Button("Send & steer into current turn") {
+                        interactor.sendMessage(steer: true)
+                    }
+                } label: {
+                    label
+                } primaryAction: {
+                    interactor.sendMessage()
+                }
+                .accessibilityLabel("Send — long-press to steer")
+            } else {
+                Button {
+                    interactor.sendMessage()
+                } label: {
+                    label
+                }
+                .buttonStyle(.plain)
+                .disabled(!enabled)
+                .accessibilityLabel("Send")
+            }
         }
     }
 
-    private func sendLabel(_ composer: ComposerState, enabled: Bool) -> some View {
-        Group {
-            if composer.isSending {
-                ProgressView()
-                    .controlSize(.small)
-            } else {
-                Image(systemName: "arrow.up")
-                    .font(.subheadline.weight(.semibold))
-            }
+    private func sendLabel(enabled: Bool) -> some View {
+        actionCircle(
+            background: enabled ? AnyShapeStyle(.tint) : AnyShapeStyle(.fill.tertiary),
+            foreground: enabled ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary)
+        ) {
+            Image(systemName: "arrow.up")
+                .font(.system(size: 15, weight: .semibold))
         }
-        .frame(width: 38, height: 38)
-        .background(
-            enabled ? AnyShapeStyle(.tint) : AnyShapeStyle(.fill.tertiary),
-            in: Circle()
-        )
-        .foregroundStyle(enabled ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
     }
+
+    // Icon-only controls keep their 38pt visuals / 44pt hit areas. Their
+    // symbols use fixed sizes; editable text remains fully Dynamic Type.
+    private func actionCircle<Content: View>(
+        background: AnyShapeStyle,
+        foreground: AnyShapeStyle,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .frame(width: 38, height: 38)
+            .background(background, in: Circle())
+            .foregroundStyle(foreground)
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+    }
+}
+
+private enum ComposerPrimaryAction {
+    case sending
+    case stop
+    case send(enabled: Bool)
 }
 
 // MARK: - Attachment chip

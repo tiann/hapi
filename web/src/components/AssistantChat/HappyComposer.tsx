@@ -48,7 +48,7 @@ import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { StatusBar } from '@/components/AssistantChat/StatusBar'
 import { ComposerButtons } from '@/components/AssistantChat/ComposerButtons'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
-import { AttachmentItem } from '@/components/AssistantChat/AttachmentItem'
+import { SortableComposerAttachments } from '@/components/AssistantChat/SortableComposerAttachments'
 import { ComposerParkingContext } from '@/components/AssistantChat/composerParkingContext'
 import type { ScratchlistParkResult } from '@/lib/scratchlistAttachmentFlow'
 import { useTranslation } from '@/lib/use-translation'
@@ -63,6 +63,7 @@ import { useVoiceInputPreferences } from '@/hooks/useVoiceInputPreferences'
 import { useDictation } from '@/hooks/useDictation'
 import type { ComposerSendIntent } from '@/lib/messageDelivery'
 import type { MessageDeliveryMode } from '@hapi/protocol'
+import { moveAttachmentId, orderItemsById, reconcileAttachmentOrder, type AttachmentDropPosition } from '@/lib/attachmentOrder'
 
 export interface TextInputState {
     text: string
@@ -300,6 +301,7 @@ export function HappyComposer(props: {
     /** Model for the context-window heuristic; see StatusBar.contextModel. */
     contextModel?: string | null
     controlledByUser?: boolean
+    concurrentClients?: boolean
     agentFlavor?: string | null
     availableModelOptions?: Array<{ value: string | null; label: string }>
     /** Full Pi model data with thinkingLevelMap for provider grouping + thinking level filtering */
@@ -381,6 +383,8 @@ export function HappyComposer(props: {
      * queue request after a scratchlist/scheduled/failed early path.
      */
     pendingSendIntentRef?: MutableRefObject<ComposerSendIntent>
+    /** Shared order ref consumed by useHappyRuntime when the message is sent. */
+    attachmentOrderRef?: MutableRefObject<string[]>
     /** Chip hover / aria-label resolver (SessionChat → useSessions). */
     resolveSessionMentionTooltip?: (id: string, title: string) => SessionMentionResolveResult
 }) {
@@ -404,6 +408,7 @@ export function HappyComposer(props: {
         contextWindow,
         contextModel,
         controlledByUser = false,
+        concurrentClients = false,
         agentFlavor,
         availableModelOptions,
         piModels,
@@ -439,6 +444,7 @@ export function HappyComposer(props: {
         onClearSendError,
         onSuppressSendErrorRestore,
         pendingSendIntentRef,
+        attachmentOrderRef: externalAttachmentOrderRef,
         resolveSessionMentionTooltip,
     } = props
 
@@ -456,6 +462,23 @@ export function HappyComposer(props: {
     const { composerEnterBehavior } = useComposerEnterBehavior()
     const composerText = useAuiState((s) => s.composer.text)
     const attachments = useAuiState((s) => s.composer.attachments)
+    const localAttachmentOrderRef = useRef<string[]>([])
+    const attachmentOrderRef = externalAttachmentOrderRef ?? localAttachmentOrderRef
+    const attachmentIds = useMemo(
+        () => attachments.map((attachment) => attachment.id),
+        [attachments],
+    )
+    const orderedAttachmentIds = reconcileAttachmentOrder(attachmentOrderRef.current, attachmentIds)
+    attachmentOrderRef.current = orderedAttachmentIds
+    const [, setAttachmentOrderRevision] = useState(0)
+    const handleAttachmentReorder = useCallback((activeId: string, targetId: string, position: AttachmentDropPosition) => {
+        const currentOrder = reconcileAttachmentOrder(attachmentOrderRef.current, attachmentIds)
+        const nextOrder = moveAttachmentId(currentOrder, activeId, targetId, position)
+        if (nextOrder.every((id, index) => id === currentOrder[index])) return
+        attachmentOrderRef.current = nextOrder
+        setAttachmentOrderRevision((revision) => revision + 1)
+    }, [attachmentIds, attachmentOrderRef])
+    const orderedAttachments = orderItemsById(attachments, orderedAttachmentIds)
     const threadIsRunning = useAuiState((s) => s.thread.isRunning)
     const threadIsDisabled = useAuiState((s) => s.thread.isDisabled)
     const composerTextRef = useRef(composerText)
@@ -621,7 +644,7 @@ export function HappyComposer(props: {
         onEdit: handleRichEdit,
     } = useRichComposerBridge(api, setInputState, sendError, onClearSendError, recordUserEdit)
 
-    const attachmentDrafts = attachments.flatMap((attachment) => {
+    const attachmentDrafts = orderedAttachments.flatMap((attachment) => {
         if (!attachment.file) return []
         const upload = attachment as typeof attachment & { path?: string; previewUrl?: string; uploadSessionId?: string }
         return [{
@@ -981,8 +1004,8 @@ export function HappyComposer(props: {
     }, [switchDisabled, onSwitchToRemote, haptic])
 
     const permissionModeOptions = useMemo(
-        () => getPermissionModeOptionsForFlavor(agentFlavor),
-        [agentFlavor]
+        () => getPermissionModeOptionsForFlavor(agentFlavor).filter(option => !concurrentClients || option.mode !== 'safe-yolo'),
+        [agentFlavor, concurrentClients]
     )
     const collaborationModeOptions = useMemo(
         () => agentFlavor === 'codex' ? getCodexCollaborationModeOptions() : [],
@@ -1139,7 +1162,7 @@ export function HappyComposer(props: {
                 const snapshot = api.composer().getState()
                 const prepared = await props.onParkScratchlist(
                     snapshot.text,
-                    snapshot.attachments,
+                    orderItemsById(snapshot.attachments, attachmentOrderRef.current),
                 )
                 if (!prepared) return
                 // Validate before irreversible add — otherwise a mid-flight
@@ -1213,6 +1236,7 @@ export function HappyComposer(props: {
         props.scratchlistMode,
         richMentionsEnabled,
         sendError,
+        attachmentOrderRef,
         pendingSendIntentRef,
         resetPendingSendIntent,
     ])
@@ -2221,7 +2245,12 @@ export function HappyComposer(props: {
                             <div className={`flex flex-wrap gap-2 px-4 pt-3 ${
                                 isExpanded ? 'max-h-[35%] shrink-0 overflow-y-auto' : ''
                             }`}>
-                                <ComposerPrimitive.Attachments components={{ Attachment: AttachmentItem }} />
+                                <SortableComposerAttachments
+                                    attachments={attachments}
+                                    orderedAttachmentIds={orderedAttachmentIds}
+                                    disabled={controlsDisabled}
+                                    onReorder={handleAttachmentReorder}
+                                />
                             </div>
                         ) : null}
 

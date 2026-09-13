@@ -193,6 +193,15 @@ describe('sessionResume', () => {
         }), 3)).toBe(true)
     })
 
+    it('does not infer a DSH resume id from stale cross-flavor metadata', () => {
+        expect(resolveAgentSessionIdFromMetadata({
+            path: '/p',
+            host: 'h',
+            flavor: 'dsh',
+            claudeSessionId: 'stale-claude-id'
+        })).toBeUndefined()
+    })
+
     it('inactiveSessionCanResume rejects non-recovering flavors with messages but no flavor-specific id', () => {
         expect(inactiveSessionCanResume(makeSession({
             metadata: { path: '/tmp/project', host: 'localhost', flavor: 'grok' },

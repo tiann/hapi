@@ -10,6 +10,7 @@ export const RPC_METHODS = {
     StopRunner: 'stop-runner',
     ListMachineDirectory: 'list-directory',
     PathExists: 'path-exists',
+    AgentAvailability: 'agent-availability',
     CursorChatStoreStatus: 'cursor-chat-store-status',
     GitStatus: 'git-status',
     GitDiffNumstat: 'git-diff-numstat',
@@ -35,6 +36,7 @@ export const RPC_METHODS = {
     ListPiModels: 'listPiModels',
     ListPiSessions: 'listPiSessions',
     ListOpencodeModels: 'listOpencodeModels',
+    ListOpencodeModelVariants: 'listOpencodeModelVariants',
     ListOpencodeModelsForCwd: 'listOpencodeModelsForCwd',
     ListGrokModelsForCwd: 'listGrokModelsForCwd',
     ListGrokModels: 'listGrokModels',
@@ -47,6 +49,7 @@ export const RPC_METHODS = {
     SteerQueuedMessage: 'steer-queued-message',
     ForkConversation: 'fork-conversation',
     RewindConversation: 'rewind-conversation',
+    ClearConversation: 'clear-conversation',
 } as const
 
 export const RPC_TARGET_MISSING_ERROR_CODE = 'rpc_target_missing' as const
