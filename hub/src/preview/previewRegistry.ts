@@ -54,9 +54,18 @@ export class PreviewRegistry {
      * must revoke the capability, not just future lookups.
      */
     constructor(
-        private readonly publicUrl: string,
+        private publicUrl: string,
         private readonly onRemove: (mountId: string) => void = () => {}
     ) {}
+
+    /**
+     * Relay mode learns its public address only after the web server (and this
+     * registry) exist — when the hub URL was left at its localhost default,
+     * the tunnel origin becomes the link base for later registrations.
+     */
+    setPublicUrl(publicUrl: string): void {
+        this.publicUrl = publicUrl
+    }
 
     /** Lookup + touch. Returns null for unknown (caller decides 404 vs 410). */
     get(mountId: string, now = Date.now()): PreviewMountEntry | null {

@@ -146,4 +146,15 @@ describe('PreviewRegistry', () => {
         registry.sweep(Date.now() + 10 * 60_000)
         expect(removed).toEqual([MOUNT_ID, MOUNT_ID_2])
     })
+
+    it('rebuilds links from the active relay address after setPublicUrl', () => {
+        const registry = new PreviewRegistry('http://localhost:3006')
+        let ack = registry.register(descriptor({ mountId: MOUNT_ID_2, name: 'before' }), ctx())
+        expect(ack.ok && ack.url.startsWith('http://localhost:3006/')).toBe(true)
+
+        registry.setPublicUrl('https://my-hub.relay.example')
+
+        ack = registry.register(descriptor(), ctx())
+        expect(ack.ok && ack.url.startsWith('https://my-hub.relay.example/')).toBe(true)
+    })
 })

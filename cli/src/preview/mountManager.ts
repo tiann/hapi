@@ -237,10 +237,12 @@ export class PreviewMountManager {
     }
 
     private async refresh(mount: PreviewMount, ttlHours: number | undefined): Promise<PreviewMount> {
+        // An explicit remount is a fresh tool call: apply the requested (or
+        // documented default) TTL instead of quietly retaining whatever
+        // remaining lifetime the old registration had — reconnects keep that
+        // remaining-lifetime behavior, tool calls do not.
         const descriptor = this.descriptorOf(mount)
-        if (ttlHours !== undefined) {
-            descriptor.ttlSeconds = this.ttlSeconds(ttlHours)
-        }
+        descriptor.ttlSeconds = this.ttlSeconds(ttlHours)
         const ack = await this.registerDescriptor(descriptor)
         if (!ack?.ok) {
             throw new Error(this.ackError(ack))

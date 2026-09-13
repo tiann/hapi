@@ -10,8 +10,9 @@ import type { PreviewFrame } from '@hapi/protocol/preview'
 const MOUNT_ID = '5f0c9a2e-1b3d-4e5f-8a9b-0c1d2e3f4a5b'
 const tempSite = mkdtempSync(join(tmpdir(), 'hapi-preview-mgr-'))
 
-function makeSocket(connected = true): { adapter: PreviewSocketAdapter & RegistrySocketAdapter; sent: PreviewFrame[]; setConnected: (value: boolean) => void; register: (ack: unknown) => void; unregistered: unknown[] } {
+function makeSocket(connected = true): { adapter: PreviewSocketAdapter & RegistrySocketAdapter; sent: PreviewFrame[]; setConnected: (value: boolean) => void; register: (ack: unknown) => void; registered: Record<string, unknown>[]; unregistered: unknown[] } {
     const sent: PreviewFrame[] = []
+    const registered: Record<string, unknown>[] = []
     const unregistered: unknown[] = []
     let isConnected = connected
     let registerAck: unknown = null
@@ -28,13 +29,16 @@ function makeSocket(connected = true): { adapter: PreviewSocketAdapter & Registr
             sent.push(frame)
             return true
         },
-        register: async () => registerAck as never,
+        register: async (descriptor: Record<string, unknown>) => {
+            registered.push(descriptor)
+            return registerAck as never
+        },
         unregister: async (request: unknown) => {
             unregistered.push(request)
             return { ok: true }
         }
     }
-    return { adapter: adapter as PreviewSocketAdapter & RegistrySocketAdapter, sent, setConnected, register, unregistered }
+    return { adapter: adapter as PreviewSocketAdapter & RegistrySocketAdapter, sent, setConnected, register, registered, unregistered }
 }
 
 function openFrame() {
@@ -212,5 +216,22 @@ describe('PreviewMountManager', () => {
         expect(socket.unregistered).toEqual([{ mountId: first.mountId }])
         expect(manager.get('a')?.mountId).toBe(second.mountId)
         rmSync(secondSite, { recursive: true, force: true })
+    })
+
+    it('applies the default TTL on an explicit remount without ttlHours', async () => {
+        // A remount of a stale entry (nearly expired) is a fresh tool call —
+        // the descriptor must NOT carry the clamped remaining 30 s lifetime;
+        // `undefined` lets the hub apply PREVIEW_DEFAULT_TTL_SECONDS.
+        socket.register({ ok: true, url: 'http://hub/preview/x/', mountId: MOUNT_ID, expiresAt: Date.now() + 20_000 })
+        const manager = new PreviewMountManager(socket.adapter)
+        await manager.mountStatic({ path: tempSite, name: 'a' })
+
+        // The hub accepts ttlSeconds: undefined and answers with the default.
+        socket.register({ ok: true, url: 'http://hub/preview/x/', mountId: MOUNT_ID, expiresAt: Date.now() + 12 * 3600_000 })
+        const again = await manager.mountStatic({ path: tempSite, name: 'a' })
+
+        const descriptor = socket.registered.at(-1) as { ttlSeconds?: number }
+        expect(descriptor.ttlSeconds).toBeUndefined()
+        expect(again.expiresAt).toBeGreaterThan(Date.now() + 3600_000)
     })
 })

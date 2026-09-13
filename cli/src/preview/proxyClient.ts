@@ -26,6 +26,8 @@ import type { PreviewMount } from './mountManager'
 
 const HTML_REWRITE_LIMIT = 2 * 1024 * 1024
 const WS_MAX_PAYLOAD = 64 * 1024 * 1024
+/** Aggregate browser bytes buffered while the upstream WS handshake pends. */
+const WS_HANDSHAKE_QUEUE_BYTES = 1024 * 1024
 
 /** Upstreams only ever speak to loopback; enforced at mount + serve time. */
 function resolveTarget(mount: PreviewMount): URL {
@@ -267,8 +269,11 @@ function serveProxyWs(mount: PreviewMount, frame: PreviewOpenFrame, sink: Previe
     let closed = false
     let upstreamOpen = false
     // Browsers (vite HMR) send the first app frame immediately after the
-    // upgrade; the upstream client may still be CONNECTING — buffer until open.
+    // upgrade; the upstream client may still be CONNECTING — buffer until
+    // open. The buffer is byte-capped: a stalled upstream handshake must not
+    // let a link holder exhaust agent memory.
     const pendingOutbound: Array<{ payload: string | Uint8Array; isText: boolean }> = []
+    let pendingBytes = 0
     try {
         ws = new WebSocket(wsUrl, protocols, {
             perMessageDeflate: false,
@@ -286,6 +291,7 @@ function serveProxyWs(mount: PreviewMount, frame: PreviewOpenFrame, sink: Previe
         for (const { payload, isText } of pendingOutbound.splice(0)) {
             ws.send(payload, { binary: !isText })
         }
+        pendingBytes = 0
     })
     ws.on('message', (data: Buffer, isBinary: boolean) => {
         if (closed) return
@@ -307,6 +313,15 @@ function serveProxyWs(mount: PreviewMount, frame: PreviewOpenFrame, sink: Previe
         onWsMessage(isText, payload) {
             if (closed) return
             if (!upstreamOpen) {
+                const bytes = typeof payload === 'string' ? Buffer.byteLength(payload) : payload.byteLength
+                if (pendingBytes + bytes > WS_HANDSHAKE_QUEUE_BYTES) {
+                    closed = true
+                    pendingOutbound.length = 0
+                    ws.terminate()
+                    sink.wsClose(1009, 'Preview buffer limit exceeded')
+                    return
+                }
+                pendingBytes += bytes
                 pendingOutbound.push({ payload, isText })
                 return
             }

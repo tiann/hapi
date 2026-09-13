@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createServer, type Server } from 'node:http'
+import { createServer as createNetServer } from 'node:net'
 import { once } from 'node:events'
 
 import {
@@ -131,4 +132,48 @@ describe('serveProxyMount backpressure', () => {
         handlers.onClose?.()
         ;(upstream as Server).close()
     }, 10_000)
+})
+
+describe('serveProxyMount WS handshake queue', () => {
+    it('bounds browser bytes queued while the upstream handshake stalls', async () => {
+        // Accepts TCP but never speaks — the ws client handshake stays pending
+        // for the full handshake timeout, like a wedged dev server.
+        const stalled = createNetServer(() => {})
+        stalled.listen(0, '127.0.0.1')
+        await once(stalled, 'listening')
+        const port = (stalled.address() as { port: number }).port
+
+        const mount: PreviewMount = {
+            mountId: '5f0c9a2e-1b3d-4e5f-8a9b-0c1d2e3f4a5b',
+            kind: 'proxy',
+            name: 'dev',
+            port,
+            ws: true,
+            publicUrl: 'http://hub/preview/5f0c9a2e-1b3d-4e5f-8a9b-0c1d2e3f4a5b/',
+            expiresAt: Date.now() + 3600_000,
+            createdAt: Date.now()
+        }
+        const closes: Array<{ code: number; reason?: string }> = []
+        const sink: PreviewConnSink = {
+            respond() {},
+            data() {},
+            end() {},
+            error() {},
+            wsMessage() {},
+            wsClose(code, reason) {
+                closes.push({ code, reason })
+            },
+            close() {}
+        }
+
+        const handlers = serveProxyMount(mount, frame({ kind: 'ws', path: 'ws' }), sink)
+        // 20 × 64 KiB of individually valid messages > the 1 MiB queue budget.
+        for (let i = 0; i < 20; i++) {
+            handlers.onWsMessage?.(true, 'x'.repeat(64 * 1024))
+        }
+
+        expect(closes.some((c) => c.code === 1009)).toBe(true)
+        handlers.onClose?.()
+        stalled.close()
+    })
 })
