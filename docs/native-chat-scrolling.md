@@ -58,6 +58,17 @@ A custom layout retains stable-ID height estimates across snapshots, applies
 offset adjustments within UIKit layout, and compensates self-sizing changes
 above the viewport. Snapshot commits are serialized/coalesced. Viewport resize
 keeps the live bottom pinned only while following the tail.
+
+The latest-button affordance is separate from tail-following intent. Small
+upward drags keep their reading offset without immediately showing the button.
+It appears at 80pt from the retained bottom and hides at 24pt, retaining its
+previous visibility between those thresholds. Hiding never resumes following;
+the actual-bottom tolerance remains 1pt. The collection reports a hysteretic
+Boolean rather than publishing per-frame distances. A trimmed live tail,
+in-flight latest navigation, or an inspection pause awaiting explicit resume
+keeps the action available regardless of proximity. Failed catch-up retains
+the retry action. Thresholds do not change history demand or retention.
+
 Visible-rectangle queries binary-search the ordered frame array, then visit
 only intersecting rows (`O(log n + visible rows)`). Height changes update the
 affected suffix's geometry, without allocating attributes for offscreen rows.

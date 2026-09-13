@@ -532,6 +532,7 @@ export function HappyThread(props: {
     metadata: SessionMetadataSummary | null
     disabled: boolean
     onRefresh: () => void
+    onContinuePlan?: () => void
     onRetryMessage?: (localId: string) => void
     historyActionPending?: boolean
     onForkConversation?: (messageLocalId?: string) => Promise<void>
@@ -1702,6 +1703,9 @@ export function HappyThread(props: {
             showSessionSummaryInChat,
             disabled: props.disabled,
             onRefresh: props.onRefresh,
+            codexPlanProposalId: props.session.active && props.session.metadata?.capabilities?.concurrentClients
+                ? props.session.agentState?.codexPlanProposalId : null,
+            onContinuePlan: props.onContinuePlan,
             onRetryMessage: props.onRetryMessage,
             historyActionPending: props.historyActionPending,
             onForkConversation: props.onForkConversation,

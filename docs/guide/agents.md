@@ -13,7 +13,7 @@ agent's integration; their supported syntax varies by agent.
 | Agent | Command | Integration | Local | Remote | Permission modes | Resume |
 |-------|---------|-------------|:-----:|:------:|------------------|:------:|
 | Claude Code | `hapi claude` | Terminal wrapper (local) + Claude Agent SDK (remote) | ✓ | ✓ | `default` `acceptEdits` `auto` `bypassPermissions` `plan` | ✓ |
-| Codex | `hapi codex` | TUI wrapper (local) + `codex app-server` JSON-RPC (remote) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` (+ `plan` collaboration mode) | ✓ |
+| Codex | `hapi codex` | Native terminal + `codex app-server` (Codex 0.154.0+) | ✓ | ✓ | `default` `read-only` `yolo` (+ `plan` collaboration mode) | ✓ |
 | Cursor Agent | `hapi cursor` | ACP (`agent acp`); legacy stream-json resume | ✓ | ✓ | `default` `plan` `ask` `debug` `autoReview` `yolo` | ✓ |
 | Grok Build | `hapi grok` | ACP (`grok agent stdio`) | ✓ | ✓ | `default` `auto` `plan` `bypassPermissions` | ✓ |
 | GitHub Copilot | `hapi copilot` | ACP (`copilot --acp --stdio`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
@@ -38,10 +38,10 @@ Permission modes are per-agent — each flavor exposes its own set (see the matr
 
 ### Local and remote mode
 
-Every session is either **local** (driven from the terminal) or **remote** (driven from web/phone). DSH is remote-only because its ACP server has no local terminal surface. Switching is seamless and keeps the same session state for flavors that support both:
+Work **locally** in the terminal or **remotely** from web/phone, keeping the same conversation when you hand off. The support matrix shows which interfaces each agent offers; DSH, Pi, and Antigravity accept input only through HAPI's remote interface.
 
-- **Remote → local:** press double-space in the terminal.
-- **Local → remote:** send a message from the web UI or phone; the session switches automatically.
+- **Remote → local:** continue in the terminal. If it shows the remote-control screen, press double-space to return to local input.
+- **Local → remote:** send a message from the web UI or phone; HAPI handles the handoff.
 
 See [Seamless Handoff](./how-it-works.md#seamless-handoff) for details.
 
@@ -52,7 +52,7 @@ hapi resume                # Interactive picker of resumable sessions on this ma
 hapi resume <session-id>   # Resume a specific HAPI session
 ```
 
-`hapi resume` works for every resumable flavor except Gemini and fresh-session-only DSH. An active remote session is handed off to the local terminal first. Pi and Antigravity are the exceptions in the other direction: neither has a local input path, so their sessions always resume in remote mode.
+`hapi resume` reopens the conversation on this machine, including active sessions you were using from your phone. Gemini and fresh-session-only DSH cannot be resumed. Pi and Antigravity resume with input still controlled from HAPI rather than the terminal.
 
 ## Cursor Agent
 
@@ -271,7 +271,7 @@ overall permission policy.
 ## Other agents
 
 - **Claude Code** (`hapi claude`) — local sessions wrap the native TUI, remote sessions drive the Claude Agent SDK. [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code)
-- **Codex** (`hapi codex`) — OpenAI's Codex CLI; remote sessions talk to `codex app-server` over JSON-RPC, with a dedicated `plan` collaboration mode. [openai/codex](https://github.com/openai/codex)
+- **Codex** (`hapi codex`) — OpenAI's Codex CLI, with terminal/Web control and a dedicated `plan` mode. See [Codex usage and limits](./codex-shared-sessions.md) for resume, terminal-exit behavior, and launch options. [openai/codex](https://github.com/openai/codex)
 - **GitHub Copilot** (`hapi copilot`) — Copilot CLI over ACP (`copilot --acp --stdio`). [GitHub Copilot](https://github.com/features/copilot)
 - **Kimi** (`hapi kimi`) — Moonshot AI's Kimi CLI over ACP (`kimi acp`). [MoonshotAI/kimi-cli](https://github.com/MoonshotAI/kimi-cli)
 - **OpenCode** (`hapi opencode`) — the open-source OpenCode agent over ACP (`opencode acp`). [opencode.ai](https://opencode.ai)

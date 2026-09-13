@@ -69,12 +69,15 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1' || process.platf
                 const id = randomUUID();
                 const question = prompt.includes('ASK_SHARED') && !outputs.length;
                 const environment = prompt.includes('CHECK_ROOT_ENV') && !outputs.length;
+                const proposal = prompt.includes('PLAN_FROM_TERMINAL');
                 const item = question ? { type: 'function_call', call_id: `ask_${id}`, name: 'request_user_input', arguments: JSON.stringify({
                     questions: [{ id: 'choice', header: 'Choice', question: 'Choose a shared client', options: [
                         { label: 'Terminal', description: 'Native answer' }, { label: 'Web', description: 'Web answer' }
                     ] }]
                 }) } : environment ? { type: 'function_call', call_id: `env_${id}`, name: 'exec_command', arguments: JSON.stringify({ cmd: 'printf "ROOT=%s\\n" "$HAPI_SESSION_ID"' }) }
-                    : { type: 'message', role: 'assistant', id: `msg_${id}`, content: [{ type: 'output_text', text: `MOCK_DONE ${prompt} ${JSON.stringify(outputs)}` }] };
+                    : { type: 'message', role: 'assistant', id: `msg_${id}`, content: [{ type: 'output_text', text: proposal
+                        ? '<proposed_plan>\n# Shared test plan\n\n1. Inspect the source\n2. Implement and verify\n</proposed_plan>'
+                        : `MOCK_DONE ${prompt} ${JSON.stringify(outputs)}` }] };
                 const events = [{ type: 'response.created', response: { id } }, { type: 'response.output_item.done', item },
                     { type: 'response.completed', response: { id, usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } } }];
                 response.writeHead(200, { 'Content-Type': 'text/event-stream' });
@@ -151,6 +154,58 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1' || process.platf
             await eventually(async () => webEvents, hasSharedReply, 'Web answer over live SSE');
             await eventually(() => api(`/sessions/${sessionId}/messages`), value => hasReply(value, 'HELLO_SHARED'), 'Web answer persisted');
             await eventually(detail, value => !record(value.session).thinking, 'native turn idle');
+            // Formal plans are native items, while the confirmation menu lives only in the TUI.
+            const nativeThreadId = String(record(record(runtime.sessions)[sessionId]).threadId);
+            const planCards = async () => {
+                const response = await api(`/sessions/${sessionId}/messages`);
+                return (Array.isArray(response.messages) ? response.messages : [])
+                    .map(message => record(record(record(record(message).content).content).data))
+                    .filter(message => message.name === 'ExitPlanMode');
+            };
+            const implementationMessages = async () => {
+                const response = await api(`/sessions/${sessionId}/messages`);
+                return (Array.isArray(response.messages) ? response.messages : []).map(message => record(record(message).content))
+                    .filter(content => content.role === 'user' && record(content.content).text === 'Implement the plan.');
+            };
+            const setPlanMode = async () => {
+                await client!.request('thread/settings/update', { threadId: nativeThreadId, collaborationMode: {
+                    mode: 'plan', settings: { model: 'mock-model', reasoning_effort: null, developer_instructions: null }
+                } });
+                await eventually(detail, value => record(value.session).collaborationMode === 'plan', 'Plan mode restored');
+            };
+            const propose = async () => {
+                const start = output.length;
+                first.stdin.write('PLAN_FROM_TERMINAL'); await new Promise(resolve => setTimeout(resolve, 150)); first.stdin.write('\r');
+                await eventually(async () => output.slice(start), text => text.includes('Implement this plan?'), 'native plan menu');
+                const value = await eventually(detail, value => typeof record(record(value.session).agentState).codexPlanProposalId === 'string', 'Web plan actions');
+                const planId = String(record(record(value.session).agentState).codexPlanProposalId);
+                await eventually(planCards, cards => cards.some(card => card.callId === planId), 'durable plan card');
+                expect(record(record(value.session).agentState).requests).toEqual({});
+                return planId;
+            };
+            const nativePlanId = await propose();
+            first.stdin.write('\r'); // Yes, implement this plan in the native TUI.
+            await eventually(detail, value => record(value.session).collaborationMode === 'default'
+                && !record(record(value.session).agentState).codexPlanProposalId, 'native plan action reflected in Web');
+            await eventually(() => api(`/sessions/${sessionId}/messages`), value => hasReply(value, 'Implement the plan.'), 'native implementation completed');
+            expect(await implementationMessages()).toHaveLength(1);
+            expect((await planCards()).filter(card => card.callId === nativePlanId)).toHaveLength(1);
+            await setPlanMode();
+            const webPlanId = await propose();
+            expect(webPlanId).not.toBe(nativePlanId);
+            await api(`/sessions/${sessionId}/codex/plan/implement`, { planId: webPlanId });
+            await eventually(detail, value => record(value.session).collaborationMode === 'default'
+                && !record(record(value.session).agentState).codexPlanProposalId, 'Web execution confirmed natively');
+            // Retrying an acknowledged action must not submit another native message.
+            await eventually(implementationMessages, value => value.length === 2, 'Web implementation reached native history');
+            await api(`/sessions/${sessionId}/codex/plan/implement`, { planId: webPlanId });
+            await eventually(detail, value => !record(value.session).thinking, 'Web plan execution idle');
+            expect(await implementationMessages()).toHaveLength(2);
+            expect((await planCards()).filter(card => card.callId === webPlanId)).toHaveLength(1);
+            // Codex 0.154 does not resolve another client's local plan menu over
+            // app-server. Dismiss it before sending later keyboard commands.
+            first.stdin.write('\x1b'); await new Promise(resolve => setTimeout(resolve, 150));
+            await setPlanMode();
             await send('ASK_SHARED');
             const pending = await eventually(detail, value => Object.keys(record(record(record(value.session).agentState).requests)).length > 0, 'Web question');
             const requestId = Object.keys(record(record(record(pending.session).agentState).requests))[0];
@@ -229,6 +284,10 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1' || process.platf
             await client.request('hapi/stopSession', { sessionId: coldClear.sessionId });
             await send('AFTER_WEB_RESUME');
             await eventually(() => api(`/sessions/${sessionId}/messages`), value => hasReply(value, 'AFTER_WEB_RESUME'), 'Web reply after resume');
+            const replayedPlans = await planCards();
+            expect(replayedPlans.filter(card => card.callId === nativePlanId)).toHaveLength(1);
+            expect(replayedPlans.filter(card => card.callId === webPlanId)).toHaveLength(1);
+            expect(record(record((await detail()).session).agentState).codexPlanProposalId).toBeNull();
             const attachOutput = output.length;
             const attached = openTerminal(['resume', sessionId]);
             await eventually(async () => output.slice(attachOutput), text => text.includes('AFTER_WEB_RESUME'), 'attach to Runner-created execution');

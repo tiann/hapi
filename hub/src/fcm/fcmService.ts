@@ -16,7 +16,7 @@ export type FcmDataPayload = {
      * later. Independent of `type` because `task-notification` is one
      * type that splits across success and failure outcomes.
      *
-     *  - `info`     ready / ambient ('no action needed') -> blue
+     *  - `info`     ready / input request                -> blue
      *  - `success`  task completed                       -> green
      *  - `warning`  permission request                   -> amber
      *  - `error`    task failed / aborted                -> red

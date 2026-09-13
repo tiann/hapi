@@ -9,7 +9,12 @@ binding (requires Telegram `initData`).
 
 ## Scope
 
-A companion implementing this contract is a **native client to the same hub the PWA talks to**, surfacing notifications and reply / approve actions on a phone or wearable. Hub topology is unchanged - the hub still runs on the operator's dev machine.
+A companion implementing this contract is a **native client to the same hub the PWA talks to**, surfacing notifications and reply / approve actions on a phone or wearable. The hub may run on the operator's development machine or a separate host; agents execute on their CLI/Runner machines.
+
+This page specifies background push. The repository's iOS and Android phone
+apps also provide interactive sessions and chat; see the [native app guide](../guide/native-apps.md)
+and [client contract](./client-contract/index.md). The hub retains direct-FCM
+support for `wear` registrations; the repository does not include a Wear OS app.
 
 ---
 
@@ -40,7 +45,7 @@ registry; no schema or database version change is required.
 
 **Response:** `{ "ok": true }`
 
-Upsert on `(namespace, deviceId, platform)` - same device re-registering replaces the FCM token.
+Upsert on `(namespace, deviceId, platform)` - same device re-registering replaces its push token.
 
 ### Unregister
 
@@ -68,19 +73,48 @@ receipt.
 
 | Key | Example | Purpose |
 |-----|---------|---------|
-| `type` | `ready` | `ready`, `permission-request`, `task-notification` |
+| `type` | `ready` | `ready`, `permission-request`, `input-request`, `task-notification` |
 | `sessionId` | uuid | Target session |
 | `sessionName` | string | Display name (`agent - project`) |
 | `url` | `/sessions/{id}` | Deep link path |
-| `requestId` | uuid | Permission only - approve/deny |
+| `requestId` | request-id | Pending request map key: approve/deny for permission, correlation only for input |
 | `title` | string | Notification title |
 | `body` | string | Notification body |
-| `severity` | `info` | `info` (ready), `warning` (permission), `success` / `error` (task) |
+| `severity` | `info` | `info` (ready/input), `warning` (permission), `success` / `error` (task) |
 | `contractVersion` | `1` | Present on every message; see [Versioning](#versioning) |
 | `notifySummary` | JSON string | Only on `ready`: parsed `AGENT_NOTIFY_SUMMARY` line from agent text, when present |
 
 Direct FCM is data-only. Android relay messages contain the encrypted wrapper
 below; after decryption the same data contract drives rendering and actions.
+
+### Questions (`input-request`)
+
+User questions are not tool approvals. The hub emits `input-request` for
+`request_user_input`, `AskUserQuestion`, `ask_user_question`, and
+`CursorAskQuestion` (including the known `functions.` wrapper). Plan approval
+(`ExitPlanMode`), async tools and arbitrary MCP name suffixes are not classified
+as questions.
+
+The title is `<agent> needs your input`. The body starts with the first readable
+question (falling back to its `header`), then `+N more question(s)` for remaining
+readable questions, then the session name. Whitespace is flattened within each
+line. The body is capped at 280 Unicode code points, with at most 80 for the
+session name, truncating only at grapheme boundaries. No options, prefilled
+answers, protocol IDs or raw tool arguments appear in the preview. Malformed
+input falls back to `Open the session to view and answer the question.`
+
+Clients render this type with **tap-to-open only**: no Allow/Deny and no ordinary
+message Reply, even when `requestId` is present. Users answer using the existing
+session question form. Android routes it to the separate `input_requests`
+HIGH-importance channel; iOS assigns no action category. Apple Watch currently
+mirrors the preview, with answering left to the phone (no watchOS app or inline
+answer flow). The `input-request-<sessionId>` identity keeps questions separate
+from permission notifications.
+
+This is an additive type in contract version 1. Existing unknown-type handling
+already renders title/body without type-specific actions. The hub retains the
+current first-pending selection and debounce behavior; this does not change
+request scheduling, answer APIs or notification withdrawal.
 
 ### Client actions (native - not hub)
 
@@ -92,7 +126,9 @@ below; after decryption the same data contract drives rendering and actions.
 
 `localId` is optional in the send-message body - an opaque client-generated id for reconciling the locally shown message with the server-echoed one.
 
-`sentFrom` extension (optional future): `android-phone`, `android-wear`.
+The REST send endpoint stamps `sentFrom: 'webapp'` server-side for native
+and web sends alike; clients do not send a `sentFrom` field. See
+[Messages](./client-contract/rest.md#messages).
 
 ---
 
@@ -167,8 +203,10 @@ can read notification content (PUSH SPEC v1).
   (e.g. `SecRandomCopyBytes`), base64-encoded. This is the per-device E2E
   encryption key; the hub validates it decodes to exactly 32 bytes and
   rejects the registration otherwise. Keep it in the Keychain (shared with
-  the Notification Service Extension via an app group). Rotate it by
-  re-registering.
+  the Notification Service Extension via a Keychain access group). Both
+  iOS targets declare `$(AppIdentifierPrefix)run.hapi.companion.push` in
+  `keychain-access-groups`; no App Group container is used for this key.
+  Rotate it by re-registering.
 - Upsert on `(namespace, deviceId, platform)`, same as Android. Unregister
   is the same `DELETE /api/devices/register` `{ "token": ... }`.
 
@@ -188,7 +226,7 @@ AAD      = ASCII "hapi-push-v1"
 ```
 
 Golden test vector (key `0x00..0x1f`, nonce `0x00..0x0b`):
-[`shared/fixtures/push/envelope-v1.json`](../../shared/fixtures/push/envelope-v1.json) -
+[`shared/fixtures/push/envelope-v1.json`](https://github.com/tiann/hapi/blob/main/shared/fixtures/push/envelope-v1.json) -
 the iOS implementation must reproduce it byte-for-byte.
 
 ### APNs request (what the device receives)
@@ -239,6 +277,13 @@ APNS_TEAM_ID=YYYYYYYYYY
 APNS_BUNDLE_ID=your.ios.bundle.id
 APNS_ENV=production   # or sandbox (Xcode/dev builds)
 ```
+
+Direct APNs credentials must match the app's signing developer account and
+bundle ID, and `APNS_ENV` must match the environment of its device token.
+Changing the developer account or bundle ID for a self-build requires matching
+provider configuration; the official relay's credentials cannot deliver to
+an arbitrary self-signed app. A self-hosted relay must use matching credentials
+as well. See the [iOS build instructions](https://github.com/tiann/hapi/blob/main/ios/README.md#push-notifications).
 
 Relay protocol (for self-hosted relays): `POST {relayUrl}/v1/push` with
 `{"platform":"ios","token":"<hex>","envelope":"<base64>","collapseId":"...","priority":10}`;

@@ -32,6 +32,7 @@ See `src/router.tsx` for route definitions.
 - `/sessions/$sessionId/files` - File browser with git status.
 - `/sessions/$sessionId/file` - File viewer with diff support.
 - `/sessions/$sessionId/terminal` - Terminal interface.
+- `/browse` - Workspace browser, enabled by the runner's configured workspace roots.
 - `/share` - Share-target landing (Web Share Target POST → `?id=`, or native `/share#url=&text=&title=`).
 - `/settings` - Settings category hub (mobile) and responsive master-detail shell.
 - `/settings/general` - Language preferences.
@@ -40,6 +41,8 @@ See `src/router.tsx` for route definitions.
 - `/settings/voice` - Everyday voice assistant preferences.
 - `/settings/voice/voices` - Full-page voice picker.
 - `/settings/voice/advanced` - Voice persona, tuning, and diagnostics.
+- `/settings/machines` - Machine management and runner status.
+- `/settings/storage` - SQLite storage sizes for the hub owner.
 - `/settings/usage` - Cache-aware token usage dashboard for the hub owner.
 - `/settings/about` - Application links and version information.
 
@@ -51,21 +54,20 @@ See `src/router.tsx` for route definitions.
 - Session title from name, summary, or path.
 - Todo progress display.
 - Pending permission request count.
-- Agent flavor label (claude/codex/gemini).
-- Model mode display.
+- Agent name and model display.
 
 ### Chat interface (`src/components/SessionChat.tsx`)
 
 - Message thread with infinite scroll.
 - Composer for sending messages.
-- Permission mode toggle (default/acceptEdits/auto/bypassPermissions/plan).
-- Model selection (default/sonnet/sonnet[1m]/opus/opus[1m]).
-- Session abort and mode switch controls.
+- Permission mode and model selection for supported agents.
+- Session abort and handoff controls.
 - Context size display.
 - Per-session scratchlist (`src/components/AssistantChat/ScratchlistPanel.tsx`)
   - Workbench panel for held notes/drafts; **distinct from the queue**.
   - Add/delete/reorder entries; promote to composer (copy) or queue (send).
-  - Persists across reloads via `localStorage` keyed per session.
+  - Entries and attachments saved on the hub and synced across devices.
+  - Reordering affects only the current view and resets when entries refresh.
   - Keyboard shortcut: Ctrl/Cmd+Shift+S to focus the add-input.
 
 ### File browser (`src/routes/sessions/files.tsx`)
@@ -82,12 +84,12 @@ See `src/router.tsx` for route definitions.
 ### Terminal (`src/routes/sessions/terminal.tsx`)
 
 - Remote terminal via xterm.js
-- Real-time via Socket.IO
+- Real-time via Socket.IO `/terminal`
 - Resize handling
 
 ### Voice assistant
 
-- ElevenLabs integration (@elevenlabs/react)
+- ElevenLabs (@elevenlabs/react), Gemini Live, and Qwen Realtime backends
 - Real-time voice control
 - Standard and realtime composer dictation with provider capability selection
 
@@ -99,7 +101,20 @@ Modular session creation:
 - Directory input with recent paths
 - Agent type selector
 - Model selector
-- Permission mode toggle (YOLO mode)
+- Per-agent permission, effort, and collaboration controls when supported
+
+### First-User-Experience (FUE)
+
+For a new, non-essential feature whose affordance would otherwise be hard to
+discover, consider the existing FUE primitive rather than a permanent UI block.
+Optional, not a requirement for every feature or a reason to expand a bug fix.
+
+- `src/lib/use-fue.ts`: `useFue(featureId)` returns `{ status, engage, dismiss }`; acknowledgement is isolated per feature in `hapi.fue.v1.<featureId>` localStorage keys.
+- `src/components/Fue.tsx`: `FueDot` marks the affordance; `FueCallout` explains it while `status === 'engaging'`.
+- Dismissal requires an affirmative user action ("Got it"), never an auto-timeout.
+- The FUE dot and feature-specific badges/counters are mutually exclusive; onboarding wins until acknowledged.
+- Opt in per feature; skip the wrapper if an upstream component already supplies onboarding.
+- Working example: `ScratchlistToggleButton` in `src/components/AssistantChat/ComposerButtons.tsx`. Use the source rather than maintaining a copied example here.
 
 ## Authentication
 

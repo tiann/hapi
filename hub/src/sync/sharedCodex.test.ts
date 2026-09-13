@@ -20,6 +20,22 @@ function fixture() {
 }
 
 describe('shared Codex hub binding', () => {
+    it('guards plan actions by namespace and runtime, leaving stale-plan and retry validation to CLI', async () => {
+        const { engine, create, rpc } = fixture()
+        try {
+            const source = create('source')
+            const unsupported = create('other', { flavor: 'claude' })
+            const calls: string[][] = []
+            rpc.implementCodexPlan = async (...args) => { calls.push(args); return { ok: true } }
+            expect(await engine.implementCodexPlan(source.id, 'other-namespace', 'plan')).toMatchObject({ ok: false })
+            expect(await engine.implementCodexPlan(unsupported.id, 'default', 'plan')).toMatchObject({ ok: false })
+            expect(calls).toHaveLength(0)
+            // The hub can lag the native plan state, including after an accepted action's lost reply.
+            expect(await engine.implementCodexPlan(source.id, 'default', 'plan')).toEqual({ ok: true })
+            expect(calls).toEqual([[source.id, 'plan']])
+        } finally { engine.stop() }
+    })
+
     it('uses the already-bound fork child without spawning a second engine', async () => {
         const { engine, create, rpc } = fixture()
         try {

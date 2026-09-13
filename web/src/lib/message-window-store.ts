@@ -591,7 +591,20 @@ function applyLatestResponse(
         requestBaseline: Map<string, DecryptedMessage>
     }
 ): InternalState {
-    const retainedResponseMessages = response.messages.filter(shouldRetainWindowMessage)
+    const dismissedIds = new Set(
+        previous.messages
+            .filter((message) => message.queueDismissed)
+            .map((message) => message.id)
+    )
+    const retainedResponseMessages = response.messages
+        .filter(shouldRetainWindowMessage)
+        .map((message) => (
+            dismissedIds.has(message.id)
+            && message.invokedAt === null
+            && message.deliveryState === 'indeterminate'
+                ? { ...message, queueDismissed: true }
+                : message
+        ))
     const concurrentServerRows = previous.messages.filter((message) => (
         !optimisticMessage(message)
         && options.requestBaseline.get(message.id) !== message
@@ -1272,11 +1285,19 @@ export function markMessagesRequeued(sessionId: string, localIds: string[]): voi
     updateState(sessionId, (previous) => {
         let changed = false
         const messages = previous.messages.map((message) => {
-            if (!message.localId || !idSet.has(message.localId) || message.deliveryState === undefined) {
+            if (
+                !message.localId
+                || !idSet.has(message.localId)
+                || (message.deliveryState === undefined && message.queueDismissed !== true)
+            ) {
                 return message
             }
             changed = true
-            const { deliveryState: _deliveryState, ...requeued } = message
+            const {
+                deliveryState: _deliveryState,
+                queueDismissed: _queueDismissed,
+                ...requeued
+            } = message
             return requeued
         })
         return changed ? buildState(previous, { messages }) : previous
@@ -1300,11 +1321,12 @@ export function markMessagesConsumed(
             const needsStatus = message.status !== 'sent'
             const needsInvokedAt = message.invokedAt === null
             const needsSteered = steered === true && message.steered !== true
-            if (!needsStatus && !needsInvokedAt && !needsSteered) return message
+            const needsClearDismiss = message.queueDismissed === true
+            if (!needsStatus && !needsInvokedAt && !needsSteered && !needsClearDismiss) return message
             changed = true
-            const { deliveryState: _deliveryState, ...withoutDeliveryState } = message
+            const { deliveryState: _deliveryState, queueDismissed: _queueDismissed, ...withoutClientHold } = message
             return {
-                ...withoutDeliveryState,
+                ...withoutClientHold,
                 ...(needsStatus ? { status: 'sent' as MessageStatus } : {}),
                 ...(needsInvokedAt ? { invokedAt } : {}),
                 ...(needsSteered ? { steered: true } : {})

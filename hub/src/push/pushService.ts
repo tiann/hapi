@@ -10,7 +10,7 @@ export type PushPayload = {
         type: string
         sessionId: string
         url: string
-        /** First pending permission request id (permission-request pushes only). */
+        /** First pending request id; input-request uses it for correlation, never approval. */
         requestId?: string
     }
 }

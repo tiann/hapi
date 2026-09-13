@@ -1,51 +1,21 @@
 # How it Works
 
-**Codex 0.154.0+** uses a [shared app-server](./codex-shared-sessions.md):
-terminal and Web/phone can act simultaneously, without switching ownership.
-The local/remote handoff descriptions below apply to other agent integrations.
-
-HAPI consists of three interconnected components that work together to provide remote AI agent control.
+HAPI connects coding agents, a self-hosted hub, and web/native clients for remote control.
 
 ## Architecture Overview
 
-```
-┌────────────────────────────────────────────────────────────────────────────┐
-│                     Your Machine (Local or Hub Host)                       │
-│                                                                            │
-│   ┌──────────────┐         ┌──────────────┐         ┌──────────────┐       │
-│   │              │         │              │         │              │       │
-│   │   HAPI CLI   │◄───────►│  HAPI Hub    │◄───────►│   Web App    │       │
-│   │              │ Socket  │              │   SSE   │  (embedded)  │       │
-│   │  + AI Agent  │   .IO   │  + SQLite    │         │              │       │
-│   │              │         │  + REST API  │         │              │       │
-│   └──────────────┘         └──────┬───────┘         └──────────────┘       │
-│                                   │                                        │
-│                                   │ localhost:3006                         │
-└───────────────────────────────────┼────────────────────────────────────────┘
-                                    │
-                          ┌─────────▼─────────┐
-                          │  Tunnel (Optional)│
-                          │  Cloudflare/ngrok │
-                          └─────────┬─────────┘
-                                    │
-┌───────────────────────────────────┼────────────────────────────────────────┐
-│                           Public Internet                                  │
-│                                   │                                        │
-│         ┌─────────────────────────┼─────────────────────────┐              │
-│         │                         ▼                         │              │
-│         │    ┌──────────────┐           ┌──────────────┐    │              │
-│         │    │              │           │              │    │              │
-│         │    │  Telegram    │           │    PWA /     │    │              │
-│         │    │  Mini App    │           │   Browser    │    │              │
-│         │    │              │           │              │    │              │
-│         │    └──────────────┘           └──────────────┘    │              │
-│         │                                                   │              │
-│         └───────────────────────────────────────────────────┘              │
-│                            Your Phone                                      │
-└────────────────────────────────────────────────────────────────────────────┘
+```text
+CLI + Agent  <---- Socket.IO /cli ---->  Hub + SQLite
+Runner       <---- Socket.IO /cli ---->       |
+  |                                          | REST + SSE
+  +-- spawns CLI sessions                    |
+                                     Web / PWA / Mini App
+                                     Native iOS / Android
 ```
 
-> **Note:** The hub can run on your local desktop or a remote host (VPS, cloud, etc.). If deployed on a host with a public IP, tunneling is not required.
+The hub can run on your local desktop or a remote host (VPS, cloud, etc.).
+Clients reach it directly or through an optional tunnel/reverse proxy. Use an
+HTTPS hub origin for native pairing; see [Deployment](./deployment.md).
 
 ## Components
 
@@ -66,7 +36,7 @@ hapi runner start # Run background service for remote session spawning
 hapi ping-peer --list  # Shell peer shortlist (prefer MCP list_peers in-session)
 ```
 
-MCP peer tools (same hub/namespace as the session): `list_peers` (discover), `inspect_peer` (read), `ping_peer` (message). These work from runner-spawned sessions even when the hub is on another host - see [Installation → Split hub + remote runner](./installation.md#split-hub--remote-runner-peer-discovery).
+MCP peer tools (same hub/namespace as the session): `list_peers` (discover), `inspect_peer` (read), `ping_peer` (message). These work from runner-spawned sessions even when the hub is on another host - see [Installation → Split hub + remote runner](./installation.md#split-hub-remote-runner-peer-discovery).
 
 ### HAPI Hub
 
@@ -74,32 +44,45 @@ The hub is the central service that connects everything:
 
 - **HTTP API** - RESTful endpoints for sessions, messages, permissions
 - **Socket.IO** - Real-time bidirectional communication with CLI
-- **SSE (Server-Sent Events)** - Live updates pushed to web clients
+- **SSE (Server-Sent Events)** - Live updates pushed to web and native clients
 - **SQLite Database** - Persistent storage for sessions and messages
 - **Telegram Bot** - Notifications and Mini App integration
 
 ### Web App
 
-A React-based PWA that provides the mobile interface:
+A React-based PWA usable in a browser, as an installed PWA, or as a Telegram Mini App:
 
 - **Session List** - View all active and past sessions
 - **Chat Interface** - Send messages and view agent responses
 - **Permission Management** - Approve or deny tool access
 - **File Browser** - Browse project files and view git diffs
-- **Terminal View** - Watch the full terminal output of a session
+- **Terminal View** - Run commands on the working machine from your browser
 - **Voice Assistant** - Talk to your agent and approve permissions by voice (see [Voice input and assistant](./voice-assistant.md))
-- **Session Sharing** - Share a read-only view of a session via a link
+- **Session References** - Copy a session reference or mention another conversation for context
 - **Remote Spawn** - Start new sessions on any connected machine
+
+### Native apps
+
+The iOS SwiftUI/UIKit and Android Kotlin Compose apps are independent clients
+of the hub. Both support sessions/chat, approvals and questions, new sessions,
+attachments, files/Git, Scratchlist, dictation and native push. Their interactive
+traffic uses the same REST + SSE client API; background notifications use
+FCM/APNs with the [native push contract](../api/native-companion-contract.md).
+
+The apps have their own navigation and rendering. Protocol fixture conformance
+does not imply web UI parity: the terminal, Work Graph and realtime voice
+controls remain web features. See [Native apps](./native-apps.md) for current
+capabilities, platform differences and build/pairing instructions.
 
 ## Data Flow
 
 ### Starting a Session
 
 ```
-1. User runs `hapi` in terminal
+1. User runs `hapi` and chooses an agent
          │
          ▼
-2. CLI starts Claude Code (or other agent)
+2. CLI starts the selected agent
          │
          ▼
 3. CLI connects to hub via Socket.IO
@@ -108,7 +91,7 @@ A React-based PWA that provides the mobile interface:
 4. Hub creates session in database
          │
          ▼
-5. Web clients receive SSE update
+5. Web/native clients receive SSE update
          │
          ▼
 6. Session appears in mobile app
@@ -123,13 +106,13 @@ A React-based PWA that provides the mobile interface:
 2. CLI sends permission request to hub
          │
          ▼
-3. Hub stores request and notifies via SSE + Telegram
+3. Hub stores request and sends SSE + configured notifications
          │
          ▼
 4. User receives notification on phone
          │
          ▼
-5. User approves/denies in web app or Telegram
+5. User approves/denies in a native or web client
          │
          ▼
 6. Hub relays decision to CLI via Socket.IO
@@ -164,7 +147,7 @@ Real-time bidirectional communication for:
 - Metadata and state updates
 - RPC method invocation
 
-### Hub ↔ Web: REST + SSE
+### Hub ↔ Web/native clients: REST + SSE
 
 - **REST API** for actions (send message, approve permission)
 - **SSE stream** for real-time updates (new messages, status changes)
@@ -188,7 +171,7 @@ When working in local mode, you have the full terminal experience — it is the 
 - Direct keyboard input with instant response
 - Full terminal UI with syntax highlighting
 - Best for focused, uninterrupted coding sessions
-- All AI processing happens locally on your machine
+- Agent tools run on your machine; model requests use the provider configured in the agent
 
 ### Remote Mode
 
@@ -213,14 +196,15 @@ Switch to remote mode when you need to step away:
 ```
 
 **Local → Remote:**
-- Receive a message from phone/web
-- Session automatically switches to remote mode
-- Terminal shows "Remote mode - waiting for input"
+- Open the session on your phone/web and send a message
+- HAPI keeps the conversation going on the same working machine
 
 **Remote → Local:**
-- Press double-space in terminal
-- Instantly regain local control
-- Continue typing as if you never left
+- Continue typing in the terminal
+- If the terminal shows the remote-control screen, press double-space to return to local input
+
+Some agents keep both interfaces available at once, so no switch is needed.
+For Codex terminal-exit and resume behavior, see [Usage and limits](./codex-shared-sessions.md).
 
 ### Use Cases
 

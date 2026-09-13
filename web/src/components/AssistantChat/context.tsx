@@ -15,6 +15,8 @@ export type HappyChatContextValue = {
     showSessionSummaryInChat: boolean
     disabled: boolean
     onRefresh: () => void
+    codexPlanProposalId?: string | null
+    onContinuePlan?: () => void
     onRetryMessage?: (localId: string) => void
     historyActionPending?: boolean
     onForkConversation?: (messageLocalId?: string) => Promise<void>
