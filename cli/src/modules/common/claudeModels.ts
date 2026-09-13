@@ -76,18 +76,16 @@ function runClaudeListModelsProbe(cwd: string): Promise<ListClaudeModelsForCwdRe
             '--input-format', 'stream-json',
             '--output-format', 'stream-json',
             '--verbose',
+            // Answering list_models must not run anybody's hooks: this probe
+            // is reachable from a remote client just by typing a directory
+            // path, once per directory. --bare also skips LSP, plugin sync,
+            // auto-memory and keychain reads, and leaves the catalog
+            // unchanged.
+            '--bare',
             // No prompt is ever sent and no MCP servers are configured for
             // this call, so there is no reason to let the workspace's own
             // .mcp.json boot project MCP servers just to answer list_models.
-            // --bare skips hooks, LSP, plugin sync, attribution, auto-memory,
-        // background prefetches and keychain reads. Measured on claude 2.1.270:
-        // without it this probe fires SessionStart hooks (4 events) and runs
-        // whatever they shell out to; with it, 0 events and a byte-identical
-        // catalog. Opening the model picker must not execute anybody's hooks --
-        // a remote web client typing directory paths would otherwise trigger
-        // local command execution once per directory.
-        '--bare',
-        '--strict-mcp-config',
+            '--strict-mcp-config',
             // This probe can run against an arbitrary cwd before the user
             // ever starts a session there (e.g. NewSession re-probes on every
             // directory change), so it must not load that directory's own

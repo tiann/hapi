@@ -1057,6 +1057,52 @@ describe('sessions routes', () => {
         ])
     })
 
+    it('lets a locally-controlled Grok session change effort once it reports concurrent clients', async () => {
+        // rejectUnsupportedEffort is shared by /effort and /model in this
+        // branch, so the capability exception has to hold on both. Only the
+        // agent saying it accepts concurrent clients lifts the local-control
+        // rejection; absent and false must both keep 409.
+        const cases: Array<{ concurrentClients?: boolean, status: number }> = [
+            { concurrentClients: true, status: 200 },
+            { concurrentClients: false, status: 409 },
+            { status: 409 }
+        ]
+
+        for (const { concurrentClients, status } of cases) {
+            for (const route of ['effort', 'model'] as const) {
+                const session = createSession({
+                    metadata: {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        flavor: 'grok',
+                        ...(concurrentClients === undefined ? {} : { capabilities: { concurrentClients } })
+                    },
+                    agentState: { controlledByUser: true, requests: {}, completedRequests: {} }
+                })
+                const { app, applySessionConfigCalls } = createApp(session)
+                // /model sends the model alone. rejectUnsupportedEffort runs
+                // first there and would pass on the true case, but the
+                // Claude-only check right after it answers 400 for grok, so a
+                // combined payload could never show whether the capability
+                // exception was honoured.
+                const body = route === 'effort'
+                    ? { effort: 'low' }
+                    : { model: 'grok-4.5' }
+
+                const response = await app.request(`/api/sessions/session-1/${route}`, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify(body)
+                })
+
+                expect(response.status).toBe(status)
+                expect(applySessionConfigCalls).toEqual(status === 200
+                    ? [['session-1', route === 'effort' ? { effort: 'low' } : { model: 'grok-4.5' }]]
+                    : [])
+            }
+        }
+    })
+
     it('applies effort changes for remote Grok sessions and rejects local control', async () => {
         const remote = createSession({
             metadata: { path: '/tmp/project', host: 'localhost', flavor: 'grok' }
