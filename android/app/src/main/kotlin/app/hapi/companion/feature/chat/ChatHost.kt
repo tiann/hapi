@@ -217,6 +217,9 @@ internal fun ToolGroupBrowser(
     val list = rememberLazyListState(initialFirstVisibleItemIndex = (group.tools.size - 1).coerceAtLeast(0))
     val scope = rememberCoroutineScope()
     val resources = LocalContext.current.resources
+    LaunchedEffect(Unit) {
+        if (group.tools.isNotEmpty()) list.scrollToItem(group.tools.lastIndex)
+    }
     InspectionScaffold(stringResource(R.string.chat_group_tools_many, group.summary.totalTools), back, close,
         actions = {
             IconButton(onClick = { scope.launch { if (group.tools.isNotEmpty()) list.scrollToItem(group.tools.lastIndex) } },
