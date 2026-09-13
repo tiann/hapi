@@ -143,7 +143,7 @@ async function fetchCodexModelsFromAppServer(includeHidden: boolean): Promise<Co
 
         const response = await client.listModels({ includeHidden });
         return Array.isArray(response.data)
-            ? response.data.map(normalizeCodexModel).filter((model): model is CodexModelSummary => model !== null)
+            ? response.data.map(normalizeCodexModel).filter((model): model is CodexModelSummary => model !== null && model.id !== 'gpt-reserve')
             : [];
     } catch (error) {
         throw new Error(getErrorMessage(error, 'Failed to list Codex models'));

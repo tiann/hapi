@@ -97,3 +97,22 @@ describe('useCodexModels query scoping', () => {
         ])
     })
 })
+
+describe('shared Codex session catalogs', () => {
+    it('uses the live session account, excludes it from machine caches, and refreshes without polling', async () => {
+        const getMachineCodexModels = vi.fn()
+        const getSessionCodexModels = vi.fn(async (id: string) => ({ success: true, models: [
+            { id: id === 'eligible' ? 'gpt-reserve' : 'gpt-6-astra', displayName: id, isDefault: false }
+        ] }))
+        const api = { getMachineCodexModels, getSessionCodexModels } as unknown as ApiClient
+        const queryClient = createQueryClient()
+        const sharedWrapper = wrapper(queryClient)
+        const first = renderHook(() => useCodexModels({ api, sessionId: 'eligible', machineId: 'm', enabled: true, sessionScoped: true }), { wrapper: sharedWrapper })
+        const second = renderHook(() => useCodexModels({ api, sessionId: 'ordinary', machineId: 'm', enabled: true, sessionScoped: true }), { wrapper: sharedWrapper })
+        await waitFor(() => expect(first.result.current.models[0]?.id).toBe('gpt-reserve'))
+        await waitFor(() => expect(second.result.current.models[0]?.id).toBe('gpt-6-astra'))
+        expect(getMachineCodexModels).not.toHaveBeenCalled()
+        first.result.current.refresh()
+        await waitFor(() => expect(getSessionCodexModels).toHaveBeenCalledTimes(3))
+    })
+})

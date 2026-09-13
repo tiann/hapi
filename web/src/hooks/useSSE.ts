@@ -665,6 +665,8 @@ export function useSSE(options: {
                 const resumed = data && typeof data === 'object'
                     && (data as { resume?: unknown }).resume === 'ok'
                 onConnectRef.current?.({ resumed: Boolean(resumed) })
+                // Account usage is read-only RPC data, not part of the SSE replay log.
+                void queryClient.invalidateQueries({ queryKey: ['session-codex-models'], refetchType: 'active' })
             }
 
             if (event.type === 'toast') {

@@ -10,6 +10,7 @@ export type SessionModelLabel = {
 }
 
 function getModelLabel(model: string): string | null {
+    if (model === 'gpt-reserve') return '☾ Luna Reserve'
     return getAgyModelLabel(model) ?? getClaudeModelLabel(model)
 }
 

@@ -205,6 +205,8 @@ export function shouldClearReasoningEffortForModelChange(args: {
     codexModels: readonly CodexModelSummary[]
     model: SessionModelSelection
 }): boolean {
+    // Reserve validates and normalizes effort atomically in the shared runtime.
+    if (args.agentFlavor === 'codex' && args.model === 'gpt-reserve') return false
     if (!args.previousModelReasoningEffort) {
         return false
     }
@@ -971,8 +973,13 @@ function SessionChatInner(props: SessionChatProps) {
         api: props.api,
         sessionId: props.session.id,
         machineId: props.session.metadata?.machineId ?? null,
+        sessionScoped: props.session.metadata?.capabilities?.concurrentClients === true,
         enabled: agentFlavor === 'codex' && props.session.active && !controlledByUser
     })
+    useEffect(() => {
+        if (agentFlavor !== 'codex' || !props.session.active || !props.session.metadata?.capabilities?.concurrentClients || props.session.thinking) return
+        void queryClient.refetchQueries({ queryKey: queryKeys.sessionCodexModels(sessionId), exact: true }, { cancelRefetch: false })
+    }, [agentFlavor, sessionId, props.session.active, props.session.thinking, props.session.model, props.session.metadata?.capabilities?.concurrentClients, queryClient])
     const effectiveCodexServiceTier = agentFlavor === 'codex'
         ? getEffectiveCodexServiceTier(
             props.session.serviceTier,
@@ -989,7 +996,7 @@ function SessionChatInner(props: SessionChatProps) {
         for (const codexModel of codexModelsState.models) {
             options.push({
                 value: codexModel.id,
-                label: codexModel.displayName
+                label: codexModel.id === 'gpt-reserve' ? '☾ Luna Reserve' : codexModel.displayName
             })
         }
         return options
@@ -2005,6 +2012,8 @@ function SessionChatInner(props: SessionChatProps) {
                         <HappyComposer
                         key={`composer-${props.session.id}`}
                         sessionId={props.session.id}
+                        codexUsage={codexModelsState.usage}
+                        onModelMenuOpen={agentFlavor === 'codex' ? codexModelsState.refresh : undefined}
                         canRestoreAttachments={props.session.active}
                         onUploadDraftSnapshot={(text, attachments) => {
                             uploadDraftSnapshotRef.current = { text, attachments }

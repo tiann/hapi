@@ -46,6 +46,7 @@ import { useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { StatusBar } from '@/components/AssistantChat/StatusBar'
+import type { CodexAccountUsage } from '@hapi/protocol/apiTypes'
 import { ComposerButtons } from '@/components/AssistantChat/ComposerButtons'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { SortableComposerAttachments } from '@/components/AssistantChat/SortableComposerAttachments'
@@ -280,6 +281,8 @@ export function ModelEffortSettingsSection(props: {
 }
 
 export function HappyComposer(props: {
+    codexUsage?: CodexAccountUsage | null
+    onModelMenuOpen?: () => void
     sessionId?: string
     onUploadDraftSnapshot?: (text: string, attachments: AttachmentDraftInput[]) => void
     canRestoreAttachments?: boolean
@@ -1427,6 +1430,7 @@ export function HappyComposer(props: {
     // instead of closing, so model->effort moves between sections directly.
     const handleSettingsToggle = useCallback((section: 'model' | 'effort' | null = null) => {
         haptic('light')
+        if ((!showSettings || section !== settingsSection) && section !== 'effort') props.onModelMenuOpen?.()
         if (showSettings && section !== settingsSection) {
             // Open with a different anchor: switch sections, keep the sheet up.
             setSettingsSection(section)
@@ -1441,7 +1445,7 @@ export function HappyComposer(props: {
         }
         setSettingsSection(section)
         setShowSettings(true)
-    }, [haptic, showSettings, settingsSection])
+    }, [haptic, showSettings, settingsSection, props.onModelMenuOpen])
 
     const clearCursorDrillDown = useCallback(() => {
         setCursorDrillDownBase(null)
@@ -1788,6 +1792,7 @@ export function HappyComposer(props: {
                                             <span className={isSelected ? 'text-[var(--app-link)]' : ''}>
                                                 {option.label}
                                             </span>
+                                            {option.value === 'gpt-reserve' && !isSelected ? <span className="ml-auto text-xs text-[var(--app-hint)]">{t('codex.reserve.available')}</span> : null}
                                         </button>
                                         )
                                     })}
@@ -2161,6 +2166,7 @@ export function HappyComposer(props: {
                     {overlays}
 
                     <StatusBar
+                        codexUsage={props.codexUsage}
                         active={active}
                         thinking={thinking}
                         agentState={agentState}
