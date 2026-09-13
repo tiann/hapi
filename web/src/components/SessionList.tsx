@@ -1677,6 +1677,7 @@ export function SessionList(props: {
                             <div key={s.id} className="contents">
                                 {shouldShowPinnedDivider(visibleGroupSessions, index) ? (
                                     <div
+                                        data-testid="session-pin-divider"
                                         className="ml-2.5 mr-2 my-1 border-t border-[var(--app-border)]"
                                         aria-hidden="true"
                                     />
