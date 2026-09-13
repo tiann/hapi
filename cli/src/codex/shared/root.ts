@@ -254,15 +254,7 @@ export class SharedCodexRoot {
                 this.publishRootContextDetails();
             })
             .catch(error => logger.debug('[Codex shared] slash command inventory', error));
-        void this.client.listSkills({ cwds: [cwd] })
-            .then(response => {
-                if (this.closed || this.stopping) return;
-                const entry = response.data?.find(item => item.cwd === cwd) ?? response.data?.[0];
-                if (!entry || (!entry.skills.length && (entry.errors?.length ?? 0) > 0)) return;
-                this.availableSkills = entry.skills.filter(skill => skill.enabled);
-                this.publishRootContextDetails();
-            })
-            .catch(error => logger.debug('[Codex shared] skill inventory', error));
+        void this.refreshContextSkills().catch(error => logger.debug('[Codex shared] skill inventory', error));
         void listConfiguredCodexMcpServers(cwd)
             .then(inventory => {
                 if (this.closed || this.stopping || inventory === undefined) return;
@@ -279,6 +271,16 @@ export class SharedCodexRoot {
                 this.publishMcpInventoryIfAvailable();
             })
             .catch(error => logger.debug('[Codex shared] MCP status inventory', error));
+    }
+
+    private async refreshContextSkills(forceReload = false): Promise<void> {
+        const cwd = this.bootstrap.workingDirectory;
+        const response = await this.client.listSkills({ cwds: [cwd], forceReload });
+        if (this.closed || this.stopping) return;
+        const entry = response.data?.find(item => item.cwd === cwd) ?? response.data?.[0];
+        if (!entry || (!entry.skills.length && (entry.errors?.length ?? 0) > 0)) return;
+        this.availableSkills = entry.skills.filter(skill => skill.enabled);
+        this.publishRootContextDetails();
     }
     private publishSteering(): void {
         const active = Boolean(this.currentTurn) && !this.stopping && !this.closed && !this.reconnecting && this.client.isInitialized();
@@ -326,6 +328,10 @@ export class SharedCodexRoot {
             const name = p.threadName ?? undefined; this.session.updateMetadata(metadata => ({ ...metadata, name }));
         }
         if (method === 'thread/archived') { await this.host.end(this, false); return; }
+        if (method === 'skills/changed') {
+            void this.refreshContextSkills(true).catch(error => logger.debug('[Codex shared] skill inventory', error));
+            return;
+        }
         if (method === 'thread/queue/changed') await this.queue.reconcile();
         await this.projection.notification(method, params, modelAtReceipt); this.alive();
     }

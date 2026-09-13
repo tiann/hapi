@@ -5,6 +5,10 @@ import type { AgentState, Metadata } from '@/api/types';
 import type { SessionBootstrapResult } from '@/agent/sessionFactory';
 import { SharedCodexRoot, type RootHost } from './root';
 
+const sharedHarness = vi.hoisted(() => ({
+    skills: [{ name: 'find-docs', description: 'Find docs', path: '/tmp/SKILL.md', scope: 'user', enabled: true }]
+}));
+
 vi.mock('../codexAppServerClient', () => ({
     CodexAppServerClient: class {
         initialized = false;
@@ -18,7 +22,7 @@ vi.mock('../codexAppServerClient', () => ({
         async initialize() { this.initialized = true; }
         isInitialized() { return this.initialized; }
         async listSkills() {
-            return { data: [{ cwd: '/tmp', skills: [{ name: 'find-docs', description: 'Find docs', path: '/tmp/SKILL.md', scope: 'user', enabled: true }], errors: [] }] };
+            return { data: [{ cwd: '/tmp', skills: sharedHarness.skills, errors: [] }] };
         }
         async listMcpServerStatuses() { return { data: [] }; }
         async disconnect() { this.initialized = false; }
@@ -143,5 +147,22 @@ describe('shared steering availability', () => {
                 mcpServers: [{ name: 'hapi', toolNames: ['change_title'] }]
             }
         }));
+    });
+
+    it('refreshes shared skills on skills/changed and preserves them on failure', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.skills).toEqual([{ name: 'find-docs' }]));
+
+        sharedHarness.skills = [];
+        f.native.notify('skills/changed', { threadId: 'thread' });
+        await vi.waitFor(() => expect(f.metadata().contextDetails?.codex?.skills).toEqual([]));
+
+        sharedHarness.skills = [{ name: 'replacement', description: 'Replacement', path: '/tmp/SKILL.md', scope: 'user', enabled: true }];
+        const client = f.root.client as unknown as { listSkills: (params: unknown) => Promise<unknown> };
+        client.listSkills = async () => { throw new Error('skills unavailable'); };
+        f.native.notify('skills/changed', { threadId: 'thread' });
+        await new Promise(resolve => setTimeout(resolve, 20));
+        expect(f.metadata().contextDetails?.codex?.skills).toEqual([]);
     });
 });
