@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, statSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { basename, dirname } from 'node:path'
 
 const axiosGet = vi.hoisted(() => vi.fn())
@@ -52,6 +53,29 @@ describe('AttachmentMaterializer', () => {
         await materializer.close()
         expect(existsSync(path)).toBe(false)
         expect(materializer.isAuthorizedPath(path)).toBe(false)
+    })
+
+    it('preserves materialized files when resumable shutdown requests it', async () => {
+        const data = Buffer.from('queued input')
+        axiosGet.mockResolvedValue({ data, headers: {} })
+        const materializer = new AttachmentMaterializer('session-1', 'token')
+        let path: string | undefined
+        try {
+            const result = await materializer.materialize(attachment)
+            path = result.path!
+
+            await materializer.close({ preserveFiles: true })
+            expect(existsSync(path)).toBe(true)
+            expect(readFileSync(path)).toEqual(data)
+
+            // ApiSessionClient.close() runs after sendSessionDeath(). The first
+            // close must detach the directory so this second close cannot remove it.
+            await materializer.close()
+            expect(existsSync(path)).toBe(true)
+        } finally {
+            await materializer.close()
+            if (path) await rm(dirname(path), { recursive: true, force: true })
+        }
     })
 
     it('shares one session directory across concurrent first-use downloads', async () => {

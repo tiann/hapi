@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { Session } from './types'
+import { existsSync, readFileSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
+import { dirname } from 'node:path'
+import type { Session, UserMessage } from './types'
 
 const socketHarness = vi.hoisted(() => ({
     sockets: [] as Array<{
@@ -994,6 +997,52 @@ describe('ApiSessionClient incoming user messages', () => {
             expect.objectContaining({ responseType: 'arraybuffer' })
         )
         client.close()
+    })
+
+    it('preserves a materialized queued attachment across resumable shutdown', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockReset()
+        const data = Buffer.from('queued durable input')
+        axiosHarness.get.mockResolvedValue({ data, headers: {} })
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+        let queuedPath: string | undefined
+        const onUserMessage = vi.fn((message: UserMessage) => {
+            queuedPath = message.content.attachments?.[0]?.path
+        })
+        client.onUserMessage(onUserMessage)
+
+        try {
+            triggerIncomingUserMessage(socket, {
+                id: 'queued-attachment-message',
+                localId: 'queued-attachment-local-id',
+                seq: 1,
+                text: 'queue this attachment',
+                sentFrom: 'webapp',
+                attachments: [{
+                    id: 'queued-att-1',
+                    filename: 'input.txt',
+                    mimeType: 'text/plain',
+                    size: data.length,
+                    attachmentId: 'queued-attachment-1'
+                }]
+            })
+
+            await vi.waitFor(() => expect(onUserMessage).toHaveBeenCalledOnce())
+            expect(queuedPath).toEqual(expect.stringContaining('attachment-'))
+            const path = queuedPath!
+            expect(readFileSync(path)).toEqual(data)
+
+            // SharedCodexRoot uses preserveUploads for an inactive/resumable queue.
+            client.sendSessionDeath(undefined, { preserveUploads: true })
+            client.close()
+            await vi.waitFor(() => expect(existsSync(path)).toBe(true))
+            expect(readFileSync(path)).toEqual(data)
+        } finally {
+            client.close()
+            if (queuedPath) await rm(dirname(queuedPath), { recursive: true, force: true })
+        }
     })
 
     it('does not deliver a backfill row canceled while its live copy is deferred', async () => {

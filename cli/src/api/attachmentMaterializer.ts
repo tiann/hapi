@@ -105,14 +105,16 @@ export class AttachmentMaterializer {
         return this.identities.get(resolve(path)) === `${identity.dev}:${identity.ino}`
     }
 
-    async close(): Promise<void> {
+    async close(options?: { preserveFiles?: boolean }): Promise<void> {
         this.closed = true
         this.paths.clear()
         this.identities.clear()
         const directoryPromise = this.directoryPromise
         this.directoryPromise = null
         const directory = await directoryPromise?.catch(() => null)
-        if (directory) await rm(directory, { recursive: true, force: true }).catch(() => {})
+        if (directory && !options?.preserveFiles) {
+            await rm(directory, { recursive: true, force: true }).catch(() => {})
+        }
     }
 
     private throwIfClosed(): void {

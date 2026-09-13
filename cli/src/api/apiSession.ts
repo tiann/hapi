@@ -1499,7 +1499,7 @@ export class ApiSessionClient extends EventEmitter {
             if (options?.preserveUploads) preserveUploadDirOnExit(this.sessionId)
             else void cleanupUploadDir(this.sessionId)
         }
-        void this.attachmentMaterializer.close()
+        void this.attachmentMaterializer.close({ preserveFiles: options?.preserveUploads })
         this.emitOrQueue(() => {
             this.socket.emit('session-end', { sid: this.sessionId, time: Date.now(), reason })
         })
