@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { Hono } from 'hono'
 import type { WebAppEnv } from '../middleware/auth'
 import { createHubSettingsRoutes } from './hubSettings'
+import { writeAutoBridgeTransientModelErrorsEnabled } from '../../config/autoBridgeTransientModelErrors'
 import { writeSessionSummaryContractEnabled } from '../../config/sessionSummaryContract'
 import { writeSessionSummaryInChatEnabled } from '../../config/sessionSummaryInChat'
 
@@ -27,18 +28,19 @@ describe('GET/PUT /api/hub-settings', () => {
         return { app, dataDir }
     }
 
-    it('returns default off for emit and chat display', async () => {
+    it('returns default off for emit, chat display, and auto-bridge', async () => {
         const { app } = await createApp()
         const response = await app.request('/api/hub-settings')
         expect(response.status).toBe(200)
         expect(response.headers.get('cache-control')).toBe('no-store')
         expect(await response.json()).toEqual({
             sessionSummaryContract: false,
-            sessionSummaryInChat: false
+            sessionSummaryInChat: false,
+            autoBridgeTransientModelErrors: false
         })
     })
 
-    it('persists emit toggle for owner without changing display', async () => {
+    it('persists emit toggle for owner without changing display or auto-bridge', async () => {
         const { app } = await createApp()
         const put = await app.request('/api/hub-settings', {
             method: 'PUT',
@@ -48,13 +50,15 @@ describe('GET/PUT /api/hub-settings', () => {
         expect(put.status).toBe(200)
         expect(await put.json()).toEqual({
             sessionSummaryContract: true,
-            sessionSummaryInChat: false
+            sessionSummaryInChat: false,
+            autoBridgeTransientModelErrors: false
         })
 
         const get = await app.request('/api/hub-settings')
         expect(await get.json()).toEqual({
             sessionSummaryContract: true,
-            sessionSummaryInChat: false
+            sessionSummaryInChat: false,
+            autoBridgeTransientModelErrors: false
         })
     })
 
@@ -70,7 +74,23 @@ describe('GET/PUT /api/hub-settings', () => {
         expect(put.status).toBe(200)
         expect(await put.json()).toEqual({
             sessionSummaryContract: true,
-            sessionSummaryInChat: true
+            sessionSummaryInChat: true,
+            autoBridgeTransientModelErrors: false
+        })
+    })
+
+    it('persists autoBridgeTransientModelErrors toggle for owner', async () => {
+        const { app } = await createApp()
+        const put = await app.request('/api/hub-settings', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ autoBridgeTransientModelErrors: true })
+        })
+        expect(put.status).toBe(200)
+        expect(await put.json()).toEqual({
+            sessionSummaryContract: false,
+            sessionSummaryInChat: false,
+            autoBridgeTransientModelErrors: true
         })
     })
 
@@ -94,6 +114,20 @@ describe('GET/PUT /api/hub-settings', () => {
         expect(response.status).toBe(400)
     })
 
+    it('rejects combined two-field updates', async () => {
+        const { app } = await createApp()
+        const response = await app.request('/api/hub-settings', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                sessionSummaryContract: true,
+                autoBridgeTransientModelErrors: true
+            })
+        })
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({ error: 'Update one hub setting per request' })
+    })
+
     it('rejects non-default namespaces for PUT but allows GET', async () => {
         const { app, dataDir } = await createApp('default')
         await writeSessionSummaryInChatEnabled(dataDir, true)
@@ -109,7 +143,8 @@ describe('GET/PUT /api/hub-settings', () => {
         expect(get.status).toBe(200)
         expect(await get.json()).toEqual({
             sessionSummaryContract: false,
-            sessionSummaryInChat: true
+            sessionSummaryInChat: true,
+            autoBridgeTransientModelErrors: false
         })
 
         const put = await tenantApp.request('/api/hub-settings', {
@@ -124,10 +159,12 @@ describe('GET/PUT /api/hub-settings', () => {
         const { app, dataDir } = await createApp()
         await writeSessionSummaryContractEnabled(dataDir, true)
         await writeSessionSummaryInChatEnabled(dataDir, true)
+        await writeAutoBridgeTransientModelErrorsEnabled(dataDir, true)
         const response = await app.request('/api/hub-settings')
         expect(await response.json()).toEqual({
             sessionSummaryContract: true,
-            sessionSummaryInChat: true
+            sessionSummaryInChat: true,
+            autoBridgeTransientModelErrors: true
         })
     })
 })

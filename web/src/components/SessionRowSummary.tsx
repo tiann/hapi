@@ -12,6 +12,7 @@ import { getCodexImportedAt } from '@/lib/codexImportedSessions'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { useTranslation } from '@/lib/use-translation'
 import { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
+import { hasUrgentModelError } from '@/components/ModelErrorBanner'
 
 function LoaderIcon(props: { className?: string }) {
     return (
@@ -151,6 +152,8 @@ export function SessionRowSummary(props: {
     const attentionLabel = attention ? getAttentionLabel(attention, t) : null
     const urgentAttention = attention !== null
         && (attention.kind === 'permission' || attention.kind === 'input')
+    const modelErrorActive = hasUrgentModelError(s.metadata)
+    const modelErrorLabel = t('session.modelError.listIndicator')
     const scheduledLabel = s.futureScheduledMessageCount > 1
         ? t('session.item.scheduledMessages', { count: s.futureScheduledMessageCount })
         : t('session.item.scheduledMessage')
@@ -174,6 +177,16 @@ export function SessionRowSummary(props: {
                     >
                         {sessionName}
                     </div>
+                    {modelErrorActive ? (
+                        <span
+                            className="relative inline-flex h-2 w-2 shrink-0"
+                            title={modelErrorLabel}
+                            aria-label={modelErrorLabel}
+                        >
+                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-500 opacity-75" />
+                            <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
+                        </span>
+                    ) : null}
                     {attention?.kind === 'unread' && nestedTooltips && attentionId ? (
                         <SessionAttentionIndicator
                             attention={attention}

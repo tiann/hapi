@@ -1,7 +1,9 @@
 import type { Session } from '../sync/syncEngine'
-import type { NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
+import type { ModelErrorNotification, ModelErrorSendOutcome, NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
 import type { NotificationSendContext } from '../notifications/notificationSendContext'
 import { NATIVE_CONTRACT_VERSION, NativeNotificationComposer, type ComposedNativeNotification } from '../notifications/nativeNotificationComposer'
+import { formatModelErrorBody, formatModelErrorTitle } from '../notifications/modelErrorCopy'
+import { getAgentName, getSessionName } from '../notifications/sessionInfo'
 import type { Store } from '../store'
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
@@ -43,6 +45,47 @@ export class FcmNotificationChannel implements NotificationChannel {
         await this.deliver(session, this.toFcmPayload(this.composer.composeTask(session, notification)), ctx)
     }
 
+    async sendModelError(
+        session: Session,
+        notification: ModelErrorNotification,
+        ctx?: NotificationSendContext
+    ): Promise<ModelErrorSendOutcome> {
+        // No active-session guard: NotificationHub only starts dispatch for
+        // active sessions, but a bounded backoff retry must still deliver if
+        // the session went inactive before the timer fired.
+
+        const agentName = getAgentName(session)
+        const sessionName = getSessionName(session)
+        const title = formatModelErrorTitle(notification.kind)
+        const body = formatModelErrorBody(notification, { agentName, sessionName })
+        const tag = `model-error-${session.id}-${notification.eventId}`
+
+        const result = await this.deliver(session, {
+            title,
+            body,
+            tag,
+            data: {
+                type: 'model-error',
+                sessionId: session.id,
+                sessionName,
+                url: `/sessions/${session.id}`,
+                title,
+                body,
+                contractVersion: NATIVE_CONTRACT_VERSION,
+                severity: 'error',
+                tag
+            }
+        }, ctx)
+        if ((result?.sent ?? 0) > 0) {
+            return 'delivered'
+        }
+        // No devices registered for this namespace - not a hard failure.
+        if ((result?.failed ?? 0) === 0) {
+            return 'unavailable'
+        }
+        return 'failed'
+    }
+
     private toFcmPayload(composed: ComposedNativeNotification): FcmSendPayload {
         return {
             title: composed.title,
@@ -63,7 +106,7 @@ export class FcmNotificationChannel implements NotificationChannel {
         }
     }
 
-    private async deliver(session: Session, payload: FcmSendPayload, ctx?: NotificationSendContext): Promise<void> {
+    private async deliver(session: Session, payload: FcmSendPayload, ctx?: NotificationSendContext) {
         // Native companion is the canonical surface: always fire FCM when the
         // hub asks us to. The previous SSE-toast shortcut here meant that
         // when the operator had the PWA open in foreground, the watch got
@@ -77,5 +120,6 @@ export class FcmNotificationChannel implements NotificationChannel {
         if ((result?.sent ?? 0) > 0 && ctx?.nativeGate) {
             ctx.nativeGate.sent = true
         }
+        return result
     }
 }
