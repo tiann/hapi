@@ -11,6 +11,9 @@ export type CodexMessage =
         model: string | null;
         usageSchema: InclusiveInputTokenUsageMarker['usageSchema'];
         inputTokenSemantics: InclusiveInputTokenUsageMarker['inputTokenSemantics'];
+        /** Cumulative session cost from ACP `usage_update.cost`. */
+        cost?: number;
+        costCurrency?: string;
         info: {
             total: {
                 inputTokens: number;
@@ -80,6 +83,9 @@ export function convertAgentMessage(message: AgentMessage, model?: string | null
                 type: 'token_count',
                 model: typeof model === 'string' && model.trim() ? model.trim() : null,
                 ...INCLUSIVE_INPUT_TOKEN_USAGE_MARKER,
+                ...(message.cost !== undefined
+                    ? { cost: message.cost, costCurrency: message.costCurrency ?? 'USD' }
+                    : {}),
                 info: {
                     total: {
                         inputTokens: message.inputTokens
