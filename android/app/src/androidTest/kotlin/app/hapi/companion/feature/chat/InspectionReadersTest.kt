@@ -87,8 +87,10 @@ class InspectionReadersTest {
                     false
                 }
             }
-        } catch (_: Throwable) {
-            throw AssertionError("Timed out waiting for displayed node <$tag>")
+        } catch (timeout: ComposeTimeoutException) {
+            val failure = AssertionError("Timed out waiting for displayed node <$tag>")
+            failure.initCause(timeout)
+            throw failure
         }
     }
 
