@@ -2,6 +2,7 @@ import { z } from 'zod'
 import type { CodexCollaborationMode, PermissionMode } from './modes'
 import type { CopilotAgentMode } from './copilotModes'
 import type { SessionEndReason } from './schemas'
+import type { PreviewFrame, PreviewRegisterAck, PreviewMountDescriptor, PreviewUnregisterRequest } from './preview'
 export { SessionEndReasonSchema, type SessionEndReason } from './schemas'
 
 export type SocketErrorReason = 'namespace-missing' | 'access-denied' | 'not-found'
@@ -249,6 +250,9 @@ export interface ServerToClientEvents {
     // streaming PTY output to the hub until someone subscribes again.
     'agent-terminal:idle': (data: AgentTerminalRefreshPayload) => void
     error: (data: { message: string; code?: SocketErrorReason; scope?: 'session' | 'machine'; id?: string }) => void
+    // Preview tunnel frames (hub -> CLI). One multiplexed virtual conn per
+    // browser request / WebSocket upgrade against a `/preview/<mountId>` URL.
+    'preview:frame': (data: PreviewFrame) => void
 }
 
 export interface ClientToServerEvents {
@@ -297,4 +301,10 @@ export interface ClientToServerEvents {
     'agent-terminal:reset': (data: { sessionId: string }) => void
     ping: (callback: () => void) => void
     'usage-report': (data: unknown) => void
+    // Preview mount registry (CLI -> hub). The CLI owns mount truth and
+    // re-registers every live mount with the same mountId on reconnect so
+    // capability URLs survive hub restarts.
+    'preview:register': (data: PreviewMountDescriptor, cb: (ack: PreviewRegisterAck) => void) => void
+    'preview:unregister': (data: PreviewUnregisterRequest, cb: (ack: { ok: boolean }) => void) => void
+    'preview:frame': (data: PreviewFrame) => void
 }

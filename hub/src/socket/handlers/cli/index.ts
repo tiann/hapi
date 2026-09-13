@@ -4,8 +4,11 @@ import type { RpcRegistry } from '../../rpcRegistry'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import type { TerminalRegistry } from '../../terminalRegistry'
 import type { CliSocketWithData, SocketServer } from '../../socketTypes'
+import type { PreviewRegistry } from '../../../preview/previewRegistry'
+import type { PreviewTunnel } from '../../../preview/previewTunnel'
 import type { AccessErrorReason, AccessResult } from './types'
 import { registerMachineHandlers } from './machineHandlers'
+import { attachPreviewSocketHandlers, cleanupPreviewHandlers, type PreviewHandlersDeps } from './previewHandlers'
 import { registerRpcHandlers } from './rpcHandlers'
 import { registerSessionHandlers } from './sessionHandlers'
 import { cleanupTerminalHandlers, registerTerminalHandlers } from './terminalHandlers'
@@ -42,6 +45,8 @@ export type CliHandlersDeps = {
     store: Store
     rpcRegistry: RpcRegistry
     terminalRegistry: TerminalRegistry
+    previewRegistry?: PreviewRegistry
+    previewTunnel?: PreviewTunnel
     onSessionAlive?: (payload: SessionAlivePayload) => void
     onSessionReady?: (payload: SessionReadyPayload) => void
     onSessionEnd?: (payload: SessionEndPayload) => void
@@ -134,6 +139,15 @@ export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlers
         emitAccessError
     })
 
+    // Preview mounts/tunnel are optional deps so environments without them
+    // (tests, relay mode) keep working unchanged.
+    const previewDeps: PreviewHandlersDeps | null = deps.previewRegistry && deps.previewTunnel
+        ? { previewRegistry: deps.previewRegistry, previewTunnel: deps.previewTunnel, namespace, sessionId }
+        : null
+    if (previewDeps) {
+        attachPreviewSocketHandlers(socket, previewDeps)
+    }
+
     socket.on('ping', (callback: () => void) => {
         callback()
     })
@@ -141,5 +155,8 @@ export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlers
     socket.on('disconnect', () => {
         rpcRegistry.unregisterAll(socket)
         cleanupTerminalHandlers(socket, { terminalRegistry, terminalNamespace })
+        if (previewDeps) {
+            cleanupPreviewHandlers(socket, previewDeps)
+        }
     })
 }

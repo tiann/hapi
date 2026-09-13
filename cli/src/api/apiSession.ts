@@ -21,8 +21,11 @@ import {
     TerminalClosePayloadSchema,
     TerminalOpenPayloadSchema,
     TerminalResizePayloadSchema,
-    TerminalWritePayloadSchema
+    TerminalWritePayloadSchema,
+    PREVIEW_EVENTS
 } from '@hapi/protocol'
+import { PREVIEW_REGISTER_ACK_TIMEOUT_MS, type PreviewMountDescriptor, type PreviewRegisterAck, type PreviewUnregisterRequest } from '@hapi/protocol/preview'
+import { createPreviewRuntime, type PreviewRuntime } from '@/preview/runtime'
 import type {
     AgentState,
     MessageContent,
@@ -234,6 +237,62 @@ function hasSameJsonValue(left: unknown, right: unknown): boolean {
 export class ApiSessionClient extends EventEmitter {
     private reconnectHandler: (() => void) | null = null
     onReconnect(handler: (() => void) | null): void { this.reconnectHandler = handler }
+
+    /**
+     * Lazily creates the preview runtime bound to this session's socket.
+     * Used by the preview_* MCP tools; a session that never calls them never
+     * builds it.
+     */
+    getPreviewRuntime(): PreviewRuntime {
+        if (!this.previewRuntime) {
+            const socket = this.socket
+            this.previewRuntime = createPreviewRuntime({
+                connected: () => socket.connected,
+                emitFrame: (frame) => {
+                    if (!socket.connected) return false
+                    socket.emit(PREVIEW_EVENTS.frame, frame)
+                    return true
+                },
+                register: (descriptor) => this.emitPreviewRegister(descriptor),
+                unregister: (request) => this.emitPreviewUnregister(request)
+            })
+        }
+        return this.previewRuntime
+    }
+
+    private emitPreviewRegister(descriptor: PreviewMountDescriptor): Promise<PreviewRegisterAck | null> {
+        return new Promise((resolve) => {
+            if (!this.socket.connected) {
+                resolve(null)
+                return
+            }
+            this.socket.timeout(PREVIEW_REGISTER_ACK_TIMEOUT_MS).emit(PREVIEW_EVENTS.register, descriptor, (error, ack) => {
+                if (error) {
+                    logger.debug('[preview] preview:register failed:', error.message)
+                    resolve(null)
+                    return
+                }
+                resolve(ack)
+            })
+        })
+    }
+
+    private emitPreviewUnregister(request: PreviewUnregisterRequest): Promise<{ ok: boolean } | null> {
+        return new Promise((resolve) => {
+            if (!this.socket.connected) {
+                resolve(null)
+                return
+            }
+            this.socket.timeout(PREVIEW_REGISTER_ACK_TIMEOUT_MS).emit(PREVIEW_EVENTS.unregister, request, (error, ack) => {
+                if (error) {
+                    logger.debug('[preview] preview:unregister failed:', error.message)
+                    resolve(null)
+                    return
+                }
+                resolve(ack)
+            })
+        })
+    }
     private readonly token: string
     readonly sessionId: string
     private metadata: Metadata | null
@@ -281,6 +340,9 @@ export class ApiSessionClient extends EventEmitter {
     private agentStateChangedDuringAttempt = false
     private readonly pendingOutboundEvents: PendingOutboundEvent[] = []
     private didWarnPendingQueueFull = false
+    // Lazily created on first preview_* MCP call — a session that never mounts
+    // a preview pays nothing.
+    private previewRuntime: PreviewRuntime | null = null
 
     constructor(token: string, session: Session, options: ApiSessionClientOptions = {}) {
         super()
@@ -332,6 +394,9 @@ export class ApiSessionClient extends EventEmitter {
             logger.debug('Socket connected successfully')
             this.awaitingMaterializedConnection = false
             this.rpcHandlerManager.onSocketConnect(this.socket)
+            // Re-assert every live preview mount (same mountIds) so capability
+            // URLs keep working after a hub restart or socket reconnect.
+            this.previewRuntime?.onConnect()
             if (this.hasConnectedOnce) {
                 this.needsBackfill = true
             }
@@ -349,10 +414,17 @@ export class ApiSessionClient extends EventEmitter {
             callback(await this.rpcHandlerManager.handleRequest(data))
         })
 
+        // Preview tunnel frames. Direct dispatch — deliberately NOT queued, so
+        // transfers can never stall behind chat traffic (and vice versa).
+        this.socket.on(PREVIEW_EVENTS.frame, (frame) => {
+            this.previewRuntime?.handleFrame(frame)
+        })
+
         this.socket.on('disconnect', (reason) => {
             logger.debug('[API] Socket disconnected:', reason)
             this.rpcHandlerManager.onSocketDisconnect()
             this.terminalManager.closeAll()
+            this.previewRuntime?.onDisconnect()
             if (this.hasConnectedOnce) {
                 this.needsBackfill = true
             }
