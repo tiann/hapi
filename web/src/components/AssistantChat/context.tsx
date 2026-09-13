@@ -9,6 +9,7 @@ export type OlderHistoryLoadResult = 'loaded' | 'transient-stop' | 'terminal-sto
 export type HappyChatContextValue = {
     api: ApiClient
     sessionId: string
+    sessionTitle?: string
     metadata: SessionMetadataSummary | null
     terminalToolDisplayMode: TerminalToolDisplayMode
     /** Hub-wide AGENT_NOTIFY_SUMMARY chat display; polled once at chat shell. */

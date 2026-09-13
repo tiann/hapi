@@ -198,7 +198,8 @@ export default defineConfig({
             'workbox-precaching',
             'workbox-routing',
             'workbox-strategies',
-            'workbox-expiration'
+            'workbox-expiration',
+            'workbox-window'
         ]
     },
     resolve: {
