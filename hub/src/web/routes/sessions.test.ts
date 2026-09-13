@@ -1080,12 +1080,8 @@ describe('sessions routes', () => {
                     agentState: { controlledByUser: true, requests: {}, completedRequests: {} }
                 })
                 const { app, applySessionConfigCalls } = createApp(session)
-                // /model sends the model alone so this case reads the shared
-                // guard's own outcome: rejectUnsupportedEffort runs first there,
-                // and the Claude-only check right after would answer 400 for
-                // grok whatever the guard decided. The combined payload is
-                // asserted separately below, where 400 and 409 distinguish the
-                // two sides of the capability line.
+                // Check model-only and effort-only requests independently.
+                // Combined model+effort requests are asserted separately below.
                 const body = route === 'effort'
                     ? { effort: 'low' }
                     : { model: 'grok-4.5' }
