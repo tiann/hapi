@@ -165,6 +165,8 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
         try {
           const listed = await client.listTools();
           const visible = listed.tools.some((tool) => tool.name === 'link_pr');
+          // Guard: SDK enable/disable always emit list_changed even when unchanged.
+          if (visible === linkPrTool.enabled) return;
           if (visible) linkPrTool.enable();
           else linkPrTool.disable();
         } catch {

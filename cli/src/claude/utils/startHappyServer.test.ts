@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -430,9 +431,8 @@ describe('startHappyServer dynamic link_pr awareness', () => {
         mockUpsertSessionExternalRef.mockReset()
     })
 
-    it('toggles link_pr list visibility without dropping the MCP session', async () => {
-        mockFetchGithubPrAwarenessEnabled.mockResolvedValue(false)
-        const sessionClient = {
+    function sessionClient(): ApiSessionClient {
+        return {
             sessionId: 'sess-awareness',
             updateMetadata: vi.fn(),
             flushMetadata: vi.fn(async () => true),
@@ -440,8 +440,14 @@ describe('startHappyServer dynamic link_pr awareness', () => {
             sendAgentMessage: vi.fn(),
             sendClaudeSessionMessage: vi.fn()
         } as unknown as ApiSessionClient
+    }
 
-        const server = await startHappyServer(sessionClient, { enableChangeTitle: false })
+    it('toggles link_pr list visibility without dropping the MCP session', async () => {
+        mockFetchGithubPrAwarenessEnabled.mockResolvedValue(false)
+        const server = await startHappyServer(sessionClient(), {
+            enableChangeTitle: false,
+            awarenessPollMs: 0,
+        })
         stopServer = server.stop
         expect(server.toolNames).toContain('link_pr')
 
@@ -488,6 +494,64 @@ describe('startHappyServer dynamic link_pr awareness', () => {
             'ping_peer',
             'inspect_peer',
         ]))
+    })
+
+    it('does not emit tools/list_changed when awareness is unchanged', async () => {
+        mockFetchGithubPrAwarenessEnabled.mockResolvedValue(false)
+        const server = await startHappyServer(sessionClient(), {
+            enableChangeTitle: false,
+            awarenessPollMs: 0,
+        })
+        stopServer = server.stop
+
+        mcp = new Client({ name: 'hapi-awareness-idempotent', version: '1.0.0' })
+        await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+        await mcp.listTools()
+
+        let listChanged = 0
+        mcp.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+            listChanged += 1
+        })
+
+        await mcp.listTools()
+        await mcp.listTools()
+        expect(listChanged).toBe(0)
+
+        mockFetchGithubPrAwarenessEnabled.mockResolvedValue(true)
+        await mcp.listTools()
+        expect(listChanged).toBe(1)
+
+        await mcp.listTools()
+        await mcp.listTools()
+        expect(listChanged).toBe(1)
+    })
+
+    it('polls hub awareness so idle HTTP clients learn about flips', async () => {
+        mockFetchGithubPrAwarenessEnabled.mockResolvedValue(false)
+        const server = await startHappyServer(sessionClient(), {
+            enableChangeTitle: false,
+            awarenessPollMs: 40,
+            // Prove the poll path alone updates registration (no per-request sync).
+            syncLinkPrOnRequest: false,
+        })
+        stopServer = server.stop
+
+        mcp = new Client({ name: 'hapi-awareness-poll', version: '1.0.0' })
+        await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+        const baseline = await mcp.listTools()
+        expect(baseline.tools.map((tool) => tool.name)).not.toContain('link_pr')
+
+        mockFetchGithubPrAwarenessEnabled.mockResolvedValue(true)
+        await vi.waitFor(async () => {
+            const onTools = await mcp!.listTools()
+            expect(onTools.tools.map((tool) => tool.name)).toContain('link_pr')
+        }, { timeout: 2000, interval: 50 })
+
+        mockFetchGithubPrAwarenessEnabled.mockResolvedValue(false)
+        await vi.waitFor(async () => {
+            const offTools = await mcp!.listTools()
+            expect(offTools.tools.map((tool) => tool.name)).not.toContain('link_pr')
+        }, { timeout: 2000, interval: 50 })
     })
 })
 

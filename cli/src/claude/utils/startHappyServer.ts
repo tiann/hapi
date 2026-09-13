@@ -35,6 +35,17 @@ type StartHappyServerOptions = {
     emitTitleSummary?: boolean;
     enableChangeTitle?: boolean;
     enableLinkPr?: boolean;
+    /**
+     * How often to re-read hub githubPrAwareness and sync RegisteredTool
+     * visibility for idle HTTP MCP clients (Claude). `0` disables polling.
+     * Default 15s. Tests may pass a shorter interval.
+     */
+    awarenessPollMs?: number;
+    /**
+     * When true (default), each HTTP MCP request re-syncs link_pr visibility
+     * before handling. Tests can disable this to prove poll-only updates.
+     */
+    syncLinkPrOnRequest?: boolean;
     skillLookup?: {
         workingDirectory: string;
         flavor: string;
@@ -291,7 +302,10 @@ function createHapiMcpServer(
         });
         if (enableLinkPr === 'dynamic') {
             linkPrTool.disable();
+            // MCP SDK 1.25.1 enable()/disable() always emit tools/list_changed —
+            // even when the flag is unchanged. Guard to avoid list→notify→list loops.
             setLinkPrVisible = (enabled) => {
+                if (enabled === linkPrTool.enabled) return;
                 if (enabled) linkPrTool.enable();
                 else linkPrTool.disable();
             };
@@ -622,13 +636,14 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
 
     const server = createServer(async (req, res) => {
         try {
-            await syncLinkPrVisibility();
             const sessionId = readMcpSessionId(req);
+            const isNewSession = !sessionId;
             const transport = sessionId
                 ? transports.get(sessionId)
                 : createMcpTransport();
-            if (!sessionId) {
-                // New MCP session registered a syncer — apply current hub flag.
+            // New sessions always seed visibility once. Existing sessions re-sync
+            // on each request unless tests disable syncLinkPrOnRequest (poll-only).
+            if (isNewSession || options.syncLinkPrOnRequest !== false) {
                 await syncLinkPrVisibility();
             }
 
@@ -661,6 +676,18 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
         hapiMcpUrl: mcpUrl,
     }));
 
+    // Idle HTTP clients (Claude) may never send another HAPI request after the
+    // initial catalog. Poll hub awareness so enable/disable + list_changed still
+    // fire when Settings flips while the session is quiet.
+    const awarenessPollMs = options.awarenessPollMs ?? 15_000;
+    let awarenessPollTimer: ReturnType<typeof setInterval> | undefined;
+    if (linkPrMode === 'dynamic' && awarenessPollMs > 0) {
+        awarenessPollTimer = setInterval(() => {
+            void syncLinkPrVisibility();
+        }, awarenessPollMs);
+        awarenessPollTimer.unref?.();
+    }
+
     // Always include link_pr in the stdio --tools shortlist when dynamic so the
     // bridge can register then enable/disable; HTTP listTools still honors the
     // live visibility flag via RegisteredTool.enable/disable.
@@ -683,6 +710,10 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
         toolNames,
         stop: () => {
             logger.debug('[hapiMCP] Stopping server');
+            if (awarenessPollTimer) {
+                clearInterval(awarenessPollTimer);
+                awarenessPollTimer = undefined;
+            }
             for (const mcp of mcps.values()) {
                 mcp.close();
             }
