@@ -693,8 +693,15 @@ export function getSessionsByNamespace(db: Database, namespace: string): StoredS
 }
 
 export function deleteSession(db: Database, id: string, namespace: string): boolean {
-    const result = db.prepare(
-        'DELETE FROM sessions WHERE id = ? AND namespace = ?'
-    ).run(id, namespace)
+    // Refuse while a running attached job exists — CASCADE would erase the live
+    // meter for idle (active=false) outliving work. Callers must transfer/clear first.
+    const result = db.prepare(`
+        DELETE FROM sessions
+        WHERE id = ? AND namespace = ?
+          AND NOT EXISTS (
+              SELECT 1 FROM session_jobs
+              WHERE session_id = sessions.id AND status = 'running'
+          )
+    `).run(id, namespace)
     return result.changes > 0
 }

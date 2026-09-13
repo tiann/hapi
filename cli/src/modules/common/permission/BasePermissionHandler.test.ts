@@ -101,3 +101,15 @@ describe('resolveToolAutoApprovalDecision list_peers', () => {
         )).toBeNull()
     })
 })
+
+describe('resolveToolAutoApprovalDecision session_job', () => {
+    it.each([
+        'session_job',
+        'hapi_session_job',
+        'mcp__hapi__session_job',
+        'Session-Attached Job'
+    ])('does not name-only auto-approve spoofable job tool %s', (toolName) => {
+        // Bridge / --allowedTools own the approve path; global title allowlist must not.
+        expect(resolveToolAutoApprovalDecision('default', toolName, 'call-1')).toBeNull()
+    })
+})
