@@ -1121,18 +1121,11 @@ function createMode(): EnhancedMode {
     };
 }
 
-type SessionStubOptions = {
-    deferMetadataUpdates?: boolean;
-    flushMetadataResult?: boolean;
-};
-
 function createSessionStub(
     messages = ['hello from launcher test'],
     mode = createMode(),
     isolateMessages = false,
-    closeQueue = true,
-    initialMetadata: Record<string, unknown> = {},
-    options: SessionStubOptions = {}
+    closeQueue = true
 ) {
     const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
     messages.forEach((message, index) => {
@@ -1163,17 +1156,6 @@ function createSessionStub(
         requests: {},
         completedRequests: {}
     };
-    let metadata = initialMetadata;
-    let pendingMetadata: Record<string, unknown> | null = null;
-    let resolveMetadataFlushStarted: (() => void) | null = null;
-    let releaseMetadataFlush: (() => void) | null = null;
-    let metadataFlushCalls = 0;
-    const metadataFlushStarted = options.deferMetadataUpdates
-        ? new Promise<void>((resolve) => {
-            resolveMetadataFlushStarted = resolve;
-        })
-        : null;
-    const metadataUpdates: Record<string, unknown>[] = [];
 
     const rpcHandlers = new Map<string, (params: unknown) => unknown>();
     const client = {
@@ -1182,34 +1164,7 @@ function createSessionStub(
                 rpcHandlers.set(method, handler);
             }
         },
-        getMetadata() {
-            return metadata;
-        },
-        updateMetadata(handler: (metadata: Record<string, unknown>) => Record<string, unknown>) {
-            const updated = handler(pendingMetadata ?? metadata);
-            metadataUpdates.push(updated);
-            if (options.deferMetadataUpdates) {
-                pendingMetadata = updated;
-            } else {
-                metadata = updated;
-            }
-        },
-        async flushMetadata() {
-            metadataFlushCalls += 1;
-            if (!options.deferMetadataUpdates) {
-                return options.flushMetadataResult ?? true;
-            }
-            resolveMetadataFlushStarted?.();
-            resolveMetadataFlushStarted = null;
-            await new Promise<void>((resolve) => {
-                releaseMetadataFlush = resolve;
-            });
-            if (pendingMetadata) {
-                metadata = pendingMetadata;
-                pendingMetadata = null;
-            }
-            return options.flushMetadataResult ?? true;
-        },
+        updateMetadata(_handler: (metadata: Record<string, unknown>) => Record<string, unknown>) {},
         updateAgentState(handler: (state: FakeAgentState) => FakeAgentState) {
             agentState = handler(agentState);
         },
@@ -1288,11 +1243,6 @@ function createSessionStub(
         foundSessionIds,
         resetThreadCalls,
         rpcHandlers,
-        getMetadata: () => metadata,
-        metadataUpdates,
-        metadataFlushStarted,
-        releaseMetadataFlush: () => releaseMetadataFlush?.(),
-        metadataFlushCalls: () => metadataFlushCalls,
         emitMessagesConsumed: client.emitMessagesConsumed,
         emitSteerIndeterminate: client.emitSteerIndeterminate,
         setPermissionMode: (nextMode: EnhancedMode['permissionMode']) => {
@@ -1544,79 +1494,6 @@ describe('codexRemoteLauncher', () => {
         harness.bridgeOptions = [];
     });
 
-    it('clears stale history capabilities until a resumed native thread is ready', async () => {
-        const { session, getMetadata } = createSessionStub([], createMode(), false, true, {
-            capabilities: {
-                conversationHistory: {
-                    forkCurrent: true,
-                    forkAtMessage: true,
-                    rewindToMessage: true
-                },
-                otherCapability: true
-            }
-        });
-        session.sessionId = 'native-thread';
-
-        await codexRemoteLauncher(session as never);
-
-        expect(getMetadata()).toMatchObject({
-            capabilities: { otherCapability: true }
-        });
-        expect(getMetadata().capabilities).not.toHaveProperty('conversationHistory');
-    });
-
-    it('does not require a metadata flush when no stale history capabilities exist', async () => {
-        const { session, rpcHandlers, metadataFlushCalls } = createSessionStub(
-            [],
-            createMode(),
-            false,
-            true,
-            {},
-            { flushMetadataResult: false }
-        );
-
-        await codexRemoteLauncher(session as never);
-
-        expect(metadataFlushCalls()).toBe(0);
-        expect(rpcHandlers.has(RPC_METHODS.ForkConversation)).toBe(true);
-        expect(rpcHandlers.has(RPC_METHODS.RewindConversation)).toBe(true);
-    });
-
-    it('waits for stale history capability removal to persist before registering history RPC handlers', async () => {
-        const { session, getMetadata, rpcHandlers, metadataFlushStarted, releaseMetadataFlush } = createSessionStub(
-            [],
-            createMode(),
-            false,
-            true,
-            {
-                capabilities: {
-                    conversationHistory: {
-                        forkCurrent: true,
-                        forkAtMessage: true,
-                        rewindToMessage: true
-                    },
-                    otherCapability: true
-                }
-            },
-            { deferMetadataUpdates: true }
-        );
-        session.sessionId = 'native-thread';
-
-        const launcherPromise = codexRemoteLauncher(session as never);
-        await metadataFlushStarted!;
-
-        expect(getMetadata().capabilities).toHaveProperty('conversationHistory');
-        expect(rpcHandlers.has(RPC_METHODS.ForkConversation)).toBe(false);
-        expect(rpcHandlers.has(RPC_METHODS.RewindConversation)).toBe(false);
-
-        releaseMetadataFlush();
-        await launcherPromise;
-
-        expect(getMetadata().capabilities).not.toHaveProperty('conversationHistory');
-        expect(rpcHandlers.has(RPC_METHODS.ForkConversation)).toBe(true);
-        expect(rpcHandlers.has(RPC_METHODS.RewindConversation)).toBe(true);
-    });
-
     it('finishes a turn and emits ready when task lifecycle events include turn_id', async () => {
         const {
             session,
@@ -1681,6 +1558,77 @@ describe('codexRemoteLauncher', () => {
             model_context_window: 400_000,
             model_auto_compact_token_limit: 300_000
         });
+    });
+
+    it('forwards user-configured MCP servers into fresh and resumed threads', async () => {
+        harness.configReadResponse = {
+            config: {
+                mcp_servers: {
+                    'package-manager': {
+                        command: 'uvx',
+                        args: ['example-mcp', 'serve'],
+                        environment_id: 'local',
+                        enabled: true,
+                        tool_timeout_sec: 60
+                    },
+                    remote: {
+                        url: 'https://example.test/mcp',
+                        bearer_token_env_var: 'REMOTE_MCP_TOKEN'
+                    }
+                }
+            }
+        };
+
+        const fresh = createSessionStub();
+        await codexRemoteLauncher(fresh.session as never);
+        const freshConfig = harness.startThreadParams[0]?.config as Record<string, unknown> | undefined;
+        const freshPackageManager = freshConfig?.['mcp_servers.package-manager'] as {
+            command?: string;
+            args?: string[];
+        } | undefined;
+        expect(harness.startThreadParams[0]?.config).toMatchObject({
+            'mcp_servers.remote': {
+                url: 'https://example.test/mcp',
+                bearer_token_env_var: 'REMOTE_MCP_TOKEN'
+            }
+        });
+        expect(freshPackageManager).toEqual(expect.objectContaining({
+            environment_id: 'local',
+            enabled: true,
+            tool_timeout_sec: 60
+        }));
+        if (process.platform === 'win32') {
+            expect(freshPackageManager?.args).toContain('mcp-proxy');
+        } else {
+            expect(freshPackageManager).toMatchObject({
+                command: 'uvx',
+                args: ['example-mcp', 'serve']
+            });
+        }
+
+        harness.startThreadParams = [];
+        const resumed = createSessionStub();
+        resumed.session.sessionId = 'thread-existing';
+        await codexRemoteLauncher(resumed.session as never);
+        const resumedConfig = harness.resumeThreadParams[0]?.config as Record<string, unknown> | undefined;
+        const resumedPackageManager = resumedConfig?.['mcp_servers.package-manager'] as {
+            command?: string;
+            args?: string[];
+        } | undefined;
+        expect(harness.resumeThreadParams[0]?.config).toMatchObject({
+            'mcp_servers.remote': {
+                url: 'https://example.test/mcp'
+            }
+        });
+        expect(resumedPackageManager).toBeDefined();
+        if (process.platform === 'win32') {
+            expect(resumedPackageManager?.args).toContain('mcp-proxy');
+        } else {
+            expect(resumedPackageManager).toMatchObject({
+                command: 'uvx',
+                args: ['example-mcp', 'serve']
+            });
+        }
     });
 
     it('keeps remote sessions working when config/read is unavailable', async () => {
@@ -3137,6 +3085,7 @@ describe('codexRemoteLauncher', () => {
 
         expect(codexMessages).toContainEqual(expect.objectContaining({
             type: 'token_count',
+            flavor: 'codex',
             thread_id: 'thread-1',
             usageSchema: 'hapi.usage.v1',
             inputTokenSemantics: 'includes-cache',

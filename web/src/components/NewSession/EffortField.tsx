@@ -19,6 +19,8 @@ export type EffortFieldProps = {
     grokOptions?: Array<{ value: string; label: string }>
     /** Model-dependent reasoning-effort options (Codex). */
     codexReasoningOptions?: Array<{ value: string; name?: string }>
+    /** Model-dependent variant values from the OpenCode catalog (OpenCode). Array = dynamic list, [] = hide field, null/undefined = static fallback. */
+    opencodeVariantOptions?: string[] | null
     /** Selected Pi model — hides effort when the model cannot reason and filters levels via thinkingLevelMap. */
     piSelectedModel?: { reasoning?: boolean; thinkingLevelMap?: PiThinkingLevelMap } | null
 }
@@ -64,9 +66,23 @@ export function EffortField(props: EffortFieldProps) {
                 }))
                 : undefined)
             : undefined
-        options = modelOptions ?? CODEX_REASONING_EFFORT_OPTIONS.filter(
-            (option) => props.agent === 'opencode' ? option.value !== 'xhigh' : option.value !== 'max'
-        )
+        if (props.agent === 'opencode') {
+            if (props.opencodeVariantOptions !== undefined && props.opencodeVariantOptions !== null) {
+                if (props.opencodeVariantOptions.length === 0) {
+                    return null
+                }
+                options = [
+                    { value: 'default', label: t('newSession.model.default') },
+                    ...props.opencodeVariantOptions.map((variant) => ({ value: variant, label: variant }))
+                ]
+            } else {
+                options = CODEX_REASONING_EFFORT_OPTIONS.filter((option) => option.value !== 'xhigh')
+            }
+        } else {
+            options = modelOptions ?? CODEX_REASONING_EFFORT_OPTIONS.filter(
+                (option) => option.value !== 'max'
+            )
+        }
     } else {
         options = CLAUDE_EFFORT_OPTIONS
     }

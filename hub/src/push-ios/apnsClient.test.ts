@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, it, spyOn } from 'bun:test'
 import http2 from 'node:http2'
 import { generateKeyPairSync } from 'node:crypto'
 import * as jose from 'jose'
@@ -49,6 +49,33 @@ describe('ApnsJwtProvider', () => {
         expect(second).not.toBe(first)
         expect(jose.decodeJwt(second).iat).toBe(Math.floor(later / 1000))
         expect(APNS_JWT_MAX_AGE_MS).toBe(45 * 60 * 1000)
+    })
+
+    it('shares one JWT across concurrent callers on startup and refresh', async () => {
+        const provider = new ApnsJwtProvider(TEST_KEY_P8, 'KEYID12345', 'TEAMID9999')
+        const t0 = 1_700_000_000_000
+        const first = await Promise.all(Array.from({ length: 8 }, () => provider.getToken(t0)))
+        expect(new Set(first).size).toBe(1)
+
+        const later = t0 + APNS_JWT_MAX_AGE_MS + 1
+        const refreshed = await Promise.all(Array.from({ length: 8 }, () => provider.getToken(later)))
+        expect(new Set(refreshed).size).toBe(1)
+        expect(refreshed[0]).not.toBe(first[0])
+        expect(await provider.getToken(later)).toBe(refreshed[0]!)
+    })
+
+    it('can retry signing after a failed token generation', async () => {
+        const provider = new ApnsJwtProvider(TEST_KEY_P8, 'KEYID12345', 'TEAMID9999')
+        const sign = spyOn(jose.SignJWT.prototype, 'sign')
+            .mockRejectedValueOnce(new Error('test signing failure'))
+        try {
+            await expect(provider.getToken()).rejects.toThrow('test signing failure')
+            const token = await provider.getToken()
+            expect(jose.decodeProtectedHeader(token).kid).toBe('KEYID12345')
+            expect(sign).toHaveBeenCalledTimes(2)
+        } finally {
+            sign.mockRestore()
+        }
     })
 })
 

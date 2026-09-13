@@ -1,6 +1,6 @@
 import type { EnhancedMode } from '../loop';
 import type { CodexCliOverrides } from './codexCliOverrides';
-import type { McpServersConfig } from './buildHapiMcpBridge';
+import type { CodexMcpServersConfig } from './codexMcpServers';
 import { getCodexSystemPrompt } from './systemPrompt';
 import type {
     ApprovalPolicy,
@@ -102,15 +102,11 @@ export function supportsReasoningSummary(model: string | undefined): boolean {
     return !MODELS_WITHOUT_REASONING_SUMMARY.has(modelName);
 }
 
-function buildMcpServerConfig(mcpServers: McpServersConfig): Record<string, unknown> {
+function buildMcpServerConfig(mcpServers: CodexMcpServersConfig): Record<string, unknown> {
     const config: Record<string, unknown> = {};
 
     for (const [name, server] of Object.entries(mcpServers)) {
-        config[`mcp_servers.${name}`] = {
-            command: server.command,
-            args: server.args,
-            ...(server.tools ? { tools: server.tools } : {})
-        };
+        config[`mcp_servers.${name}`] = { ...server };
     }
 
     return config;
@@ -197,7 +193,7 @@ export function buildUserInputFromMessage(
 export function buildThreadStartParams(args: {
     cwd: string;
     mode: EnhancedMode;
-    mcpServers: McpServersConfig;
+    mcpServers: CodexMcpServersConfig;
     cliOverrides?: CodexCliOverrides;
     baseInstructions?: string;
     developerInstructions?: string;

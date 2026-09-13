@@ -102,7 +102,7 @@ describe('bootstrapExistingSession', () => {
         delete process.env[HAPI_SESSION_ID_ENV]
     })
 
-    it('loads an existing HAPI session and reports it to the runner', async () => {
+    it('does not wait for metadata when an existing session has no stale history capabilities', async () => {
         const session = createSession()
         const sessionClient = {
             updateMetadata: vi.fn(),

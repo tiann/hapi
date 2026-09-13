@@ -29,11 +29,16 @@ import { backoff } from '@/utils/time'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers'
+import { setAgyCatalogChangeListener } from '../modules/common/agyModels'
 import {
     listOpencodeModelsForCwd,
     type ListOpencodeModelsForCwdRequest,
     type ListOpencodeModelsForCwdResponse
 } from '../modules/common/opencodeModels'
+import {
+    listOpencodeModelVariants,
+    type ListOpencodeModelVariantsResponse
+} from '../modules/common/opencodeModelVariants'
 import {
     listGrokModelsForCwd,
     type ListGrokModelsForCwdRequest,
@@ -117,6 +122,12 @@ export class ApiMachineClient {
         })
 
         registerCommonHandlers(this.rpcHandlerManager, getInvokedCwd())
+
+        // Only the machine daemon answers `<machineId>:listAgyModels`, so it is
+        // the one process that can tell the hub its catalog moved.
+        setAgyCatalogChangeListener(() => {
+            this.socket.emit('machine-agy-models-changed', { machineId: this.machine.id })
+        })
 
         this.rpcHandlerManager.registerHandler<unknown, AgentAvailabilityResponse>(
             RPC_METHODS.AgentAvailability,
@@ -253,6 +264,23 @@ export class ApiMachineClient {
                 }
 
                 return await listOpencodeModelsForCwd(resolvedCwd)
+            }
+        )
+
+        this.rpcHandlerManager.registerHandler<{ cwd?: string | null }, ListOpencodeModelVariantsResponse>(
+            RPC_METHODS.ListOpencodeModelVariants,
+            async (params) => {
+                const rawCwd = typeof params?.cwd === 'string' ? params.cwd.trim() : ''
+                if (!rawCwd) {
+                    return { success: false, error: 'cwd is required' }
+                }
+
+                const resolvedCwd = await this.pathPolicy.resolveForCheck(rawCwd)
+                if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
+                    return { success: false, error: 'Path is outside workspace roots' }
+                }
+
+                return await listOpencodeModelVariants({ cwd: resolvedCwd })
             }
         )
 
@@ -655,6 +683,8 @@ export class ApiMachineClient {
 
     shutdown(): void {
         this.stopKeepAlive()
+        // The listener holds this client, and the socket is about to close.
+        setAgyCatalogChangeListener(null)
         if (this.socket) {
             this.socket.close()
         }

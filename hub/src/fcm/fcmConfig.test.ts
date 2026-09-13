@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
+import { generateKeyPairSync } from 'node:crypto'
 
 import { resolveFcmConfig } from './fcmConfig'
 
@@ -26,7 +27,7 @@ function makeServiceAccountFile(
 const VALID_ACCOUNT = {
     project_id: 'proj-1',
     client_email: 'svc@proj-1.iam.gserviceaccount.com',
-    private_key: '-----BEGIN PRIVATE KEY-----\nMIG\n-----END PRIVATE KEY-----\n'
+    private_key: generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' })
 }
 
 describe('resolveFcmConfig', () => {

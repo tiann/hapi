@@ -22,9 +22,10 @@ struct DirectoryStatusUI: Equatable {
 
 /// Which permission control the current flavor renders (web `PermissionField`).
 enum PermissionUI: Equatable {
-    /// Native permission-mode picker (grok + codex-family).
+    /// Native permission-mode picker (claude, grok, codex-family —
+    /// `NewSessionLogic.usesNativePermissionSelect`).
     case nativeSelect([PermissionModeOption])
-    /// HAPI YOLO toggle (claude/agy/cursor) with the native mode it maps to.
+    /// HAPI YOLO toggle (agy/cursor) with the native mode it maps to.
     case yoloToggle(nativeModeLabel: String?)
     /// Pi: the agent manages its own permissions.
     case managed
@@ -330,7 +331,7 @@ final class NewSessionModel {
             return .managed
         }
         if NewSessionLogic.usesNativePermissionSelect(agent) {
-            return .nativeSelect(agent.permissionModes.map { PermissionModeOption(mode: $0) })
+            return .nativeSelect(agent.launchPermissionModes.map { PermissionModeOption(mode: $0) })
         }
         return .yoloToggle(nativeModeLabel: NewSessionLogic.hapiYoloNativeMode(for: agent)?.label)
     }

@@ -16,6 +16,9 @@ it shares only the protocol contract (`docs/api/`) and the golden fixtures
 
 ## Build
 
+Native chat scrolling architecture and acceptance checklist:
+[Native transcript scrolling](../docs/native-chat-scrolling.md).
+
 Open `ios/Hapi.xcodeproj` in Xcode and run the shared `Hapi` scheme, or from
 the command line:
 
@@ -24,18 +27,182 @@ the command line:
 xcodebuild build -project ios/Hapi.xcodeproj -scheme Hapi \
   -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
 
-# Package tests (also runs on macOS, the package is pure Foundation)
+# Package tests (macOS; protocol/client plus UI package tests)
 swift test --package-path ios/Packages/HapiKit
 ```
 
-CI runs both on `macos-15` via `.github/workflows/ios.yml` (triggered by
-changes under `ios/**` and `shared/fixtures/**`).
+CI runs package tests, the simulator build, and app-hosted transcript tests
+on `macos-15` via `.github/workflows/ios.yml` (triggered by changes under
+`ios/**` and `shared/fixtures/**`).
 
 ### Localization catalog
 
-`Hapi/Resources/Localizable.xcstrings` is hand-maintained. Compiler string
-extraction stays disabled so opening or building the project does not rewrite
-the catalog with decorative or intentionally verbatim strings.
+`Hapi/Resources/Localizable.xcstrings` is **manually managed**, including every
+entry's `"extractionState" : "manual"`. Keep `SWIFT_EMIT_LOC_STRINGS = NO` for the
+app/extension in Debug and Release. That setting disables compiler extraction;
+it does **not** prevent the Xcode editor from synchronizing or saving a catalog.
+Unspecified ownership can still turn entries into `stale` during synchronization.
+
+Use Xcode's native catalog formatting (key order, spacing, escaping), not a
+generic JSON formatter. After adding or editing translations, run from repo root:
+
+```sh
+python3 ios/scripts/localizations.py --check   # read-only ownership check; no Xcode needed
+python3 ios/scripts/localizations.py --fix     # macOS/Xcode: mark manual, normalize native format
+```
+
+The normalizer uses `xcstringstool` on a temporary copy, verifies that all keys,
+translations, plural variations and comments survive, and writes only if needed.
+It never deletes real entries: review/remove unwanted auto-extracted additions
+before `--fix`, rather than silently making them permanent. Keep dynamic values
+and decorative text verbatim in SwiftUI where they are not localization keys.
+
+CI checks manual ownership, tests normalization idempotence, and verifies that
+building/testing does not rewrite the catalog. Formatting is delegated to the
+installed Xcode rather than reimplementing its ordering in Python; `--check`
+does not enforce one Xcode version's byte-level formatting on another version.
+
+After migrating an existing checkout, use **Product → Clean Build Folder** if
+Xcode still synchronizes old extraction results, then rebuild/reopen and inspect
+the diff. Do not hide the file with `.gitignore`, `skip-worktree`, or restore it
+unconditionally: real translation edits must remain visible and committed.
+
+### Reading typography
+
+`HapiUI` separates color palettes (`HapiTheme`) from resolved Dynamic Type
+metrics (`HapiTypography`). Install `.hapiTypography()` at a presentation root,
+outside `AnchoredTranscriptList`; hosted rows inherit those metrics. Do not
+scale the resolved values again. Body/user/composer text starts at 16pt,
+inline code at 15pt, code/diffs/terminal at 14pt, and captions at 12pt.
+Body and code add 3pt and 2pt of scaled inter-line spacing respectively.
+
+The transcript and composer share a centered, at-most-720pt reading column
+with 16pt minimum side margins. Font, Bold Text, locale, and effective width
+changes invalidate height measurements while preserving the reading anchor.
+Ordinary streaming updates retain unchanged hosting roots and measurements.
+
+User messages stay fully expanded through 8,000 characters and 120 source lines,
+even when they span multiple screens. Only larger payloads fold to a preview
+bounded to 2,000 characters / 24 lines. The folding threshold is separate from
+the preview budget; both bound the actual text passed to layout. **View full
+message** opens a screen-owned reader with one 4,000-character / 80-source-line
+part mounted at a time, previous/next navigation, and exact full-content copy.
+Paging preserves Unicode and whitespace without scanning the entire payload on
+open. The reader survives cell recycling and pauses hidden history/tail following;
+closing it preserves the reading position. Stored/sent messages are never truncated.
+
+The UIKit transcript suite covers typography changes, recycling, shrinking
+text, tablet/phone widths, and tail following. Optional deterministic visual
+specimens cover light/dark/OLED, mixed Chinese/English, code, tables, diffs,
+approvals, and the actual composer. They use a non-networked test interactor;
+they are **not** live conversations or App Store screenshots. Capture into a
+new temporary directory, never over the release gallery:
+
+```sh
+TEST_RUNNER_HAPI_TYPOGRAPHY_CAPTURE=/tmp/hapi-typography-review \
+  ios/scripts/test-transcript.sh -only-testing:HapiTests/TypographySnapshotTests
+```
+
+### Tool inspection
+
+Plan proposals (`ExitPlanMode` / `exit_plan_mode`) are reading documents, not
+activity summaries: their complete `input.plan` Markdown stays visible in the
+conversation, before any approval controls. The same renderer is used in the
+inspector; null output does not show a misleading "No output" placeholder.
+Plans are prewarmed in the chat Markdown cache and never use the ordinary
+tool-output preview/paging budget. The inspector retains raw fields under Source.
+
+Tool summaries open a native large sheet instead of expanding their output
+inside the conversation. Tool groups also stay as one summary row: tapping one
+opens a native lazy list in the same inspector. Calls remain chronological, with
+each new presentation initially positioned at the latest tool. Streaming never
+scrolls the list; **Latest tool** explicitly returns to its end. Details push
+inside the same sheet, retaining the list position on Back. Both levels keep a
+toolbar Close action and native swipe dismissal. The inspector resolves stable
+group/tool IDs from live data; output-only changes do not reconfigure unchanged
+group summaries in the transcript. Group headers prioritize total calls over
+category counts.
+File/image summaries show the action and basename; commands use a bounded preview.
+Success is quiet, while running/errors remain visible; every row keeps a 44pt target.
+Edits show their recorded input, with a separate **View current file** action.
+Task/Agent sidechains open a process page; approvals and question answering remain in
+the conversation/process, not in the read-only inspector.
+
+Question inspectors show recorded selections, custom answers and notes with
+Markdown questions/options. `request_user_input` also restores answers from
+historical results; live permission answers take precedence. Answered cards
+avoid duplicate results, but retain errors and the full input/result/answers
+under **Source**. Answer submission remains in the conversation.
+
+Synchronous questions use a dedicated inline card, not the orange approval
+footer. Only one question is shown at a time: single-selection taps advance
+to the next question, while multiple-selection and text questions use **Next
+question**. **Previous question** retains all choices and notes; the last step
+always requires **Submit answer**. Recommended labels are display-only badges,
+never default selections or rewritten wire values. Other-answer/note fields
+expand on demand; text-only questions and prefilled drafts show them immediately.
+All form state survives transcript-cell recycling for the retained request.
+Successful records collapse to answer summaries; missing recorded answers are
+shown as handled, not inferred from local drafts. Ordinary approvals and the
+asynchronous question path are unchanged.
+
+Question tests include pure navigation/answer-building checks and app-hosted
+layout/recycling specimens (fake data; no live agent or saved credentials):
+
+```sh
+TEST_RUNNER_HAPI_QUESTION_CAPTURE=/tmp/hapi-question-review \
+  ios/scripts/test-transcript.sh -only-testing:HapiTests/QuestionAnswerDraftTests \
+    -only-testing:HapiTests/QuestionCardPresentationTests
+```
+
+Inspection pauses transcript tail-following and hidden history paging, without
+opening another SSE subscription. Closing returns to the reading anchor;
+**Back to latest** explicitly resumes following. Trimmed records remain visible
+as labeled, read-only snapshots; missing groups retain their last membership,
+without switching to another group. Incomplete history is labeled and can be
+loaded from the conversation after closing the inspector. Large text is loaded
+in 20,000-character parts and can be copied in full; large diffs use paged source
+instead of eager rows.
+
+The inspector recognizes namespaced command/script/patch calls. File reads use
+source-language highlighting; web/agent prose uses Markdown (large documents
+fall back to paged source). Common nested result envelopes are unwrapped, with
+command exit/status metadata kept visible. **Source** reveals the original
+input/result, including fields not shown in the preview; mixed text/media
+results stay JSON instead of losing non-text blocks.
+
+The app-hosted suite covers selection, live updates, native sheet presentation,
+2/42/240-call lists, initial positioning, detail navigation, surface handoffs,
+Unicode paging, and reading-position preservation. Native swipe gestures and
+release-device animation smoothness still need manual acceptance. Transcript
+specimens run the real ChatModel/ChatTranscriptView with fake HTTP and closed
+loopback SSE; sheet specimens are non-networked. Both use deterministic test
+records, not live sessions or App Store screenshots. Capture into a fresh directory:
+
+```sh
+TEST_RUNNER_HAPI_TOOL_CAPTURE=/tmp/hapi-tool-review \
+  ios/scripts/test-transcript.sh -only-testing:HapiTests/ToolInspectionPresentationTests \
+    -only-testing:HapiTests/ToolTranscriptPresentationTests
+```
+
+### Home filtering
+
+Home keeps a fixed Sessions title: hub switching on the leading edge,
+Filters and New Session on the trailing edge. The native menu currently
+offers machine single-selection; only applied filters add a summary line.
+Filters are transient per home/hub and never select a new session's machine.
+Options/counts come from all session summaries, including historical machines;
+the online roster supplies names only. Missing names use a labeled short ID.
+Session-count updates do not reorder options or reset the list's scroll position.
+
+App-hosted filter tests use observable in-memory stores (no network or pairing).
+Optional layout captures are test specimens, not live or App Store screenshots:
+
+```sh
+TEST_RUNNER_HAPI_HOME_CAPTURE=/tmp/hapi-home-review \
+  ios/scripts/test-transcript.sh -only-testing:HapiTests/SessionListFilterTests \
+    -only-testing:HapiTests/HomeFilterPresentationTests
+```
 
 ### Linux verification (no Mac needed)
 
@@ -72,7 +239,7 @@ ios/
   Hapi.xcodeproj/        Hand-rolled minimal project (objectVersion 77).
   Hapi/                  App target sources. This is an Xcode 16 "synchronized
                          folder": add files here and they join the target
-                         without touching project.pbxproj. As of M2a:
+                         without touching project.pbxproj. Main areas:
                            Models/    AppModel (pairing state machine, hub
                                       switching, deep-link routing, scene
                                       phase) + HubSession (per-active-hub
@@ -93,22 +260,24 @@ ios/
                            Features/  Pairing/ (welcome, VisionKit QR scan,
                                       manual entry, shared confirm + error
                                       states), Home/ (session list host with
-                                      hub switcher + connection dot in the
-                                      toolbar), Sessions/ (SessionListView:
+                                      leading hub switcher, native filter
+                                      menu + new-session action; one degraded
+                                      connection notice below navigation),
+                                      Sessions/ (SessionListView:
                                       status dot with thinking pulse, title
                                       cascade, flavor·machine·worktree meta,
                                       pending/todo badges, unread dots,
-                                      pinned section, machine filter chips,
+                                      pinned section, applied-filter summary,
                                       pull-to-refresh, long-press
                                       pin/archive; row taps push the chat),
-                                      Chat/ (M2f read-only chat: ChatModel —
+                                      Chat/ (interactive chat: ChatModel —
                                       window state + session detail →
                                       ChatPipeline off-main, ~100 ms
                                       coalesced, last-seen stamping, header
                                       cascade; ChatView — bottom-anchored
-                                      ScrollView/LazyVStack with auto-stick,
-                                      new-messages pill, top sentinel paging
-                                      with scroll re-anchoring, degraded
+                                      UICollectionView with cached heights,
+                                      ID/offset anchoring, viewport paging,
+                                      explicit return-to-latest, degraded
                                       banners; Blocks/ — user bubble, agent
                                       markdown, reasoning, tool cards with
                                       per-tool bodies + knownTools-parity
@@ -207,7 +376,7 @@ ios/
                                       preferredColorScheme; system follows
                                       the OS, explicit modes override, OLED
                                       = dark on pure black); Language —
-                                      persist-only until the M5 i18n pass;
+                                      system/English/简体中文; applies on relaunch;
                                       owner-gated (JWT ns == "default",
                                       fail closed) Usage dashboard — range
                                       7d/30d/all, stat tiles, Swift Charts
@@ -694,9 +863,9 @@ for push entitlements:
    actions — can be exercised with `xcrun simctl push` using a payload whose
    `hapi.e` was produced with the device's registered key.
 
-## Milestones (track A of the native-clients plan)
+## Milestone history (track A of the native-clients plan)
 
-- **M0** — this scaffold: project, HapiKit package, CI, one passing test.
+- **M0** — initial scaffold: project, HapiKit package, CI, one passing test.
 - **M1** — foundations: HapiProtocol wire models + catalogs; APIClient + auth
   (Keychain, single-flight 401 refresh); SSEClient + reconnect state machine +
   versioned patch application (incl. gzip streaming check); pairing flow

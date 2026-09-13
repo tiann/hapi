@@ -241,6 +241,7 @@ struct SettingsView: View {
             LabeledContent("App version", value: appVersion)
             LabeledContent("Protocol version", value: String(ProtocolVersion.supported))
             hubRow
+            PrivacyPolicyLink()
         }
     }
 
@@ -257,7 +258,7 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             case .loaded(let health):
-                Text("Status: \(health.status) · protocol v\(health.protocolVersion)")
+                Text("Status: \(health.status) · protocol v\(health.protocolVersion, specifier: "%lld")")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             case .failed:

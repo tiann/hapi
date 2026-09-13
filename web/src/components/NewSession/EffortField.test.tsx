@@ -111,4 +111,31 @@ describe('EffortField', () => {
         )
         expect(container.querySelector('select')).toBeNull()
     })
+
+    it('renders OpenCode dynamic variants with a default entry', () => {
+        const { container } = render(
+            <EffortField {...baseProps} agent="opencode" opencodeVariantOptions={['low', 'high', 'max']} />
+        )
+        const select = container.querySelector('select') as HTMLSelectElement
+        expect(Array.from(select.options).map((option) => option.value)).toEqual([
+            'default', 'low', 'high', 'max'
+        ])
+    })
+
+    it('hides the OpenCode effort field when variants are an empty array', () => {
+        const { container } = render(
+            <EffortField {...baseProps} agent="opencode" opencodeVariantOptions={[]} />
+        )
+        expect(container.querySelector('select')).toBeNull()
+    })
+
+    it('falls back to static OpenCode presets when variants are not provided', () => {
+        const { container } = render(
+            <EffortField {...baseProps} agent="opencode" opencodeVariantOptions={null} />
+        )
+        const select = container.querySelector('select') as HTMLSelectElement
+        expect(Array.from(select.options).map((option) => option.value)).toEqual([
+            'default', 'low', 'medium', 'high', 'max'
+        ])
+    })
 })
