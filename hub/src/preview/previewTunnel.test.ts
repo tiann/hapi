@@ -235,6 +235,20 @@ describe('PreviewTunnel lifecycle (regressions)', () => {
         expect(tunnel.stats.conns).toBe(1)
     })
 
+    it('cancels the CLI side with a close frame when the head deadline expires', async () => {
+        const { ns, fake } = makeNamespace()
+        const tunnel = new PreviewTunnel(ns, { openTimeoutMs: 50 })
+        const conn = tunnel.openHttp(makeEntry(), httpMeta())
+        const connId = (fake.framesToCli[0] as { connId: string }).connId
+
+        // Never answer — the deadline must notify the CLI (cancel upstream)
+        // AND settle the browser head with a 504.
+        const head = await conn!.head
+        expect(head?.status).toBe(504)
+        expect(fake.framesToCli.some((frame) => frame.type === 'close' && frame.connId === connId)).toBe(true)
+        expect(tunnel.stats.conns).toBe(0)
+    })
+
     it('closeMount kills live conns and closes websockets toward the browser', async () => {
         const { ns, fake } = makeNamespace()
         const tunnel = new PreviewTunnel(ns)

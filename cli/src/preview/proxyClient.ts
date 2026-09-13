@@ -220,7 +220,12 @@ function serveProxyHttp(mount: PreviewMount, frame: PreviewOpenFrame, sink: Prev
             if (idleTimer) clearTimeout(idleTimer)
             if (!overflow) {
                 const html = Buffer.concat(chunks).toString('utf8')
-                const rewritten = rewriteHtml(html, prefix)
+                // Base href points at the document's own directory so nested
+                // pages keep their relative URLs while root-relative runtime
+                // URLs are corrected into the mount.
+                const slash = frame.path.lastIndexOf('/')
+                const docDir = slash > 0 ? frame.path.slice(0, slash) : ''
+                const rewritten = rewriteHtml(html, prefix, docDir)
                 const body = Buffer.from(rewritten, 'utf8')
                 const finalHeaders = { ...headers, 'content-length': String(body.byteLength) }
                 responded = true

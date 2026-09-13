@@ -281,10 +281,16 @@ export class PreviewTunnel {
         // Head deadline: if the CLI never answers, the browser gets a 504
         // instead of hanging on a dead socket. Cleared the moment a response
         // head arrives (long transfers outlive the deadline by design).
+        // closeConn (not a silent finish) so the CLI cancels its upstream
+        // request instead of leaking an orphan stream past the deadline.
         conn.openTimer = setTimeout(() => {
             if (conn.closed) return
-            this.failHead(conn, null)
-            this.finishConn(conn)
+            if (conn.headResolve) {
+                conn.headResolve({ status: 504, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } })
+                conn.headResolve = null
+                this.enqueue(conn, new TextEncoder().encode('Preview upstream timed out'))
+            }
+            this.closeConn(conn)
         }, this.openTimeoutMs)
         conn.openTimer.unref?.()
     }

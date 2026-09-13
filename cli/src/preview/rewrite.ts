@@ -32,7 +32,7 @@ function splitSrcset(value: string): SrcsetCandidate[] {
 export function rewriteSrcset(value: string, prefix: string): string {
     return splitSrcset(value)
         .map(({ url, descriptor }) => {
-            const rewritten = url.startsWith('/') && !url.startsWith('//') && !SKIP_URL_PREFIXES.test(url)
+            const rewritten = url.startsWith('/') && !url.startsWith('//') && !SKIP_URL_PREFIXES.test(url) && !url.startsWith(prefix)
                 ? `${prefix}${url}`
                 : url
             return descriptor ? `${rewritten} ${descriptor}` : rewritten
@@ -49,16 +49,25 @@ export function injectBaseTag(html: string, baseHref: string): string {
     return `${html.slice(0, insertAt)}<base href="${baseHref}">${html.slice(insertAt)}`
 }
 
-/** Full HTML rewrite: attribute URLs, srcset, then a <base> injection. */
-export function rewriteHtml(html: string, prefix: string): string {
+/**
+ * Full HTML rewrite: attribute URLs, srcset, then a `<base>` injection.
+ *
+ * The base points at the DOCUMENT's directory (not the mount root) so that
+ * relative URLs like `./chart.js` in `docs/page.html` keep resolving against
+ * the page's own directory — while root-relative runtime URLs (`fetch('/api')`)
+ * are corrected into the mount. Already-prefixed URLs are left untouched so
+ * rewrites are idempotent.
+ */
+export function rewriteHtml(html: string, prefix: string, docDir = ''): string {
     let output = html.replace(HTML_PREFIX_ATTRIBUTE, (match, attr: string, quote: string, url: string) => {
-        if (SKIP_URL_PREFIXES.test(url)) return match
+        if (SKIP_URL_PREFIXES.test(url) || url === prefix || url.startsWith(`${prefix}/`)) return match
         return ` ${attr}=${quote}${prefix}${url}${quote}`
     })
     output = output.replace(/\ssrcset=(["'])([^"']+)\1/gi, (_match, quote: string, value: string) => {
         return ` srcset=${quote}${rewriteSrcset(value, prefix)}${quote}`
     })
-    return injectBaseTag(output, `${prefix}/`)
+    const cleanDir = docDir.replace(/^\/+|\/+$/g, '')
+    return injectBaseTag(output, `${prefix}/${cleanDir}${cleanDir ? '/' : ''}`)
 }
 
 /**

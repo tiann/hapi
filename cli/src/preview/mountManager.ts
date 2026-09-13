@@ -251,12 +251,20 @@ export class PreviewMountManager {
     }
 
     private async registerNew(descriptor: PreviewMountDescriptor, replaced?: PreviewMount): Promise<PreviewMount> {
+        // Replacing a name with a new target must revoke the old mount hub-side
+        // first: its capability URL stops working, in-flight conns get cut, and
+        // the per-session mount cap slot is freed before the new registration.
+        if (replaced) {
+            try {
+                await this.socket.unregister({ mountId: replaced.mountId })
+            } catch (error) {
+                logger.debug('[preview] Failed to unregister replaced mount:', error instanceof Error ? error.message : String(error))
+            }
+            this.mounts.delete(replaced.name)
+        }
         const ack = await this.registerDescriptor(descriptor)
         if (!ack?.ok) {
             throw new Error(this.ackError(ack))
-        }
-        if (replaced) {
-            this.mounts.delete(replaced.name)
         }
         const mount: PreviewMount = {
             mountId: descriptor.mountId,

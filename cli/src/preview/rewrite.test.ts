@@ -34,6 +34,22 @@ describe('rewriteHtml', () => {
         expect(withBase).toContain('href="/preview/m1/x/"')
         expect(withBase.match(/<base/g)).toHaveLength(1)
     })
+
+    it('bases the document at its own directory so nested relative URLs survive', () => {
+        const page = rewriteHtml('<html><head></head><body><script src="./chart.js"></script></body></html>', '/preview/m1', 'docs/guides')
+        // `./chart.js` itself is untouched (relative resolves against doc URL),
+        // and the injected base points at the document directory.
+        expect(page).toContain('src="./chart.js"')
+        expect(page).toContain('<base href="/preview/m1/docs/guides/">')
+
+        const rootPage = rewriteHtml('<html><head></head></html>', '/preview/m1')
+        expect(rootPage).toContain('<base href="/preview/m1/">')
+    })
+
+    it('is idempotent for already-prefixed URLs', () => {
+        const html = '<img src="/preview/m1/logo.png"><a href="/preview/m1/page">x</a>'
+        expect(rewriteHtml(html, '/preview/m1')).toBe(html)
+    })
 })
 
 describe('rewriteSrcset', () => {

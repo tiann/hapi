@@ -10,8 +10,9 @@ import type { PreviewFrame } from '@hapi/protocol/preview'
 const MOUNT_ID = '5f0c9a2e-1b3d-4e5f-8a9b-0c1d2e3f4a5b'
 const tempSite = mkdtempSync(join(tmpdir(), 'hapi-preview-mgr-'))
 
-function makeSocket(connected = true): { adapter: PreviewSocketAdapter & RegistrySocketAdapter; sent: PreviewFrame[]; setConnected: (value: boolean) => void; register: (ack: unknown) => void } {
+function makeSocket(connected = true): { adapter: PreviewSocketAdapter & RegistrySocketAdapter; sent: PreviewFrame[]; setConnected: (value: boolean) => void; register: (ack: unknown) => void; unregistered: unknown[] } {
     const sent: PreviewFrame[] = []
+    const unregistered: unknown[] = []
     let isConnected = connected
     let registerAck: unknown = null
     const setConnected = (value: boolean) => {
@@ -28,9 +29,12 @@ function makeSocket(connected = true): { adapter: PreviewSocketAdapter & Registr
             return true
         },
         register: async () => registerAck as never,
-        unregister: async () => ({ ok: true })
+        unregister: async (request: unknown) => {
+            unregistered.push(request)
+            return { ok: true }
+        }
     }
-    return { adapter: adapter as PreviewSocketAdapter & RegistrySocketAdapter, sent, setConnected, register }
+    return { adapter: adapter as PreviewSocketAdapter & RegistrySocketAdapter, sent, setConnected, register, unregistered }
 }
 
 function openFrame() {
@@ -195,5 +199,18 @@ describe('PreviewMountManager', () => {
         socket.register(null)
         const manager = new PreviewMountManager(socket.adapter)
         await expect(manager.mountStatic({ path: tempSite })).rejects.toThrow('timed out')
+    })
+
+    it('unregisters the old mount hub-side when replacing a name with a new target', async () => {
+        const manager = new PreviewMountManager(socket.adapter)
+        const first = await manager.mountStatic({ path: tempSite, name: 'a' })
+
+        const secondSite = mkdtempSync(join(tmpdir(), 'hapi-preview-mgr2-'))
+        const second = await manager.mountStatic({ path: secondSite, name: 'a' })
+
+        expect(second.mountId).not.toBe(first.mountId)
+        expect(socket.unregistered).toEqual([{ mountId: first.mountId }])
+        expect(manager.get('a')?.mountId).toBe(second.mountId)
+        rmSync(secondSite, { recursive: true, force: true })
     })
 })
