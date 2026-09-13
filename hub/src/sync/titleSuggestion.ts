@@ -14,7 +14,6 @@ export const TITLE_SUGGESTION_MAX_TITLE_CHARS = 80
 export const TITLE_SUGGESTION_RATE_LIMIT = 5
 export const TITLE_SUGGESTION_RATE_WINDOW_MS = 10 * 60 * 1000
 export const TITLE_SUGGESTION_TIMEOUT_MS = 10_000
-const TITLE_PROVIDER_RESPONSE_MAX_CHARS = 16_000
 export const TITLE_SUGGESTION_MAX_TOKENS = 64
 const TITLE_SUGGESTION_RATE_LIMIT_ENV = 'HAPI_TITLE_SUGGESTION_RATE_LIMIT'
 const TITLE_SUGGESTION_RATE_WINDOW_ENV = 'HAPI_TITLE_SUGGESTION_RATE_WINDOW_MS'
@@ -277,13 +276,12 @@ async function readTitleProviderResponseBody(response: Response): Promise<unknow
         if (isAbortError(error)) throw error
         return null
     }
-    const boundedText = text.slice(0, TITLE_PROVIDER_RESPONSE_MAX_CHARS)
-    if (!boundedText.trim()) return null
+    if (!text.trim()) return null
 
     try {
-        return JSON.parse(boundedText) as unknown
+        return JSON.parse(text) as unknown
     } catch {
-        return boundedText
+        return text
     }
 }
 

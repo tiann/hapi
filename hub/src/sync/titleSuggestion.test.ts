@@ -96,6 +96,26 @@ describe('OpenAI-compatible title provider', () => {
         expect(await request.json()).toMatchObject({ model: 'small-model' })
     })
 
+    it('parses a large response envelope when the title content is short', async () => {
+        const provider = new OpenAICompatibleTitleProvider(
+            {
+                baseUrl: 'https://example.test/v1',
+                apiKey: 'secret',
+                model: 'small-model'
+            },
+            async () => new Response(JSON.stringify({
+                choices: [{
+                    message: {
+                        content: 'Large response title',
+                        reasoning_content: 'r'.repeat(16_001)
+                    }
+                }]
+            }), { status: 200 })
+        )
+
+        await expect(provider.suggest('Recent conversation')).resolves.toBe('Large response title')
+    })
+
     it('surfaces a safe provider HTTP reason without exposing credentials', async () => {
         const provider = new OpenAICompatibleTitleProvider(
             {
