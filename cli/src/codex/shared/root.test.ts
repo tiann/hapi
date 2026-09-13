@@ -17,6 +17,10 @@ vi.mock('../codexAppServerClient', () => ({
         async connect() {}
         async initialize() { this.initialized = true; }
         isInitialized() { return this.initialized; }
+        async listSkills() {
+            return { data: [{ cwd: '/tmp', skills: [{ name: 'find-docs', description: 'Find docs', path: '/tmp/SKILL.md', scope: 'user', enabled: true }], errors: [] }] };
+        }
+        async listMcpServerStatuses() { return { data: [] }; }
         async disconnect() { this.initialized = false; }
         async request(method: string) {
             if (method === 'thread/read' || method === 'thread/resume') return { model: 'mock', thread: this.thread };
@@ -27,8 +31,18 @@ vi.mock('../codexAppServerClient', () => ({
     isIndeterminateError: () => false
 }));
 vi.mock('../utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: async () => ({
-    mcpServers: {}, server: { stop() {} }
+    mcpServers: { hapi: { command: 'hapi', args: ['mcp'], tools: { change_title: {} } } }, server: { stop() {} }
 }) }));
+vi.mock('@/modules/common/slashCommands', () => ({
+    listSlashCommands: async () => [{ name: '/compact' }]
+}));
+vi.mock('../utils/codexMcpInventory', () => ({
+    listConfiguredCodexMcpServers: async () => [],
+    mergeCodexMcpInventories: (...inventories: Array<Array<unknown>>) => inventories.flat(),
+    parseCodexMcpStatusResponse: (value: unknown) => value && typeof value === 'object' && 'data' in value
+        ? (value as { data: unknown[] }).data
+        : undefined
+}));
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -65,7 +79,7 @@ async function fixture() {
         notify(method: string, params: unknown): void;
         abandoned(): void;
     };
-    return { root, native, state: () => state, updateState, reconnect: () => reconnect?.() };
+    return { root, native, state: () => state, metadata: () => metadata, updateState, reconnect: () => reconnect?.() };
 }
 
 describe('shared steering availability', () => {
@@ -114,5 +128,20 @@ describe('shared steering availability', () => {
         f.native.thread.turns = [{ id: 'busy', status: 'completed', items: [] }];
         f.reconnect();
         await vi.waitFor(() => expect(f.state().steeringActive).toBe(false));
+    });
+
+    it('publishes provider inventories through the active shared root', async () => {
+        const f = await fixture();
+
+        await f.root.activate();
+
+        await vi.waitFor(() => expect(f.metadata().contextDetails).toMatchObject({
+            provider: 'codex',
+            codex: {
+                slashCommands: ['/compact'],
+                skills: [{ name: 'find-docs' }],
+                mcpServers: [{ name: 'hapi', toolNames: ['change_title'] }]
+            }
+        }));
     });
 });

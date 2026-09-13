@@ -20,7 +20,8 @@ export class SharedCodexProjection {
     private readonly turns = new Map<string, string>();
     private readonly turnModels = new Map<string, string>();
     constructor(private readonly session: ApiSessionClient, readonly threadId: string,
-        private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string) {
+        private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string,
+        private readonly onTokenUsage?: (info: unknown, model?: string) => void) {
         if (!parentThreadId) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
     }
 
@@ -94,6 +95,9 @@ export class SharedCodexProjection {
                 this.send({ type: 'tool-call-result', callId, output: event.output, is_error: event.is_error }, key);
             } else if (event.type === 'token_count' || event.type === 'context_compacted' || event.type.startsWith('thread_goal_')) {
                 const model = event.type === 'token_count' && turnId ? this.turnModels.get(turnId) : undefined;
+                if (event.type === 'token_count' && !this.parentThreadId) {
+                    this.onTokenUsage?.(event.info, model);
+                }
                 this.send({ ...event, ...(model ? { model } : {}), flavor: 'codex', scope: { role: 'parent', threadId: this.threadId }, scope_role: 'parent', thread_id: this.threadId }, key);
             } else if (event.type === 'plan_update') {
                 this.send({ type: 'tool-call', name: 'update_plan', callId: 'codex-plan-state', input: { plan: event.plan, source: 'codex' } }, key);

@@ -21,6 +21,13 @@ import { getCodexSystemPrompt } from '../utils/systemPrompt';
 import { record, string } from './gateway';
 import { initializeSharedClient, type SharedLaunchOptions } from './launch';
 import { inheritedSandbox, settingsMatch } from './settings';
+import { buildCodexContextDetails, publishContextDetails, type CodexMcpServerInventory } from '@/agent/contextDetails';
+import {
+    listConfiguredCodexMcpServers,
+    mergeCodexMcpInventories,
+    parseCodexMcpStatusResponse
+} from '../utils/codexMcpInventory';
+import type { SkillMetadata } from '../appServerTypes';
 
 type RuntimeSettings = NonNullable<Parameters<ApiSessionClient['keepAlive']>[2]>;
 export type RootHost = {
@@ -66,6 +73,11 @@ export class SharedCodexRoot {
     private settingsNative: Record<string, unknown> = {};
     private settingsNotification?: Record<string, unknown>;
     private readonly settingsListeners = new Set<() => void>();
+    private availableSlashCommands?: string[];
+    private availableSkills?: SkillMetadata[];
+    private configuredMcpServerInventory?: CodexMcpServerInventory[];
+    private statusMcpServerInventory?: CodexMcpServerInventory[];
+    private mcpInventoryLoaded = false;
     private ready!: () => void;
     private readonly bound = new Promise<void>(resolve => { this.ready = resolve; });
 
@@ -167,7 +179,8 @@ export class SharedCodexRoot {
             (id, input) => this.session.syncNativeQueuedMessage(id, input === null ? null : inputText(input)),
             ids => this.session.setSteerDeliveryState(ids, 'queued'));
         await this.queue.load();
-        this.projection = new SharedCodexProjection(this.session, threadId, id => this.queue.committed(id));
+        this.projection = new SharedCodexProjection(this.session, threadId, id => this.queue.committed(id), undefined,
+            (info, model) => this.publishRootContextDetails(info, model));
         this.session.updateMetadata(metadata => ({ ...metadata, codexSessionId: threadId, capabilities: {
             ...metadata.capabilities, concurrentClients: true, terminal: true,
             // In-place rewind needs a native + hub commit barrier. Do not
@@ -187,7 +200,85 @@ export class SharedCodexRoot {
         await this.initialSettings(options);
         if (this.stopping) throw new Error('Codex execution is stopping');
         this.registerControls(); this.ready();
+        this.startContextInventory();
         this.heartbeat = setInterval(() => this.alive(), 2_000); this.alive(); this.session.emitSessionReady();
+    }
+
+    private getMcpContextArgs(): {
+        mcpServers?: Record<string, unknown>;
+        mcpServerInventory?: readonly CodexMcpServerInventory[];
+    } {
+        const bridgeServers = this.bridge?.mcpServers ?? {};
+        const savedMcpServers = this.session.getMetadata()?.contextDetails?.codex?.mcpServers;
+        const includeBridge = this.mcpInventoryLoaded
+            || ((savedMcpServers?.length ?? 0) === 0 && Object.keys(bridgeServers).length > 0);
+        const availableInventories = [this.configuredMcpServerInventory, this.statusMcpServerInventory]
+            .filter((inventory): inventory is CodexMcpServerInventory[] => inventory !== undefined);
+        const inventory = this.mcpInventoryLoaded
+            ? mergeCodexMcpInventories(...availableInventories)
+            : undefined;
+        return {
+            mcpServers: includeBridge ? bridgeServers : undefined,
+            mcpServerInventory: inventory
+        };
+    }
+
+    private publishRootContextDetails(info?: unknown, model?: string): void {
+        publishContextDetails(this.session, buildCodexContextDetails({
+            info,
+            model: model ?? this.settings.model,
+            threadId: this.threadId,
+            slashCommands: this.availableSlashCommands,
+            skills: this.availableSkills,
+            ...this.getMcpContextArgs()
+        }));
+    }
+
+    private publishMcpInventoryIfAvailable(): void {
+        const availableInventories = [this.configuredMcpServerInventory, this.statusMcpServerInventory]
+            .filter((inventory): inventory is CodexMcpServerInventory[] => inventory !== undefined);
+        const complete = this.configuredMcpServerInventory !== undefined
+            && this.statusMcpServerInventory !== undefined;
+        const mergedInventory = mergeCodexMcpInventories(...availableInventories);
+        if (!complete && mergedInventory.length === 0) return;
+        this.mcpInventoryLoaded = true;
+        this.publishRootContextDetails();
+    }
+
+    private startContextInventory(): void {
+        const cwd = this.bootstrap.workingDirectory;
+        void listSlashCommands('codex', cwd)
+            .then(commands => {
+                if (this.closed || this.stopping) return;
+                this.availableSlashCommands = commands.map(command => command.name);
+                this.publishRootContextDetails();
+            })
+            .catch(error => logger.debug('[Codex shared] slash command inventory', error));
+        void this.client.listSkills({ cwds: [cwd] })
+            .then(response => {
+                if (this.closed || this.stopping) return;
+                const entry = response.data?.find(item => item.cwd === cwd) ?? response.data?.[0];
+                if (!entry || (!entry.skills.length && (entry.errors?.length ?? 0) > 0)) return;
+                this.availableSkills = entry.skills.filter(skill => skill.enabled);
+                this.publishRootContextDetails();
+            })
+            .catch(error => logger.debug('[Codex shared] skill inventory', error));
+        void listConfiguredCodexMcpServers(cwd)
+            .then(inventory => {
+                if (this.closed || this.stopping || inventory === undefined) return;
+                this.configuredMcpServerInventory = inventory;
+                this.publishMcpInventoryIfAvailable();
+            })
+            .catch(error => logger.debug('[Codex shared] configured MCP inventory', error));
+        void this.client.listMcpServerStatuses()
+            .then(response => {
+                if (this.closed || this.stopping) return;
+                const inventory = parseCodexMcpStatusResponse(response);
+                if (inventory === undefined) return;
+                this.statusMcpServerInventory = inventory;
+                this.publishMcpInventoryIfAvailable();
+            })
+            .catch(error => logger.debug('[Codex shared] MCP status inventory', error));
     }
     private publishSteering(): void {
         const active = Boolean(this.currentTurn) && !this.stopping && !this.closed && !this.reconnecting && this.client.isInitialized();
