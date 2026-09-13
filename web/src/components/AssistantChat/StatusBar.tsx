@@ -372,9 +372,6 @@ export function StatusBar(props: {
                         </>
                     )}
                 />
-                {props.agentFlavor === 'codex' && props.agentState?.codexUsage ? (
-                    <CodexUsage usage={props.agentState.codexUsage} />
-                ) : null}
                 {contextUsageLabel ? (
                     <Popover.Root>
                         <Popover.Trigger asChild>
