@@ -89,6 +89,7 @@ final class ToolTranscriptPresentationTests: XCTestCase {
             try await eventually { host.presentedViewController != nil && !model.followsTail }
             try await Task.sleep(for: .milliseconds(600))
             XCTAssertTrue(model.isInspectingContent)
+            XCTAssertTrue(model.showsJumpToLatest, "Viewport proximity must not hide an inspection's resume action")
             XCTAssertNil(model.toolInspection.selection, "Group root must pause following without a selected tool")
             XCTAssertEqual(collection.numberOfItems(inSection: 0), 6)
             let presented = try XCTUnwrap(host.presentedViewController)
@@ -125,6 +126,7 @@ final class ToolTranscriptPresentationTests: XCTestCase {
             let restored = try XCTUnwrap(collection.visibleCells.first { $0.accessibilityIdentifier == anchorID })
             XCTAssertEqual(restored.frame.minY - collection.contentOffset.y, anchorY, accuracy: 1)
             XCTAssertFalse(model.followsTail)
+            XCTAssertTrue(model.showsJumpToLatest, "The real transcript must retain its resume action after dismissal")
             XCTAssertEqual(collection.numberOfItems(inSection: 0), 6)
         }
     }

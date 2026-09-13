@@ -18,7 +18,7 @@ In this policy, “we” means the maintainers and publisher of the HAPI project
 - Paired hub addresses and access credentials. Credentials are kept in platform-protected app storage.
 - Preferences and app state, such as theme, language, notification choices, drafts, recent paths, and a random device identifier used for push registration.
 - Cached hub data, including session/message snapshots and generated images, for performance and limited offline display.
-- Files, photos, and audio you explicitly select or record while preparing an attachment or dictation request. Camera and dictation scratch files use temporary cache storage and are normally deleted after ingestion or cancellation; selected content is transmitted only when you invoke the corresponding send, save, or transcription action.
+- Files, photos, and audio you explicitly select or record while preparing an attachment or dictation request. Camera and dictation scratch files use temporary cache storage and are normally deleted after ingestion or cancellation.
 
 The mobile operating system and app-store software may separately create device backups or diagnostics according to your device settings and their own policies.
 
@@ -26,13 +26,23 @@ The mobile operating system and app-store software may separately create device 
 
 The app uses your data to authenticate to your hub, display and update sessions, send commands and attachments, perform notification actions, and provide features you request. Core app traffic travels between the app and your self-hosted hub. The Android app accepts only HTTPS hub URLs and disables cleartext network traffic.
 
+Selecting a chat or Scratchlist attachment starts uploading it after preparation,
+before you send the message or save the entry. Chat attachments travel through
+the hub to the session's CLI machine; Scratchlist attachments are stored by the
+hub. Sending or saving references those uploaded files. Removing unused
+attachments requests cleanup on a best-effort basis; it does not guarantee
+immediate remote deletion.
+
+Dictation audio is uploaded when you stop recording for transcription. The
+transcript is inserted into the draft for you to review and send.
+
 Your hub, coding agents, plugins, and command-line tools may send prompts, source code, files, audio, or other content to services you configure, such as AI model or transcription providers. Those services process data under their own terms and privacy policies. HAPI does not choose or control your self-hosted configuration.
 
 ## Push notifications
 
 **Android:** notifications use Google Firebase Cloud Messaging (FCM). When push is enabled, the app registers its FCM token, random app device identifier, and device-generated encryption key with each paired hub. Official app delivery through the HAPI push relay is end-to-end encrypted: the relay and Google carry ciphertext and routing metadata, but cannot read notification content. Private builds using a hub configured for direct FCM retain an unencrypted notification payload, including session identifiers, title, status, and action type; Google processes that data under [Firebase's privacy terms](https://firebase.google.com/support/privacy). Builds without Firebase configuration do not register for or receive FCM push.
 
-**iOS:** notifications are end-to-end encrypted. Your hub encrypts the content with a key that exists only on your device and your hub; Apple's push service and the HAPI push relay carry ciphertext and routing metadata only, and cannot read the notification content. Self-hosters using a separately signed app build with matching APNs credentials can bypass the relay; a different developer account's credentials alone cannot send notifications to the official App Store build.
+**iOS:** notifications are end-to-end encrypted. Your hub encrypts the content with a key that exists only on your device and your hub; Apple's push service and the HAPI push relay carry ciphertext and routing metadata only, and cannot read the notification content. Self-hosters using a separately signed app build with matching APNs credentials can bypass the relay; a different developer account's credentials alone cannot send notifications to an app signed by the official publisher.
 
 ### HAPI native push relay
 

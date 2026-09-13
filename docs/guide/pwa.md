@@ -2,6 +2,9 @@
 
 HAPI's web interface is a fully-featured PWA that can be installed on your phone for a native app-like experience.
 
+This page covers browser installation. For the SwiftUI/UIKit and Kotlin
+Compose clients, see [Native apps (iOS / Android)](./native-apps.md).
+
 ## What is PWA?
 
 A Progressive Web App (PWA) is a web application that can be installed on your device and works like a native app:
@@ -121,9 +124,15 @@ HAPI supports push notifications to alert you when agents need attention.
 | Ready | Agent finished and awaits input |
 | Task completed / Task failed | A background task finishes (success or failure) |
 
-### Native Android Push
+### Native app notifications
 
-In addition to Web Push, the hub can send notifications through Firebase Cloud Messaging (FCM) to native companion apps on Android and Wear OS. Official Android phone builds use the encrypted push relay by default, so a current hub needs no Firebase setup. Hubs with private Firebase credentials retain direct phone/Wear delivery. When a native device is registered for your namespace, the companion app is treated as the canonical notification surface — if the native push provider accepted a notification, the hub skips the Web Push duplicate so you only get one alert. See the [native companion API contract](../api/native-companion-contract.md) for setup details.
+The [native Android and iOS apps](./native-apps.md#notifications) use FCM and
+APNs. Official builds use encrypted push relay delivery by default; private
+builds need matching provider configuration. If a native provider accepts a
+notification for any device in your namespace, the hub skips the Web Push
+duplicate for that dispatch. Missing registrations or failed sends retain the
+Web Push fallback. Provider acceptance is not a handset receipt. See
+[Native app notifications](./notifications.md#native-app-notifications).
 
 ::: tip
 If push notifications don't work in your region (e.g., FCM unavailable), use [Telegram integration](./notifications.md#telegram-setup) instead.

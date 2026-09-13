@@ -4,6 +4,10 @@ import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentState, Metadata } from '@/api/types';
 import type { SessionBootstrapResult } from '@/agent/sessionFactory';
 import { SharedCodexRoot, type RootHost } from './root';
+import { codexPlanProposalId } from './plan';
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+
+type NativeTurn = { id: string; status: string; items: unknown[] };
 
 const sharedHarness = vi.hoisted(() => ({
     skills: [{ name: 'find-docs', description: 'Find docs', path: '/tmp/SKILL.md', scope: 'user', enabled: true }]
@@ -12,7 +16,9 @@ const sharedHarness = vi.hoisted(() => ({
 vi.mock('../codexAppServerClient', () => ({
     CodexAppServerClient: class {
         initialized = false;
-        thread = { id: 'thread', turns: [] as Array<{ id: string; status: string; items: unknown[] }> };
+        thread = { id: 'thread', turns: [] as NativeTurn[] };
+        settings: Record<string, unknown> = { model: 'mock', collaborationMode: { mode: 'default' } };
+        queue: Array<{ id: string; clientUserMessageId: unknown; input: unknown }> = [];
         notify?: (method: string, params: unknown) => void;
         abandoned?: () => void;
         setNotificationHandler(handler: typeof this.notify) { this.notify = handler; }
@@ -26,9 +32,20 @@ vi.mock('../codexAppServerClient', () => ({
         }
         async listMcpServerStatuses() { return { data: [] }; }
         async disconnect() { this.initialized = false; }
-        async request(method: string) {
-            if (method === 'thread/read' || method === 'thread/resume') return { model: 'mock', thread: this.thread };
-            if (method === 'thread/list' || method === 'thread/queue/list') return { data: [] };
+        async request(method: string, params: Record<string, unknown> = {}) {
+            if (method === 'thread/read' || method === 'thread/resume') return { ...this.settings, thread: structuredClone(this.thread) };
+            if (method === 'thread/list') return { data: [] };
+            if (method === 'thread/queue/list') return { data: this.queue };
+            if (method === 'thread/settings/update') {
+                this.settings = { ...this.settings, ...params };
+                this.notify?.('thread/settings/updated', { threadId: 'thread', threadSettings: this.settings });
+                return {};
+            }
+            if (method === 'thread/queue/add') {
+                const entry = { id: `queued-${this.queue.length}`, clientUserMessageId: params.clientUserMessageId, input: params.input };
+                this.queue.push(entry);
+                return { queuedSubmission: entry };
+            }
             throw new Error(`Unexpected request: ${method}`);
         }
     },
@@ -60,13 +77,17 @@ async function fixture() {
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
     let reconnect: (() => void) | null = null;
     const updateState = vi.fn((fn: (value: AgentState) => AgentState) => { state = fn(state); });
+    const rpc = new Map<string, (raw: unknown) => Promise<unknown>>();
+    const send = vi.fn();
     const session = {
         sessionId: 'sid', getMetadata: () => metadata,
         updateMetadata: (fn: (value: Metadata) => Metadata) => { metadata = fn(metadata); },
         updateAgentState: updateState, keepAlive() {},
         onUserMessage() {}, onCancelQueuedMessage() {}, onRetryQueuedMessage() {},
         onReconnect: (fn: (() => void) | null) => { reconnect = fn; },
-        rpcHandlerManager: { registerHandler() {} }, sendSessionEvent() {}, sendAgentMessage() {}, emitSessionReady() {},
+        rpcHandlerManager: { registerHandler: (name: string, handler: (raw: unknown) => Promise<unknown>) => rpc.set(name, handler) },
+        sendSessionEvent() {}, sendAgentMessage: send, emitSessionReady() {},
+        sendUserMessage() {}, emitMessagesConsumed() {}, emitSteerIndeterminate() {}, syncNativeQueuedMessage() {},
         sendSessionDeath() {}, async flush() {}, close() {}
     } as unknown as ApiSessionClient;
     const root = new SharedCodexRoot({ session, workingDirectory: directory } as SessionBootstrapResult, {
@@ -79,12 +100,154 @@ async function fixture() {
     await root.bind('thread', { model: 'mock', thread: { turns: [] } }, false);
     const native = root.client as unknown as {
         initialized: boolean;
-        thread: { id: string; turns: Array<{ id: string; status: string; items: unknown[] }> };
+        thread: { id: string; turns: NativeTurn[] };
+        queue: Array<{ id: string; clientUserMessageId: string; input: unknown }>;
         notify(method: string, params: unknown): void;
         abandoned(): void;
     };
-    return { root, native, state: () => state, metadata: () => metadata, updateState, reconnect: () => reconnect?.() };
+    return { root, native, rpc, send, state: () => state, metadata: () => metadata, updateState, reconnect: () => reconnect?.() };
 }
+
+async function completePlan(f: Awaited<ReturnType<typeof fixture>>, status = 'completed') {
+    await f.root.applySettings({ collaborationMode: 'plan' });
+    const turn = { id: 'plan-turn', status: 'inProgress', items: [{ id: 'plan-item', type: 'plan', text: '# Implement me' }] };
+    f.native.thread.turns.push(turn);
+    f.native.notify('turn/started', { threadId: 'thread', turn: { id: turn.id } });
+    f.native.notify('item/completed', { threadId: 'thread', turnId: turn.id, item: turn.items[0] });
+    expect(f.state().codexPlanProposalId).toBeNull();
+    turn.status = status;
+    f.native.notify('turn/completed', { threadId: 'thread', turn: { id: turn.id, status } });
+    await vi.waitFor(() => expect(f.send).toHaveBeenCalledWith(expect.objectContaining({ name: 'ExitPlanMode' }), expect.any(String)));
+    return codexPlanProposalId('thread', turn.id, 'plan-item');
+}
+
+describe('shared plan actions', () => {
+    it('preserves content while native turns, mode changes and disconnects withdraw controls', async () => {
+        const f = await fixture();
+        const id = await completePlan(f);
+        expect(f.state().codexPlanProposalId).toBe(id);
+        expect(f.state().requests).toEqual({});
+        await f.root.applySettings({ collaborationMode: 'default' });
+        expect(f.state().codexPlanProposalId).toBeNull();
+        await f.root.applySettings({ collaborationMode: 'plan' });
+        expect(f.state().codexPlanProposalId).toBe(id);
+        f.native.initialized = false; f.native.abandoned();
+        expect(f.state().codexPlanProposalId).toBeNull();
+        await vi.waitFor(() => expect(f.state().codexPlanProposalId).toBe(id));
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'new' } });
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 'plan-turn', status: 'completed' } });
+        expect(f.state().codexPlanProposalId).toBeNull();
+        expect(f.send.mock.calls.some(([message]) => message.input?.plan === '# Implement me')).toBe(true);
+    });
+
+    it.each(['failed', 'interrupted'])('does not offer a proposal from a %s turn', async status => {
+        const f = await fixture();
+        await completePlan(f, status);
+        await f.root.refresh();
+        expect(f.state().codexPlanProposalId).toBeNull();
+    });
+
+    it('uses only the latest root turn when replaying history', async () => {
+        const f = await fixture();
+        const id = await completePlan(f);
+        f.reconnect();
+        await f.root.refresh();
+        await vi.waitFor(() => expect(f.state().codexPlanProposalId).toBe(id));
+        f.native.thread.turns.push({ id: 'new', status: 'completed', items: [] });
+        await f.root.refresh();
+        expect(f.state().codexPlanProposalId).toBeNull();
+        f.native.notify('item/completed', { threadId: 'child', turnId: 'child-turn', item: { id: 'p', type: 'plan', text: 'child' } });
+        expect(f.state().codexPlanProposalId).toBeNull();
+    });
+
+    it('switches mode and submits once across repeated Web actions and lost replies', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const id = await completePlan(f);
+        const action = () => f.rpc.get(RPC_METHODS.ImplementCodexPlan)!({ planId: id });
+        const request = vi.spyOn(f.root.client, 'request');
+        expect(await Promise.all([action(), action()])).toEqual([{ ok: true }, { ok: true }]);
+        f.reconnect();
+        expect(await action()).toEqual({ ok: true });
+        expect(request.mock.calls.filter(([method]) => method === 'thread/queue/add')).toHaveLength(1);
+        const settingsIndex = request.mock.calls.findIndex(([method]) => method === 'thread/settings/update');
+        const queueIndex = request.mock.calls.findIndex(([method]) => method === 'thread/queue/add');
+        expect(settingsIndex).toBeLessThan(queueIndex);
+        expect(request.mock.calls[settingsIndex][1]).toMatchObject({ collaborationMode: { mode: 'default' } });
+        expect(f.native.queue[0]).toMatchObject({ input: [{ type: 'text', text: 'Implement the plan.' }] });
+        expect(f.state().codexPlanProposalId).toBeNull();
+    });
+
+    it('does not let a slow history snapshot resurrect a plan after native continuation', async () => {
+        const f = await fixture();
+        await completePlan(f);
+        const request = f.root.client.request.bind(f.root.client);
+        let release!: () => void;
+        const blocked = new Promise<void>(resolve => { release = resolve; });
+        let reading!: () => void;
+        const started = new Promise<void>(resolve => { reading = resolve; });
+        vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            const result = await request(method, params);
+            if (method === 'thread/read' && (params as { includeTurns?: boolean }).includeTurns) {
+                reading(); await blocked;
+            }
+            return result;
+        });
+        const refresh = f.root.refresh();
+        await started;
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'terminal-continued' } });
+        release(); await refresh;
+        expect(f.state().codexPlanProposalId).toBeNull();
+    });
+
+    it('does not change mode when native input appears during the action preflight', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const id = await completePlan(f);
+        const request = f.root.client.request.bind(f.root.client);
+        const spy = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            const result = await request(method, params);
+            if (method === 'thread/queue/list') f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'terminal' } });
+            return result;
+        });
+        expect(await f.rpc.get(RPC_METHODS.ImplementCodexPlan)!({ planId: id })).toMatchObject({ ok: false, code: 'stale_plan' });
+        expect(spy.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
+        expect(f.native.queue).toHaveLength(0);
+    });
+
+    it('rejects stale proposals and native activity arriving during the mode switch', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const id = await completePlan(f);
+        const action = (planId = id) => f.rpc.get(RPC_METHODS.ImplementCodexPlan)!({ planId });
+        expect(await action('old')).toMatchObject({ ok: false, code: 'stale_plan' });
+        const request = f.root.client.request.bind(f.root.client);
+        vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            const result = await request(method, params);
+            if (method === 'thread/settings/update') f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'terminal' } });
+            return result;
+        });
+        expect(await action()).toMatchObject({ ok: false, code: 'stale_plan' });
+        expect(f.native.queue).toHaveLength(0);
+    });
+
+    it('does not resend an implementation with an unknown queue outcome', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const id = await completePlan(f);
+        const request = f.root.client.request.bind(f.root.client);
+        const spy = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            const result = await request(method, params);
+            // An invalid response schema leaves delivery indeterminate even after acceptance.
+            return method === 'thread/queue/add' ? {} : result;
+        });
+        const action = () => f.rpc.get(RPC_METHODS.ImplementCodexPlan)!({ planId: id });
+        expect(await action()).toMatchObject({ ok: false, code: 'indeterminate' });
+        f.native.queue = []; // Absence is not proof of cancellation or delivery.
+        expect(await action()).toMatchObject({ ok: false, code: 'indeterminate' });
+        expect(spy.mock.calls.filter(([method]) => method === 'thread/queue/add')).toHaveLength(1);
+    });
+});
 
 describe('shared steering availability', () => {
     it('keeps idle sessions online without polling usage or publishing agent-state updates', async () => {

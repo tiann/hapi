@@ -8,6 +8,7 @@ import { CodeBlock } from '@/components/CodeBlock'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { PermissionFooter } from '@/components/ToolCard/PermissionFooter'
+import { CodexPlanFooter } from '@/components/ToolCard/CodexPlanFooter'
 import { AskUserQuestionFooter } from '@/components/ToolCard/AskUserQuestionFooter'
 import { RequestUserInputFooter } from '@/components/ToolCard/RequestUserInputFooter'
 import { isAskUserQuestionToolName } from '@/components/ToolCard/askUserQuestion'
@@ -608,6 +609,9 @@ function ToolCardInner(props: ToolCardProps) {
                         )
                     ) : null}
 
+                    {(toolName === 'ExitPlanMode' || toolName === 'exit_plan_mode') && !permission ? (
+                        <CodexPlanFooter planId={props.block.tool.id} />
+                    ) : null}
                     {isAskUserQuestion && permission?.status === 'pending' ? (
                         <AskUserQuestionFooter
                             api={props.api}

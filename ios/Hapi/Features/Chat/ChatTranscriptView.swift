@@ -56,7 +56,10 @@ struct ChatTranscriptView: View {
             historyControlID: TranscriptRow.historyID,
             isInspectionPresented: model.isInspectingContent,
             onViewport: { viewport in
-                model.readingViewportChanged(followsTail: viewport.followsTail, needsOlder: viewport.needsOlder)
+                model.readingViewportChanged(
+                    followsTail: viewport.followsTail, needsOlder: viewport.needsOlder,
+                    isAwayFromBottom: viewport.isAwayFromBottom
+                )
             },
             onLayout: { version, progress in model.historyLaidOut(version: version, madeProgress: progress) },
             spacingBefore: { previous, row in row.spacing(after: previous) }
@@ -65,7 +68,7 @@ struct ChatTranscriptView: View {
             AnyView(rowView(row))
         }
         .overlay(alignment: .bottomTrailing) {
-            if !model.followsTail || model.hasTrimmedTail || model.isJumpingToLatest {
+            if model.showsJumpToLatest {
                 Button(action: model.jumpToLatest) {
                     HStack(spacing: 6) {
                         if model.isJumpingToLatest { ProgressView().controlSize(.small) }

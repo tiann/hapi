@@ -2,9 +2,17 @@
 
 Control your AI coding agent with your voice. The built-in voice assistant supports three backends: **ElevenLabs** Conversational AI, **Gemini Live**, and **Qwen Realtime**. Pick whichever provider you have credentials for — the hub detects what's configured and the web app lets you switch.
 
-For speech-to-text without a spoken assistant, open **Settings → Voice**, choose **Dictation**, then select a configured provider. Dictation records until you tap the microphone again, inserts the transcript into the composer, and never sends it automatically. Standard mode is the default. Realtime mode shows a live transcript while you speak and inserts the final result when you stop.
+In the web app, for speech-to-text without a spoken assistant, open **Settings → Voice**, choose **Dictation**, then select a configured provider. Dictation records until you tap the microphone again, inserts the transcript into the composer, and never sends it automatically. Standard mode is the default. Realtime mode shows a live transcript while you speak and inserts the final result when you stop.
 
-Dictation and voice-assistant provider credentials can be added in **Settings → Voice** (saved on the hub, masked in the UI). Environment variables still win when set at process start, and remain the preferred ops/bootstrap path:
+[Native iOS and Android apps](./native-apps.md#sessions-and-everyday-use)
+currently use standard dictation only. They select the first hub provider that
+supports standard transcription and show the microphone once discovery
+succeeds. Recording is uploaded when stopped; the transcript is inserted into
+the draft for review. Configure credentials on the hub or through **Web
+Settings → Voice**. The realtime dictation, assistant and provider-selection
+controls described below are web features.
+
+Dictation and voice-assistant provider credentials can be added in **Web Settings → Voice** (saved on the hub, masked in the UI). Environment variables still win when set at process start, and remain the preferred ops/bootstrap path:
 
 ```bash
 # Voice assistant backends (any of these enables the assistant)

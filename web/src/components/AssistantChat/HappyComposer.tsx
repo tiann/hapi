@@ -16,6 +16,7 @@ import {
     type SyntheticEvent as ReactSyntheticEvent,
     useCallback,
     useEffect,
+    useImperativeHandle,
     useMemo,
     useRef,
     useState
@@ -282,6 +283,7 @@ export function ModelEffortSettingsSection(props: {
 
 export function HappyComposer(props: {
     sessionId?: string
+    focusInputRef?: MutableRefObject<(() => void) | null>
     onUploadDraftSnapshot?: (text: string, attachments: AttachmentDraftInput[]) => void
     canRestoreAttachments?: boolean
     disabled?: boolean
@@ -912,6 +914,12 @@ export function HappyComposer(props: {
             }
         }, 0)
     }, [haptic, richMentionsEnabled])
+
+    // Keep focus within the user's click gesture so mobile keyboards can open.
+    useImperativeHandle(props.focusInputRef, () => () => {
+        if (richMentionsEnabled) richInputRef.current?.focus()
+        else textareaRef.current?.focus()
+    }, [richMentionsEnabled])
 
     const handleSuggestionSelect = useCallback((index: number) => {
         const suggestion = suggestions[index]

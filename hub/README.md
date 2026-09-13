@@ -6,7 +6,7 @@ Telegram bot + HTTP API + realtime updates for hapi hub.
 
 - Telegram bot for notifications and the Mini App entrypoint.
 - HTTP API for sessions, messages, permissions, machines, and files.
-- Server-Sent Events stream for live updates in the web app.
+- Server-Sent Events stream for live updates in web and native clients.
 - Socket.IO channel for CLI connections.
 - Serves the web app from `web/dist` or embedded assets in the single binary; network-relay mode uses the separately hosted official web app.
 - Persists state in SQLite via `bun:sqlite`.
@@ -17,7 +17,7 @@ See `src/configuration.ts` for all options.
 
 ### Required
 
-- `CLI_API_TOKEN` - Base shared secret used by CLI and web login. Clients append `:<namespace>` for isolation. Auto-generated on first run if not set.
+- `CLI_API_TOKEN` - Base shared secret used by CLI, web login and native pairing. Clients append `:<namespace>` for isolation. Auto-generated on first run if not set.
 
 ### Optional (Telegram)
 
@@ -74,7 +74,7 @@ hapi hub
 
 `hapi server` remains supported as an alias.
 
-If you only need web + CLI, you can omit TELEGRAM_BOT_TOKEN.
+For web/native clients + CLI, you can omit TELEGRAM_BOT_TOKEN.
 To enable Telegram, set TELEGRAM_BOT_TOKEN and HAPI_PUBLIC_URL, start the hub, open `/app`
 in the bot chat, and bind the Mini App with `CLI_API_TOKEN:<namespace>` when prompted.
 

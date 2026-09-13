@@ -6,15 +6,21 @@ Web Push needs no provider configuration: [install the PWA](./pwa.md) and allow 
 
 ## Native app notifications
 
+See [Native apps](./native-apps.md) for build, pairing and platform requirements.
+
 For official Android and iOS apps, pair an updated hub and allow notifications.
 No Firebase project or Apple developer account is needed. Notification content
 is end-to-end encrypted through the official push relay, which also works when
 you access the hub through Tailscale or your own HTTPS setup. Android requires
 Google Play services and FCM connectivity.
 
-Private app builds can use their own matching Firebase/APNs credentials.
-See the [native push contract](../api/native-companion-contract.md) for those
-settings and delivery details.
+Private app builds need matching Firebase/APNs credentials. An Android build
+without Firebase configuration has no FCM push. For a self-signed iOS build,
+the signing account, bundle ID and APNs environment must match the provider
+configuration; the official relay cannot deliver to an arbitrary self-build.
+See the [native push contract](../api/native-companion-contract.md) for settings
+and delivery details. This push relay is independent of the `--relay` network
+tunnel.
 
 ## Telegram Setup
 

@@ -60,6 +60,12 @@ final class ChatModel {
     private(set) var jumpToLatestToken = 0
     private(set) var isJumpingToLatest = false
     private(set) var hasTrimmedTail = false
+    private var isAwayFromBottom = false
+    private var resumeAfterInspection = false
+    var showsJumpToLatest: Bool {
+        isJumpingToLatest || hasTrimmedTail
+            || (!followsTail && (isAwayFromBottom || resumeAfterInspection))
+    }
     let toolInspection = ToolInspectionState()
     private(set) var visibleSurfaces = Set<String>()
     var isInspectingContent: Bool {
@@ -166,7 +172,10 @@ final class ChatModel {
         jumpTask?.cancel()
         jumpTask = nil
         isJumpingToLatest = false
-        readingViewportChanged(followsTail: false, needsOlder: false)
+        // Closing an inspector must leave an explicit resume action even
+        // when no content has arrived and the reading anchor is at bottom.
+        resumeAfterInspection = true
+        readingViewportChanged(followsTail: false, needsOlder: false, isAwayFromBottom: isAwayFromBottom)
     }
 
     @discardableResult
@@ -274,11 +283,13 @@ final class ChatModel {
 
     // MARK: - Actions
 
-    func readingViewportChanged(followsTail: Bool, needsOlder: Bool) {
+    func readingViewportChanged(followsTail: Bool, needsOlder: Bool, isAwayFromBottom: Bool) {
         let followsTail = isInspectingContent ? false : followsTail
         let needsOlder = isInspectingContent ? false : needsOlder
         let changedMode = self.followsTail != followsTail
         self.followsTail = followsTail
+        self.isAwayFromBottom = !followsTail && isAwayFromBottom
+        if followsTail && !hasTrimmedTail { resumeAfterInspection = false }
         viewportNeedsOlder = needsOlder
         if changedMode, !isJumpingToLatest, let controller = chat.windowController {
             if followsTail && hasTrimmedTail { jumpToLatest(); return }
@@ -407,6 +418,8 @@ final class ChatModel {
             await controller.setViewMode(.tail)
             guard !Task.isCancelled, self.chat === chat else { return }
             self.followsTail = true
+            self.isAwayFromBottom = false
+            self.resumeAfterInspection = false
             self.jumpToLatestToken += 1
         }
     }

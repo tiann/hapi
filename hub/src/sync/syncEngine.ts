@@ -14,6 +14,7 @@ import {
 } from '@hapi/protocol/runnerCapabilities'
 import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
+import type { ImplementCodexPlanResult } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
@@ -1905,6 +1906,17 @@ export class SyncEngine {
         if (!child) throw new Error('Invalid shared-runtime clear binding')
         // No superseded-session redirect: only the initiating client navigates.
         return { sessionId: child.id }
+    }
+
+    async implementCodexPlan(sessionId: string, namespace: string, planId: string): Promise<ImplementCodexPlanResult> {
+        const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok || !access.session.active || access.session.metadata?.flavor !== 'codex'
+            || !access.session.metadata.capabilities?.concurrentClients) {
+            return { ok: false, code: 'unavailable', error: 'Plan implementation requires an active shared Codex session' }
+        }
+        // CLI validates native history and deduplicates already accepted actions.
+        // A stale Hub plan id must not prevent a safe retry of a lost RPC reply.
+        return await this.rpcGateway.implementCodexPlan(access.sessionId, planId)
     }
 
     async switchSession(sessionId: string, to: 'remote' | 'local'): Promise<void> {

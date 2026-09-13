@@ -1,0 +1,123 @@
+{
+    "description": "Shared Codex proposals remain completed content without a synthetic permission. The current plan id only enables Web client actions; native continuation preserves the card.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "codex:root:turn:before:agent_message",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Proposal preface"
+            },
+            {
+                "createdAt": 1755000001000,
+                "id": "codex-proposed-plan:root:turn:plan-item",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "codex-proposed-plan:root:turn:plan-item",
+                    "input": {
+                        "plan": "# Shared plan\n\n1. Inspect\n2. Implement"
+                    },
+                    "name": "ExitPlanMode",
+                    "result": null,
+                    "state": "completed"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "codex:root:turn:before:agent_message",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Proposal preface"
+            },
+            {
+                "createdAt": 1755000001000,
+                "id": "codex-proposed-plan:root:turn:plan-item",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "codex-proposed-plan:root:turn:plan-item",
+                    "input": {
+                        "plan": "# Shared plan\n\n1. Inspect\n2. Implement"
+                    },
+                    "name": "ExitPlanMode",
+                    "result": null,
+                    "state": "completed"
+                }
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": {
+            "codexPlanProposalId": "codex-proposed-plan:root:turn:plan-item"
+        },
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "id": "codex:root:turn:before:agent_message",
+                            "message": "Proposal preface",
+                            "type": "message"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "shared-plan-0",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "codex-proposed-plan:root:turn:plan-item",
+                            "id": "codex:root:turn:plan-item:proposed_plan",
+                            "input": {
+                                "plan": "# Shared plan\n\n1. Inspect\n2. Implement"
+                            },
+                            "name": "ExitPlanMode",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000001000,
+                "id": "shared-plan-1",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "codex-proposed-plan:root:turn:plan-item",
+                            "id": "codex:root:turn:plan-item:proposed_plan:result",
+                            "output": null,
+                            "type": "tool-call-result"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002000,
+                "id": "shared-plan-2",
+                "localId": null,
+                "seq": 3
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "codex-shared-plan-available"
+}

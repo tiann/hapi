@@ -558,6 +558,18 @@ export type ForkConversationResponse = {
     sessionId: string
 }
 
+export const ImplementCodexPlanRequestSchema = z.object({
+    planId: z.string().min(1)
+})
+
+export type ImplementCodexPlanRequest = z.infer<typeof ImplementCodexPlanRequestSchema>
+
+export type ImplementCodexPlanResult = { ok: true } | {
+    ok: false
+    code: 'stale_plan' | 'unavailable' | 'indeterminate' | 'failed'
+    error: string
+}
+
 export const RewindConversationRequestSchema = z.object({
     messageLocalId: z.string().min(1)
 })
