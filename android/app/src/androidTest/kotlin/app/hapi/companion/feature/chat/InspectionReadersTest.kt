@@ -75,23 +75,42 @@ class InspectionReadersTest {
         ToolGroupingOptions(hasMoreMessages = false),
     ).filterIsInstance<ToolGroupBlock>().single()
 
+    // LazyColumn initial positioning and scroll-to-item can settle after a
+    // recomposition on API 36; do not race the semantics tree by one frame.
+    private fun waitForDisplayed(tag: String) {
+        try {
+            compose.waitUntil(10_000) {
+                try {
+                    compose.onNodeWithTag(tag).assertIsDisplayed()
+                    true
+                } catch (_: AssertionError) {
+                    false
+                }
+            }
+        } catch (_: Throwable) {
+            throw AssertionError("Timed out waiting for displayed node <$tag>")
+        }
+    }
+
     @Test fun toolBrowserStartsAtLatestButDoesNotFollowUpdatesWhileReading() {
         val inspected = mutableStateOf(Inspected(group(200), false))
         var selected: String? = null
         compose.setContent {
             HapiTheme { ToolGroupBrowser(inspected.value, "/repo", { selected = it }, {}, {}) }
         }
-        compose.onNodeWithTag("inspection-tool-tool-200").assertIsDisplayed()
+        waitForDisplayed("inspection-tool-tool-200")
         compose.onNodeWithTag("inspection-tools").performScrollToIndex(30)
-        compose.onNodeWithTag("inspection-tool-tool-31").assertIsDisplayed()
+        waitForDisplayed("inspection-tool-tool-31")
         compose.runOnIdle { inspected.value = Inspected(group(201), false) }
-        compose.onNodeWithTag("inspection-tool-tool-31").assertIsDisplayed().performClick()
+        waitForDisplayed("inspection-tool-tool-31")
+        compose.onNodeWithTag("inspection-tool-tool-31").performClick()
         compose.runOnIdle { assertEquals("tool-31", selected) }
         compose.onNodeWithTag("inspection-tool-tool-201").assertDoesNotExist()
+        waitForDisplayed("inspection-latest-tool")
         compose.onNodeWithTag("inspection-latest-tool").performClick()
-        compose.onNodeWithTag("inspection-tool-tool-201").assertIsDisplayed()
+        waitForDisplayed("inspection-tool-tool-201")
         compose.runOnIdle { inspected.value = inspected.value.copy(stale = true) }
-        compose.onNodeWithTag("inspection-notice").assertIsDisplayed()
+        waitForDisplayed("inspection-notice")
     }
 
     @Test fun fullContentUsesExactClipboardTextOrAReadableGrantedUri() {
