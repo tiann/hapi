@@ -1,3 +1,4 @@
+import { StrictMode } from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '@/api/client'
@@ -83,6 +84,26 @@ describe('AskUserQuestionFooter draft persistence (hapi#1734)', () => {
         )
 
         expect(screen.getByRole('radio', { name: /Alpha/ })).toHaveAttribute('aria-checked', 'false')
+    })
+
+    it('restores an in-progress answer after a session-switch remount under StrictMode', () => {
+        // Dev-only StrictMode replays this effect as setup -> cleanup -> setup
+        // right on mount, before the setState calls in setup have flowed
+        // through a render. A naive cleanup would read pre-restore ref values
+        // and, being blank, delete the draft its own setup just loaded —
+        // caught by review on tiann/hapi#1853.
+        const tool = makeTool('tool-1')
+        const { rerender } = render(
+            <StrictMode><SessionKeyedWrapper sessionId="session-A" tool={tool} /></StrictMode>
+        )
+
+        fireEvent.click(screen.getByRole('radio', { name: /Alpha/ }))
+        expect(screen.getByRole('radio', { name: /Alpha/ })).toHaveAttribute('aria-checked', 'true')
+
+        rerender(<StrictMode><SessionKeyedWrapper sessionId="session-B" tool={tool} /></StrictMode>) // switch away
+        rerender(<StrictMode><SessionKeyedWrapper sessionId="session-A" tool={tool} /></StrictMode>) // switch back
+
+        expect(screen.getByRole('radio', { name: /Alpha/ })).toHaveAttribute('aria-checked', 'true')
     })
 
     it('clears the stored draft once the answer is submitted', async () => {

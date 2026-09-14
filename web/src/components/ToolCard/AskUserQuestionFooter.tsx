@@ -135,11 +135,26 @@ export function AskUserQuestionFooter(props: {
         // blank when this instance is reused for a different tool call (hapi#1734).
         submittedRef.current = false
         const draft = getAskUserQuestionDraft(draftKey)
-        setStep(draft?.step ?? 0)
-        setSelectedByQuestion(draft?.selectedByQuestion ?? questions.map(() => []))
-        setOtherSelectedByQuestion(draft?.otherSelectedByQuestion ?? questions.map(() => false))
-        setOtherTextByQuestion(draft?.otherTextByQuestion ?? questions.map(() => ''))
-        setFallbackText(draft?.fallbackText ?? '')
+        const restored = {
+            step: draft?.step ?? 0,
+            selectedByQuestion: draft?.selectedByQuestion ?? questions.map(() => []),
+            otherSelectedByQuestion: draft?.otherSelectedByQuestion ?? questions.map(() => false),
+            otherTextByQuestion: draft?.otherTextByQuestion ?? questions.map(() => ''),
+            fallbackText: draft?.fallbackText ?? '',
+        }
+        // React (StrictMode, dev only) replays this effect as setup → cleanup →
+        // setup right on mount, before the setState calls below have flowed
+        // through a render. Without this, the cleanup's save would read the
+        // ref's still-pre-restore render values and, being blank, delete the
+        // draft this same effect just loaded — so the replayed setup restores
+        // nothing. Setting the ref here makes the premature cleanup a harmless
+        // re-save of exactly what was just loaded.
+        draftStateRef.current = restored
+        setStep(restored.step)
+        setSelectedByQuestion(restored.selectedByQuestion)
+        setOtherSelectedByQuestion(restored.otherSelectedByQuestion)
+        setOtherTextByQuestion(restored.otherTextByQuestion)
+        setFallbackText(restored.fallbackText)
         setLoading(false)
         setError(null)
 
