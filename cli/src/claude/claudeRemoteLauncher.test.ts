@@ -13,7 +13,10 @@ const harness = vi.hoisted(() => ({
     claudeArgsPerCall: [] as (string[] | undefined)[],
     initialMessages: [] as string[],
     triggerSwitch: null as (() => void) | null,
-    switchAfterCall: 2
+    switchAfterCall: 2,
+    lastOpts: null as any,
+    needsContextWindowSeedCalls: [] as string[],
+    seedMeasuredContextWindowCalls: [] as [string, number][]
 }))
 
 vi.mock('./claudeRemote', () => ({
@@ -22,6 +25,7 @@ vi.mock('./claudeRemote', () => ({
 
         harness.callCount += 1
         harness.claudeArgsPerCall.push(opts.claudeArgs ? [...opts.claudeArgs] : opts.claudeArgs)
+        harness.lastOpts = opts
 
         const initial = await opts.nextMessage()
         if (!initial) {
@@ -74,6 +78,13 @@ vi.mock('./utils/sdkToLogConverter', () => ({
         convertSidechainUserMessage(): null { return null }
         updateSelectedModel(): void {}
         generateInterruptedToolResult(): null { return null }
+        needsContextWindowSeed(model: string): string | null {
+            harness.needsContextWindowSeedCalls.push(model)
+            return null
+        }
+        seedMeasuredContextWindow(key: string, maxTokens: number): void {
+            harness.seedMeasuredContextWindowCalls.push([key, maxTokens])
+        }
     }
 }))
 
@@ -147,7 +158,36 @@ describe('claudeRemoteLauncher resume anchor', () => {
         harness.initialMessages = []
         harness.triggerSwitch = null
         harness.switchAfterCall = 2
+        harness.lastOpts = null
+        harness.needsContextWindowSeedCalls = []
+        harness.seedMeasuredContextWindowCalls = []
         vi.clearAllMocks()
+    })
+
+    it('wires needsContextWindowSeed/onContextWindowSeed through to the SDKToLogConverter instance', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+
+        try {
+            queue.push('hello', { permissionMode: 'default' }, 'local-1')
+            harness.switchAfterCall = 1
+            harness.triggerSwitch = () => {
+                client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            }
+
+            await claudeRemoteLauncher(session as any)
+
+            expect(typeof harness.lastOpts.needsContextWindowSeed).toBe('function')
+            expect(typeof harness.lastOpts.onContextWindowSeed).toBe('function')
+
+            harness.lastOpts.needsContextWindowSeed('claude-sonnet-5')
+            expect(harness.needsContextWindowSeedCalls).toEqual(['claude-sonnet-5'])
+
+            harness.lastOpts.onContextWindowSeed({ key: 'claude-sonnet-5', maxTokens: 967_000 })
+            expect(harness.seedMeasuredContextWindowCalls).toEqual([['claude-sonnet-5', 967_000]])
+        } finally {
+            session.stopKeepAlive()
+        }
     })
 
     it('keeps --resume available for the launch that actually captures the session id', async () => {

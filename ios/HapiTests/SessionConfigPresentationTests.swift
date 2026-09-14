@@ -59,7 +59,9 @@ final class SessionConfigPresentationTests: XCTestCase {
         XCTAssertTrue(host.presentedViewController === sheet, "Push within the same sheet, not another modal")
         XCTAssertEqual(harness.model.detent, .large)
         XCTAssertGreaterThan(sheet.view.bounds.height, rootHeight)
-        XCTAssertEqual(itemCount(try XCTUnwrap(findList(sheet.view))), 7)
+        // Default plus three offered families; "sonnet" is a preset, so no
+        // synthetic current row.
+        XCTAssertEqual(itemCount(try XCTUnwrap(findList(sheet.view))), 4)
         try capture(window, name: "models")
         harness.model.selectModel("sonnet")
         try await settle()
@@ -206,7 +208,9 @@ final class SessionConfigPresentationTests: XCTestCase {
         harness.model.path = [.model]
         try await settle()
         XCTAssertTrue(host.presentedViewController === sheet)
-        XCTAssertEqual(itemCount(try XCTUnwrap(findList(sheet.view))), 7)
+        // Default plus three offered families; "sonnet" is a preset, so no
+        // synthetic current row.
+        XCTAssertEqual(itemCount(try XCTUnwrap(findList(sheet.view))), 4)
         try capture(window, name: "device-models")
     }
 

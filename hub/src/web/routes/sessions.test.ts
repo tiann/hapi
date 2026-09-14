@@ -530,6 +530,46 @@ describe('sessions routes', () => {
         expect(applySessionConfigCalls).toEqual([])
     })
 
+    it('rejects a combined model+effort request for a Pi session', async () => {
+        // Pi supports effort, so the capability guard admits it, but its CLI
+        // runs set_model and set_thinking_level in sequence and commits the
+        // model between them. A failing thinking-level call would leave Pi on
+        // the new model while this route reports 409 and the hub cache keeps
+        // the old one, so the pair has to go through the two routes instead.
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'pi' }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'some-model', effort: null })
+        })
+
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({
+            error: 'Combining model and effort in one request is only supported for Claude sessions'
+        })
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
+    it('still applies a plain model change for a Pi session', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'pi' }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'some-model' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(applySessionConfigCalls).toEqual([['session-1', { model: 'some-model' }]])
+    })
+
     it('rejects collaboration mode changes for non-Codex sessions', async () => {
         const session = createSession({
             metadata: {
@@ -890,6 +930,94 @@ describe('sessions routes', () => {
         expect(applySessionConfigCalls).toEqual([])
     })
 
+    it('applies model and effort together in a single request when the payload carries both', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'haiku', effort: null })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ ok: true })
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { model: 'haiku', effort: null }]
+        ])
+    })
+
+    it('applies a model change with effort together for a locally-controlled Claude session (unlike codex/cursor/grok)', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            agentState: { controlledByUser: true, requests: {}, completedRequests: {} }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'haiku', effort: null })
+        })
+
+        expect(response.status).toBe(200)
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { model: 'haiku', effort: null }]
+        ])
+    })
+
+    it('rejects a model change that also carries effort for a flavor that does not support effort (matches /effort\'s 400)', async () => {
+        // 'codex' supports model change but not effort (shared/src/flavors.ts
+        // FLAVOR_CAPS) -- a payload folding an effort into /model must be
+        // rejected the same way a bare /effort request would be, not
+        // silently accepted just because the model field alone is valid.
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex' }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gpt-5.5', effort: 'high' })
+        })
+
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({
+            error: 'Effort selection is not supported for this session type'
+        })
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
+    it('rejects a model+effort change for a locally-controlled Grok session with 409', async () => {
+        // /model's own pre-existing per-flavor controlledByUser block (above)
+        // already rejects any local-Grok model change before the shared
+        // effort guard's own grok branch is reached, so this fires with
+        // /model's message rather than /effort's -- the requirement is the
+        // 409 status: a locally-controlled Grok session can never have its
+        // model or effort changed through this route, with or without an
+        // effort in the payload.
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'grok' },
+            agentState: { controlledByUser: true, requests: {}, completedRequests: {} }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'grok-4.5', effort: 'low' })
+        })
+
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'Model selection can only be changed for remote Grok sessions'
+        })
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
     it('rejects effort changes for non-Claude sessions', async () => {
         const { app, applySessionConfigCalls } = createApp(createSession())
 
@@ -927,6 +1055,73 @@ describe('sessions routes', () => {
         expect(applySessionConfigCalls).toEqual([
             ['session-1', { effort: 'max' }]
         ])
+    })
+
+    it('lets a locally-controlled Grok session change effort once it reports concurrent clients', async () => {
+        // rejectUnsupportedEffort is shared by /effort and /model in this
+        // branch, so the capability exception has to hold on both. Only the
+        // agent saying it accepts concurrent clients lifts the local-control
+        // rejection; absent and false must both keep 409.
+        const cases: Array<{ concurrentClients?: boolean, status: number }> = [
+            { concurrentClients: true, status: 200 },
+            { concurrentClients: false, status: 409 },
+            { status: 409 }
+        ]
+
+        for (const { concurrentClients, status } of cases) {
+            for (const route of ['effort', 'model'] as const) {
+                const session = createSession({
+                    metadata: {
+                        path: '/tmp/project',
+                        host: 'localhost',
+                        flavor: 'grok',
+                        ...(concurrentClients === undefined ? {} : { capabilities: { concurrentClients } })
+                    },
+                    agentState: { controlledByUser: true, requests: {}, completedRequests: {} }
+                })
+                const { app, applySessionConfigCalls } = createApp(session)
+                // Check model-only and effort-only requests independently.
+                // Combined model+effort requests are asserted separately below.
+                const body = route === 'effort'
+                    ? { effort: 'low' }
+                    : { model: 'grok-4.5' }
+
+                const response = await app.request(`/api/sessions/session-1/${route}`, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify(body)
+                })
+
+                expect(response.status).toBe(status)
+                expect(applySessionConfigCalls).toEqual(status === 200
+                    ? [['session-1', route === 'effort' ? { effort: 'low' } : { model: 'grok-4.5' }]]
+                    : [])
+
+                if (route === 'model') {
+                    // The combined payload takes a different exit on each side
+                    // of the capability line: with it, /model's own local-control
+                    // gate passes and the Claude-only check answers 400; without
+                    // it, that gate answers 409 and the effort guards are never
+                    // reached. Neither ever applies anything.
+                    const combined = createApp(createSession({
+                        metadata: {
+                            path: '/tmp/project',
+                            host: 'localhost',
+                            flavor: 'grok',
+                            ...(concurrentClients === undefined ? {} : { capabilities: { concurrentClients } })
+                        },
+                        agentState: { controlledByUser: true, requests: {}, completedRequests: {} }
+                    }))
+                    const combinedResponse = await combined.app.request('/api/sessions/session-1/model', {
+                        method: 'POST',
+                        headers: { 'content-type': 'application/json' },
+                        body: JSON.stringify({ model: 'grok-4.5', effort: 'low' })
+                    })
+                    expect(combinedResponse.status).toBe(concurrentClients === true ? 400 : 409)
+                    expect(combined.applySessionConfigCalls).toEqual([])
+                }
+            }
+        }
     })
 
     it('applies effort changes for remote Grok sessions and rejects local control', async () => {
