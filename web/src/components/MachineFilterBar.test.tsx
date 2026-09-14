@@ -1,6 +1,6 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import { MachineFilterBar, MachineFilterMenu, getMachineFilterMenuClampStyle } from './MachineFilterBar'
+import { MachineFilterBar, MachineFilterMenu, MachineSummaryRow, getMachineFilterMenuClampStyle } from './MachineFilterBar'
 import { I18nProvider } from '@/lib/i18n-context'
 
 const defaultMachines: Parameters<typeof MachineFilterBar>[0]['machines'] = [
@@ -117,6 +117,62 @@ describe('MachineFilterBar', () => {
         renderBar()
 
         expect(screen.getByRole('group', { name: 'Filter sessions by machine' }).className).toContain('max-md:hidden')
+    })
+})
+
+describe('MachineSummaryRow', () => {
+    function renderSummary(machine: Parameters<typeof MachineSummaryRow>[0]['machine']) {
+        return render(
+            <I18nProvider>
+                <MachineSummaryRow machine={machine} />
+            </I18nProvider>
+        )
+    }
+
+    it('renders the machine, session count, and inline health without any filter button', () => {
+        renderSummary(defaultMachines[1])
+
+        expect(screen.getByText('Teemo')).toBeTruthy()
+        expect(screen.getByText('(2)')).toBeTruthy()
+        // Health is inline — no hover needed — so touch layouts see it too.
+        expect(screen.getByText('CPU 12% · RAM 88%')).toBeTruthy()
+        // Not a filter control: the inline row has no button (the only button
+        // anywhere is the tooltip body's "?" help toggle).
+        const content = screen.getByText('Teemo').parentElement!
+        expect(within(content).queryByRole('button')).toBeNull()
+    })
+
+    it('keeps full capacity details in a hover popup like the filter chips', () => {
+        renderSummary(defaultMachines[1])
+
+        const content = screen.getByText('Teemo').parentElement!
+        const describedBy = content.getAttribute('aria-describedby')
+        expect(describedBy).toBeTruthy()
+
+        const tooltip = document.getElementById(describedBy!)
+        expect(tooltip).toBeTruthy()
+        expect(tooltip!.getAttribute('role')).toBe('tooltip')
+        expect(tooltip!.textContent).toContain('Machine capacity')
+        expect(tooltip!.textContent).toContain('12%')
+        // The inline metrics cover touch layouts; the popup itself is desktop-only
+        expect(tooltip!.className).toContain('max-md:hidden')
+        // A pseudo-element bridges the mt-1 gap so the popup stays open while entered
+        expect(tooltip!.className).toContain('before:-top-1')
+    })
+
+    it('stays visible below the md breakpoint (health must not be desktop-only)', () => {
+        const { container } = renderSummary(defaultMachines[1])
+
+        expect(container.firstElementChild!.className).not.toContain('max-md:hidden')
+    })
+
+    it('renders label and count only when the machine reports no metrics', () => {
+        renderSummary(defaultMachines[0])
+
+        expect(screen.getByText('Mint')).toBeTruthy()
+        expect(screen.getByText('(3)')).toBeTruthy()
+        expect(screen.queryByText(/CPU/)).toBeNull()
+        expect(screen.queryByText(/RAM/)).toBeNull()
     })
 })
 

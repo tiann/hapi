@@ -128,6 +128,51 @@ export function MachineFilterBar(props: {
     )
 }
 
+// Single-machine counterpart of MachineFilterBar: with nothing to filter,
+// chips would be meaningless, but the machine's health and session count
+// still belong in the sidebar. Renders a compact non-interactive row —
+// health metrics are inline so touch layouts need no hover, and pointer
+// users get the same capacity popup as the filter chips.
+export function MachineSummaryRow(props: { machine: MachineFilterItem }) {
+    const tooltipId = useId()
+    const hasHealth = Boolean(props.machine.healthPresentation?.metrics.length)
+
+    const content = (
+        <span
+            className="flex min-w-0 items-center gap-1.5"
+            aria-describedby={hasHealth ? tooltipId : undefined}
+        >
+            <span className="max-w-32 truncate text-[var(--app-fg)]">{props.machine.label}</span>
+            <span className="shrink-0 tabular-nums text-[var(--app-hint)]">({props.machine.sessionCount})</span>
+            {hasHealth ? (
+                <span className="min-w-0 truncate tabular-nums text-[var(--app-hint)]">
+                    {props.machine.healthPresentation!.metrics
+                        .map((metric) => `${metric.shortLabel} ${metric.percent}%`)
+                        .join(' · ')}
+                </span>
+            ) : null}
+        </span>
+    )
+
+    return (
+        <div className="flex items-center px-2 pb-2 text-xs">
+            {hasHealth ? (
+                // Same popup treatment as the filter chips: hidden below md
+                // (the inline metrics above already cover touch layouts).
+                <HoverTooltip
+                    id={tooltipId}
+                    target={content}
+                    side="bottom"
+                    align="start"
+                    tooltipClassName="pointer-events-auto before:absolute before:inset-x-0 before:-top-1 before:h-1 before:content-[''] px-3 py-2 min-w-[16rem] max-md:hidden"
+                >
+                    <MachineHealthTooltipBody presentation={props.machine.healthPresentation!} />
+                </HoverTooltip>
+            ) : content}
+        </div>
+    )
+}
+
 function MachineFilterMenuRow(props: {
     label: string
     count: number
