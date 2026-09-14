@@ -43,6 +43,16 @@ export type CodexMessage =
     | { type: 'plan'; entries: PlanItem[] }
     | { type: 'error'; message: string }
     | {
+        type: 'round-summary';
+        summary: {
+            usage: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number };
+            modelUsage: Record<string, { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number }>;
+            total_cost_usd?: number;
+            num_turns: number;
+            duration_ms: number;
+        };
+    }
+    | {
         type: 'generated-image';
         imageId: string;
         fileName: string;
@@ -119,6 +129,22 @@ export function convertAgentMessage(message: AgentMessage, model?: string | null
             return {
                 type: 'plan',
                 entries: message.items
+            };
+        case 'round_summary':
+            return {
+                type: 'round-summary',
+                summary: {
+                    usage: {
+                        input_tokens: message.summary.usage.inputTokens,
+                        output_tokens: message.summary.usage.outputTokens,
+                        cache_read_input_tokens: message.summary.usage.cacheReadInputTokens,
+                        cache_creation_input_tokens: message.summary.usage.cacheCreationInputTokens
+                    },
+                    modelUsage: message.summary.modelUsage,
+                    ...(message.summary.totalCostUsd !== undefined ? { total_cost_usd: message.summary.totalCostUsd } : {}),
+                    num_turns: message.summary.numTurns,
+                    duration_ms: message.summary.durationMs
+                }
             };
         case 'generated_image':
             return {
