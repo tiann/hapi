@@ -8,6 +8,12 @@ import {
 } from '@/lib/composer-attachment-drafts'
 import { persistInactiveComposerAttachments, composerDraftWasHandedOff } from '@/lib/composer-draft-transfer'
 
+const liveComposers = new Map<string, { getText: () => string; setText: (text: string) => void }>()
+
+export function getLiveComposerDraft(sessionId: string) {
+    return liveComposers.get(sessionId)
+}
+
 export type ComposerDraftHydration = {
     /** Session represented by this status; prevents a previous session's ready state leaking across a key change. */
     sessionId: string | undefined
@@ -41,6 +47,22 @@ export function useComposerDraft(
 ): ComposerDraftHydration {
     const composerTextRef = useRef(composerText)
     composerTextRef.current = composerText
+    const setTextRef = useRef(setText)
+    setTextRef.current = setText
+    useEffect(() => {
+        if (!sessionId) return
+        const composer = {
+            getText: () => draftReadyRef.current ? composerTextRef.current : (composerTextRef.current || getDraft(sessionId)),
+            setText: (text: string) => {
+                composerTextRef.current = text
+                setTextRef.current(text)
+            },
+        }
+        liveComposers.set(sessionId, composer)
+        return () => {
+            if (liveComposers.get(sessionId) === composer) liveComposers.delete(sessionId)
+        }
+    }, [sessionId])
     const attachmentsRef = useRef(attachments)
     attachmentsRef.current = attachments
 
@@ -86,6 +108,7 @@ export function useComposerDraft(
                     restoredAny: true,
                     hasStoredAttachments: false,
                 })
+                composerTextRef.current = draft!
                 setText(draft!)
             }
             draftReadyRef.current = true
