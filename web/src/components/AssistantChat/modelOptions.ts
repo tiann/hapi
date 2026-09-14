@@ -43,7 +43,7 @@ function withCurrentModelOption(
     const autoIndex = nextOptions.findIndex((option) => option.value === null)
     nextOptions.splice(autoIndex >= 0 ? autoIndex + 1 : 0, 0, {
         value: normalizedCurrentModel,
-        label: resolveLabel?.(normalizedCurrentModel) ?? normalizedCurrentModel
+        label: normalizedCurrentModel === 'gpt-reserve' ? '☾ Luna Reserve' : resolveLabel?.(normalizedCurrentModel) ?? normalizedCurrentModel
     })
     return nextOptions
 }

@@ -159,3 +159,11 @@ describe('permission mode persistence', () => {
     })
 
 })
+
+it('does not persist an unverified Reserve selection on an inactive session', async () => {
+    const engine = createEngine()
+    const session = engine.getOrCreateSession('reserve-inactive', { path: '/tmp/project', host: 'localhost', flavor: 'codex' }, null, 'default')
+    const originalModel = session.model
+    await expect(engine.applySessionConfig(session.id, { model: 'gpt-reserve' })).rejects.toThrow('requires an active Codex session')
+    expect(engine.getSession(session.id)?.model).toBe(originalModel)
+})

@@ -582,3 +582,10 @@ describe('buildAgyComposerModelOptions', () => {
         expect(buildAgyComposerModelOptions([])).toBeUndefined()
     })
 })
+
+it('leaves Reserve effort normalization to the atomic native model switch', () => {
+    expect(shouldClearReasoningEffortForModelChange({
+        agentFlavor: 'codex', previousModelReasoningEffort: 'ultra', model: 'gpt-reserve',
+        codexModels: [{ id: 'gpt-reserve', displayName: 'Luna Reserve', isDefault: false, supportedReasoningEfforts: ['high'] }]
+    })).toBe(false)
+})

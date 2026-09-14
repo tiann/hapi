@@ -1,4 +1,15 @@
 export default {
+  'codex.reserve.available': 'Available',
+  'codex.usage.label': 'Usage',
+  'codex.usage.details': 'Codex usage details',
+  'codex.usage.ordinary': 'Ordinary usage',
+  'codex.usage.unknown': 'Unknown',
+  'codex.usage.window': 'Usage window',
+  'codex.usage.minutes': '{value} min',
+  'codex.usage.hours': '{value}h',
+  'codex.usage.days': '{value}d',
+  'codex.usage.remaining': '{value}% remaining',
+  'codex.usage.resets': 'Resets {value}',
   // Loading states
   'loading': 'Loading…',
   'authorizing': 'Authorizing…',
