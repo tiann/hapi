@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { ChatToolCall } from '@/chat/types'
 import { Badge } from '@/components/ui/badge'
@@ -12,6 +12,12 @@ import {
     getAskUserQuestionOptionFrameClassName,
     type AskUserQuestionChoiceMode
 } from '@/components/ToolCard/askUserQuestionOptionCard'
+import {
+    askUserQuestionDraftKey,
+    clearAskUserQuestionDraft,
+    getAskUserQuestionDraft,
+    saveAskUserQuestionDraft,
+} from '@/lib/ask-user-question-drafts'
 import { cn } from '@/lib/utils'
 import { usePlatform } from '@/hooks/usePlatform'
 import { Spinner } from '@/components/Spinner'
@@ -101,6 +107,8 @@ export function AskUserQuestionFooter(props: {
     ), [props.tool.name, props.tool.input, useStableQuestionIds])
     const questions = parsed.questions
 
+    const draftKey = askUserQuestionDraftKey(props.sessionId, props.tool.id)
+
     const [step, setStep] = useState(0)
     const [selectedByQuestion, setSelectedByQuestion] = useState<number[][]>([])
     const [otherSelectedByQuestion, setOtherSelectedByQuestion] = useState<boolean[]>([])
@@ -110,15 +118,37 @@ export function AskUserQuestionFooter(props: {
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
 
+    // Mirrors the answer-in-progress fields above so the cleanup below can
+    // persist the latest values without depending on them (which would tear
+    // down and rebuild the draft-restore effect on every keystroke).
+    const draftStateRef = useRef({ step, selectedByQuestion, otherSelectedByQuestion, otherTextByQuestion, fallbackText })
+    draftStateRef.current = { step, selectedByQuestion, otherSelectedByQuestion, otherTextByQuestion, fallbackText }
+    // Set once `run` below submits or denies successfully, so an unmount that
+    // follows (e.g. a session switch right after answering) can't resurrect
+    // the just-cleared draft via the cleanup's own save.
+    const submittedRef = useRef(false)
+
     useEffect(() => {
-        setStep(0)
-        setSelectedByQuestion(questions.map(() => []))
-        setOtherSelectedByQuestion(questions.map(() => false))
-        setOtherTextByQuestion(questions.map(() => ''))
-        setFallbackText('')
+        // Restores a session-switch remount's own in-progress answer (SessionChat
+        // keys the whole subtree by session.id — see its own comment), and, since
+        // draftKey also changes for a genuinely new question, still resets to
+        // blank when this instance is reused for a different tool call (hapi#1734).
+        submittedRef.current = false
+        const draft = getAskUserQuestionDraft(draftKey)
+        setStep(draft?.step ?? 0)
+        setSelectedByQuestion(draft?.selectedByQuestion ?? questions.map(() => []))
+        setOtherSelectedByQuestion(draft?.otherSelectedByQuestion ?? questions.map(() => false))
+        setOtherTextByQuestion(draft?.otherTextByQuestion ?? questions.map(() => ''))
+        setFallbackText(draft?.fallbackText ?? '')
         setLoading(false)
         setError(null)
-    }, [props.tool.id])
+
+        return () => {
+            if (!submittedRef.current) {
+                saveAskUserQuestionDraft(draftKey, draftStateRef.current)
+            }
+        }
+    }, [draftKey])
 
     if (!permission || permission.status !== 'pending') return null
     if (!isAskUserQuestionToolName(props.tool.name)) return null
@@ -128,6 +158,8 @@ export function AskUserQuestionFooter(props: {
         setError(null)
         try {
             await action()
+            submittedRef.current = true
+            clearAskUserQuestionDraft(draftKey)
             haptic.notification(hapticType)
             props.onDone()
         } catch (e) {
