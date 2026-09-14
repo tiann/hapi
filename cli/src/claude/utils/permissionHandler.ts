@@ -17,6 +17,7 @@ import { EnhancedMode, PermissionMode } from "../loop";
 import { getToolDescriptor } from "./getToolDescriptor";
 import { delay } from "@/utils/time";
 import { isObject } from "@hapi/protocol";
+import { PERMISSION_REQUEST_NOT_FOUND_MESSAGE } from "@hapi/protocol/rpcMethods";
 import {
     BasePermissionHandler,
     type PendingPermissionRequest,
@@ -481,9 +482,11 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
         // of a silent no-op: RpcHandlerManager.handleRequest catches this and
         // returns it as `{ error: message }`, which the hub's RpcGateway now
         // turns into a 409 for the operator instead of accepting a doomed
-        // answer with no feedback (hapi#1735).
-        logger.debug('Permission request not found or already resolved');
-        throw new Error('Permission request not found or already resolved');
+        // answer with no feedback (hapi#1735). The message is the shared
+        // PERMISSION_REQUEST_NOT_FOUND_MESSAGE constant so the hub can match
+        // on it specifically rather than treating any error here as "not found".
+        logger.debug(PERMISSION_REQUEST_NOT_FOUND_MESSAGE);
+        throw new Error(PERMISSION_REQUEST_NOT_FOUND_MESSAGE);
     }
 
     protected onResponseReceived(response: PermissionResponse): void {

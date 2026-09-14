@@ -1,5 +1,5 @@
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
-import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
+import { PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import {
     ArchiveCodexSessionRpcResponseSchema,
     AgentAvailabilityResponseSchema,
@@ -77,10 +77,14 @@ export class PermissionRequestNotFoundError extends Error {
     }
 }
 
-function rpcErrorMessage(response: unknown): string | null {
-    if (!response || typeof response !== 'object') return null
+// Matches on the specific shared message rather than treating any error on
+// the Permission RPC method as "not found" — a future, unrelated throw in
+// handlePermissionResponse's success path should surface as a genuine error,
+// not get relabeled as a stale request.
+function isPermissionRequestNotFoundResponse(response: unknown): boolean {
+    if (!response || typeof response !== 'object') return false
     const error = (response as Record<string, unknown>).error
-    return typeof error === 'string' ? error : null
+    return error === PERMISSION_REQUEST_NOT_FOUND_MESSAGE
 }
 
 export type RpcCommandResponse = CommandResponse
@@ -137,10 +141,7 @@ export class RpcGateway {
             decision,
             answers
         })
-        // Nothing else on this RPC method's response path throws today — an
-        // error here means the CLI no longer had this request pending.
-        const error = rpcErrorMessage(response)
-        if (error) {
+        if (isPermissionRequestNotFoundResponse(response)) {
             throw new PermissionRequestNotFoundError(requestId)
         }
     }
@@ -155,8 +156,7 @@ export class RpcGateway {
             approved: false,
             decision
         })
-        const error = rpcErrorMessage(response)
-        if (error) {
+        if (isPermissionRequestNotFoundResponse(response)) {
             throw new PermissionRequestNotFoundError(requestId)
         }
     }
