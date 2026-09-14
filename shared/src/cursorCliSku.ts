@@ -20,6 +20,24 @@ export function cursorModelBaseId(modelId: string): string {
     return bracket === -1 ? trimmed : trimmed.slice(0, bracket);
 }
 
+function stripCursorFamilyPrefix(base: string): string {
+    return base.startsWith('cursor-') ? base.slice('cursor-'.length) : base;
+}
+
+/**
+ * Compare an ACP wire base with a CLI sku base. Cursor's CLI keeps a legacy `cursor-`
+ * family prefix for some models (`cursor-grok-4.6-high` vs ACP base `grok-4.6`), so a
+ * plain equality check silently drops those variant rows.
+ */
+export function cursorModelBaseMatches(a: string, b: string): boolean {
+    const left = a.trim();
+    const right = b.trim();
+    if (left === right) {
+        return true;
+    }
+    return stripCursorFamilyPrefix(left) === stripCursorFamilyPrefix(right);
+}
+
 /** Longest-first suffixes from Cursor CLI sku ids (e.g. `gpt-5.5-high-fast` → `gpt-5.5`). */
 const CLI_SKU_SUFFIXES = [
     '-extra-high-fast',
@@ -114,6 +132,14 @@ export function parseCursorWireParams(modelId: string): Record<string, string> {
         params[segment.slice(0, eq).trim()] = segment.slice(eq + 1).trim();
     }
     return params;
+}
+
+/**
+ * Parameter hints carried by a CLI `agent --list-models` sku
+ * (effort/reasoning/thinking/fast suffixes).
+ */
+export function parseCursorSkuParamHints(slug: string): Record<string, string> {
+    return inferSkuParamHints(slug);
 }
 
 function inferSkuParamHints(slug: string): Record<string, string> {
