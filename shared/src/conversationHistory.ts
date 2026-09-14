@@ -48,7 +48,7 @@ export const UNSUPPORTED_CONVERSATION_HISTORY: ConversationHistoryCapabilityStat
 export const CLAUDE_CONVERSATION_HISTORY: ConversationHistoryCapabilityStates = {
     forkCurrent: 'supported',
     forkAtMessage: 'unsupported',
-    rewindToMessage: 'unsupported'
+    rewindToMessage: 'supported'
 }
 
 export const CODEX_CONVERSATION_HISTORY_INITIAL: ConversationHistoryCapabilityStates = {
