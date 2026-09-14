@@ -1,7 +1,8 @@
 import React from "react";
 import { Session } from "./session";
 import { RemoteModeDisplay } from "@/ui/ink/RemoteModeDisplay";
-import { claudeRemote } from "./claudeRemote";
+import { claudeRemote, type CompactSummaryPayload } from "./claudeRemote";
+import { convertAgentMessage } from "@/agent/messageConverter";
 import { PermissionHandler } from "./utils/permissionHandler";
 import { Future } from "@/utils/future";
 import { SDKAssistantMessage, SDKMessage, SDKUserMessage } from "./sdk";
@@ -492,6 +493,13 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         onFirstResult: (initialMessage) => {
                             applySessionTitleFallback(session.client, initialMessage);
                         },
+                        onCompactResultAccepted: () => {
+                            // The command has completed at the SDK boundary even
+                            // if transcript summary lookup is still pending. A
+                            // later stream failure must not replay /compact.
+                            reachedReadyThisAttempt = true;
+                            inFlightMessage = null;
+                        },
                         onCompletionEvent: (message: string) => {
                             logger.debug(`[remote]: Completion event: ${message}`);
                             session.client.sendSessionEvent({ type: 'message', message });
@@ -507,7 +515,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // just asked to clear.
                             session.consumeOneTimeFlags();
                         },
-                        onReady: async (completionEvent?: string) => {
+                        onReady: async (completionEvent?: string, compactSummary?: CompactSummaryPayload, compactContextTokens?: number) => {
                             // Reaching ready at all means this attempt is not an
                             // immediate/deterministic failure -- reset the
                             // respawn-storm guard. The turn that led here is no
@@ -520,6 +528,26 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             if (completionEvent) {
                                 logger.debug(`[remote]: Completion event: ${completionEvent}`);
                                 session.client.sendSessionEvent({ type: 'message', message: completionEvent });
+                            }
+                            if (compactSummary) {
+                                logger.debug(`[remote]: Compact summary promoted (${compactSummary.summary.length} chars)`);
+                                session.client.sendSessionEvent({
+                                    type: 'compact-summary',
+                                    summary: compactSummary.summary,
+                                    tokensBefore: compactSummary.tokensBefore,
+                                    estimatedTokensAfter: compactSummary.tokensAfter
+                                });
+                            }
+                            if (compactContextTokens !== undefined) {
+                                // The status bar keeps the last pre-compaction
+                                // usage until the next model response; refresh
+                                // it with the boundary's post-tokens the same
+                                // way the Pi launcher does.
+                                const convertedUsage = convertAgentMessage(
+                                    { type: 'usage', inputTokens: 0, outputTokens: 0, contextTokens: compactContextTokens },
+                                    session.getModel()
+                                );
+                                if (convertedUsage) session.client.sendAgentMessage(convertedUsage);
                             }
 
                             logger.debug(
