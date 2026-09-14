@@ -48,6 +48,8 @@ export const BUILTIN_SLASH_COMMANDS = {
         { name: 'plan', description: 'Enable plan mode; use /plan off to return to default', source: 'builtin' },
         { name: 'default', description: 'Return OpenCode permission mode to default', source: 'builtin' },
         { name: 'init', description: 'Generate or refresh AGENTS.md for this project', source: 'builtin' },
+        { name: 'compact', description: 'Compact (summarize) the OpenCode session context (remote sessions only)', source: 'builtin' },
+        { name: 'clear', description: 'Archive this HAPI session and open a fresh OpenCode session', source: 'builtin' },
     ],
     cursor: [
         { name: 'compress', description: 'Compress conversation context to free window space (pass-through to Cursor agent)', source: 'builtin' },
