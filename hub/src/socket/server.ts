@@ -11,9 +11,11 @@ import { registerTerminalHandlers } from './handlers/terminal'
 import { RpcRegistry } from './rpcRegistry'
 import { SOCKET_MAX_HTTP_BUFFER_SIZE } from './socketLimits'
 import type { SyncEvent } from '../sync/syncEngine'
+import { PreviewRegistry } from '../preview/previewRegistry'
+import { PreviewTunnel, type CliPreviewNamespace } from '../preview/previewTunnel'
 import { TerminalRegistry } from './terminalRegistry'
 import { clearUserTerminalBuffer } from './userTerminalBuffer'
-import type { CliSocketWithData, SocketData, SocketServer } from './socketTypes'
+import type { CliSocketServer, CliSocketWithData, SocketData, SocketServer } from './socketTypes'
 
 const jwtPayloadSchema = z.object({
     uid: z.number(),
@@ -52,6 +54,8 @@ export function createSocketServer(deps: SocketServerDeps): {
     io: SocketServer
     engine: Engine
     rpcRegistry: RpcRegistry
+    previewRegistry: PreviewRegistry
+    previewTunnel: PreviewTunnel
 } {
     const configuration = getConfiguration()
     const corsOrigins = deps.corsOrigins ?? configuration.corsOrigins
@@ -89,6 +93,11 @@ export function createSocketServer(deps: SocketServerDeps): {
     const maxTerminalsPerSession = maxTerminals
     const cliNs = io.of('/cli')
     const terminalNs = io.of('/terminal')
+    // Preview mounts + tunnel live on the /cli namespace (they ride the CLI's
+    // socket); the web routes consume them via the registry/tunnel objects.
+    // The tunnel is constructed first so mount removal can revoke its conns.
+    const previewTunnel = new PreviewTunnel(cliNs as unknown as CliPreviewNamespace)
+    const previewRegistry = new PreviewRegistry(configuration.publicUrl, (mountId) => previewTunnel.closeMount(mountId))
     const terminalRegistry = new TerminalRegistry({
         idleTimeoutMs,
         // Release the per-terminal scrollback buffer whenever a terminal is
@@ -125,6 +134,8 @@ export function createSocketServer(deps: SocketServerDeps): {
         store: deps.store,
         rpcRegistry,
         terminalRegistry,
+        previewRegistry,
+        previewTunnel,
         onSessionAlive: deps.onSessionAlive,
         onSessionReady: deps.onSessionReady,
         onSessionEnd: deps.onSessionEnd,
@@ -167,5 +178,5 @@ export function createSocketServer(deps: SocketServerDeps): {
         maxTerminalsPerSession
     }))
 
-    return { io, engine, rpcRegistry }
+    return { io, engine, rpcRegistry, previewRegistry, previewTunnel }
 }

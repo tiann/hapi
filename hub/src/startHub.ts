@@ -287,7 +287,9 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         socketEngine: socketServer.engine,
         corsOrigins,
         relayMode: relayFlag.enabled,
-        officialWebUrl
+        officialWebUrl,
+        previewRegistry: socketServer.previewRegistry,
+        previewTunnel: socketServer.previewTunnel
     })
 
     // Start the bot if configured
@@ -316,6 +318,11 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
                 useRelay: process.env.HAPI_RELAY_FORCE_TCP === 'true' || process.env.HAPI_RELAY_FORCE_TCP === '1'
             })
             tunnelUrl = await tunnelManager.start()
+            // Relay-mode preview links must point at the tunnel origin, not the
+            // loopback default — but never override an explicit public URL.
+            if (tunnelUrl && config.sources.publicUrl === 'default') {
+                socketServer.previewRegistry.setPublicUrl(tunnelUrl)
+            }
         } catch (error) {
             console.error('[Tunnel] Failed to start:', error instanceof Error ? error.message : error)
             console.log('[Tunnel] Hub continuing without tunnel. Restart without --relay to disable.')

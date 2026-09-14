@@ -15,6 +15,7 @@ import { deepEqual } from "@/utils/deepEqual";
 import { getToolName } from "./getToolName";
 import { EnhancedMode, PermissionMode } from "../loop";
 import { getToolDescriptor } from "./getToolDescriptor";
+import { isManualApprovalToolName } from "@/modules/common/permission/BasePermissionHandler";
 import { delay } from "@/utils/time";
 import { isObject } from "@hapi/protocol";
 import {
@@ -249,8 +250,13 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
     handleToolCall = async (toolName: string, input: unknown, mode: EnhancedMode, options: { signal: AbortSignal }): Promise<PermissionResult> => {
         const isQuestionTool = isQuestionToolName(toolName);
 
+        // Publishing a preview is outward-facing (a publicly readable
+        // capability URL for local dirs/services): skip cached allows and the
+        // bypassPermissions shortcut so it always reaches the approval flow.
+        const isPublicationTool = isManualApprovalToolName(toolName);
+
         // Check if tool is explicitly allowed
-        if (!isQuestionTool && toolName === 'Bash') {
+        if (!isQuestionTool && !isPublicationTool && toolName === 'Bash') {
             const inputObj = input as { command?: string };
             if (inputObj?.command) {
                 // Check literal matches
@@ -264,7 +270,7 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
                     }
                 }
             }
-        } else if (!isQuestionTool && this.allowedTools.has(toolName)) {
+        } else if (!isQuestionTool && !isPublicationTool && this.allowedTools.has(toolName)) {
             return { behavior: 'allow', updatedInput: input as Record<string, unknown> };
         }
 
@@ -275,7 +281,7 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
         // Handle special cases
         //
 
-        if (!isQuestionTool && this.permissionMode === 'bypassPermissions') {
+        if (!isQuestionTool && this.permissionMode === 'bypassPermissions' && !isPublicationTool) {
             // In bypassPermissions (YOLO) mode, exit_plan_mode needs special
             // handling: inject PLAN_FAKE_RESTART so the agent continues after
             // the plan, rather than stalling and waiting for user input.
