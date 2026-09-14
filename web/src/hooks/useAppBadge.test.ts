@@ -11,6 +11,10 @@ function createSession(id: string, updatedAt: number): SessionSummary {
         thinking: false,
         activeAt: updatedAt,
         updatedAt,
+        // Has real conversation content, so it's eligible for the sidebar's
+        // "Unread" filter and "mark all read" — see createStubSession() below
+        // for a session excluded from both.
+        hasConversationContent: true,
         metadata: null,
         metadataVersion: 0,
         agentStateVersion: 0,
@@ -25,6 +29,12 @@ function createSession(id: string, updatedAt: number): SessionSummary {
         model: null,
         effort: null,
     }
+}
+
+/** A duplicate/reconnect artifact with no real content — excluded from the sidebar's
+ *  "Unread" filter and "mark all read" via shouldShowSessionInSidebar (hapi#1845). */
+function createStubSession(id: string, updatedAt: number): SessionSummary {
+    return { ...createSession(id, updatedAt), hasConversationContent: false }
 }
 
 function setDisplayMode(standalone: boolean): void {
@@ -159,6 +169,23 @@ describe('useAppBadge', () => {
         rerender([createSession('session-a', 11)])
         await new Promise(resolve => setTimeout(resolve, 0))
         expect(setAppBadge).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not count an empty stub session the sidebar filters out of "Unread"/"mark all read" (hapi#1845)', async () => {
+        setDisplayMode(true)
+        const { setAppBadge, clearAppBadge } = setAppBadgeNavigator()
+        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ 'stub-session': 10 }))
+
+        renderHook(() => useAppBadge({
+            enabled: true,
+            scope: 'https://hapi.test',
+            sessions: [createStubSession('stub-session', 11)],
+            isLoading: false,
+            hasError: false,
+        }))
+
+        await waitFor(() => expect(clearAppBadge).toHaveBeenCalledTimes(1))
+        expect(setAppBadge).not.toHaveBeenCalled()
     })
 
     it('does not use app badges for a normal browser tab', async () => {
