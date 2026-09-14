@@ -65,6 +65,24 @@ export class RpcTargetMissingError extends Error {
     }
 }
 
+/**
+ * The CLI no longer has this permission request pending — most often because
+ * it was already answered, or canceled on the agent side (e.g. Claude Code
+ * sent a control_cancel_request for it) before this answer arrived.
+ */
+export class PermissionRequestNotFoundError extends Error {
+    constructor(requestId: string) {
+        super(`Permission request is no longer active: ${requestId}`)
+        this.name = 'PermissionRequestNotFoundError'
+    }
+}
+
+function rpcErrorMessage(response: unknown): string | null {
+    if (!response || typeof response !== 'object') return null
+    const error = (response as Record<string, unknown>).error
+    return typeof error === 'string' ? error : null
+}
+
 export type RpcCommandResponse = CommandResponse
 export type FileSearchOptions = {
     query: string
@@ -111,7 +129,7 @@ export class RpcGateway {
         decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort',
         answers?: Record<string, string[]> | Record<string, { answers: string[] }>
     ): Promise<void> {
-        await this.sessionRpc(sessionId, RPC_METHODS.Permission, {
+        const response = await this.sessionRpc(sessionId, RPC_METHODS.Permission, {
             id: requestId,
             approved: true,
             mode,
@@ -119,6 +137,12 @@ export class RpcGateway {
             decision,
             answers
         })
+        // Nothing else on this RPC method's response path throws today — an
+        // error here means the CLI no longer had this request pending.
+        const error = rpcErrorMessage(response)
+        if (error) {
+            throw new PermissionRequestNotFoundError(requestId)
+        }
     }
 
     async denyPermission(
@@ -126,11 +150,15 @@ export class RpcGateway {
         requestId: string,
         decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
     ): Promise<void> {
-        await this.sessionRpc(sessionId, RPC_METHODS.Permission, {
+        const response = await this.sessionRpc(sessionId, RPC_METHODS.Permission, {
             id: requestId,
             approved: false,
             decision
         })
+        const error = rpcErrorMessage(response)
+        if (error) {
+            throw new PermissionRequestNotFoundError(requestId)
+        }
     }
 
     async abortSession(sessionId: string): Promise<void> {
