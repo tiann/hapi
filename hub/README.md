@@ -109,6 +109,7 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 - `POST /api/sessions/:id/archive` - Archive active session.
 - `PATCH /api/sessions/:id` - Rename session.
 - `DELETE /api/sessions/:id` - Delete inactive session.
+- `POST /api/sessions/delete-archived` - Atomically delete the supplied `sessionIds` with `requireAllArchived: true`; every session must belong to the authenticated namespace and still be inactive with lifecycle state `archived`. A changed lifecycle returns 409 without deleting any member.
 - `GET /api/sessions/:id/slash-commands` - List slash commands.
 - `GET /api/sessions/:id/skills` - List skills.
 - `POST /api/sessions/:id/permission-mode` - Set permission mode.
