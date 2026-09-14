@@ -57,6 +57,8 @@ function createSession() {
         client: {
             rpcHandlerManager: { registerHandler: vi.fn() },
             sendAgentMessage: vi.fn(),
+            getMetadata: vi.fn(() => null),
+            updateMetadata: vi.fn(),
             sendSessionEvent: vi.fn()
         },
         queue,
