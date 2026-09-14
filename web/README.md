@@ -63,6 +63,7 @@ See `src/router.tsx` for route definitions.
 ### Chat interface (`src/components/SessionChat.tsx`)
 
 - Message thread with infinite scroll.
+- Assistant response actions jump to the conversation start or the corresponding user input. Navigation loads older history without moving the composer or discarding live tail usage; returning to the tail restores the regular history window.
 - Composer for sending messages.
 - Permission mode and model selection for supported agents.
 - Session abort and handoff controls.
