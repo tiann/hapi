@@ -46,6 +46,7 @@ export function useRealtimeDictation(config: {
     const elevenLabsActiveRef = useRef(false)
     const elevenLabsFinalizedRef = useRef(false)
     const resolveElevenLabsCommitRef = useRef<(() => void) | null>(null)
+    const lastCommitSucceededRef = useRef(false)
     onFinalTranscriptRef.current = config.onFinalTranscript
 
     const updatePartial = useCallback((text: string) => {
@@ -53,8 +54,9 @@ export function useRealtimeDictation(config: {
         if (mountedRef.current) setPartialTranscript(text)
     }, [])
 
-    const finish = useCallback((text: string) => {
+    const finish = useCallback((text: string, committed = true) => {
         if (!mountedRef.current) return
+        lastCommitSucceededRef.current = committed && text.trim().length > 0
         updatePartial('')
         onFinalTranscriptRef.current(text)
         setStatus('disconnected')
@@ -84,7 +86,7 @@ export function useRealtimeDictation(config: {
             if (!elevenLabsActiveRef.current) return
             elevenLabsFinalizedRef.current = true
             elevenLabsActiveRef.current = false
-            finish(text)
+            finish(text, true)
             resolveElevenLabsCommitRef.current?.()
             resolveElevenLabsCommitRef.current = null
         },
@@ -98,7 +100,7 @@ export function useRealtimeDictation(config: {
             resolveElevenLabsCommitRef.current?.()
             resolveElevenLabsCommitRef.current = null
             sessionRef.current = null
-            finish(partial)
+            finish(partial, false)
             setError('ElevenLabs realtime transcription disconnected')
             setStatus('error')
         }
@@ -125,7 +127,7 @@ export function useRealtimeDictation(config: {
                 if (operationRef.current === operation) updatePartial(text)
             },
             onFinal: (text) => {
-                if (operationRef.current === operation) finish(text)
+                if (operationRef.current === operation) finish(text, true)
             },
             onError: (realtimeError) => {
                 if (operationRef.current === operation) fail(realtimeError)
@@ -163,7 +165,7 @@ export function useRealtimeDictation(config: {
                                 new Promise<void>((resolve) => setTimeout(resolve, 2_500))
                             ])
                         } finally {
-                            if (elevenLabsActiveRef.current && !elevenLabsFinalizedRef.current) finish(partialRef.current)
+                            if (elevenLabsActiveRef.current && !elevenLabsFinalizedRef.current) finish(partialRef.current, false)
                             elevenLabsActiveRef.current = false
                             resolveElevenLabsCommitRef.current = null
                             elevenLabs.disconnect()
@@ -201,7 +203,7 @@ export function useRealtimeDictation(config: {
         }
     }, [config.api, config.provider, elevenLabs, fail, finish, status, supported, updatePartial])
 
-    const stop = useCallback(async () => {
+    const stop = useCallback(async (): Promise<boolean> => {
         const session = sessionRef.current
         if (!session) {
             operationRef.current += 1
@@ -212,21 +214,27 @@ export function useRealtimeDictation(config: {
                 elevenLabs.disconnect()
             }
             setStatus('disconnected')
-            return
+            return false
         }
         setStatus('connecting')
+        lastCommitSucceededRef.current = false
         try {
             await session.stop()
+            return lastCommitSucceededRef.current
         } catch (stopError) {
             fail(stopError)
+            return false
         } finally {
             if (sessionRef.current === session) sessionRef.current = null
         }
     }, [elevenLabs, fail])
 
-    const toggle = useCallback(async () => {
-        if (status === 'connected' || status === 'connecting') await stop()
-        else await start()
+    const toggle = useCallback(async (): Promise<boolean> => {
+        if (status === 'connected' || status === 'connecting') return await stop()
+        else {
+            await start()
+            return false
+        }
     }, [start, status, stop])
 
     useEffect(() => {

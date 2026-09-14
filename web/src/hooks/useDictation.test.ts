@@ -52,14 +52,73 @@ describe('useDictation', () => {
             onTextChange
         }), { wrapper: StrictMode })
 
-        await act(() => result.current.toggle())
+        await act(async () => { await result.current.toggle() })
         expect(result.current.status).toBe('connected')
-        await act(() => result.current.toggle())
+        await act(async () => { await result.current.toggle() })
 
         await waitFor(() => expect(onTextChange).toHaveBeenCalledWith('existing draft dictated words'))
         expect(api.transcribeVoice).toHaveBeenCalledOnce()
         expect(stopTrack).toHaveBeenCalled()
     })
+
+    it('resolves stop promise only after transcription and onTextChange complete', async () => {
+        const stopTrack = vi.fn()
+        Object.defineProperty(navigator, 'mediaDevices', {
+            configurable: true,
+            value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop: stopTrack }] })) }
+        })
+
+        class MockMediaRecorder {
+            static isTypeSupported() { return true }
+            state: RecordingState = 'inactive'
+            mimeType = 'audio/webm'
+            ondataavailable: ((event: BlobEvent) => void) | null = null
+            onerror: (() => void) | null = null
+            onstop: (() => void) | null = null
+            start() { this.state = 'recording' }
+            stop() {
+                this.state = 'inactive'
+                this.ondataavailable?.({ data: new Blob(['audio'], { type: this.mimeType }) } as BlobEvent)
+                this.onstop?.()
+            }
+        }
+        vi.stubGlobal('MediaRecorder', MockMediaRecorder)
+
+        let resolveTranscription!: (val: { text: string }) => void
+        const onTextChange = vi.fn()
+        const api = {
+            transcribeVoice: vi.fn(() => new Promise<{ text: string }>((resolve) => {
+                resolveTranscription = resolve
+            }))
+        }
+        const { result } = renderHook(() => useDictation({
+            api: api as unknown as ApiClient,
+            provider: 'openai',
+            mode: 'standard',
+            getCurrentText: () => 'existing draft',
+            onTextChange
+        }))
+
+        await act(async () => { await result.current.toggle() })
+        expect(result.current.status).toBe('connected')
+
+        let toggleResolved = false
+        const togglePromise = act(async () => {
+            await result.current.toggle()
+            toggleResolved = true
+        })
+
+        // togglePromise should NOT resolve until transcribeVoice finishes
+        expect(toggleResolved).toBe(false)
+        expect(onTextChange).not.toHaveBeenCalled()
+
+        resolveTranscription({ text: 'async dictated text' })
+        await togglePromise
+
+        expect(toggleResolved).toBe(true)
+        expect(onTextChange).toHaveBeenCalledWith('existing draft async dictated text')
+    })
+
 
     it('shows on-device partial text and inserts only the final transcript', async () => {
         vi.stubGlobal('navigator', {
@@ -102,12 +161,12 @@ describe('useDictation', () => {
             onTextChange
         }))
 
-        await act(() => result.current.toggle())
+        await act(async () => { await result.current.toggle() })
         act(() => recognition?.emit('live words', false))
         expect(result.current.partialTranscript).toBe('live words')
         expect(onTextChange).not.toHaveBeenCalled()
         act(() => recognition?.emit('final words', true))
-        await act(() => result.current.toggle())
+        await act(async () => { await result.current.toggle() })
 
         await waitFor(() => expect(onTextChange).toHaveBeenCalledWith('existing draft final words'))
         expect(result.current.partialTranscript).toBe('')
