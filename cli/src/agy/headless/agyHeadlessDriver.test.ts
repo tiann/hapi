@@ -587,6 +587,63 @@ describe('AgyHeadlessDriver', () => {
         expect(plannerEntries.map((e) => e!.content)).toEqual(['hello']);
     });
 
+    it('does not duplicate a completed answer whose deltas were mangled', async () => {
+        const { session, queue, sent } = createSession();
+        // Reproduces a real agy turn: a multi-byte character split across two
+        // `text_delta` fields reaches us as three replacement characters, while
+        // the result envelope carries the same answer decoded cleanly. The
+        // envelope must REPLACE the mangled rendering, not be appended after it
+        // (the chat showed the whole answer twice, once corrupted).
+        const stream = [
+            '{"event":"init","conversation_id":"c-dup","init":{}}',
+            '{"event":"step_update","step_update":{"conversation_id":"c-dup","step_index":0,"state":"DONE","step_type":"user_input"}}',
+            '{"event":"step_update","step_update":{"conversation_id":"c-dup","step_index":2,"state":"ACTIVE","step_type":"agent_response","text_delta":"\u7ed3\ufffd"}}',
+            '{"event":"step_update","step_update":{"conversation_id":"c-dup","step_index":2,"state":"ACTIVE","step_type":"agent_response","text_delta":"\ufffd\ufffd\u5316\u8f93\u51fa"}}',
+            '{"event":"step_update","step_update":{"conversation_id":"c-dup","step_index":2,"state":"DONE","step_type":"agent_response","text_delta":"\\n","duration_seconds":2.4}}',
+            '{"event":"result","result":{"conversation_id":"c-dup","status":"SUCCESS","response":"\u7ed3\u6784\u5316\u8f93\u51fa\\n","duration_seconds":3.4}}',
+        ];
+        const driver = new AgyHeadlessDriver({ session, spawnAgy: () => fakeAgyProcess(stream) });
+
+        queue.push('hello', { permissionMode: 'request-review' }, 'local-1');
+        const launchPromise = driver.launch();
+        await new Promise((r) => setTimeout(r, 500));
+        queue.close();
+        session.stopKeepAlive();
+        await launchPromise;
+
+        const plannerEntries = sent
+            .map((args) => (args as unknown[])[0] as { type?: string; content?: string } | undefined)
+            .filter((e) => e?.type === 'PLANNER_RESPONSE');
+        // Exactly one entry, and it is the clean rendering.
+        expect(plannerEntries.map((e) => e!.content)).toEqual(['\u7ed3\u6784\u5316\u8f93\u51fa\n']);
+    });
+
+    it('does not duplicate mangled pre-tool narration echoed by the result', async () => {
+        const { session, queue, sent } = createSession();
+        // Same corruption, but the answer is followed by a tool step, so it is
+        // released before the envelope arrives and the tolerant comparison is
+        // what has to recognise the echo.
+        const stream = [
+            '{"event":"init","conversation_id":"c-dup2","init":{}}',
+            '{"event":"step_update","step_update":{"conversation_id":"c-dup2","step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"\u7ed3\ufffd\ufffd\ufffd\u5316\u8f93\u51fa"}}',
+            '{"event":"step_update","step_update":{"conversation_id":"c-dup2","step_index":2,"state":"DONE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"ls"},"output":"x"}}}',
+            '{"event":"result","result":{"conversation_id":"c-dup2","status":"SUCCESS","response":"\u7ed3\u6784\u5316\u8f93\u51fa","duration_seconds":0.2}}',
+        ];
+        const driver = new AgyHeadlessDriver({ session, spawnAgy: () => fakeAgyProcess(stream) });
+
+        queue.push('hello', { permissionMode: 'request-review' }, 'local-1');
+        const launchPromise = driver.launch();
+        await new Promise((r) => setTimeout(r, 500));
+        queue.close();
+        session.stopKeepAlive();
+        await launchPromise;
+
+        const plannerEntries = sent
+            .map((args) => (args as unknown[])[0] as { type?: string; content?: string } | undefined)
+            .filter((e) => e?.type === 'PLANNER_RESPONSE');
+        expect(plannerEntries).toHaveLength(1);
+    });
+
     it('delivers the final result response after completed pre-tool narration', async () => {
         const { session, queue, client, sent } = createSession();
         // A tool turn: completed pre-tool narration, a tool event, NO final
