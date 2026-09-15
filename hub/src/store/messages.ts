@@ -322,6 +322,27 @@ export function getMessages(
     return rows.reverse().map(toStoredMessage)
 }
 
+export function getMessagesBeforeSeq(
+    db: Database,
+    sessionId: string,
+    beforeSeq?: number,
+    limit: number = 200
+): StoredMessage[] {
+    const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 200
+    const beforeClause = beforeSeq === undefined ? '' : 'AND seq < ?'
+    const params = beforeSeq === undefined
+        ? [sessionId, safeLimit]
+        : [sessionId, beforeSeq, safeLimit]
+    const rows = db.prepare(`
+        SELECT * FROM messages
+        WHERE session_id = ? ${beforeClause}
+        ORDER BY seq DESC
+        LIMIT ?
+    `).all(...params) as DbMessageRow[]
+
+    return rows.reverse().map(toStoredMessage)
+}
+
 export function getAllMessages(
     db: Database,
     sessionId: string
@@ -1074,6 +1095,13 @@ export function mergeSessionMessages(
             db.prepare(
                 'UPDATE messages SET seq = seq + ? WHERE session_id = ?'
             ).run(oldMaxSeq, toSessionId)
+            db.prepare(`
+                UPDATE sessions
+                SET todos_source_seq = todos_source_seq + @offset
+                WHERE id = @sessionId
+                  AND todos_source_at IS NOT NULL
+                  AND todos_source_seq >= 0
+            `).run({ offset: oldMaxSeq, sessionId: toSessionId })
         }
 
         const collisions = db.prepare(`

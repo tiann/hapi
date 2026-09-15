@@ -1,6 +1,6 @@
 import type { Database } from 'bun:sqlite'
 
-import type { StoredSession, VersionedUpdateResult } from './types'
+import type { SessionTodoSource, StoredSession, VersionedUpdateResult } from './types'
 import {
     deleteSession,
     getOrCreateSession,
@@ -63,16 +63,18 @@ export class SessionStore {
         return updateSessionAgentState(this.db, id, agentState, expectedVersion, namespace)
     }
 
-    setSessionTodos(id: string, todos: unknown, todosUpdatedAt: number, namespace: string): boolean {
-        return setSessionTodos(this.db, id, todos, todosUpdatedAt, namespace)
+    setSessionTodos(id: string, todos: unknown, source: SessionTodoSource, namespace: string): boolean {
+        return setSessionTodos(this.db, id, todos, source, namespace)
     }
 
     replaceSessionTodos(
         id: string,
         todos: unknown,
-        namespace: string
+        namespace: string,
+        source?: SessionTodoSource | null,
+        options?: { touchUpdatedAt?: boolean }
     ): boolean {
-        return replaceSessionTodos(this.db, id, todos, namespace)
+        return replaceSessionTodos(this.db, id, todos, namespace, source, options)
     }
 
     setSessionTeamState(id: string, teamState: unknown, updatedAt: number, namespace: string): boolean {

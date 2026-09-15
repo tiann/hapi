@@ -881,21 +881,69 @@ describe('replaceSessionTodos: watermark ratchet (PR #897 rewind race)', () => {
         const lateTodos = [{ content: 'late', status: 'pending', activeForm: 'doing late' }]
         const earlyTodos = [{ content: 'early', status: 'pending', activeForm: 'doing early' }]
 
-        expect(store.sessions.setSessionTodos(session.id, lateTodos, priorAt, 'default')).toBe(true)
-        expect(store.sessions.getSession(session.id)?.todosUpdatedAt).toBe(priorAt)
+        const priorSource = { at: priorAt, seq: 1 }
+        expect(store.sessions.setSessionTodos(session.id, lateTodos, priorSource, 'default')).toBe(true)
+        expect(store.sessions.getSession(session.id)?.todosUpdatedAt).toBeGreaterThanOrEqual(priorAt)
+        expect(store.sessions.getSession(session.id)?.todosSourceAt).toBe(priorAt)
+        expect(store.sessions.getSession(session.id)?.todosSourceSeq).toBe(1)
 
         // Rewind would otherwise stamp the remaining TodoWrite's older createdAt.
         expect(store.sessions.replaceSessionTodos(session.id, earlyTodos, 'default')).toBe(true)
 
         const after = store.sessions.getSession(session.id)
-        expect(after?.todosUpdatedAt).toBe(priorAt + 1)
+        expect(after?.todosUpdatedAt).toBeGreaterThan(priorAt)
         expect(after?.todos).toEqual(earlyTodos)
+        expect(after?.todosSourceAt).toBe(priorAt)
+        expect(after?.todosSourceSeq).toBe(1)
 
         // A lagged pre-rewind structured patch using priorAt must lose the
         // store-side monotonic write too (defense in depth vs SSE gate).
-        expect(store.sessions.setSessionTodos(session.id, lateTodos, priorAt, 'default')).toBe(false)
+        expect(store.sessions.setSessionTodos(session.id, lateTodos, priorSource, 'default')).toBe(false)
         expect(store.sessions.getSession(session.id)?.todos).toEqual(earlyTodos)
 
+        store.close()
+    })
+
+    it('accepts a later task snapshot with the same timestamp when its source seq is newer', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'same-ms-todos-source-position',
+            { path: '/tmp/project' },
+            null,
+            'default'
+        )
+        const first = [{ content: 'first', status: 'pending', activeForm: 'doing first' }]
+        const second = [{ content: 'second', status: 'in_progress', activeForm: 'doing second' }]
+
+        expect(store.sessions.setSessionTodos(session.id, first, { at: 2_000, seq: 1 }, 'default')).toBe(true)
+        expect(store.sessions.setSessionTodos(session.id, second, { at: 2_000, seq: 2 }, 'default')).toBe(true)
+        expect(store.sessions.setSessionTodos(session.id, first, { at: 2_000, seq: 1 }, 'default')).toBe(false)
+
+        const after = store.sessions.getSession(session.id)
+        expect(after?.todos).toEqual(second)
+        expect(after?.todosSourceAt).toBe(2_000)
+        expect(after?.todosSourceSeq).toBe(2)
+        expect(after?.todosUpdatedAt).toBeGreaterThan(2_000)
+        store.close()
+    })
+
+    it('does not move session activity to wall clock during historical task backfill', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'historical-todos-activity',
+            { path: '/tmp/project' },
+            null,
+            'default'
+        )
+        const before = store.sessions.getSession(session.id)?.updatedAt
+
+        expect(store.sessions.setSessionTodos(
+            session.id,
+            [{ content: 'historical', status: 'pending' }],
+            { at: 1_000, seq: 1 },
+            'default'
+        )).toBe(true)
+        expect(store.sessions.getSession(session.id)?.updatedAt).toBe(before)
         store.close()
     })
 
@@ -933,14 +981,16 @@ describe('replaceSessionTodos: watermark ratchet (PR #897 rewind race)', () => {
         expect(store.sessions.setSessionTodos(
             session.id,
             [{ content: 'gone', status: 'pending', activeForm: 'going' }],
-            50,
+            { at: 50, seq: 1 },
             'default'
         )).toBe(true)
 
         expect(store.sessions.replaceSessionTodos(session.id, null, 'default')).toBe(true)
         const after = store.sessions.getSession(session.id)
         expect(after?.todos).toBeNull()
-        expect(after?.todosUpdatedAt).toBe(51)
+        expect(after?.todosUpdatedAt).toBeGreaterThan(50)
+        expect(after?.todosSourceAt).toBe(50)
+        expect(after?.todosSourceSeq).toBe(1)
 
         store.close()
     })

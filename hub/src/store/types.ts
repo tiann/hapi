@@ -1,3 +1,8 @@
+export type SessionTodoSource = {
+    at: number
+    seq: number
+}
+
 export type StoredSession = {
     id: string
     tag: string | null
@@ -17,6 +22,8 @@ export type StoredSession = {
     serviceTier: string | null
     todos: unknown | null
     todosUpdatedAt: number | null
+    todosSourceAt: number | null
+    todosSourceSeq: number | null
     teamState: unknown | null
     teamStateUpdatedAt: number | null
     active: boolean
