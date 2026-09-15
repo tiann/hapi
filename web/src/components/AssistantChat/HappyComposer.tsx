@@ -344,6 +344,8 @@ export function HappyComposer(props: {
     onVoiceToggle?: () => void
     onVoiceMicToggle?: () => void
     voiceTranscriptionApi?: ApiClient
+    usageQueryApi?: ApiClient
+    usageQueryMachineId?: string | null
     // Schedule props (lifted from internal state when provided)
     pendingSchedule?: PendingSchedule | null
     onSchedule?: (pending: PendingSchedule) => void
@@ -2186,6 +2188,8 @@ export function HappyComposer(props: {
                         copilotAgentMode={copilotAgentMode}
                         agentFlavor={agentFlavor}
                         voiceStatus={effectiveVoiceStatus}
+                        usageQueryApi={props.usageQueryApi}
+                        usageQueryMachineId={props.usageQueryMachineId}
                     />
 
                     {dictationActive && dictation.partialTranscript ? (

@@ -2186,6 +2186,8 @@ function SessionChatInner(props: SessionChatProps) {
                         onVoiceToggle={voice && voiceBackendReady ? handleVoiceToggle : undefined}
                         onVoiceMicToggle={voice && voiceBackendReady ? handleVoiceMicToggle : undefined}
                         voiceTranscriptionApi={props.api}
+                        usageQueryApi={props.api}
+                        usageQueryMachineId={props.session.metadata?.machineId ?? null}
                         scratchlistMode={scratchlistMode}
                         scratchlistCount={scratchlist.entries.length}
                         onScratchlistToggle={handleScratchlistToggle}
