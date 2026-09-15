@@ -416,19 +416,121 @@ html:has(.chat-scroll-y) #root {
 
 /* Sidebar resize handle */
 .sidebar-resize-handle {
+    position: relative;
     width: 4px;
     cursor: col-resize;
-    background: var(--app-divider);
+    background: transparent;
     transition: background-color 0.15s;
+    overflow: visible;
 }
 
-.sidebar-resize-handle:hover,
-.sidebar-resize-handle[data-dragging] {
+.sidebar-resize-handle::before {
+    position: absolute;
+    z-index: 0;
+    inset: 0;
+    content: '';
+    pointer-events: none;
+    background: var(--app-divider);
+    transition: background-color 0.15s, opacity 0.15s;
+}
+
+.sidebar-resize-handle:hover::before {
     background: var(--app-link);
 }
 
-.sidebar-resize-handle[data-dragging] {
+.sidebar-resize-handle[data-dragging]::before {
+    background: var(--app-link);
     opacity: 0.6;
+}
+
+/* Keep the divider's 4px drag target unchanged; reveal the separate action on hover. */
+.sidebar-hide-button {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    z-index: 10;
+    display: flex;
+    width: 36px;
+    height: 48px;
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+    transform: translate(-50%, -50%) scale(1);
+    border: 0;
+    background: transparent;
+    opacity: 1;
+    pointer-events: auto;
+    color: var(--app-hint);
+    transition: opacity 0.15s, transform 0.15s, color 0.15s;
+}
+
+.sidebar-hide-button svg,
+.sidebar-show-button svg {
+    width: 24px;
+    height: 40px;
+    display: block;
+    flex-shrink: 0;
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .sidebar-hide-button {
+        transform: translate(-50%, -50%) scale(0.85);
+        opacity: 0;
+        pointer-events: none;
+    }
+
+    .sidebar-resize-handle:hover .sidebar-hide-button,
+    .sidebar-resize-handle:focus-within .sidebar-hide-button,
+    .sidebar-hide-button:focus-visible {
+        transform: translate(-50%, -50%) scale(1);
+        opacity: 1;
+        pointer-events: auto;
+    }
+}
+
+/* Hybrid devices may keep a fine primary pointer while also exposing touch. */
+@media (any-pointer: coarse) {
+    .sidebar-hide-button {
+        transform: translate(-50%, -50%) scale(1);
+        opacity: 1;
+        pointer-events: auto;
+    }
+}
+
+.sidebar-resize-handle[data-dragging] .sidebar-hide-button {
+    transform: translate(-50%, -50%) scale(0.85);
+    opacity: 0;
+    pointer-events: none;
+}
+
+.sidebar-hide-button:hover,
+.sidebar-show-button:hover {
+    color: var(--app-hint);
+}
+
+.sidebar-hide-button:focus-visible,
+.sidebar-show-button:focus-visible {
+    color: var(--app-link);
+    outline: 2px solid var(--app-link);
+    outline-offset: 2px;
+}
+
+.sidebar-show-button {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    z-index: 20;
+    width: 36px;
+    height: 48px;
+    cursor: pointer;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 0;
+    transform: translateY(-50%);
+    border: 0;
+    background: transparent;
+    color: var(--app-hint);
+    transition: color 0.15s;
 }
 
 /*
