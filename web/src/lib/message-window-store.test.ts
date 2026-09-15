@@ -3,6 +3,7 @@ import type { ApiClient } from '@/api/client'
 import type { DecryptedMessage, MessagesResponse } from '@/types/api'
 import {
     HISTORY_WINDOW_SIZE,
+    INITIAL_PAGE_SIZE,
     VISIBLE_WINDOW_SIZE,
     activateMessageWindow,
     appendOptimisticMessage,
@@ -249,6 +250,49 @@ afterEach(() => {
 })
 
 describe('message tail synchronization', () => {
+    it('uses a small cold latest page while keeping older loads at full page size', async () => {
+        const id = sessionId('cold-initial-page')
+        const latestMessages = Array.from({ length: INITIAL_PAGE_SIZE }, (_, index) =>
+            makeAgentMessage({
+                id: `latest-${index + 1}`,
+                seq: index + 1,
+                at: (index + 1) * 1_000
+            })
+        )
+        const older = makeAgentMessage({ id: 'older', seq: 0, at: 0 })
+        const getMessages = vi.fn()
+            .mockResolvedValueOnce(latestResponse(latestMessages, {
+                epoch: 1,
+                hasMore: true,
+                nextBeforeAt: 1_000,
+                nextBeforeSeq: 1
+            }))
+            .mockResolvedValueOnce(beforeResponse([older], {
+                epoch: 1,
+                hasMore: false,
+                nextBeforeAt: 0,
+                nextBeforeSeq: 0
+            }))
+        const api = createApi(getMessages)
+
+        await syncTailMessages(api, id)
+
+        expect(getMessages).toHaveBeenCalledWith(id, { limit: INITIAL_PAGE_SIZE })
+        expect(getMessageWindowState(id).messages).toHaveLength(INITIAL_PAGE_SIZE)
+
+        await fetchOlderMessages(api, id)
+
+        expect(getMessages).toHaveBeenLastCalledWith(id, {
+            beforeAt: 1_000,
+            beforeSeq: 1,
+            limit: 200
+        })
+        expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual([
+            'older',
+            ...latestMessages.map((message) => message.id)
+        ])
+    })
+
     it('removes the rewound suffix immediately and applies duplicate invalidations once', async () => {
         const id = sessionId('rewind-suffix')
         const prefix = makeAgentMessage({ id: 'prefix', seq: 1, at: 1_000 })

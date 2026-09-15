@@ -8,7 +8,8 @@ import json, sys
 items = [x for x in json.load(sys.stdin)["runtimes"] if x.get("isAvailable") and x.get("name", "").startswith("iOS")]
 print(max(items, key=lambda x: tuple(map(int, x["version"].split("."))))["identifier"])
 ')
-device=$(xcrun simctl create "HAPI Transcript Tests" com.apple.CoreSimulator.SimDeviceType.iPhone-15 "$runtime")
+device_type=${HAPI_TEST_DEVICE_TYPE:-com.apple.CoreSimulator.SimDeviceType.iPhone-15}
+device=$(xcrun simctl create "HAPI Transcript Tests" "$device_type" "$runtime")
 trap 'xcrun simctl delete "$device" >/dev/null 2>&1 || true' EXIT
 
 xcodebuild test -project ios/Hapi.xcodeproj -scheme Hapi \

@@ -207,11 +207,41 @@ public enum NewSessionLogic {
         /// Separator used by the typed path; suggestions preserve it.
         public let separator: String
 
+        public var includeHidden: Bool { prefix.hasPrefix(".") }
+
         public init(parent: String, prefix: String, separator: String = "/") {
             self.parent = parent
             self.prefix = prefix
             self.separator = separator
         }
+    }
+
+    public enum DirectoryAutocompleteQuery: Equatable, Sendable {
+        case none
+        case roots([String])
+        case directory(ParentQuery)
+        case outsideRoots
+    }
+
+    /// Complete known roots without listing their forbidden ancestors. Once
+    /// inside a root, use the normal parent listing. `path` is home-expanded.
+    public static func directoryAutocompleteQuery(
+        path: String,
+        roots: [String]
+    ) -> DirectoryAutocompleteQuery {
+        if path.isEmpty { return roots.isEmpty ? .none : .roots(Array(roots.prefix(8))) }
+        guard let query = parentQuery(for: path) else { return .none }
+        if roots.contains(where: {
+            RemoteDirectoryPath.isWithinRoot(path: path, root: $0)
+                && RemoteDirectoryPath.isWithinRoot(path: $0, root: path)
+        }) {
+            return .directory(ParentQuery(parent: path, prefix: "", separator: query.separator))
+        }
+        if RemoteDirectoryPath.allowsBrowsing(path: query.parent, roots: roots) {
+            return .directory(query)
+        }
+        let matchingRoots = roots.filter { $0.lowercased().hasPrefix(path.lowercased()) }
+        return matchingRoots.isEmpty ? .outsideRoots : .roots(Array(matchingRoots.prefix(8)))
     }
 
     /// Derives the list-directory request from the typed text: list the

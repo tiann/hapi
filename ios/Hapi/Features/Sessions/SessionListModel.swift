@@ -11,20 +11,70 @@ struct SessionRowUI: Identifiable, Equatable {
     let summary: SessionSummary
     /// `getSessionTitle` port: name → summary text → path tail → id prefix.
     let title: String
-    /// Secondary line: summary text, only when it is not already the title.
-    let subtitle: String?
-    /// Single meta line, `project · worktree · machine`: project is the last
-    /// two segments of the worktree base path (session path fallback, the web
-    /// sidebar's group-name rule); the machine label is disambiguation only —
-    /// present only when several machines are known and no machine filter is
-    /// active. Full paths never render in the list (the session detail owns
-    /// them).
-    let meta: String?
+    /// Short project name only. Paths, machine/worktree details and the
+    /// conversation summary stay out of the compact home row.
+    let project: String?
     /// Raw flavor id (`claude`, `codex`, …); labels resolve via the catalog.
     let flavor: String?
     let unread: Bool
 
     var id: String { summary.id }
+    var status: SessionRowStatus? { SessionRowStatus(summary: summary) }
+}
+
+/// Presentation only: request totals/kinds come from the hub, independently
+/// of the capped request slice and the local read watermark.
+enum SessionRowStatus: Equatable {
+    case needsReply(Int)
+    case needsApproval(Int)
+    case needsAttention(Int)
+    case running
+
+    init?(summary: SessionSummary) {
+        let count = summary.pendingRequestsCount
+        if count > 0 {
+            let kinds = Set(summary.pendingRequestKinds)
+            if kinds == [.input] {
+                self = .needsReply(count)
+            } else if kinds == [.permission] {
+                self = .needsApproval(count)
+            } else {
+                self = .needsAttention(count)
+            }
+        } else if summary.active && summary.thinking {
+            self = .running
+        } else {
+            return nil
+        }
+    }
+
+    /// Localize in the view so its locale also governs previews/specimens.
+    var titleKey: String {
+        switch self {
+        case .needsReply: return "Needs reply"
+        case .needsApproval: return "Needs approval"
+        case .needsAttention: return "Needs attention"
+        case .running: return "Running"
+        }
+    }
+
+    var count: Int? {
+        switch self {
+        case .needsReply(let count), .needsApproval(let count), .needsAttention(let count): return count
+        case .running: return nil
+        }
+    }
+
+    /// Unfilled attention symbols; running uses the native loading indicator.
+    /// Status wording/count remain available to VoiceOver in either case.
+    var symbolName: String? {
+        switch self {
+        case .needsReply: return "bubble.left"
+        case .needsApproval: return "hand.raised"
+        case .needsAttention: return "exclamationmark.bubble"
+        case .running: return nil
+        }
+    }
 }
 
 struct MachineFilterUI: Identifiable, Equatable {
@@ -59,6 +109,7 @@ final class SessionListModel {
     /// Last refresh failed — show the offline state over snapshot data.
     private(set) var isOffline = false
     private(set) var hasRefreshedOnce = false
+    @ObservationIgnored private var hasAttemptedRefresh = false
     /// Transient pin/archive failure for an alert.
     var actionError: String?
 
@@ -177,32 +228,11 @@ final class SessionListModel {
             guard let activeFilter else { return true }
             return (summary.metadata?.machineId ?? unknownMachineFilterId) == activeFilter
         }
-        // With one machine — or a machine filter active — every visible row
-        // shares the machine, so repeating it per row is noise.
-        let machines = machineFilters
-        let showMachine = machines.count >= 2 && activeFilter == nil
-        let labels = Dictionary(uniqueKeysWithValues: machines.map { ($0.id, $0.label) })
         return visible.map { summary in
-            let title = Self.sessionTitle(summary)
-            let rawSummaryText = summary.metadata?.summary?.text
-            let isBlank = rawSummaryText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true
-            let summaryText = isBlank ? nil : rawSummaryText
-            var metaParts: [String] = []
-            if let project = Self.projectLabel(summary) {
-                metaParts.append(project)
-            }
-            if let tree = summary.metadata?.worktree {
-                let name = tree.name.trimmingCharacters(in: .whitespaces)
-                metaParts.append(name.isEmpty ? tree.branch : tree.name)
-            }
-            if showMachine, let machine = labels[summary.metadata?.machineId ?? unknownMachineFilterId] {
-                metaParts.append(machine)
-            }
-            return SessionRowUI(
+            SessionRowUI(
                 summary: summary,
-                title: title,
-                subtitle: (summaryText != nil && summaryText != title) ? summaryText : nil,
-                meta: metaParts.isEmpty ? nil : metaParts.joined(separator: " · "),
+                title: Self.sessionTitle(summary),
+                project: Self.projectLabel(summary),
                 flavor: summary.metadata?.flavor,
                 unread: LastSeenStore.isUnread(summary, lastSeenAt: lastSeen[summary.id] ?? 0)
             )
@@ -215,25 +245,32 @@ final class SessionListModel {
         rows.prefix { $0.summary.globalPinned == true || $0.summary.pinned == true }.count
     }
 
-    /// Project identity for the meta line: last two segments of the worktree
-    /// base path, session path fallback — mirrors the web sidebar's
-    /// `getGroupDisplayName` rule (`SessionList.tsx`).
+    /// Use the worktree's owning project, not its temporary checkout name.
+    /// The home needs a scan key, not a repeated path or machine inventory.
     static func projectLabel(_ summary: SessionSummary) -> String? {
-        guard let path = summary.metadata?.worktree?.basePath ?? summary.metadata?.path,
-              !path.isEmpty else { return nil }
-        let parts = path.split(whereSeparator: { $0 == "/" || $0 == "\\" }).map(String.init)
-        if parts.isEmpty { return path }
-        if parts.count == 1 { return parts[0] }
-        return "\(parts[parts.count - 2])/\(parts[parts.count - 1])"
+        guard let path = summary.metadata?.worktree?.basePath ?? summary.metadata?.path else { return nil }
+        return path.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init)
     }
 
     // MARK: - Actions
+
+    /// A split sidebar can disappear/reappear just because the window
+    /// collapses. Fetch once per home, not once per layout transition;
+    /// global SSE recovery and explicit pull-to-refresh still fetch normally.
+    func refreshOnFirstAppearance() async {
+        guard !hasAttemptedRefresh else { return }
+        hasAttemptedRefresh = true
+        // The sidebar's SwiftUI task is cancelled when it collapses. The
+        // initial fetch belongs to the model, not that transient presentation.
+        await Task { await self.refresh() }.value
+    }
 
     /// Pull-to-refresh / initial load. Coalesces concurrent calls; the first
     /// successful list seeds the unread baseline so historical sessions do
     /// not all light up as unread.
     func refresh() async {
         guard !isRefreshing else { return }
+        hasAttemptedRefresh = true
         isRefreshing = true
         defer { isRefreshing = false }
         do {

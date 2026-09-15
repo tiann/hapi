@@ -62,6 +62,25 @@ Final paragraph after the divider.
 \`alist.techotaku39.top\` 已失效，5244 端口也不再监听。
 
 请将 \`machine-status-widget/hapi-machine-status.user.js\` 全文覆盖到油猴脚本中，然后强制刷新页面。
+
+### LaTeX
+
+Inline formula: \\(E=mc^2\\)
+
+\\[
+\\lim_{x\\to 0}\\frac{\\sin x}{x}=1
+\\]
+
+\\[
+\\prod_{i=1}^{n} x_i
+\\]
+
+\\[
+\\begin{aligned}
+f(x) &= x^2+2x+1 \\\\
+     &= (x+1)^2
+\\end{aligned}
+\\]
 `
 
 if (new URLSearchParams(window.location.search).get('theme') === 'dark') {

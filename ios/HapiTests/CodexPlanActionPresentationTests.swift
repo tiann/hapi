@@ -55,9 +55,40 @@ final class CodexPlanActionPresentationTests: XCTestCase {
                                         createdAt: 0, result: .null), children: [], meta: nil)
     }
 
-    private func height<V: View>(_ view: V, size: DynamicTypeSize = .large) -> CGFloat {
+    private func measuredSize<V: View>(
+        _ view: V, width: CGFloat = 320, size: DynamicTypeSize = .large
+    ) -> CGSize {
         UIHostingController(rootView: view.hapiTypography().environment(\.dynamicTypeSize, size))
-            .sizeThatFits(in: CGSize(width: 320, height: CGFloat.greatestFiniteMagnitude)).height
+            .sizeThatFits(in: CGSize(width: width, height: CGFloat.greatestFiniteMagnitude))
+    }
+
+    private func height<V: View>(_ view: V, size: DynamicTypeSize = .large) -> CGFloat {
+        measuredSize(view, size: size).height
+    }
+
+    func testActionsUseOneCompactRowAndStackWithoutClippingWhenNeeded() throws {
+        let driver = try Driver()
+        let actions = CodexPlanActionsView(planId: "proposal", interactions: driver.interactor)
+            .environment(\.locale, Locale(identifier: "en"))
+        for theme in [HapiTheme.light, .dark, .oled] {
+            for width: CGFloat in [320, 390, 720] {
+                let measured = measuredSize(actions.hapiTheme(theme), width: width)
+                XCTAssertEqual(measured.height, 44 + 24, accuracy: 1,
+                               "One 44 pt row plus the card inset, without system button padding")
+                XCTAssertLessThanOrEqual(measured.width, width)
+            }
+            let narrow = measuredSize(actions.hapiTheme(theme), width: 220)
+            XCTAssertEqual(narrow.height, 2 * 44 + 8 + 24, accuracy: 1,
+                           "Two full-width targets with an 8 pt gap")
+            XCTAssertLessThanOrEqual(narrow.width, 220)
+            let accessible = measuredSize(actions.hapiTheme(theme), size: .accessibility3)
+            XCTAssertGreaterThan(accessible.height, narrow.height,
+                                 "Large labels wrap and grow instead of truncating")
+            XCTAssertLessThanOrEqual(accessible.width, 320)
+            XCTAssertEqual(measuredSize(actions.hapiTheme(theme).disabled(true)).height,
+                           measuredSize(actions.hapiTheme(theme)).height,
+                           "Disabled styling must not shift the layout")
+        }
     }
 
     func testCompletedProposalsHaveClientActionsWithoutInventingPermissions() throws {
@@ -67,7 +98,7 @@ final class CodexPlanActionPresentationTests: XCTestCase {
             let readOnly = height(ToolCallBlockView(block: block, basePath: nil))
             let actionable = height(ToolCallBlockView(block: block, basePath: nil)
                 .environment(\.chatInteractions, driver.interactor))
-            XCTAssertGreaterThan(actionable, readOnly + 88, "Two separate 44 pt action targets")
+            XCTAssertGreaterThan(actionable, readOnly + 44, "A compact row of separate 44 pt action targets")
             let large = height(ToolCallBlockView(block: block, basePath: nil)
                 .environment(\.chatInteractions, driver.interactor), size: .accessibility3)
             XCTAssertGreaterThan(large, actionable)
@@ -101,7 +132,7 @@ final class CodexPlanActionPresentationTests: XCTestCase {
         try await settle { driver.height > 100 }
         let actionable = driver.height
         driver.publish(nil, version: 2)
-        try await settle { driver.height < actionable - 88 }
+        try await settle { driver.height < actionable - 44 }
         let readOnly = driver.height
         driver.publish("proposal", version: 1)
         try await Task.sleep(for: .milliseconds(100))
@@ -124,10 +155,49 @@ final class CodexPlanActionPresentationTests: XCTestCase {
         XCTAssertEqual(driver.interactor.composerText, "Refine step two")
     }
 
-    private func host<V: View>(_ view: V) throws -> UIWindow {
+    func testActionCardSpecimensInLightDarkOLEDAndLargeType() async throws {
+        let cases: [(String, HapiTheme, DynamicTypeSize, CGFloat)] = [
+            ("light", .light, .large, 390), ("dark", .dark, .large, 390),
+            ("oled", .oled, .large, 390), ("narrow", .light, .large, 252),
+            ("large-type", .dark, .accessibility3, 390),
+        ]
+        for (name, theme, size, width) in cases {
+            let driver = try Driver()
+            let view = NavigationStack {
+                ScrollView {
+                    MeasuredCard(driver: driver, block: block())
+                        .hapiReadingColumn()
+                        .padding(.vertical, 16)
+                }
+                .background(theme.background)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    ChatComposerView(interactor: driver.interactor)
+                }
+                .navigationTitle("Plan proposal")
+                .navigationBarTitleDisplayMode(.inline)
+            }
+            .hapiTypography().hapiTheme(theme)
+            .environment(\.dynamicTypeSize, size)
+            .environment(\.locale, Locale(identifier: "en"))
+            .preferredColorScheme(theme.isDark ? .dark : .light)
+            let window = try host(view, width: width)
+            defer { window.isHidden = true }
+            try await settle { driver.height > 100 }
+            try await Task.sleep(for: .milliseconds(150))
+            guard let directory = ProcessInfo.processInfo.environment["HAPI_TOOL_CAPTURE"] else { continue }
+            let url = URL(fileURLWithPath: directory, isDirectory: true)
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            try XCTUnwrap(image.pngData()).write(to: url.appendingPathComponent("plan-actions-\(name).png"))
+        }
+    }
+
+    private func host<V: View>(_ view: V, width: CGFloat = 390) throws -> UIWindow {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let window = UIWindow(windowScene: scene)
-        window.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        window.frame = CGRect(x: 0, y: 0, width: width, height: 844)
         window.rootViewController = UIHostingController(rootView: view)
         window.makeKeyAndVisible()
         return window

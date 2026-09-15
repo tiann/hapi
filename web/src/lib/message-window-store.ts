@@ -40,6 +40,7 @@ export type MessageWindowState = {
 
 export const VISIBLE_WINDOW_SIZE = 400
 export const HISTORY_WINDOW_SIZE = 600
+export const INITIAL_PAGE_SIZE = 20
 const AGENT_RUN_WINDOW_SIZE = 800
 const OLDER_LOAD_WINDOW_SIZE = 800
 const PAGE_SIZE = 200
@@ -693,7 +694,14 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
 
         if (!canIncrement) {
             const requestBaseline = new Map(getState(sessionId).messages.map((message) => [message.id, message]))
-            const response = await api.getMessages(sessionId, { limit: PAGE_SIZE })
+            // A cold window has no server cursor yet, so prioritize the latest
+            // usable messages for first paint. Structural resets and cached
+            // re-entry keep the full page so their authoritative replacement
+            // remains unchanged; user-driven older loads still use PAGE_SIZE.
+            const latestPageSize = initial.requiresLatestReset || initialCursor !== null
+                ? PAGE_SIZE
+                : INITIAL_PAGE_SIZE
+            const response = await api.getMessages(sessionId, { limit: latestPageSize })
             if (!isCurrentTailSync(sessionId, generation)) return
             updateState(sessionId, (previous) => {
                 if (previous.syncGeneration !== generation) return previous

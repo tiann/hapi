@@ -288,17 +288,17 @@ struct QuestionAnswerFormView: View {
             }
         } label: {
             HStack(spacing: 8) {
-                if submitting { ProgressView().tint(.white).controlSize(.small) }
+                if submitting {
+                    ProgressView().tint(theme.background).controlSize(.small)
+                        .accessibilityHidden(true)
+                }
                 Text(submitting ? String(localized: "Submitting answer…") :
                         last ? String(localized: "Submit answer") : String(localized: "Next question"))
                     .fixedSize(horizontal: false, vertical: true)
             }
             .font(typography.toolTitleFont)
-            .frame(maxWidth: fullWidth ? .infinity : nil, minHeight: 32)
-            .padding(.horizontal, 8)
         }
-        .buttonStyle(.borderedProminent)
-        .tint(theme.accent)
+        .buttonStyle(ChatActionButtonStyle(emphasis: .primary, fillsWidth: fullWidth))
         .disabled(!enabled || submitting || (last ? draft.submission(in: form) == nil : !draft.isAnswered(at: index, in: form)))
         .accessibilityIdentifier(last ? "question-submit" : "question-next")
     }

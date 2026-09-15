@@ -205,6 +205,23 @@ describe('matchSessionsForMention', () => {
         expect(hits.map((s) => s.id)).toEqual(['fff-machine'])
     })
 
+    it('requires every multi-word token (AND) via shared sessionMatchesQuery', () => {
+        const pool = [
+            makeSession({
+                id: 'full-and',
+                updatedAt: 50,
+                metadata: { path: '/work/home-lab', name: 'Assistant notes' },
+            }),
+            makeSession({
+                id: 'home-only',
+                updatedAt: 40,
+                metadata: { path: '/work/home-lab', name: 'other' },
+            }),
+        ]
+        const hits = matchSessionsForMention(pool, 'home assistant')
+        expect(hits.map((s) => s.id)).toEqual(['full-and'])
+    })
+
     it('empty query returns active/recent shortlist without archived', () => {
         const hits = matchSessionsForMention(sessions, '', { limit: 10 })
         // Active first (by updatedAt), then inactive recent — archived omitted.

@@ -6,6 +6,36 @@ import XCTest
 
 @MainActor
 final class SessionListFilterTests: XCTestCase {
+    func testSidebarAppearanceFetchesOnceButExplicitRetryStillRefreshes() async {
+        let sessions = HomeFilterTestSessions()
+        sessions.failRefresh = true
+        let model = HomeFilterTestData.model(sessions: sessions)
+        await model.refreshOnFirstAppearance()
+        await model.refreshOnFirstAppearance()
+        XCTAssertEqual(sessions.refreshCount, 1)
+        XCTAssertTrue(model.isOffline)
+        sessions.failRefresh = false
+        await model.refresh()
+        XCTAssertEqual(sessions.refreshCount, 2)
+        XCTAssertFalse(model.isOffline)
+        await model.refreshOnFirstAppearance()
+        XCTAssertEqual(sessions.refreshCount, 2)
+    }
+
+    func testSidebarInitialRefreshOutlivesPresentationCancellation() async {
+        let sessions = HomeFilterTestSessions()
+        let model = HomeFilterTestData.model(sessions: sessions)
+        let presentation = Task {
+            await Task.yield()
+            await model.refreshOnFirstAppearance()
+        }
+        presentation.cancel()
+        await presentation.value
+        XCTAssertEqual(sessions.refreshCount, 1)
+        XCTAssertFalse(sessions.refreshWasCancelled)
+        XCTAssertTrue(model.hasRefreshedOnce)
+    }
+
     func testEmptyAndSingleMachineHaveNoFilterAffordance() {
         let sessions = HomeFilterTestSessions()
         let model = HomeFilterTestData.model(sessions: sessions)
@@ -17,7 +47,7 @@ final class SessionListFilterTests: XCTestCase {
         XCTAssertNil(model.activeMachineFilter)
         XCTAssertNil(model.filterSummary)
         XCTAssertEqual(model.rows.count, 1)
-        XCTAssertEqual(model.rows.first?.meta, "workspace/hapi")
+        XCTAssertEqual(model.rows.first?.project, "hapi")
     }
 
     func testNamesCountsAndStableOrderIncludeHistoricalMachines() {
@@ -52,11 +82,11 @@ final class SessionListFilterTests: XCTestCase {
         ])
         let model = HomeFilterTestData.model(sessions: sessions)
         let options = model.machineFilters
-        XCTAssertTrue(model.rows.allSatisfy { $0.meta?.contains(" · ") == true })
+        XCTAssertTrue(model.rows.allSatisfy { $0.project == "hapi" }, "Machines remain in filters, not every row")
         model.selectMachine("mac")
         XCTAssertTrue(model.filters.isActive)
         XCTAssertEqual(model.rows.map(\.id), ["a"])
-        XCTAssertEqual(model.rows.first?.meta, "workspace/hapi")
+        XCTAssertEqual(model.rows.first?.project, "hapi")
         XCTAssertEqual(model.filterSummary, "Machine: Machine · mac")
         model.selectMachine("mac")
         XCTAssertEqual(model.activeMachineFilter, "mac")
@@ -153,10 +183,12 @@ final class SessionListFilterTests: XCTestCase {
 final class HomeFilterTestSessions: SessionListStoring {
     var sessions: [SessionSummary]
     var refreshCount = 0
+    var refreshWasCancelled = false
     var failRefresh = false
     init(_ sessions: [SessionSummary] = []) { self.sessions = sessions }
     func refresh() async throws {
         refreshCount += 1
+        refreshWasCancelled = Task.isCancelled
         if failRefresh { throw URLError(.notConnectedToInternet) }
     }
     func scheduleRefresh() {}

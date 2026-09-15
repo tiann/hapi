@@ -1257,7 +1257,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // regardless of the verbose/quiet logger setting.
     console.log('');
     console.log('Hapi runner started.');
-    console.log(`  Workspace roots: ${workspaceRoots?.join(', ') ?? '(not set — browsing is limited to home)'}`);
+    console.log(`  Workspace roots: ${workspaceRoots?.join(', ') ?? '(not set — browsing and spawning are unrestricted)'}`);
     console.log(`  Hub URL:        ${configuration.apiUrl}`);
     console.log(`  Machine ID:     ${machine.id}`);
     console.log(`  Control port:   ${controlPort}`);

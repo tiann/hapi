@@ -19,8 +19,10 @@ public enum MessageWindowConstants {
     /// Separate trim bucket for codex `agent-run-*` rows so background-agent
     /// traces don't evict chat.
     public static let agentRunWindowSize = 800
-    /// Request size for every page fetch.
+    /// Request size for ordinary latest/reset, forward, and older-page fetches.
     public static let pageSize = 200
+    /// Request size for a genuinely cold latest page, prioritizing first paint.
+    public static let initialPageSize = 20
 }
 
 public enum MessageViewMode: String, Sendable {

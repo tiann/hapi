@@ -13,7 +13,7 @@ keeps one active. Session lists support machine filtering, pinning and archive;
 sending to an inactive session can resume it and migrate the draft/navigation
 when the returned session ID changes.
 
-Model and permission controls follow the session's agent/capabilities;
+Model, permission and Codex collaboration controls follow the session's agent/capabilities;
 usage/storage require the owner namespace. Rename, Delete and explicit Reopen
 have API wrappers but no current iOS UI. See the [native app guide](../docs/guide/native-apps.md)
 for platform differences, web-only features and everyday use.
@@ -95,15 +95,28 @@ presentation. When changing fixture inputs or generation, run
 hand-edit fixtures. See [fixture guidance](../shared/fixtures/README.md) and
 [UI development](#ui-development) for targeted app-hosted checks.
 
+New-session directory regression checks: `ios/scripts/linux-test.sh --filter
+'NewSession|RemoteDirectoryBrowser'` covers path queries and browser navigation;
+`HapiTests/NewSessionDirectoryTests` covers the form's defaults, roster refresh,
+offline machines and spawn validation. On a device, verify home → parent → a
+project outside home, explicit workspace-root prefixes, `~/` and hidden-directory
+completion, and clearing the input while machine health updates arrive. A
+restored or selected offline machine stays selected until the user chooses an
+online machine; its old path is never silently moved to another host.
+
 ## Pairing
 
 The app supports multiple hubs with one active selection. See the
 [auth contract](../docs/api/client-contract/auth.md) for the wire rules.
 
 - **Manual entry:** start `hapi hub --relay`, then *Enter Manually* → HTTPS
-  hub origin and access token → *Pair*. For a source-tree `bun run dev` hub,
-  put an HTTPS reverse proxy or tunnel in front of `localhost:3006`; a
-  physical phone must reach that endpoint. The app checks `GET /health`,
+  hub address and access token → *Pair*. The address starts empty, with a
+  separate protocol menu defaulting to HTTPS; type the domain/IP and optional
+  port without a scheme. Pasting a full HTTP(S) URL updates that menu. A full
+  companion or web pairing link pasted into either field fills both values
+  for review — only submitting the form starts a connection. For a source-tree
+  `bun run dev` hub, put an HTTPS reverse proxy or tunnel in front of
+  `localhost:3006`; a physical phone must reach that endpoint. The app checks `GET /health`,
   requires `protocolVersion == ProtocolVersion.supported`, exchanges the
   token with `POST /api/auth` and stores credentials in the Keychain.
 - **QR scan:** the in-app scanner accepts both hub QR forms —
@@ -119,16 +132,21 @@ The app supports multiple hubs with one active selection. See the
   issued JWT rejected again, triggers re-pairing. Temporary network/5xx refresh
   failures retain credentials.
 
-The parser accepts HTTP URLs; manual addresses without a scheme receive an
-`http://` prefix. This is input normalization, not a transport exemption.
+The parser accepts HTTP URLs. Manual entry uses the selected protocol
+(default HTTPS); HTTP must be selected explicitly or supplied in a full URL
+or pairing link. The form warns that HTTP is unencrypted and may be restricted
+by iOS. It never guesses HTTP for a local address or downgrades after a failed
+HTTPS connection. Input acceptance is not a transport exemption.
 `Hapi/Info.plist` and the project build settings declare no ATS exceptions,
-including no `NSAllowsLocalNetworking`. Use explicit HTTPS URLs for a reliable
+including no `NSAllowsLocalNetworking`. Use HTTPS endpoints for a reliable
 pairing setup; HTTP behavior remains subject to system network policy.
 
 Manual app-layer acceptance: pair → kill/relaunch → background/foreground →
 pair a second hub and switch → sign out → scan both QR forms → open a deep
 link for unpaired/paired hubs. Also check that transient hub failures preserve
-pairing, while a rejected rotated token shows the sign-out banner. Pure pairing
+pairing, while a rejected rotated token shows the sign-out banner.
+Manual-entry form and system-paste behavior is covered by app-hosted
+`ManualPairingFormTests` and `ManualEntryPresentationTests`; pure pairing
 and auth behavior is covered by the package tests; this checklist is for the
 app wiring and platform interaction.
 
@@ -237,6 +255,40 @@ uses `AnchoredTranscriptList` (`UICollectionView` with SwiftUI hosting) and
 prepares Markdown off the main thread; see
 [native transcript scrolling](../docs/native-chat-scrolling.md).
 
+## Scratchlist workflow
+
+The composer tray toggles a session-local `chat` / `scratchlist` destination.
+Scratchlist mode shows one recent draft, or just a header while the input is
+focused or when using accessibility text sizes, and an explicitly labelled
+**Save draft** action. Tap the header to open the full list, or × to return to
+chat. Closing the drawer preserves input; taking a draft or accepting a queue
+send returns to chat mode. The queue remains a
+separate, automatically delivered surface.
+
+Text and attachments park as one snapshot. Failed saves retain input and
+retry the same entry ID. Taking a saved attachment creates a borrowed hub
+reference, without resuming the session; an explicit chat send stages it to
+the active/resumed session's upload directory. Queue actions do not consume
+the composer and use a stable local ID for the saved entry version. A failed
+post-acceptance deletion retries removal only. The full inventory uses one
+navigation stack for reading and transactional editing, with discard guards
+and editor identities protecting against late uploads.
+
+Inventory rows show two lines of text, an attachment count, **Take draft** and
+a menu for queueing, editing, copying and deleting. Pull down for search
+(including attachment filenames); full filenames and relative timestamps live
+in the detail view. The editor's + menu offers photos and files. Empty states
+and routine chrome avoid explanatory paragraphs; failures stay inline with
+their recovery action, without a duplicate toast.
+
+Regression suites: package `ScratchlistComposerWorkflowTests`,
+`ScratchlistAttachmentFlowTests`, `ScratchlistStoreTests` and
+`ComposerAttachmentsTests`; app-hosted `ScratchlistScreenModelTests` and
+`ScratchlistPresentationTests` (including transcript-anchor preservation).
+The presentation suite attaches light/dark, compact, accessibility, inventory
+and editor renders. Manually check keyboard/VoiceOver, conflict choices,
+photo/file retry, and inactive-session sending on a connected device.
+
 ## UI development
 
 ### Localization catalog
@@ -270,6 +322,53 @@ After migrating an existing checkout, use **Product → Clean Build Folder** if
 Xcode still synchronizes old extraction results, then rebuild/reopen and inspect
 the diff. Do not hide the file with `.gitignore`, `skip-worktree`, or restore it
 unconditionally: real translation edits must remain visible and committed.
+
+### iPad navigation and resizing
+
+iPad uses a two-column `NavigationSplitView`: sessions in the sidebar and a
+separate detail navigation stack for chat → files/viewer/process pages. The
+sidebar requests 280–360pt (320pt ideal); the system collapses the same view
+hierarchy in compact windows. iPhone keeps its single `NavigationStack`.
+Cold starts and hub switches show **Select a session** until the user chooses
+one; notifications and new sessions can open an ID before its list row arrives.
+Selection and nested navigation are in memory, not restored across launches.
+
+`SessionNavigationState` owns selection, detail path and column visibility;
+neither window geometry nor sidebar filters may clear them. Reopening the
+selected session preserves its file page. A different/superseding session resets
+the entire detail stack, but a late superseding callback cannot replace a chat
+the user has since selected. Only explicit removal events or successful archive
+operations clear the current selection, never optimistic list removal/rollback.
+
+The detail's identity is hub/session-based, so resizing preserves the existing
+chat, draft, attachment tray and transcript anchor. Native menus/sheets remain
+native; the hub sign-out and attachment dialogs are anchored to their buttons.
+The explicit scene manifest disables additional HAPI windows, **not** Split
+View/Stage Manager with other apps. Do not enable scene-manifest generation
+(which generates multiple-scene support) or require full screen. Multiwindow,
+third-column inspectors, keyboard shortcuts and drag/drop are not implemented.
+
+`SessionNavigationTests` covers navigation/removal policy and the built scene
+manifest. `SessionSplitPresentationTests` runs on an actual iPad simulator and
+uses the production split shell/list plus a real, non-networked chat specimen:
+selection, compact programmatic opening, nested Back, filtering, resizing,
+reading anchors, draft/attachment retention and surface/subscription lifetime.
+CI keeps the iPhone suite and adds iPad Air 11-inch (M2). Run it locally with:
+
+```sh
+HAPI_TEST_DEVICE_TYPE=com.apple.CoreSimulator.SimDeviceType.iPad-Air-11-inch-M2 \
+  ios/scripts/test-transcript.sh \
+    -only-testing:HapiTests/SessionNavigationTests \
+    -only-testing:HapiTests/SessionSplitPresentationTests
+```
+
+Optional specimens: set `TEST_RUNNER_HAPI_IPAD_CAPTURE` to a **new temporary
+directory**; these are synthetic test conversations, not release screenshots.
+Before release, manually verify mini/11/13-inch portrait and landscape,
+one-third/half-screen and Stage Manager resizing, keyboard docking/floating and
+hardware-keyboard transitions, light/dark, Chinese/English, Dynamic Type and
+VoiceOver. Check settings/new-session/Scratchlist/inspection sheets while
+resizing, notification navigation, and background/foreground reconnection.
 
 ### Reading typography
 
@@ -307,7 +406,55 @@ TEST_RUNNER_HAPI_TYPOGRAPHY_CAPTURE=/tmp/hapi-typography-review \
   ios/scripts/test-transcript.sh -only-testing:HapiTests/TypographySnapshotTests
 ```
 
+### Session settings
+
+The chat gear presents a single-page model/effort and permission/collaboration
+form. All selections use native menus; permission explanations, high-risk
+indicators, model-loading/retry states and update feedback remain in the form.
+Changes apply immediately; Done only dismisses. On regular-width windows the
+production toolbar button anchors an iPad popover; compact windows adapt that
+same presenter to a medium/large sheet (large for accessibility text).
+
+Run the configuration and real-presentation tests on both phone and tablet:
+
+```sh
+ios/scripts/test-transcript.sh \
+  -only-testing:HapiTests/SessionConfigTests \
+  -only-testing:HapiTests/SessionConfigPresentationTests
+
+# Pick a device type supported by your installed runtime:
+# xcrun simctl list devicetypes
+HAPI_TEST_DEVICE_TYPE=com.apple.CoreSimulator.SimDeviceType.iPad-Pro-11-inch-M5-12GB \
+  ios/scripts/test-transcript.sh \
+  -only-testing:HapiTests/SessionConfigTests \
+  -only-testing:HapiTests/SessionConfigPresentationTests
+```
+
+The script creates and deletes an isolated simulator. Set
+`TEST_RUNNER_HAPI_SESSION_CONFIG_CAPTURE` to a new temporary directory for
+non-networked specimens (not App Store screenshots). A widened phone window
+is not a substitute for the native iPad anchor test. For AXe-driven menu and
+Done checks, run only
+`SessionConfigPresentationTests/testNativeDevicePresentationIsAnchoredOnIPadAndAdaptsOnIPhone`
+with `TEST_RUNNER_HAPI_SESSION_CONFIG_INTERACTIVE_SECONDS=180`; leave the panel
+open when the pause ends. Manually check rotation and Split View/window resizing,
+menu checkmarks and risk announcements, and that closing preserves the chat's
+draft and reading position.
+
 ### Tool inspection
+
+Inline approvals use a neutral card with a quiet pending/submitting/handled
+status, a full-input link, and adaptive action rows. `ChatActionButtonStyle`
+owns the complete 44pt minimum target (10pt corners); do not add system bordered
+button padding or another minimum label height. Approvals, question navigation
+and plan actions share only this style, never their submission semantics.
+Queued-message actions also keep 44pt targets and stack when the column is too
+narrow. Native alerts, sheets and form controls retain their system styling.
+
+`PermissionActionPresentationTests` covers flavor gates, action geometry, busy
+and already-handled states, failures, themes and large text. To capture isolated,
+non-networked approval specimens, set `TEST_RUNNER_HAPI_APPROVAL_CAPTURE` to a
+new temporary directory and run it through `ios/scripts/test-transcript.sh`.
 
 Plan proposals (`ExitPlanMode` / `exit_plan_mode`) are reading documents, not
 activity summaries: their complete `input.plan` Markdown stays visible in the
@@ -316,7 +463,9 @@ inspector; null output does not show a misleading "No output" placeholder.
 Shared Codex proposals expose **Implement plan** and **Continue planning** only
 when the active session's `agentState.codexPlanProposalId` matches the tool-call
 id. Implementation uses the dedicated plan endpoint, not permission approval;
-continue only focuses the composer, preserving its draft. Pending/error state
+continue hides that proposal’s action menu locally and focuses the composer,
+preserving its draft and plan mode without sending a message. The plan document
+remains readable, and a new proposal gets a fresh menu. Pending/error state
 survives row recycling. Withdrawn, historical and child proposals stay read-only
 (an outstanding operation/error can still be shown).
 Plans are prewarmed in the chat Markdown cache and never use the ordinary

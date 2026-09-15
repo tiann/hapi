@@ -397,6 +397,43 @@ describe('AcpMessageHandler', () => {
         expect(messages).toEqual([{ type: 'text', text: '|-----|-----|-----|\n' }]);
     });
 
+    it('drops extra zeros after 300 under default dedupe', () => {
+        // Grok streams "3000" as "300" then "0". Default overlap-dedupe sees
+        // bufferedText.endsWith("0") after "300" and skips the extra zero.
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        for (const text of ['3  \n', '30  \n', '300', '0  \n', '300', '00']) {
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+                content: { type: 'text', text }
+            });
+        }
+
+        handler.flushText();
+
+        expect(messages).toEqual([{ type: 'text', text: '3  \n30  \n300  \n300' }]);
+    });
+
+    it('preserves extra zeros after 300 in delta mode', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler(
+            (message) => messages.push(message),
+            { textChunkMode: 'delta' }
+        );
+
+        for (const text of ['3  \n', '30  \n', '300', '0  \n', '300', '00']) {
+            handler.handleUpdate({
+                sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+                content: { type: 'text', text }
+            });
+        }
+
+        handler.flushText();
+
+        expect(messages).toEqual([{ type: 'text', text: '3  \n30  \n3000  \n30000' }]);
+    });
+
     it('keeps existing tool name when update only has kind fallback', () => {
         const messages: AgentMessage[] = [];
         const handler = new AcpMessageHandler((message) => messages.push(message));

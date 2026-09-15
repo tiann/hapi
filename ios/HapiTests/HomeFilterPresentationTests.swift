@@ -1,4 +1,5 @@
 import HapiClient
+import HapiProtocol
 import HapiUI
 import Observation
 import SwiftUI
@@ -20,6 +21,7 @@ final class HomeFilterPresentationTests: XCTestCase {
         let navigation: Navigation
         var theme: HapiTheme = .light
         var size: DynamicTypeSize = .large
+        var locale = Locale(identifier: "en")
 
         var body: some View {
             @Bindable var navigation = navigation
@@ -50,6 +52,7 @@ final class HomeFilterPresentationTests: XCTestCase {
             .hapiTypography()
             .hapiTheme(theme)
             .environment(\.dynamicTypeSize, size)
+            .environment(\.locale, locale)
             .environment(\.colorScheme, theme.isDark ? .dark : .light)
             .preferredColorScheme(theme.isDark ? .dark : .light)
         }
@@ -117,10 +120,48 @@ final class HomeFilterPresentationTests: XCTestCase {
         XCTAssertTrue(model.showsFilterMenu)
     }
 
+    func testNativeListRowsKeepOnlyTitleAndProjectStatus() async throws {
+        let sessions = HomeFilterTestSessions((0..<3).map { index in
+            var summary = HomeFilterTestData.summary("row-\(index)", machine: nil)
+            summary.metadata?.summary = .init(text: "A short preview")
+            summary.pendingRequestsCount = index == 2 ? 0 : 1
+            summary.pendingRequestKinds = [.input]
+            summary.thinking = index == 2
+            if index > 0 { summary.todoProgress = .init(completed: 3, total: 5) }
+            return summary
+        })
+        let model = HomeFilterTestData.model(sessions: sessions)
+        let window = try makeWindow(Harness(model: model, navigation: Navigation()), width: 390)
+        defer { window.isHidden = true }
+        try await settle()
+        let list = try XCTUnwrap(findCollection(window))
+        let heights = try (0..<3).map { index in
+            try XCTUnwrap(list.layoutAttributesForItem(at: IndexPath(item: index, section: 0))).size.height
+        }
+        XCTAssertGreaterThanOrEqual(heights[0], 60)
+        XCTAssertLessThanOrEqual(heights[0], 70, "Two readable lines, with breathing room")
+        XCTAssertEqual(heights[0], heights[1], accuracy: 1, "Source progress must not add visible content")
+        XCTAssertEqual(heights[0], heights[2], accuracy: 1, "Activity shares the same quiet secondary line")
+    }
+
     func testHomeLayoutSpecimens() async throws {
-        let sessions = HomeFilterTestSessions((0..<36).map {
+        let now = Int(Date.now.timeIntervalSince1970 * 1_000)
+        let sessions = HomeFilterTestSessions((0..<6).map {
             var row = HomeFilterTestData.summary("session-\($0)", machine: $0.isMultiple(of: 2) ? "mac" : "debian")
-            row.metadata?.name = ["Review session filtering", "检查离线状态与筛选反馈", "Keep the reading position"][($0 / 2) % 3]
+            let sample = $0 % 6
+            row.metadata?.name = ["优化 iOS 首页", "Review database migration", "确认发布方案与执行权限",
+                                  "修复通知同步", "补齐离线恢复与回归测试",
+                                  "排查后台任务重试问题"][sample]
+            row.metadata?.flavor = sample.isMultiple(of: 2) ? "codex" : "claude"
+            row.metadata?.summary = .init(text: "已补齐重连逻辑和测试 · Recovery checks are ready")
+            row.updatedAt = now - [0, 59 * 60_000, 2 * 3_600_000, 4 * 3_600_000, 2 * 86_400_000, 330 * 86_400_000][sample]
+            row.pendingRequestsCount = [1, 2, 7, 0, 0, 1][sample]
+            row.pendingRequestKinds = sample == 1 ? [.permission] : (sample == 2 ? [.input, .permission] : [.input])
+            row.thinking = sample == 0 || sample == 3
+            row.active = sample != 5
+            if sample == 0 || sample == 3 || sample == 4 {
+                row.todoProgress = .init(completed: sample == 4 ? 5 : 3, total: 5)
+            }
             return row
         })
         let machines = HomeFilterTestMachines([
@@ -131,14 +172,19 @@ final class HomeFilterPresentationTests: XCTestCase {
         let cases: [(String, HapiTheme, DynamicTypeSize, CGFloat)] = [
             ("light", .light, .large, 402), ("dark", .dark, .large, 402),
             ("compact", .light, .large, 320), ("large-text", .light, .accessibility3, 390),
-            ("wide", .light, .large, 768),
+            ("wide", .light, .large, 768), ("oled", .oled, .large, 390),
+            ("chinese", .light, .large, 390),
         ]
         for (name, theme, size, width) in cases {
             model.clearFilters()
             machines.machines[0].metadata?.displayName = name == "compact" || name == "large-text"
                 ? "MacBook Pro · 上海开发环境 · very-long-machine-name.example.com" : nil
-            let window = try makeWindow(Harness(model: model, navigation: Navigation(), theme: theme, size: size), width: width)
+            let locale = Locale(identifier: name == "chinese" || name == "large-text" ? "zh-Hans" : "en")
+            let window = try makeWindow(Harness(model: model, navigation: Navigation(), theme: theme, size: size, locale: locale), width: width)
             defer { window.isHidden = true }
+            try await settle()
+            // After the first-refresh baseline, mix read and unread rows.
+            for index in [0, 2, 4] { sessions.sessions[index].updatedAt += 1 }
             try await settle()
             let all = try XCTUnwrap(findCollection(window))
             let allTop = try firstRowTop(all, in: window)
@@ -149,7 +195,7 @@ final class HomeFilterPresentationTests: XCTestCase {
             let filteredTop = try firstRowTop(filtered, in: window)
             XCTAssertGreaterThanOrEqual(filteredTop - allTop, 43, "Applied summary has a 44pt clear target")
             XCTAssertLessThanOrEqual(filtered.frame.width, width + 1)
-            XCTAssertEqual(model.rows.count, 18)
+            XCTAssertEqual(model.rows.count, 3)
             try capture(window, name: "\(name)-filtered")
         }
     }

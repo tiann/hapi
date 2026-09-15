@@ -87,7 +87,7 @@ async function fixture() {
         notify(method: string, params: unknown): void;
         abandoned(): void;
     };
-    return { root, native, rpc, send, state: () => state, updateState, reconnect: () => reconnect?.() };
+    return { root, native, rpc, send, metadata: () => metadata, state: () => state, updateState, reconnect: () => reconnect?.() };
 }
 
 async function completePlan(f: Awaited<ReturnType<typeof fixture>>, status = 'completed') {
@@ -104,6 +104,19 @@ async function completePlan(f: Awaited<ReturnType<typeof fixture>>, status = 'co
 }
 
 describe('shared plan actions', () => {
+    it('persists remote title tools while retaining native terminal rename events', async () => {
+        const f = await fixture();
+        const item = { id: 'title', type: 'mcpToolCall', server: 'hapi', tool: 'change_title',
+            arguments: { title: 'Remote title' }, status: 'completed', result: { content: [], isError: false } };
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 'turn', item });
+        await vi.waitFor(() => expect(f.metadata().summary?.text).toBe('Remote title'));
+        f.native.notify('thread/name/updated', { threadId: 'thread', threadName: 'Terminal title' });
+        await vi.waitFor(() => expect(f.metadata().name).toBe('Terminal title'));
+        await f.root.refresh();
+        expect(f.metadata().summary?.text).toBe('Remote title');
+        expect(f.metadata().name).toBe('Terminal title');
+    });
+
     it('preserves content while native turns, mode changes and disconnects withdraw controls', async () => {
         const f = await fixture();
         const id = await completePlan(f);

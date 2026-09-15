@@ -415,6 +415,7 @@ class ChatViewModel(
     private data class CodexPlanOperations(
         val pendingPlanId: String? = null,
         val implementedPlanIds: Set<String> = emptySet(),
+        val continuedPlanIds: Set<String> = emptySet(),
         val errors: Map<String, CodexPlanFailure> = emptyMap(),
     )
     private val codexPlanOperations = MutableStateFlow(CodexPlanOperations())
@@ -1469,6 +1470,7 @@ class ChatViewModel(
             detail.active && detail.metadata?.flavor == "codex"
                 && detail.metadata?.capabilities?.concurrentClients == true
                 && it !in operations.implementedPlanIds
+                && it !in operations.continuedPlanIds
         },
         pendingPlanId = operations.pendingPlanId,
         disabled = busy || detail?.thinking == true,
@@ -1520,6 +1522,9 @@ class ChatViewModel(
 
     fun continueCodexPlan(planId: String) {
         if (!currentCodexPlanActions().forPlan(planId).canAct) return
+        codexPlanOperations.update {
+            it.copy(continuedPlanIds = it.continuedPlanIds + planId, errors = it.errors - planId)
+        }
         composerFocusRequest.update { it + 1 }
     }
 

@@ -7,6 +7,7 @@ import SwiftUI
 struct CodexPlanActionsView: View {
     let planId: String
     let interactions: ChatInteractor
+    @Environment(\.hapiTheme) private var theme
     @Environment(\.hapiTypography) private var typography
 
     var body: some View {
@@ -16,30 +17,19 @@ struct CodexPlanActionsView: View {
                 if let error = state.error {
                     Text(verbatim: LocalizedNoticeMapper.map(error))
                         .font(typography.captionFont)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(theme.danger)
                         .accessibilityIdentifier("plan-error-\(planId)")
                 }
                 if state.available || state.pending {
-                    // Stack on narrow phones and at large Dynamic Type sizes;
-                    // labels stay complete and every action has a 44 pt target.
-                    VStack(alignment: .leading, spacing: 4) {
-                        Button { interactions.implementCodexPlan(planId: planId) } label: {
-                            HStack {
-                                if state.pending { ProgressView().controlSize(.small) }
-                                Text("Implement plan")
-                            }
-                            .frame(maxWidth: .infinity, minHeight: 44)
-                            .contentShape(Rectangle())
+                    // Prefer one compact row, but never squeeze or truncate
+                    // the labels to fit a narrow column or larger text size.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 8) {
+                            buttons(state: state, horizontal: true)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityIdentifier("plan-implement-\(planId)")
-                        Button { interactions.continueCodexPlan(planId: planId) } label: {
-                            Text("Continue planning")
-                                .frame(maxWidth: .infinity, minHeight: 44)
-                                .contentShape(Rectangle())
+                        VStack(spacing: 8) {
+                            buttons(state: state, horizontal: false)
                         }
-                        .buttonStyle(.bordered)
-                        .accessibilityIdentifier("plan-continue-\(planId)")
                     }
                     .font(typography.toolTitleFont)
                     .disabled(!state.canAct)
@@ -47,5 +37,30 @@ struct CodexPlanActionsView: View {
             }
             .padding(12)
         }
+    }
+
+    @ViewBuilder
+    private func buttons(state: CodexPlanActionState, horizontal: Bool) -> some View {
+        Button { interactions.implementCodexPlan(planId: planId) } label: {
+            HStack(spacing: 8) {
+                if state.pending {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(theme.background)
+                        .accessibilityHidden(true)
+                }
+                Text("Implement plan")
+            }
+            .fixedSize(horizontal: horizontal, vertical: true)
+        }
+        .buttonStyle(ChatActionButtonStyle(emphasis: .primary))
+        .accessibilityIdentifier("plan-implement-\(planId)")
+
+        Button { interactions.continueCodexPlan(planId: planId) } label: {
+            Text("Continue planning")
+                .fixedSize(horizontal: horizontal, vertical: true)
+        }
+        .buttonStyle(ChatActionButtonStyle(emphasis: .secondary))
+        .accessibilityIdentifier("plan-continue-\(planId)")
     }
 }

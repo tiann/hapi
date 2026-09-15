@@ -66,6 +66,10 @@ See `src/router.tsx` for route definitions.
 - Composer for sending messages.
 - Permission mode and model selection for supported agents.
 - Session abort and handoff controls.
+- Codex **Continue planning** hides the current proposal's action menu locally
+  and focuses the composer without sending a message or replacing its draft.
+  The plan document remains readable; recycled cards stay dismissed and new
+  proposals get fresh action menus.
 - Context size display.
 - Per-session scratchlist (`src/components/AssistantChat/ScratchlistPanel.tsx`)
   - Workbench panel for held notes/drafts; **distinct from the queue**.

@@ -14,6 +14,7 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import remarkDisableIndentedCode from '@/lib/remark-disable-indented-code'
 import remarkRepairTables from '@/lib/remark-repair-tables'
+import remarkLatexBracketMath from '@/lib/remark-latex-bracket-math'
 import { useNavigate } from '@tanstack/react-router'
 import { PRESERVE_SESSION_SIDEBAR_SCROLL } from '@/lib/sessionNavigation'
 import remarkStripCjkAutolink from '@/lib/remark-strip-cjk-autolink'
@@ -35,7 +36,7 @@ import { UriConfirmDialog } from '@/components/UriConfirmDialog'
 import type { MarkdownTextPrimitiveProps } from '@assistant-ui/react-markdown'
 
 // ── Plugin array ────────────────────────────────────────────────────────────
-// Order: remarkGfm → remarkRepairTables → remarkNonHttpsAutolink → remarkStripCjkAutolink → remarkMath → remarkDisableIndentedCode → remarkSessionPathLinks → remarkFilePathLinks
+// Order: remarkGfm → remarkRepairTables → remarkLatexBracketMath → remarkNonHttpsAutolink → remarkStripCjkAutolink → remarkMath → remarkDisableIndentedCode → remarkSessionPathLinks → remarkFilePathLinks
 // remarkRepairTables must run immediately after remarkGfm — it reads file.value
 // (raw source) to pad short separator rows before remark-gfm parses the table.
 // remarkNonHttpsAutolink must run BEFORE remarkStripCjkAutolink so that the
@@ -84,12 +85,14 @@ const REMARK_GFM_PLUGIN = [
 export const MARKDOWN_PLUGINS = [
     REMARK_GFM_PLUGIN,
     remarkRepairTables,
+    remarkLatexBracketMath,
     ...MARKDOWN_PLUGIN_TAIL,
 ] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
 
 export const MARKDOWN_PLUGINS_STANDALONE = [
     REMARK_GFM_PLUGIN,
     remarkRepairTables,
+    remarkLatexBracketMath,
     ...MARKDOWN_PLUGIN_TAIL_STANDALONE,
 ] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
 
@@ -98,6 +101,7 @@ export const MARKDOWN_PLUGINS_STANDALONE = [
 export const MARKDOWN_PLUGINS_WITH_BREAKS = [
     REMARK_GFM_PLUGIN,
     remarkRepairTables,
+    remarkLatexBracketMath,
     remarkBreaks,
     ...MARKDOWN_PLUGIN_TAIL,
 ] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
@@ -105,6 +109,7 @@ export const MARKDOWN_PLUGINS_WITH_BREAKS = [
 export const MARKDOWN_PLUGINS_STANDALONE_WITH_BREAKS = [
     REMARK_GFM_PLUGIN,
     remarkRepairTables,
+    remarkLatexBracketMath,
     remarkBreaks,
     ...MARKDOWN_PLUGIN_TAIL_STANDALONE,
 ] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>

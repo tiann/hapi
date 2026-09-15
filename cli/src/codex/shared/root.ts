@@ -143,6 +143,8 @@ export class SharedCodexRoot {
     }
 
     async prepare(): Promise<void> {
+        // Descendants share this bridge. The projection applies successful
+        // root title calls so a child cannot rename the parent session.
         this.bridge = await buildHapiMcpBridge(this.session, { exportSessionEnv: false, emitTitleSummary: false,
             skillLookup: { workingDirectory: this.bootstrap.workingDirectory, flavor: 'codex' } });
         await initializeSharedClient(this.client);

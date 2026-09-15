@@ -93,6 +93,23 @@ struct SessionListStoreTests {
 
     // MARK: - Event: patch
 
+    @Test func generatedTitlePatchUpdatesListAndDetailAndRejectsAnOlderTitle() async throws {
+        let (_, store) = try makeStore()
+        var initial = storeSession("remote", updatedAt: 100)
+        initial.metadata = SessionMetadata(path: "/repo", host: "test", flavor: "codex")
+        store.applySessionEvent(try sessionUpdatedEvent("remote", dataJSON: fullSessionJSON(initial)))
+        let revision = store.listRevision
+        let titlePatch = #"{"metadata":{"version":2,"value":{"path":"/repo","host":"test","flavor":"codex","summary":{"text":"Remote title","updatedAt":200}}}}"#
+        store.applySessionEvent(try sessionUpdatedEvent("remote", dataJSON: titlePatch))
+        #expect(store.sessions.first?.metadata?.summary?.text == "Remote title")
+        #expect(store.detail(for: "remote")?.metadata?.summary?.text == "Remote title")
+        #expect(store.listRevision > revision)
+        store.applySessionEvent(try sessionUpdatedEvent("remote", dataJSON: titlePatch))
+        store.applySessionEvent(try sessionUpdatedEvent("remote", dataJSON: #"{"metadata":{"version":1,"value":{"path":"/repo","host":"test"}}}"#))
+        #expect(store.sessions.first?.metadata?.summary?.text == "Remote title")
+        #expect(store.detail(for: "remote")?.metadata?.summary?.text == "Remote title")
+    }
+
     @Test func staleVersionedPatchLeavesDetailAndSummaryUntouched() async throws {
         let (performer, store) = try makeStore()
         await performer.enqueue(json: try sessionsResponseJSON(
@@ -318,6 +335,34 @@ struct SessionListStoreTests {
     }
 
     // MARK: - Snapshot
+
+    @Test func removalNotificationsIgnoreFailedArchivesAndListReplacement() async throws {
+        let (performer, store) = try makeStore()
+        var removals: [String] = []
+        store.onSessionRemoved = { removals.append($0) }
+        await performer.enqueue(json: try sessionsResponseJSON(storeSummary("s1"), storeSummary("s2")))
+        try await store.refresh()
+        await performer.enqueue(status: 409, json: #"{"error":"cannot archive"}"#)
+        do {
+            try await store.archiveSession(sessionId: "s1")
+            Issue.record("The archive should fail")
+        } catch {}
+        #expect(removals.isEmpty)
+        #expect(store.sessions.contains { $0.id == "s1" })
+
+        await performer.enqueue(json: #"{"ok":true}"#)
+        try await store.archiveSession(sessionId: "s1")
+        #expect(removals == ["s1"])
+        await performer.enqueue(json: try sessionsResponseJSON())
+        try await store.refresh()
+        #expect(removals == ["s1"], "A refreshed list is not an explicit removal event")
+
+        // Removal still arrives when the ID is absent (new session/notification
+        // raced the list), including the same ID replayed on both SSE pipes.
+        store.applySessionEvent(try sessionRemovedEvent("s2"))
+        store.applySessionEvent(try sessionRemovedEvent("s2"))
+        #expect(removals == ["s1", "s2", "s2"])
+    }
 
     @Test func summariesRoundTripThroughTheSnapshotIntoAColdStore() async throws {
         let directory = makeTempDirectory()

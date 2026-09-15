@@ -89,6 +89,28 @@
         }
       }
     },
+    "%@ · %@ requests" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ · %2$@ requests"
+          }
+        }
+      }
+    },
+    "%@ · %lld requests" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ · %lld 项"
+          }
+        }
+      }
+    },
     "%@, %lld sessions" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -136,6 +158,35 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%lld 个代理步骤"
+          }
+        }
+      }
+    },
+    "%lld attachments" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld attachment"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld attachments"
+                }
+              }
+            }
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 个附件"
           }
         }
       }
@@ -675,6 +726,17 @@
         }
       }
     },
+    "Add to send queue" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "加入发送队列"
+          }
+        }
+      }
+    },
     "After" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -851,6 +913,17 @@
         }
       }
     },
+    "Already queued — couldn't remove the draft. Retry removal only." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已加入队列，但草稿移除失败。请重试移除，不会重复发送。"
+          }
+        }
+      }
+    },
     "Answer every question first" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -924,6 +997,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "外观"
+          }
+        }
+      }
+    },
+    "Append to input" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "追加到输入"
           }
         }
       }
@@ -1045,6 +1129,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "等待回答"
+          }
+        }
+      }
+    },
+    "Back to chat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "返回聊天"
           }
         }
       }
@@ -1247,6 +1342,17 @@
         }
       }
     },
+    "Chat" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "聊天"
+          }
+        }
+      }
+    },
     "Check the connection to your hub and try again." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1254,6 +1360,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "请检查与 Hub 的连接后重试。"
+          }
+        }
+      }
+    },
+    "Check the hub address. HTTPS is recommended, for example https://hub.example.com." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请检查 Hub 地址。建议使用 HTTPS，例如 https://hub.example.com。"
+          }
+        }
+      }
+    },
+    "Checking directory…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在检查目录…"
           }
         }
       }
@@ -1276,6 +1404,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "正在检查已安装的代理…"
+          }
+        }
+      }
+    },
+    "Choose a session from the sidebar, or start a new one." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从侧栏选择一个会话，或新建会话。"
           }
         }
       }
@@ -1390,6 +1529,17 @@
         }
       }
     },
+    "Connection protocol" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接协议"
+          }
+        }
+      }
+    },
     "Connection: %@" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1496,6 +1646,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "复制结果"
+          }
+        }
+      }
+    },
+    "Copy text" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "复制文字"
           }
         }
       }
@@ -1632,6 +1793,28 @@
         }
       }
     },
+    "Couldn't prepare the attachments — retry or remove the failed files" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "附件准备失败，请重试或移除失败的附件"
+          }
+        }
+      }
+    },
+    "Couldn't queue the draft — retry" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "草稿加入队列失败，请重试"
+          }
+        }
+      }
+    },
     "Couldn't read %@" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1665,6 +1848,17 @@
         }
       }
     },
+    "Couldn't refresh — showing saved drafts" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "刷新失败，正在显示已缓存的草稿"
+          }
+        }
+      }
+    },
     "Couldn't remove the attachment — check the hub connection" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1672,6 +1866,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "无法移除附件 — 请检查 Hub 连接"
+          }
+        }
+      }
+    },
+    "Couldn't save the draft — your changes are kept here" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存失败，修改仍保留在这里，请重试"
           }
         }
       }
@@ -1797,6 +2002,17 @@
         }
       }
     },
+    "Default" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "默认"
+          }
+        }
+      }
+    },
     "Delete" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1815,6 +2031,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "删除团队"
+          }
+        }
+      }
+    },
+    "Delete this draft?" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除这条草稿？"
           }
         }
       }
@@ -1940,6 +2167,28 @@
         }
       }
     },
+    "Discard changes" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "放弃修改"
+          }
+        }
+      }
+    },
+    "Discard your changes?" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "放弃尚未保存的修改？"
+          }
+        }
+      }
+    },
     "Disk footprint of the hub's SQLite database (database, write-ahead log, shared memory)." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1947,6 +2196,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Hub SQLite 数据库的磁盘占用（数据库、预写日志、共享内存）。"
+          }
+        }
+      }
+    },
+    "Dismiss" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关闭"
+          }
+        }
+      }
+    },
+    "Domain or IP address" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "域名或 IP 地址"
           }
         }
       }
@@ -1962,6 +2233,50 @@
         }
       }
     },
+    "Draft" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "草稿"
+          }
+        }
+      }
+    },
+    "Draft actions" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "草稿操作"
+          }
+        }
+      }
+    },
+    "Draft added to the send queue" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "草稿已加入发送队列"
+          }
+        }
+      }
+    },
+    "Draft no longer available" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这条草稿已不存在"
+          }
+        }
+      }
+    },
     "Draft parked to scratchlist" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1969,6 +2284,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "草稿已存入草稿夹"
+          }
+        }
+      }
+    },
+    "Draft text" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "草稿内容"
+          }
+        }
+      }
+    },
+    "Drafts can contain at most 10,000 characters — shorten the text before saving" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "草稿最多支持 10,000 个字符，请缩短内容后再暂存"
           }
         }
       }
@@ -2002,6 +2339,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "编辑 %lld/%lld"
+          }
+        }
+      }
+    },
+    "Edit draft" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "编辑草稿"
           }
         }
       }
@@ -2094,13 +2442,35 @@
         }
       }
     },
-    "Enter the hub's full address, e.g. http://192.168.1.20:3006." : {
+    "Enter a valid hub domain or IP address, with an optional port." : {
       "extractionState" : "manual",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "请输入 Hub 的完整地址，例如 http://192.168.1.20:3006。"
+            "value" : "请输入有效的 Hub 域名或 IP 地址，可包含端口。"
+          }
+        }
+      }
+    },
+    "Enter the access token printed by your hub." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请输入 Hub 启动时显示的访问令牌。"
+          }
+        }
+      }
+    },
+    "Enter your hub address without the protocol, or paste a full URL or pairing link." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入 Hub 地址，无需填写协议；也可粘贴完整地址或配对链接。"
           }
         }
       }
@@ -2156,6 +2526,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "取消排队消息失败"
+          }
+        }
+      }
+    },
+    "Failed to check directory" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法检查目录"
           }
         }
       }
@@ -2446,6 +2827,28 @@
         }
       }
     },
+    "HTTP is unencrypted and may be restricted by iOS. HTTPS is recommended." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "HTTP 不加密，且可能受 iOS 网络策略限制。建议使用 HTTPS。"
+          }
+        }
+      }
+    },
+    "Held — not sent" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂存 · 未发送"
+          }
+        }
+      }
+    },
     "Hide note" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -2640,6 +3043,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Hub 地址无效"
+          }
+        }
+      }
+    },
+    "Keep an instruction for later…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "记下稍后要做的事…"
+          }
+        }
+      }
+    },
+    "Keep editing" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "继续编辑"
           }
         }
       }
@@ -2985,6 +3410,17 @@
         }
       }
     },
+    "More approval options" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更多授权选项"
+          }
+        }
+      }
+    },
     "Name needs at least one letter or digit" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -2992,6 +3428,39 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "名称需要至少一个字母或数字"
+          }
+        }
+      }
+    },
+    "Needs approval" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "待批准"
+          }
+        }
+      }
+    },
+    "Needs attention" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "待处理"
+          }
+        }
+      }
+    },
+    "Needs reply" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "待回复"
           }
         }
       }
@@ -3106,6 +3575,17 @@
         }
       }
     },
+    "No drafts yet" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂无草稿"
+          }
+        }
+      }
+    },
     "No files matched" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -3135,6 +3615,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "没有在线机器"
+          }
+        }
+      }
+    },
+    "No matching directories" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有匹配的目录"
           }
         }
       }
@@ -3524,6 +4015,17 @@
         }
       }
     },
+    "Pairing details filled in. Review them, then tap Pair." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "配对信息已填入，请确认后点击「配对」。"
+          }
+        }
+      }
+    },
     "Pairing succeeded but the credentials could not be stored on this device. Try again." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -3586,6 +4088,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "路径"
+          }
+        }
+      }
+    },
+    "Path is outside workspace roots" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "目录不在此机器允许的工作区内。"
           }
         }
       }
@@ -3799,13 +4312,13 @@
         }
       }
     },
-    "Printed by the hub at startup, and shown in the web app under Settings → Companion Pairing. Pasting a full pairing link into either field also works." : {
+    "Printed by the hub at startup, or available in web Settings → Companion Pairing. You can also paste a pairing link here." : {
       "extractionState" : "manual",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Hub 启动时打印，也显示在网页版「设置 → 伴侣应用配对」中。将完整配对链接粘贴到任一输入框同样有效。"
+            "value" : "可在 Hub 启动信息或网页版「设置 → 伴侣应用配对」中获取。也可在此粘贴配对链接。"
           }
         }
       }
@@ -4085,6 +4598,17 @@
         }
       }
     },
+    "Remove" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除"
+          }
+        }
+      }
+    },
     "Remove %@" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -4195,6 +4719,17 @@
         }
       }
     },
+    "Retry removal" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重试移除"
+          }
+        }
+      }
+    },
     "Run script" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -4257,6 +4792,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "保存"
+          }
+        }
+      }
+    },
+    "Save draft" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂存"
+          }
+        }
+      }
+    },
+    "Save input, then take draft" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "先暂存，再取回"
           }
         }
       }
@@ -4382,6 +4939,17 @@
         }
       }
     },
+    "Search drafts" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索草稿"
+          }
+        }
+      }
+    },
     "Search files" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -4400,6 +4968,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "搜索文件…"
+          }
+        }
+      }
+    },
+    "Searching directories…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在查找目录…"
           }
         }
       }
@@ -4426,6 +5005,17 @@
         }
       }
     },
+    "Select a session" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择一个会话"
+          }
+        }
+      }
+    },
     "Select all that apply" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -4444,6 +5034,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "已选择"
+          }
+        }
+      }
+    },
+    "Selected machine is offline" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "所选机器已离线"
+          }
+        }
+      }
+    },
+    "Selected machine is offline. Choose an online machine." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "所选机器已离线，请选择一台在线机器。"
           }
         }
       }
@@ -4976,6 +5588,28 @@
         }
       }
     },
+    "Submitting approval…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在提交授权…"
+          }
+        }
+      }
+    },
+    "Take draft" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取回"
+          }
+        }
+      }
+    },
     "Team: %@" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -5042,17 +5676,6 @@
         }
       }
     },
-    "The address the hub prints at startup — a LAN address like http://192.168.1.20:3006, or the public tunnel URL when running with --relay." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Hub 启动时打印的地址 — 局域网地址如 http://192.168.1.20:3006，或使用 --relay 时的公网隧道地址。"
-          }
-        }
-      }
-    },
     "The app checks the hub is reachable, then exchanges the token for a session." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -5060,6 +5683,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "应用会先确认 Hub 可达，再用令牌换取会话。"
+          }
+        }
+      }
+    },
+    "The attachments exceed the scratchlist limits — remove a file or choose a smaller one" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "附件超出草稿夹限制，请移除附件或选择更小的文件"
           }
         }
       }
@@ -5214,6 +5848,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此笔记的附件配额已用完"
+          }
+        }
+      }
+    },
+    "This pairing link is invalid or incomplete. Copy the full link from your hub." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "配对链接无效或不完整。请从 Hub 复制完整链接。"
           }
         }
       }
@@ -5548,6 +6193,17 @@
         }
       }
     },
+    "View all" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查看全部"
+          }
+        }
+      }
+    },
     "View current file" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -5610,6 +6266,17 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "查看过程 · %lld 个步骤"
+          }
+        }
+      }
+    },
+    "View the full draft" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "查看草稿全文"
           }
         }
       }
@@ -5735,6 +6402,17 @@
         }
       }
     },
+    "Write draft" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "写草稿"
+          }
+        }
+      }
+    },
     "Write file" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -5757,6 +6435,17 @@
         }
       }
     },
+    "You already have a draft" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入框中已有内容"
+          }
+        }
+      }
+    },
     "Your answer" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -5768,13 +6457,13 @@
         }
       }
     },
-    "approve %@" : {
+    "Your input changed — review it and try again" : {
       "extractionState" : "manual",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "批准 %@"
+            "value" : "输入内容已发生变化，请检查后重试"
           }
         }
       }
@@ -5797,17 +6486,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "feature-x（可选）"
-          }
-        }
-      }
-    },
-    "needs input" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "需要输入"
           }
         }
       }

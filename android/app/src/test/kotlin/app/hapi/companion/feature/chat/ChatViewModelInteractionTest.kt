@@ -483,7 +483,7 @@ class ChatViewModelInteractionTest {
         assertEquals(0L, vm.composer.value.focusRequest)
     }
 
-    @Test fun `continue planning preserves the draft and mode without a request`() = runTest {
+    @Test fun `continue planning dismisses actions and preserves the draft and mode without a request`() = runTest {
         val harness = InteractionHarness(this, planDetail())
         harness.viewModel.setComposerText("Refine step two")
         harness.viewModel.continueCodexPlan("plan-1")
@@ -495,6 +495,17 @@ class ChatViewModelInteractionTest {
         assertTrue(harness.api.sendCalls.value.isEmpty())
         assertTrue(harness.api.approveCalls.value.isEmpty())
         assertTrue(harness.api.configCalls.value.isEmpty())
+        assertFalse(harness.viewModel.codexPlanActions.value.forPlan("plan-1").isVisible)
+        harness.viewModel.continueCodexPlan("plan-1")
+        harness.viewModel.implementCodexPlan("plan-1")
+        harness.sessionStore.setDetail(planDetail())
+        testScheduler.runCurrent()
+        assertEquals(1L, harness.viewModel.composer.value.focusRequest)
+        assertTrue(harness.api.planCalls.value.isEmpty())
+        assertFalse(harness.viewModel.codexPlanActions.value.forPlan("plan-1").isVisible)
+        harness.sessionStore.setDetail(planDetail().copy(agentState = AgentState(codexPlanProposalId = "plan-2")))
+        testScheduler.runCurrent()
+        assertTrue(harness.viewModel.codexPlanActions.value.forPlan("plan-2").canAct)
     }
 
     @Test fun `plan implementation is single flight and acceptance survives stale refresh`() = runTest {

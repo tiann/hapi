@@ -14,12 +14,29 @@ export function inputText(input: unknown): string {
     }).filter(Boolean).join('\n');
 }
 
+function requestedTitle(item: Record<string, unknown>): string | undefined {
+    if (item.type !== 'mcpToolCall' || item.server !== 'hapi' || item.tool !== 'change_title') return;
+    return string(record(item.arguments).title)?.trim() || undefined;
+}
+
+function successfulTitle(item: Record<string, unknown>, pending?: string): string | undefined {
+    if (item.type !== 'mcpToolCall' || (item.status !== undefined && item.status !== 'completed')
+        || item.error != null || item.result == null) return;
+    const result = record(item.result);
+    if ('Err' in result || result.isError === true || record(result.Ok).isError === true) return;
+    return requestedTitle(item) ?? pending;
+}
+
 /** Canonical V2 stream only. Stable message IDs also deduplicate snapshot replay at the hub. */
 export class SharedCodexProjection {
     private converter = new AppServerEventConverter();
     private readonly emitted = new Set<string>();
     private readonly turns = new Map<string, string>();
     private readonly turnModels = new Map<string, string>();
+    // Unlike transcript emission, title side effects survive reset/replay.
+    private readonly pendingTitles = new Map<string, string>();
+    private readonly completedTitles = new Set<string>();
+    private titleRevision = 0;
     constructor(private readonly session: ApiSessionClient, readonly threadId: string,
         private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string) {
         if (!parentThreadId) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
@@ -38,6 +55,30 @@ export class SharedCodexProjection {
     }
 
     async notification(method: string, params: unknown, modelAtReceipt?: string): Promise<void> {
+        const p = record(params);
+        const item = record(p.item);
+        if (!this.parentThreadId && p.threadId === this.threadId && string(item.id)) {
+            const key = `${string(p.turnId) ?? 'thread'}:${item.id}`;
+            if (!this.completedTitles.has(key)) {
+                const title = requestedTitle(item);
+                if (method === 'item/started' && title) this.pendingTitles.set(key, title);
+                if (method === 'item/completed') {
+                    const completedTitle = successfulTitle(item, this.pendingTitles.get(key));
+                    this.pendingTitles.delete(key);
+                    if (completedTitle) {
+                        this.completedTitles.add(key);
+                        const revision = ++this.titleRevision;
+                        this.session.updateMetadata(metadata => revision !== this.titleRevision ? metadata : {
+                            ...metadata, summary: { text: completedTitle, updatedAt: Date.now() }
+                        });
+                    }
+                }
+            }
+        }
+        await this.project(method, params, modelAtReceipt);
+    }
+
+    private async project(method: string, params: unknown, modelAtReceipt?: string): Promise<void> {
         if (method.startsWith('codex/event/')) return;
         const p = record(params);
         const item = record(p.item);
@@ -126,18 +167,41 @@ export class SharedCodexProjection {
     async history(thread: unknown): Promise<void> {
         const turns = record(thread).turns;
         if (!Array.isArray(turns)) return;
+        const titleRevision = this.titleRevision;
+        let latestTitle: string | undefined;
         for (const value of turns) {
             const turn = record(value);
             if (!Array.isArray(turn.items)) continue;
             for (const item of turn.items) {
                 const params = { threadId: this.threadId, turnId: turn.id, item };
-                await this.notification('item/started', params);
+                const titleKey = `${string(turn.id) ?? 'thread'}:${record(item).id}`;
+                const pendingTitle = requestedTitle(record(item));
+                if (!this.parentThreadId && string(record(item).id) && pendingTitle && !this.completedTitles.has(titleKey)) {
+                    this.pendingTitles.set(titleKey, pendingTitle);
+                }
+                await this.project('item/started', params);
                 // Active snapshots can contain partial assistant text. Do not
                 // settle it under the final stable id and suppress completion.
                 if (turn.status !== 'inProgress' || record(item).status === 'completed' || record(item).type === 'userMessage') {
-                    await this.notification('item/completed', params);
+                    if (!this.parentThreadId) {
+                        const title = successfulTitle(record(item));
+                        if (title && string(record(item).id)) {
+                            latestTitle = title;
+                            this.completedTitles.add(titleKey);
+                        }
+                        this.pendingTitles.delete(titleKey);
+                    }
+                    await this.project('item/completed', params);
                 }
             }
+        }
+        // Repair sessions created while remote title projection was missing.
+        // Recheck inside the metadata lock: live updates may still be queued,
+        // and a replay must never replace an existing or newer title.
+        if (latestTitle && titleRevision === this.titleRevision && !this.session.getMetadata()?.summary?.text?.trim()) {
+            const title = latestTitle;
+            this.session.updateMetadata(metadata => titleRevision !== this.titleRevision || metadata.summary?.text?.trim()
+                ? metadata : { ...metadata, summary: { text: title, updatedAt: Date.now() } });
         }
     }
 }

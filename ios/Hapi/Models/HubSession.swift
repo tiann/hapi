@@ -49,6 +49,13 @@ final class HubSession {
     /// the chat the user is looking at is pure noise.
     private(set) var openChatSessionId: String?
 
+    struct SessionRemoval: Equatable {
+        let sessionId: String
+        // Repeated removal of a reopened ID still notifies navigation.
+        private let occurrence = UUID()
+    }
+    private(set) var sessionRemoval: SessionRemoval?
+
     /// Fired once when the hub terminally rejects the stored credentials
     /// (access token rotated/revoked). `AppModel` reacts by dropping the hub
     /// back to pairing with a banner.
@@ -113,6 +120,9 @@ final class HubSession {
             try await api.setVisibility(subscriptionId: subscriptionId, visibility: visibility)
         })
         self.router = SyncEventRouter(sessions: sessionStore, machines: machineStore)
+        sessionStore.onSessionRemoved = { [weak self] sessionId in
+            self?.sessionRemoval = SessionRemoval(sessionId: sessionId)
+        }
     }
 
     // MARK: - Per-chat sessions (M2f)
@@ -214,6 +224,7 @@ final class HubSession {
         // Hub switch can outrun the chat view's disappear; stop is idempotent.
         activeChat?.stop()
         activeChat = nil
+        openChatSessionId = nil
         consumeTask?.cancel()
         consumeTask = nil
         if let sse {

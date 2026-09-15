@@ -11,6 +11,8 @@ public struct ScratchlistSessionState: Equatable, Sendable {
     public var isRefreshing = false
     /// No successful fetch yet and the last attempt failed → error state.
     public var loadFailed = false
+    /// A refresh failed; cached rows remain usable.
+    public var refreshFailed = false
     /// The session sits at the 200-entry cap (local count, or the hub's 409
     /// `scratchlist_at_cap` verdict) — disable the add affordances.
     public var atCap = false
@@ -46,6 +48,7 @@ public enum ScratchlistAttachmentDeleteResult: Sendable {
 public enum ScratchlistStoreError: Error, Equatable {
     /// A create with neither text nor attachments (the hub would 400 it).
     case emptyEntry
+    case textTooLong
 }
 
 /// The scratchlist surface UI layers depend on (``ScratchlistStore`` is the
@@ -70,7 +73,8 @@ public protocol SessionScratchlistStoring: AnyObject {
     func createEntry(
         sessionId: String,
         text: String,
-        attachments: [ScratchlistAttachment]
+        attachments: [ScratchlistAttachment],
+        entryId: String?
     ) async -> ScratchlistCreateResult
 
     /// Optimistic update (nil = keep; `attachments = []` clears). Returns
@@ -100,6 +104,9 @@ public protocol SessionScratchlistStoring: AnyObject {
 }
 
 extension SessionScratchlistStoring {
+    public func createEntry(sessionId: String, text: String, attachments: [ScratchlistAttachment]) async -> ScratchlistCreateResult {
+        await createEntry(sessionId: sessionId, text: text, attachments: attachments, entryId: nil)
+    }
     /// Text-only create convenience (protocol requirements cannot default arguments).
     public func createEntry(sessionId: String, text: String) async -> ScratchlistCreateResult {
         await createEntry(sessionId: sessionId, text: text, attachments: [])
@@ -124,8 +131,7 @@ extension SessionScratchlistStoring {
 ///   ``ScratchlistSessionState/atCap`` flag (recomputed from entry count on
 ///   every entries change).
 ///
-/// Text is trimmed and truncated to ``ScratchlistCaps/maxTextLength`` (web
-/// truncates rather than rejects). Entries are memory-only: the hub is the
+/// Overlong text is rejected, never silently truncated. Entries are memory-only: the hub is the
 /// durable store and every open refetches.
 @MainActor @Observable
 public final class ScratchlistStore: SessionScratchlistStoring {
@@ -227,6 +233,7 @@ public final class ScratchlistStore: SessionScratchlistStoring {
             update(sessionId) { state in
                 state.isRefreshing = false
                 state.loadFailed = !state.loaded
+                state.refreshFailed = true
             }
             throw error
         }
@@ -242,6 +249,7 @@ public final class ScratchlistStore: SessionScratchlistStoring {
             state.loaded = true
             state.isRefreshing = false
             state.loadFailed = false
+            state.refreshFailed = false
         }
     }
 
@@ -255,27 +263,31 @@ public final class ScratchlistStore: SessionScratchlistStoring {
     public func createEntry(
         sessionId: String,
         text: String,
-        attachments: [ScratchlistAttachment]
+        attachments: [ScratchlistAttachment],
+        entryId: String? = nil
     ) async -> ScratchlistCreateResult {
-        let trimmed = Self.clampText(text)
+        guard text.utf16.count <= ScratchlistCaps.maxTextLength else { return .failed(ScratchlistStoreError.textTooLong) }
+        let trimmed = Self.trimText(text)
         if trimmed.isEmpty && attachments.isEmpty {
             return .failed(ScratchlistStoreError.emptyEntry)
         }
-        if state(sessionId).entries.count >= ScratchlistCaps.maxEntries {
+        // An explicit id may be a retry of an accepted POST with a lost reply.
+        // Let the hub apply its idempotency check, even when the local list is full.
+        if entryId == nil, state(sessionId).entries.count >= ScratchlistCaps.maxEntries {
             update(sessionId) { $0.atCap = true }
             return .atCap
         }
 
         let stamp = now()
         let optimistic = ScratchlistEntry(
-            entryId: makeEntryId(),
+            entryId: entryId ?? makeEntryId(),
             text: trimmed,
             createdAt: stamp,
             updatedAt: stamp,
             attachments: attachments
         )
         pendingCreates.insert(optimistic.entryId)
-        setEntries(sessionId, [optimistic] + state(sessionId).entries)
+        setEntries(sessionId, [optimistic] + state(sessionId).entries.filter { $0.entryId != optimistic.entryId })
 
         do {
             let response = try await api.createScratchlistEntry(
@@ -323,7 +335,8 @@ public final class ScratchlistStore: SessionScratchlistStoring {
         text: String?,
         attachments: [ScratchlistAttachment]?
     ) async -> Bool {
-        let trimmed = text.map(Self.clampText)
+        if let text, text.utf16.count > ScratchlistCaps.maxTextLength { return false }
+        let trimmed = text.map(Self.trimText)
         if trimmed == nil && attachments == nil { return false }
         let previous = state(sessionId).entries.first { $0.entryId == entryId }
         if var optimistic = previous {
@@ -470,20 +483,7 @@ public final class ScratchlistStore: SessionScratchlistStoring {
         states[sessionId] = state
     }
 
-    /// Trim, then truncate to the hub's UTF-16 length cap without splitting a
-    /// grapheme (the web slices JS strings, which count UTF-16 units). Pure —
-    /// `nonisolated` so it can be passed as an `Optional.map` transform.
-    nonisolated static func clampText(_ text: String) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.utf16.count > ScratchlistCaps.maxTextLength else { return trimmed }
-        var used = 0
-        var end = trimmed.startIndex
-        for index in trimmed.indices {
-            let next = trimmed.index(after: index)
-            used += trimmed[index...index].utf16.count
-            if used > ScratchlistCaps.maxTextLength { break }
-            end = next
-        }
-        return String(trimmed[..<end])
+    nonisolated static func trimText(_ text: String) -> String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

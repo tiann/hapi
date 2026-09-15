@@ -111,7 +111,7 @@ struct PairingErrorView: View {
     private var message: String {
         switch failure {
         case .invalidHubURL:
-            String(localized: "Enter the hub's full address, e.g. http://192.168.1.20:3006.")
+            String(localized: "Check the hub address. HTTPS is recommended, for example https://hub.example.com.")
         case .unreachable:
             String(localized: "No HAPI hub answered at this address. Check that the hub is running and that this device can reach it (same network, or the relay tunnel is up).")
         case .protocolMismatch(let hubVersion, let supportedVersion):

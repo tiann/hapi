@@ -1,20 +1,12 @@
 import HapiClient
 import HapiProtocol
 import Observation
-import SwiftUI
 
-/// App-only selection/navigation state. The interactor remains the source of
+/// App-only selection state. The interactor remains the source of
 /// truth, including optimistic updates, capability gates and server reloads.
 @MainActor @Observable
 final class SessionConfigModel {
-    enum Page: Hashable {
-        case permission
-        case model
-    }
-
     let interactor: ChatInteractor
-    var path: [Page] = []
-    private var rootDetent: PresentationDetent = .medium
 
     init(interactor: ChatInteractor) {
         self.interactor = interactor
@@ -25,15 +17,11 @@ final class SessionConfigModel {
     var modelLoadFailed: Bool { interactor.codexModels == .failed }
     var showsModel: Bool { config.modelOptions != nil || config.modelOptionsLoading }
     var showsEffort: Bool { config.effortOptions?.isEmpty == false }
-    var hasSettings: Bool { !config.permissionModes.isEmpty || showsModel || showsEffort }
-
-    /// Details always expand; returning restores the user's root-sheet height.
-    var detent: PresentationDetent {
-        get { path.isEmpty ? rootDetent : .large }
-        set { if path.isEmpty { rootDetent = newValue } }
-    }
+    var showsCollaborationMode: Bool { config.flavor == "codex" }
+    var hasSettings: Bool { !config.permissionModes.isEmpty || showsModel || showsEffort || showsCollaborationMode }
 
     var permission: PermissionMode { config.permissionMode ?? .default }
+    var collaborationMode: CodexCollaborationMode { config.collaborationMode ?? .default }
 
     var currentModel: String? {
         if config.flavor == "claude" {
@@ -51,11 +39,11 @@ final class SessionConfigModel {
             ?? currentModel ?? "Default"
     }
 
-    /// Do not misrepresent an unlisted current model as the first catalog item.
-    var unlistedModel: String? {
-        guard let currentModel,
-              config.modelOptions?.contains(where: { $0.value == currentModel }) != true else { return nil }
-        return currentModel
+    /// Give the menu a read-only matching tag, even when Codex has neither an
+    /// explicit selection nor a catalog default. Never imply its first model.
+    var unlistedModelOption: CatalogOption? {
+        guard config.modelOptions?.contains(where: { $0.value == currentModel }) != true else { return nil }
+        return CatalogOption(value: currentModel, label: modelLabel)
     }
 
     var currentEffort: String? {
@@ -79,13 +67,16 @@ final class SessionConfigModel {
     func selectPermission(_ mode: PermissionMode) {
         guard !isApplying, config.permissionModes.contains(where: { $0.mode == mode }) else { return }
         if mode != permission { interactor.setPermissionMode(mode) }
-        path.removeAll()
     }
 
     func selectModel(_ value: String?) {
         guard !isApplying, config.modelOptions?.contains(where: { $0.value == value }) == true else { return }
         if value != currentModel { interactor.setModel(value) }
-        path.removeAll()
+    }
+
+    func selectCollaborationMode(_ mode: CodexCollaborationMode) {
+        guard !isApplying, config.canChangeCollaborationMode, mode != collaborationMode else { return }
+        interactor.setCollaborationMode(mode)
     }
 
     func selectEffort(_ value: String?) {

@@ -11,16 +11,16 @@ import SwiftUI
 ///   home owns the filter menu and connection notice;
 /// - pinned section first (the sort already puts globalPinned/pinned rows on
 ///   top; a header makes the boundary visible);
-/// - per row: flavor brand icon + title, spinner while a turn is in flight,
-///   summary line, `project · worktree · machine` meta line (machine only
-///   when it disambiguates), relative `updatedAt`, pending-request badge,
-///   todo-progress chip, unread dot; disconnected rows are dimmed —
-///   connected is the resting state, so no presence dot (web parity);
+/// - per row: flavor brand icon + title, trailing relative `updatedAt` and
+///   an optional unread dot; a quiet second line has project left and a small status
+///   indicator right. No preview, task progress, machine/path details or badges.
+///   Disconnected titles/icons are secondary, without dimming attention;
 /// - long-press context menu → pin (none/project/global) + archive with
 ///   optimistic store updates; failures land in an alert.
 struct SessionListView: View {
     @Environment(\.hapiTheme) private var theme
     let model: SessionListModel
+    var selection: Binding<String?>? = nil
     let onOpenSession: (String) -> Void
 
     var body: some View {
@@ -40,7 +40,11 @@ struct SessionListView: View {
         .task {
             // Explicit fetch on entry: the snapshot may be stale and a
             // `resume: ok` handshake deliberately skips the REST resync.
-            await model.refresh()
+            if selection != nil {
+                await model.refreshOnFirstAppearance()
+            } else {
+                await model.refresh()
+            }
         }
         .refreshable {
             await model.refresh()
@@ -69,7 +73,7 @@ struct SessionListView: View {
     private func sessionList(now: Date) -> some View {
         let rows = model.rows
         let pinnedCount = SessionListModel.pinnedCount(of: rows)
-        return List {
+        return List(selection: selection) {
             if pinnedCount > 0 {
                 Section("Pinned") {
                     ForEach(rows.prefix(pinnedCount)) { row in
@@ -115,22 +119,35 @@ struct SessionListView: View {
     }
 
     private func rowCell(_ row: SessionRowUI, now: Date) -> some View {
-        Button {
-            model.onSessionOpened(row.id)
-            onOpenSession(row.id)
-        } label: {
-            SessionRowView(row: row, now: now)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                // Plain buttons otherwise ignore the label's empty space.
-                .contentShape(Rectangle())
+        Group {
+            if selection != nil {
+                NavigationLink(value: row.id) {
+                    rowLabel(row, now: now)
+                }
+                .tag(row.id)
+            } else {
+                Button {
+                    model.onSessionOpened(row.id)
+                    onOpenSession(row.id)
+                } label: {
+                    rowLabel(row, now: now)
+                }
+                .buttonStyle(.plain)
+            }
         }
-        .buttonStyle(.plain)
+        .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
         // Default separator color reads heavy against these rows; the theme
         // divider is the WeChat-style faint hairline.
         .listRowSeparatorTint(theme.divider)
         .contextMenu {
             contextMenuActions(row)
         }
+    }
+
+    private func rowLabel(_ row: SessionRowUI, now: Date) -> some View {
+        SessionRowView(row: row, now: now)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
     }
 
     @ViewBuilder
@@ -193,135 +210,114 @@ struct SessionListView: View {
 // MARK: - Row
 
 struct SessionRowView: View {
+    @Environment(\.hapiTheme) private var theme
+    @ScaledMetric(relativeTo: .footnote) private var statusSlotSize: CGFloat = 16
+
     let row: SessionRowUI
     let now: Date
 
+    // The agent owns the leading column; one quiet line of secondary text
+    // keeps the row focused on the title rather than a stack of indicators.
+    private let textInset: CGFloat = 24
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 4) {
             titleLine
-            // Summary directly under the title (its prose continuation); the
-            // `project · machine` meta closes the row as a footer.
-            if let subtitle = row.subtitle {
-                Text(subtitle)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            metaLine
-            badgeLine
+            detailLine
+                .padding(.leading, textInset)
         }
-        .padding(.vertical, 2)
-        // Dimming expresses "disconnected" (web parity): connected is the
-        // resting state here, so only the exception gets marked — no
-        // per-row presence dot.
-        .opacity(row.summary.active ? 1 : 0.5)
+        .alignmentGuide(.listRowSeparatorLeading) { _ in textInset }
         .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("home.session.\(row.id)")
     }
 
     private var titleLine: some View {
-        // Spinner/dot pinned to the trailing edge next to the timestamp
-        // (Android row order), so they don't drift with the title length.
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             AgentFlavorIconView(flavor: row.flavor)
-            Text(row.title)
+                .foregroundStyle(row.summary.active ? theme.textPrimary : theme.textSecondary)
+                .opacity(row.summary.active ? 1 : 0.5)
+            Text(verbatim: row.title)
                 .font(.body)
                 .fontWeight(row.unread ? .semibold : .regular)
+                .foregroundStyle(row.summary.active ? theme.textPrimary : theme.textSecondary)
                 .lineLimit(1)
             Spacer(minLength: 4)
-            if row.summary.active && row.summary.thinking {
-                ProgressView()
-                    .scaleEffect(0.7)
-                    .frame(width: 14, height: 14)
-                    .tint(.green)
-                    .accessibilityLabel("Thinking")
-            }
-            if row.unread {
-                Circle()
-                    .fill(.tint)
-                    .frame(width: 8, height: 8)
-                    .accessibilityLabel("Unread")
-            }
-            Text(formatRelativeAge(now: now, thenEpochMs: row.summary.updatedAt))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    // `project · worktree · machine`, composed in the model (machine only
-    // when it disambiguates) — the row just renders it.
-    @ViewBuilder
-    private var metaLine: some View {
-        if let meta = row.meta {
-            // Footnote, not caption: as the row's only secondary line the
-            // meta carries the project scan key (web keeps title/meta at
-            // 14/12; 17/13 is the same contrast).
-            Text(meta)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-    }
-
-    @ViewBuilder
-    private var badgeLine: some View {
-        let summary = row.summary
-        if summary.pendingRequestsCount > 0 || summary.todoProgress != nil {
             HStack(spacing: 6) {
-                if summary.pendingRequestsCount > 0 {
-                    PendingBadge(
-                        count: summary.pendingRequestsCount,
-                        kinds: summary.pendingRequestKinds,
-                        requests: summary.pendingRequests
-                    )
-                }
-                if let progress = summary.todoProgress {
-                    TodoChip(progress: progress)
+                Text(verbatim: formatRelativeAge(now: now, thenEpochMs: row.summary.updatedAt))
+                    .font(.caption2)
+                    .foregroundStyle(theme.textSecondary)
+                    .monospacedDigit()
+                    .fixedSize()
+                // Unread dots always occupy the trailing edge. Read rows
+                // remove the slot so the timestamp itself aligns right.
+                if row.unread {
+                    Circle()
+                        .fill(theme.accent)
+                        .frame(width: 8, height: 8)
+                        .frame(width: 12)
+                        .accessibilityLabel("Unread")
                 }
             }
-            .padding(.top, 2)
+            .fixedSize()
         }
     }
-}
 
-/// Pending badge: authoritative `pendingRequestsCount` + kind wording; the
-/// capped `pendingRequests` slice names the first tool.
-struct PendingBadge: View {
-    let count: Int
-    let kinds: [PendingRequestKind]
-    let requests: [PendingRequest]
-
-    var body: some View {
-        let needsInput = kinds.contains(.input) && !kinds.contains(.permission)
-        let label: String
-        if needsInput {
-            label = String(localized: "needs input")
-        } else if let first = requests.first {
-            label = String(format: String(localized: "approve %@"), first.tool)
-        } else {
-            label = String(localized: "pending")
+    @ViewBuilder
+    private var detailLine: some View {
+        if row.project != nil || row.status != nil {
+            HStack(alignment: .center, spacing: 0) {
+                // Keep the same text line height when metadata is missing,
+                // so the symbol does not jump vertically at large text sizes.
+                Text(verbatim: row.project ?? " ")
+                    .lineLimit(1)
+                    .accessibilityHidden(row.project == nil)
+                Spacer(minLength: 12)
+                if let status = row.status {
+                    statusIndicator(status)
+                }
+            }
+            .font(.footnote)
+            .foregroundStyle(theme.textSecondary)
         }
-        let text = count > 1 ? "\(count) · \(label)" : label
-        return Text(text)
-            .font(.caption2)
-            .lineLimit(1)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(.orange.opacity(0.18), in: RoundedRectangle(cornerRadius: 6))
-            .foregroundStyle(.orange)
     }
-}
 
-struct TodoChip: View {
-    let progress: TodoProgress
+    private func statusIndicator(_ status: SessionRowStatus) -> some View {
+        Group {
+            if let symbol = status.symbolName {
+                Image(systemName: symbol)
+                    .symbolVariant(.none)
+                    .symbolRenderingMode(.monochrome)
+                    .foregroundStyle(attentionColor)
+            } else {
+                ProgressView()
+                    // Native small loading already scales with Dynamic Type;
+                    // an extra scaleEffect would overflow the shared slot.
+                    .controlSize(.small)
+                    .tint(theme.textSecondary)
+            }
+        }
+        // One shared slot keeps attention symbols and loading aligned.
+        // Footnote is 13pt at the default size and scales for AX.
+        .frame(width: statusSlotSize, height: statusSlotSize)
+        .fixedSize()
+        .layoutPriority(1)
+        .accessibilityLabel(statusAccessibilityText(status))
+    }
 
-    var body: some View {
-        Label("\(progress.completed)/\(progress.total)", systemImage: "checklist")
-            .font(.caption2)
-            .lineLimit(1)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 6))
-            .foregroundStyle(.secondary)
+    // Darker amber keeps thin strokes visible on white without a filled
+    // symbol, background badge or animation competing with the session title.
+    private var attentionColor: Color {
+        theme.isDark ? theme.warning : Color(hex: 0x9A6700)
+    }
+
+    /// Keep the exact request count available to VoiceOver without adding
+    /// another visible number or badge to every waiting conversation.
+    private func statusAccessibilityText(_ status: SessionRowStatus) -> Text {
+        let title = Text(LocalizedStringKey(status.titleKey))
+        if let count = status.count, count > 1 {
+            return Text("\(title) · \(count) requests")
+        }
+        return title
     }
 }
 

@@ -167,6 +167,16 @@ after the form-level query without requiring a duplicate client RPC.
 Availability checks executables and static runner configuration only; it does
 not execute the Agent or verify account/login state.
 
+Directory listing and spawning use the same workspace-root policy. With no
+`metadata.workspaceRoots`, paths are unrestricted beyond the runner account's
+filesystem permissions; `metadata.homeDir` is only a suggested starting location.
+Explicit roots restrict both operations, after canonical symlink resolution.
+Listings classify allowed directory symlinks as directories and omit links
+whose targets escape the configured roots. Dot-prefixed entries require
+`includeHidden: true`. Autocomplete clients can suggest known workspace roots
+from metadata while a user types their prefix, without listing a root's
+out-of-bounds parent.
+
 ### Git & files (RPC-wrapped)
 
 Source: `hub/src/web/routes/git.ts`. Git endpoints return the **raw command output** — `GitCommandResponse` `{success, stdout?, stderr?, exitCode?, error?}` — and the client parses `stdout` itself (reference parsers: `web/src/lib/gitParsers.ts`).
