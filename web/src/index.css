@@ -334,6 +334,28 @@ html:has(.chat-scroll-y) #root {
     touch-action: pan-y;
 }
 
+/* Keep file-preview content aligned to the previous left edge while reserving
+ * the scrollbar slot on the right on both touch and pointer devices. */
+.file-preview-scroll-y {
+    overflow-x: hidden;
+    scrollbar-gutter: stable;
+}
+
+/* Older WebViews without scrollbar-gutter still need a stable right slot. */
+@supports not (scrollbar-gutter: stable) {
+    .file-preview-scroll-y {
+        overflow-y: scroll;
+    }
+}
+
+/* Include the reserved scrollbar width in the visible content width so the
+ * outer left and right edge spacing remains equal. */
+.file-preview-scroll-content {
+    width: calc(100% + var(--file-preview-scrollbar-compensation, 0px));
+    max-width: calc(var(--content-max-w, 960px) + var(--file-preview-scrollbar-compensation, 0px));
+    transform: translateX(var(--file-preview-scroll-content-offset, 0px));
+}
+
 /* On touch-first devices, keep the chat scrollbar from shifting centered content. */
 @media (hover: none) and (pointer: coarse) {
     .chat-scroll-y {
