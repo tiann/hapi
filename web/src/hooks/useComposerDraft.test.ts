@@ -184,12 +184,23 @@ describe('useComposerDraft', () => {
     it('restores saved attachments when the composer is empty', async () => {
         const file = new File(['image'], 'image.png', { type: 'image/png' })
         mockGetDraftAttachments.mockResolvedValue([file])
+        mockGetRestoredUploadMetadata.mockReturnValue({ id: 'stored-file' })
         const addAttachment = vi.fn(async () => {})
+        const onRestoredAttachmentIds = vi.fn()
 
-        const { result } = renderHook(() => useComposerDraft('session-1', '', [], true, vi.fn(), addAttachment))
+        const { result } = renderHook(() => useComposerDraft(
+            'session-1',
+            '',
+            [],
+            true,
+            vi.fn(),
+            addAttachment,
+            onRestoredAttachmentIds,
+        ))
         await act(async () => flushRAF())
 
         expect(addAttachment).toHaveBeenCalledWith(file)
+        expect(onRestoredAttachmentIds).toHaveBeenCalledWith(['stored-file'])
         expect(result.current).toEqual({
             sessionId: 'session-1',
             complete: true,

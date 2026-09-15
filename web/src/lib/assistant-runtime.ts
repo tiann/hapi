@@ -701,14 +701,17 @@ function toThreadMessageLike(
 
 type TextMessagePart = { type: 'text'; text: string }
 
-function getTextFromParts(parts: readonly { type: string }[] | undefined): string {
+function getRawTextFromParts(parts: readonly { type: string }[] | undefined): string {
     if (!parts) return ''
 
     return parts
         .filter((part): part is TextMessagePart => part.type === 'text' && typeof (part as TextMessagePart).text === 'string')
         .map((part) => part.text)
         .join('\n')
-        .trim()
+}
+
+function getTextFromParts(parts: readonly { type: string }[] | undefined): string {
+    return getRawTextFromParts(parts).trim()
 }
 
 type ExtractedAttachmentMetadata = { __attachmentMetadata: AttachmentMetadata }
@@ -725,8 +728,12 @@ function isAttachmentMetadataJson(text: string): ExtractedAttachmentMetadata | n
     }
 }
 
-function extractMessageContent(message: AppendMessage): { text: string; attachments: AttachmentMetadata[] } {
-    if (message.role !== 'user') return { text: '', attachments: [] }
+export function extractMessageContent(message: AppendMessage): {
+    text: string
+    originalText: string
+    attachments: AttachmentMetadata[]
+} {
+    if (message.role !== 'user') return { text: '', originalText: '', attachments: [] }
 
     // Extract attachments from attachment content
     const attachments: AttachmentMetadata[] = []
@@ -745,13 +752,14 @@ function extractMessageContent(message: AppendMessage): { text: string; attachme
         }
     }
 
+    const originalText = getRawTextFromParts(message.content)
     const contentText = getTextFromParts(message.content)
     const text = [otherAttachmentTexts.join('\n'), contentText]
         .filter((value) => value.length > 0)
         .join('\n\n')
         .trim()
 
-    return { text, attachments }
+    return { text, originalText, attachments }
 }
 
 export function useHappyRuntime(props: {
@@ -769,6 +777,7 @@ export function useHappyRuntime(props: {
         attachments?: AttachmentMetadata[],
         scheduledAt?: number | null,
         intent?: ComposerSendIntent,
+        originalText?: string,
     ) => void
     attachmentOrderRef?: React.MutableRefObject<string[]>
     onAbort: () => Promise<void>
@@ -946,7 +955,7 @@ export function useHappyRuntime(props: {
         // Reset before any early return so an empty submission, extraction
         // failure, or downstream exception cannot leak an explicit queue
         // gesture into the next ordinary send.
-        const { text, attachments } = extractMessageContent(message)
+        const { text, originalText, attachments } = extractMessageContent(message)
         const orderedAttachments = orderItemsById(
             attachments,
             props.attachmentOrderRef?.current ?? [],
@@ -962,6 +971,7 @@ export function useHappyRuntime(props: {
             orderedAttachments.length > 0 ? orderedAttachments : undefined,
             scheduledAt,
             intent,
+            originalText,
         )
     }, [props.attachmentOrderRef, props.onSendMessage, props.pendingScheduleRef, props.pendingSendIntentRef])
 

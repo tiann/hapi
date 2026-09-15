@@ -38,6 +38,7 @@ export function useComposerDraft(
     canRestoreAttachments: boolean,
     setText: (text: string) => void,
     addAttachment: (file: File) => Promise<void>,
+    onRestoredAttachmentIds?: (ids: readonly string[]) => void,
 ): ComposerDraftHydration {
     const composerTextRef = useRef(composerText)
     composerTextRef.current = composerText
@@ -126,6 +127,11 @@ export function useComposerDraft(
                     const id = getRestoredUploadMetadata(file)?.id
                     return !id || !visibleIds.has(id)
                 })
+                onRestoredAttachmentIds?.(
+                    filesToRestore
+                        .map((file) => getRestoredUploadMetadata(file)?.id)
+                        .filter((id): id is string => Boolean(id)),
+                )
                 // Text is already known to be restored; attachment presence by
                 // itself is not. An upload can fail, so only successful adds
                 // contribute to restoredAny in the final completion update.
