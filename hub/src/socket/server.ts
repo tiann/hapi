@@ -37,6 +37,7 @@ export type SocketServerDeps = {
     jwtSecret: Uint8Array
     corsOrigins?: string[]
     getSession?: (sessionId: string) => { active: boolean; namespace: string } | null
+    onSessionConnected?: (sessionId: string, clientInstanceId?: string) => void
     onWebappEvent?: (event: SyncEvent) => void
     onSessionAlive?: (payload: { sid: string; time: number; thinking?: boolean; mode?: 'local' | 'remote' }) => void
     onSessionReady?: (payload: { sid: string; time: number }) => void
@@ -125,6 +126,7 @@ export function createSocketServer(deps: SocketServerDeps): {
         store: deps.store,
         rpcRegistry,
         terminalRegistry,
+        onSessionConnected: deps.onSessionConnected,
         onSessionAlive: deps.onSessionAlive,
         onSessionReady: deps.onSessionReady,
         onSessionEnd: deps.onSessionEnd,

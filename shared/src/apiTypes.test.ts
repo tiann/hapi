@@ -144,4 +144,36 @@ describe('SendMessageRequestSchema deliveryMode', () => {
             expect(parsed.error.issues.some((issue) => issue.message.includes('cannot use steer'))).toBe(true)
         }
     })
+
+    it('accepts scheduled messages backed by hub scratchlist attachments', () => {
+        const parsed = SendMessageRequestSchema.safeParse({
+            text: 'send image later',
+            localId: 'scheduled-image',
+            scheduledAt: Date.now() + 60_000,
+            attachments: [{
+                id: 'attachment-1',
+                filename: 'image.png',
+                mimeType: 'image/png',
+                size: 10,
+                path: 'hapi-hub:scratchlist/default/session-1/attachment-1-image.png'
+            }]
+        })
+        expect(parsed.success).toBe(true)
+    })
+
+    it('rejects scheduled messages backed by transient CLI upload paths', () => {
+        const parsed = SendMessageRequestSchema.safeParse({
+            text: 'send image later',
+            localId: 'scheduled-image-cli-path',
+            scheduledAt: Date.now() + 60_000,
+            attachments: [{
+                id: 'attachment-1',
+                filename: 'image.png',
+                mimeType: 'image/png',
+                size: 10,
+                path: 'C:/temp/image.png'
+            }]
+        })
+        expect(parsed.success).toBe(false)
+    })
 })

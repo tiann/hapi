@@ -5,11 +5,11 @@ import {
     deleteScratchlistEntry,
     moveScratchlistEntry,
     persistScratchlist,
+    reorderScratchlistEntry,
     readScratchlist,
-    SCRATCHLIST_CONFIRM_DELETE_THRESHOLD,
     SCRATCHLIST_MAX_ENTRIES,
     SCRATCHLIST_MAX_TEXT_LENGTH,
-    shouldConfirmDelete,
+    updateScratchlistEntry,
     type ScratchlistEntry,
 } from './scratchlist'
 
@@ -123,17 +123,68 @@ describe('moveScratchlistEntry', () => {
     })
 })
 
-describe('shouldConfirmDelete', () => {
-    it('confirms only when entry text exceeds the threshold', () => {
-        const short = makeEntry({ id: 'a', text: 'x'.repeat(SCRATCHLIST_CONFIRM_DELETE_THRESHOLD) })
-        const long = makeEntry({ id: 'b', text: 'x'.repeat(SCRATCHLIST_CONFIRM_DELETE_THRESHOLD + 1) })
-        expect(shouldConfirmDelete(short)).toBe(false)
-        expect(shouldConfirmDelete(long)).toBe(true)
+describe('reorderScratchlistEntry', () => {
+    function ids(entries: ScratchlistEntry[]): string[] {
+        return entries.map((e) => e.id)
+    }
+
+    const sample: ScratchlistEntry[] = [
+        makeEntry({ id: 'a' }),
+        makeEntry({ id: 'b' }),
+        makeEntry({ id: 'c' }),
+    ]
+
+    it('moves an entry to a target index', () => {
+        expect(ids(reorderScratchlistEntry(sample, 'a', 2))).toEqual(['b', 'c', 'a'])
+        expect(ids(reorderScratchlistEntry(sample, 'c', 0))).toEqual(['c', 'a', 'b'])
     })
 
-    it('returns false for null / undefined entries', () => {
-        expect(shouldConfirmDelete(null)).toBe(false)
-        expect(shouldConfirmDelete(undefined)).toBe(false)
+    it('clamps out-of-range target indexes', () => {
+        expect(ids(reorderScratchlistEntry(sample, 'a', 99))).toEqual(['b', 'c', 'a'])
+        expect(ids(reorderScratchlistEntry(sample, 'c', -1))).toEqual(['c', 'a', 'b'])
+    })
+
+    it('returns the same list for an unknown id, invalid index, or no-op', () => {
+        expect(reorderScratchlistEntry(sample, 'missing', 1)).toBe(sample)
+        expect(reorderScratchlistEntry(sample, 'a', 1.5)).toBe(sample)
+        expect(reorderScratchlistEntry(sample, 'b', 1)).toBe(sample)
+    })
+})
+
+describe('updateScratchlistEntry', () => {
+    it('normalizes text, records the update time, and preserves other entries', () => {
+        const sample = [
+            makeEntry({ id: 'a', text: 'before' }),
+            makeEntry({ id: 'b', text: 'untouched' }),
+        ]
+        const next = updateScratchlistEntry(sample, 'a', '  after  \n', 2000)
+        expect(next.map((entry) => entry.text)).toEqual(['after', 'untouched'])
+        expect(next[0]?.updatedAt).toBe(2000)
+        expect(next[1]).toBe(sample[1])
+    })
+
+    it('rejects empty edits and truncates overlong edits', () => {
+        const sample = [makeEntry({ id: 'a', text: 'before' })]
+        expect(updateScratchlistEntry(sample, 'a', '   ')).toBe(sample)
+        const next = updateScratchlistEntry(sample, 'a', 'x'.repeat(SCRATCHLIST_MAX_TEXT_LENGTH + 10))
+        expect(next[0]?.text).toHaveLength(SCRATCHLIST_MAX_TEXT_LENGTH)
+    })
+
+    it('updates attachment metadata without changing the entry text', () => {
+        const attachment = {
+            id: 'photo-1',
+            filename: 'photo.png',
+            mimeType: 'image/png',
+            size: 4,
+            path: 'hapi-hub:scratchlist/default/session-test/photo-1.png',
+        } as NonNullable<ScratchlistEntry['attachments']>[number]
+        const sample = [makeEntry({ id: 'a', text: 'with photo', attachments: [attachment] })]
+
+        const next = updateScratchlistEntry(sample, 'a', 'with photo', 2000, [])
+
+        expect(next[0]?.text).toBe('with photo')
+        expect(next[0]?.attachments).toEqual([])
+        expect(next[0]?.updatedAt).toBe(2000)
     })
 })
 

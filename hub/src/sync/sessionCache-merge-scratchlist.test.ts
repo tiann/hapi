@@ -35,8 +35,16 @@ function createCapturingPublisher(events: SyncEvent[]): EventPublisher {
 function setup() {
     const store = new Store(':memory:')
     const events: SyncEvent[] = []
-    const cache = new SessionCache(store, createCapturingPublisher(events))
-    return { store, events, cache }
+    const lockCalls: Array<{ namespace: string; sessionIds: string[] }> = []
+    const cache = new SessionCache(
+        store,
+        createCapturingPublisher(events),
+        async (namespace, sessionIds, fn) => {
+            lockCalls.push({ namespace, sessionIds: [...sessionIds] })
+            return fn()
+        },
+    )
+    return { store, events, cache, lockCalls }
 }
 
 function makeSessions(cache: SessionCache, ns: string = 'default') {
@@ -56,6 +64,18 @@ function makeSessions(cache: SessionCache, ns: string = 'default') {
 }
 
 describe('mergeSessions (deleteOldSession=true) - scratchlist transfer', () => {
+    it('runs the message and scratchlist transfer under one source-target attachment lock', async () => {
+        const { cache, lockCalls } = setup()
+        const { oldSession, newSession } = makeSessions(cache)
+
+        await cache.mergeSessions(oldSession.id, newSession.id, 'default')
+
+        expect(lockCalls).toEqual([{
+            namespace: 'default',
+            sessionIds: [oldSession.id, newSession.id],
+        }])
+    })
+
     it('moves scratchlist rows from old to new before the cascade-delete fires', async () => {
         const { store, cache } = setup()
         const { oldSession, newSession } = makeSessions(cache)
@@ -72,6 +92,20 @@ describe('mergeSessions (deleteOldSession=true) - scratchlist transfer', () => {
         // Old session is gone (deleteOldSession=true) AND its rows
         // are not stranded on a phantom session id.
         expect(store.scratchlist.list(oldSession.id)).toEqual([])
+    })
+
+    it('preserves the old session scratchlist order during transfer', async () => {
+        const { store, cache } = setup()
+        const { oldSession, newSession } = makeSessions(cache)
+
+        store.scratchlist.create(oldSession.id, 'first', { entryId: 'first' })
+        store.scratchlist.create(oldSession.id, 'second', { entryId: 'second' })
+        store.scratchlist.reorder(oldSession.id, ['first', 'second'])
+
+        await cache.mergeSessions(oldSession.id, newSession.id, 'default')
+
+        expect(store.scratchlist.list(newSession.id).map((entry) => entry.entryId))
+            .toEqual(['first', 'second'])
     })
 
     it('re-keys hub attachment paths when rows move to the new session id', async () => {
@@ -118,6 +152,88 @@ describe('mergeSessions (deleteOldSession=true) - scratchlist transfer', () => {
             )
             expect(resolved.ok).toBe(true)
         } finally {
+            if (prevHome === undefined) delete process.env.HAPI_HOME
+            else process.env.HAPI_HOME = prevHome
+            rmSync(hapiHome, { recursive: true, force: true })
+        }
+    })
+
+    it('re-keys Hub attachment paths embedded in moved messages', async () => {
+        const { mkdtempSync, rmSync } = await import('node:fs')
+        const { join } = await import('node:path')
+        const { tmpdir } = await import('node:os')
+        const hapiHome = mkdtempSync(join(tmpdir(), 'hapi-message-merge-att-'))
+        const previousHome = process.env.HAPI_HOME
+        process.env.HAPI_HOME = hapiHome
+        try {
+            const { store, cache } = setup()
+            const { oldSession, newSession } = makeSessions(cache)
+            const { writeScratchlistAttachmentFile, sumScratchlistAttachmentBytesOnDisk } =
+                await import('../scratchlistAttachments/storage')
+            const attachment = await writeScratchlistAttachmentFile(
+                hapiHome,
+                'default',
+                oldSession.id,
+                'scheduled.png',
+                'image/png',
+                Buffer.from('message-image')
+            )
+            store.messages.addMessage(
+                oldSession.id,
+                {
+                    role: 'user',
+                    content: { type: 'text', text: 'send later', attachments: [attachment] },
+                },
+                'message-with-attachment',
+                Date.now() + 60_000,
+            )
+
+            await cache.mergeSessions(oldSession.id, newSession.id, 'default')
+
+            const moved = store.messages.getAllMessages(newSession.id)
+            const movedAttachment = (moved[0]?.content as { content?: { attachments?: Array<{ path: string }> } })
+                .content?.attachments?.[0]
+            expect(movedAttachment?.path).toContain(`/${newSession.id}/`)
+            expect(movedAttachment?.path).not.toContain(`/${oldSession.id}/`)
+            expect(await sumScratchlistAttachmentBytesOnDisk(hapiHome, 'default', oldSession.id)).toBe(0)
+            expect(await sumScratchlistAttachmentBytesOnDisk(hapiHome, 'default', newSession.id)).toBe('message-image'.length)
+        } finally {
+            if (previousHome === undefined) delete process.env.HAPI_HOME
+            else process.env.HAPI_HOME = previousHome
+            rmSync(hapiHome, { recursive: true, force: true })
+        }
+    })
+
+    it('removes orphaned source attachment files when deleting a merged session', async () => {
+        const { mkdtempSync, rmSync } = await import('node:fs')
+        const { join } = await import('node:path')
+        const { tmpdir } = await import('node:os')
+        const hapiHome = mkdtempSync(join(tmpdir(), 'hapi-merge-orphan-att-'))
+        const prevHome = process.env.HAPI_HOME
+        process.env.HAPI_HOME = hapiHome
+        const { store, cache } = setup()
+        try {
+            const { oldSession, newSession } = makeSessions(cache)
+            const { sumScratchlistAttachmentBytesOnDisk, writeScratchlistAttachmentFile } =
+                await import('../scratchlistAttachments/storage')
+            await writeScratchlistAttachmentFile(
+                hapiHome,
+                'default',
+                oldSession.id,
+                'orphan.png',
+                'image/png',
+                Buffer.from('orphan'),
+            )
+
+            // The scheduled draft was already deleted, leaving only the Hub
+            // file under the old session directory.
+            expect(await sumScratchlistAttachmentBytesOnDisk(hapiHome, 'default', oldSession.id))
+                .toBe('orphan'.length)
+            await cache.mergeSessions(oldSession.id, newSession.id, 'default')
+
+            expect(await sumScratchlistAttachmentBytesOnDisk(hapiHome, 'default', oldSession.id)).toBe(0)
+        } finally {
+            store.close()
             if (prevHome === undefined) delete process.env.HAPI_HOME
             else process.env.HAPI_HOME = prevHome
             rmSync(hapiHome, { recursive: true, force: true })
