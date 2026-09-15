@@ -3,8 +3,13 @@ import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 
 const mockSpawn = vi.fn();
-vi.mock('node:child_process', () => ({
-    get spawn() { return mockSpawn; }
+const mockKillProcessByChildProcess = vi.fn();
+vi.mock('cross-spawn', () => ({
+    default: mockSpawn
+}));
+
+vi.mock('@/utils/process', () => ({
+    killProcessByChildProcess: mockKillProcessByChildProcess
 }));
 
 vi.mock('@/ui/logger', () => ({
@@ -44,6 +49,7 @@ describe('PiTransport', () => {
         vi.clearAllMocks();
         mockProcess = createMockProcess();
         mockSpawn.mockReturnValue(mockProcess);
+        mockKillProcessByChildProcess.mockResolvedValue(true);
     });
 
     describe('start()', () => {
@@ -170,12 +176,45 @@ describe('PiTransport', () => {
     });
 
     describe('kill()', () => {
-        it('should send SIGTERM to the process', () => {
+        it('should stop the process tree', async () => {
             const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
             transport.start();
 
-            transport.kill();
-            expect(mockProcess.kill).toHaveBeenCalledWith('SIGTERM');
+            await transport.kill();
+            expect(mockKillProcessByChildProcess).toHaveBeenCalledWith(mockProcess, false);
+        });
+
+        it('should force-stop the process tree when graceful cleanup fails', async () => {
+            mockKillProcessByChildProcess
+                .mockResolvedValueOnce(false)
+                .mockResolvedValueOnce(true);
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
+            transport.start();
+
+            await transport.kill();
+            expect(mockKillProcessByChildProcess).toHaveBeenNthCalledWith(1, mockProcess, false);
+            expect(mockKillProcessByChildProcess).toHaveBeenNthCalledWith(2, mockProcess, true);
+        });
+
+        it('should force-stop the process tree when graceful cleanup throws', async () => {
+            mockKillProcessByChildProcess
+                .mockRejectedValueOnce(new Error('taskkill failed'))
+                .mockResolvedValueOnce(true);
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
+            transport.start();
+
+            await transport.kill();
+            expect(mockKillProcessByChildProcess).toHaveBeenNthCalledWith(2, mockProcess, true);
+        });
+
+        it('should not stop a PID after the process has already closed', async () => {
+            const transport = new PiTransport({ command: 'pi', args: ['--mode', 'rpc'], cwd: '/work' });
+            transport.start();
+            mockProcess.emit('close', 0, null);
+
+            await transport.kill();
+
+            expect(mockKillProcessByChildProcess).not.toHaveBeenCalled();
         });
 
         it('should be a no-op when process is not running', () => {

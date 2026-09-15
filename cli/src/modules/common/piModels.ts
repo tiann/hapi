@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import spawn from 'cross-spawn'
 import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand'
 import { homedir } from 'node:os'
 import { parse } from 'node:path'
@@ -127,7 +127,6 @@ function runPiModelsProbe(): Promise<ListPiModelsForMachineResponse> {
             // filesystem root (see resolveProbeCwd).
             cwd: resolveProbeCwd(),
             stdio: ['pipe', 'pipe', 'pipe'],
-            shell: process.platform === 'win32',
             windowsHide: process.platform === 'win32',
         })
         let stdoutBuffer = ''
