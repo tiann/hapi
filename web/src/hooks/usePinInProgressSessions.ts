@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 
 export const DEFAULT_PIN_IN_PROGRESS_SESSIONS = false
 
+const PIN_IN_PROGRESS_SESSIONS_CHANGED_EVENT = 'hapi-pin-in-progress-sessions-changed'
+
 function getPinInProgressSessionsStorageKey(): string {
     return 'hapi-pin-in-progress-sessions'
 }
@@ -72,8 +74,19 @@ export function usePinInProgressSessions(): {
             setPinInProgressSessionsState(parsePinInProgressSessions(event.newValue))
         }
 
+        const onLocalChange = (event: Event) => {
+            if (!(event instanceof CustomEvent) || typeof event.detail !== 'boolean') {
+                return
+            }
+            setPinInProgressSessionsState(event.detail)
+        }
+
         window.addEventListener('storage', onStorage)
-        return () => window.removeEventListener('storage', onStorage)
+        window.addEventListener(PIN_IN_PROGRESS_SESSIONS_CHANGED_EVENT, onLocalChange)
+        return () => {
+            window.removeEventListener('storage', onStorage)
+            window.removeEventListener(PIN_IN_PROGRESS_SESSIONS_CHANGED_EVENT, onLocalChange)
+        }
     }, [])
 
     const setPinInProgressSessions = useCallback((value: boolean) => {
@@ -83,6 +96,10 @@ export function usePinInProgressSessions(): {
             safeRemoveItem(getPinInProgressSessionsStorageKey())
         } else {
             safeSetItem(getPinInProgressSessionsStorageKey(), String(value))
+        }
+
+        if (isBrowser()) {
+            window.dispatchEvent(new CustomEvent(PIN_IN_PROGRESS_SESSIONS_CHANGED_EVENT, { detail: value }))
         }
     }, [])
 
