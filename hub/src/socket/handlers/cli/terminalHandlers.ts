@@ -6,7 +6,7 @@ import {
     TerminalReadyPayloadSchema
 } from '@hapi/protocol'
 import type { StoredSession } from '../../../store'
-import type { TerminalRegistry } from '../../terminalRegistry'
+import type { TerminalRegistry, TerminalRegistryEntry } from '../../terminalRegistry'
 import type { CliSocketWithData, SocketServer } from '../../socketTypes'
 import type { AccessErrorReason, AccessResult } from './types'
 import { appendAgentTerminalOutput, clearAgentTerminalBuffer } from '../../agentTerminalBuffer'
@@ -30,6 +30,36 @@ export type TerminalHandlersDeps = {
     emitAccessError: EmitAccessError
 }
 
+function emitToTerminalViewers(
+    terminalNamespace: SocketNamespace,
+    entry: TerminalRegistryEntry,
+    event: string,
+    payload: unknown
+): boolean {
+    let emitted = false
+    for (const socketId of entry.viewerSocketIds) {
+        const terminalSocket = terminalNamespace.sockets.get(socketId)
+        if (!terminalSocket) {
+            continue
+        }
+        terminalSocket.emit(event, payload)
+        emitted = true
+    }
+    return emitted
+}
+
+function emitToTerminalSession(
+    terminalNamespace: SocketNamespace,
+    sessionId: string,
+    event: 'terminal:exit' | 'terminal:error',
+    payload: unknown
+): void {
+    // Inventory subscribers stay in the session room even when they are not
+    // attached to this PTY. Removal must therefore be session-scoped rather
+    // than viewer-scoped so every selector can refresh its server projection.
+    terminalNamespace.to(`session:${sessionId}`).emit(event, payload)
+}
+
 export function registerTerminalHandlers(socket: CliSocketWithData, deps: TerminalHandlersDeps): void {
     const { terminalRegistry, terminalNamespace, resolveSessionAccess, emitAccessError } = deps
 
@@ -44,31 +74,19 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
         return entry
     }
 
-    const resolveOwnedTerminal = (payload: { sessionId: string; terminalId: string }) => {
-        const entry = resolveOwnedEntry(payload)
-        if (!entry) return null
-        const terminalSocket = terminalNamespace.sockets.get(entry.socketId)
-        return terminalSocket ? { entry, terminalSocket } : null
-    }
-
-    const forwardTerminalEvent = (event: string, payload: { sessionId: string; terminalId: string } & Record<string, unknown>) => {
-        const owned = resolveOwnedTerminal(payload)
-        if (!owned) return false
-        owned.terminalSocket.emit(event, payload)
-        return true
-    }
-
     const ownsAgentSession = (sessionId: string): boolean => socket.rooms.has(`session:${sessionId}`)
-
 
     socket.on('terminal:ready', (data: unknown) => {
         const parsed = terminalReadySchema.safeParse(data)
         if (!parsed.success) {
             return
         }
-        if (forwardTerminalEvent('terminal:ready', parsed.data)) {
-            terminalRegistry.markActivity(parsed.data.terminalId)
+        const entry = resolveOwnedEntry(parsed.data)
+        if (!entry) {
+            return
         }
+        emitToTerminalViewers(terminalNamespace, entry, 'terminal:ready', parsed.data)
+        terminalRegistry.markActivity(parsed.data.terminalId)
     })
 
     socket.on('terminal:output', (data: unknown) => {
@@ -79,10 +97,10 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
         const entry = resolveOwnedEntry(parsed.data)
         if (!entry) return
         terminalRegistry.markActivity(parsed.data.terminalId)
-        // Keep buffering while the web socket is detached so its replacement
-        // can replay everything the still-running PTY emitted in the gap.
+        // The PTY is server-side and durable. Buffer output even with zero web
+        // viewers, then fan live bytes out to every currently attached viewer.
         appendUserTerminalOutput(parsed.data.sessionId, parsed.data.terminalId, parsed.data.data)
-        terminalNamespace.sockets.get(entry.socketId)?.emit('terminal:output', parsed.data)
+        emitToTerminalViewers(terminalNamespace, entry, 'terminal:output', parsed.data)
     })
 
     socket.on('agent-terminal:output', (data: unknown) => {
@@ -131,14 +149,11 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
         if (!entry || entry.sessionId !== parsed.data.sessionId || entry.cliSocketId !== socket.id) {
             return
         }
-        // remove() fires the registry's onRemove → clears this terminal's
-        // scrollback buffer (without touching the session's other terminals).
+        // remove() clears the server-side resource and its scrollback. Broadcast
+        // the removal to every session subscriber, including selectors that were
+        // not attached to this terminal, so they refresh immediately.
         terminalRegistry.remove(parsed.data.terminalId)
-        const terminalSocket = terminalNamespace.sockets.get(entry.socketId)
-        if (!terminalSocket) {
-            return
-        }
-        terminalSocket.emit('terminal:exit', parsed.data)
+        emitToTerminalSession(terminalNamespace, entry.sessionId, 'terminal:exit', parsed.data)
     })
 
     socket.on('terminal:error', (data: unknown) => {
@@ -155,21 +170,26 @@ export function registerTerminalHandlers(socket: CliSocketWithData, deps: Termin
         const sessionAccess = resolveSessionAccess(parsed.data.sessionId)
         if (!sessionAccess.ok) {
             terminalRegistry.remove(parsed.data.terminalId)
+            // The browser room was authorized when its sockets subscribed, but
+            // access may have changed since then. Use a generic removal message
+            // rather than forwarding potentially sensitive CLI error details.
+            emitToTerminalSession(terminalNamespace, entry.sessionId, 'terminal:error', {
+                terminalId: entry.terminalId,
+                message: 'Terminal is no longer available.'
+            })
             emitAccessError('session', parsed.data.sessionId, sessionAccess.reason)
             return
         }
 
-        const terminalSocket = terminalNamespace.sockets.get(entry.socketId)
         terminalRegistry.remove(parsed.data.terminalId)
-        terminalSocket?.emit('terminal:error', parsed.data)
+        emitToTerminalSession(terminalNamespace, entry.sessionId, 'terminal:error', parsed.data)
     })
 }
 
 export function cleanupTerminalHandlers(socket: CliSocketWithData, deps: { terminalRegistry: TerminalRegistry; terminalNamespace: SocketNamespace }): void {
     const removed = deps.terminalRegistry.removeByCliSocket(socket.id)
     for (const entry of removed) {
-        const terminalSocket = deps.terminalNamespace.sockets.get(entry.socketId)
-        terminalSocket?.emit('terminal:error', {
+        emitToTerminalSession(deps.terminalNamespace, entry.sessionId, 'terminal:error', {
             terminalId: entry.terminalId,
             message: 'CLI disconnected.'
         })
