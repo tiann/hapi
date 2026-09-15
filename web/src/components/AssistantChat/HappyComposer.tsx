@@ -64,11 +64,23 @@ import { useVoiceInputPreferences } from '@/hooks/useVoiceInputPreferences'
 import { useDictation } from '@/hooks/useDictation'
 import type { ComposerSendIntent } from '@/lib/messageDelivery'
 import type { MessageDeliveryMode } from '@hapi/protocol'
+import {
+    filterComposerMessageHistory,
+    formatComposerHistoryPreview,
+    getComposerHistoryTrigger,
+    type ComposerMessageHistoryEntry,
+} from '@/lib/composerMessageHistory'
 import { moveAttachmentId, orderItemsById, reconcileAttachmentOrder, type AttachmentDropPosition } from '@/lib/attachmentOrder'
 
 export interface TextInputState {
     text: string
     selection: { start: number; end: number }
+}
+
+type HistoryNavigationState = {
+    draftText: string
+    draftSelection: TextInputState['selection']
+    entryId: string
 }
 
 export function getComposerEscapeAction(input: {
@@ -159,6 +171,7 @@ export function useRichComposerBridge(
 }
 
 const defaultSuggestionHandler = async (): Promise<Suggestion[]> => []
+const EMPTY_MESSAGE_HISTORY: readonly ComposerMessageHistoryEntry[] = []
 
 /** True when composer text/attachment ids match a pre-park snapshot. */
 export function composerParkSnapshotUnchanged(
@@ -283,6 +296,8 @@ export function ModelEffortSettingsSection(props: {
 export function HappyComposer(props: {
     sessionId?: string
     focusInputRef?: MutableRefObject<(() => void) | null>
+    /** Lets sibling composer controls invalidate history after external text edits. */
+    historyNavigationInvalidationRef?: MutableRefObject<(() => void) | null>
     onUploadDraftSnapshot?: (text: string, attachments: AttachmentDraftInput[]) => void
     canRestoreAttachments?: boolean
     disabled?: boolean
@@ -338,6 +353,8 @@ export function HappyComposer(props: {
     terminalUnsupported?: boolean
     autocompletePrefixes?: string[]
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
+    /** User messages from the currently loaded session window, newest first. */
+    messageHistory?: readonly ComposerMessageHistoryEntry[]
     // Voice assistant props
     voiceStatus?: ConversationStatus
     voiceMicMuted?: boolean
@@ -435,6 +452,7 @@ export function HappyComposer(props: {
         terminalUnsupported = false,
         autocompletePrefixes = ['@', '/', '$'],
         autocompleteSuggestions = defaultSuggestionHandler,
+        messageHistory = EMPTY_MESSAGE_HISTORY,
         voiceStatus = 'disconnected',
         voiceMicMuted = false,
         onVoiceToggle,
@@ -464,6 +482,24 @@ export function HappyComposer(props: {
     const { composerEnterBehavior } = useComposerEnterBehavior()
     const composerText = useAuiState((s) => s.composer.text)
     const attachments = useAuiState((s) => s.composer.attachments)
+    const [historyNavigation, setHistoryNavigation] = useState<HistoryNavigationState | null>(null)
+    const [historyDismissedText, setHistoryDismissedText] = useState<string | null>(null)
+    const [historySuggestionIndex, setHistorySuggestionIndex] = useState(0)
+    const clearHistoryNavigation = useCallback(() => {
+        setHistoryNavigation(null)
+    }, [])
+    const invalidateProgrammaticUserEdit = useCallback(() => {
+        clearHistoryNavigation()
+        setHistoryDismissedText(null)
+    }, [clearHistoryNavigation])
+    useEffect(() => {
+        const ref = props.historyNavigationInvalidationRef
+        if (!ref) return
+        ref.current = invalidateProgrammaticUserEdit
+        return () => {
+            if (ref.current === invalidateProgrammaticUserEdit) ref.current = null
+        }
+    }, [invalidateProgrammaticUserEdit, props.historyNavigationInvalidationRef])
     const localAttachmentOrderRef = useRef<string[]>([])
     const attachmentOrderRef = externalAttachmentOrderRef ?? localAttachmentOrderRef
     const attachmentIds = useMemo(
@@ -486,7 +522,13 @@ export function HappyComposer(props: {
     const composerTextRef = useRef(composerText)
     composerTextRef.current = composerText
     const getCurrentComposerText = useCallback(() => composerTextRef.current, [])
-    const setComposerText = useCallback((text: string) => api.composer().setText(text), [api])
+    const setComposerText = useCallback((text: string) => {
+        api.composer().setText(text)
+        // Dictation updates the composer programmatically, so it bypasses the
+        // input's onEdit callback. Treat it as a user edit for history state,
+        // while history navigation replacements use replaceComposerText below.
+        invalidateProgrammaticUserEdit()
+    }, [api, invalidateProgrammaticUserEdit])
     const voiceInput = useVoiceInputPreferences(props.voiceTranscriptionApi ?? null)
     const dictationConfig = useMemo(() => ({
         api: props.voiceTranscriptionApi ?? null,
@@ -631,6 +673,8 @@ export function HappyComposer(props: {
     }, [])
 
     const handleUserEdit = useCallback(() => {
+        clearHistoryNavigation()
+        setHistoryDismissedText(null)
         recordUserEdit()
         // Editing the restored text is the operator's "I'm handling it"
         // signal -- drop the inline error so the affordance doesn't shout
@@ -638,13 +682,13 @@ export function HappyComposer(props: {
         if (sendError && onClearSendError) {
             onClearSendError()
         }
-    }, [recordUserEdit, sendError, onClearSendError])
+    }, [clearHistoryNavigation, recordUserEdit, sendError, onClearSendError])
 
     const {
         onValueChange: handleRichValueChange,
         onMirrorChange: handleRichMirrorChange,
         onEdit: handleRichEdit,
-    } = useRichComposerBridge(api, setInputState, sendError, onClearSendError, recordUserEdit)
+    } = useRichComposerBridge(api, setInputState, sendError, onClearSendError, handleUserEdit)
 
     const attachmentDrafts = orderedAttachments.flatMap((attachment) => {
         if (!attachment.file) return []
@@ -863,6 +907,63 @@ export function HappyComposer(props: {
         autocompleteSuggestions,
         { clampSelection: true, wrapAround: true }
     )
+    const historyTrigger = useMemo(
+        () => getComposerHistoryTrigger(inputState.text, inputState.selection),
+        [inputState.selection.end, inputState.selection.start, inputState.text]
+    )
+    const historyTriggerVisible = historyNavigation === null
+        && historyTrigger !== null
+        && historyDismissedText !== inputState.text
+    const filteredHistoryEntries = useMemo(
+        () => historyTriggerVisible && historyTrigger
+            ? filterComposerMessageHistory(messageHistory, historyTrigger.query)
+            : [],
+        [historyTrigger, historyTriggerVisible, messageHistory]
+    )
+    const historyNavigationIndex = historyNavigation === null
+        ? -1
+        : messageHistory.findIndex((entry) => entry.id === historyNavigation.entryId)
+    const historyNavigationVisible = historyNavigation !== null && historyNavigationIndex >= 0
+    const visibleHistoryEntries = historyNavigationVisible
+        ? messageHistory
+        : filteredHistoryEntries
+    const historySuggestions = useMemo<Suggestion[]>(
+        () => visibleHistoryEntries.map((entry) => {
+            const preview = formatComposerHistoryPreview(entry.text)
+            return {
+                key: `history:${entry.id}`,
+                text: entry.text,
+                // History restores the message text only. Attachment metadata
+                // remains available in the history entry, while the generic
+                // indicator warns that selecting the row will not restore files.
+                label: preview,
+                description: entry.attachments.length > 0
+                    ? t('composerHistory.attachmentsNotRestored', { count: entry.attachments.length })
+                    : undefined,
+            }
+        }),
+        [t, visibleHistoryEntries]
+    )
+    const historySuggestionsVisible = historySuggestions.length > 0
+        && (historyNavigationVisible || historyTriggerVisible)
+    // History navigation owns the visible overlay and keyboard handling after
+    // a message is recalled. Generic autocomplete remains eligible before
+    // navigation starts, so existing slash/@/$ behavior keeps its priority.
+    const genericSuggestionsVisible = historyNavigation === null
+        && !historySuggestionsVisible
+        && suggestions.length > 0
+    const historySelectedIndex = historyNavigationVisible ? historyNavigationIndex : historySuggestionIndex
+
+    useEffect(() => {
+        if (historyNavigation !== null || !historyTriggerVisible) {
+            setHistorySuggestionIndex(0)
+            return
+        }
+        setHistorySuggestionIndex((current) => Math.min(
+            current,
+            Math.max(0, filteredHistoryEntries.length - 1),
+        ))
+    }, [filteredHistoryEntries.length, historyNavigation, historyTrigger?.query, historyTriggerVisible])
 
     const haptic = useCallback((type: 'light' | 'success' | 'error' = 'light') => {
         if (type === 'light') {
@@ -906,6 +1007,85 @@ export function HappyComposer(props: {
             }
         }, 0)
     }, [haptic, richMentionsEnabled])
+
+    const replaceComposerText = useCallback((text: string, selection?: TextInputState['selection']) => {
+        const nextSelection = selection ?? { start: text.length, end: text.length }
+        if (richMentionsEnabled && richInputRef.current) {
+            return richInputRef.current.replaceText(text, nextSelection)
+        }
+
+        api.composer().setText(text)
+        setInputState({ text, selection: nextSelection })
+        setTimeout(() => {
+            const input = textareaRef.current
+            if (!input) return
+            input.setSelectionRange(nextSelection.start, nextSelection.end)
+            try {
+                input.focus({ preventScroll: true })
+            } catch {
+                input.focus()
+            }
+        }, 0)
+        return { text, selection: nextSelection }
+    }, [api, richMentionsEnabled])
+
+    useEffect(() => {
+        if (!historyNavigation || historyNavigationIndex >= 0) return
+        // The recalled entry disappeared from the loaded window. Restore the
+        // saved draft instead of silently switching to a different entry.
+        replaceComposerText(historyNavigation.draftText, historyNavigation.draftSelection)
+        setHistoryNavigation(null)
+        setHistoryDismissedText(null)
+    }, [historyNavigation, historyNavigationIndex, replaceComposerText])
+
+    const handleHistorySelect = useCallback((index: number) => {
+        const entry = visibleHistoryEntries[index]
+        if (!entry) return
+        handleUserEdit()
+        replaceComposerText(entry.text)
+        setHistoryNavigation(null)
+        // A restored message may itself begin with #/＃. Keep that literal
+        // prefix without immediately treating the restored value as a new
+        // history query; the next user edit clears this dismissal.
+        setHistoryDismissedText(entry.text)
+        haptic('light')
+    }, [handleUserEdit, haptic, replaceComposerText, visibleHistoryEntries])
+
+    const enterHistoryNavigation = useCallback(() => {
+        const entry = messageHistory[0]
+        if (!entry) return
+        setHistoryNavigation({
+            draftText: composerText,
+            draftSelection: inputState.selection,
+            entryId: entry.id,
+        })
+        setHistoryDismissedText(null)
+        replaceComposerText(entry.text)
+        haptic('light')
+    }, [composerText, haptic, inputState.selection, messageHistory, replaceComposerText])
+
+    const moveHistoryNavigation = useCallback((direction: 'older' | 'newer') => {
+        if (!historyNavigation || historyNavigationIndex < 0 || messageHistory.length === 0) return
+
+        if (direction === 'newer' && historyNavigationIndex === 0) {
+            replaceComposerText(historyNavigation.draftText, historyNavigation.draftSelection)
+            setHistoryNavigation(null)
+            setHistoryDismissedText(null)
+            haptic('light')
+            return
+        }
+
+        const nextIndex = direction === 'older'
+            ? Math.min(historyNavigationIndex + 1, messageHistory.length - 1)
+            : Math.max(historyNavigationIndex - 1, 0)
+        if (nextIndex === historyNavigationIndex) return
+
+        const entry = messageHistory[nextIndex]
+        if (!entry) return
+        setHistoryNavigation((current) => current ? { ...current, entryId: entry.id } : current)
+        replaceComposerText(entry.text)
+        haptic('light')
+    }, [haptic, historyNavigation, historyNavigationIndex, messageHistory, replaceComposerText])
 
     // Keep focus within the user's click gesture so mobile keyboards can open.
     useImperativeHandle(props.focusInputRef, () => () => {
@@ -1136,6 +1316,7 @@ export function HappyComposer(props: {
     }, [pendingSendIntentRef])
 
     const handleSend = useCallback(async (intent: ComposerSendIntent = 'default') => {
+        clearHistoryNavigation()
         // SessionChat preloads the ref only when restoring a rejected send:
         // queue retries remain queue, while an ordinary fresh send always
         // starts from the explicit/default argument. Capture it before the
@@ -1234,6 +1415,7 @@ export function HappyComposer(props: {
         api,
         attachments,
         canSend,
+        clearHistoryNavigation,
         draftHydration.hasStoredAttachments,
         hasAttachments,
         hasText,
@@ -1266,8 +1448,35 @@ export function HappyComposer(props: {
             return
         }
 
+        // When Ctrl/Cmd+Enter is configured to send, it must bypass an open
+        // history list and submit the literal `#...` text unchanged.
+        if (
+            key === 'Enter'
+            && historySuggestionsVisible
+            && (e.ctrlKey || e.metaKey)
+            && !e.altKey
+            && composerEnterBehavior === 'newline'
+        ) {
+            e.preventDefault()
+            if (canSend) {
+                flushAndSend()
+                setShowContinueHint(false)
+            }
+            return
+        }
+
+        // Enter with history visible selects the highlighted whole-message
+        // entry. This is separate from generic @/slash/$ replacement because
+        // history removes its temporary trigger instead of preserving it.
+        if (key === 'Enter' && historySuggestionsVisible) {
+            e.preventDefault()
+            const indexToSelect = historySelectedIndex >= 0 ? historySelectedIndex : 0
+            handleHistorySelect(indexToSelect)
+            return
+        }
+
         // Enter with suggestions visible: select the suggestion
-        if (key === 'Enter' && suggestions.length > 0) {
+        if (key === 'Enter' && genericSuggestionsVisible) {
             e.preventDefault()
             const indexToSelect = selectedIndex >= 0 ? selectedIndex : 0
             handleSuggestionSelect(indexToSelect)
@@ -1292,7 +1501,7 @@ export function HappyComposer(props: {
             return
         }
 
-        if (suggestions.length > 0) {
+        if (genericSuggestionsVisible) {
             if (key === 'ArrowUp') {
                 e.preventDefault()
                 moveUp()
@@ -1311,6 +1520,53 @@ export function HappyComposer(props: {
             }
         }
 
+        if (historySuggestionsVisible) {
+            if (key === 'ArrowUp') {
+                e.preventDefault()
+                if (historyNavigation) {
+                    moveHistoryNavigation('older')
+                } else {
+                    setHistorySuggestionIndex((current) => current <= 0
+                        ? historySuggestions.length - 1
+                        : current - 1)
+                }
+                return
+            }
+            if (key === 'ArrowDown') {
+                e.preventDefault()
+                if (historyNavigation) {
+                    moveHistoryNavigation('newer')
+                } else {
+                    setHistorySuggestionIndex((current) => current >= historySuggestions.length - 1
+                        ? 0
+                        : current + 1)
+                }
+                return
+            }
+            if (key === 'Tab' && !e.shiftKey) {
+                e.preventDefault()
+                const indexToSelect = historySelectedIndex >= 0 ? historySelectedIndex : 0
+                handleHistorySelect(indexToSelect)
+                return
+            }
+        }
+
+        // Preserve native multiline ArrowUp behavior everywhere except the
+        // absolute beginning (or an empty composer), where history navigation
+        // is unambiguous and useful on keyboards without a history button.
+        if (
+            key === 'ArrowUp'
+            && !genericSuggestionsVisible
+            && !historySuggestionsVisible
+            && messageHistory.length > 0
+            && inputState.selection.start === inputState.selection.end
+            && (composerText.length === 0 || inputState.selection.start === 0)
+        ) {
+            e.preventDefault()
+            enterHistoryNavigation()
+            return
+        }
+
         if (key === 'Escape') {
             // FUE callout also listens on window; dismiss it first so Escape
             // does not also abort a running thread or collapse the editor.
@@ -1321,13 +1577,19 @@ export function HappyComposer(props: {
                 return
             }
             const action = getComposerEscapeAction({
-                hasSuggestions: suggestions.length > 0,
+                hasSuggestions: genericSuggestionsVisible || historySuggestionsVisible,
                 threadIsRunning,
                 isExpanded,
             })
             if (action) {
                 e.preventDefault()
-                if (action === 'clearSuggestions') clearSuggestions()
+                if (action === 'clearSuggestions') {
+                    clearSuggestions()
+                    if (historySuggestionsVisible) {
+                        setHistoryDismissedText(inputState.text)
+                        clearHistoryNavigation()
+                    }
+                }
                 else if (action === 'abort') handleAbort()
                 else handleExpandedToggle()
                 return
@@ -1343,12 +1605,24 @@ export function HappyComposer(props: {
             haptic('light')
         }
     }, [
+        genericSuggestionsVisible,
         suggestions,
+        historySuggestions,
+        historySuggestionsVisible,
+        historySelectedIndex,
+        historyNavigation,
+        messageHistory,
+        composerText,
+        inputState.selection,
         selectedIndex,
         moveUp,
         moveDown,
         clearSuggestions,
         handleSuggestionSelect,
+        handleHistorySelect,
+        enterHistoryNavigation,
+        moveHistoryNavigation,
+        clearHistoryNavigation,
         threadIsRunning,
         handleAbort,
         onPermissionModeChange,
@@ -2075,7 +2349,21 @@ export function HappyComposer(props: {
             )
         }
 
-        if (suggestions.length > 0) {
+        if (historySuggestionsVisible) {
+            return (
+                <div className={`${overlayPositionClass} w-full`}>
+                    <FloatingOverlay>
+                        <Autocomplete
+                            suggestions={historySuggestions}
+                            selectedIndex={historySelectedIndex}
+                            onSelect={(index) => handleHistorySelect(index)}
+                        />
+                    </FloatingOverlay>
+                </div>
+            )
+        }
+
+        if (genericSuggestionsVisible) {
             return (
                 <div className={`${overlayPositionClass} w-full`}>
                     <FloatingOverlay>
@@ -2119,7 +2407,11 @@ export function HappyComposer(props: {
         codexReasoningEffortOptions,
         claudeEffortOptions,
         fastModeOptions,
+        genericSuggestionsVisible,
         suggestions,
+        historySuggestions,
+        historySuggestionsVisible,
+        historySelectedIndex,
         selectedIndex,
         controlsDisabled,
         collaborationMode,
@@ -2144,6 +2436,7 @@ export function HappyComposer(props: {
         clearCursorDrillDown,
         resolveModelVariantsForBase,
         handleSuggestionSelect,
+        handleHistorySelect,
         overlayPositionClass,
         t
     ])
