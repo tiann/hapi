@@ -25,6 +25,7 @@ import { inheritedSandbox, settingsMatch } from './settings';
 import { planImplementationMessageId, planProposalForItem, planProposalForTurn } from './plan';
 
 type RuntimeSettings = NonNullable<Parameters<ApiSessionClient['keepAlive']>[2]>;
+export type NativeForkBoundary = { kind: 'at' | 'through'; localId: string };
 export type RootHost = {
     directory: string; generation: string; endpoint: string; token?: string;
     settingsFor(threadId: string): Record<string, unknown> | undefined;
@@ -204,6 +205,22 @@ export class SharedCodexRoot {
         if (subscribe) response = record(await this.client.request('thread/resume', { threadId }));
         this.acceptSettings(response); this.acceptSettings(this.host.settingsFor(threadId) ?? {});
         await this.projection.history(response.thread); await this.refresh(); await this.refreshChildren(true);
+    }
+    latestMessageLocalId(): string | undefined { return this.projection?.latestMessageLocalId(); }
+    historicalForkBoundary(params: Record<string, unknown>): NativeForkBoundary | undefined {
+        const beforeTurnId = string(params.beforeTurnId);
+        if (beforeTurnId) {
+            const localId = this.projection.firstMessageLocalIdForTurn(beforeTurnId);
+            return localId ? { kind: 'at', localId } : undefined;
+        }
+        const lastTurnId = string(params.lastTurnId);
+        if (lastTurnId) {
+            const after = this.projection.firstMessageLocalIdAfterTurn(lastTurnId);
+            if (after) return { kind: 'at', localId: after };
+            const latest = this.projection.latestMessageLocalId();
+            return latest ? { kind: 'through', localId: latest } : undefined;
+        }
+        return undefined;
     }
     async activate(options: SharedLaunchOptions = {}): Promise<void> {
         // Restored input cannot run before the cold-resume settings are applied.
@@ -487,7 +504,10 @@ export class SharedCodexRoot {
             if (messageLocalId && !beforeTurnId) throw new Error('No native history point for this message');
             if (messageLocalId) await this.assertBoundary(messageLocalId, beforeTurnId!);
             const child = await this.host.create('thread/fork', { ...this.freshParams(), threadId: this.threadId,
-                ...(beforeTurnId ? { beforeTurnId } : {}) }, this);
+                ...(beforeTurnId ? { beforeTurnId } : {}),
+                ...(messageLocalId
+                    ? { hapiForkMessageLocalId: messageLocalId }
+                    : { hapiForkThroughMessageLocalId: this.projection.latestMessageLocalId() ?? '' }) }, this);
             await child.initialSettings({ collaborationMode: this.settings.collaborationMode });
             return { nativeSessionId: child.threadId, sessionId: child.session.sessionId };
         });

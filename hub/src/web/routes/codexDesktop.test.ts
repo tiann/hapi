@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it } from 'bun:test'
+import { afterEach, describe, expect, it, spyOn } from 'bun:test'
 import { randomUUID } from 'node:crypto'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Hono } from 'hono'
@@ -1324,6 +1324,9 @@ describe('Codex Desktop import routes', () => {
         store.messages.addMessage(engineSession.id, { type: 'text', text: 'engine-only message' }, 'engine-1')
         const engine = {
             getSessionsByNamespace: () => [engineSession],
+            getSessionByNamespace: (sessionId: string) => sessionId === engineSession.id
+                ? { ...engineSession, active: false }
+                : undefined,
             deleteSession: async (sessionId: string) => {
                 store.sessions.deleteSession(sessionId, 'default')
             },
@@ -1352,6 +1355,464 @@ describe('Codex Desktop import routes', () => {
             const sessions = store.sessions.getSessionsByNamespace('default')
             expect(sessions.map((session) => session.id)).toEqual([storedSession.id])
             expect(store.messages.getAllMessages(storedSession.id)).toHaveLength(3)
+        } finally {
+            store.close()
+        }
+    })
+
+    it('clones durable attachments before deleting a duplicate source session', async () => {
+        const root = mkdtempSync(join(tmpdir(), 'hapi-codex-attachment-merge-'))
+        const store = new Store(':memory:', { attachmentsRoot: join(root, 'attachments') })
+        const canonical = store.sessions.getOrCreateSession(
+            'canonical-attachment-session',
+            { codexSessionId: 'codex-thread-attachments' },
+            {},
+            'default'
+        )
+        const source = store.sessions.getOrCreateSession(
+            'source-attachment-session',
+            { codexSessionId: 'codex-thread-attachments' },
+            {},
+            'default'
+        )
+        const attachment = await store.attachments.create({
+            namespace: 'default',
+            sessionId: source.id,
+            filename: 'photo.png',
+            mimeType: 'image/png',
+            original: Buffer.from('durable-original')
+        })
+        store.messages.addMessage(canonical.id, {
+            role: 'user',
+            content: { type: 'text', text: 'source with attachment' }
+        }, 'canonical-1')
+        store.messages.addMessage(canonical.id, { role: 'agent', content: { type: 'text', text: 'canonical reply' } }, 'canonical-2')
+        store.messages.addMessage(source.id, {
+            role: 'user',
+            content: {
+                type: 'text',
+                text: 'source with attachment',
+                attachments: [{
+                    id: 'message-attachment',
+                    filename: attachment.filename,
+                    mimeType: attachment.mimeType,
+                    size: attachment.size,
+                    attachmentId: attachment.id
+                }]
+            }
+        }, 'source-1')
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => null }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-attachments'] })
+            })
+            expect(response.status).toBe(200)
+            const mergedMessages = store.messages.getAllMessages(canonical.id)
+            expect(mergedMessages).toHaveLength(2)
+            expect(mergedMessages.some((message) => message.localId === 'source-1')).toBe(false)
+            const merged = mergedMessages.find((message) => message.localId === 'canonical-1')
+            const mergedBody = (merged?.content as {
+                content?: { attachments?: Array<{ attachmentId?: string }> }
+            } | undefined)?.content
+            const copiedId = mergedBody?.attachments?.[0]?.attachmentId
+            expect(copiedId).toBeDefined()
+            expect(copiedId).not.toBe(attachment.id)
+            expect((await store.attachments.readForSessionAsync(copiedId!, 'default', canonical.id))?.data)
+                .toEqual(Buffer.from('durable-original'))
+            expect(await store.cleanupOrphanedAttachments()).toBe(0)
+            expect(store.attachments.getForSession(attachment.id, 'default', source.id)).toBeNull()
+        } finally {
+            store.close()
+            rmSync(root, { recursive: true, force: true })
+        }
+    })
+
+    it('matches repeated prompt texts by occurrence when merging attachments', async () => {
+        const root = mkdtempSync(join(tmpdir(), 'hapi-codex-repeated-attachment-merge-'))
+        const store = new Store(':memory:', { attachmentsRoot: join(root, 'attachments') })
+        const source = store.sessions.getOrCreateSession(
+            'source-repeated-attachment-session',
+            { codexSessionId: 'codex-thread-repeated-attachments' },
+            {},
+            'default'
+        )
+        const canonical = store.sessions.getOrCreateSession(
+            'canonical-repeated-attachment-session',
+            { codexSessionId: 'codex-thread-repeated-attachments' },
+            {},
+            'default'
+        )
+        store.sessions.touchSessionUpdatedAt(canonical.id, Date.now() + 1_000, 'default')
+        const firstAttachment = await store.attachments.create({
+            namespace: 'default',
+            sessionId: source.id,
+            filename: 'first.txt',
+            mimeType: 'text/plain',
+            original: Buffer.from('first original')
+        })
+        const secondAttachment = await store.attachments.create({
+            namespace: 'default',
+            sessionId: source.id,
+            filename: 'second.txt',
+            mimeType: 'text/plain',
+            original: Buffer.from('second original')
+        })
+        const prompt = (attachmentId?: string) => ({
+            role: 'user',
+            content: {
+                type: 'text',
+                text: 'repeat this',
+                ...(attachmentId ? {
+                    attachments: [{
+                        id: `message-${attachmentId}`,
+                        filename: attachmentId === firstAttachment.id ? firstAttachment.filename : secondAttachment.filename,
+                        mimeType: 'text/plain',
+                        size: attachmentId === firstAttachment.id ? firstAttachment.size : secondAttachment.size,
+                        attachmentId
+                    }]
+                } : {})
+            }
+        })
+        store.messages.addMessage(canonical.id, prompt(), 'canonical-1')
+        store.messages.addMessage(canonical.id, prompt(), 'canonical-2')
+        store.messages.addMessage(source.id, prompt(firstAttachment.id), 'source-1')
+        store.messages.addMessage(source.id, prompt(secondAttachment.id), 'source-2')
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => null }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-repeated-attachments'] })
+            })
+            expect(response.status).toBe(200)
+            const mergedMessages = store.messages.getAllMessages(canonical.id)
+            expect(mergedMessages).toHaveLength(2)
+            const attachmentIds = mergedMessages.map((message) => {
+                const content = message.content as {
+                    content?: { attachments?: Array<{ attachmentId?: string }> }
+                }
+                return content.content?.attachments?.[0]?.attachmentId
+            })
+            expect(attachmentIds[0]).toBeDefined()
+            expect(attachmentIds[1]).toBeDefined()
+            expect(attachmentIds[0]).not.toBe(attachmentIds[1])
+            expect((await store.attachments.readForSessionAsync(attachmentIds[0]!, 'default', canonical.id))?.data)
+                .toEqual(Buffer.from('first original'))
+            expect((await store.attachments.readForSessionAsync(attachmentIds[1]!, 'default', canonical.id))?.data)
+                .toEqual(Buffer.from('second original'))
+        } finally {
+            store.close()
+            rmSync(root, { recursive: true, force: true })
+        }
+    })
+
+    it('rolls back a failed attachment merge and retries without duplicates', async () => {
+        const root = mkdtempSync(join(tmpdir(), 'hapi-codex-attachment-merge-retry-'))
+        const store = new Store(':memory:', { attachmentsRoot: join(root, 'attachments') })
+        const source = store.sessions.getOrCreateSession(
+            'source-failed-attachment-merge-session',
+            { codexSessionId: 'codex-thread-failed-attachment-merge' },
+            {},
+            'default'
+        )
+        const canonical = store.sessions.getOrCreateSession(
+            'canonical-failed-attachment-merge-session',
+            { codexSessionId: 'codex-thread-failed-attachment-merge' },
+            {},
+            'default'
+        )
+        store.sessions.touchSessionUpdatedAt(canonical.id, Date.now() + 1_000, 'default')
+
+        const firstAttachment = await store.attachments.create({
+            namespace: 'default',
+            sessionId: source.id,
+            filename: 'first.txt',
+            mimeType: 'text/plain',
+            original: Buffer.from('first original')
+        })
+        const secondAttachment = await store.attachments.create({
+            namespace: 'default',
+            sessionId: source.id,
+            filename: 'second.txt',
+            mimeType: 'text/plain',
+            original: Buffer.from('second original')
+        })
+        const prompt = (attachmentId?: string) => ({
+            role: 'user',
+            content: {
+                type: 'text',
+                text: attachmentId === firstAttachment.id
+                    ? 'first repeated prompt'
+                    : attachmentId === secondAttachment.id
+                        ? 'second repeated prompt'
+                        : 'first repeated prompt',
+                ...(attachmentId ? {
+                    attachments: [{
+                        id: `message-${attachmentId}`,
+                        filename: attachmentId === firstAttachment.id ? firstAttachment.filename : secondAttachment.filename,
+                        mimeType: 'text/plain',
+                        size: attachmentId === firstAttachment.id ? firstAttachment.size : secondAttachment.size,
+                        attachmentId
+                    }]
+                } : {})
+            }
+        })
+        store.messages.addMessage(canonical.id, prompt(), 'canonical-1')
+        store.messages.addMessage(canonical.id, {
+            role: 'user',
+            content: { type: 'text', text: 'second repeated prompt' }
+        }, 'canonical-2')
+        store.messages.addMessage(source.id, prompt(firstAttachment.id), 'source-1')
+        store.messages.addMessage(source.id, prompt(secondAttachment.id), 'source-2')
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => null }))
+
+        const cloneCalls: string[] = []
+        const clonePaths: string[] = []
+        let cloneAttempt = 0
+        const originalClone = store.attachments.cloneForSession.bind(store.attachments)
+        const cloneSpy = spyOn(store.attachments, 'cloneForSession').mockImplementation(async (...args) => {
+            cloneAttempt += 1
+            if (cloneAttempt === 2) {
+                throw new Error('simulated second attachment clone failure')
+            }
+            const cloned = await originalClone(...args)
+            cloneCalls.push(cloned.id)
+            clonePaths.push(cloned.originalPath)
+            return cloned
+        })
+
+        const merge = () => app.request('/api/codex/merge-duplicate-sessions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sessionIds: ['codex-thread-failed-attachment-merge'] })
+        })
+
+        try {
+            const failedResponse = await merge()
+            expect(failedResponse.status).toBe(200)
+            const failedBody = await failedResponse.json() as { success: false; error: string }
+            expect(failedBody.success).toBe(false)
+            expect(failedBody.error).toContain('simulated second attachment clone failure')
+            expect(store.sessions.getSessionByNamespace(source.id, 'default')).not.toBeNull()
+            expect(store.messages.getAllMessages(canonical.id).map((message) => message.content)).toEqual([
+                prompt(),
+                {
+                    role: 'user',
+                    content: { type: 'text', text: 'second repeated prompt' }
+                }
+            ])
+            expect(cloneCalls).toHaveLength(1)
+            expect(store.attachments.getForSession(cloneCalls[0]!, 'default', canonical.id)).toBeNull()
+            expect(existsSync(clonePaths[0]!)).toBe(false)
+            expect(store.attachments.getForSession(firstAttachment.id, 'default', source.id)).not.toBeNull()
+            expect(store.attachments.getForSession(secondAttachment.id, 'default', source.id)).not.toBeNull()
+
+            const retryResponse = await merge()
+            expect(retryResponse.status).toBe(200)
+            const retryBody = await retryResponse.json() as { success: true }
+            expect(retryBody.success).toBe(true)
+
+            const mergedMessages = store.messages.getAllMessages(canonical.id)
+            expect(mergedMessages).toHaveLength(2)
+            const mergedAttachmentIds = mergedMessages.map((message) => {
+                const content = message.content as {
+                    content?: { attachments?: Array<{ attachmentId?: string }> }
+                }
+                return content.content?.attachments?.map((attachment) => attachment.attachmentId) ?? []
+            })
+            expect(mergedAttachmentIds).toEqual([
+                [cloneCalls[1]],
+                [cloneCalls[2]]
+            ])
+            expect(store.sessions.getSessionByNamespace(source.id, 'default')).toBeNull()
+            expect(store.attachments.getForSession(firstAttachment.id, 'default', source.id)).toBeNull()
+            expect(store.attachments.getForSession(secondAttachment.id, 'default', source.id)).toBeNull()
+        } finally {
+            cloneSpy.mockRestore()
+            store.close()
+            rmSync(root, { recursive: true, force: true })
+        }
+    })
+
+    it('rejects a duplicate merge when the source reconnects during attachment cloning', async () => {
+        const root = mkdtempSync(join(tmpdir(), 'hapi-codex-attachment-merge-reconnect-'))
+        const store = new Store(':memory:', { attachmentsRoot: join(root, 'attachments') })
+        const source = store.sessions.getOrCreateSession(
+            'source-reconnect-attachment-merge-session',
+            { codexSessionId: 'codex-thread-reconnect-attachment-merge' },
+            {},
+            'default'
+        )
+        const canonical = store.sessions.getOrCreateSession(
+            'canonical-reconnect-attachment-merge-session',
+            { codexSessionId: 'codex-thread-reconnect-attachment-merge' },
+            {},
+            'default'
+        )
+        store.sessions.touchSessionUpdatedAt(canonical.id, Date.now() + 1_000, 'default')
+        const attachment = await store.attachments.create({
+            namespace: 'default',
+            sessionId: source.id,
+            filename: 'reconnect.txt',
+            mimeType: 'text/plain',
+            original: Buffer.from('source original')
+        })
+        const prompt = {
+            role: 'user',
+            content: {
+                type: 'text',
+                text: 'reconnect attachment prompt'
+            }
+        }
+        store.messages.addMessage(canonical.id, prompt, 'canonical-1')
+        store.messages.addMessage(source.id, {
+            role: 'user',
+            content: {
+                type: 'text',
+                text: 'reconnect attachment prompt',
+                attachments: [{
+                    id: 'reconnect-attachment',
+                    filename: attachment.filename,
+                    mimeType: attachment.mimeType,
+                    size: attachment.size,
+                    attachmentId: attachment.id
+                }]
+            }
+        }, 'source-1')
+
+        let sourceActive = false
+        let clonedId: string | undefined
+        const originalClone = store.attachments.cloneMessageAttachments.bind(store.attachments)
+        const cloneSpy = spyOn(store.attachments, 'cloneMessageAttachments').mockImplementation(async (...args) => {
+            const cloned = await originalClone(...args) as typeof prompt
+            clonedId = (cloned.content as { attachments?: Array<{ attachmentId?: string }> })
+                .attachments?.[0]?.attachmentId
+            sourceActive = true
+            store.messages.addMessage(source.id, {
+                role: 'user',
+                content: { type: 'text', text: 'arrived during merge' }
+            }, 'late-source-message')
+            return cloned
+        })
+
+        const engine = {
+            getSessionsByNamespace: () => [],
+            getSessionByNamespace: (sessionId: string) => {
+                if (sessionId === source.id) return { id: source.id, namespace: 'default', active: sourceActive }
+                if (sessionId === canonical.id) return { id: canonical.id, namespace: 'default', active: false }
+                return undefined
+            }
+        } as unknown as SyncEngine
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-reconnect-attachment-merge'] })
+            })
+            expect(response.status).toBe(200)
+            const body = await response.json() as { success: false; error: string }
+            expect(body.success).toBe(false)
+            expect(body.error).toContain('became active')
+            expect(store.sessions.getSessionByNamespace(source.id, 'default')).not.toBeNull()
+            expect(store.messages.getAllMessages(source.id).some((message) => message.localId === 'late-source-message'))
+                .toBe(true)
+            expect(store.attachments.getForSession(attachment.id, 'default', source.id)).not.toBeNull()
+            expect(clonedId).toBeDefined()
+            expect(store.attachments.getForSession(clonedId!, 'default', canonical.id)).toBeNull()
+        } finally {
+            cloneSpy.mockRestore()
+            store.close()
+            rmSync(root, { recursive: true, force: true })
+        }
+    })
+
+    it('preserves indeterminate delivery state when merging an unmatched duplicate message', async () => {
+        const store = new Store(':memory:')
+        const source = store.sessions.getOrCreateSession(
+            'source-indeterminate-merge-session',
+            { codexSessionId: 'codex-thread-indeterminate-merge' },
+            {},
+            'default'
+        )
+        const canonical = store.sessions.getOrCreateSession(
+            'canonical-indeterminate-merge-session',
+            { codexSessionId: 'codex-thread-indeterminate-merge' },
+            {},
+            'default'
+        )
+        store.sessions.touchSessionUpdatedAt(canonical.id, Date.now() + 1_000, 'default')
+
+        const knownPrompt = {
+            role: 'user',
+            content: { type: 'text', text: 'known prompt' }
+        }
+        const canonicalOnlyPrompt = {
+            role: 'user',
+            content: { type: 'text', text: 'canonical-only prompt' }
+        }
+        const unmatchedPrompt = {
+            role: 'user',
+            content: { type: 'text', text: 'unmatched prompt' }
+        }
+        store.messages.addMessage(canonical.id, knownPrompt, 'canonical-1')
+        store.messages.addMessage(canonical.id, canonicalOnlyPrompt, 'canonical-2')
+        store.messages.addMessage(source.id, knownPrompt, 'source-1')
+        store.messages.addMessage(source.id, unmatchedPrompt, 'source-indeterminate')
+        expect(store.messages.setMessagesDeliveryState(source.id, ['source-indeterminate'], 'indeterminate')).toBe(1)
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => null }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-indeterminate-merge'] })
+            })
+            expect(response.status).toBe(200)
+            const body = await response.json() as { success: true }
+            expect(body.success).toBe(true)
+
+            const copied = store.messages.getAllMessages(canonical.id)
+                .find((message) => message.localId?.startsWith('source-indeterminate'))
+            expect(copied?.deliveryState).toBe('indeterminate')
+            expect(copied?.invokedAt).toBeNull()
+            expect(store.messages.getUninvokedLocalMessages(canonical.id, { deliverableOnly: true }))
+                .not.toContainEqual(copied)
+            expect(store.messages.getDeliverableMessagesAfter(canonical.id, 0, Date.now()))
+                .not.toContainEqual(copied)
+            expect(store.sessions.getSessionByNamespace(source.id, 'default')).toBeNull()
         } finally {
             store.close()
         }

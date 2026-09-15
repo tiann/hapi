@@ -65,6 +65,13 @@ export const MetadataSchema = z.object({
     // (`claude --resume <id> --fork-session`). Lets the web list mark the new
     // session as a branch of `<id>` instead of an unrelated duplicate.
     forkedFrom: z.string().optional(),
+    // HAPI localId boundary for a historical shared Codex fork. Persisted so a
+    // Hub restart can hydrate only the native fork prefix, not later messages.
+    forkedAtMessageLocalId: z.string().optional(),
+    // Inclusive HAPI localId boundary for a current-tip shared Codex fork.
+    // Empty string represents a fork of an empty transcript. Persisted so
+    // later parent activity is excluded after a Hub restart.
+    forkedThroughMessageLocalId: z.string().optional(),
     codexSessionId: z.string().optional(),
     // 原始 Codex thread id。导入 Codex 历史后，HAPI 会 fork 出自己的续写 thread；
     // codexSessionId 保存 fork 后的 thread，codexSourceSessionId 保留来源 thread 便于同步/展示。
@@ -292,8 +299,13 @@ export const AttachmentMetadataSchema = z.object({
     filename: z.string(),
     mimeType: z.string(),
     size: z.number(),
-    path: z.string(),
+    // `path` is the legacy CLI-local upload reference. New messages carry an
+    // opaque hub attachment id and the CLI materializes it on demand.
+    path: z.string().min(1).optional(),
+    attachmentId: z.string().min(1).optional(),
     previewUrl: z.string().optional()
+}).refine((value) => Boolean(value.path || value.attachmentId), {
+    message: 'Attachment metadata must include either path or attachmentId'
 })
 
 export type AttachmentMetadata = z.infer<typeof AttachmentMetadataSchema>

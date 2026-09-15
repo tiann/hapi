@@ -12,6 +12,7 @@ const MAX_PREVIEW_BYTES = 5 * 1024 * 1024
 
 type PendingUploadAttachment = PendingAttachment & {
     path?: string
+    attachmentId?: string
     previewUrl?: string
     uploadSessionId?: string
 }
@@ -27,30 +28,29 @@ export function createAttachmentAdapter(
 ): AttachmentAdapter {
     const cancelledAttachmentIds = new Set<string>()
 
-    const deleteUpload = async (path?: string, uploadSessionId = sessionId) => {
-        if (!path) return
+    const deleteUpload = async (
+        path?: string,
+        attachmentId?: string,
+        uploadSessionId = sessionId
+    ) => {
+        if (!path && !attachmentId) return
         try {
-            await api.deleteUploadFile(uploadSessionId, path)
+            if (attachmentId) {
+                await api.deleteAttachment(uploadSessionId, attachmentId)
+            } else if (path) {
+                await api.deleteUploadFile(uploadSessionId, path)
+            }
         } catch {
             // Best effort cleanup
         }
     }
 
     return {
-        // assistant-ui uses the exact "*" sentinel for an allow-all adapter.
-        // "*/*" is forwarded to MIME matching and rejects every file before
-        // this adapter's add() method can run.
         accept: '*',
 
         async *add({ file }): AsyncGenerator<PendingAttachment> {
-            // Upload paths are scoped to the session that created them. An
-            // inactive composer may resume into a different session id, so its
-            // persisted file must follow the normal resolve/transfer flow and
-            // be uploaded again by the resumed composer. Pathless restored
-            // metadata still supplies a stable id so draft merge cannot
-            // duplicate the same File across persistence passes.
             const restored = getRestoredUploadMetadata(file)
-            if (!resolveSessionId && restored?.path) {
+            if (!resolveSessionId && (restored?.path || restored?.attachmentId)) {
                 yield {
                     id: restored.id,
                     type: 'file',
@@ -59,6 +59,7 @@ export function createAttachmentAdapter(
                     file,
                     status: { type: 'requires-action', reason: 'composer-send' },
                     path: restored.path,
+                    attachmentId: restored.attachmentId,
                     previewUrl: restored.previewUrl,
                     uploadSessionId: restored.uploadSessionId,
                 } as PendingUploadAttachment
@@ -88,9 +89,7 @@ export function createAttachmentAdapter(
                     previewUrl
                 } as PendingUploadAttachment
 
-                if (cancelledAttachmentIds.has(id)) {
-                    return
-                }
+                if (cancelledAttachmentIds.has(id)) return
 
                 if (file.size > MAX_UPLOAD_BYTES) {
                     yield {
@@ -105,9 +104,24 @@ export function createAttachmentAdapter(
                 }
 
                 const uploadSessionId = resolveSessionId ? await resolveSessionId() : sessionId
-                // Resume may already have merged the source session away. Always
-                // hand off with a live cancellation predicate so transfer can
-                // drop this id (even if already persisted on the source draft).
+                if (restored
+                    && restored.uploadSessionId === uploadSessionId
+                    && (restored.path || restored.attachmentId)) {
+                    yield {
+                        id,
+                        type: 'file',
+                        name: file.name,
+                        contentType,
+                        file,
+                        status: { type: 'requires-action', reason: 'composer-send' },
+                        path: restored.path,
+                        attachmentId: restored.attachmentId,
+                        previewUrl: restored.previewUrl,
+                        uploadSessionId,
+                    } as PendingUploadAttachment
+                    return
+                }
+
                 if (uploadSessionId !== sessionId && onSessionResolved) {
                     await onSessionResolved(uploadSessionId, {
                         id,
@@ -117,17 +131,15 @@ export function createAttachmentAdapter(
                     })
                     return
                 }
-                if (cancelledAttachmentIds.has(id)) {
-                    return
-                }
+                if (cancelledAttachmentIds.has(id)) return
 
+                // The local preview is only for the composer. The Hub receives
+                // the original bytes and new messages persist only attachmentId.
                 const content = previewUrl
                     ? base64FromDataUrl(previewUrl)
                     : await fileToBase64(file)
 
-                if (cancelledAttachmentIds.has(id)) {
-                    return
-                }
+                if (cancelledAttachmentIds.has(id)) return
 
                 yield {
                     id,
@@ -141,13 +153,13 @@ export function createAttachmentAdapter(
 
                 const result = await api.uploadFile(uploadSessionId, file.name, content, contentType)
                 if (cancelledAttachmentIds.has(id)) {
-                    if (result.success && result.path) {
-                        await deleteUpload(result.path, uploadSessionId)
+                    if (result.success && (result.path || result.attachmentId)) {
+                        await deleteUpload(result.path, result.attachmentId, uploadSessionId)
                     }
                     return
                 }
 
-                if (!result.success || !result.path) {
+                if (!result.success || (!result.path && !result.attachmentId)) {
                     yield {
                         id,
                         type: 'file',
@@ -167,10 +179,10 @@ export function createAttachmentAdapter(
                     file,
                     status: { type: 'requires-action', reason: 'composer-send' },
                     path: result.path,
+                    attachmentId: result.attachmentId,
                     previewUrl,
                     uploadSessionId,
                 } as PendingUploadAttachment
-
             } catch {
                 yield {
                     id,
@@ -185,23 +197,22 @@ export function createAttachmentAdapter(
 
         async remove(attachment: Attachment): Promise<void> {
             cancelledAttachmentIds.add(attachment.id)
-            const path = (attachment as PendingUploadAttachment).path
-            const uploadSessionId = (attachment as PendingUploadAttachment).uploadSessionId
-            await deleteUpload(path, uploadSessionId)
+            const pending = attachment as PendingUploadAttachment
+            await deleteUpload(pending.path, pending.attachmentId, pending.uploadSessionId)
         },
 
         async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
             const pending = attachment as PendingUploadAttachment
             const path = pending.path
+            const attachmentId = pending.attachmentId
 
-            // Build AttachmentMetadata to be sent with the message
-            const metadata: AttachmentMetadata | undefined = path ? {
+            const metadata: AttachmentMetadata | undefined = (path || attachmentId) ? {
                 id: attachment.id,
                 filename: attachment.name,
                 mimeType: attachment.contentType ?? 'application/octet-stream',
                 size: attachment.file?.size ?? 0,
-                path,
-                previewUrl: pending.previewUrl
+                ...(path ? { path, previewUrl: pending.previewUrl } : {}),
+                ...(attachmentId ? { attachmentId } : {})
             } : undefined
 
             return {
@@ -210,7 +221,6 @@ export function createAttachmentAdapter(
                 name: attachment.name,
                 contentType: attachment.contentType,
                 status: { type: 'complete' },
-                // Store metadata as JSON in the text content for extraction by assistant-runtime
                 content: metadata ? [{ type: 'text', text: JSON.stringify({ __attachmentMetadata: metadata }) }] : []
             }
         }
@@ -224,18 +234,14 @@ async function fileToBase64(file: File): Promise<string> {
 function base64FromDataUrl(dataUrl: string): string {
     const separatorIndex = dataUrl.indexOf(',')
     const base64 = separatorIndex >= 0 ? dataUrl.slice(separatorIndex + 1) : ''
-    if (!base64) {
-        throw new Error('Failed to read file')
-    }
+    if (!base64) throw new Error('Failed to read file')
     return base64
 }
 
 async function fileToDataUrl(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
         const reader = new FileReader()
-        reader.onload = () => {
-            resolve(reader.result as string)
-        }
+        reader.onload = () => resolve(reader.result as string)
         reader.onerror = reject
         reader.readAsDataURL(file)
     })

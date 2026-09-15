@@ -881,7 +881,7 @@ export class MessageService {
             }
         }
 
-        const inserted = this.store.addMessageForCurrentSession(
+        const inserted = await this.store.addMessageForCurrentSession(
             sessionId,
             content,
             payload.localId ?? undefined,

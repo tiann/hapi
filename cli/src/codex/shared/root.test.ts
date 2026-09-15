@@ -61,6 +61,7 @@ async function fixture() {
     const updateState = vi.fn((fn: (value: AgentState) => AgentState) => { state = fn(state); });
     const rpc = new Map<string, (raw: unknown) => Promise<unknown>>();
     const send = vi.fn();
+    const create = vi.fn<RootHost['create']>(async () => { throw new Error('Unexpected root creation'); });
     const session = {
         sessionId: 'sid', getMetadata: () => metadata,
         updateMetadata: (fn: (value: Metadata) => Metadata) => { metadata = fn(metadata); },
@@ -74,7 +75,7 @@ async function fixture() {
     } as unknown as ApiSessionClient;
     const root = new SharedCodexRoot({ session, workingDirectory: directory } as SessionBootstrapResult, {
         directory, generation: 'test', endpoint: 'mock', settingsFor: () => undefined,
-        create: async () => { throw new Error('Unexpected root creation'); },
+        create,
         end: async () => { throw new Error('Unexpected root archive'); }
     } satisfies RootHost);
     cleanups.push(async () => { await root.close(false); await rm(directory, { recursive: true, force: true }); });
@@ -87,7 +88,7 @@ async function fixture() {
         notify(method: string, params: unknown): void;
         abandoned(): void;
     };
-    return { root, native, rpc, send, metadata: () => metadata, state: () => state, updateState, reconnect: () => reconnect?.() };
+    return { root, native, rpc, send, create, metadata: () => metadata, state: () => state, updateState, reconnect: () => reconnect?.() };
 }
 
 async function completePlan(f: Awaited<ReturnType<typeof fixture>>, status = 'completed') {
@@ -153,6 +154,37 @@ describe('shared plan actions', () => {
         expect(f.state().codexPlanProposalId).toBeNull();
         f.native.notify('item/completed', { threadId: 'child', turnId: 'child-turn', item: { id: 'p', type: 'plan', text: 'child' } });
         expect(f.state().codexPlanProposalId).toBeNull();
+    });
+
+    it('records the current root message as the inclusive shared fork boundary', async () => {
+        const f = await fixture();
+        const child = { threadId: 'child-thread', session: { sessionId: 'child-sid' }, initialSettings: vi.fn(async () => {}) };
+        f.create.mockResolvedValueOnce(child as never);
+        await f.root.activate();
+        f.native.thread.turns.push({ id: 'turn', status: 'completed', items: [
+            { id: 'item', type: 'userMessage', clientId: 'user-1', content: [{ type: 'text', text: 'hello' }] },
+            { id: 'answer', type: 'agentMessage', text: 'answer' }
+        ] });
+        await f.root.refresh();
+
+        await expect(f.rpc.get(RPC_METHODS.ForkConversation)!({})).resolves.toEqual({
+            nativeSessionId: 'child-thread', sessionId: 'child-sid'
+        });
+        expect(f.create).toHaveBeenCalledWith('thread/fork', expect.objectContaining({
+            hapiForkThroughMessageLocalId: 'codex:thread:turn:answer:agent_message'
+        }), f.root);
+        expect(f.create.mock.calls[0][1]).not.toHaveProperty('hapiForkMessageLocalId');
+    });
+
+    it('maps final native lastTurnId forks to an inclusive HAPI boundary', async () => {
+        const f = await fixture();
+        f.native.thread.turns.push({ id: 'turn-1', status: 'completed', items: [
+            { id: 'user-1', type: 'userMessage', clientId: 'local-1', content: [{ type: 'text', text: 'hello' }] }
+        ] });
+        await f.root.refresh();
+        expect(f.root.historicalForkBoundary({ lastTurnId: 'turn-1' })).toEqual({
+            kind: 'through', localId: 'local-1'
+        });
     });
 
     it('switches mode and submits once across repeated Web actions and lost replies', async () => {
