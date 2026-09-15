@@ -10,11 +10,11 @@ function asString(value: unknown): string | null {
     return typeof value === 'string' && value.length > 0 ? value : null
 }
 
-function parseAction(value: unknown): CodexCommandAction | null {
+function parseAction(value: unknown, fallbackCommand: string | null): CodexCommandAction | null {
     if (!value || typeof value !== 'object') return null
     const action = value as Record<string, unknown>
     const type = asString(action.type)
-    const command = asString(action.command)
+    const command = asString(action.command) ?? fallbackCommand
     if (!type || !command) return null
 
     if (type === 'read') {
@@ -46,7 +46,10 @@ export function getCodexCommandActions(block: ToolCallBlock): CodexCommandAction
     const input = block.tool.input as Record<string, unknown>
     const raw = input.command_actions ?? input.commandActions
     if (!Array.isArray(raw)) return []
-    return raw.map(parseAction).filter((action): action is CodexCommandAction => action !== null)
+    const fallbackCommand = asString(input.command)
+    return raw
+        .map((action) => parseAction(action, fallbackCommand))
+        .filter((action): action is CodexCommandAction => action !== null)
 }
 
 export function isCodexExplorationTool(block: ToolCallBlock): boolean {

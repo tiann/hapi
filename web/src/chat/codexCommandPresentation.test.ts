@@ -38,6 +38,23 @@ describe('Codex command presentation metadata', () => {
         expect(isCodexExplorationTool(tool)).toBe(true)
     })
 
+    it('uses the top-level command for historical actions that omit their command field', () => {
+        const tool = block({
+            command: 'Get-Content src/a.ts',
+            command_actions: [
+                { type: 'read', name: 'a.ts', path: '/repo/src/a.ts' }
+            ]
+        })
+
+        expect(getCodexCommandActions(tool)).toEqual([{
+            type: 'read',
+            command: 'Get-Content src/a.ts',
+            name: 'a.ts',
+            path: '/repo/src/a.ts'
+        }])
+        expect(isCodexExplorationTool(tool)).toBe(true)
+    })
+
     it('rejects malformed actions and does not classify unknown commands as exploration', () => {
         const tool = block({
             command_actions: [
