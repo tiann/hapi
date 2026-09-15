@@ -90,7 +90,7 @@ export function updateComposerDraftTextSnapshot(sessionId: string, text: string)
 /** Stable membership/metadata key for attachment-only persist effects. */
 export function attachmentDraftRevision(attachments: readonly AttachmentDraftInput[]): string {
     return attachments
-        .map(({ id, path, uploadSessionId }) => `${id}:${path ?? ''}:${uploadSessionId ?? ''}`)
+        .map(({ id, path, attachmentId, uploadSessionId }) => `${id}:${path ?? ''}:${attachmentId ?? ''}:${uploadSessionId ?? ''}`)
         .join('\0')
 }
 
@@ -117,10 +117,24 @@ export function forgetComposerDraftHandoff(sessionId: string): void {
     completedHandoffs.delete(sessionId)
 }
 
-function stripSessionScopedUploadFields(attachment: AttachmentDraftInput): AttachmentDraftInput {
+function stripSessionScopedUploadFields(
+    attachment: AttachmentDraftInput,
+    targetSessionId: string,
+): AttachmentDraftInput {
+    if (attachment.attachmentId) {
+        // Durable Hub attachments are transferred with the session merge. Keep
+        // the opaque id and retarget its ownership context instead of uploading
+        // the same File again under the resumed session.
+        return {
+            ...attachment,
+            path: undefined,
+            uploadSessionId: targetSessionId,
+        }
+    }
     return {
         ...attachment,
         path: undefined,
+        attachmentId: undefined,
         previewUrl: undefined,
         uploadSessionId: undefined,
     }
@@ -150,6 +164,7 @@ async function loadPersistedAttachments(
             id: metadata?.id ?? `transferred-${index}-${file.name}`,
             file,
             path: metadata?.path,
+            attachmentId: metadata?.attachmentId,
             previewUrl: metadata?.previewUrl,
             uploadSessionId: metadata?.uploadSessionId,
         }
@@ -383,17 +398,23 @@ export async function transferComposerDraft(
             const normalizedBase = (
                 sourceSessionId === targetSessionId
                     ? currentBase
-                    : currentBase.map(stripSessionScopedUploadFields)
+                    : currentBase.map((item) => stripSessionScopedUploadFields(item, targetSessionId))
             ).filter((item) => !cancelledIds.has(item.id))
             const normalizedPending = pendingAttachments
                 .filter((item) => !cancelledIds.has(item.id))
-                .map((attachment) => ({
-                    id: attachment.id,
-                    file: attachment.file,
-                    previewUrl: attachment.previewUrl,
-                    path: undefined,
-                    uploadSessionId: undefined,
-                }))
+                .map((attachment) => attachment.attachmentId
+                    ? {
+                        ...attachment,
+                        path: undefined,
+                        uploadSessionId: targetSessionId,
+                    }
+                    : {
+                        id: attachment.id,
+                        file: attachment.file,
+                        previewUrl: attachment.previewUrl,
+                        path: undefined,
+                        uploadSessionId: undefined,
+                    })
             return mergeAttachmentsById(normalizedBase, normalizedPending)
         }
 

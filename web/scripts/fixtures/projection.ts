@@ -24,13 +24,17 @@ function withOptional(target: JsonObject, key: string, value: unknown): void {
 function projectAttachments(attachments: AttachmentMetadata[] | undefined): JsonObject[] | undefined {
     if (!attachments || attachments.length === 0) return undefined
     // previewUrl is a web-serving convenience — dropped.
-    return attachments.map((attachment) => ({
-        id: attachment.id,
-        filename: attachment.filename,
-        mimeType: attachment.mimeType,
-        size: attachment.size,
-        path: attachment.path
-    }))
+    return attachments.map((attachment) => {
+        const projected: JsonObject = {
+            id: attachment.id,
+            filename: attachment.filename,
+            mimeType: attachment.mimeType,
+            size: attachment.size
+        }
+        withOptional(projected, 'path', attachment.path)
+        withOptional(projected, 'attachmentId', attachment.attachmentId)
+        return projected
+    })
 }
 
 function projectPermission(permission: ToolPermission | undefined): JsonObject | undefined {

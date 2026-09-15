@@ -289,7 +289,8 @@ data class ChatAttachment(
     val filename: String,
     val mimeType: String,
     val size: Double,
-    val path: String,
+    val path: String? = null,
+    val attachmentId: String? = null,
     val previewUrl: String? = null,
 )
 

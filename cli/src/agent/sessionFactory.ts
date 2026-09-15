@@ -164,6 +164,12 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.forkedFrom !== undefined) {
         preserved.forkedFrom = metadata.forkedFrom
     }
+    if (metadata.forkedAtMessageLocalId !== undefined) {
+        preserved.forkedAtMessageLocalId = metadata.forkedAtMessageLocalId
+    }
+    if (metadata.forkedThroughMessageLocalId !== undefined) {
+        preserved.forkedThroughMessageLocalId = metadata.forkedThroughMessageLocalId
+    }
     if (metadata.capabilities?.conversationHistory !== undefined) {
         preserved.capabilities = {
             ...preserved.capabilities,

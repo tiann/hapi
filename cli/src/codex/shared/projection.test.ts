@@ -88,6 +88,16 @@ describe('shared history projection', () => {
         await projection.history(snapshot); projection.reset(); await projection.history(snapshot);
         expect(send).toHaveBeenCalledTimes(2); expect(send.mock.calls[0]).toEqual(send.mock.calls[1]);
     });
+    it('maps native historical fork turn boundaries to HAPI message local IDs', async () => {
+        const session = { getMetadata: () => {}, sendAgentMessage: vi.fn(), sendUserMessage: vi.fn(), updateMetadata: vi.fn() } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {});
+        await projection.history({ turns: [
+            { id: 'turn-1', status: 'completed', items: [{ id: 'user-1', type: 'userMessage', clientId: 'local-1', content: [{ type: 'text', text: 'one' }] }] },
+            { id: 'turn-2', status: 'completed', items: [{ id: 'user-2', type: 'userMessage', clientId: 'local-2', content: [{ type: 'text', text: 'two' }] }] }
+        ] });
+        expect(projection.firstMessageLocalIdForTurn('turn-1')).toBe('local-1');
+        expect(projection.firstMessageLocalIdAfterTurn('turn-1')).toBe('local-2');
+    });
     it('does not settle an active snapshot under the final message id', async () => {
         const send = vi.fn();
         const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
