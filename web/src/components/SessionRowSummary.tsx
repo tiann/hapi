@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { SessionSummary } from '@/types/api'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
 import { ScheduleIcon } from '@/components/icons'
@@ -12,7 +12,12 @@ import { getCodexImportedAt } from '@/lib/codexImportedSessions'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { useTranslation } from '@/lib/use-translation'
 import { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
-
+import {
+    attachedJobFraction,
+    formatAttachedJobProgress,
+    isAttachedJobStale
+} from '@/lib/attachedJob'
+import { isAgentForegroundThinking } from '@/lib/sessionInProgress'
 function LoaderIcon(props: { className?: string }) {
     return (
         <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={props.className}>
@@ -162,14 +167,32 @@ export function SessionRowSummary(props: {
     const attentionId = attentionTooltipIdProp ?? ownedIds.attentionId
     const scheduleId = scheduleTooltipIdProp ?? ownedIds.scheduleId
     const timeLabel = getSessionTimeLabel(s, t)
+    const attachedJob = s.attachedJob?.status === 'running' ? s.attachedJob : null
+    // Tick once a minute so elapsed wall-time advances without waiting for a heartbeat SSE.
+    const [nowMs, setNowMs] = useState(() => Date.now())
+    useEffect(() => {
+        if (!attachedJob) return
+        setNowMs(Date.now())
+        const id = window.setInterval(() => setNowMs(Date.now()), 60_000)
+        return () => window.clearInterval(id)
+    }, [attachedJob?.key, attachedJob?.startedAt])
+    const jobStale = attachedJob ? isAttachedJobStale(attachedJob, nowMs) : false
+    const jobFraction = attachedJob ? attachedJobFraction(attachedJob) : null
+    const jobProgressLabel = attachedJob
+        ? formatAttachedJobProgress(attachedJob, nowMs, {
+            left: t('session.item.attachedJob.left'),
+            running: t('session.item.attachedJob.running'),
+            noHeartbeat: t('session.item.attachedJob.noHeartbeat'),
+        })
+        : null
 
     return (
         <div className={`flex w-full min-w-0 flex-col gap-1 ${className ?? ''}`}>
-            <div className={`grid grid-cols-[minmax(9rem,1fr)_minmax(0,max-content)] items-center gap-2 ${!s.active ? 'opacity-50' : ''}`}>
+            <div className={`grid grid-cols-[minmax(9rem,1fr)_minmax(0,max-content)] items-center gap-2 ${!s.active && !attachedJob ? 'opacity-50' : ''}`}>
                 <div className="flex min-w-0 items-center gap-2">
                     <AgentFlavorIcon flavor={s.metadata?.flavor} className="h-4 w-4 shrink-0 -translate-y-px" />
                     <div
-                        className={`min-w-0 flex-1 truncate text-sm font-medium ${s.active ? 'text-[var(--app-fg)]' : 'text-[var(--app-hint)]'}`}
+                        className={`min-w-0 flex-1 truncate text-sm font-medium ${s.active || attachedJob ? 'text-[var(--app-fg)]' : 'text-[var(--app-hint)]'}`}
                         title={sessionName}
                     >
                         {sessionName}
@@ -187,7 +210,7 @@ export function SessionRowSummary(props: {
                             title={attentionLabel ?? undefined}
                             aria-label={attentionLabel ?? undefined}
                         />
-                    ) : s.active && s.thinking ? (
+                    ) : isAgentForegroundThinking(s) ? (
                         <LoaderIcon className="h-3.5 w-3.5 shrink-0 animate-spin-slow text-[var(--app-badge-success-text)]" />
                     ) : urgentAttention && nestedTooltips && attentionId ? (
                         <SessionAttentionIndicator
@@ -288,6 +311,52 @@ export function SessionRowSummary(props: {
                     ) : null}
                 </div>
             </div>
+            {attachedJob && jobProgressLabel ? (
+                <div
+                    className={`flex min-w-0 items-center gap-2 text-[11px] leading-none ${
+                        jobStale
+                            ? 'text-[var(--app-badge-warning-text)]'
+                            : 'text-[var(--app-badge-success-text)]'
+                    }`}
+                    title={
+                        jobStale
+                            ? t('session.item.attachedJob.staleTitle', {
+                                detail: attachedJob.detail ?? attachedJob.label,
+                            })
+                            : (attachedJob.detail ?? attachedJob.label)
+                    }
+                >
+                    <span
+                        className={`h-1.5 w-1.5 shrink-0 rounded-full bg-current ${jobStale ? '' : 'animate-pulse'}`}
+                        aria-hidden="true"
+                    />
+                    <span className="min-w-0 truncate font-medium">
+                        {attachedJob.label}
+                        {jobStale ? (
+                            <span className="font-semibold"> · {t('session.item.attachedJob.stale')}</span>
+                        ) : null}
+                        <span className="font-normal opacity-80"> · {jobProgressLabel}</span>
+                    </span>
+                    {jobFraction !== null ? (
+                        <span
+                            className="ml-auto h-1 w-16 shrink-0 overflow-hidden rounded-full bg-[var(--app-border)]"
+                            aria-hidden="true"
+                        >
+                            <span
+                                className="block h-full rounded-full bg-current transition-[width] duration-300"
+                                style={{ width: `${Math.round(jobFraction * 100)}%` }}
+                            />
+                        </span>
+                    ) : (
+                        <span
+                            className="ml-auto h-1 w-16 shrink-0 overflow-hidden rounded-full bg-[var(--app-border)]"
+                            aria-hidden="true"
+                        >
+                            <span className="block h-full w-1/3 animate-pulse rounded-full bg-current opacity-70" />
+                        </span>
+                    )}
+                </div>
+            ) : null}
             {projectLabel || machineLabel ? (
                 <div className="truncate text-xs text-[var(--app-hint)]" title={[projectLabel, machineLabel].filter(Boolean).join(' · ')}>
                     {[projectLabel, machineLabel].filter(Boolean).join(' · ')}

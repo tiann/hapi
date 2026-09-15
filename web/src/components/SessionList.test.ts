@@ -41,6 +41,8 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
         backgroundTaskCount: 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
         model: null,
         effort: null,
         ...overrides
@@ -132,6 +134,33 @@ describe('deduplicateSessionsByAgentId', () => {
         const result = deduplicateSessionsByAgentId(sessions)
         expect(result).toHaveLength(1)
         expect(result[0].id).toBe('a') // active wins despite older updatedAt
+    })
+
+    it('keeps a job-bearing duplicate when the winner has no attached job', () => {
+        const sessions = [
+            makeSession({
+                id: 'winner-active',
+                active: true,
+                metadata: { path: '/p', agentSessionId: 'thread-1', flavor: 'codex' },
+                updatedAt: 300,
+            }),
+            makeSession({
+                id: 'job-loser',
+                active: false,
+                metadata: { path: '/p', agentSessionId: 'thread-1', flavor: 'codex' },
+                updatedAt: 100,
+                attachedJob: {
+                    key: 'beets',
+                    label: 'beets',
+                    status: 'running',
+                    heartbeatAt: 1,
+                    startedAt: 1,
+                    updatedAt: 1,
+                },
+            }),
+        ]
+        const result = deduplicateSessionsByAgentId(sessions)
+        expect(result.map((s) => s.id).sort()).toEqual(['job-loser', 'winner-active'])
     })
 
     it('prefers selected session among inactive duplicates', () => {
@@ -365,6 +394,26 @@ describe('shouldShowSessionInSidebar', () => {
         expect(shouldShowSessionInSidebar(stub, 'stub')).toBe(true)
         expect(shouldShowSessionInSidebar({ ...stub, active: true })).toBe(true)
         expect(shouldShowSessionInSidebar({ ...stub, pinned: true })).toBe(true)
+    })
+
+    it('keeps idle empty stubs with a running attached job (pre-title register)', () => {
+        const stub = makeSession({
+            id: 'job-stub',
+            active: false,
+            metadata: { path: '/work/hapi' },
+            attachedJob: {
+                key: 'beets',
+                label: 'beets import',
+                status: 'running',
+                heartbeatAt: 1_000,
+                startedAt: 1_000,
+                updatedAt: 1_000,
+                remaining: 10,
+            },
+        })
+        expect(isSidebarEmptySessionStub(stub)).toBe(true)
+        expect(shouldShowSessionInSidebar(stub)).toBe(true)
+        expect(prepareSidebarSessions([stub]).map((s) => s.id)).toEqual(['job-stub'])
     })
 })
 

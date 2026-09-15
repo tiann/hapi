@@ -189,15 +189,21 @@ function collectProcessTree(pid: number): number[] {
  * Signals are sent synchronously (children first) to work in exit handlers,
  * then waits asynchronously for processes to die.
  */
-async function killProcessTree(pid: number, force: boolean): Promise<boolean> {
+async function killProcessTree(
+  pid: number,
+  force: boolean,
+  signal: NodeJS.Signals = 'SIGTERM'
+): Promise<boolean> {
   // Collect all PIDs first (sync) - returns in child-first order
   const pids = collectProcessTree(pid);
 
-  // Signal all processes synchronously (children first, then root)
-  const signal = force ? 'SIGKILL' : 'SIGTERM';
+  // Signal all processes synchronously (children first, then root).
+  // Preserve the caller's signal when soft-killing so Ctrl-C stays SIGINT
+  // (exit 130) instead of always remapping to SIGTERM (exit 143).
+  const killSignal = force ? 'SIGKILL' : signal;
   for (const p of pids) {
     try {
-      process.kill(p, signal);
+      process.kill(p, killSignal);
     } catch {
       // Process may have already exited
     }
@@ -212,10 +218,14 @@ async function killProcessTree(pid: number, force: boolean): Promise<boolean> {
 }
 
 /** Kill a PID and all descendants, verifying the complete tree is gone. */
-export async function killProcessTreeByPid(pid: number, force: boolean = false): Promise<boolean> {
+export async function killProcessTreeByPid(
+  pid: number,
+  force: boolean = false,
+  signal: NodeJS.Signals = 'SIGTERM'
+): Promise<boolean> {
   if (!Number.isFinite(pid) || pid <= 0) return false;
   if (isWindows()) return killProcess(pid, force);
-  return killProcessTree(pid, force);
+  return killProcessTree(pid, force, signal);
 }
 
 /**
@@ -248,7 +258,8 @@ async function waitForProcessToDie(pid: number, force: boolean): Promise<void> {
 
 export async function killProcessByChildProcess(
   child: ChildProcess,
-  force: boolean = false
+  force: boolean = false,
+  signal: NodeJS.Signals = 'SIGTERM'
 ): Promise<boolean> {
   const pid = child.pid;
   if (!pid) {
@@ -261,5 +272,5 @@ export async function killProcessByChildProcess(
   }
 
   // Kill entire process tree on Unix to prevent orphan processes
-  return killProcessTreeByPid(pid, force);
+  return killProcessTreeByPid(pid, force, signal);
 }
