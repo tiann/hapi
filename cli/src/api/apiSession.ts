@@ -281,6 +281,16 @@ export class ApiSessionClient extends EventEmitter {
     private agentStateChangedDuringAttempt = false
     private readonly pendingOutboundEvents: PendingOutboundEvent[] = []
     private didWarnPendingQueueFull = false
+    private commonHandlersRegistered = false
+
+    private registerCommonHandlersFor(session: Session): void {
+        if (this.commonHandlersRegistered || !session.metadata?.path) return
+        registerCommonHandlers(this.rpcHandlerManager, session.metadata.path, {
+            enableRecycleBin: true,
+            recycleBinNamespace: session.namespace,
+        })
+        this.commonHandlersRegistered = true
+    }
 
     constructor(token: string, session: Session, options: ApiSessionClientOptions = {}) {
         super()
@@ -299,9 +309,7 @@ export class ApiSessionClient extends EventEmitter {
             logger: (msg, data) => logger.debug(msg, data)
         })
 
-        if (this.metadata?.path) {
-            registerCommonHandlers(this.rpcHandlerManager, this.metadata.path)
-        }
+        if (!this.materializer) this.registerCommonHandlersFor(session)
 
         this.socket = io(`${configuration.apiUrl}/cli`, {
             auth: {
@@ -588,6 +596,7 @@ export class ApiSessionClient extends EventEmitter {
                 this.agentState = materialized.agentState
                 this.agentStateVersion = materialized.agentStateVersion
                 this.state = 'active'
+                this.registerCommonHandlersFor(materialized)
 
                 if (shouldSyncMetadata && latestMetadata) {
                     this.updateMetadata(() => latestMetadata)
