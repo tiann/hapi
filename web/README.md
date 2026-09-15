@@ -64,6 +64,7 @@ See `src/router.tsx` for route definitions.
 
 - Message thread with infinite scroll.
 - Composer for sending messages.
+- Composer send shortcut: Alt+S (independent of the Enter behavior setting).
 - Permission mode and model selection for supported agents.
 - Session abort and handoff controls.
 - Codex **Continue planning** hides the current proposal's action menu locally
