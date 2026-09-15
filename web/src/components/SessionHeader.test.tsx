@@ -83,7 +83,7 @@ describe('resolveSessionHeaderMachineLabel', () => {
 })
 
 describe('SessionHeader', () => {
-    it('hides title generation when the Hub does not advertise the capability', () => {
+    it('keeps title generation discoverable when the Hub does not advertise the capability', () => {
         const api = {
             getMachines: vi.fn().mockResolvedValue({ machines: [] }),
             getScratchlist: vi.fn().mockResolvedValue({ entries: [] })
@@ -107,7 +107,7 @@ describe('SessionHeader', () => {
         fireEvent.click(screen.getByTitle('More actions'))
         fireEvent.click(screen.getByRole('menuitem', { name: /Rename/ }))
 
-        expect(screen.queryByRole('button', { name: 'Generate' })).not.toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Generate' })).toBeInTheDocument()
     })
 
     it('manually syncs an inactive Pi session through its owning machine', async () => {

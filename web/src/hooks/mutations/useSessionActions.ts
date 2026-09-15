@@ -28,7 +28,7 @@ export function useSessionActions(
     setServiceTier: (serviceTier: string | null) => Promise<void>
     renameSession: (name: string) => Promise<void>
     suggestSessionTitle: () => Promise<string>
-    updateSessionSummary: (text: string) => Promise<void>
+    updateSessionSummary: (text: string, clearName?: boolean) => Promise<void>
     setPinMode: (mode: 'none' | 'project' | 'global') => Promise<void>
     deleteSession: () => Promise<void>
     isPending: boolean
@@ -248,11 +248,11 @@ export function useSessionActions(
     })
 
     const summaryMutation = useMutation({
-        mutationFn: async (text: string) => {
+        mutationFn: async ({ text, clearName }: { text: string; clearName?: boolean }) => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
             }
-            await api.updateSessionSummary(sessionId, text)
+            await api.updateSessionSummary(sessionId, text, clearName)
         },
         onSuccess: () => void invalidateSession(),
     })
@@ -294,7 +294,7 @@ export function useSessionActions(
         setServiceTier: serviceTierMutation.mutateAsync,
         renameSession: renameMutation.mutateAsync,
         suggestSessionTitle: titleSuggestionMutation.mutateAsync,
-        updateSessionSummary: summaryMutation.mutateAsync,
+        updateSessionSummary: (text, clearName = false) => summaryMutation.mutateAsync({ text, clearName }),
         setPinMode: pinMutation.mutateAsync,
         deleteSession: deleteMutation.mutateAsync,
         isPending: abortMutation.isPending
