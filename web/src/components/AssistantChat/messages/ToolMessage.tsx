@@ -68,6 +68,7 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
     const ctx = useHappyChatContext()
     const { t } = useTranslation()
     const [objectUrl, setObjectUrl] = useState<string | null>(null)
+    const [fileSize, setFileSize] = useState<number | undefined>(undefined)
     const [error, setError] = useState<string | null>(null)
     const [imageStyle, setImageStyle] = useState<CSSProperties | undefined>(undefined)
     const [loadMedia, setLoadMedia] = useState(false)
@@ -102,6 +103,7 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
             objectUrlRef.current = null
         }
         setObjectUrl(null)
+        setFileSize(undefined)
         setImageStyle(undefined)
         setError(null)
 
@@ -114,6 +116,7 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
                 }
                 objectUrlRef.current = nextObjectUrl
                 setObjectUrl(nextObjectUrl)
+                setFileSize(blob.size)
                 if (isImage) {
                     setImageStyle(undefined)
                     const probe = new Image()
@@ -172,6 +175,7 @@ export function GeneratedImageCard(props: { block: GeneratedImageBlock }) {
                             src={objectUrl}
                             fileName={props.block.fileName}
                             label={props.block.fileName}
+                            fileSize={fileSize}
                             buttonClassName="block max-h-[min(28rem,60vh)] max-w-full cursor-zoom-in rounded-xl text-left"
                             imageClassName="max-h-[min(28rem,60vh)] max-w-full rounded-xl object-contain"
                             imageStyle={imageStyle}

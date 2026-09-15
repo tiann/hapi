@@ -5,8 +5,8 @@ import { ImagePreview } from './ImagePreview'
 function renderGallery() {
     render(
         <>
-            <ImagePreview src="/first.png" fileName="first.png" label="First image" />
-            <ImagePreview src="/second.png" fileName="second.png" label="Second image" />
+            <ImagePreview src="/first.png" fileName="first.png" label="First image" fileSize={1536} />
+            <ImagePreview src="/second.png" fileName="second.png" label="Second image" fileSize={2048} />
         </>
     )
 }
@@ -18,13 +18,58 @@ describe('ImagePreview gallery navigation', () => {
         fireEvent.click(screen.getByRole('button', { name: /first image/i }))
 
         const dialog = screen.getByRole('dialog', { name: 'First image' })
+        expect(within(dialog).getAllByRole('button').map((button) => button.getAttribute('title'))).toEqual([
+            'Close',
+            'Zoom out',
+            'Reset zoom',
+            'Zoom in',
+            'Previous image',
+            'Next image',
+        ])
+        expect(within(dialog).getAllByRole('button')
+            .map((button) => button.querySelector('svg')?.getAttribute('class'))
+            .filter(Boolean)).toEqual([
+            'h-4 w-4',
+            'h-4 w-4',
+            'h-4 w-4',
+            'h-4 w-4',
+            'h-4 w-4',
+        ])
+        expect(within(dialog).getByRole('button', { name: '100%' })).toHaveClass(
+            'flex',
+            'h-8',
+            'items-center',
+            'justify-center',
+        )
+        const image = within(dialog).getByRole('img', { name: 'First image' })
+        Object.defineProperty(image, 'naturalWidth', { configurable: true, value: 1200 })
+        Object.defineProperty(image, 'naturalHeight', { configurable: true, value: 700 })
+        fireEvent.load(image)
+        const desktopInfo = dialog.querySelector('[data-image-preview-info="desktop"]')
+        expect(desktopInfo).not.toBeNull()
+        expect(desktopInfo).toHaveClass('flex', 'flex-1', 'items-center', 'max-sm:hidden')
+        expect(desktopInfo).toHaveTextContent('first.png')
+        const mobileInfo = dialog.querySelector('[data-image-preview-info="mobile"]')
+        expect(mobileInfo).not.toBeNull()
+        expect(mobileInfo).toHaveClass('hidden', 'max-sm:flex', 'border-t')
+        const imageMetadata = within(desktopInfo as HTMLElement).getByText('1200 × 700 px · 1.5 KB')
+        expect(imageMetadata).toBeInTheDocument()
+        expect(imageMetadata).toHaveClass('shrink-0', 'text-sm', 'text-white/60')
+        expect(imageMetadata.parentElement).toHaveClass('items-center', 'text-sm')
+        expect(imageMetadata.parentElement).toHaveAttribute('data-image-preview-info', 'desktop')
+        expect(dialog).toHaveClass('fixed', 'inset-0', 'flex-col')
+        expect(within(dialog).getByRole('button', { name: 'Zoom out' }).parentElement).toHaveAttribute('data-image-preview-controls', '')
+        expect(within(dialog).getByRole('button', { name: 'Zoom out' }).parentElement).toHaveClass('max-sm:order-2', 'max-sm:gap-1')
         expect(within(dialog).getByText('1 / 2')).toBeInTheDocument()
         expect(within(dialog).getByRole('button', { name: 'Previous image' })).toBeDisabled()
 
         fireEvent.click(within(dialog).getByRole('button', { name: 'Next image' }))
 
         const nextDialog = screen.getByRole('dialog', { name: 'Second image' })
-        expect(within(nextDialog).getByText('second.png')).toBeInTheDocument()
+        const nextDesktopInfo = nextDialog.querySelector('[data-image-preview-info="desktop"]')
+        expect(nextDesktopInfo).not.toBeNull()
+        expect(nextDesktopInfo).toHaveTextContent('second.png')
+        expect(nextDesktopInfo).toHaveTextContent('2 KB')
         expect(within(nextDialog).getByText('2 / 2')).toBeInTheDocument()
         expect(within(nextDialog).getByRole('img', { name: 'Second image' })).toHaveAttribute('src', '/second.png')
         expect(within(nextDialog).getByRole('button', { name: 'Next image' })).toBeDisabled()
