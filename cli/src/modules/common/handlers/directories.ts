@@ -1,10 +1,10 @@
 import { logger } from '@/ui/logger'
-import { readdir, stat } from 'fs/promises'
+import { readdir, realpath, stat } from 'fs/promises'
 import { basename, join, resolve } from 'path'
-import type { DirectoryEntry, ListDirectoryResponse, StatFilesResponse } from '@hapi/protocol/apiTypes'
+import type { DirectoryEntry, FileMetadataEntry, ListDirectoryResponse, StatFilesResponse } from '@hapi/protocol/apiTypes'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
-import { validatePath } from '../pathSecurity'
+import { resolveRealPathWithinWorkingDirectory, validatePath } from '../pathSecurity'
 import { getErrorMessage, rpcError } from '../rpcResponses'
 
 interface ListDirectoryRequest {
@@ -109,11 +109,34 @@ export function registerDirectoryHandlers(rpcHandlerManager: RpcHandlerManager, 
             }
         }
 
+        if (data.paths.length === 0) {
+            return { success: true, entries: [] }
+        }
+
+        const resolvedWorkingDirectory = await realpath(workingDirectory).catch(() => null)
+        if (!resolvedWorkingDirectory) {
+            return { success: true, entries: data.paths.map((path) => ({ path })) }
+        }
+
         const entries = await Promise.all(data.paths.map(async (path) => {
             try {
-                const stats = await stat(resolve(workingDirectory, path))
+                const resolvedPath = await resolveRealPathWithinWorkingDirectory(
+                    path,
+                    workingDirectory,
+                    resolvedWorkingDirectory
+                )
+                if (!resolvedPath) {
+                    return { path }
+                }
+                const stats = await stat(resolvedPath)
+                const type: FileMetadataEntry['type'] = stats.isFile()
+                    ? 'file'
+                    : stats.isDirectory()
+                        ? 'directory'
+                        : 'other'
                 return {
                     path,
+                    type,
                     size: stats.size,
                     modified: stats.mtime.getTime()
                 }

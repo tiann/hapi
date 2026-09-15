@@ -14,11 +14,15 @@ async function createTempDir(prefix: string): Promise<string> {
 
 describe('directory RPC handlers', () => {
     let rootDir: string
+    let outsideDir: string | undefined
     let rpc: RpcHandlerManager
 
     beforeEach(async () => {
         if (rootDir) {
             await rm(rootDir, { recursive: true, force: true })
+        }
+        if (outsideDir) {
+            await rm(outsideDir, { recursive: true, force: true })
         }
 
         rootDir = await createTempDir('hapi-dir-handler')
@@ -67,7 +71,7 @@ describe('directory RPC handlers', () => {
     it('returns metadata for a batch of searched files', async () => {
         const response = await rpc.handleRequest({
             method: 'session-test:statFiles',
-            params: JSON.stringify({ paths: ['README.md', 'src/index.ts', 'missing.txt'] })
+            params: JSON.stringify({ paths: ['README.md', 'src/index.ts', 'src', 'missing.txt'] })
         })
         const parsed = JSON.parse(response) as {
             success: boolean
@@ -75,10 +79,12 @@ describe('directory RPC handlers', () => {
         }
 
         expect(parsed.success).toBe(true)
-        expect(parsed.entries).toHaveLength(3)
-        expect(parsed.entries?.[0]).toMatchObject({ path: 'README.md', size: 6 })
+        expect(parsed.entries).toHaveLength(4)
+        expect(parsed.entries?.[0]).toMatchObject({ path: 'README.md', type: 'file', size: 6 })
         expect(parsed.entries?.[0]?.modified).toBeTypeOf('number')
-        expect(parsed.entries?.[2]).toEqual({ path: 'missing.txt' })
+        expect(parsed.entries?.[1]).toMatchObject({ path: 'src/index.ts', type: 'file' })
+        expect(parsed.entries?.[2]).toMatchObject({ path: 'src', type: 'directory' })
+        expect(parsed.entries?.[3]).toEqual({ path: 'missing.txt' })
     })
 
     it('rejects stat paths outside the session working directory', async () => {
@@ -90,5 +96,27 @@ describe('directory RPC handlers', () => {
 
         expect(parsed.success).toBe(false)
         expect(parsed.error).toContain('outside the working directory')
+    })
+
+    it('does not expose metadata for a symlinked directory outside the workspace', async () => {
+        outsideDir = await createTempDir('hapi-dir-handler-outside')
+        await writeFile(join(outsideDir, 'secret.txt'), 'secret')
+        try {
+            await symlink(outsideDir, join(rootDir, 'linked'), 'junction')
+        } catch {
+            return
+        }
+
+        const response = await rpc.handleRequest({
+            method: 'session-test:statFiles',
+            params: JSON.stringify({ paths: ['linked'] })
+        })
+        const parsed = JSON.parse(response) as {
+            success: boolean
+            entries?: Array<{ path: string; type?: string }>
+        }
+
+        expect(parsed.success).toBe(true)
+        expect(parsed.entries).toEqual([{ path: 'linked' }])
     })
 })

@@ -57,6 +57,7 @@ import { useSessionBrowserTitle } from '@/hooks/useSessionBrowserTitle'
 import { clearCodexImportedSession } from '@/lib/codexImportedSessions'
 import { getSupersedingSessionId, prepareFollowSupersedingSession, shouldFollowSupersedingSession } from '@/routes/sessions/followSupersedingSession'
 import { migrateSuppressedSendError } from '@/lib/suppressed-send-error'
+import { buildFileMentionSearchQuery } from '@/lib/file-search-query'
 import FilesPage from '@/routes/sessions/files'
 import FilePage from '@/routes/sessions/file'
 import TerminalPage from '@/routes/sessions/terminal'
@@ -702,7 +703,11 @@ function SessionPage() {
 
             const fileHits: Suggestion[] = []
             if ((agentType === 'codex' || agentType === 'copilot') && api && sessionId) {
-                const response = await api.searchSessionFiles(sessionId, search, 50)
+                const response = await api.searchSessionFiles(
+                    sessionId,
+                    buildFileMentionSearchQuery(search),
+                    50
+                )
                 if (response.success && response.files) {
                     for (const file of response.files) {
                         // Codex App Server expects @"path"; Copilot CLI uses @path (relative preferred).

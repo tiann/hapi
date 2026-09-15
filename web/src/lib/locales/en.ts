@@ -483,6 +483,7 @@ export default {
   'files.tab.changes': 'Changes',
   'files.tab.directories': 'Directories',
   'files.search.empty': 'No files match your search.',
+  'files.search.emptyPath': 'No files match your search in this path.',
   'files.search.error.failed': 'Failed to search files.',
   'files.search.error.failedWithDetail': 'Failed to search files: {error}',
   'files.changes.section.staged': 'Staged Changes ({n})',
