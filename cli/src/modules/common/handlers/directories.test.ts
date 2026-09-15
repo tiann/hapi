@@ -1,9 +1,16 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdir, rm, symlink, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { RpcHandlerManager } from '../../../api/rpc/RpcHandlerManager'
 import { registerDirectoryHandlers } from './directories'
+
+const { statMock } = vi.hoisted(() => ({ statMock: vi.fn() }))
+
+vi.mock('fs/promises', async () => {
+    const actual = await vi.importActual<typeof import('fs/promises')>('fs/promises')
+    return { ...actual, stat: statMock }
+})
 
 async function createTempDir(prefix: string): Promise<string> {
     const base = tmpdir()
@@ -17,6 +24,10 @@ describe('directory RPC handlers', () => {
     let rpc: RpcHandlerManager
 
     beforeEach(async () => {
+        const actual = await vi.importActual<typeof import('fs/promises')>('fs/promises')
+        statMock.mockReset()
+        statMock.mockImplementation(actual.stat)
+
         if (rootDir) {
             await rm(rootDir, { recursive: true, force: true })
         }
@@ -79,6 +90,47 @@ describe('directory RPC handlers', () => {
         expect(parsed.entries?.[0]).toMatchObject({ path: 'README.md', size: 6 })
         expect(parsed.entries?.[0]?.modified).toBeTypeOf('number')
         expect(parsed.entries?.[2]).toEqual({ path: 'missing.txt' })
+    })
+
+    it('stops starting later stat batches after cancellation', async () => {
+        const paths = Array.from({ length: 32 }, (_, index) => `file-${index}.txt`)
+        await Promise.all(paths.map((path) => writeFile(join(rootDir, path), path)))
+
+        let firstStatStarted!: () => void
+        const firstStat = new Promise<void>((resolve) => {
+            firstStatStarted = resolve
+        })
+        let releaseFirstStat!: () => void
+        const firstStatRelease = new Promise<void>((resolve) => {
+            releaseFirstStat = resolve
+        })
+        const originalStat = (await vi.importActual<typeof import('fs/promises')>('fs/promises')).stat
+        let statCallCount = 0
+        statMock.mockImplementation(async (path: Parameters<typeof originalStat>[0]) => {
+            statCallCount += 1
+            if (statCallCount === 1) {
+                firstStatStarted()
+                await firstStatRelease
+            }
+            return await originalStat(path)
+        })
+
+        try {
+            const request = rpc.handleRequest({
+                method: 'session-test:statFiles',
+                params: JSON.stringify({ paths }),
+                requestId: 'stat-files-cancel'
+            })
+
+            await firstStat
+            expect(rpc.cancelRequest('stat-files-cancel')).toBe(true)
+            releaseFirstStat()
+
+            await expect(request).resolves.toBe(JSON.stringify({ error: 'Request aborted' }))
+            expect(statCallCount).toBe(16)
+        } finally {
+            statMock.mockReset()
+        }
     })
 
     it('rejects stat paths outside the session working directory', async () => {
