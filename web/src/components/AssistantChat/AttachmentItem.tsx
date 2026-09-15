@@ -1,13 +1,30 @@
-import { AttachmentPrimitive, useThreadComposerAttachment } from '@assistant-ui/react'
+import { useCallback, useLayoutEffect, useRef, useState } from 'react'
+import {
+    AttachmentPrimitive,
+    useComposerRuntime,
+    useThreadComposerAttachment,
+    useThreadComposerAttachmentRuntime,
+} from '@assistant-ui/react'
 import type { PendingAttachment } from '@assistant-ui/react'
-import type { KeyboardEventHandler, MouseEventHandler, PointerEventHandler, PointerEvent as ReactPointerEvent } from 'react'
+import type {
+    KeyboardEventHandler,
+    MouseEventHandler,
+    MutableRefObject,
+    PointerEventHandler,
+    PointerEvent as ReactPointerEvent,
+} from 'react'
 import { ImagePreview } from '@/components/ImagePreview'
 import { Spinner } from '@/components/Spinner'
+import { RefreshIcon } from '@/components/icons'
 import { useComposerParking } from '@/components/AssistantChat/composerParkingContext'
+import { useTranslation } from '@/lib/use-translation'
 
 type ComposerAttachmentWithPreview = PendingAttachment & {
     previewUrl?: string
+    retryable?: boolean
 }
+
+const TRUNCATED_REMOVE_MARGIN_LEFT = '-7px'
 
 export type AttachmentDragHandleProps = {
     onPointerDown: PointerEventHandler<HTMLButtonElement>
@@ -18,6 +35,12 @@ export type AttachmentDragHandleProps = {
     onSurfaceContextMenu?: MouseEventHandler<HTMLElement>
     onSurfaceClick?: MouseEventHandler<HTMLElement>
 }
+
+export type AttachmentRetryHandler = (
+    originalId: string,
+    retryId: string,
+    originalIndex: number,
+) => void
 
 function ErrorIcon() {
     return (
@@ -94,11 +117,38 @@ function DragHandle(props: AttachmentDragHandleProps & { isFile?: boolean }) {
     )
 }
 
-export function AttachmentItem(props: { dragHandleProps?: AttachmentDragHandleProps } = {}) {
-    const { name, status, previewUrl } = useThreadComposerAttachment() as ComposerAttachmentWithPreview
+export function AttachmentItem(props: {
+    dragHandleProps?: AttachmentDragHandleProps
+    attachmentOrderRef?: MutableRefObject<string[]>
+    onRetry?: AttachmentRetryHandler
+} = {}) {
+    const { id, name, file, status, previewUrl, retryable } = useThreadComposerAttachment() as ComposerAttachmentWithPreview
+    const composer = useComposerRuntime()
+    const attachmentRuntime = useThreadComposerAttachmentRuntime()
     const isParking = useComposerParking()
+    const { t } = useTranslation()
+    const [isRetrying, setIsRetrying] = useState(false)
+    const filenameRef = useRef<HTMLSpanElement>(null)
+    const [isFilenameTruncated, setIsFilenameTruncated] = useState(false)
     const isUploading = status.type === 'running'
     const isError = status.type === 'incomplete'
+    const showRetry = isError && retryable !== false && !isParking
+
+    useLayoutEffect(() => {
+        const element = filenameRef.current
+        if (!element) return
+
+        const updateTruncation = () => {
+            const next = element.scrollWidth > element.clientWidth
+            setIsFilenameTruncated((current) => current === next ? current : next)
+        }
+        updateTruncation()
+
+        if (typeof ResizeObserver === 'undefined') return
+        const observer = new ResizeObserver(updateTruncation)
+        observer.observe(element)
+        return () => observer.disconnect()
+    }, [name, isError])
     const surfacePointerDown = props.dragHandleProps?.onSurfacePointerDown
         ? (event: ReactPointerEvent<HTMLElement>) => {
             const target = event.target
@@ -108,6 +158,41 @@ export function AttachmentItem(props: { dragHandleProps?: AttachmentDragHandlePr
             props.dragHandleProps?.onSurfacePointerDown?.(event)
         }
         : undefined
+
+    const retryUpload = useCallback(async () => {
+        if (isRetrying || isParking) return
+
+        setIsRetrying(true)
+        try {
+            const originalIndex = props.attachmentOrderRef?.current.indexOf(id) ?? -1
+            const retryFile = new File([file], file.name, {
+                type: file.type,
+                lastModified: file.lastModified,
+            })
+            let unsubscribe: (() => void) | undefined
+            if (props.onRetry) {
+                unsubscribe = composer.subscribe(() => {
+                    const retryAttachment = composer.getState().attachments.find(
+                        (attachment) => attachment.file === retryFile,
+                    )
+                    if (!retryAttachment) return
+                    unsubscribe?.()
+                    unsubscribe = undefined
+                    props.onRetry?.(id, retryAttachment.id, originalIndex)
+                })
+            }
+            try {
+                await attachmentRuntime.remove()
+                await composer.addAttachment(retryFile)
+            } finally {
+                unsubscribe?.()
+            }
+        } catch (error) {
+            console.error('Failed to retry attachment upload', error)
+        } finally {
+            setIsRetrying(false)
+        }
+    }, [attachmentRuntime, composer, file, id, isParking, isRetrying, props.attachmentOrderRef, props.onRetry])
 
     if (previewUrl && !isError) {
         return (
@@ -161,20 +246,41 @@ export function AttachmentItem(props: { dragHandleProps?: AttachmentDragHandlePr
             onPointerDown={surfacePointerDown}
             onContextMenu={props.dragHandleProps?.onSurfaceContextMenu}
         >
-            {props.dragHandleProps ? <DragHandle {...props.dragHandleProps} isFile /> : null}
+            {showRetry ? (
+                <button
+                    type="button"
+                    className="hapi-composer-attachment-control hapi-composer-attachment-file-control -mx-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-transparent text-red-500 transition-colors hover:text-red-600 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--app-link)] disabled:cursor-wait disabled:opacity-60"
+                    aria-label={t('attachment.retryUpload')}
+                    title={t('attachment.retryUpload')}
+                    disabled={isRetrying}
+                    onClick={() => { void retryUpload() }}
+                >
+                    <RefreshIcon className="h-[18px] w-[18px]" />
+                </button>
+            ) : props.dragHandleProps && !isError ? (
+                <DragHandle {...props.dragHandleProps} isFile />
+            ) : null}
             {isUploading ? <Spinner size="sm" label={null} className="text-[var(--app-hint)]" /> : null}
-            {isError ? (
-                <span className="text-red-500">
-                    <ErrorIcon />
+            {isError && (!showRetry || isParking) ? (
+                <span data-testid="attachment-error-icon" className="text-red-500">
+                    <span aria-hidden="true">
+                        <ErrorIcon />
+                    </span>
+                    <span className="sr-only">{t('attachment.uploadFailed')}</span>
                 </span>
             ) : null}
-            <span className={`max-w-[150px] truncate ${isError ? 'text-red-500 line-through' : ''}`}>{name}</span>
-            {isError ? <span className="text-xs text-red-500 whitespace-nowrap">Upload failed</span> : null}
+            <span
+                ref={filenameRef}
+                className={`max-w-[150px] truncate ${isError ? 'text-red-500 line-through' : ''}`}
+            >
+                {name}
+            </span>
             {!isParking ? (
                 <AttachmentPrimitive.Remove
                     className="hapi-composer-attachment-control hapi-composer-attachment-file-control -mx-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-transparent text-[var(--app-hint)] transition-colors hover:text-[var(--app-fg)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--app-link)]"
                     aria-label="Remove attachment"
                     title="Remove attachment"
+                    style={isError && isFilenameTruncated ? { marginLeft: TRUNCATED_REMOVE_MARGIN_LEFT } : undefined}
                 >
                     <RemoveIcon />
                 </AttachmentPrimitive.Remove>

@@ -20,6 +20,26 @@ type PendingScratchlistAttachment = PendingAttachment & {
     path?: string
     hubAttachment?: ScratchlistAttachmentMetadata
     previewUrl?: string
+    retryable?: boolean
+}
+
+const NON_RETRYABLE_UPLOAD_ERROR_CODES = new Set([
+    'scratchlist_attachment_too_large',
+    'scratchlist_attachment_mime',
+    'scratchlist_attachments_per_entry',
+    'scratchlist_attachments_entry_bytes',
+    'scratchlist_attachments_session_bytes',
+])
+
+function getErrorCode(error: unknown): string | undefined {
+    if (typeof error !== 'object' || error === null) return undefined
+    const code = (error as { code?: unknown }).code
+    return typeof code === 'string' ? code : undefined
+}
+
+function isRetryableUploadError(codeOrError?: unknown): boolean {
+    const code = typeof codeOrError === 'string' ? codeOrError : getErrorCode(codeOrError)
+    return code === undefined || !NON_RETRYABLE_UPLOAD_ERROR_CODES.has(code)
 }
 
 /** Rebuild hub metadata from a composer-draft path so remount does not re-upload. */
@@ -142,8 +162,9 @@ export function createScratchlistAttachmentAdapter(
                         name: file.name,
                         contentType,
                         file,
-                        status: { type: 'incomplete', reason: 'error' }
-                    }
+                        status: { type: 'incomplete', reason: 'error' },
+                        retryable: isRetryableUploadError(result.code),
+                    } as PendingScratchlistAttachment
                     return
                 }
 
@@ -172,15 +193,16 @@ export function createScratchlistAttachmentAdapter(
                     hubAttachment: result.attachment,
                     previewUrl
                 } as PendingScratchlistAttachment
-            } catch {
+            } catch (error) {
                 yield {
                     id,
                     type: 'file',
                     name: file.name,
                     contentType,
                     file,
-                    status: { type: 'incomplete', reason: 'error' }
-                }
+                    status: { type: 'incomplete', reason: 'error' },
+                    retryable: isRetryableUploadError(error),
+                } as PendingScratchlistAttachment
             }
         },
 

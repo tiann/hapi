@@ -170,6 +170,51 @@ describe('createScratchlistAttachmentAdapter', () => {
         expect((ready as { path?: string }).path).toBe('/scratchlist/sessions/s1/proof.png')
     })
 
+    it('marks deterministic upload failures as non-retryable', async () => {
+        const uploadScratchlistAttachment = vi.fn().mockResolvedValue({
+            success: false,
+            error: 'File too large',
+            code: 'scratchlist_attachment_too_large',
+        })
+        const adapter = createScratchlistAttachmentAdapter(
+            { uploadScratchlistAttachment } as never,
+            'session-1',
+        )
+        const file = new File(['proof'], 'proof.png', { type: 'image/png' })
+        const states: Array<Record<string, unknown>> = []
+
+        for await (const state of adapter.add({ file }) as AsyncGenerator<Record<string, unknown>>) {
+            states.push(state)
+        }
+
+        expect(states.at(-1)).toMatchObject({
+            status: { type: 'incomplete', reason: 'error' },
+            retryable: false,
+        })
+    })
+
+    it('marks upload failures without a deterministic code as retryable', async () => {
+        const uploadScratchlistAttachment = vi.fn().mockResolvedValue({
+            success: false,
+            error: 'Temporary upload failure',
+        })
+        const adapter = createScratchlistAttachmentAdapter(
+            { uploadScratchlistAttachment } as never,
+            'session-1',
+        )
+        const file = new File(['proof'], 'proof.png', { type: 'image/png' })
+        const states: Array<Record<string, unknown>> = []
+
+        for await (const state of adapter.add({ file }) as AsyncGenerator<Record<string, unknown>>) {
+            states.push(state)
+        }
+
+        expect(states.at(-1)).toMatchObject({
+            status: { type: 'incomplete', reason: 'error' },
+            retryable: true,
+        })
+    })
+
     it('keeps a successful upload ready when image preview generation fails', async () => {
         stubUploadThenPreviewReadFailure()
         const attachment = {
