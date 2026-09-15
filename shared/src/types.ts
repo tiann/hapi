@@ -27,6 +27,12 @@ export type {
 
 export type { SessionSummary, SessionSummaryMetadata, PendingRequest, PendingRequestKind } from './sessionSummary'
 export { PENDING_REQUEST_SUMMARY_CAP } from './sessionSummary'
+export type {
+    ClaudeContextDetails,
+    CodexContextDetails,
+    ContextDetails,
+    ContextUsageSnapshot
+} from './contextDetails'
 export { AGENT_MESSAGE_PAYLOAD_TYPE } from './modes'
 
 export type {

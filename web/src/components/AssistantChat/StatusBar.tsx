@@ -5,8 +5,7 @@ import {
     getPermissionModeTone,
     isPermissionModeAllowedForFlavor
 } from '@hapi/protocol'
-import type { PermissionModeTone } from '@hapi/protocol'
-import * as Popover from '@radix-ui/react-popover'
+import type { ContextDetails, PermissionModeTone } from '@hapi/protocol'
 import { useMemo } from 'react'
 import type { AgentState, CodexCollaborationMode, PermissionMode } from '@/types/api'
 import type { ConversationStatus } from '@/realtime/types'
@@ -17,9 +16,11 @@ import {
     getReasoningEffortForFlavor,
     shouldShowReasoningStatusLabel
 } from '@/lib/codexStatusLabels'
+import * as Popover from '@radix-ui/react-popover'
 import { isFastServiceTier } from './codexFastMode'
 import { useTranslation } from '@/lib/use-translation'
 import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
+import { ContextDetailsDialog } from './ContextDetailsDialog'
 
 // Vibing messages for thinking state
 const VIBING_MESSAGES = [
@@ -49,6 +50,14 @@ const PERMISSION_TONE_CLASSES: Record<PermissionModeTone, string> = {
 
 const CONTEXT_WARNING_THRESHOLD_PERCENT = 70
 const CONTEXT_DANGER_THRESHOLD_PERCENT = 90
+
+type ContextUsageSummary = {
+    cacheRead: string | null
+    used: string
+    usedPercentage: number | null
+    remaining: string | null
+    remainingPercentage: number | null
+}
 
 function getConnectionStatus(
     active: boolean,
@@ -191,6 +200,43 @@ export function shouldShowCodexFastBadge(
     return agentFlavor === 'codex' && isFastServiceTier(serviceTier)
 }
 
+function normalizeLegacyList(values: readonly string[] | null | undefined): string[] | undefined {
+    if (!values) return undefined
+    const normalized = Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)))
+    return normalized.length > 0 ? normalized : undefined
+}
+
+function addLegacyClaudeLists(args: {
+    details: ContextDetails | null | undefined
+    agentFlavor: string | null | undefined
+    tools: readonly string[] | null | undefined
+    slashCommands: readonly string[] | null | undefined
+}): ContextDetails | null | undefined {
+    const isClaude = args.details?.provider === 'claude' || (!args.details && args.agentFlavor === 'claude')
+    if (!isClaude) return args.details
+
+    const legacyTools = normalizeLegacyList(args.tools)
+    const legacySlashCommands = normalizeLegacyList(args.slashCommands)
+    const claude = args.details?.claude
+    const systemTools = claude && 'systemTools' in claude ? claude.systemTools : legacyTools
+    const slashCommands = claude && 'slashCommands' in claude ? claude.slashCommands : legacySlashCommands
+    if (!systemTools && !slashCommands) return args.details
+
+    return {
+        ...(args.details ?? { version: 1, updatedAt: 0, provider: 'claude' as const }),
+        provider: 'claude',
+        claude: {
+            ...claude,
+            ...(systemTools
+                ? { systemTools }
+                : {}),
+            ...(slashCommands
+                ? { slashCommands }
+                : {})
+        }
+    }
+}
+
 export function StatusBar(props: {
     active: boolean
     thinking: boolean
@@ -199,6 +245,10 @@ export function StatusBar(props: {
     contextSize?: number
     contextCacheRead?: number
     contextWindow?: number | null
+    contextDetails?: ContextDetails | null
+    /** Legacy Claude metadata retained on sessions created before nested lists were added. */
+    legacyTools?: readonly string[] | null
+    legacySlashCommands?: readonly string[] | null
     /**
      * Model to use for the context-window fallback heuristic when
      * contextWindow is absent. Falls back to `model`. Callers pass the
@@ -223,32 +273,44 @@ export function StatusBar(props: {
         [props.active, props.thinking, props.agentState, props.voiceStatus, props.backgroundTaskCount, t]
     )
 
-    const contextHeuristicModel = props.contextModel ?? props.model
+    const effectiveContextSize = props.contextSize ?? props.contextDetails?.usage?.contextTokens
+    const effectiveContextWindow = props.contextWindow ?? props.contextDetails?.contextWindow
+    const effectiveContextCacheRead = props.contextCacheRead ?? props.contextDetails?.usage?.cacheReadTokens
+    const contextHeuristicModel = props.contextModel ?? props.contextDetails?.model ?? props.model
     const contextWarning = useMemo(
         () => {
-            if (props.contextSize === undefined) return null
-            const maxContextSize = props.contextWindow ?? getContextBudgetTokens(contextHeuristicModel, props.agentFlavor)
+            if (effectiveContextSize === undefined) return null
+            const maxContextSize = effectiveContextWindow ?? getContextBudgetTokens(contextHeuristicModel, props.agentFlavor)
             if (!maxContextSize) return null
-            return getContextWarning(props.contextSize, maxContextSize)
+            return getContextWarning(effectiveContextSize, maxContextSize)
         },
-        [props.contextSize, props.contextWindow, contextHeuristicModel, props.agentFlavor]
+        [effectiveContextSize, effectiveContextWindow, contextHeuristicModel, props.agentFlavor]
     )
     const contextUsageLabel = useMemo(() => {
-        if (props.contextSize === undefined) return null
-        const maxContextSize = props.contextWindow ?? getContextBudgetTokens(contextHeuristicModel, props.agentFlavor)
-        return formatContextUsageLabel(props.contextSize, maxContextSize)
-    }, [props.contextSize, props.contextWindow, contextHeuristicModel, props.agentFlavor])
+        if (effectiveContextSize === undefined) return null
+        const maxContextSize = effectiveContextWindow ?? getContextBudgetTokens(contextHeuristicModel, props.agentFlavor)
+        return formatContextUsageLabel(effectiveContextSize, maxContextSize)
+    }, [effectiveContextSize, effectiveContextWindow, contextHeuristicModel, props.agentFlavor])
     const compactContextUsageLabel = useMemo(() => {
-        if (props.contextSize === undefined) return null
-        const maxContextSize = props.contextWindow ?? getContextBudgetTokens(contextHeuristicModel, props.agentFlavor)
-        return formatCompactContextUsageLabel(props.contextSize, maxContextSize)
-    }, [props.contextSize, props.contextWindow, contextHeuristicModel, props.agentFlavor])
-    const contextUsageDetails = useMemo(() => {
-        if (props.contextSize === undefined) return null
-        const maxContextSize = props.contextWindow ?? getContextBudgetTokens(contextHeuristicModel, props.agentFlavor)
-        return getContextUsageDetails(props.contextSize, maxContextSize, props.contextCacheRead)
-    }, [props.contextSize, props.contextCacheRead, props.contextWindow, contextHeuristicModel, props.agentFlavor])
+        if (effectiveContextSize === undefined) return null
+        const maxContextSize = effectiveContextWindow ?? getContextBudgetTokens(contextHeuristicModel, props.agentFlavor)
+        return formatCompactContextUsageLabel(effectiveContextSize, maxContextSize)
+    }, [effectiveContextSize, effectiveContextWindow, contextHeuristicModel, props.agentFlavor])
+    const contextUsageDetails: ContextUsageSummary | null = useMemo(() => {
+        if (effectiveContextSize === undefined) return null
+        const maxContextSize = effectiveContextWindow ?? getContextBudgetTokens(contextHeuristicModel, props.agentFlavor)
+        return getContextUsageDetails(effectiveContextSize, maxContextSize, effectiveContextCacheRead)
+    }, [effectiveContextSize, effectiveContextCacheRead, effectiveContextWindow, contextHeuristicModel, props.agentFlavor])
     const contextUsedPercentage = contextUsageDetails?.usedPercentage ?? null
+    const displayContextDetails = useMemo(
+        () => addLegacyClaudeLists({
+            details: props.contextDetails,
+            agentFlavor: props.agentFlavor,
+            tools: props.legacyTools,
+            slashCommands: props.legacySlashCommands
+        }),
+        [props.contextDetails, props.agentFlavor, props.legacyTools, props.legacySlashCommands]
+    )
 
     const permissionMode = props.permissionMode
     // Copilot always shows permission (including Default) so model=auto sessions
@@ -294,14 +356,22 @@ export function StatusBar(props: {
     return (
         <div className="flex min-w-0 items-baseline justify-between gap-2 px-2 pb-1">
             <div className="flex min-w-0 items-baseline gap-2">
-                <div className="relative top-px sm:top-0.5 flex shrink-0 items-center gap-1.5">
-                    <span
-                        className={`h-2 w-2 rounded-full ${connectionStatus.dotColor} ${connectionStatus.isPulsing ? 'animate-pulse' : ''}`}
-                    />
-                    <span className={`whitespace-nowrap text-xs ${connectionStatus.color}`}>
-                        {connectionStatus.text}
-                    </span>
-                </div>
+                <ContextDetailsDialog
+                    details={displayContextDetails}
+                    triggerAriaLabel={`${t('misc.contextAgentDetails')}: ${connectionStatus.text}`}
+                    triggerClassName="relative top-px sm:top-0.5 flex shrink-0 cursor-pointer items-center gap-1.5 rounded-sm border-0 bg-transparent p-0 text-left outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-link)]"
+                    triggerContent={(
+                        <>
+                            <span
+                                aria-hidden="true"
+                                className={`h-2 w-2 rounded-full ${connectionStatus.dotColor} ${connectionStatus.isPulsing ? 'animate-pulse' : ''}`}
+                            />
+                            <span className={`whitespace-nowrap text-xs ${connectionStatus.color}`}>
+                                {connectionStatus.text}
+                            </span>
+                        </>
+                    )}
+                />
                 {contextUsageLabel ? (
                     <Popover.Root>
                         <Popover.Trigger asChild>
