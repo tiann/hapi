@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { registerGeneratedImageFromPath } from '@/modules/common/generatedImages';
+import { isForkSeedSummary } from '@/agent/sessionTitlePolicy';
 import { AppServerEventConverter } from '../utils/appServerEventConverter';
 import { record, string } from './gateway';
 import { codexPlanProposalId } from './plan';
@@ -198,9 +199,12 @@ export class SharedCodexProjection {
         // Repair sessions created while remote title projection was missing.
         // Recheck inside the metadata lock: live updates may still be queued,
         // and a replay must never replace an existing or newer title.
-        if (latestTitle && titleRevision === this.titleRevision && !this.session.getMetadata()?.summary?.text?.trim()) {
+        const currentMetadata = this.session.getMetadata();
+        if (latestTitle && titleRevision === this.titleRevision
+            && (!currentMetadata?.summary?.text?.trim() || isForkSeedSummary(currentMetadata))) {
             const title = latestTitle;
-            this.session.updateMetadata(metadata => titleRevision !== this.titleRevision || metadata.summary?.text?.trim()
+            this.session.updateMetadata(metadata => titleRevision !== this.titleRevision
+                || (metadata.summary?.text?.trim() && !isForkSeedSummary(metadata))
                 ? metadata : { ...metadata, summary: { text: title, updatedAt: Date.now() } });
         }
     }

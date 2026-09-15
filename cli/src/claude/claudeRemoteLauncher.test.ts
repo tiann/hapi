@@ -12,6 +12,7 @@ const harness = vi.hoisted(() => ({
     callCount: 0,
     claudeArgsPerCall: [] as (string[] | undefined)[],
     initialMessages: [] as string[],
+    emitFirstResult: false,
     triggerSwitch: null as (() => void) | null,
     switchAfterCall: 2
 }))
@@ -44,6 +45,9 @@ vi.mock('./claudeRemote', () => ({
         // Mirrors a launch that actually spawns Claude and observes the
         // session id via the SDK's system/init message.
         opts.onSessionFound('captured-session-id')
+        if (harness.emitFirstResult) {
+            opts.onFirstResult?.(initial.message)
+        }
 
         if (harness.callCount === harness.switchAfterCall && harness.triggerSwitch) {
             // Stop the runMainLoop() while-loop so the test doesn't hang
@@ -89,8 +93,9 @@ vi.mock('./utils/OutgoingMessageQueue', () => ({
 import { claudeRemoteLauncher } from './claudeRemoteLauncher'
 import { Session } from './session'
 
-function createClientStub() {
+function createClientStub(initialMetadata: Record<string, unknown> = {}) {
     const rpcHandlers = new Map<string, () => void | Promise<void>>()
+    let metadata = initialMetadata
     return {
         rpcHandlerManager: {
             registerHandler: (method: string, handler: () => void | Promise<void>) => {
@@ -99,7 +104,8 @@ function createClientStub() {
         },
         rpcHandlers,
         keepAlive: () => {},
-        updateMetadata: (mutator: (metadata: any) => any) => { mutator({}) },
+        getMetadata: () => metadata,
+        updateMetadata: (mutator: (metadata: any) => any) => { metadata = mutator(metadata) },
         emitMessagesConsumed: () => {},
         sendClaudeSessionMessage: () => {},
         sendSessionEvent: () => {},
@@ -145,6 +151,7 @@ describe('claudeRemoteLauncher resume anchor', () => {
         harness.callCount = 0
         harness.claudeArgsPerCall = []
         harness.initialMessages = []
+        harness.emitFirstResult = false
         harness.triggerSwitch = null
         harness.switchAfterCall = 2
         vi.clearAllMocks()
@@ -251,6 +258,30 @@ describe('claudeRemoteLauncher resume anchor', () => {
             expect(harness.callCount).toBe(1)
             expect(harness.claudeArgsPerCall[0]).toBeUndefined()
             expect(session.sessionId).toBe('captured-session-id')
+        } finally {
+            session.stopKeepAlive()
+        }
+    })
+
+    it('keeps a Fork seed for the remote first-message fallback', async () => {
+        const client = createClientStub({
+            forkedFrom: 'parent-session',
+            summary: { text: 'Fork: Parent title', updatedAt: 1 }
+        })
+        const { session, queue } = createSession(client, undefined)
+        harness.emitFirstResult = true
+        harness.switchAfterCall = 1
+        harness.triggerSwitch = () => {
+            client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+        }
+
+        try {
+            queue.push('continue', { permissionMode: 'default' }, 'local-1')
+            await claudeRemoteLauncher(session as any)
+
+            expect(client.getMetadata()).toMatchObject({
+                summary: { text: 'Fork: Parent title', updatedAt: 1 }
+            })
         } finally {
             session.stopKeepAlive()
         }
