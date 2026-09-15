@@ -18,6 +18,10 @@ function formatTokenDelta(event: AgentEvent | undefined): string | null {
 export function HappySystemMessage() {
     const role = useAuiState((s) => s.message.role)
     const messageId = useAuiState((s) => s.message.id)
+    const sourceMessageIds = useAuiState((s) => {
+        const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+        return custom?.sourceMessageIds
+    })
     const text = useAuiState((s) => {
         if (s.message.role !== 'system') return ''
         return s.message.content[0]?.type === 'text' ? s.message.content[0].text : ''
@@ -61,7 +65,11 @@ export function HappySystemMessage() {
     }
 
     return (
-        <MessagePrimitive.Root id={getConversationMessageAnchorId(messageId)} className="scroll-mt-4 py-1">
+        <MessagePrimitive.Root
+            id={getConversationMessageAnchorId(messageId)}
+            data-hapi-source-message-ids={sourceMessageIds?.join(' ') || undefined}
+            className="scroll-mt-4 py-1"
+        >
             <div className="mx-auto w-fit max-w-[92%] px-2 text-center text-xs text-[var(--app-hint)] opacity-80">
                 <span className="inline-flex items-center gap-1">
                     {icon ? <span aria-hidden="true">{icon}</span> : null}

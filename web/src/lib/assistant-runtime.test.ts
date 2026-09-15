@@ -4,6 +4,7 @@ import {
     aggregateResponseGroups,
     assignThreadMessageIds,
     assignThreadMessageIdsWithStableWrappers,
+    buildSourceMessageIdsByBlock,
     findLatestCompletedBoundaryId,
     getBlockPresentationTimestamp,
     getResponseGroupTimestamps
@@ -133,6 +134,21 @@ describe('assignThreadMessageIds', () => {
         expect(second[0]).toBe(first[0])
         expect(second[0].threadMessageId).toBe('agent-text:a')
         expect(second[1].threadMessageId).toBe('user-text:u')
+    })
+})
+
+describe('buildSourceMessageIdsByBlock', () => {
+    it('keeps a raw search-hit id on the first card of a joined assistant group', () => {
+        const firstTool = toolCall('tool-1')
+        const target = agentText('raw-target:0', {
+            sourceMessageIds: ['raw-target', 'raw-target-stream-update']
+        })
+        const user = userText('user-1')
+        const sourceIdsByBlock = buildSourceMessageIdsByBlock([firstTool, target, user])
+
+        expect(sourceIdsByBlock.get(firstTool)).toEqual(['raw-target', 'raw-target-stream-update'])
+        expect(sourceIdsByBlock.get(target)).toEqual(['raw-target', 'raw-target-stream-update'])
+        expect(sourceIdsByBlock.get(user)).toEqual(['user-1'])
     })
 })
 

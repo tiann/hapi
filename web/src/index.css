@@ -46,6 +46,9 @@
     --app-link-muted: rgba(17, 24, 39, 0.18);
     --app-scrollbar-thumb: rgba(107, 114, 128, 0.34);
     --app-scrollbar-thumb-hover: rgba(107, 114, 128, 0.5);
+    --app-search-match-bg: #fef3c7;
+    --app-search-match-fg: #78350f;
+    --app-search-match-outline: #d97706;
 
     /* Theme-aware colors (light mode defaults) */
     --app-border: rgba(15, 23, 42, 0.08);
@@ -129,6 +132,9 @@
     --app-link-muted: rgba(255, 255, 255, 0.2);
     --app-scrollbar-thumb: rgba(196, 203, 214, 0.28);
     --app-scrollbar-thumb-hover: rgba(196, 203, 214, 0.42);
+    --app-search-match-bg: rgba(250, 204, 21, 0.3);
+    --app-search-match-fg: #fef08a;
+    --app-search-match-outline: #facc15;
 
     --app-border: rgba(255, 255, 255, 0.08);
     --app-divider: rgba(255, 255, 255, 0.08);
@@ -210,6 +216,9 @@
     --app-link-muted: rgba(255, 255, 255, 0.22);
     --app-scrollbar-thumb: rgba(196, 203, 214, 0.24);
     --app-scrollbar-thumb-hover: rgba(196, 203, 214, 0.4);
+    --app-search-match-bg: rgba(250, 204, 21, 0.28);
+    --app-search-match-fg: #fef08a;
+    --app-search-match-outline: #facc15;
 
     --app-border: rgba(255, 255, 255, 0.12);
     --app-divider: rgba(255, 255, 255, 0.1);
@@ -438,6 +447,23 @@ html:has(.chat-scroll-y) #root {
  */
 .happy-thread-messages > * {
     overflow-anchor: none;
+}
+
+/* Keep the message selected from a session-content search result identifiable
+ * until the in-chat search navigation is dismissed or another match is chosen. */
+.hapi-message-search-target {
+    background-color: var(--app-chat-user-chip-bg);
+    border-radius: 0.35rem;
+}
+
+mark.hapi-message-search-target {
+    color: var(--app-search-match-fg);
+    background-color: var(--app-search-match-bg);
+    border-radius: 0.2em;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+    box-shadow: none;
+    animation: none;
 }
 
 /* Markdown styles */
