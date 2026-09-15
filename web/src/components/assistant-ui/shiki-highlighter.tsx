@@ -1,6 +1,7 @@
 import type { SyntaxHighlighterProps } from '@assistant-ui/react-markdown'
 import type { CSSProperties, ReactNode } from 'react'
 import { useShikiHighlightedLines, splitCodeLines } from '@/lib/shiki'
+import { getCodeGutterTrack } from '@/lib/code-gutter'
 import { useCodeWrap } from '@/hooks/useCodeWrap'
 
 // `@assistant-ui/react-markdown`'s DefaultCodeBlock renders this component
@@ -15,7 +16,7 @@ export function SyntaxHighlighter(props: SyntaxHighlighterProps) {
     const codeLines: ReactNode[] = highlightedLines ?? splitCodeLines(props.code)
     const lineNumberWidth = Math.max(String(codeLines.length).length, 3)
     const codeGridStyle = {
-        gridTemplateColumns: `${lineNumberWidth}ch ${codeWrap ? 'minmax(0, 1fr)' : 'max-content'}`
+        gridTemplateColumns: `${getCodeGutterTrack(lineNumberWidth)} ${codeWrap ? 'minmax(0, 1fr)' : 'max-content'}`
     } satisfies CSSProperties
     // Inline style, not a Tailwind class: `.aui-md :where(pre)
     // { white-space: pre }` in index.css is unlayered CSS that outranks any

@@ -88,4 +88,16 @@ describe('SyntaxHighlighter wrap toggle', () => {
         expect(codeCells[0]).toHaveTextContent('plain one')
         expect(codeCells[1]).toHaveTextContent('plain two')
     })
+
+    it.each([1, 12, 123])('includes the line-number cell padding in the %i-line gutter track', (lineCount) => {
+        const code = Array.from({ length: lineCount }, (_, index) => `line ${index + 1}`).join('\n')
+        const { container } = render(
+            <I18nProvider>
+                <SyntaxHighlighter code={code} language="text" components={{ Pre: StubPre, Code: StubCode }} />
+            </I18nProvider>
+        )
+
+        const grid = container.querySelector('[data-hapi-code-grid="true"]') as HTMLElement | null
+        expect(grid?.style.gridTemplateColumns).toBe('calc(3ch + 1.5rem) max-content')
+    })
 })
