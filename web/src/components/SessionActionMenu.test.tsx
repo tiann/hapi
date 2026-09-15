@@ -230,10 +230,10 @@ describe('SessionActionMenu - Reopen action', () => {
 })
 
 describe('SessionActionMenu - Codex sync action', () => {
-    it('renders Sync Codex only when a handler is provided', () => {
+    it('renders Sync session only when a Codex handler is provided', () => {
         const { rerender } = renderMenu({ onSyncCodex: undefined })
 
-        expect(screen.queryByRole('menuitem', { name: /Sync Codex/ })).toBeNull()
+        expect(screen.queryByRole('menuitem', { name: /Sync session/ })).toBeNull()
 
         rerender(
             <I18nProvider>
@@ -254,7 +254,7 @@ describe('SessionActionMenu - Codex sync action', () => {
             </I18nProvider>
         )
 
-        expect(screen.getByRole('menuitem', { name: /Sync Codex/ })).toBeInTheDocument()
+        expect(screen.getByRole('menuitem', { name: /Sync session/ })).toBeInTheDocument()
     })
 
     it('fires onSyncCodex and closes the menu when clicked', () => {
@@ -262,7 +262,7 @@ describe('SessionActionMenu - Codex sync action', () => {
         const onClose = vi.fn()
         renderMenu({ onSyncCodex, onClose })
 
-        fireEvent.click(screen.getByRole('menuitem', { name: /Sync Codex/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: /Sync session/ }))
 
         expect(onSyncCodex).toHaveBeenCalledTimes(1)
         expect(onClose).toHaveBeenCalledTimes(1)
@@ -270,20 +270,20 @@ describe('SessionActionMenu - Codex sync action', () => {
 })
 
 describe('SessionActionMenu - Pi sync action', () => {
-    it('renders, fires, and closes Sync Pi history when a handler is provided', () => {
+    it('renders, fires, and closes Sync session when a Pi handler is provided', () => {
         const onSyncPi = vi.fn()
         const onClose = vi.fn()
         renderMenu({ onSyncPi, onClose })
 
-        fireEvent.click(screen.getByRole('menuitem', { name: /Sync Pi history/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: /Sync session/ }))
 
         expect(onSyncPi).toHaveBeenCalledOnce()
         expect(onClose).toHaveBeenCalledOnce()
     })
 
-    it('hides Sync Pi history when no handler is provided', () => {
+    it('hides Sync session when no Pi handler is provided', () => {
         renderMenu({ onSyncPi: undefined })
-        expect(screen.queryByRole('menuitem', { name: /Sync Pi history/ })).toBeNull()
+        expect(screen.queryByRole('menuitem', { name: /Sync session/ })).toBeNull()
     })
 })
 
