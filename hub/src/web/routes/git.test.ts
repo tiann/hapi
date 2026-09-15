@@ -59,6 +59,34 @@ describe('generated images route', () => {
         expect(rpcCalls).toBe(0)
     })
 
+    it('serves generated image metadata without transferring the content', async () => {
+        const session = { id: 'session-1', namespace: 'default', active: true } as unknown as Session
+        let metadataOnly: boolean | undefined
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session }),
+            readGeneratedImage: async (_sessionId: string, _imageId: string, options?: { metadataOnly?: boolean }) => {
+                metadataOnly = options?.metadataOnly
+                return {
+                    success: true,
+                    size: 20 * 1024,
+                    mimeType: 'application/octet-stream',
+                    fileName: 'archive.zip'
+                }
+            }
+        } as unknown as Partial<SyncEngine>
+
+        const response = await buildApp(engine).request('/api/sessions/session-1/generated-images/img-1?metadata=1')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            size: 20 * 1024,
+            mimeType: 'application/octet-stream',
+            fileName: 'archive.zip'
+        })
+        expect(metadataOnly).toBe(true)
+    })
+
     it('serves audio inline and generic files as downloads with nosniff', async () => {
         const session = { id: 'session-1', namespace: 'default', active: true } as unknown as Session
         let mimeType = 'audio/wav'
