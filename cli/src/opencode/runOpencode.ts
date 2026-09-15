@@ -485,6 +485,12 @@ export async function runOpencode(opts: {
         rpcHandlerManager: session.rpcHandlerManager,
         flavor: 'opencode',
         modelMode: 'nullable',
+        // OpenCode's session/set_model requires the provider-qualified
+        // "provider/modelId" wire format; rebuild it from the hub's object
+        // payload instead of collapsing to a bare modelId (which fails
+        // resolution with "model not found" and leaves the backend model
+        // unchanged while the hub already shows the new one).
+        modelProviderQualified: true,
         modelReasoningEffortMode: 'nullable',
         onApply: (config) => {
             if (config.permissionMode !== undefined) {
