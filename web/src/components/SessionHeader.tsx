@@ -14,6 +14,7 @@ import { formatReasoningLabel, getReasoningEffortForFlavor } from '@/lib/codexSt
 import { retargetSharePendingTransfer } from '@/lib/sharePendingState'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { useTranslation } from '@/lib/use-translation'
+import { getSessionActivityTimestamp } from '@hapi/protocol'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
 import { isFastServiceTier } from '@/components/AssistantChat/codexFastMode'
 import { getSessionTitle } from '@/lib/sessionTitle'
@@ -520,7 +521,7 @@ export function SessionHeader(props: {
                 sessionPinned={Boolean(session.pinned)}
                 sessionGlobalPinned={Boolean(session.globalPinned)}
                 onRename={() => setRenameOpen(true)}
-                onMarkUnread={() => markSessionUnread(session.id, session.updatedAt)}
+                onMarkUnread={() => markSessionUnread(session.id, getSessionActivityTimestamp(session))}
                 onSetPinMode={api ? (mode) => void handleSetPinMode(mode) : undefined}
                 onExport={() => setExportOpen(true)}
                 onSyncCodex={api && codexSessionId ? handleSyncCodex : undefined}

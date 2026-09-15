@@ -22,6 +22,8 @@ func storeSummary(
     active: Bool = false,
     updatedAt: Int = 0,
     activeAt: Int = 0,
+    lastAssistantMessageAt: Int? = nil,
+    lastAssistantMessageVersion: Int? = nil,
     pinned: Bool? = nil,
     globalPinned: Bool? = nil,
     pendingRequestsCount: Int = 0,
@@ -37,6 +39,8 @@ func storeSummary(
         thinking: false,
         activeAt: activeAt,
         updatedAt: updatedAt,
+        lastAssistantMessageAt: lastAssistantMessageAt,
+        lastAssistantMessageVersion: lastAssistantMessageVersion,
         pinned: pinned,
         globalPinned: globalPinned,
         metadata: nil,
@@ -58,8 +62,10 @@ func storeSummary(
 
 func storeSession(
     _ id: String,
+    seq: Int = 1,
     updatedAt: Int = 0,
     active: Bool = true,
+    lastAssistantMessageAt: Int? = nil,
     metadataVersion: Int = 1,
     agentStateVersion: Int = 1,
     todosUpdatedAt: Int? = 0
@@ -67,9 +73,10 @@ func storeSession(
     Session(
         id: id,
         namespace: "default",
-        seq: 1,
+        seq: seq,
         createdAt: 1,
         updatedAt: updatedAt,
+        lastAssistantMessageAt: lastAssistantMessageAt,
         active: active,
         activeAt: 0,
         metadata: nil,

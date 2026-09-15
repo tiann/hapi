@@ -129,7 +129,7 @@ class SessionListViewModel(
                 // refresh fails but the stream works, unseeded watermarks
                 // would light every row's unread dot (once-per-scope inside
                 // the store, so repeated calls are no-ops).
-                if (sessions.isNotEmpty()) {
+                if (sessions.isNotEmpty() && hasRefreshedOnce.value) {
                     runCatching { lastSeenStore.initializeBaseline(hubKey, sessions) }
                 }
             }
@@ -223,7 +223,7 @@ class SessionListViewModel(
     /** Call when navigating into a session: stamps the last-seen watermark. */
     fun onSessionOpened(sessionId: String) {
         val summary = sessionStore.sessions.value.firstOrNull { it.id == sessionId } ?: return
-        lastSeenStore.markSeen(sessionId, summary.updatedAt)
+        lastSeenStore.markSeen(sessionId, LastSeenStore.seenTimestamp(summary))
     }
 
     /** `PUT /sessions/:id/pin` with optimistic re-sort; failures surface on [errors]. */

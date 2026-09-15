@@ -96,11 +96,18 @@ final class HubSession {
         // Per-hub snapshot directory: cold starts render the last known list
         // instantly, then SSE/REST reconcile.
         let snapshotDirectory = SnapshotLocations.directory(forHub: hubUrl)
+        let lastSeenStore = LastSeenStore(snapshotDirectory: snapshotDirectory)
         let sessionStore = SessionListStore(api: api, snapshotDirectory: snapshotDirectory)
+        sessionStore.onLiveReplyDuringBackfill = { [weak lastSeenStore] sessionId, activityAt in
+            lastSeenStore?.markUnread(sessionId: sessionId, activityAt: activityAt)
+        }
+        sessionStore.onSessionsChanged = { [weak lastSeenStore] sessions in
+            lastSeenStore?.initializeBaseline(scopeKey: hubUrl, sessions: sessions)
+        }
         let machineStore = MachineStore(api: api, snapshotDirectory: snapshotDirectory)
         self.sessionStore = sessionStore
         self.machineStore = machineStore
-        self.lastSeenStore = LastSeenStore(snapshotDirectory: snapshotDirectory)
+        self.lastSeenStore = lastSeenStore
         self.windows = MessageWindowControllers(
             provider: api,
             snapshots: WindowSnapshotStore(

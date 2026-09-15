@@ -31,6 +31,7 @@ private class FakeSessionStore : SessionListStore {
     override val sessions: StateFlow<List<SessionSummary>> = backing
     val calls = MutableStateFlow<List<String>>(emptyList())
     var failRefresh = false
+    var rowsOnRefresh: List<SessionSummary>? = null
 
     fun set(vararg rows: SessionSummary) {
         backing.value = sortSessionSummaries(rows.toList())
@@ -43,6 +44,7 @@ private class FakeSessionStore : SessionListStore {
     override suspend fun refresh() {
         record("refresh")
         if (failRefresh) throw RuntimeException("offline")
+        rowsOnRefresh?.let { backing.value = sortSessionSummaries(it) }
     }
 
     override fun scheduleRefresh() = record("scheduleRefresh")
@@ -98,6 +100,8 @@ private class FakeMachineStore : MachineListStore {
 private fun summary(
     id: String,
     updatedAt: Long = 0,
+    lastAssistantMessageAt: Long? = null,
+    assistantReplyClockBackfilled: Boolean? = null,
     active: Boolean = false,
     machineId: String? = null,
     name: String? = null,
@@ -110,6 +114,8 @@ private fun summary(
     thinking = false,
     activeAt = 0,
     updatedAt = updatedAt,
+    lastAssistantMessageAt = lastAssistantMessageAt,
+    assistantReplyClockBackfilled = assistantReplyClockBackfilled,
     metadata = SessionSummaryMetadata(
         name = name,
         path = path,
@@ -330,6 +336,56 @@ class SessionListViewModelTest {
         viewModel.refresh()
         state = viewModel.uiState.first { it.isOffline }
         assertFalse(state.isRefreshing)
+    }
+
+    @Test
+    fun `SSE does not baseline cached rows before authoritative refresh`() = runTest {
+        val sessions = FakeSessionStore()
+        val machines = FakeMachineStore()
+        val lastSeenStore = LastSeenStore(backgroundScope)
+        val viewModel = SessionListViewModel(
+            sessionStore = sessions,
+            machineStore = machines,
+            lastSeenStore = lastSeenStore,
+            scope = backgroundScope,
+            hubKey = "hub-test",
+        )
+
+        // Simulate an old sessions.json snapshot plus an early SSE row. The
+        // snapshot has no reply-clock fields, so it must not establish the
+        // hub-wide baseline before REST hydration supplies server truth.
+        sessions.set(
+            summary("legacy", updatedAt = 9_000),
+            summary("early-sse", updatedAt = 100),
+        )
+        runCurrent()
+        assertEquals(0, lastSeenStore.lastSeenAt("legacy"))
+        assertTrue(viewModel.uiState.value.rows.associate { it.id to it.unread }.getValue("legacy"))
+
+        sessions.rowsOnRefresh = listOf(
+            summary(
+                "legacy",
+                updatedAt = 9_000,
+                lastAssistantMessageAt = 5_000,
+                assistantReplyClockBackfilled = true,
+            ),
+            summary(
+                "early-sse",
+                updatedAt = 100,
+                lastAssistantMessageAt = 50,
+                assistantReplyClockBackfilled = true,
+            ),
+        )
+        viewModel.refresh()
+        viewModel.uiState.first { state ->
+            state.rows.any { it.id == "legacy" && !it.unread }
+        }
+
+        assertEquals(5_000, lastSeenStore.lastSeenAt("legacy"))
+        assertEquals(50, lastSeenStore.lastSeenAt("early-sse"))
+        val hydrated = viewModel.uiState.value.rows.associateBy { it.id }
+        assertFalse(hydrated.getValue("legacy").unread)
+        assertFalse(hydrated.getValue("early-sse").unread)
     }
 
     @Test

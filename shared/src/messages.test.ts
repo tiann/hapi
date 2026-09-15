@@ -4,6 +4,7 @@ import {
     extractAssistantPlainText,
     hasConversationMessageContent,
     extractNotifySummary,
+    isAssistantTextMessage,
     getLiveReasoningStreamId,
     getReasoningStreamId,
     isRedundantGoalStatusEventContent,
@@ -29,6 +30,17 @@ describe('extractAssistantPlainText', () => {
             }
         }
         expect(extractAssistantPlainText(content)).toBe('Hello there.')
+    })
+
+    test('ignores event/message status text', () => {
+        const content = {
+            type: 'event',
+            data: {
+                type: 'message',
+                message: 'Visible event reply.'
+            }
+        }
+        expect(extractAssistantPlainText(content)).toBeNull()
     })
 
     test('returns null for codex/tool-call (no text)', () => {
@@ -77,6 +89,17 @@ describe('extractAssistantPlainText', () => {
         expect(extractAssistantPlainText(content)).toBe('Line one.\nLine two.')
     })
 
+    test('extracts output/assistant text from claude SDK string content', () => {
+        const content = {
+            type: 'output',
+            data: {
+                type: 'assistant',
+                message: { content: 'A string-form Claude reply.' }
+            }
+        }
+        expect(extractAssistantPlainText(content)).toBe('A string-form Claude reply.')
+    })
+
     test('returns null for output/assistant with no text blocks', () => {
         const content = {
             type: 'output',
@@ -111,6 +134,77 @@ describe('extractAssistantPlainText', () => {
     test('returns null for unknown content shapes', () => {
         expect(extractAssistantPlainText({ type: 'event', data: {} })).toBeNull()
         expect(extractAssistantPlainText({ type: 'text' })).toBeNull()
+    })
+})
+
+describe('isAssistantTextMessage', () => {
+    test('accepts a visible assistant message and rejects non-text agent events', () => {
+        expect(isAssistantTextMessage({
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'message', message: 'answer' } }
+        })).toBe(true)
+        expect(isAssistantTextMessage({
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'tool-call', name: 'Edit' } }
+        })).toBe(false)
+        expect(isAssistantTextMessage({
+            role: 'user',
+            content: { type: 'codex', data: { type: 'message', message: 'not an assistant reply' } }
+        })).toBe(false)
+        expect(isAssistantTextMessage({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    isMeta: true,
+                    message: { content: [{ type: 'text', text: 'hidden recap' }] }
+                }
+            }
+        })).toBe(false)
+    })
+
+    test('rejects a role-wrapped event/message status notice', () => {
+        expect(isAssistantTextMessage({
+            role: 'agent',
+            content: {
+                type: 'event',
+                data: { type: 'message', message: 'Visible event reply.' }
+            }
+        })).toBe(false)
+    })
+
+    test('rejects sidechain assistant prose', () => {
+        expect(isAssistantTextMessage({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    isSidechain: true,
+                    message: { content: [{ type: 'text', text: 'subagent progress' }] }
+                }
+            }
+        })).toBe(false)
+    })
+
+    test('rejects hidden notification and AGY tool-only output', () => {
+        const footer = 'AGENT_NOTIFY_SUMMARY {"status":"done","summary":"ok"}'
+        expect(isAssistantTextMessage({
+            role: 'agent',
+            content: { type: 'output', data: { type: 'agy_message', content: footer } }
+        })).toBe(false)
+        expect(isAssistantTextMessage({
+            role: 'agent',
+            content: { type: 'output', data: { type: 'agy_message', content: `Visible answer\n${footer}` } }
+        })).toBe(true)
+        expect(isAssistantTextMessage({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'agy_message', content: 'Inside the task-266 log\n[Message] result' }
+            }
+        })).toBe(false)
     })
 })
 

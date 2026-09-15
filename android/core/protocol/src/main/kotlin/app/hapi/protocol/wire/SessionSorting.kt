@@ -11,7 +11,8 @@ package app.hapi.protocol.wire
  * 4. among sessions with equal `active` **when both are active**:
  *    `pendingRequestsCount` descending (the reference's
  *    `left.active && …` guard — inactive ties skip straight to recency);
- * 5. finally `updatedAt` descending.
+ * 5. finally the latest assistant reply time descending, falling back to
+ *    `updatedAt` for sessions with no visible assistant reply.
  *
  * Ties keep their prior relative order: JS `Array.prototype.sort` and
  * Kotlin's `sortedWith` are both stable.
@@ -33,7 +34,9 @@ val SessionSummaryComparator: Comparator<SessionSummary> = Comparator { left, ri
     if (left.active && left.pendingRequestsCount != right.pendingRequestsCount) {
         return@Comparator right.pendingRequestsCount - left.pendingRequestsCount
     }
-    right.updatedAt.compareTo(left.updatedAt)
+    val leftRecency = left.lastAssistantMessageAt ?: left.updatedAt
+    val rightRecency = right.lastAssistantMessageAt ?: right.updatedAt
+    rightRecency.compareTo(leftRecency)
 }
 
 /** Stable sort of a whole list with [SessionSummaryComparator]. */

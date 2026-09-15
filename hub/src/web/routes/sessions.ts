@@ -22,6 +22,7 @@ import {
     UpdateSessionSummaryRequestSchema,
     supportsModelChange,
     supportsEffort,
+    getSessionListSortTimestamp,
     toSessionSummary,
     UploadFileRequestSchema
 } from '@hapi/protocol'
@@ -109,8 +110,9 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 if (a.active && aPending !== bPending) {
                     return bPending - aPending
                 }
-                // Then by updatedAt
-                return b.updatedAt - a.updatedAt
+                // Then by the latest visible assistant reply. Legacy and
+                // no-reply sessions fall back to the activity clock.
+                return getSessionListSortTimestamp(b) - getSessionListSortTimestamp(a)
             })
         if (limit !== null) {
             sessionRecords = sessionRecords.slice(0, limit)
