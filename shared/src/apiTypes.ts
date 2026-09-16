@@ -133,7 +133,7 @@ export type SpawnResponse =
     | {
         type: 'error'
         message: string
-        code?: 'agent_unavailable' | 'runner_upgrade_required' | 'outside_workspace_roots'
+        code?: 'agent_unavailable' | 'model_unavailable' | 'runner_upgrade_required' | 'outside_workspace_roots'
         agent?: z.infer<typeof AgentFlavorSchema>
     }
 

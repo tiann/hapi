@@ -11,6 +11,7 @@ import { killProcessByChildProcess } from '@/utils/process';
 import { getCursorAcpModelsSnapshot } from '@/cursor/utils/cursorAcpModelsBridge';
 import { getErrorMessage } from './rpcResponses';
 import {
+    getSharedCursorModelsCacheAgeMs,
     readSharedCursorModelsCache,
     writeSharedCursorModelsCache,
     _resetSharedCursorModelsCacheForTests
@@ -162,6 +163,8 @@ interface CacheEntry {
 }
 
 const CACHE_TTL_MS = 60_000;
+/** Beyond this, a cached catalog is too old to reject a model id against. */
+const CACHED_CATALOG_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const PROBE_TIMEOUT_MS = 30_000;
 const cache: CacheEntry = {
     expiresAt: 0,
@@ -283,12 +286,23 @@ async function runCursorModelProbe(): Promise<ListCursorModelsResponse> {
     });
 }
 
-async function applyInMemoryCache(response: ListCursorModelsResponse): Promise<ListCursorModelsResponse> {
+/**
+ * `persist` must stay false whenever `response` was itself read back off the
+ * shared cache. The file's mtime is what dates the catalog for the spawn
+ * preflight (getCachedCursorModelIds), so writing an old snapshot back would
+ * renew its freshness without anyone having asked Cursor for a new one — a
+ * catalog from before a Cursor upgrade would then keep rejecting models that
+ * are now valid. Only a live source (ACP snapshot or probe) may stamp the file.
+ */
+async function applyInMemoryCache(
+    response: ListCursorModelsResponse,
+    persist = true
+): Promise<ListCursorModelsResponse> {
     const enriched = await enrichCursorModelsWithCliSkus(response);
     if ((enriched.availableModels?.length ?? 0) > 0) {
         cache.expiresAt = Date.now() + CACHE_TTL_MS;
         cache.response = enriched;
-        writeSharedCursorModelsCache(enriched);
+        if (persist) writeSharedCursorModelsCache(enriched);
     }
     return enriched;
 }
@@ -302,7 +316,7 @@ async function listCursorModelsWhileAcpActive(): Promise<ListCursorModelsRespons
     // Session child writes the on-disk cache; prefer it over this process's in-memory entry.
     const shared = readSharedCursorModelsCache();
     if (shared) {
-        return applyInMemoryCache(shared);
+        return applyInMemoryCache(shared, false);
     }
     if (cache.expiresAt > Date.now() && (cache.response.availableModels?.length ?? 0) > 0) {
         const shared = readSharedCursorModelsCache();
@@ -331,7 +345,7 @@ export async function listCursorModels(): Promise<ListCursorModelsResponse> {
 
     const shared = readSharedCursorModelsCache();
     if (shared) {
-        return applyInMemoryCache(shared);
+        return applyInMemoryCache(shared, false);
     }
 
     if (inflight) {
@@ -374,6 +388,40 @@ export async function listCursorModels(): Promise<ListCursorModelsResponse> {
     })();
 
     return inflight;
+}
+
+/**
+ * Catalog ids from whatever is already cached (ACP snapshot, in-process cache,
+ * on-disk shared cache). Never probes: the spawn preflight must not block on
+ * `agent --list-models`, which can take 30s and contends with the ACP spawn
+ * lease. Returns [] when nothing usable is cached, which callers must read as
+ * "unknown catalog", not "no models".
+ */
+export function getCachedCursorModelIds(): string[] {
+    const sources: (readonly CursorModelSummary[] | undefined)[] = [];
+    // Live ACP session snapshot — current by construction.
+    sources.push(getCursorAcpModelsSnapshot()?.availableModels);
+
+    // The in-memory entry and the file are written together by
+    // applyInMemoryCache, so the file's mtime dates both. Past the age bound
+    // both are dropped rather than trusted past their TTL: a runner can stay up
+    // for weeks, and a catalog that predates a Cursor upgrade would reject an id
+    // that is now valid.
+    const sharedAgeMs = getSharedCursorModelsCacheAgeMs();
+    if (sharedAgeMs !== null && sharedAgeMs <= CACHED_CATALOG_MAX_AGE_MS) {
+        sources.push(cache.response.availableModels, cache.response.cliModelSkus);
+        const shared = readSharedCursorModelsCache();
+        sources.push(shared?.availableModels, shared?.cliModelSkus);
+    }
+
+    const ids = new Set<string>();
+    for (const source of sources) {
+        for (const entry of source ?? []) {
+            const modelId = entry.modelId.trim();
+            if (modelId) ids.add(modelId);
+        }
+    }
+    return [...ids];
 }
 
 export function seedCursorModelsCache(response: ListCursorModelsResponse): void {

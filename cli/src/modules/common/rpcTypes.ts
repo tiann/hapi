@@ -37,6 +37,6 @@ export type SpawnSessionResult =
     | {
         type: 'error'
         errorMessage: string
-        code?: 'agent_unavailable' | 'outside_workspace_roots'
+        code?: 'agent_unavailable' | 'model_unavailable' | 'outside_workspace_roots'
         agent?: AgentFlavor
     }
