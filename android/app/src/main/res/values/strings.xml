@@ -178,6 +178,8 @@
     <string name="channel_permission_requests_desc">An agent is waiting for you to allow or deny a tool call</string>
     <string name="channel_input_requests">Questions for you</string>
     <string name="channel_input_requests_desc">An agent needs you to answer a question in the session</string>
+    <string name="channel_model_errors">Model errors</string>
+    <string name="channel_model_errors_desc">An agent hit a model-side failure that needs attention</string>
     <string name="channel_ready">Agent ready</string>
     <string name="channel_ready_desc">An agent finished and is waiting for input</string>
     <string name="channel_task_notifications">Task notifications</string>

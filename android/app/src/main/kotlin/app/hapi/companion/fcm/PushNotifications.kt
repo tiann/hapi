@@ -64,7 +64,7 @@ object PushNotifications {
             when (payload.type) {
                 PushType.PERMISSION_REQUEST -> addPermissionActions(context, builder, payload)
                 PushType.READY, PushType.TASK_NOTIFICATION -> addReplyActions(context, builder, payload)
-                PushType.INPUT_REQUEST, null -> Unit
+                PushType.INPUT_REQUEST, PushType.MODEL_ERROR, null -> Unit
             }
         }
 
