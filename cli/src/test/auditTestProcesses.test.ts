@@ -34,7 +34,10 @@ describe('findTestOwnedProcesses', () => {
         }
     })
 
-    it('finds a live child carrying the marker in its environment', async () => {
+    // Live process-table detection depends on `ps axeww`, which is not
+    // available on Windows; the scan short-circuits to an empty list there, so
+    // this assertion only applies on POSIX platforms.
+    it.skipIf(process.platform === 'win32')('finds a live child carrying the marker in its environment', async () => {
         const markerValue = `MCK${process.pid}${Date.now()}`
         const child = spawnMarkedChild(markerValue)
         await new Promise<void>((resolve) => child.once('spawn', () => resolve()))
