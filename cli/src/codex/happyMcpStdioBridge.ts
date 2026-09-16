@@ -23,7 +23,16 @@ import {
   SESSION_ID_PREFIX_PARAM_DESCRIPTION,
 } from '@hapi/protocol/sessionCitation';
 
-const DEFAULT_TOOL_NAMES = ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer'];
+const DEFAULT_TOOL_NAMES = [
+  'change_title',
+  // `link_pr` is opt-in; internal launchers add it via --tools after probing the hub.
+  'display_image',
+  'display_video',
+  'display_media',
+  'list_peers',
+  'ping_peer',
+  'inspect_peer',
+];
 
 function parseArgs(argv: string[]): { url: string | null; toolNames: Set<string> } {
   let url: string | null = null;
@@ -107,7 +116,76 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       );
     }
 
+    const linkPrInputSchema: z.ZodTypeAny = z.object({
+      url: z.string().optional().describe('GitHub PR URL'),
+      repo: z.string().optional().describe('owner/repo'),
+      number: z.number().int().positive().optional().describe('PR number'),
+      role: z.enum(['primary', 'secondary']).optional(),
+    });
 
+    if (toolNames.has('link_pr')) {
+      const linkPrTool = server.registerTool<any, any>(
+        'link_pr',
+        {
+          description: 'Attach the current HAPI session to a GitHub pull request',
+          title: 'Link Pull Request',
+          inputSchema: linkPrInputSchema,
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            const client = await ensureHttpClient();
+            await syncLinkPrVisibilityFromHttp(client);
+            if (!linkPrTool.enabled) {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: 'GitHub PR awareness is disabled in Settings → Features. Enable it, then retry link_pr.',
+                  },
+                ],
+                isError: true,
+              };
+            }
+            const response = await client.callTool({ name: 'link_pr', arguments: args });
+            return response as any;
+          } catch (error) {
+            return {
+              content: [
+                { type: 'text' as const, text: `Failed to link PR: ${error instanceof Error ? error.message : String(error)}` },
+              ],
+              isError: true,
+            };
+          }
+        }
+      );
+      // Start hidden until the first HTTP listTools sync confirms awareness.
+      linkPrTool.disable();
+
+      async function syncLinkPrVisibilityFromHttp(client: Client): Promise<void> {
+        try {
+          const listed = await client.listTools();
+          const visible = listed.tools.some((tool) => tool.name === 'link_pr');
+          // Guard: SDK enable/disable always emit list_changed even when unchanged.
+          if (visible === linkPrTool.enabled) return;
+          if (visible) linkPrTool.enable();
+          else linkPrTool.disable();
+        } catch {
+          // Keep prior visibility on transient HTTP errors.
+        }
+      }
+
+      // Periodic sync so Codex listTools tracks hub toggles without destroying
+      // the cached HTTP MCP session.
+      const visibilityTimer = setInterval(() => {
+        void ensureHttpClient()
+          .then((client) => syncLinkPrVisibilityFromHttp(client))
+          .catch(() => undefined);
+      }, 15_000);
+      visibilityTimer.unref?.();
+      void ensureHttpClient()
+        .then((client) => syncLinkPrVisibilityFromHttp(client))
+        .catch(() => undefined);
+    }
 
     const displayImageInputSchema: z.ZodTypeAny = z.object({
       path: z.string().describe('Absolute filesystem path of the local image to display to the human user. This file is sent for user display, not provided to the model for image inspection'),

@@ -1,11 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ApiSessionClient } from '@/api/apiSession'
+import { upsertSessionExternalRef } from '@/api/upsertSessionExternalRef'
+import { fetchGithubPrAwarenessEnabled } from '@/api/fetchGithubPrAwareness'
 import { startHappyServer, toClaudeAllowedHapiMcpTools } from './startHappyServer'
+
+vi.mock('@/api/upsertSessionExternalRef', () => ({
+    upsertSessionExternalRef: vi.fn()
+}))
+
+vi.mock('@/api/fetchGithubPrAwareness', () => ({
+    fetchGithubPrAwarenessEnabled: vi.fn(async () => false)
+}))
+
+const mockUpsertSessionExternalRef = vi.mocked(upsertSessionExternalRef)
+const mockFetchGithubPrAwarenessEnabled = vi.mocked(fetchGithubPrAwarenessEnabled)
 
 type ToolResult = {
     content?: Array<{ type: string; text?: string }>
@@ -50,12 +64,13 @@ describe('startHappyServer skill_lookup', () => {
         } as unknown as ApiSessionClient
         const server = await startHappyServer(sessionClient, enableSkillLookup
             ? {
+                enableLinkPr: false,
                 skillLookup: {
                     workingDirectory,
                     flavor: 'opencode'
                 }
             }
-            : {})
+            : { enableLinkPr: false })
         stopServer = server.stop
 
         client = new Client(
@@ -174,7 +189,7 @@ describe('startHappyServer skill_lookup', () => {
             sendAgentMessage: vi.fn(),
             sendClaudeSessionMessage: vi.fn()
         } as unknown as ApiSessionClient
-        const server = await startHappyServer(sessionClient, { enableChangeTitle: false })
+        const server = await startHappyServer(sessionClient, { enableChangeTitle: false, enableLinkPr: false })
         stopServer = server.stop
         const mcp = new Client({ name: 'hapi-test', version: '1.0.0' })
         client = mcp
@@ -182,7 +197,14 @@ describe('startHappyServer skill_lookup', () => {
         await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)))
         const tools = await mcp.listTools()
 
-        expect(server.toolNames).toEqual(['display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer'])
+        expect(server.toolNames).toEqual([
+            'display_image',
+            'display_video',
+            'display_media',
+            'list_peers',
+            'ping_peer',
+            'inspect_peer',
+        ])
         expect(tools.tools.map((tool) => tool.name)).toEqual([
             'display_image',
             'display_video',
@@ -193,6 +215,344 @@ describe('startHappyServer skill_lookup', () => {
         ])
     })
 
+})
+
+describe('startHappyServer link_pr', () => {
+    let stopServer: (() => void) | null
+    let mcp: Client | null
+
+    afterEach(async () => {
+        await mcp?.close()
+        stopServer?.()
+        mcp = null
+        stopServer = null
+        mockUpsertSessionExternalRef.mockReset()
+    })
+
+    async function connectWithClient(sessionClient: ApiSessionClient): Promise<Client> {
+        const server = await startHappyServer(sessionClient, { enableChangeTitle: false, enableLinkPr: true })
+        stopServer = server.stop
+        mcp = new Client({ name: 'hapi-link-pr-test', version: '1.0.0' })
+        await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+        return mcp
+    }
+
+    it('reports success when hub upsert persists the ref', async () => {
+        const linkedRef = {
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 1163,
+            url: 'https://github.com/tiann/hapi/pull/1163',
+            role: 'primary' as const,
+            source: 'agent' as const,
+            linkedAt: 1_700_000_000_000
+        }
+        mockUpsertSessionExternalRef.mockResolvedValue({
+            ok: true,
+            status: 200,
+            externalRefs: [linkedRef]
+        })
+        const sessionClient = {
+            sessionId: 'sess-1',
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            getMetadata: vi.fn(() => ({ externalRefs: [linkedRef] })),
+            sendAgentMessage: vi.fn(),
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+
+        const client = await connectWithClient(sessionClient)
+        const result = await client.callTool({
+            name: 'link_pr',
+            arguments: { url: 'https://github.com/tiann/hapi/pull/1163' }
+        }) as ToolResult
+
+        expect(result.isError).toBe(false)
+        expect(result.content?.[0]?.text).toContain('Linked tiann/hapi#1163')
+        expect(mockUpsertSessionExternalRef).toHaveBeenCalledWith('sess-1', expect.objectContaining({
+            repo: 'tiann/hapi',
+            number: 1163
+        }))
+        expect(sessionClient.flushMetadata).not.toHaveBeenCalled()
+    })
+
+    it('upserts without wiping other github_pr refs', async () => {
+        const existing = {
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 100,
+            url: 'https://github.com/tiann/hapi/pull/100',
+            role: 'primary' as const,
+            source: 'user' as const,
+            linkedAt: 1
+        }
+        const secondary = {
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 1163,
+            url: 'https://github.com/tiann/hapi/pull/1163',
+            role: 'secondary' as const,
+            source: 'agent' as const,
+            linkedAt: 2
+        }
+        mockUpsertSessionExternalRef.mockResolvedValue({
+            ok: true,
+            status: 200,
+            externalRefs: [existing, secondary]
+        })
+        const sessionClient = {
+            sessionId: 'sess-1',
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            getMetadata: vi.fn(() => ({ externalRefs: [existing, secondary] })),
+            sendAgentMessage: vi.fn(),
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+
+        const client = await connectWithClient(sessionClient)
+        const result = await client.callTool({
+            name: 'link_pr',
+            arguments: { url: 'https://github.com/tiann/hapi/pull/1163', role: 'secondary' }
+        }) as ToolResult
+
+        expect(result.isError).toBe(false)
+        expect(mockUpsertSessionExternalRef).toHaveBeenCalledWith('sess-1', expect.objectContaining({
+            repo: 'tiann/hapi',
+            number: 1163,
+            role: 'secondary'
+        }))
+        expect(sessionClient.flushMetadata).not.toHaveBeenCalled()
+    })
+
+    it('preserves cached health when re-linking the same PR', async () => {
+        const existing = {
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 1163,
+            url: 'https://github.com/tiann/hapi/pull/1163',
+            role: 'primary' as const,
+            source: 'agent' as const,
+            linkedAt: 300,
+            openState: 'open' as const,
+            checks: 'pending' as const,
+            merge: 'unstable' as const,
+            statusCheckedAt: 200,
+            estateCode: 'ci_pending'
+        }
+        mockUpsertSessionExternalRef.mockResolvedValue({
+            ok: true,
+            status: 200,
+            externalRefs: [existing]
+        })
+        const sessionClient = {
+            sessionId: 'sess-1',
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            getMetadata: vi.fn(() => ({ externalRefs: [existing] })),
+            sendAgentMessage: vi.fn(),
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+
+        const client = await connectWithClient(sessionClient)
+        const result = await client.callTool({
+            name: 'link_pr',
+            arguments: { url: 'https://github.com/tiann/hapi/pull/1163' }
+        }) as ToolResult
+
+        expect(result.isError).toBe(false)
+        expect(mockUpsertSessionExternalRef).toHaveBeenCalledOnce()
+        expect(sessionClient.flushMetadata).not.toHaveBeenCalled()
+    })
+
+    it('errors when the hub does not persist the linked ref', async () => {
+        mockUpsertSessionExternalRef.mockResolvedValue({
+            ok: true,
+            status: 200,
+            externalRefs: []
+        })
+        const sessionClient = {
+            sessionId: 'sess-1',
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            getMetadata: vi.fn(() => ({ externalRefs: [] })),
+            sendAgentMessage: vi.fn(),
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+
+        const client = await connectWithClient(sessionClient)
+        const result = await client.callTool({
+            name: 'link_pr',
+            arguments: { url: 'https://github.com/tiann/hapi/pull/1163' }
+        }) as ToolResult
+
+        expect(result.isError).toBe(true)
+        expect(result.content?.[0]?.text).toContain('Hub did not persist the PR link')
+    })
+
+    it('fails once at MAX_EXTERNAL_REFS without queueing metadata retries', async () => {
+        mockUpsertSessionExternalRef.mockResolvedValue({
+            ok: false,
+            status: 400,
+            error: 'at most 32 external refs are allowed'
+        })
+        const sessionClient = {
+            sessionId: 'sess-1',
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            getMetadata: vi.fn(() => ({ externalRefs: [] })),
+            sendAgentMessage: vi.fn(),
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+
+        const client = await connectWithClient(sessionClient)
+        const result = await client.callTool({
+            name: 'link_pr',
+            arguments: { url: 'https://github.com/tiann/hapi/pull/1163' }
+        }) as ToolResult
+
+        expect(result.isError).toBe(true)
+        expect(result.content?.[0]?.text).toContain('at most 32 external refs')
+        expect(mockUpsertSessionExternalRef).toHaveBeenCalledOnce()
+        expect(sessionClient.flushMetadata).not.toHaveBeenCalled()
+    })
+})
+
+describe('startHappyServer dynamic link_pr awareness', () => {
+    let stopServer: (() => void) | null
+    let mcp: Client | null
+
+    afterEach(async () => {
+        await mcp?.close()
+        stopServer?.()
+        mcp = null
+        stopServer = null
+        mockFetchGithubPrAwarenessEnabled.mockReset()
+        mockFetchGithubPrAwarenessEnabled.mockResolvedValue(false)
+        mockUpsertSessionExternalRef.mockReset()
+    })
+
+    function sessionClient(): ApiSessionClient {
+        return {
+            sessionId: 'sess-awareness',
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            getMetadata: vi.fn(() => ({ externalRefs: [] })),
+            sendAgentMessage: vi.fn(),
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+    }
+
+    it('toggles link_pr list visibility without dropping the MCP session', async () => {
+        mockFetchGithubPrAwarenessEnabled.mockResolvedValue(false)
+        const server = await startHappyServer(sessionClient(), {
+            enableChangeTitle: false,
+            awarenessPollMs: 0,
+        })
+        stopServer = server.stop
+        expect(server.toolNames).toContain('link_pr')
+
+        mcp = new Client({ name: 'hapi-awareness-dynamic', version: '1.0.0' })
+        await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+
+        const offTools = await mcp.listTools()
+        expect(offTools.tools.map((tool) => tool.name)).not.toContain('link_pr')
+
+        mockFetchGithubPrAwarenessEnabled.mockResolvedValue(true)
+        // Any request re-syncs visibility; listTools is enough.
+        const onTools = await mcp.listTools()
+        expect(onTools.tools.map((tool) => tool.name)).toContain('link_pr')
+
+        mockUpsertSessionExternalRef.mockResolvedValue({
+            ok: true,
+            status: 200,
+            externalRefs: [{
+                kind: 'github_pr',
+                repo: 'tiann/hapi',
+                number: 1163,
+                url: 'https://github.com/tiann/hapi/pull/1163',
+                role: 'primary',
+                source: 'agent',
+                linkedAt: 1
+            }]
+        })
+        const linked = await mcp.callTool({
+            name: 'link_pr',
+            arguments: { url: 'https://github.com/tiann/hapi/pull/1163' }
+        }) as ToolResult
+        expect(linked.isError).toBeFalsy()
+
+        mockFetchGithubPrAwarenessEnabled.mockResolvedValue(false)
+        const offAgain = await mcp.listTools()
+        expect(offAgain.tools.map((tool) => tool.name)).not.toContain('link_pr')
+
+        // Unrelated tools remain available on the same connection.
+        expect(offAgain.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+            'display_image',
+            'display_video',
+            'display_media',
+            'list_peers',
+            'ping_peer',
+            'inspect_peer',
+        ]))
+    })
+
+    it('does not emit tools/list_changed when awareness is unchanged', async () => {
+        mockFetchGithubPrAwarenessEnabled.mockResolvedValue(false)
+        const server = await startHappyServer(sessionClient(), {
+            enableChangeTitle: false,
+            awarenessPollMs: 0,
+        })
+        stopServer = server.stop
+
+        mcp = new Client({ name: 'hapi-awareness-idempotent', version: '1.0.0' })
+        await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+        await mcp.listTools()
+
+        let listChanged = 0
+        mcp.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+            listChanged += 1
+        })
+
+        await mcp.listTools()
+        await mcp.listTools()
+        expect(listChanged).toBe(0)
+
+        mockFetchGithubPrAwarenessEnabled.mockResolvedValue(true)
+        await mcp.listTools()
+        expect(listChanged).toBe(1)
+
+        await mcp.listTools()
+        await mcp.listTools()
+        expect(listChanged).toBe(1)
+    })
+
+    it('polls hub awareness so idle HTTP clients learn about flips', async () => {
+        mockFetchGithubPrAwarenessEnabled.mockResolvedValue(false)
+        const server = await startHappyServer(sessionClient(), {
+            enableChangeTitle: false,
+            awarenessPollMs: 40,
+            // Prove the poll path alone updates registration (no per-request sync).
+            syncLinkPrOnRequest: false,
+        })
+        stopServer = server.stop
+
+        mcp = new Client({ name: 'hapi-awareness-poll', version: '1.0.0' })
+        await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+        const baseline = await mcp.listTools()
+        expect(baseline.tools.map((tool) => tool.name)).not.toContain('link_pr')
+
+        mockFetchGithubPrAwarenessEnabled.mockResolvedValue(true)
+        await vi.waitFor(async () => {
+            const onTools = await mcp!.listTools()
+            expect(onTools.tools.map((tool) => tool.name)).toContain('link_pr')
+        }, { timeout: 2000, interval: 50 })
+
+        mockFetchGithubPrAwarenessEnabled.mockResolvedValue(false)
+        await vi.waitFor(async () => {
+            const offTools = await mcp!.listTools()
+            expect(offTools.tools.map((tool) => tool.name)).not.toContain('link_pr')
+        }, { timeout: 2000, interval: 50 })
+    })
 })
 
 describe('toClaudeAllowedHapiMcpTools', () => {
