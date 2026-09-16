@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ApiClient } from '@/api/client'
-import type { Machine, PiModelSummary } from '@/types/api'
+import type { AgentAvailabilityEntry, Machine, PiModelSummary } from '@/types/api'
 import { saveNewSessionFormDraft } from './newSessionFormDraft'
 import {
     loadPreferredLaunchSettings,
@@ -17,7 +17,7 @@ const mocks = vi.hoisted(() => ({
     checkPathsExists: vi.fn(),
     availableAgents: [
         'agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'grok', 'kimi', 'opencode', 'pi'
-    ].map((agent) => ({ agent, available: true })),
+    ].map((agent) => ({ agent, available: true })) as AgentAvailabilityEntry[],
     codexModelsLoading: false,
     agyModelsLoading: false,
     agyModels: [{ modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }],
@@ -292,7 +292,7 @@ describe('NewSession launch preferences', () => {
             0,
             mocks.availableAgents.length,
             ...['agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'grok', 'kimi', 'opencode', 'pi']
-                .map((agent) => ({ agent, available: true }))
+                .map((agent) => ({ agent, available: true })) as AgentAvailabilityEntry[]
         )
         mocks.codexModelsLoading = false
         mocks.agyModelsLoading = false
@@ -338,6 +338,34 @@ describe('NewSession launch preferences', () => {
 
         await waitFor(() => expect(screen.getByDisplayValue('codex')).toBeChecked())
         expect(screen.queryByDisplayValue('claude')).not.toBeInTheDocument()
+    })
+
+    it('reveals unavailable Agents on demand and keeps them disabled', async () => {
+        mocks.availableAgents.splice(
+            0,
+            mocks.availableAgents.length,
+            { agent: 'claude', available: true },
+            { agent: 'codex', available: true },
+            { agent: 'agy', available: false, reason: 'not_found' }
+        )
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        expect(screen.queryByDisplayValue('agy')).not.toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'newSession.moreAgents' }))
+        await waitFor(() => expect(screen.getByDisplayValue('agy')).toBeDisabled())
+        expect(screen.getByDisplayValue('agy')).toHaveAccessibleName(/newSession\.agentUnavailableReason\.notFound/)
+        expect(screen.getByDisplayValue('claude')).toBeEnabled()
+        expect(screen.getByTestId('create')).toBeEnabled()
     })
 
     it('refuses a directory rejected by workspace-root validation', async () => {

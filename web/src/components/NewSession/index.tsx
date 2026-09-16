@@ -1,7 +1,8 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, PiLocalSessionSummary } from '@/types/api'
-import type { CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
+import { CREATABLE_AGENT_FLAVORS } from '@hapi/protocol'
+import type { AgentAvailabilityEntry, CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
 import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
@@ -291,11 +292,24 @@ export function NewSession(props: {
         api: props.api,
         machineId,
     })
+    const agentOptions = useMemo<AgentAvailabilityEntry[]>(() => {
+        if (!machineId || agentAvailability.isLoading || agentAvailability.error) return []
+
+        const availabilityByAgent = new Map(
+            agentAvailability.agents.map((entry) => [entry.agent, entry])
+        )
+        return CREATABLE_AGENT_FLAVORS
+            .map((agentFlavor) => availabilityByAgent.get(agentFlavor) ?? {
+                agent: agentFlavor,
+                available: false,
+                reason: 'not_found' as const,
+            })
+    }, [agentAvailability.agents, agentAvailability.error, agentAvailability.isLoading, machineId])
     const availableAgents = useMemo(
-        () => agentAvailability.agents
-            .filter((entry) => entry.available && entry.agent !== 'gemini')
+        () => agentOptions
+            .filter((entry) => entry.available)
             .map((entry) => entry.agent as AgentType),
-        [agentAvailability.agents]
+        [agentOptions]
     )
     const selectedAgentAvailable = availableAgents.includes(agent)
 
@@ -1760,7 +1774,7 @@ export function NewSession(props: {
             />
             <AgentSelector
                 agent={agent}
-                agents={availableAgents}
+                agents={agentOptions}
                 isDisabled={isFormDisabled || agentAvailability.isLoading || Boolean(agentAvailability.error)}
                 onAgentChange={handleAgentChange}
             />
