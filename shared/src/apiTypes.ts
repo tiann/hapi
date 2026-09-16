@@ -548,6 +548,19 @@ export const SendMessageRequestSchema = z.object({
 
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>
 
+/**
+ * CLI peer-delivery body (`POST /cli/sessions/:sourceSessionId/peer-messages`).
+ * Path id is the authenticated source session (CLI_API_TOKEN namespace); hub stamps
+ * meta.notifySource=peer + sourceSessionId. Web JWT `/api/*` cannot mint this stamp.
+ */
+export const PeerMessageRequestSchema = z.object({
+    text: z.string().min(1),
+    /** Receiving session id — must exist in the same hub namespace as the source. */
+    targetSessionId: z.string().min(1)
+})
+
+export type PeerMessageRequest = z.infer<typeof PeerMessageRequestSchema>
+
 export const ForkConversationRequestSchema = z.object({
     messageLocalId: z.string().min(1).optional()
 })
