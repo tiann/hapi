@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
     existsSync,
     linkSync,
@@ -14,19 +14,30 @@ import {
     writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { homedir, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import {
     CURSOR_HAPI_MCP_SERVER_ID,
     HAPI_MCP_OVERLAY_PID_ENV,
     cursorHapiMcpServerId,
+    HAPI_MCP_OVERLAY_SESSION_ENV,
+    HAPI_MCP_GIT_EXCLUDE_MARKER_PREFIX,
+    appendExcludeLease,
+    appendExcludeLeaseUnlocked,
+    hapiMcpGitExcludeMarker,
     installCursorMcpOverlay,
     isProcessAlive,
     readLockOwner,
+    removeExcludeLease,
     resolveCursorMcpConfigDir,
+    resolveProjectCursorConfigDir,
+    shieldProjectMcpJsonFromGit,
     withMcpJsonLock,
     writeMcpJsonAtomic,
 } from './cursorMcpOverlay';
+
+const overlayModulePath = fileURLToPath(new URL('./cursorMcpOverlay.ts', import.meta.url));
 
 describe('installCursorMcpOverlay', () => {
     const roots: string[] = [];
@@ -55,31 +66,38 @@ describe('installCursorMcpOverlay', () => {
         expect(resolveCursorMcpConfigDir(' /tmp/custom-cursor ')).toBe('/tmp/custom-cursor');
     });
 
-    it('writes per-session bridge into .cursor/mcp.json and removes only that id on cleanup', () => {
+    it('writes the stable hapi mailbox into the project mcp.json and removes it on cleanup', () => {
         const cwd = makeProjectDir(JSON.stringify({
             mcpServers: {
                 other: { command: 'echo', args: ['x'] },
             },
         }, null, 2));
-        const serverId = cursorHapiMcpServerId('session-a');
-
+        const serverId = CURSOR_HAPI_MCP_SERVER_ID;
         const mcpPath = join(cwd, '.cursor', 'mcp.json');
 
         const handle = installCursorMcpOverlay(cwd, {
             command: '/bin/hapi',
             args: ['mcp', '--url', 'http://127.0.0.1:12345/'],
-        }, { serverId, enableCursorMcp: noopEnable, mcpConfigDir: join(cwd, '.cursor') });
+        }, {
+            serverId,
+            overlaySessionId: 'session-a',
+            enableCursorMcp: noopEnable,
+            mcpConfigDir: join(cwd, '.cursor'),
+        });
 
         const merged = JSON.parse(readFileSync(mcpPath, 'utf-8')) as {
-            mcpServers: Record<string, { command: string; args: string[] }>;
+            mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }>;
         };
         expect(merged.mcpServers.other).toEqual({ command: 'echo', args: ['x'] });
         expect(merged.mcpServers[serverId]).toEqual({
             command: '/bin/hapi',
             args: ['mcp', '--url', 'http://127.0.0.1:12345/'],
-            env: { [HAPI_MCP_OVERLAY_PID_ENV]: String(process.pid) },
+            env: {
+                [HAPI_MCP_OVERLAY_PID_ENV]: String(process.pid),
+                [HAPI_MCP_OVERLAY_SESSION_ENV]: 'session-a',
+            },
         });
-        expect(merged.mcpServers[CURSOR_HAPI_MCP_SERVER_ID]).toBeUndefined();
+        expect(Object.keys(merged.mcpServers).filter((id) => id.startsWith('hapi-'))).toEqual([]);
 
         handle.cleanup();
         const after = JSON.parse(readFileSync(mcpPath, 'utf-8')) as {
@@ -89,45 +107,114 @@ describe('installCursorMcpOverlay', () => {
         expect(after.mcpServers[serverId]).toBeUndefined();
     });
 
-    it('leaves a newer session bridge intact when an older session cleans up first', () => {
-        const cwd = makeProjectDir(JSON.stringify({
+    it('strips dead hapi-* keys from user mcp.json but keeps live sibling overlays', () => {
+        const cwd = makeProjectDir();
+        const userDir = join(cwd, 'user-cursor');
+        mkdirSync(userDir, { recursive: true });
+        const probe = spawnSync(process.execPath, ['-e', ''], { encoding: 'utf-8' });
+        const deadPid = probe.pid;
+        expect(typeof deadPid).toBe('number');
+        expect(isProcessAlive(deadPid!)).toBe(false);
+        writeFileSync(join(userDir, 'mcp.json'), JSON.stringify({
             mcpServers: {
-                other: { command: 'echo', args: ['x'] },
+                playwright: { command: 'echo', args: ['pw'] },
+                [cursorHapiMcpServerId('dead')]: {
+                    command: '/bin/hapi',
+                    args: ['mcp', '--url', 'http://127.0.0.1:8888/'],
+                    env: { [HAPI_MCP_OVERLAY_PID_ENV]: String(deadPid) },
+                },
+                [cursorHapiMcpServerId('sibling')]: {
+                    command: '/bin/hapi',
+                    args: ['mcp', '--url', 'http://127.0.0.1:9999/'],
+                    env: { [HAPI_MCP_OVERLAY_PID_ENV]: String(process.pid) },
+                },
             },
         }, null, 2));
-        const mcpPath = join(cwd, '.cursor', 'mcp.json');
-        const idA = cursorHapiMcpServerId('session-a');
-        const idB = cursorHapiMcpServerId('session-b');
 
-        const handleA = installCursorMcpOverlay(cwd, {
+        installCursorMcpOverlay(cwd, {
+            command: '/bin/hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:12345/'],
+        }, {
+            serverId: CURSOR_HAPI_MCP_SERVER_ID,
+            overlaySessionId: 'session-a',
+            enableCursorMcp: noopEnable,
+            mcpConfigDir: join(cwd, '.cursor'),
+            userMcpConfigDir: userDir,
+        }).cleanup();
+
+        const user = JSON.parse(readFileSync(join(userDir, 'mcp.json'), 'utf-8')) as {
+            mcpServers: Record<string, unknown>;
+        };
+        expect(user.mcpServers.playwright).toEqual({ command: 'echo', args: ['pw'] });
+        expect(user.mcpServers[cursorHapiMcpServerId('dead')]).toBeUndefined();
+        expect(user.mcpServers[cursorHapiMcpServerId('sibling')]).toBeDefined();
+        expect(user.mcpServers[CURSOR_HAPI_MCP_SERVER_ID]).toBeUndefined();
+    });
+
+    it('keeps one mailbox per project when two sessions use different cwds', () => {
+        const userDir = join(tmpdir(), `hapi-cursor-user-${randomUUID()}`);
+        mkdirSync(userDir, { recursive: true });
+        roots.push(userDir);
+        const cwdA = makeProjectDir();
+        const cwdB = makeProjectDir();
+
+        const handleA = installCursorMcpOverlay(cwdA, {
             command: '/bin/hapi',
             args: ['mcp', '--url', 'http://127.0.0.1:1111/'],
-        }, { serverId: idA, enableCursorMcp: noopEnable, mcpConfigDir: join(cwd, '.cursor') });
-
-        const handleB = installCursorMcpOverlay(cwd, {
+        }, {
+            serverId: CURSOR_HAPI_MCP_SERVER_ID,
+            overlaySessionId: 'session-a',
+            enableCursorMcp: noopEnable,
+            mcpConfigDir: join(cwdA, '.cursor'),
+            userMcpConfigDir: userDir,
+        });
+        const handleB = installCursorMcpOverlay(cwdB, {
             command: '/bin/hapi',
             args: ['mcp', '--url', 'http://127.0.0.1:2222/'],
-        }, { serverId: idB, enableCursorMcp: noopEnable, mcpConfigDir: join(cwd, '.cursor') });
-
-        handleA.cleanup();
-
-        const afterA = JSON.parse(readFileSync(mcpPath, 'utf-8')) as {
-            mcpServers: Record<string, { command: string; args: string[] }>;
-        };
-        expect(afterA.mcpServers[idA]).toBeUndefined();
-        expect(afterA.mcpServers[idB]).toEqual({
-            command: '/bin/hapi',
-            args: ['mcp', '--url', 'http://127.0.0.1:2222/'],
-            env: { [HAPI_MCP_OVERLAY_PID_ENV]: String(process.pid) },
+        }, {
+            serverId: CURSOR_HAPI_MCP_SERVER_ID,
+            overlaySessionId: 'session-b',
+            enableCursorMcp: noopEnable,
+            mcpConfigDir: join(cwdB, '.cursor'),
+            userMcpConfigDir: userDir,
         });
 
-        handleB.cleanup();
-
-        const afterB = JSON.parse(readFileSync(mcpPath, 'utf-8')) as {
-            mcpServers: Record<string, { command: string; args: string[] }>;
+        const a = JSON.parse(readFileSync(join(cwdA, '.cursor', 'mcp.json'), 'utf-8')) as {
+            mcpServers: Record<string, { args: string[] }>;
         };
-        expect(afterB.mcpServers[idB]).toBeUndefined();
-        expect(afterB.mcpServers.other).toEqual({ command: 'echo', args: ['x'] });
+        const b = JSON.parse(readFileSync(join(cwdB, '.cursor', 'mcp.json'), 'utf-8')) as {
+            mcpServers: Record<string, { args: string[] }>;
+        };
+        expect(a.mcpServers.hapi.args).toContain('http://127.0.0.1:1111/');
+        expect(b.mcpServers.hapi.args).toContain('http://127.0.0.1:2222/');
+        expect(existsSync(join(userDir, 'mcp.json')) ? JSON.parse(readFileSync(join(userDir, 'mcp.json'), 'utf-8')).mcpServers : {}).toEqual({});
+
+        handleA.cleanup();
+        expect(JSON.parse(readFileSync(join(cwdB, '.cursor', 'mcp.json'), 'utf-8')).mcpServers.hapi.args).toContain('http://127.0.0.1:2222/');
+        handleB.cleanup();
+    });
+
+    it('refuses a second live mailbox in the same cwd instead of multiplex keys', () => {
+        const cwd = makeProjectDir();
+        installCursorMcpOverlay(cwd, {
+            command: '/bin/hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:1111/'],
+        }, {
+            serverId: CURSOR_HAPI_MCP_SERVER_ID,
+            overlaySessionId: 'session-a',
+            enableCursorMcp: noopEnable,
+            mcpConfigDir: join(cwd, '.cursor'),
+        });
+
+        expect(() => installCursorMcpOverlay(cwd, {
+            command: '/bin/hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:2222/'],
+        }, {
+            serverId: CURSOR_HAPI_MCP_SERVER_ID,
+            overlaySessionId: 'session-b',
+            enableCursorMcp: noopEnable,
+            mcpConfigDir: join(cwd, '.cursor'),
+        })).toThrow(/second live HAPI MCP mailbox/);
     });
 
     it('preserves mcpServers keys added during the session on cleanup', () => {
@@ -207,8 +294,8 @@ describe('installCursorMcpOverlay', () => {
         });
     });
 
-    it('restores a pre-existing entry for the same server id instead of deleting it', () => {
-        const serverId = cursorHapiMcpServerId('session-a');
+    it('refuses to overwrite a user-owned entry for the same server id', () => {
+        const serverId = CURSOR_HAPI_MCP_SERVER_ID;
         const prior = { command: 'old-hapi', args: ['mcp'] };
         const cwd = makeProjectDir(JSON.stringify({
             mcpServers: {
@@ -217,12 +304,12 @@ describe('installCursorMcpOverlay', () => {
         }, null, 2));
 
         const mcpPath = join(cwd, '.cursor', 'mcp.json');
-        const handle = installCursorMcpOverlay(cwd, {
+        expect(() => installCursorMcpOverlay(cwd, {
             command: '/bin/hapi',
             args: ['mcp', '--url', 'http://127.0.0.1:12345/'],
-        }, { serverId, enableCursorMcp: noopEnable, mcpConfigDir: join(cwd, '.cursor') });
-
-        handle.cleanup();
+        }, { serverId, enableCursorMcp: noopEnable, mcpConfigDir: join(cwd, '.cursor') })).toThrow(
+            /already exists/,
+        );
 
         const after = JSON.parse(readFileSync(mcpPath, 'utf-8')) as {
             mcpServers: Record<string, { command: string; args: string[] }>;
@@ -350,12 +437,363 @@ describe('installCursorMcpOverlay', () => {
             mcpServers: Record<string, { command: string; args?: string[]; env?: Record<string, string> }>;
         };
         expect(merged.mcpServers['hapi-dead']).toBeUndefined();
-        expect(merged.mcpServers['hapi-live']?.command).toBe('/bin/hapi');
+        expect(merged.mcpServers['hapi-live']).toEqual({
+            command: '/bin/hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:2222/'],
+            env: { [HAPI_MCP_OVERLAY_PID_ENV]: String(process.pid) },
+        });
         expect(merged.mcpServers['hapi-user']?.command).toBe('user-owned');
         expect(merged.mcpServers.other).toEqual({ command: 'echo', args: ['x'] });
         expect(merged.mcpServers[serverId]?.env?.[HAPI_MCP_OVERLAY_PID_ENV]).toBe(String(process.pid));
 
         handle.cleanup();
+    });
+
+    it('refuses a symlinked project .cursor directory (attacker escape to ~/.cursor)', () => {
+        const cwd = makeProjectDir();
+        const realCursorDir = join(cwd, 'real-cursor');
+        mkdirSync(realCursorDir, { recursive: true });
+        writeFileSync(join(realCursorDir, 'mcp.json'), `${JSON.stringify({ mcpServers: {} }, null, 2)}\n`);
+        symlinkSync(realCursorDir, join(cwd, '.cursor'));
+
+        expect(() => installCursorMcpOverlay(cwd, {
+            command: '/bin/hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:12345/'],
+        }, {
+            serverId: CURSOR_HAPI_MCP_SERVER_ID,
+            overlaySessionId: 'session-a',
+            enableCursorMcp: noopEnable,
+            mcpConfigDir: join(cwd, '.cursor'),
+        })).toThrow(/Refusing a symlinked project Cursor config dir/);
+    });
+
+    it('accepts symlink-prefix mcpConfigDir when cwd is already realpath (estate ~/coding → /work/coding)', () => {
+        // Mimic oos: session.path realpath'd under /work/..., mcpConfigDir still via ~/coding symlink.
+        const root = join(tmpdir(), `hapi-coding-link-${randomUUID()}`);
+        const workRoot = join(root, 'work', 'proj');
+        const homeCoding = join(root, 'home', 'coding');
+        mkdirSync(workRoot, { recursive: true });
+        mkdirSync(join(root, 'home'), { recursive: true });
+        symlinkSync(join(root, 'work'), homeCoding);
+        const symlinkCwd = join(homeCoding, 'proj');
+        const realCwd = workRoot;
+        const viaSymlinkCursor = join(symlinkCwd, '.cursor');
+
+        expect(resolveProjectCursorConfigDir(realCwd, viaSymlinkCursor)).toBe(join(realCwd, '.cursor'));
+
+        const handle = installCursorMcpOverlay(realCwd, {
+            command: '/bin/hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:12345/'],
+        }, {
+            serverId: CURSOR_HAPI_MCP_SERVER_ID,
+            overlaySessionId: 'session-a',
+            enableCursorMcp: noopEnable,
+            mcpConfigDir: viaSymlinkCursor,
+        });
+        expect(existsSync(join(realCwd, '.cursor', 'mcp.json'))).toBe(true);
+        const written = JSON.parse(readFileSync(join(realCwd, '.cursor', 'mcp.json'), 'utf-8')) as {
+            mcpServers: Record<string, unknown>;
+        };
+        expect(written.mcpServers[CURSOR_HAPI_MCP_SERVER_ID]).toBeTruthy();
+        handle.cleanup();
+        rmSync(root, { recursive: true, force: true });
+    });
+
+    it('adds project mcp.json to .git/info/exclude so git add -A will not scoop the mailbox', () => {
+        const root = join(tmpdir(), `hapi-mcp-git-shield-${randomUUID()}`);
+        mkdirSync(root, { recursive: true });
+        spawnSync('git', ['init'], { cwd: root, encoding: 'utf-8' });
+        spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root });
+        spawnSync('git', ['config', 'user.name', 'test'], { cwd: root });
+        writeFileSync(join(root, 'README'), 'x\n');
+        spawnSync('git', ['add', 'README'], { cwd: root });
+        spawnSync('git', ['commit', '-m', 'init'], { cwd: root });
+
+        const handle = installCursorMcpOverlay(root, {
+            command: '/bin/hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:12345/'],
+        }, {
+            serverId: CURSOR_HAPI_MCP_SERVER_ID,
+            overlaySessionId: 'session-a',
+            enableCursorMcp: noopEnable,
+            mcpConfigDir: join(root, '.cursor'),
+        });
+
+        const exclude = readFileSync(join(root, '.git', 'info', 'exclude'), 'utf-8');
+        expect(exclude).toContain(HAPI_MCP_GIT_EXCLUDE_MARKER_PREFIX);
+        expect(exclude).toContain('.cursor/mcp.json');
+        const check = spawnSync('git', ['check-ignore', '-v', '--', '.cursor/mcp.json'], {
+            cwd: root,
+            encoding: 'utf-8',
+        });
+        expect(check.status).toBe(0);
+
+        handle.cleanup();
+        const after = readFileSync(join(root, '.git', 'info', 'exclude'), 'utf-8');
+        expect(after).not.toContain(HAPI_MCP_GIT_EXCLUDE_MARKER_PREFIX);
+        expect(after).not.toContain('.cursor/mcp.json');
+        rmSync(root, { recursive: true, force: true });
+    });
+
+    it('preserves pre-existing .git/info/exclude rules across install and cleanup', () => {
+        const root = join(tmpdir(), `hapi-mcp-git-preserve-${randomUUID()}`);
+        mkdirSync(root, { recursive: true });
+        spawnSync('git', ['init'], { cwd: root, encoding: 'utf-8' });
+        spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root });
+        spawnSync('git', ['config', 'user.name', 'test'], { cwd: root });
+        writeFileSync(join(root, 'README'), 'x\n');
+        spawnSync('git', ['add', 'README'], { cwd: root });
+        spawnSync('git', ['commit', '-m', 'init'], { cwd: root });
+        mkdirSync(join(root, '.git', 'info'), { recursive: true });
+        writeFileSync(join(root, '.git', 'info', 'exclude'), 'local-secret.txt\n*.local.bak\n', 'utf-8');
+
+        const handle = installCursorMcpOverlay(root, {
+            command: '/bin/hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:12345/'],
+        }, {
+            serverId: CURSOR_HAPI_MCP_SERVER_ID,
+            overlaySessionId: 'session-a',
+            enableCursorMcp: noopEnable,
+            mcpConfigDir: join(root, '.cursor'),
+        });
+
+        const mid = readFileSync(join(root, '.git', 'info', 'exclude'), 'utf-8');
+        expect(mid).toContain('local-secret.txt');
+        expect(mid).toContain('*.local.bak');
+        expect(mid).toContain('.cursor/mcp.json');
+
+        handle.cleanup();
+        const after = readFileSync(join(root, '.git', 'info', 'exclude'), 'utf-8');
+        expect(after).toContain('local-secret.txt');
+        expect(after).toContain('*.local.bak');
+        expect(after).not.toContain(HAPI_MCP_GIT_EXCLUDE_MARKER_PREFIX);
+        expect(after).not.toContain('.cursor/mcp.json');
+        rmSync(root, { recursive: true, force: true });
+    });
+
+    it('prunes dead-owner exclude leases on the next install', () => {
+        const root = join(tmpdir(), `hapi-mcp-git-dead-lease-${randomUUID()}`);
+        mkdirSync(root, { recursive: true });
+        spawnSync('git', ['init'], { cwd: root, encoding: 'utf-8' });
+        spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root });
+        spawnSync('git', ['config', 'user.name', 'test'], { cwd: root });
+        writeFileSync(join(root, 'README'), 'x\n');
+        spawnSync('git', ['add', 'README'], { cwd: root });
+        spawnSync('git', ['commit', '-m', 'init'], { cwd: root });
+        mkdirSync(join(root, '.git', 'info'), { recursive: true });
+        const deadPid = spawnSync(process.execPath, ['-e', ''], { encoding: 'utf-8' }).pid!;
+        const deadLease = `${deadPid}:${randomUUID()}`;
+        writeFileSync(
+            join(root, '.git', 'info', 'exclude'),
+            `${hapiMcpGitExcludeMarker(deadLease)}\n.cursor/mcp.json\nkeep-me.txt\n`,
+            'utf-8',
+        );
+
+        const handle = installCursorMcpOverlay(root, {
+            command: '/bin/hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:12345/'],
+        }, {
+            serverId: CURSOR_HAPI_MCP_SERVER_ID,
+            overlaySessionId: 'session-a',
+            enableCursorMcp: noopEnable,
+            mcpConfigDir: join(root, '.cursor'),
+        });
+
+        const mid = readFileSync(join(root, '.git', 'info', 'exclude'), 'utf-8');
+        expect(mid).toContain('keep-me.txt');
+        expect(mid).not.toContain(hapiMcpGitExcludeMarker(deadLease));
+        expect(mid).toContain('.cursor/mcp.json');
+        expect(mid).toMatch(new RegExp(`${HAPI_MCP_GIT_EXCLUDE_MARKER_PREFIX} ${process.pid}:`));
+
+        handle.cleanup();
+        const after = readFileSync(join(root, '.git', 'info', 'exclude'), 'utf-8');
+        expect(after).toContain('keep-me.txt');
+        expect(after).not.toContain('.cursor/mcp.json');
+        rmSync(root, { recursive: true, force: true });
+    });
+
+    it('keeps shared exclude while a sibling worktree lease is still live', () => {
+        const root = join(tmpdir(), `hapi-mcp-git-lease-main-${randomUUID()}`);
+        const linked = join(tmpdir(), `hapi-mcp-git-lease-link-${randomUUID()}`);
+        mkdirSync(root, { recursive: true });
+        spawnSync('git', ['init'], { cwd: root, encoding: 'utf-8' });
+        spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root });
+        spawnSync('git', ['config', 'user.name', 'test'], { cwd: root });
+        writeFileSync(join(root, 'README'), 'x\n');
+        spawnSync('git', ['add', 'README'], { cwd: root });
+        spawnSync('git', ['commit', '-m', 'init'], { cwd: root });
+        expect(spawnSync('git', ['worktree', 'add', linked, 'HEAD'], {
+            cwd: root,
+            encoding: 'utf-8',
+        }).status).toBe(0);
+
+        const handleA = installCursorMcpOverlay(root, {
+            command: '/bin/hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:12345/'],
+        }, {
+            serverId: CURSOR_HAPI_MCP_SERVER_ID,
+            overlaySessionId: 'session-a',
+            enableCursorMcp: noopEnable,
+            mcpConfigDir: join(root, '.cursor'),
+        });
+        const handleB = installCursorMcpOverlay(linked, {
+            command: '/bin/hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:12345/'],
+        }, {
+            serverId: CURSOR_HAPI_MCP_SERVER_ID,
+            overlaySessionId: 'session-b',
+            enableCursorMcp: noopEnable,
+            mcpConfigDir: join(linked, '.cursor'),
+        });
+
+        handleA.cleanup();
+        const mid = readFileSync(join(root, '.git', 'info', 'exclude'), 'utf-8');
+        expect(mid).toContain('.cursor/mcp.json');
+        expect(spawnSync('git', ['check-ignore', '-v', '--', '.cursor/mcp.json'], {
+            cwd: linked,
+            encoding: 'utf-8',
+        }).status).toBe(0);
+
+        handleB.cleanup();
+        const after = readFileSync(join(root, '.git', 'info', 'exclude'), 'utf-8');
+        expect(after).not.toContain('.cursor/mcp.json');
+        spawnSync('git', ['worktree', 'remove', '--force', linked], { cwd: root, encoding: 'utf-8' });
+        rmSync(root, { recursive: true, force: true });
+        rmSync(linked, { recursive: true, force: true });
+    });
+
+    it('serializes concurrent exclude lease updates across processes', async () => {
+        const root = join(tmpdir(), `hapi-mcp-git-race-${randomUUID()}`);
+        mkdirSync(join(root, '.git', 'info'), { recursive: true });
+        const excludePath = join(root, '.git', 'info', 'exclude');
+        writeFileSync(excludePath, 'keep-me.txt\n', 'utf-8');
+        const lockPath = `${excludePath}.hapi.lock`;
+        const donePath = join(root, 'child-done');
+        const errPath = join(root, 'child-err');
+        const leaseA = 'lease-a';
+        const leaseB = 'lease-b';
+
+        // Hold the lock first so the child must wait mid-flight.
+        const childExit = new Promise<number>((resolve, reject) => {
+            withMcpJsonLock(lockPath, () => {
+                appendExcludeLeaseUnlocked(excludePath, '.cursor/mcp.json', leaseA);
+                const child = spawn('bun', [
+                    '-e',
+                    `
+                        import { appendExcludeLease } from ${JSON.stringify(overlayModulePath)};
+                        try {
+                            appendExcludeLease(${JSON.stringify(excludePath)}, '.cursor/mcp.json', ${JSON.stringify(leaseB)});
+                            await Bun.write(${JSON.stringify(donePath)}, 'ok');
+                            process.exit(0);
+                        } catch (error) {
+                            await Bun.write(${JSON.stringify(errPath)}, String(error));
+                            process.exit(1);
+                        }
+                    `,
+                ], {
+                    cwd: root,
+                    stdio: 'ignore',
+                });
+                child.on('error', reject);
+                child.on('exit', (code) => resolve(code ?? 1));
+                // Keep holding until the child has had time to enter the wait loop.
+                const end = Date.now() + 400;
+                while (Date.now() < end) {
+                    // busy-wait
+                }
+            });
+        });
+
+        const code = await childExit;
+        if (existsSync(errPath)) {
+            throw new Error(`child failed: ${readFileSync(errPath, 'utf-8')}`);
+        }
+        expect(code).toBe(0);
+        expect(existsSync(donePath)).toBe(true);
+
+        const both = readFileSync(excludePath, 'utf-8');
+        expect(both).toContain('keep-me.txt');
+        expect(both).toContain(hapiMcpGitExcludeMarker(leaseA));
+        expect(both).toContain(hapiMcpGitExcludeMarker(leaseB));
+
+        removeExcludeLease(excludePath, '.cursor/mcp.json', leaseA);
+        const afterA = readFileSync(excludePath, 'utf-8');
+        expect(afterA).toContain(hapiMcpGitExcludeMarker(leaseB));
+        expect(afterA).toContain('keep-me.txt');
+        expect(afterA).not.toContain(hapiMcpGitExcludeMarker(leaseA));
+
+        removeExcludeLease(excludePath, '.cursor/mcp.json', leaseB);
+        rmSync(root, { recursive: true, force: true });
+    }, 20_000);
+
+    it('writes exclude via --git-path so linked worktrees share the common exclude', () => {
+        const root = join(tmpdir(), `hapi-mcp-git-wt-main-${randomUUID()}`);
+        const linked = join(tmpdir(), `hapi-mcp-git-wt-link-${randomUUID()}`);
+        mkdirSync(root, { recursive: true });
+        spawnSync('git', ['init'], { cwd: root, encoding: 'utf-8' });
+        spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root });
+        spawnSync('git', ['config', 'user.name', 'test'], { cwd: root });
+        writeFileSync(join(root, 'README'), 'x\n');
+        spawnSync('git', ['add', 'README'], { cwd: root });
+        spawnSync('git', ['commit', '-m', 'init'], { cwd: root });
+        const addWt = spawnSync('git', ['worktree', 'add', linked, 'HEAD'], {
+            cwd: root,
+            encoding: 'utf-8',
+        });
+        expect(addWt.status).toBe(0);
+
+        const handle = installCursorMcpOverlay(linked, {
+            command: '/bin/hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:12345/'],
+        }, {
+            serverId: CURSOR_HAPI_MCP_SERVER_ID,
+            overlaySessionId: 'session-a',
+            enableCursorMcp: noopEnable,
+            mcpConfigDir: join(linked, '.cursor'),
+        });
+
+        const commonExclude = readFileSync(join(root, '.git', 'info', 'exclude'), 'utf-8');
+        expect(commonExclude).toContain('.cursor/mcp.json');
+        const check = spawnSync('git', ['check-ignore', '-v', '--', '.cursor/mcp.json'], {
+            cwd: linked,
+            encoding: 'utf-8',
+        });
+        expect(check.status).toBe(0);
+
+        handle.cleanup();
+        spawnSync('git', ['worktree', 'remove', '--force', linked], { cwd: root, encoding: 'utf-8' });
+        rmSync(root, { recursive: true, force: true });
+        rmSync(linked, { recursive: true, force: true });
+    });
+
+    it('refuses a tracked project mcp.json instead of using skip-worktree', () => {
+        const root = join(tmpdir(), `hapi-mcp-git-skip-${randomUUID()}`);
+        mkdirSync(join(root, '.cursor'), { recursive: true });
+        spawnSync('git', ['init'], { cwd: root, encoding: 'utf-8' });
+        spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root });
+        spawnSync('git', ['config', 'user.name', 'test'], { cwd: root });
+        writeFileSync(join(root, '.cursor', 'mcp.json'), `${JSON.stringify({
+            mcpServers: { other: { command: 'echo', args: ['x'] } },
+        }, null, 2)}\n`);
+        spawnSync('git', ['add', '.cursor/mcp.json'], { cwd: root });
+        spawnSync('git', ['commit', '-m', 'track mcp'], { cwd: root });
+
+        expect(() => installCursorMcpOverlay(root, {
+            command: '/bin/hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:12345/'],
+        }, {
+            serverId: CURSOR_HAPI_MCP_SERVER_ID,
+            overlaySessionId: 'session-a',
+            enableCursorMcp: noopEnable,
+            mcpConfigDir: join(root, '.cursor'),
+        })).toThrow(/Refusing runtime overlay for tracked/);
+
+        const after = JSON.parse(readFileSync(join(root, '.cursor', 'mcp.json'), 'utf-8')) as {
+            mcpServers: Record<string, unknown>;
+        };
+        expect(after.mcpServers.hapi).toBeUndefined();
+        expect(after.mcpServers.other).toEqual({ command: 'echo', args: ['x'] });
+        rmSync(root, { recursive: true, force: true });
     });
 
     it('refuses a symlinked .cursor/mcp.json and leaves the external target unchanged', () => {
@@ -383,23 +821,68 @@ describe('installCursorMcpOverlay', () => {
         expect(readFileSync(realConfig, 'utf-8')).toBe(original);
     });
 
-    it('refuses a symlinked .cursor directory before mutating MCP config', () => {
+    it('follows a symlinked user Cursor dir (HOME/.cursor → estate disk) when stripping', () => {
         const cwd = makeProjectDir();
-        const realCursorDir = join(cwd, 'real-cursor');
-        mkdirSync(realCursorDir, { recursive: true });
-        const externalMcp = join(realCursorDir, 'mcp.json');
-        const original = `${JSON.stringify({ mcpServers: {} }, null, 2)}\n`;
-        writeFileSync(externalMcp, original, 'utf-8');
-        symlinkSync(realCursorDir, join(cwd, '.cursor'));
+        const realUserDir = join(cwd, 'estate-user-cursor');
+        mkdirSync(realUserDir, { recursive: true });
+        const probe = spawnSync(process.execPath, ['-e', ''], { encoding: 'utf-8' });
+        const deadPid = probe.pid!;
+        writeFileSync(join(realUserDir, 'mcp.json'), JSON.stringify({
+            mcpServers: {
+                [cursorHapiMcpServerId('dead')]: {
+                    command: '/bin/hapi',
+                    args: ['mcp'],
+                    env: { [HAPI_MCP_OVERLAY_PID_ENV]: String(deadPid) },
+                },
+            },
+        }, null, 2));
+        const userLink = join(cwd, 'user-cursor-link');
+        symlinkSync(realUserDir, userLink);
 
-        expect(() => installCursorMcpOverlay(cwd, {
+        installCursorMcpOverlay(cwd, {
             command: '/bin/hapi',
             args: ['mcp', '--url', 'http://127.0.0.1:12345/'],
-        }, { serverId: cursorHapiMcpServerId('session-a'), enableCursorMcp: noopEnable, mcpConfigDir: join(cwd, '.cursor') })).toThrow(
-            /Refusing to use a symlinked Cursor config directory/
-        );
+        }, {
+            serverId: CURSOR_HAPI_MCP_SERVER_ID,
+            overlaySessionId: 'session-a',
+            enableCursorMcp: noopEnable,
+            mcpConfigDir: join(cwd, '.cursor'),
+            userMcpConfigDir: userLink,
+        }).cleanup();
 
-        expect(readFileSync(externalMcp, 'utf-8')).toBe(original);
+        const user = JSON.parse(readFileSync(join(realUserDir, 'mcp.json'), 'utf-8')) as {
+            mcpServers: Record<string, unknown>;
+        };
+        expect(user.mcpServers[cursorHapiMcpServerId('dead')]).toBeUndefined();
+    });
+
+    it('does not restore a dead PID-stamped previous hapi slot on cleanup', () => {
+        const probe = spawnSync(process.execPath, ['-e', ''], { encoding: 'utf-8' });
+        const deadPid = probe.pid!;
+        expect(isProcessAlive(deadPid)).toBe(false);
+        const cwd = makeProjectDir(JSON.stringify({
+            mcpServers: {
+                [CURSOR_HAPI_MCP_SERVER_ID]: {
+                    command: '/bin/old-hapi',
+                    args: ['mcp'],
+                    env: { [HAPI_MCP_OVERLAY_PID_ENV]: String(deadPid) },
+                },
+            },
+        }, null, 2));
+        const mcpPath = join(cwd, '.cursor', 'mcp.json');
+        const handle = installCursorMcpOverlay(cwd, {
+            command: '/bin/hapi',
+            args: ['mcp', '--url', 'http://127.0.0.1:12345/'],
+        }, {
+            serverId: CURSOR_HAPI_MCP_SERVER_ID,
+            overlaySessionId: 'session-a',
+            enableCursorMcp: noopEnable,
+            mcpConfigDir: join(cwd, '.cursor'),
+        });
+        handle.cleanup();
+        // File may remain (hadFile was true) but the dead prior slot must not return.
+        expect(JSON.parse(readFileSync(mcpPath, 'utf-8')).mcpServers?.[CURSOR_HAPI_MCP_SERVER_ID])
+            .toBeUndefined();
     });
 
     it('writeMcpJsonAtomic preserves restrictive mode and cleans up tmp on failure path', () => {
