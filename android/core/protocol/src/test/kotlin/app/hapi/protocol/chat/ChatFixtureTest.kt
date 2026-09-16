@@ -31,7 +31,7 @@ class ChatFixtureTest(private val fixtureName: String, private val file: File) {
 
     companion object {
         /** Highest chat-fixture document version this port implements. */
-        const val SUPPORTED_FIXTURE_VERSION = 1
+        const val SUPPORTED_FIXTURE_VERSION = 2
 
         val fixturesDir: File by lazy {
             val path = System.getProperty("hapi.fixtures.dir")

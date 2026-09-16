@@ -19,7 +19,8 @@ import {
     registerGeneratedImage,
 } from "@/modules/common/generatedImages";
 import type { InlineMediaSource } from "@/modules/common/inlineMediaSource";
-import { DISPLAY_IMAGE_PROMPT_CURSOR, DISPLAY_MEDIA_PROMPT_CURSOR, DISPLAY_VIDEO_PROMPT_CURSOR } from "@/modules/common/displayImagePrompt";
+import { DISPLAY_IMAGE_PROMPT_CURSOR, DISPLAY_LINKS_PROMPT_CURSOR, DISPLAY_MEDIA_PROMPT_CURSOR, DISPLAY_VIDEO_PROMPT_CURSOR } from "@/modules/common/displayImagePrompt";
+import { buildDisplayLinksPayload, buildDisplayLinksToolName, parseDisplayLinksToolInput, assertBoundDisplayLinksSession } from "@hapi/protocol";
 import { resolveSkill } from "@/modules/common/skills";
 import {
     INSPECT_PEER_TOOL_DESCRIPTION,
@@ -31,11 +32,23 @@ import { PingPeerError, formatInspectPeerReport, formatPeerSessionsList, inspect
 type StartHappyServerOptions = {
     emitTitleSummary?: boolean;
     enableChangeTitle?: boolean;
+    /**
+     * Cursor-only (#1516): doubled-letter URL recall is a Cursor-routed failure mode.
+     * Defaults on when skillLookup.flavor === 'cursor'.
+     */
+    enableDisplayLinks?: boolean;
     skillLookup?: {
         workingDirectory: string;
         flavor: string;
     };
 };
+
+function resolveEnableDisplayLinks(options: StartHappyServerOptions): boolean {
+    if (options.enableDisplayLinks !== undefined) {
+        return options.enableDisplayLinks;
+    }
+    return options.skillLookup?.flavor === 'cursor';
+}
 
 /** Registered on the MCP server, but never pre-approved via Claude --allowedTools. */
 const CLAUDE_MANUAL_APPROVAL_HAPI_TOOLS = new Set([
@@ -61,7 +74,8 @@ function createHapiMcpServer(
     client: ApiSessionClient,
     emitTitleSummary: boolean,
     enableChangeTitle: boolean,
-    skillLookup: StartHappyServerOptions['skillLookup']
+    skillLookup: StartHappyServerOptions['skillLookup'],
+    enableDisplayLinks: boolean
 ): McpServer {
     const handler = async (title: string) => {
         logger.debug('[hapiMCP] Changing title to:', title);
@@ -106,6 +120,24 @@ function createHapiMcpServer(
     const displayMediaInputSchema: z.ZodTypeAny = z.object({
         path: z.string().describe('Local filesystem path of the media or file to send to the user'),
         title: z.string().trim().min(1).max(255).optional().describe('Optional display title or filename'),
+    });
+
+    const displayLinksInputSchema: z.ZodTypeAny = z.object({
+        urls: z.array(z.union([
+            z.object({
+                href: z.string().describe('http(s) URL to paint. Construct by concatenation for landmine strings (tia+nn), never copy from model prose.'),
+                title: z.string().trim().min(1).max(255).optional().describe('Optional link label shown on the card'),
+            }),
+            z.string(),
+        ])).min(1).max(20).optional().describe('Optional http(s) URLs to paint as tappable cards'),
+        texts: z.array(z.union([
+            z.object({
+                value: z.string().min(1).max(8192).describe('Exact string to paint for copy. Construct by concatenation (VK+K), never copy from model prose.'),
+                title: z.string().trim().min(1).max(255).optional().describe('Optional label shown on the copy card'),
+            }),
+            z.string().min(1).max(8192),
+        ])).min(1).max(20).optional().describe('Optional exact-copy strings (secrets, tokens, SHAs, tags, MagicDNS labels)'),
+        sessionId: z.string().min(1).optional().describe('This chat\'s HAPI session id (required at runtime). Cursor routes duplicate MCP tool names to one server; a mismatch means the call landed on the wrong session MCP.'),
     });
 
     const pingPeerInputSchema: z.ZodTypeAny = z.object({
@@ -291,6 +323,69 @@ function createHapiMcpServer(
         }
     });
 
+    if (enableDisplayLinks) {
+        const displayLinksToolName = buildDisplayLinksToolName(client.sessionId);
+        mcp.registerTool<any, any>(displayLinksToolName, {
+            description: `Paint clickable http(s) URL cards and/or exact-copy strings into the current HAPI chat without a fake user turn. Cursor-only: other flavors type URLs and secrets fine. Per-session tool name (ends with _display_links) so concurrent hapi-* MCP overlays do not collide. ${DISPLAY_LINKS_PROMPT_CURSOR}`,
+            title: 'Display Links',
+            inputSchema: displayLinksInputSchema,
+        }, async (args: {
+            urls?: Array<{ href: string; title?: string } | string>
+            texts?: Array<{ value: string; title?: string } | string>
+            sessionId?: string
+        }) => {
+            logger.debug(
+                '[hapiMCP] Display links: bound=',
+                client.sessionId,
+                'caller=',
+                args.sessionId,
+                'urls=',
+                args.urls?.length ?? 0,
+                'texts=',
+                args.texts?.length ?? 0,
+            );
+
+            try {
+                assertBoundDisplayLinksSession(client.sessionId, args.sessionId);
+                const parsed = parseDisplayLinksToolInput(args);
+                client.sendAgentMessage(buildDisplayLinksPayload({
+                    urls: parsed.urls,
+                    texts: parsed.texts,
+                    id: randomUUID(),
+                }));
+
+                const parts: string[] = [];
+                if (parsed.urls.length > 0) {
+                    parts.push(`${parsed.urls.length} link${parsed.urls.length === 1 ? '' : 's'}`);
+                }
+                if (parsed.texts.length > 0) {
+                    parts.push(`${parsed.texts.length} exact-copy card${parsed.texts.length === 1 ? '' : 's'}`);
+                }
+                return {
+                    content: [
+                        {
+                            type: 'text' as const,
+                            text: `Displayed ${parts.join(', ')}`,
+                        },
+                    ],
+                    isError: false,
+                };
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                logger.debug('[hapiMCP] Failed to display links:', message);
+                return {
+                    content: [
+                        {
+                            type: 'text' as const,
+                            text: `Failed to display links: ${message}`,
+                        },
+                    ],
+                    isError: true,
+                };
+            }
+        });
+    }
+
     mcp.registerTool<any, any>('ping_peer', {
         description: PING_PEER_TOOL_DESCRIPTION,
         title: 'Ping Peer Session',
@@ -475,11 +570,12 @@ function readMcpSessionId(req: IncomingMessage): string | undefined {
 export async function startHappyServer(client: ApiSessionClient, options: StartHappyServerOptions = {}) {
     const emitTitleSummary = options.emitTitleSummary ?? true;
     const enableChangeTitle = options.enableChangeTitle ?? true;
+    const enableDisplayLinks = resolveEnableDisplayLinks(options);
     const transports = new Map<string, StreamableHTTPServerTransport>();
     const mcps = new Map<string, McpServer>();
 
     const createMcpTransport = () => {
-        const mcp = createHapiMcpServer(client, emitTitleSummary, enableChangeTitle, options.skillLookup);
+        const mcp = createHapiMcpServer(client, emitTitleSummary, enableChangeTitle, options.skillLookup, enableDisplayLinks);
         const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (sessionId) => {
@@ -534,8 +630,12 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
     }));
 
     const toolNames = enableChangeTitle
-        ? ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer']
-        : ['display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer'];
+        ? ['change_title', 'display_image', 'display_video', 'display_media']
+        : ['display_image', 'display_video', 'display_media'];
+    if (enableDisplayLinks) {
+        toolNames.push(buildDisplayLinksToolName(client.sessionId));
+    }
+    toolNames.push('list_peers', 'ping_peer', 'inspect_peer');
     if (options.skillLookup) {
         toolNames.push('skill_lookup');
     }

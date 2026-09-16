@@ -19,7 +19,7 @@
         "olderCursor": null,
         "viewMode": "tail"
     },
-    "fixtureVersion": 1,
+    "fixtureVersion": 2,
     "name": "optimistic-echo-reconciles-by-localid",
     "ops": [
         {
