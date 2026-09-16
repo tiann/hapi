@@ -353,6 +353,24 @@ describe('getNextModelForFlavor', () => {
         expect(getNextModelForFlavor('kimi', null)).toBeNull()
     })
 
+    it('serves dynamic Kimi options to a running session with Default and aliases', () => {
+        const options = getModelOptionsForFlavor('kimi', 'GLM-5.3-flash', [
+            { value: null, label: 'Default' },
+            { value: 'GLM-5.3-flash', label: 'thehive — thehive / GLM-5.3-flash' },
+            { value: 'deepseek-v4.1-flash', label: 'thehive — thehive / hive-deepseek' }
+        ])
+
+        expect(options[0]).toEqual({ value: null, label: 'Default' })
+        expect(options.map((option) => option.value)).toEqual([null, 'GLM-5.3-flash', 'deepseek-v4.1-flash'])
+
+        // Cycling with a dynamic catalog moves through the discovered aliases.
+        expect(getNextModelForFlavor('kimi', 'GLM-5.3-flash', [
+            { value: null, label: 'Default' },
+            { value: 'GLM-5.3-flash', label: 'thehive — GLM-5.3-flash' },
+            { value: 'deepseek-v4.1-flash', label: 'thehive — deepseek-v4.1-flash' }
+        ])).toBe('deepseek-v4.1-flash')
+    })
+
     it('keeps a cursor current model on cycle (no Claude fallback)', () => {
         expect(getNextModelForFlavor('cursor', 'composer-2.5')).toBe('composer-2.5')
         expect(getNextModelForFlavor('cursor', null)).toBeNull()

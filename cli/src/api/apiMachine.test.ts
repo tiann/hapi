@@ -8,6 +8,7 @@ const listOpencodeModelsForCwdMock = vi.hoisted(() => vi.fn())
 const listOpencodeModelVariantsMock = vi.hoisted(() => vi.fn())
 const listGrokModelsForCwdMock = vi.hoisted(() => vi.fn())
 const listCopilotModelsForCwdMock = vi.hoisted(() => vi.fn())
+const listKimiModelsForCwdMock = vi.hoisted(() => vi.fn())
 const inspectCursorChatStoreMock = vi.hoisted(() => vi.fn())
 
 vi.mock('socket.io-client', () => ({
@@ -32,6 +33,10 @@ vi.mock('../modules/common/grokModels', () => ({
 
 vi.mock('../modules/common/copilotModels', () => ({
     listCopilotModelsForCwd: listCopilotModelsForCwdMock
+}))
+
+vi.mock('../modules/common/kimiModels', () => ({
+    listKimiModelsForCwd: listKimiModelsForCwdMock
 }))
 
 vi.mock('@/cursor/cursorChatStoreStatus', () => ({
@@ -102,6 +107,15 @@ async function callListCopilotModels(client: ApiMachineClient, machineId: string
     const manager = (client as unknown as { rpcHandlerManager: { handleRequest: (req: { method: string; params: string }) => Promise<string> } }).rpcHandlerManager
     const raw = await manager.handleRequest({
         method: `${machineId}:listCopilotModelsForCwd`,
+        params: JSON.stringify({ cwd })
+    })
+    return JSON.parse(raw) as unknown
+}
+
+async function callListKimiModels(client: ApiMachineClient, machineId: string, cwd: string): Promise<unknown> {
+    const manager = (client as unknown as { rpcHandlerManager: { handleRequest: (req: { method: string; params: string }) => Promise<string> } }).rpcHandlerManager
+    const raw = await manager.handleRequest({
+        method: `${machineId}:listKimiModelsForCwd`,
         params: JSON.stringify({ cwd })
     })
     return JSON.parse(raw) as unknown
@@ -473,6 +487,64 @@ describe('ApiMachineClient listGrokModelsForCwd handler', () => {
                 currentModelId: 'grok-4.5'
             })
             expect(listGrokModelsForCwdMock).toHaveBeenCalledWith(realpathSync.native(workspaceRoot))
+        } finally {
+            client.shutdown()
+        }
+    })
+})
+
+describe('ApiMachineClient listKimiModelsForCwd handler', () => {
+    let workspaceRoot: string
+
+    beforeEach(() => {
+        ioMock.mockReset()
+        listKimiModelsForCwdMock.mockReset()
+        workspaceRoot = mkdtempSync(join(tmpdir(), 'hapi-kimi-machine-ws-'))
+    })
+
+    afterEach(() => {
+        rmSync(workspaceRoot, { recursive: true, force: true })
+    })
+
+    it('rejects cwd outside workspace roots before running the Kimi model probe', async () => {
+        const machine = makeMachine('kimi-machine-1')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        const outsideCwd = mkdtempSync(join(tmpdir(), 'hapi-kimi-outside-'))
+
+        try {
+            expect(await callListKimiModels(client, machine.id, outsideCwd)).toEqual({
+                success: false,
+                error: 'Path is outside workspace roots'
+            })
+            expect(listKimiModelsForCwdMock).not.toHaveBeenCalled()
+        } finally {
+            rmSync(outsideCwd, { recursive: true, force: true })
+            client.shutdown()
+        }
+    })
+
+    it('forwards a resolved workspace cwd to the Kimi model probe', async () => {
+        const machine = makeMachine('kimi-machine-2')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        listKimiModelsForCwdMock.mockResolvedValueOnce({
+            success: true,
+            availableModels: [
+                { modelId: 'GLM-5.3-flash', name: 'thehive / GLM-5.3-flash', provider: 'thehive' },
+                { modelId: 'hyper-glm-5.3-flash', name: 'charm-hyper / Hyper · GLM-5.3-Flash', provider: 'charm-hyper' }
+            ],
+            currentModelId: 'GLM-5.3-flash'
+        })
+
+        try {
+            expect(await callListKimiModels(client, machine.id, workspaceRoot)).toEqual({
+                success: true,
+                availableModels: [
+                    { modelId: 'GLM-5.3-flash', name: 'thehive / GLM-5.3-flash', provider: 'thehive' },
+                    { modelId: 'hyper-glm-5.3-flash', name: 'charm-hyper / Hyper · GLM-5.3-Flash', provider: 'charm-hyper' }
+                ],
+                currentModelId: 'GLM-5.3-flash'
+            })
+            expect(listKimiModelsForCwdMock).toHaveBeenCalledWith(realpathSync.native(workspaceRoot))
         } finally {
             client.shutdown()
         }

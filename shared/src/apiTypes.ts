@@ -838,6 +838,22 @@ export type CopilotModelsResponse = {
 
 export type ListCopilotModelsResponse = CopilotModelsResponse
 
+export type KimiModelSummary = {
+    /** Kimi model alias as used by `--model` / `session/set_model`. */
+    modelId: string
+    name?: string
+    provider?: string
+}
+
+export type KimiModelsResponse = {
+    success: boolean
+    availableModels?: KimiModelSummary[]
+    currentModelId?: string | null
+    error?: string
+}
+
+export type ListKimiModelsResponse = KimiModelsResponse
+
 export type GrokReasoningEffortResponse = {
     success: boolean
     options?: GrokReasoningEffortOption[]

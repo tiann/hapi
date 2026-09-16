@@ -164,6 +164,24 @@ describe('NewSession preferences', () => {
         })
     })
 
+    it('does not reset a remembered Kimi alias against the static Default-only list', () => {
+        // Kimi's catalog is dynamic; validating against MODEL_OPTIONS.kimi
+        // (only 'auto') must not turn a saved alias back into Default before
+        // the real catalog arrives.
+        expect(resolvePreferredLaunchSettings('kimi', {
+            model: 'GLM-5.3-flash',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default'
+        })).toEqual({
+            model: 'GLM-5.3-flash',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            permissionMode: 'default'
+        })
+    })
+
     it('falls back when a remembered permission mode is invalid for the agent', () => {
         expect(resolvePreferredLaunchSettings('codex', {
             model: 'auto',
