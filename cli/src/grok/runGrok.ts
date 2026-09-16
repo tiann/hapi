@@ -14,7 +14,7 @@ import {
     setControlledByUser
 } from '@/agent/runnerLifecycle'
 import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc'
-import { formatMessageWithAttachments } from '@/utils/attachmentFormatter'
+import { formatUserMessageForAgent } from '@/utils/attachmentFormatter'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 
 export async function runGrok(opts: {
@@ -79,7 +79,11 @@ export async function runGrok(opts: {
 
     session.onUserMessage((message, localId) => {
         queue.push(
-            formatMessageWithAttachments(message.content.text, message.content.attachments),
+            formatUserMessageForAgent(
+                message.content.text,
+                message.content.attachments,
+                message.meta
+            ),
             {
                 permissionMode: currentPermissionMode,
                 model: currentModel ?? undefined,
