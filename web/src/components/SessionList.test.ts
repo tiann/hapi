@@ -15,9 +15,11 @@ import {
     getSessionDedupKey,
     getWorktreeSessionLabel,
     getVisibleSessionPreview,
+    groupSessionsByDirectory,
     isSidebarEmptySessionStub,
     normalizeSearch,
     prepareSidebarSessions,
+    resolveSessionGroupDirectory,
     sessionMatchesQuery,
     sessionMatchesTimeRange,
     shouldShowPinnedDivider,
@@ -651,5 +653,314 @@ describe('getPullRefreshIndicatorRotation', () => {
     it('turns the pull indicator upward once refresh is ready', () => {
         expect(getPullRefreshIndicatorRotation('pulling')).toBe(0)
         expect(getPullRefreshIndicatorRotation('ready')).toBe(180)
+    })
+})
+describe('resolveSessionGroupDirectory', () => {
+    it('uses worktree.basePath when the session path lives under it', () => {
+        expect(resolveSessionGroupDirectory({
+            path: '/home/heavygee/coding/hapi/worktrees/feat-x',
+            worktree: { basePath: '/home/heavygee/coding/hapi' },
+        })).toBe('/home/heavygee/coding/hapi')
+    })
+
+    it('falls back to metadata.path when basePath is missing', () => {
+        expect(resolveSessionGroupDirectory({
+            path: '/home/heavygee/coding/server-setup',
+        })).toBe('/home/heavygee/coding/server-setup')
+    })
+
+    it('rewrites logical path spelling when realpathed worktreePath sits under basePath', () => {
+        // Estate: CLI realpaths worktreePath/basePath; metadata.path may keep ~/coding.
+        expect(resolveSessionGroupDirectory({
+            path: '/home/heavygee/coding/hapi/worktrees/cursor-mcp-isolation',
+            worktree: {
+                basePath: '/work/coding/hapi',
+                worktreePath: '/work/coding/hapi/worktrees/cursor-mcp-isolation',
+            },
+        })).toBe('/home/heavygee/coding/hapi')
+    })
+
+    it('rewrites logical path spelling for HAPI sibling <repo>-worktrees layout', () => {
+        expect(resolveSessionGroupDirectory({
+            path: '/home/me/coding/hapi-worktrees/feat',
+            worktree: {
+                basePath: '/work/coding/hapi',
+                worktreePath: '/work/coding/hapi-worktrees/feat',
+            },
+        })).toBe('/home/me/coding/hapi')
+    })
+
+    it('matches the worktree suffix at the project boundary, not a nested repeat', () => {
+        expect(resolveSessionGroupDirectory({
+            path: '/home/me/coding/hapi/worktrees/feat/src/worktrees/feat/file',
+            worktree: {
+                basePath: '/work/coding/hapi',
+                worktreePath: '/work/coding/hapi/worktrees/feat',
+            },
+        })).toBe('/home/me/coding/hapi')
+    })
+
+    it('keeps an external same-suffix worktree under basePath', () => {
+        // worktreePath is NOT under basePath — no alias evidence.
+        expect(resolveSessionGroupDirectory({
+            path: '/home/me/org/repo/worktrees/feature',
+            worktree: {
+                basePath: '/mnt/clone/org/repo',
+                worktreePath: '/home/me/org/repo/worktrees/feature',
+            },
+        })).toBe('/mnt/clone/org/repo')
+    })
+
+    it('keeps a pure realpath session under the realpath root', () => {
+        expect(resolveSessionGroupDirectory({
+            path: '/work/coding/hapi',
+            worktree: { basePath: '/work/coding/hapi' },
+        })).toBe('/work/coding/hapi')
+    })
+
+    it('preserves POSIX and Windows filesystem roots', () => {
+        expect(resolveSessionGroupDirectory({ path: '/' })).toBe('/')
+        expect(resolveSessionGroupDirectory({ path: 'C:\\' })).toBe('C:\\')
+        expect(resolveSessionGroupDirectory({
+            path: 'C:\\',
+            worktree: { basePath: 'C:\\' },
+        })).toBe('C:\\')
+    })
+
+    it('preserves trailing whitespace in filesystem paths', () => {
+        expect(resolveSessionGroupDirectory({
+            path: '/srv/project ',
+        })).toBe('/srv/project ')
+        expect(resolveSessionGroupDirectory({
+            path: '/srv/project /worktrees/feature',
+            worktree: { basePath: '/srv/project ' },
+        })).toBe('/srv/project ')
+    })
+
+    it('preserves trailing backslash on POSIX paths', () => {
+        expect(resolveSessionGroupDirectory({
+            path: '/srv/project\\',
+        })).toBe('/srv/project\\')
+    })
+
+    it('returns Other when neither path nor basePath is set', () => {
+        expect(resolveSessionGroupDirectory({})).toBe('Other')
+    })
+})
+
+describe('groupSessionsByDirectory symlink coalesce', () => {
+    it('places symlink-prefix and realpath basePath sessions in one project group', () => {
+        const homeSpelling = makeSession({
+            id: 'home',
+            updatedAt: 2,
+            metadata: {
+                machineId: 'machine-oos',
+                path: '/home/heavygee/coding/hapi',
+                worktree: {
+                    basePath: '/home/heavygee/coding/hapi',
+                    branch: 'main',
+                    name: 'driver',
+                    worktreePath: '/home/heavygee/coding/hapi/driver',
+                },
+            },
+        })
+        const realpathBase = makeSession({
+            id: 'work',
+            updatedAt: 1,
+            active: true,
+            metadata: {
+                machineId: 'machine-oos',
+                path: '/home/heavygee/coding/hapi/worktrees/feat-x',
+                worktree: {
+                    basePath: '/work/coding/hapi',
+                    branch: 'feat/x',
+                    name: 'feat-x',
+                    worktreePath: '/work/coding/hapi/worktrees/feat-x',
+                },
+            },
+        })
+
+        const groups = groupSessionsByDirectory([homeSpelling, realpathBase])
+        expect(groups).toHaveLength(1)
+        expect(groups[0]?.directory).toBe('/home/heavygee/coding/hapi')
+        expect(groups[0]?.displayName).toBe('coding/hapi')
+        expect(groups[0]?.sessions.map((s) => s.id).sort()).toEqual(['home', 'work'])
+    })
+
+    it('does not invent a home root for an external same-suffix worktree alone', () => {
+        const external = makeSession({
+            id: 'external-wt',
+            updatedAt: 1,
+            metadata: {
+                machineId: 'machine-oos',
+                path: '/home/me/org/repo/worktrees/feature',
+                worktree: {
+                    basePath: '/mnt/clone/org/repo',
+                    branch: 'feature',
+                    name: 'feature',
+                    worktreePath: '/home/me/org/repo/worktrees/feature',
+                },
+            },
+        })
+
+        const groups = groupSessionsByDirectory([external])
+        expect(groups).toHaveLength(1)
+        expect(groups[0]?.directory).toBe('/mnt/clone/org/repo')
+        expect(groups[0]?.displayName).toBe('org/repo')
+    })
+
+    it('keeps an external worktree separate from an unrelated same-suffix clone', () => {
+        const unrelatedClone = makeSession({
+            id: 'clone',
+            updatedAt: 2,
+            metadata: {
+                machineId: 'machine-oos',
+                path: '/home/me/org/repo',
+                worktree: {
+                    basePath: '/home/me/org/repo',
+                    branch: 'main',
+                    name: 'main',
+                    worktreePath: '/home/me/org/repo',
+                },
+            },
+        })
+        const external = makeSession({
+            id: 'external-wt',
+            updatedAt: 1,
+            metadata: {
+                machineId: 'machine-oos',
+                path: '/home/me/org/repo/worktrees/feature',
+                worktree: {
+                    basePath: '/mnt/clone/org/repo',
+                    branch: 'feature',
+                    name: 'feature',
+                    worktreePath: '/home/me/org/repo/worktrees/feature',
+                },
+            },
+        })
+
+        const groups = groupSessionsByDirectory([unrelatedClone, external])
+        expect(groups).toHaveLength(2)
+        expect(groups.map((g) => g.directory).sort()).toEqual([
+            '/home/me/org/repo',
+            '/mnt/clone/org/repo',
+        ])
+    })
+
+    it('preserves Windows forward-slash spelling when coalescing alias sessions', () => {
+        const homeSpelling = makeSession({
+            id: 'home',
+            updatedAt: 2,
+            metadata: {
+                machineId: 'machine-win',
+                path: 'C:/Users/me/coding/hapi',
+                worktree: {
+                    basePath: 'C:/Users/me/coding/hapi',
+                    branch: 'main',
+                    name: 'main',
+                    worktreePath: 'C:/Users/me/coding/hapi',
+                },
+            },
+        })
+        const aliased = makeSession({
+            id: 'alias',
+            updatedAt: 1,
+            metadata: {
+                machineId: 'machine-win',
+                path: 'C:/Users/me/coding/hapi/worktrees/feat',
+                worktree: {
+                    basePath: 'D:/mirror/coding/hapi',
+                    branch: 'feat',
+                    name: 'feat',
+                    worktreePath: 'D:/mirror/coding/hapi/worktrees/feat',
+                },
+            },
+        })
+
+        expect(resolveSessionGroupDirectory(aliased.metadata ?? {})).toBe('C:/Users/me/coding/hapi')
+        const groups = groupSessionsByDirectory([homeSpelling, aliased])
+        expect(groups).toHaveLength(1)
+        expect(groups[0]?.directory).toBe('C:/Users/me/coding/hapi')
+    })
+
+    it('coalesces HAPI sibling worktree layout across symlink spellings', () => {
+        const homeSpelling = makeSession({
+            id: 'home',
+            updatedAt: 2,
+            metadata: {
+                machineId: 'machine-oos',
+                path: '/home/me/coding/hapi',
+                worktree: {
+                    basePath: '/home/me/coding/hapi',
+                    branch: 'main',
+                    name: 'main',
+                    worktreePath: '/home/me/coding/hapi',
+                },
+            },
+        })
+        const sibling = makeSession({
+            id: 'sibling',
+            updatedAt: 1,
+            metadata: {
+                machineId: 'machine-oos',
+                path: '/home/me/coding/hapi-worktrees/feat',
+                worktree: {
+                    basePath: '/work/coding/hapi',
+                    branch: 'feat',
+                    name: 'feat',
+                    worktreePath: '/work/coding/hapi-worktrees/feat',
+                },
+            },
+        })
+
+        const groups = groupSessionsByDirectory([homeSpelling, sibling])
+        expect(groups).toHaveLength(1)
+        expect(groups[0]?.directory).toBe('/home/me/coding/hapi')
+        expect(groups[0]?.sessions.map((s) => s.id).sort()).toEqual(['home', 'sibling'])
+    })
+
+    it('folds Windows path case when matching alias evidence', () => {
+        expect(resolveSessionGroupDirectory({
+            path: 'C:/Users/Me/coding/hapi/worktrees/feat',
+            worktree: {
+                basePath: 'c:/users/me/coding/hapi',
+                worktreePath: 'c:/users/me/coding/hapi/worktrees/feat',
+            },
+        })).toBe('C:/Users/Me/coding/hapi')
+    })
+
+    it('groups mixed-case Windows spellings under one map key', () => {
+        const upper = makeSession({
+            id: 'upper',
+            updatedAt: 2,
+            metadata: {
+                machineId: 'machine-win',
+                path: 'C:\\Users\\Me\\coding\\hapi',
+                worktree: {
+                    basePath: 'C:\\Users\\Me\\coding\\hapi',
+                    branch: 'main',
+                    name: 'main',
+                    worktreePath: 'C:\\Users\\Me\\coding\\hapi',
+                },
+            },
+        })
+        const lower = makeSession({
+            id: 'lower',
+            updatedAt: 1,
+            metadata: {
+                machineId: 'machine-win',
+                path: 'c:/users/me/coding/hapi/worktrees/feat',
+                worktree: {
+                    basePath: 'c:/users/me/coding/hapi',
+                    branch: 'feat',
+                    name: 'feat',
+                    worktreePath: 'c:/users/me/coding/hapi/worktrees/feat',
+                },
+            },
+        })
+
+        const groups = groupSessionsByDirectory([upper, lower])
+        expect(groups).toHaveLength(1)
+        expect(groups[0]?.sessions.map((s) => s.id).sort()).toEqual(['lower', 'upper'])
     })
 })
