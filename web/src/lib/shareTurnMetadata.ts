@@ -7,6 +7,8 @@ export type ShareTurnMetadataItem = {
     key: ShareTurnMetadataKey
     text: string
     flavor?: string | null
+    /** Absolute datetime for relative `lastActive` (and similar) hover labels. */
+    title?: string | null
 }
 
 export function getShareTurnReasoningLabel(
