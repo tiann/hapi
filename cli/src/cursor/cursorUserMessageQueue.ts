@@ -10,12 +10,14 @@ export function enqueueCursorUserMessage(
     messageQueue: MessageQueue2<EnhancedMode>,
     formattedText: string,
     enhancedMode: EnhancedMode,
-    localId?: string
+    localId?: string,
+    steerHint?: boolean
 ): void {
     const specialCommand = parseCursorSpecialCommand(formattedText);
     if (specialCommand.type !== null) {
+        // Control / slash commands never soft-steer — isolate and ignore the hint.
         messageQueue.pushIsolated(formattedText.trim(), enhancedMode, localId);
         return;
     }
-    messageQueue.push(formattedText, enhancedMode, localId);
+    messageQueue.push(formattedText, enhancedMode, localId, steerHint);
 }

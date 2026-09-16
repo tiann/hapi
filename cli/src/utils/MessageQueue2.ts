@@ -6,6 +6,8 @@ export interface QueueItem<T> {
     modeHash: string;
     localId?: string;
     isolate?: boolean; // If true, this message must be processed alone
+    /** Request mid-turn steer into the active turn instead of waiting for turn end. */
+    steerHint?: boolean;
     /** Stable FIFO key used when an async reservation is restored later. */
     enqueueOrder?: number;
 }
@@ -29,7 +31,7 @@ export class MessageQueue2<T> {
     public queue: QueueItem<T>[] = []; // Made public for testing
     private waiter: ((hasMessages: boolean) => void) | null = null;
     private closed = false;
-    private onMessageHandler: ((message: string, mode: T) => void) | null = null;
+    private onMessageHandler: ((message: string, mode: T, item: QueueItem<T>) => void) | null = null;
     onBatchConsumed: ((localIds: string[]) => void) | null = null;
     modeHasher: (mode: T) => string;
     private readonly reservations = new Map<string, QueueReservation<T>>();
@@ -49,14 +51,14 @@ export class MessageQueue2<T> {
     /**
      * Set a handler that will be called when a message arrives
      */
-    setOnMessage(handler: ((message: string, mode: T) => void) | null): void {
+    setOnMessage(handler: ((message: string, mode: T, item: QueueItem<T>) => void) | null): void {
         this.onMessageHandler = handler;
     }
 
     /**
      * Push a message to the queue with a mode.
      */
-    push(message: string, mode: T, localId?: string): void {
+    push(message: string, mode: T, localId?: string, steerHint?: boolean): void {
         if (this.closed) {
             throw new Error('Cannot push to closed queue');
         }
@@ -64,12 +66,13 @@ export class MessageQueue2<T> {
         const modeHash = this.modeHasher(mode);
         logger.debug(`[MessageQueue2] push() called with mode hash: ${modeHash}`);
 
-        const item = {
+        const item: QueueItem<T> = {
             message,
             mode,
             modeHash,
             localId,
             isolate: false,
+            ...(steerHint === true ? { steerHint: true } : {}),
             enqueueOrder: this.nextEnqueueOrder++
         };
         Object.defineProperty(item, 'enqueueOrder', { value: item.enqueueOrder, enumerable: false, writable: true });
@@ -77,7 +80,7 @@ export class MessageQueue2<T> {
 
         // Trigger message handler if set
         if (this.onMessageHandler) {
-            this.onMessageHandler(message, mode);
+            this.onMessageHandler(message, mode, item);
         }
 
         // Notify waiter if any
@@ -103,7 +106,7 @@ export class MessageQueue2<T> {
         const modeHash = this.modeHasher(mode);
         logger.debug(`[MessageQueue2] pushImmediate() called with mode hash: ${modeHash}`);
 
-        const item = {
+        const item: QueueItem<T> = {
             message,
             mode,
             modeHash,
@@ -116,7 +119,7 @@ export class MessageQueue2<T> {
 
         // Trigger message handler if set
         if (this.onMessageHandler) {
-            this.onMessageHandler(message, mode);
+            this.onMessageHandler(message, mode, item);
         }
 
         // Notify waiter if any
@@ -145,7 +148,7 @@ export class MessageQueue2<T> {
         const modeHash = this.modeHasher(mode);
         logger.debug(`[MessageQueue2] pushIsolated() called with mode hash: ${modeHash} - preserving ${this.queue.length} pending messages`);
 
-        const item = {
+        const item: QueueItem<T> = {
             message,
             mode,
             modeHash,
@@ -157,7 +160,7 @@ export class MessageQueue2<T> {
         this.queue.push(item);
 
         if (this.onMessageHandler) {
-            this.onMessageHandler(message, mode);
+            this.onMessageHandler(message, mode, item);
         }
 
         if (this.waiter) {
@@ -189,7 +192,7 @@ export class MessageQueue2<T> {
         // rejection must not restore a prompt the clear command discarded.
         this.cancelReservations();
 
-        const item = {
+        const item: QueueItem<T> = {
             message,
             mode,
             modeHash,
@@ -202,7 +205,7 @@ export class MessageQueue2<T> {
 
         // Trigger message handler if set
         if (this.onMessageHandler) {
-            this.onMessageHandler(message, mode);
+            this.onMessageHandler(message, mode, item);
         }
 
         // Notify waiter if any
@@ -227,7 +230,7 @@ export class MessageQueue2<T> {
         const modeHash = this.modeHasher(mode);
         logger.debug(`[MessageQueue2] unshift() called with mode hash: ${modeHash}`);
 
-        const item = {
+        const item: QueueItem<T> = {
             message,
             mode,
             modeHash,
@@ -240,7 +243,7 @@ export class MessageQueue2<T> {
 
         // Trigger message handler if set
         if (this.onMessageHandler) {
-            this.onMessageHandler(message, mode);
+            this.onMessageHandler(message, mode, item);
         }
 
         // Notify waiter if any
@@ -269,7 +272,7 @@ export class MessageQueue2<T> {
         const modeHash = this.modeHasher(mode);
         logger.debug(`[MessageQueue2] unshiftIsolated() called with mode hash: ${modeHash}`);
 
-        const item = {
+        const item: QueueItem<T> = {
             message,
             mode,
             modeHash,
@@ -281,7 +284,7 @@ export class MessageQueue2<T> {
         this.queue.unshift(item);
 
         if (this.onMessageHandler) {
-            this.onMessageHandler(message, mode);
+            this.onMessageHandler(message, mode, item);
         }
 
         if (this.waiter) {
