@@ -51,6 +51,12 @@ import {
     isRetryableCursorError,
     stripRetryableCursorError
 } from './cursorAutoRetry';
+import { formatUnexpectedStopBlockedFooter } from './unexpectedStopBlockedFooter';
+import {
+    CURSOR_POST_TOOL_INTERRUPT_AUTO_CONTINUE_STATUS,
+    CURSOR_POST_TOOL_INTERRUPT_CONTINUE,
+    CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE
+} from './cursorPostToolInterruptContinue';
 
 const CURSOR_ABORT_DRAIN_TIMEOUT_MS = 5_000;
 
@@ -618,7 +624,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
             // skill_lookup discovery lives on the MCP tool description — do not
             // prepend instructions onto user turns (prompt-injection false positive).
-            const promptContent: PromptContent[] = [{
+            let promptContent: PromptContent[] = [{
                 type: 'text',
                 text: batch.message
             }];
@@ -631,6 +637,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             try {
                 this.promptInFlight = true;
                 this.userAbortRequested = false;
+                // One auto-Continue after post-tool interrupt (#1724) — not a full
+                // prompt replay (duplicate tool risk). Matches operator "Continue".
+                let postToolAutoContinueUsed = false;
                 for (let retryAttempt = 0; retryAttempt <= CURSOR_AUTO_RETRY_LIMIT; retryAttempt += 1) {
                     this.pendingRetryableError = null;
                     this.pendingRetryableFromStderr = false;
@@ -661,7 +670,22 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     }
 
                     if (this.attemptProducedToolActivity) {
-                        this.surfacePromptFailure('Cursor connection interrupted after tool activity; the prompt was not retried.');
+                        if (!postToolAutoContinueUsed) {
+                            postToolAutoContinueUsed = true;
+                            promptContent = [{
+                                type: 'text',
+                                text: CURSOR_POST_TOOL_INTERRUPT_CONTINUE
+                            }];
+                            this.messageBuffer.addMessage(
+                                CURSOR_POST_TOOL_INTERRUPT_AUTO_CONTINUE_STATUS,
+                                'status'
+                            );
+                            // Spend a fresh attempt budget on Continue (not the
+                            // original prompt). Reset so the for-loop can still run.
+                            retryAttempt = -1;
+                            continue;
+                        }
+                        this.surfacePromptFailure(CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE);
                         break;
                     }
                     if (retryAttempt < CURSOR_AUTO_RETRY_LIMIT) {
@@ -904,6 +928,13 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         const converted = convertAgentMessage({ type: 'error', message });
         if (converted) this.session.sendAgentMessage(converted);
         this.messageBuffer.addMessage(message, 'status');
+        // Estate Blocked chrome (#1717) keys off lastNotify from AGENT_NOTIFY_SUMMARY
+        // on assistant text — not error rows (#1724).
+        const footer = convertAgentMessage({
+            type: 'text',
+            text: formatUnexpectedStopBlockedFooter({ summary: message })
+        });
+        if (footer) this.session.sendAgentMessage(footer);
     }
 
     private installLiveSessionConfigSync(
