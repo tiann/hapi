@@ -38,6 +38,61 @@ function makeAgentMessage(text: string, overrides?: Partial<TracedMessage>): Tra
 }
 
 describe('reduceTimeline', () => {
+    function makeChildEvent(type: string, createdAt: number, extra: Record<string, unknown> = {}): TracedMessage {
+        return {
+            id: `${type}-${createdAt}`, localId: null, createdAt, role: 'event', isSidechain: false,
+            content: { type, agentId: 'historical-child', cardId: 'codex-agent:historical-child', ...extra }
+        } as TracedMessage
+    }
+
+    function makeChildTrace(createdAt: number): TracedMessage {
+        return makeChildEvent('agent-run-trace', createdAt, {
+            message: { type: 'message', message: 'Historical child output' }
+        })
+    }
+
+    it.each([1, 2])('does not invent a running child or elapsed timer from %i traces without lifecycle state', count => {
+        const messages = Array.from({ length: count }, (_, index) => makeChildTrace(1000 + index))
+        const { blocks } = reduceTimeline(messages, makeContext())
+        expect(blocks).toHaveLength(1)
+        const card = blocks[0]
+        if (card.kind !== 'tool-call') throw new Error('Missing child card')
+        expect(card.tool.state).toBe('pending')
+        expect(card.tool.startedAt).toBeNull()
+        expect(card.tool.completedAt).toBeNull()
+        expect(card.tool.input).toMatchObject({ agentStatus: 'pending', statusUnknown: true, statusText: 'History — status unavailable' })
+        expect(card.children?.filter(child => child.kind === 'agent-text')).toHaveLength(count)
+    })
+
+    it.each(['agent-run-start', 'agent-run-update'])('uses explicit running state after historical traces (%s)', type => {
+        const { blocks } = reduceTimeline([
+            makeChildTrace(1000),
+            makeChildEvent(type, 2000, { status: 'running', startedAt: 1900 }),
+            makeChildTrace(3000)
+        ], makeContext())
+        expect(blocks).toHaveLength(1)
+        const card = blocks[0]
+        if (card.kind !== 'tool-call') throw new Error('Missing child card')
+        expect(card.tool.state).toBe('running')
+        expect(card.tool.startedAt).toBe(1900)
+        expect(card.tool.input).toMatchObject({ statusUnknown: false, statusText: 'Running' })
+    })
+
+    it.each(['completed', 'error'])('keeps explicit %s state when further historical traces arrive', status => {
+        const { blocks } = reduceTimeline([
+            makeChildTrace(1000),
+            makeChildEvent('agent-run-update', 2000, { status, statusText: 'Finished', completedAt: 1950 }),
+            makeChildTrace(3000)
+        ], makeContext())
+        expect(blocks).toHaveLength(1)
+        const card = blocks[0]
+        if (card.kind !== 'tool-call') throw new Error('Missing child card')
+        expect(card.tool.state).toBe(status)
+        expect(card.tool.startedAt).toBeNull()
+        expect(card.tool.completedAt).toBe(1950)
+        expect(card.tool.input).toMatchObject({ statusUnknown: false, statusText: 'Finished' })
+    })
+
     it('renders user text as user-text block', () => {
         const text = 'Hello, this is a normal message'
         const { blocks } = reduceTimeline([makeUserMessage(text)], makeContext())
