@@ -1,4 +1,4 @@
-import { describe, expect, it, mock } from 'bun:test'
+import { describe, expect, it, mock, spyOn } from 'bun:test'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { Store, type StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
@@ -53,6 +53,143 @@ function reasoningTextOf(message: { content: unknown }): string {
 }
 
 describe('cli session handlers', () => {
+    it.each(['user', 'agent'] as const)('does not repeat %s history side effects or broadcasts after reconnect', (role) => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('replay', {}, null, 'default')
+        const events: SyncEvent[] = []
+        const activity = mock()
+        const progress = mock()
+        const attach = () => {
+            const socket = new FakeSocket()
+            registerSessionHandlers(socket as unknown as CliSocketWithData, {
+                store, resolveSessionAccess: () => ({ ok: true, value: session }),
+                emitAccessError() {}, onSessionActivity: activity, onAgentProgress: progress,
+                onWebappEvent: event => events.push(event)
+            })
+            return socket
+        }
+        const packet = { sid: session.id, localId: 'codex:stable-history-id', message: role === 'user' ? {
+            role: 'user', content: { type: 'text', text: 'hello' }
+        } : {
+            role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'text', text: 'done' } }
+        } }
+        const original = attach()
+        original.trigger('message', packet)
+        const eventCount = events.length
+        const activityCount = activity.mock.calls.length
+        expect(eventCount).toBe(1)
+        expect(activityCount).toBe(role === 'user' ? 1 : 0)
+        expect(progress).toHaveBeenCalledTimes(1)
+        const reconnected = attach()
+        for (let i = 0; i < 100; i++) reconnected.trigger('message', packet)
+        expect(store.messages.countMessages(session.id)).toBe(1)
+        expect(events).toHaveLength(eventCount)
+        expect(activity.mock.calls).toHaveLength(activityCount)
+        expect(reconnected.roomEvents).toHaveLength(0)
+        expect(progress).toHaveBeenCalledTimes(1)
+        store.close()
+    })
+
+    it('does not deduplicate messages without a local ID or across sessions', () => {
+        const store = new Store(':memory:')
+        try {
+            const first = store.sessions.getOrCreateSession('first', {}, null, 'default')
+            const second = store.sessions.getOrCreateSession('second', {}, null, 'default')
+            const socket = new FakeSocket()
+            const events: SyncEvent[] = []
+            registerSessionHandlers(socket as unknown as CliSocketWithData, {
+                store, resolveSessionAccess: sid => ({ ok: true, value: sid === first.id ? first : second }),
+                emitAccessError() {}, onWebappEvent: event => events.push(event)
+            })
+            const message = { role: 'user', content: { type: 'text', text: 'hello' } }
+            for (const sid of [first.id, second.id]) {
+                socket.trigger('message', { sid, localId: 'same-id', message })
+                socket.trigger('message', { sid, message })
+                socket.trigger('message', { sid, message })
+                expect(store.messages.countMessages(sid)).toBe(3)
+            }
+            expect(events).toHaveLength(6)
+            expect(socket.roomEvents).toHaveLength(6)
+        } finally {
+            store.close()
+        }
+    })
+
+    it('keeps consumption acknowledgements independent of duplicate message suppression', () => {
+        const store = new Store(':memory:')
+        try {
+            const session = store.sessions.getOrCreateSession('pending-ack', {}, null, 'default')
+            const content = { role: 'user', content: { type: 'text', text: 'queued' } }
+            store.messages.addMessage(session.id, content, 'queued-id')
+            const socket = new FakeSocket()
+            const events: SyncEvent[] = []
+            registerSessionHandlers(socket as unknown as CliSocketWithData, {
+                store, resolveSessionAccess: () => ({ ok: true, value: session }),
+                emitAccessError() {}, onWebappEvent: event => events.push(event)
+            })
+            socket.trigger('message', { sid: session.id, localId: 'queued-id', message: content })
+            expect(events).toHaveLength(0)
+            expect(store.messages.getMessages(session.id)[0].invokedAt).toBeNull()
+            socket.trigger('messages-consumed', { sid: session.id, localIds: ['queued-id'] })
+            expect(store.messages.getMessages(session.id)[0].invokedAt).not.toBeNull()
+            expect(events).toEqual([expect.objectContaining({
+                type: 'messages-consumed', sessionId: session.id, localIds: ['queued-id']
+            })])
+            expect(socket.roomEvents).toHaveLength(0)
+        } finally {
+            store.close()
+        }
+    })
+
+    it('still rejects unauthorized duplicate messages before checking stored IDs', () => {
+        const store = new Store(':memory:')
+        const lookup = spyOn(store.messages, 'hasLocalMessage')
+        try {
+            const session = store.sessions.getOrCreateSession('private', {}, null, 'other')
+            store.messages.addMessage(session.id, { text: 'private' }, 'existing')
+            const socket = new FakeSocket()
+            const accessError = mock()
+            const event = mock()
+            registerSessionHandlers(socket as unknown as CliSocketWithData, {
+                store, resolveSessionAccess: () => ({ ok: false, reason: 'access-denied' }),
+                emitAccessError: accessError, onWebappEvent: event
+            })
+            socket.trigger('message', { sid: session.id, localId: 'existing', message: { text: 'changed' } })
+            expect(accessError).toHaveBeenCalledTimes(1)
+            expect(lookup).not.toHaveBeenCalled()
+            expect(event).not.toHaveBeenCalled()
+            expect(socket.roomEvents).toHaveLength(0)
+            expect(store.messages.getMessages(session.id)[0].content).toEqual({ text: 'private' })
+        } finally {
+            lookup.mockRestore()
+            store.close()
+        }
+    })
+
+    it('does not count a replayed background task start twice', () => {
+        const store = new Store(':memory:')
+        try {
+            const session = store.sessions.getOrCreateSession('background-replay', {}, null, 'default')
+            const delta = mock()
+            const socket = new FakeSocket()
+            registerSessionHandlers(socket as unknown as CliSocketWithData, {
+                store, resolveSessionAccess: () => ({ ok: true, value: session }),
+                emitAccessError() {}, onBackgroundTaskDelta: delta
+            })
+            const packet = { sid: session.id, localId: 'background-start', message: {
+                role: 'agent', content: { type: 'output', data: {
+                    type: 'tool_result', content: 'Command running in background with ID: task-1'
+                } }
+            } }
+            socket.trigger('message', packet)
+            socket.trigger('message', packet)
+            expect(delta).toHaveBeenCalledTimes(1)
+            expect(delta).toHaveBeenCalledWith(session.id, { started: 1, completed: 0 })
+        } finally {
+            store.close()
+        }
+    })
+
     it.each([undefined, 'terminated', 'error'] as const)('preserves shared Codex pending input on execution exit (%s)', reason => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('shared-end', { flavor: 'codex', capabilities: { concurrentClients: true } }, null, 'default')
