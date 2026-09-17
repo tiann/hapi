@@ -200,6 +200,22 @@ controls for DSH.
 - `HAPI_DSH_ACP_ARGS_JSON` - Optional JSON array of ACP server arguments.
 - `HAPI_HTTP_MCP_URL` - Default MCP target for `hapi mcp`.
 
+### Proxy (network egress)
+
+The CLI honors standard proxy environment variables for every hub connection —
+both the HTTP API (axios) and the machine/session WebSocket (socket.io/`ws`):
+
+- `HTTPS_PROXY` / `https_proxy` (lowercase wins), `HTTP_PROXY` / `http_proxy`, `ALL_PROXY` / `all_proxy`
+- `NO_PROXY` / `no_proxy` - supports `*`, domains (subdomains included), `host:port`, IPv4, IPv6 and CIDR. Loopback addresses always bypass the proxy.
+
+Proxy URLs may embed credentials: `http://user:pass@proxy.example:7890`.
+Only `http://` and `https://` proxies are supported; SOCKS and PAC files are
+not. `hapi doctor` prints the resolved HTTP/WS egress path with credentials
+redacted.
+
+For corporate TLS interception, point `NODE_EXTRA_CA_CERTS` at the CA bundle so
+the tunneled WebSocket handshake trusts the corporate root.
+
 ### Runner
 
 - `HAPI_RUNNER_HEARTBEAT_INTERVAL` - Heartbeat interval in ms (default: 60000).

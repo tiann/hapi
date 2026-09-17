@@ -79,6 +79,7 @@
     "@types/ws": "8.18.1",
     "bun-types": "1.4.0",
     "dotenv": "^17.2.3",
+    "socket.io": "^4.8.3",
     "typescript": "^5",
     "vitest": "^4.0.16"
   },

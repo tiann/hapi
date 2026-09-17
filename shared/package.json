@@ -25,13 +25,16 @@
         "./voice-personality": "./src/voicePersonality.ts",
         "./usage": "./src/usage.ts",
         "./settingsFileLock": "./src/settingsFileLock.ts",
-        "./agentCliSpawnLease": "./src/agentCliSpawnLease.ts"
+        "./agentCliSpawnLease": "./src/agentCliSpawnLease.ts",
+        "./net": "./src/net/index.ts"
     },
     "sideEffects": false,
     "scripts": {
         "test": "bun test"
     },
     "dependencies": {
+        "http-proxy-agent": "^7.0.2",
+        "https-proxy-agent": "^7.0.6",
         "proper-lockfile": "^4.1.2",
         "zod": "^4.2.1"
     },

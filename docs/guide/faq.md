@@ -197,6 +197,24 @@ Run `hapi doctor` first - it shows whether `CLI_API_TOKEN` is set and where it c
 - Check token matches in CLI and hub
 - Verify `~/.hapi/settings.json` has correct `cliApiToken`
 
+### The CLI registers but the machine stays offline behind a proxy
+
+The CLI routes both HTTP and WebSocket hub traffic through standard proxy
+environment variables. Export them in the same shell (or service unit) that
+starts `hapi`:
+
+```bash
+export HTTPS_PROXY=http://user:pass@proxy.example:7890
+export HTTP_PROXY=http://user:pass@proxy.example:7890
+export NO_PROXY=localhost,127.0.0.1,::1
+hapi doctor   # shows the resolved HTTP/WS egress path, credentials redacted
+```
+
+`NO_PROXY` supports `*`, domains (subdomains included), `host:port`, IPv4,
+IPv6 and CIDR; loopback always bypasses the proxy. Only `http://` and
+`https://` proxies are supported - SOCKS and PAC files are not. For corporate
+TLS interception, point `NODE_EXTRA_CA_CERTS` at the corporate CA bundle.
+
 ### Runner won't start
 
 Run `hapi doctor` first - it shows runner status (including stale state), all hapi processes, and recent log files.

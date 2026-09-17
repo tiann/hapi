@@ -41,6 +41,7 @@ import { cleanupUploadDir, preserveUploadDirOnExit } from '../modules/common/han
 import { TerminalManager } from '@/terminal/TerminalManager'
 import { applyVersionedAck } from './versionedUpdate'
 import { buildHubRequestHeaders, buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
+import { socketIoProxyOptions } from '@/net/proxy'
 
 /**
  * XML tags that Claude Code injects as `type:'user'` messages.
@@ -316,7 +317,8 @@ export class ApiSessionClient extends EventEmitter {
             reconnectionDelayMax: 5000,
             transports: ['websocket'],
             autoConnect: false,
-            ...buildSocketIoExtraHeaderOptions()
+            ...buildSocketIoExtraHeaderOptions(),
+            ...socketIoProxyOptions(configuration.apiUrl)
         })
 
         this.terminalManager = new TerminalManager({

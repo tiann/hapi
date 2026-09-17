@@ -22,6 +22,7 @@ import {
 } from '@hapi/protocol/apiTypes'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import { RUNNER_CAPABILITIES } from '@hapi/protocol'
+import { describeEgress } from '@hapi/protocol/net'
 import type { RunnerState, Machine, MachineMetadata } from './types'
 import { RunnerStateSchema, MachineMetadataSchema } from './types'
 import { getInstalledCliMtimeMs } from '@/runner/controlClient'
@@ -59,6 +60,7 @@ import { applyVersionedAck } from './versionedUpdate'
 import { archiveLocalCodexSession, listLocalCodexSessionSummaries, listLocalCodexSessionsWithMessagesByIds } from '../modules/common/codexSessions'
 import { listLocalPiSessionSummaries, listLocalPiSessionsWithMessagesByIds } from '../modules/common/piSessions'
 import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
+import { socketIoProxyOptions } from '@/net/proxy'
 import { collectMachineHealth } from '@/utils/machineHealth'
 import { inspectCursorChatStore } from '@/cursor/cursorChatStoreStatus'
 import { homedir } from 'node:os'
@@ -538,7 +540,9 @@ export class ApiMachineClient {
     }
 
     connect(): void {
-        this.socket = io(`${configuration.apiUrl}/cli`, {
+        const socketUrl = `${configuration.apiUrl}/cli`
+        const egress = describeEgress(socketUrl)
+        this.socket = io(socketUrl, {
             transports: ['websocket'],
             auth: {
                 token: this.token,
@@ -549,11 +553,12 @@ export class ApiMachineClient {
             reconnection: true,
             reconnectionDelay: 1000,
             reconnectionDelayMax: 5000,
-            ...buildSocketIoExtraHeaderOptions()
+            ...buildSocketIoExtraHeaderOptions(),
+            ...socketIoProxyOptions(configuration.apiUrl)
         })
 
         this.socket.on('connect', () => {
-            logger.debug('[API MACHINE] Connected to bot')
+            logger.debug(`[API MACHINE] Connected to bot (${egress})`)
             this.rpcHandlerManager.onSocketConnect(this.socket)
             this.updateRunnerState((state) => ({
                 ...(state ?? {}),
@@ -643,7 +648,7 @@ export class ApiMachineClient {
         })
 
         this.socket.on('connect_error', (error) => {
-            logger.debug(`[API MACHINE] Connection error: ${error.message}`)
+            logger.debug(`[API MACHINE] Connection error (${egress}): ${error.message}`)
         })
 
         this.socket.on('error', (payload) => {
