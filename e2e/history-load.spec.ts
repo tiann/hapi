@@ -1,5 +1,67 @@
 import { expect, test } from '@playwright/test'
 
+test('cached re-entry keeps the cache visible while refreshing a small latest tail', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?cachedReentry=1&holdLatest=1')
+    const viewport = page.locator('.app-scroll-y')
+    await expect(viewport).toBeVisible()
+
+    await expect.poll(async () => await page.evaluate(() => ({
+        latestRequests: window.__probe.requests.filter((request) => request.direction === 'latest').length,
+        latestLimit: window.__probe.requests.find((request) => request.direction === 'latest')?.limit ?? null
+    }))).toEqual({ latestRequests: 1, latestLimit: 20 })
+
+    // The persisted snapshot must remain usable while the latest-tail request
+    // is held in flight; this is the user-visible cache-first contract.
+    await expect(page.getByText('Fixture message 1001', { exact: true })).toBeVisible()
+    expect(await page.evaluate(() => window.__probe.requests.filter((request) => request.direction === 'before').length)).toBe(0)
+
+    await page.evaluate(() => window.__probe.releaseLatest())
+    await expect(page.getByText('Fixture message 1200', { exact: true })).toBeVisible()
+    await expect(page.getByText('Fixture message 1001', { exact: true })).toHaveCount(0)
+
+    // The small latest page still exposes its normal older cursor; scrolling
+    // to the top must load one full history page through the existing path.
+    await viewport.dispatchEvent('pointerdown', { button: 0, pointerType: 'mouse' })
+    await page.evaluate(() => {
+        const element = document.querySelector('.app-scroll-y') as HTMLElement
+        element.scrollTop = 0
+        element.dispatchEvent(new Event('scroll'))
+    })
+    await viewport.dispatchEvent('pointerup', { button: 0, pointerType: 'mouse' })
+    await expect.poll(async () => await page.evaluate(() => ({
+        beforeRequests: window.__probe.requests.filter((request) => request.direction === 'before').length,
+        beforeLimit: window.__probe.requests.find((request) => request.direction === 'before')?.limit ?? null
+    }))).toEqual({ beforeRequests: 1, beforeLimit: 200 })
+    await expect(page.getByText('Fixture message 1001', { exact: true })).toBeVisible()
+})
+
+test('cached re-entry resumes an upward history gesture after latest refresh completes', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?cachedReentry=1&holdLatest=1')
+    const viewport = page.locator('.app-scroll-y')
+    await expect(viewport).toBeVisible()
+    await expect.poll(async () => await page.evaluate(() => ({
+        latestRequests: window.__probe.requests.filter((request) => request.direction === 'latest').length,
+        latestLimit: window.__probe.requests.find((request) => request.direction === 'latest')?.limit ?? null
+    }))).toEqual({ latestRequests: 1, latestLimit: 20 })
+
+    // The user starts browsing older history before the latest refresh returns.
+    await viewport.dispatchEvent('pointerdown', { button: 0, pointerType: 'mouse' })
+    await page.evaluate(() => {
+        const element = document.querySelector('.app-scroll-y') as HTMLElement
+        element.scrollTop = 0
+        element.dispatchEvent(new Event('scroll'))
+    })
+    await viewport.dispatchEvent('pointerup', { button: 0, pointerType: 'mouse' })
+    expect(await page.evaluate(() => window.__probe.requests.filter((request) => request.direction === 'before').length)).toBe(0)
+
+    await page.evaluate(() => window.__probe.releaseLatest())
+    await expect.poll(async () => await page.evaluate(() => ({
+        beforeRequests: window.__probe.requests.filter((request) => request.direction === 'before').length,
+        beforeLimit: window.__probe.requests.find((request) => request.direction === 'before')?.limit ?? null
+    }))).toEqual({ beforeRequests: 1, beforeLimit: 200 })
+    await expect(page.getByText('Fixture message 1000', { exact: true })).toBeVisible()
+})
+
 // Regression: loading an older page prepends hundreds of messages at once.
 // assistant-ui's tap scheduler aborts a flush with more than 50 dirty
 // resources and drops the rest, so the thread never reflected the merged

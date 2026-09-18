@@ -47,6 +47,7 @@ import { mkdtempSync, copyFileSync, writeFileSync, existsSync, mkdirSync, rmSync
 import { createHash } from 'node:crypto'
 import { Database } from 'bun:sqlite'
 
+import { isLiveLifecycleState } from '@hapi/protocol'
 import type { CursorMigrateOutcome, CursorMigrateRefusalReason } from '@hapi/protocol/apiTypes'
 import type { Metadata } from '@hapi/protocol/schemas'
 import type { Session } from '@hapi/protocol/types'
@@ -461,11 +462,11 @@ export function preflightSession(session: Session | undefined, now: () => number
     if (!CURSOR_SESSION_ID_RE.test(trimmed) || trimmed === '.' || trimmed === '..') {
         return refusal(sessionId, 'no_cursor_session_id', `cursorSessionId '${trimmed}' fails basename validation`, start, now)
     }
-    // Block both lifecycleState==='running' AND session.active (legacy rows
-    // may lack lifecycleState but still be active in the cache). Codex
-    // review #34 P2.
+    // Block both a live lifecycleState ('running' or the keepalive-idle
+    // 'idle' of tiann/hapi#1820) AND session.active (legacy rows may lack
+    // lifecycleState but still be active in the cache). Codex review #34 P2.
     const lifecycle = typeof metadata.lifecycleState === 'string' ? metadata.lifecycleState : undefined
-    const isActive = lifecycle === 'running' || session.active === true
+    const isActive = isLiveLifecycleState(lifecycle) || session.active === true
     if (isActive && !opts.forceArchiveRunning) {
         return refusal(sessionId, 'running_refused', 'session is active; archive first or pass forceArchiveRunning', start, now)
     }
@@ -731,8 +732,8 @@ export class CursorLegacyMigrator {
             } catch (err) {
                 return refusal(session.id, 'archive_failed', err instanceof Error ? err.message : String(err), start, this.deps.now)
             }
-        } else if (metadata.lifecycleState === 'running') {
-            log.info('[migrator] migrating stale lifecycle=running row without archive RPC (no live runner)', { sessionId: session.id })
+        } else if (isLiveLifecycleState(metadata.lifecycleState)) {
+            log.info('[migrator] migrating stale live-lifecycle row without archive RPC (no live runner)', { sessionId: session.id, lifecycleState: metadata.lifecycleState })
         }
 
         // If we just archived an active session, wait for the legacy
@@ -929,7 +930,7 @@ export class CursorLegacyMigrator {
             tryRm(acpSessionDir)
             return refusal(session.id, 'session_resumed_during_migrate', `session became active during migration (active=true lifecycleState=${latest.lifecycleState ?? 'n/a'}); rolled back ACP placement`, start, this.deps.now)
         }
-        if (latest && !wasActive && latest.lifecycleState === 'running') {
+        if (latest && !wasActive && isLiveLifecycleState(latest.lifecycleState)) {
             // Lifecycle says running but active=false and we did NOT
             // archive this session ourselves. Something external lifted
             // it back to running between preflight and now (rare but

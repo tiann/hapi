@@ -1702,7 +1702,9 @@ export function NewSession(props: {
                 ? (opencodeSelectedModel ?? undefined)
                 : agent === 'agy'
                     ? (agySelectedModel ?? undefined)
-                    : (model !== 'auto' ? claudeSelectedRowValue : undefined)
+                    : agent === 'cursor'
+                        ? (model === 'auto' || !model ? 'auto' : model)
+                        : (model !== 'auto' ? claudeSelectedRowValue : undefined)
             const resolvedEffort = (agent === 'claude' || agent === 'grok' || agent === 'pi') && effort !== 'auto'
                 ? effort
                 : undefined

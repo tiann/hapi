@@ -16,6 +16,18 @@ const sessionModels = [
 ] as const
 
 describe('resolveSessionCursorModelChange', () => {
+    it.each([false, true])('labels the live Auto limitation only without native Auto (native=%s)', (nativeAuto) => {
+        const picker = buildSessionCursorPickerState({
+            sessionModels: [{ modelId: nativeAuto ? 'auto' : 'default' }, ...sessionModels],
+            machineModels: [{ modelId: 'auto' }],
+            sessionModel: 'composer-2.5[fast=true]',
+            sessionCurrentModelId: 'composer-2.5[fast=true]',
+            autoRestartLabel: 'Auto (switching back requires restart)'
+        })
+        expect(picker.modelOptions.find(option => option.value === 'auto')?.label)
+            .toBe(nativeAuto ? 'Auto' : 'Auto (switching back requires restart)')
+    })
+
     const picker = buildSessionCursorPickerState({
         sessionModels,
         machineModels: [],
@@ -35,6 +47,22 @@ describe('resolveSessionCursorModelChange', () => {
             ok: true,
             wireId: 'composer-2.5[fast=true]',
             nextSelectedBase: 'composer-2.5',
+            shouldApply: true
+        })
+    })
+
+    it('selecting Auto applies the CLI auto model id', () => {
+        const plan = resolveSessionCursorModelChange({
+            picker,
+            sessionModel: 'composer-2.5[fast=true]',
+            cursorSelectedBase: 'composer-2.5',
+            kind: 'base',
+            value: 'auto'
+        })
+        expect(plan).toEqual({
+            ok: true,
+            wireId: 'auto',
+            nextSelectedBase: 'auto',
             shouldApply: true
         })
     })

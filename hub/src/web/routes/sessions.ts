@@ -4,6 +4,7 @@ import {
     ForkConversationRequestSchema,
     ImplementCodexPlanRequestSchema,
     getPermissionModesForFlavor,
+    isLiveLifecycleState,
     isPermissionModeAllowedForFlavor,
     RenameSessionRequestSchema,
     SetSessionPinnedRequestSchema,
@@ -481,7 +482,10 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ ok: true, alreadyArchived: true })
         }
 
-        if (!sessionResult.session.active && lifecycleState !== 'running') {
+        // tiann/hapi#1820: `idle` is a live lifecycle too — a session the hub
+        // reconciled as keepalive-only must stay archivable once its socket
+        // finally drops, exactly like a stale `running` row.
+        if (!sessionResult.session.active && !isLiveLifecycleState(lifecycleState)) {
             return c.json({ error: 'Session is inactive' }, 409)
         }
 

@@ -4,6 +4,8 @@ import type { CursorModelSummary } from '@hapi/protocol/apiTypes';
 export type CursorModelsSnapshot = {
     availableModels: CursorModelSummary[];
     currentModelId: string | null;
+    /** ACP advertised the parameterized picker (bare bases + fast/thought_level options). */
+    parameterized?: boolean;
 };
 
 type CursorAcpModelSnapshotBackend = Pick<AcpSdkBackend, 'getSessionModelsMetadata' | 'getConfigOptionByCategory'>
@@ -39,8 +41,16 @@ function mergeModelEntries(
 }
 
 /**
- * Zed-style Cursor catalog: `configOptions` model category lists every wire id;
+ * Zed-style Cursor catalog: `configOptions` model category lists every model id;
  * `availableModels` alone is often one variant per base family.
+ *
+ * Cursor's parameterized picker advertises bare model bases plus separate
+ * `fast` / `thought_level` config options. Cursor rejects every bracket id whose
+ * parameter set is not that model's complete set, and those per-model sets are not
+ * derivable from the options, so no wire ids are ever synthesized here: the
+ * advertised values are kept verbatim (bare bases are accepted by `--model`, with
+ * defaults applied) and the requested parameters are applied over ACP config
+ * options by `applyParameterizedCursorModel`.
  */
 export function buildCursorModelsSnapshotFromAcp(
     backend: CursorAcpModelSnapshotBackend,
@@ -48,38 +58,14 @@ export function buildCursorModelsSnapshotFromAcp(
 ): CursorModelsSnapshot | null {
     const metadata = backend.getSessionModelsMetadata(sessionId);
     const modelOption = findConfigOption(backend, sessionId, 'model');
-    const fastOption = findConfigOption(backend, sessionId, 'fast');
 
     if (!metadata && !modelOption) {
         return null;
     }
 
     const merged = new Map<string, CursorModelSummary>();
-    const parameterizedFastModels: CursorModelSummary[] = [];
 
-    if (modelOption?.options?.length && fastOption?.options?.length) {
-        const fastValues = fastOption.options
-            .map((option) => option.value.trim())
-            .filter((value) => value === 'false' || value === 'true');
-        if (fastValues.length > 0) {
-            for (const option of modelOption.options) {
-                const modelId = option.value.trim();
-                if (!modelId || modelId.includes('[')) {
-                    continue;
-                }
-                for (const fast of fastValues) {
-                    parameterizedFastModels.push({
-                        modelId: `${modelId}[fast=${fast}]`,
-                        name: option.name
-                    });
-                }
-            }
-        }
-    }
-
-    if (parameterizedFastModels.length > 0) {
-        mergeModelEntries(merged, parameterizedFastModels);
-    } else if (modelOption?.options?.length) {
+    if (modelOption?.options?.length) {
         mergeModelEntries(merged, modelOption.options.map((option) => ({
             modelId: option.value,
             name: option.name
@@ -87,26 +73,24 @@ export function buildCursorModelsSnapshotFromAcp(
     }
 
     if (metadata?.availableModels?.length) {
-        mergeModelEntries(
-            merged,
-            parameterizedFastModels.length > 0
-                ? metadata.availableModels.filter((entry) => entry.modelId.includes('['))
-                : metadata.availableModels
-        );
+        mergeModelEntries(merged, metadata.availableModels);
     }
 
     if (merged.size === 0) {
         return null;
     }
 
-    const currentModelId = parameterizedFastModels.length > 0 && modelOption?.currentValue && fastOption?.currentValue
-        ? `${modelOption.currentValue}[fast=${fastOption.currentValue}]`
-        : metadata?.currentModelId
-            ?? modelOption?.currentValue
-            ?? null;
+    const parameterized = Boolean(
+        modelOption?.options?.length
+        && modelOption.options.every((option) => {
+            const value = option.value.trim();
+            return value.length > 0 && !value.includes('[');
+        })
+    );
 
     return {
         availableModels: [...merged.values()],
-        currentModelId
+        currentModelId: metadata?.currentModelId ?? modelOption?.currentValue ?? null,
+        ...(parameterized ? { parameterized: true } : {})
     };
 }

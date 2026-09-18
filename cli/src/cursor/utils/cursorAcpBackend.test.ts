@@ -30,8 +30,14 @@ describe('createCursorAcpBackend', () => {
         ]);
     });
 
-    it('omits --model for default/auto spawn selection', () => {
-        expect(buildCursorAcpArgs({ model: 'auto' })).toEqual(['acp']);
+    it('pins CLI auto with --model auto', () => {
+        expect(buildCursorAcpArgs({ model: 'auto' })).toEqual(['--model', 'auto', 'acp']);
+        expect(buildCursorAcpArgs({ model: 'default[]' })).toEqual(['--model', 'auto', 'acp']);
+    });
+
+    it('omits --model when spawn model is unset', () => {
+        expect(buildCursorAcpArgs({ model: null })).toEqual(['acp']);
+        expect(buildCursorAcpArgs({})).toEqual(['acp']);
     });
 
     it('adds --auto-review, --worktree, and --add-dir before acp', () => {

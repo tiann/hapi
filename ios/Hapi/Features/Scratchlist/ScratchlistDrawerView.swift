@@ -2,6 +2,22 @@ import HapiClient
 import HapiProtocol
 import HapiUI
 import SwiftUI
+import UIKit
+
+private struct ScratchlistAccessibilityProbe: UIViewRepresentable {
+    let identifier: String
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        view.accessibilityIdentifier = identifier
+        view.isAccessibilityElement = false
+        return view
+    }
+
+    func updateUIView(_ view: UIView, context: Context) {
+        view.accessibilityIdentifier = identifier
+    }
+}
 
 /// One recent draft while browsing; just a header while typing.
 struct ScratchlistDrawerView: View {
@@ -32,6 +48,13 @@ struct ScratchlistDrawerView: View {
                     onDelete: { model.deleteEntry(entry.entryId) }, compact: true)
                     .padding(.bottom, 8)
                     .accessibilityIdentifier("scratchlist.recent")
+                    // Keep a concrete UIKit node for presentation tests. The
+                    // probe follows the same condition as the visible preview.
+                    .background {
+                        ScratchlistAccessibilityProbe(identifier: "scratchlist.recent")
+                            .frame(width: 1, height: 1)
+                            .allowsHitTesting(false)
+                    }
             }
             Divider()
         }

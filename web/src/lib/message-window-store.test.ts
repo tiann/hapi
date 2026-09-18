@@ -137,6 +137,7 @@ function makeAgentRunMessage(id: string, seq: number, at: number): DecryptedMess
 function latestResponse(
     messages: DecryptedMessage[],
     options: {
+        limit?: number
         epoch?: number
         hasMore?: boolean
         reset?: boolean
@@ -154,7 +155,7 @@ function latestResponse(
         messages,
         page: {
             direction: 'latest',
-            limit: 200,
+            limit: options.limit ?? 200,
             epoch: options.epoch ?? 0,
             reset: options.reset ?? false,
             nextBeforeAt: options.nextBeforeAt ?? null,
@@ -383,7 +384,7 @@ describe('message tail synchronization', () => {
         expect(getMessageWindowState(id).isSyncingTail).toBe(false)
     })
 
-    it('renders a persisted window immediately, then requests the latest tail on re-entry', async () => {
+    it('renders a persisted window immediately, then requests a small latest tail on re-entry', async () => {
         const id = sessionId('reentry')
         const cached = makeAgentMessage({ id: 'cached', seq: 40, at: 40_000 })
         sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
@@ -401,16 +402,24 @@ describe('message tail synchronization', () => {
         activateMessageWindow(id)
         expect(getMessageWindowState(id).viewMode).toBe('tail')
 
+        const response = deferred<MessagesResponse>()
+        const getMessages = vi.fn(async () => await response.promise)
+        const syncing = syncTailMessages(createApi(getMessages), id)
+
+        expect(getMessages).toHaveBeenCalledWith(id, { limit: 20 })
+        expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(['cached'])
+        expect(getMessageWindowState(id).isSyncingTail).toBe(true)
+
         const latest = makeAgentMessage({ id: 'latest', seq: 2_040, at: 2_040_000 })
-        const getMessages = vi.fn(async () => latestResponse([latest], {
+        response.resolve(latestResponse([latest], {
+            limit: 20,
             epoch: 3,
             hasMore: true,
             nextBeforeAt: 1_841_000,
             nextBeforeSeq: 1_841
         }))
-        await syncTailMessages(createApi(getMessages), id)
+        await syncing
 
-        expect(getMessages).toHaveBeenCalledWith(id, { limit: 200 })
         expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(['latest'])
         expect(getMessageWindowState(id).hasMore).toBe(true)
         expect('pending' in getMessageWindowState(id)).toBe(false)
@@ -441,7 +450,7 @@ describe('message tail synchronization', () => {
         const getMessages = vi.fn(async () => latestResponse([latest], { epoch: 3 }))
         await syncTailMessages(createApi(getMessages), id)
 
-        expect(getMessages).toHaveBeenCalledWith(id, { limit: 200 })
+        expect(getMessages).toHaveBeenCalledWith(id, { limit: 20 })
         expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual([
             'local-1',
             'latest'
@@ -450,6 +459,127 @@ describe('message tail synchronization', () => {
             id: 'local-1',
             status: 'queued'
         }))
+    })
+
+    it('keeps the latest page cursor available for older history after re-entry', async () => {
+        const id = sessionId('reentry-older-history')
+        const cached = makeAgentMessage({ id: 'cached', seq: 40, at: 40_000 })
+        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+            messages: [cached],
+            hasMore: true,
+            oldestPositionAt: 40_000,
+            oldestPositionSeq: 40,
+            newestPositionAt: 40_000,
+            newestPositionSeq: 40,
+            epoch: 3
+        }))
+
+        activateMessageWindow(id)
+        const latest = [
+            makeAgentMessage({ id: 'latest-1', seq: 2_039, at: 2_039_000 }),
+            makeAgentMessage({ id: 'latest-2', seq: 2_040, at: 2_040_000 })
+        ]
+        const older = makeAgentMessage({ id: 'older', seq: 2_038, at: 2_038_000 })
+        const getMessages = vi.fn()
+            .mockResolvedValueOnce(latestResponse(latest, {
+                limit: 20,
+                epoch: 3,
+                hasMore: true,
+                nextBeforeAt: 2_039_000,
+                nextBeforeSeq: 2_039
+            }))
+            .mockResolvedValueOnce(beforeResponse([older], {
+                epoch: 3,
+                hasMore: false,
+                nextBeforeAt: 2_038_000,
+                nextBeforeSeq: 2_038
+            }))
+        const api = createApi(getMessages)
+
+        await syncTailMessages(api, id)
+        await fetchOlderMessages(api, id)
+
+        expect(getMessages.mock.calls[0]?.[1]).toEqual({ limit: 20 })
+        expect(getMessages.mock.calls[1]?.[1]).toEqual({
+            beforeAt: 2_039_000,
+            beforeSeq: 2_039,
+            limit: 200
+        })
+        expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual([
+            'older',
+            'latest-1',
+            'latest-2'
+        ])
+    })
+
+    it('keeps cached messages visible when the re-entry refresh fails', async () => {
+        const id = sessionId('reentry-refresh-failure')
+        const cached = makeAgentMessage({ id: 'cached', seq: 40, at: 40_000 })
+        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+            messages: [cached],
+            hasMore: true,
+            oldestPositionAt: 40_000,
+            oldestPositionSeq: 40,
+            newestPositionAt: 40_000,
+            newestPositionSeq: 40,
+            epoch: 3
+        }))
+
+        activateMessageWindow(id)
+        const getMessages = vi.fn(async () => {
+            throw new Error('latest tail unavailable')
+        })
+
+        await syncTailMessages(createApi(getMessages), id)
+
+        expect(getMessages).toHaveBeenCalledWith(id, { limit: 20 })
+        expect(getMessageWindowState(id)).toMatchObject({
+            messages: [cached],
+            isSyncingTail: false,
+            warning: 'latest tail unavailable'
+        })
+    })
+
+    it('preserves live and optimistic rows that arrive during a re-entry refresh', async () => {
+        const id = sessionId('reentry-concurrent-rows')
+        const cached = makeAgentMessage({ id: 'cached', seq: 40, at: 40_000 })
+        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+            messages: [cached],
+            hasMore: true,
+            oldestPositionAt: 40_000,
+            oldestPositionSeq: 40,
+            newestPositionAt: 40_000,
+            newestPositionSeq: 40,
+            epoch: 3
+        }))
+
+        activateMessageWindow(id)
+        const response = deferred<MessagesResponse>()
+        const getMessages = vi.fn(async () => await response.promise)
+        const syncing = syncTailMessages(createApi(getMessages), id)
+        await vi.waitFor(() => expect(getMessages).toHaveBeenCalledWith(id, { limit: 20 }))
+
+        const optimistic = makeUserMessage({
+            id: 'local-1',
+            localId: 'local-1',
+            createdAt: 41_000,
+            invokedAt: null,
+            status: 'sending'
+        })
+        appendOptimisticMessage(id, optimistic)
+        const live = makeAgentMessage({ id: 'live', seq: 41, at: 41_000 })
+        ingestIncomingMessages(id, [live])
+
+        response.resolve(latestResponse([
+            makeAgentMessage({ id: 'latest', seq: 2_040, at: 2_040_000 })
+        ], { limit: 20, epoch: 3 }))
+        await syncing
+
+        expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual([
+            'live',
+            'local-1',
+            'latest'
+        ])
     })
 
     it('keeps incremental synchronization for non-activation refreshes', async () => {
@@ -706,7 +836,7 @@ describe('message tail synchronization', () => {
         activateMessageWindow(id)
         const reentrySync = syncTailMessages(api, id)
         await vi.waitFor(() => expect(getMessages).toHaveBeenCalledTimes(2))
-        expect(getMessages.mock.calls[1]?.[1]).toEqual({ limit: 200 })
+        expect(getMessages.mock.calls[1]?.[1]).toEqual({ limit: 20 })
         staleResponse.resolve(afterResponse([
             makeAgentMessage({ id: 'stale-page', seq: 41, at: 41_000 })
         ], {
@@ -962,6 +1092,7 @@ describe('message tail synchronization', () => {
         await syncTailMessages(createApi(getMessages), id)
 
         expect(getMessages).toHaveBeenCalledTimes(1)
+        expect(getMessages).toHaveBeenCalledWith(id, { limit: INITIAL_PAGE_SIZE })
         expect(getMessageWindowState(id).hasMore).toBe(true)
     })
 })

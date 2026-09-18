@@ -45,7 +45,7 @@ export function resolveSessionCursorModelChange(args: {
 
     if (kind === 'base') {
         if (!value || value === 'auto') {
-            return { ok: true, wireId: null, nextSelectedBase: 'auto', shouldApply: true }
+            return { ok: true, wireId: 'auto', nextSelectedBase: 'auto', shouldApply: true }
         }
         if (value.includes('[')) {
             const base = resolveCursorBaseFromWire(value, picker.catalog)
@@ -64,7 +64,7 @@ export function resolveSessionCursorModelChange(args: {
         const wireId = resolveWireIdForBaseChange(value, picker.catalog, sessionModel)
         return {
             ok: true,
-            wireId: wireId === 'auto' ? null : wireId,
+            wireId: wireId === 'auto' ? 'auto' : wireId,
             nextSelectedBase: value,
             shouldApply: wireId !== null
         }
@@ -83,7 +83,7 @@ export function resolveSessionCursorModelChange(args: {
 
     // flat picker: value is wire id or auto
     if (!value || value === 'auto') {
-        return { ok: true, wireId: null, nextSelectedBase: 'auto', shouldApply: true }
+        return { ok: true, wireId: 'auto', nextSelectedBase: 'auto', shouldApply: true }
     }
     if (!picker.catalog.wireToBase.has(value)) {
         return { ok: false, reason: 'model wire id not in catalog' }
@@ -208,6 +208,7 @@ export function buildSessionCursorPickerState(args: {
     cliModelSkus?: readonly CursorModelSummary[]
     sessionModel: string | null | undefined
     sessionCurrentModelId: string | null
+    autoRestartLabel?: string
 }): CursorPickerState {
     const catalog = buildCursorCatalogFromSources({
         sessionModels: args.sessionModels,
@@ -215,11 +216,18 @@ export function buildSessionCursorPickerState(args: {
         cliModelSkus: args.cliModelSkus,
         currentWireId: args.sessionCurrentModelId ?? args.sessionModel,
         sessionModelFromHub: args.sessionModel,
-        defaultValue: null
+        defaultValue: 'auto'
     })
-    return buildCursorPickerState({
+    const picker = buildCursorPickerState({
         catalog,
         currentWireId: args.sessionModel ?? args.sessionCurrentModelId,
-        defaultValue: null
+        defaultValue: 'auto'
     })
+    const autoRestartLabel = args.autoRestartLabel
+    if (autoRestartLabel && !args.sessionModels.some(model => model.modelId.trim() === 'auto')) {
+        picker.modelOptions = picker.modelOptions.map(option => option.value === 'auto'
+            ? { ...option, label: autoRestartLabel }
+            : option)
+    }
+    return picker
 }

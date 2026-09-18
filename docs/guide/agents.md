@@ -54,6 +54,20 @@ hapi resume <session-id>   # Resume a specific HAPI session
 
 `hapi resume` reopens the conversation on this machine, including active sessions you were using from your phone. Gemini and fresh-session-only DSH cannot be resumed. Pi and Antigravity resume with input still controlled from HAPI rather than the terminal.
 
+### Mathematical formulas in HAPI Markdown
+
+HAPI renders LaTeX-style mathematics through KaTeX. When generating or revising Markdown intended for display in HAPI, follow these rules exactly:
+
+- Use `\( ... \)` for inline mathematics.
+- Use `\[ ... \]` for standalone display mathematics.
+- Do not use single-dollar delimiters such as `$x^2$`. Single-dollar math is disabled to prevent currency values such as `$200` from being misinterpreted as formulas.
+- `$$ ... $$` remains supported for compatibility, but `\[ ... \]` is preferred for display mathematics.
+- Do not put formulas inside inline code, fenced code blocks, or other code content.
+- Use only LaTeX commands supported by KaTeX. TikZ is not supported.
+- Do not use bare `[ ... ]` as math delimiters.
+
+Before sending a response, check every mathematical expression for the correct delimiters. Rewrite any mathematical `$...$` expression as `\(...\)` or `\[...\]`; preserve ordinary currency text such as `$200` as plain text.
+
 ## Cursor Agent
 
 HAPI supports [Cursor Agent CLI](https://cursor.com/docs/cli/using) for running Cursor's AI coding agent with remote control via web and phone.
