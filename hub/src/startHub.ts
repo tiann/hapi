@@ -7,6 +7,7 @@ import { HappyBot } from './telegram/bot'
 import { startWebServer } from './web/server'
 import { getOrCreateJwtSecret } from './config/jwtSecret'
 import { getOrCreateOwnerId } from './config/ownerId'
+import { mergeCorsOrigins, normalizeOrigin, normalizeOrigins } from './config/corsOrigins'
 import { createSocketServer } from './socket/server'
 import { SSEManager } from './sse/sseManager'
 import { getOrCreateVapidKeys } from './config/vapidKeys'
@@ -63,42 +64,6 @@ function resolveRelayFlag(args: string[]): { enabled: boolean; source: RelayFlag
     return { enabled, source }
 }
 
-function normalizeOrigin(value: string): string {
-    const trimmed = value.trim()
-    if (!trimmed) {
-        return ''
-    }
-    try {
-        return new URL(trimmed).origin
-    } catch {
-        return trimmed
-    }
-}
-
-function normalizeOrigins(origins: string[]): string[] {
-    const normalized = origins
-        .map(normalizeOrigin)
-        .filter(Boolean)
-    if (normalized.includes('*')) {
-        return ['*']
-    }
-    return Array.from(new Set(normalized))
-}
-
-function mergeCorsOrigins(base: string[], extra: string[]): string[] {
-    if (base.includes('*') || extra.includes('*')) {
-        return ['*']
-    }
-    const merged = new Set<string>()
-    for (const origin of base) {
-        merged.add(origin)
-    }
-    for (const origin of extra) {
-        merged.add(origin)
-    }
-    return Array.from(merged)
-}
-
 export interface HubInstance {
     stop(): Promise<void>
 }
@@ -123,8 +88,13 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     const relayFlag = resolveRelayFlag(options.args ?? process.argv)
     const officialWebUrl = process.env.HAPI_OFFICIAL_WEB_URL || 'https://app.hapi.run'
     const config = await createConfiguration()
-    const baseCorsOrigins = normalizeOrigins(config.corsOrigins)
+    const baseCorsOrigins = normalizeOrigins(config.corsOrigins).origins
     const relayCorsOrigin = normalizeOrigin(officialWebUrl)
+    if (relayFlag.enabled && !relayCorsOrigin) {
+        console.warn(
+            `[Hub] Ignoring invalid HAPI_OFFICIAL_WEB_URL "${officialWebUrl}" (expected an origin like https://example.com)`
+        )
+    }
     const corsOrigins = relayFlag.enabled
         ? mergeCorsOrigins(baseCorsOrigins, relayCorsOrigin ? [relayCorsOrigin] : [])
         : baseCorsOrigins
@@ -150,6 +120,14 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     console.log(`[Hub] HAPI_LISTEN_HOST: ${config.listenHost} (${formatSource(config.sources.listenHost)})`)
     console.log(`[Hub] HAPI_LISTEN_PORT: ${config.listenPort} (${formatSource(config.sources.listenPort)})`)
     console.log(`[Hub] HAPI_PUBLIC_URL: ${config.publicUrl} (${formatSource(config.sources.publicUrl)})`)
+    console.log(`[Hub] CORS origins: ${corsOrigins.length > 0 ? corsOrigins.join(', ') : '(none)'}`)
+    if (corsOrigins.length === 0) {
+        console.warn(
+            '[Hub] No CORS origins configured. Same-origin clients are still allowed, but cross-origin ' +
+            'browser clients will be rejected. Set HAPI_PUBLIC_URL to your public URL (for example ' +
+            'https://example.com) or CORS_ORIGINS.'
+        )
+    }
 
     if (!config.telegramEnabled) {
         console.log('[Hub] Telegram: disabled (no TELEGRAM_BOT_TOKEN)')

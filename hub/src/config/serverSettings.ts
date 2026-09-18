@@ -8,6 +8,8 @@
  * it will be saved to settings.json for future use
  */
 
+import { hasUrlScheme, normalizeHubUrl } from '@hapi/protocol'
+import { deriveCorsOrigins, normalizeOrigins, parseCorsOriginsEnv } from './corsOrigins'
 import { getSettingsFile, updateSettings } from './settings'
 
 const OLD_SETTINGS_FIELDS = ['webappHost', 'webappPort', 'webappUrl'] as const
@@ -68,40 +70,64 @@ export interface ServerSettingsResult {
     savedToFile: boolean
 }
 
-/**
- * Parse and normalize CORS origins
- */
-function parseCorsOrigins(str: string): string[] {
-    const entries = str
-        .split(',')
-        .map(origin => origin.trim())
-        .filter(Boolean)
-
-    if (entries.includes('*')) {
-        return ['*']
+function sameStringArray(left: string[] | undefined, right: string[]): boolean {
+    if (!left || left.length !== right.length) {
+        return false
     }
+    return left.every((value, index) => value === right[index])
+}
 
-    const normalized: string[] = []
-    for (const entry of entries) {
-        try {
-            normalized.push(new URL(entry).origin)
-        } catch {
-            // Keep raw value if it's already an origin-like string
-            normalized.push(entry)
-        }
+/**
+ * Normalize the public URL and persist the repaired value.
+ *
+ * A scheme-less value (e.g. "hapi.example.com") used to parse as "not a URL",
+ * which silently emptied the CORS allowlist and broke every absolute link the
+ * hub emits. Repair it, tell the operator, and fail loudly when the value
+ * cannot be a hub URL at all.
+ */
+function normalizePublicUrl(raw: string): string {
+    const trimmed = raw.trim()
+    const normalized = normalizeHubUrl(raw)
+    if (!normalized) {
+        throw new Error(
+            `Invalid publicUrl "${raw}" (expected an absolute http(s) URL without embedded ` +
+            'credentials, like https://example.com).'
+        )
+    }
+    if (normalized !== trimmed && !hasUrlScheme(trimmed)) {
+        console.warn(
+            `[Hub] publicUrl "${trimmed}" is missing a scheme; using "${normalized}". ` +
+            'Update HAPI_PUBLIC_URL or settings.json to silence this warning.'
+        )
+    } else if (normalized !== trimmed) {
+        console.warn(
+            `[Hub] publicUrl "${trimmed}" was normalized to "${normalized}". ` +
+            'Update HAPI_PUBLIC_URL or settings.json to silence this warning.'
+        )
     }
     return normalized
 }
 
 /**
- * Derive CORS origins from public URL
+ * Normalize the CORS allowlist and report entries nothing can ever match.
  */
-function deriveCorsOrigins(publicUrl: string): string[] {
-    try {
-        return [new URL(publicUrl).origin]
-    } catch {
-        return []
+function normalizeCorsOrigins(values: string[], source: 'env' | 'file'): string[] {
+    const { origins, dropped, repaired } = normalizeOrigins(values)
+    const hint = source === 'env'
+        ? 'Update CORS_ORIGINS to silence this warning.'
+        : 'settings.json has been updated to match.'
+    for (const entry of dropped) {
+        console.warn(
+            `[Hub] Ignoring invalid CORS origin "${entry}" (expected an origin like ` +
+            `https://example.com). ${hint}`
+        )
     }
+    for (const entry of repaired) {
+        console.warn(
+            `[Hub] CORS origin "${entry.from.trim()}" was normalized to "${entry.to}". ${hint}`
+        )
+    }
+    return origins
 }
 
 function rejectOldSettingsFields(settings: object, settingsFile: string): void {
@@ -252,29 +278,37 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
         // publicUrl: env > file > default
         let publicUrl = `http://localhost:${listenPort}`
         if (process.env.HAPI_PUBLIC_URL) {
-            publicUrl = process.env.HAPI_PUBLIC_URL
+            publicUrl = normalizePublicUrl(process.env.HAPI_PUBLIC_URL)
             sources.publicUrl = 'env'
             if (settings.publicUrl === undefined) {
                 settings.publicUrl = publicUrl
                 needsSave = true
             }
         } else if (settings.publicUrl !== undefined) {
-            publicUrl = settings.publicUrl
+            publicUrl = normalizePublicUrl(settings.publicUrl)
             sources.publicUrl = 'file'
+            if (settings.publicUrl !== publicUrl) {
+                settings.publicUrl = publicUrl
+                needsSave = true
+            }
         }
 
         // corsOrigins: env > file > derived from publicUrl
         let corsOrigins: string[]
         if (process.env.CORS_ORIGINS) {
-            corsOrigins = parseCorsOrigins(process.env.CORS_ORIGINS)
+            corsOrigins = normalizeCorsOrigins(parseCorsOriginsEnv(process.env.CORS_ORIGINS), 'env')
             sources.corsOrigins = 'env'
             if (settings.corsOrigins === undefined) {
                 settings.corsOrigins = corsOrigins
                 needsSave = true
             }
         } else if (settings.corsOrigins !== undefined) {
-            corsOrigins = settings.corsOrigins
+            corsOrigins = normalizeCorsOrigins(settings.corsOrigins, 'file')
             sources.corsOrigins = 'file'
+            if (!sameStringArray(settings.corsOrigins, corsOrigins)) {
+                settings.corsOrigins = corsOrigins
+                needsSave = true
+            }
         } else {
             corsOrigins = deriveCorsOrigins(publicUrl)
         }

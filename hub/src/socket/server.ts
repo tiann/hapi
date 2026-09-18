@@ -8,6 +8,7 @@ import { constantTimeEquals } from '../utils/crypto'
 import { parseAccessToken } from '../utils/accessToken'
 import { registerCliHandlers } from './handlers/cli'
 import { registerTerminalHandlers } from './handlers/terminal'
+import { createOriginGate } from './originPolicy'
 import { RpcRegistry } from './rpcRegistry'
 import { SOCKET_MAX_HTTP_BUFFER_SIZE } from './socketLimits'
 import type { SyncEvent } from '../sync/syncEngine'
@@ -73,13 +74,7 @@ export function createSocketServer(deps: SocketServerDeps): {
         path: '/socket.io/',
         cors: corsOptions,
         maxHttpBufferSize: SOCKET_MAX_HTTP_BUFFER_SIZE,
-        allowRequest: async (req) => {
-            const origin = req.headers.get('origin')
-            if (!origin || allowAllOrigins || corsOrigins.includes(origin)) {
-                return
-            }
-            throw 'Origin not allowed'
-        }
+        allowRequest: createOriginGate({ allowedOrigins: corsOrigins, allowAllOrigins })
     })
     io.bind(engine)
 
