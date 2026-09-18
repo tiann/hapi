@@ -153,6 +153,28 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         return c.json({ sessions })
     })
 
+    /**
+     * Resume-size guard probe (see shared/src/sessionSizeGuard.ts). The CLI's
+     * `bootstrapExistingSession` calls this before attaching a terminal
+     * session to an existing hub row, so an oversized transcript is refused
+     * before the agent replays it into the hub.
+     */
+    app.get('/sessions/:id/size-guard', (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+
+        const namespace = c.get('namespace')
+        const result = engine.getSessionSizeGuard(c.req.param('id'), namespace)
+        if (result.type === 'error') {
+            const status = result.code === 'access_denied' ? 403 : 404
+            return c.json({ error: result.message, code: result.code }, status)
+        }
+
+        return c.json({ ...result.stats, verdict: result.verdict })
+    })
+
     app.get('/sessions/:id/resume-target', (c) => {
         const engine = getSyncEngine()
         if (!engine) {

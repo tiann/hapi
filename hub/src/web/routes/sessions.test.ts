@@ -57,8 +57,8 @@ type ReopenResultMock =
     | { type: 'incomplete'; message: string; missing: [string, ...string[]] }
 
 function createApp(session: Session, opts?: {
-    resumeSession?: (sessionId: string, namespace: string, resumeOpts?: { permissionMode?: string }) => Promise<{ type: string; sessionId?: string; message?: string; code?: string }>
-    reopenSession?: (sessionId: string, namespace: string) => Promise<ReopenResultMock>
+    resumeSession?: (sessionId: string, namespace: string, resumeOpts?: { permissionMode?: string; force?: boolean }) => Promise<{ type: string; sessionId?: string; message?: string; code?: string }>
+    reopenSession?: (sessionId: string, namespace: string, reopenOpts?: { force?: boolean }) => Promise<ReopenResultMock>
     listSlashCommands?: SyncEngine['listSlashCommands']
     getSessionExport?: (sessionId: string, session: Session, options?: { force?: boolean }) => unknown
     sessionExists?: boolean
@@ -1703,4 +1703,77 @@ describe('sessions routes', () => {
         expect(body.sessions.map((s) => s.id)).toEqual(['new-inactive'])
     })
 
+})
+
+describe('resume-size guard routes', () => {
+    it.each([
+        ['session_too_large', 'over the hard resume limit'],
+        ['session_size_confirm_required', 'over the resume confirmation threshold']
+    ] as const)('maps %s resume refusals to HTTP 413', async (code, message) => {
+        const session = createSession({ active: false })
+        const { app } = createApp(session, {
+            resumeSession: async () => ({ type: 'error', code, message })
+        })
+
+        const response = await app.request('/api/sessions/session-1/resume', { method: 'POST' })
+        expect(response.status).toBe(413)
+        expect(await response.json()).toEqual({ error: message, code })
+    })
+
+    it('passes force through the resume route body', async () => {
+        const session = createSession({ active: false })
+        const captured: unknown[] = []
+        const { app } = createApp(session, {
+            resumeSession: async (sessionId, _namespace, resumeOpts) => {
+                captured.push(resumeOpts)
+                return { type: 'success', sessionId }
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/resume', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ force: true })
+        })
+        expect(response.status).toBe(200)
+        expect(captured).toEqual([{ permissionMode: undefined, force: true }])
+    })
+
+    it.each([
+        ['session_too_large'],
+        ['session_size_confirm_required']
+    ] as const)('maps %s reopen refusals to HTTP 413', async (code) => {
+        const session = createSession({ active: false })
+        const { app } = createApp(session, {
+            reopenSession: async () => ({ type: 'error', code, message: 'too large' })
+        })
+
+        const response = await app.request('/api/sessions/session-1/reopen', { method: 'POST' })
+        expect(response.status).toBe(413)
+        expect(await response.json()).toEqual({ error: 'too large', code })
+    })
+
+    it('passes force through the reopen route body', async () => {
+        const session = createSession({ active: false })
+        const captured: unknown[] = []
+        const { app } = createApp(session, {
+            reopenSession: async (sessionId, _namespace, reopenOpts) => {
+                captured.push(reopenOpts)
+                return { type: 'success', sessionId, resumed: true }
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/reopen', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ force: true })
+        })
+        expect(response.status).toBe(200)
+        expect(captured).toEqual([{ force: true }])
+
+        // Bodyless reopen (existing clients) keeps working and stays unforced.
+        const bodyless = await app.request('/api/sessions/session-1/reopen', { method: 'POST' })
+        expect(bodyless.status).toBe(200)
+        expect(captured).toEqual([{ force: true }, undefined])
+    })
 })

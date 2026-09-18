@@ -144,10 +144,19 @@ export const SessionPermissionModeRequestSchema = z.object({
 export type SessionPermissionModeRequest = z.infer<typeof SessionPermissionModeRequestSchema>
 
 export const ResumeSessionRequestSchema = z.object({
-    permissionMode: PermissionModeSchema.optional()
+    permissionMode: PermissionModeSchema.optional(),
+    /** Bypass the resume-size guard (see sessionSizeGuard.ts). */
+    force: z.boolean().optional()
 })
 
 export type ResumeSessionRequest = z.infer<typeof ResumeSessionRequestSchema>
+
+export const ReopenSessionRequestSchema = z.object({
+    /** Bypass the resume-size guard (see sessionSizeGuard.ts). */
+    force: z.boolean().optional()
+})
+
+export type ReopenSessionRequest = z.infer<typeof ReopenSessionRequestSchema>
 
 export const ReopenSessionResponseSchema = z.object({
     ok: z.literal(true),

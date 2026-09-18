@@ -647,6 +647,28 @@ export function countMessages(db: Database, sessionId: string): number {
     return row?.count ?? 0
 }
 
+export type SessionSizeStats = {
+    messageCount: number
+    contentBytes: number
+}
+
+/**
+ * Resume-size guard input: total rows plus stored content bytes for one
+ * session. `LENGTH(CAST(content AS BLOB))` counts bytes for both storage
+ * shapes (plaintext JSON TEXT → UTF-8 bytes, zstd BLOB → compressed bytes);
+ * plain LENGTH() would return characters for TEXT rows. Compressed rows
+ * undercount the decoded size that actually lands in hub memory on replay,
+ * which is why the guard pairs this with a message-count threshold.
+ */
+export function getSessionSizeStats(db: Database, sessionId: string): SessionSizeStats {
+    const row = prepareCached(db, `
+        SELECT COUNT(*) AS count, COALESCE(SUM(LENGTH(CAST(content AS BLOB))), 0) AS bytes
+        FROM messages
+        WHERE session_id = ?
+    `).get(sessionId) as { count: number; bytes: number } | undefined
+    return { messageCount: row?.count ?? 0, contentBytes: row?.bytes ?? 0 }
+}
+
 /** Count uninvoked local messages scheduled for a future time (session list indicator). */
 export function countFutureScheduledLocalMessages(
     db: Database,

@@ -7,7 +7,7 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import { isKnownFlavor, isLiveLifecycleState, isSteeringSupportedForSession, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
+import { evaluateSessionSize, isKnownFlavor, isLiveLifecycleState, isSteeringSupportedForSession, sessionSizeGuardMessage, type LocalResumeTarget, type ResumableSession, type SessionEndReason, type SessionSizeStats, type SessionSizeVerdict } from '@hapi/protocol'
 import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
@@ -98,12 +98,16 @@ export type {
 
 export type ResumeSessionResult =
     | { type: 'success'; sessionId: string }
-    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed'; rollbackSafe?: boolean }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed' | 'session_too_large' | 'session_size_confirm_required'; rollbackSafe?: boolean }
 
 export type ReopenSessionResult =
     | { type: 'success'; sessionId: string; resumed: boolean; cursorSessionProtocol?: 'acp' | 'stream-json' }
-    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed' | 'metadata_conflict' }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed' | 'metadata_conflict' | 'session_too_large' | 'session_size_confirm_required' }
     | { type: 'incomplete'; message: string; missing: [string, ...string[]] }
+
+export type SessionSizeGuardResult =
+    | { type: 'success'; stats: SessionSizeStats; verdict: SessionSizeVerdict }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' }
 
 export type LocalResumeTargetResult =
     | { type: 'success'; target: LocalResumeTarget }
@@ -2873,7 +2877,28 @@ export class SyncEngine {
         }
     }
 
-    async resumeSession(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode }): Promise<ResumeSessionResult> {
+    /**
+     * Resume-size guard lookup (see shared/src/sessionSizeGuard.ts): message
+     * count + stored content bytes for one session, evaluated against the
+     * locked soft/hard thresholds. Exposed for the CLI size-guard route so
+     * terminal-initiated attaches (`hapi resume`, `hapi codex resume
+     * --existing-session-id ...`) can refuse before the agent replays the
+     * thread into the hub.
+     */
+    getSessionSizeGuard(sessionId: string, namespace: string): SessionSizeGuardResult {
+        const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) {
+            return {
+                type: 'error',
+                message: access.reason === 'access-denied' ? 'Session access denied' : 'Session not found',
+                code: access.reason === 'access-denied' ? 'access_denied' : 'session_not_found'
+            }
+        }
+        const stats = this.store.messages.getSessionSizeStats(access.sessionId)
+        return { type: 'success', stats, verdict: evaluateSessionSize(stats) }
+    }
+
+    async resumeSession(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode; force?: boolean }): Promise<ResumeSessionResult> {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return {
@@ -2921,6 +2946,22 @@ export class SyncEngine {
         }
         if (initialSession.active) {
             return { type: 'success', sessionId: access.sessionId }
+        }
+
+        // Resume-size guard (see shared/src/sessionSizeGuard.ts): resuming an
+        // oversized session replays its full history into the hub, which has
+        // OOMed the hub before. Refuse before any migration/spawn work unless
+        // the caller explicitly forced it. Already-active sessions no-op above.
+        if (!opts?.force) {
+            const stats = this.store.messages.getSessionSizeStats(access.sessionId)
+            const verdict = evaluateSessionSize(stats)
+            if (verdict !== 'ok') {
+                return {
+                    type: 'error',
+                    message: sessionSizeGuardMessage(stats, verdict),
+                    code: verdict === 'hard' ? 'session_too_large' : 'session_size_confirm_required'
+                }
+            }
         }
 
         // tiann/hapi#824 — invisible, automatic, per-session ACP migration on
@@ -3296,7 +3337,7 @@ export class SyncEngine {
      * Returns `incomplete` (HTTP 422 from the route layer) when the agent metadata
      * needed to resume is missing.
      */
-    async reopenSession(sessionId: string, namespace: string): Promise<ReopenSessionResult> {
+    async reopenSession(sessionId: string, namespace: string, opts?: { force?: boolean }): Promise<ReopenSessionResult> {
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return {
@@ -3404,7 +3445,11 @@ export class SyncEngine {
                 }
             }
 
-            const resumeResult = await this.resumeSession(access.sessionId, namespace)
+            const resumeResult = await this.resumeSession(
+                access.sessionId,
+                namespace,
+                opts?.force ? { force: true } : undefined
+            )
             if (resumeResult.type === 'error') {
                 // Never restore archived metadata over a live Pi child. A live
                 // row blocks retry by itself and must remain visible as active.
@@ -3430,7 +3475,11 @@ export class SyncEngine {
         // Not active and not archived (e.g. brand-new session that has not yet connected,
         // or one that ended without writing archive metadata). Forward to resume so the
         // operator still gets one-click revival.
-        const resumeResult = await this.resumeSession(access.sessionId, namespace)
+        const resumeResult = await this.resumeSession(
+            access.sessionId,
+            namespace,
+            opts?.force ? { force: true } : undefined
+        )
         if (resumeResult.type === 'error') {
             return resumeResult
         }

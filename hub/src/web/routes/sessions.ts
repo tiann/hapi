@@ -8,6 +8,7 @@ import {
     isPermissionModeAllowedForFlavor,
     RenameSessionRequestSchema,
     SetSessionPinnedRequestSchema,
+    ReopenSessionRequestSchema,
     ResumeSessionRequestSchema,
     RewindConversationRequestSchema,
     SCRATCHLIST_MAX_ENTRIES,
@@ -222,7 +223,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Invalid body' }, 400)
         }
 
-        const { permissionMode } = parsed.data
+        const { permissionMode, force } = parsed.data
         if (permissionMode !== undefined) {
             const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
             if (!isPermissionModeAllowedForFlavor(permissionMode, flavor)) {
@@ -234,14 +235,15 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const result = await engine.resumeSession(
             sessionResult.sessionId,
             namespace,
-            permissionMode !== undefined ? { permissionMode } : undefined
+            permissionMode !== undefined || force !== undefined ? { permissionMode, force } : undefined
         )
         if (result.type === 'error') {
             const status = result.code === 'no_machine_online' ? 503
                 : result.code === 'access_denied' ? 403
                     : result.code === 'session_not_found' ? 404
                         : result.code === 'resume_unavailable' ? 409
-                            : 500
+                            : result.code === 'session_too_large' || result.code === 'session_size_confirm_required' ? 413
+                                : 500
             return c.json({ error: result.message, code: result.code }, status)
         }
 
@@ -259,8 +261,18 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return sessionResult
         }
 
+        const body = await c.req.json().catch(() => null)
+        const parsed = body ? ReopenSessionRequestSchema.safeParse(body) : { success: true as const, data: {} as { force?: boolean } }
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
         const namespace = c.get('namespace')
-        const result = await engine.reopenSession(sessionResult.sessionId, namespace)
+        const result = await engine.reopenSession(
+            sessionResult.sessionId,
+            namespace,
+            parsed.data.force ? { force: true } : undefined
+        )
 
         if (result.type === 'incomplete') {
             return c.json({ error: result.message, missing: result.missing }, 422)
@@ -272,7 +284,8 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                     : result.code === 'session_not_found' ? 404
                         : result.code === 'resume_unavailable' ? 409
                             : result.code === 'metadata_conflict' ? 409
-                                : 500
+                                : result.code === 'session_too_large' || result.code === 'session_size_confirm_required' ? 413
+                                    : 500
             return c.json({ error: result.message, code: result.code }, status)
         }
 
@@ -548,7 +561,9 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 const status = result.code === 'no_machine_online' ? 503
                     : result.code === 'access_denied' ? 403
                         : result.code === 'session_not_found' ? 404
-                            : result.code === 'resume_unavailable' ? 409 : 500
+                            : result.code === 'resume_unavailable' ? 409
+                                : result.code === 'session_too_large' || result.code === 'session_size_confirm_required' ? 413
+                                    : 500
                 return c.json({ error: result.message, code: result.code }, status)
             }
             sessionId = result.sessionId
