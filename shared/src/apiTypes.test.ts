@@ -5,8 +5,32 @@ import {
     ListCodexSessionsRpcResponseSchema,
     ListPiSessionsRpcResponseSchema,
     MessagesQuerySchema,
-    SendMessageRequestSchema
+    SendMessageRequestSchema,
+    SessionModelRequestSchema
 } from './apiTypes'
+
+describe('SessionModelRequestSchema', () => {
+    it('parses a model change with no effort field (existing shape stays valid)', () => {
+        const parsed = SessionModelRequestSchema.parse({ model: 'sonnet' })
+        expect(parsed).toEqual({ model: 'sonnet' })
+        expect(parsed.effort).toBeUndefined()
+    })
+
+    it('parses a model change that also clears effort in the same payload', () => {
+        const parsed = SessionModelRequestSchema.parse({ model: 'haiku', effort: null })
+        expect(parsed).toEqual({ model: 'haiku', effort: null })
+    })
+
+    it('parses a model change that sets a concrete effort alongside the model', () => {
+        const parsed = SessionModelRequestSchema.parse({ model: 'opus[1m]', effort: 'high' })
+        expect(parsed).toEqual({ model: 'opus[1m]', effort: 'high' })
+    })
+
+    it('rejects an empty-string effort, same as the standalone effort route', () => {
+        const result = SessionModelRequestSchema.safeParse({ model: 'sonnet', effort: '' })
+        expect(result.success).toBe(false)
+    })
+})
 
 describe('ListCodexSessionsRpcResponseSchema', () => {
     it('preserves Codex session messages when parsing runner RPC responses', () => {
