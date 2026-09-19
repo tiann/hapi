@@ -7,7 +7,7 @@ import { Store } from './index'
 import { getUsageSummary } from '../sync/usageService'
 
 describe('Store V19->current migration: usage re-index', () => {
-    it('clears stale derived usage rows and scan state', () => {
+    it('clears stale derived usage rows and scan state', async () => {
         const directory = mkdtempSync(join(tmpdir(), 'hapi-migration-v19-to-v20-'))
         const dbPath = join(directory, 'test.db')
         let store: Store | undefined
@@ -46,7 +46,7 @@ describe('Store V19->current migration: usage re-index', () => {
         }
     })
 
-    it('re-indexes legacy unknown-model events with the session model fallback', () => {
+    it('re-indexes legacy unknown-model events with the session model fallback', async () => {
         const directory = mkdtempSync(join(tmpdir(), 'hapi-migration-v19-to-v20-reindex-'))
         const dbPath = join(directory, 'test.db')
         let store: Store | undefined
@@ -74,7 +74,7 @@ describe('Store V19->current migration: usage re-index', () => {
                     }
                 }
             })
-            expect(getUsageSummary(store, 'default', 'all').totals.requests).toBe(1)
+            expect((await getUsageSummary(store, 'default', 'all')).totals.requests).toBe(1)
             store.close()
             store = undefined
 
@@ -88,7 +88,7 @@ describe('Store V19->current migration: usage re-index', () => {
             db.close()
 
             store = new Store(dbPath)
-            const result = getUsageSummary(store, 'default', 'all')
+            const result = await getUsageSummary(store, 'default', 'all')
             expect(result.totals.requests).toBe(1)
             expect(result.byModel).toEqual([
                 expect.objectContaining({ key: 'gpt-test', totalTokens: 110 })
