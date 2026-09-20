@@ -44,12 +44,20 @@ const AUTO_APPROVE_EXACT_TOOL_NAMES = new Set([
 // modes must still gate them. Treat both as write-like in read-only so ACP
 // titles such as "Ping Peer Session" / "Inspect Peer Session" also require
 // approval. list_peers is discovery-only and is auto-approved above.
+// preview_* is likewise sensitive: it publishes publicly-readable capability
+// URLs exposing local directories / loopback services.
 const AUTO_APPROVE_TOOL_ID_HINTS = ['change_title', 'save_memory'];
 const SENSITIVE_TOOL_NAME_HINTS = [
     'ping_peer',
     'ping peer',
     'inspect_peer',
     'inspect peer',
+    'preview_static',
+    'preview_proxy',
+    'preview_stop',
+    'mount static preview',
+    'proxy local dev server',
+    'unmount preview',
 ];
 const AUTO_APPROVE_WRITE_TOOL_HINTS = [
     'write',
@@ -60,6 +68,28 @@ const AUTO_APPROVE_WRITE_TOOL_HINTS = [
     'fs-edit',
     ...SENSITIVE_TOOL_NAME_HINTS
 ];
+
+/**
+ * Publication tools always need an explicit human decision, in every mode:
+ * yolo/always-proceed/safe-yolo exist to auto-approve LOCAL work, while
+ * mounting a preview publishes a publicly readable capability URL for local
+ * directories or services. User-configured always-allow rules (explicit
+ * consent) still win — see resolveToolAutoApprovalDecision.
+ */
+export const MANUAL_APPROVAL_TOOL_NAME_HINTS = [
+    'preview_static',
+    'preview_proxy',
+    'preview_stop',
+    'mount static preview',
+    'proxy local dev server',
+    'unmount preview',
+];
+
+/** True for tools whose effect is an outward-facing publication. */
+export function isManualApprovalToolName(toolName: string): boolean {
+    const lower = toolName.toLowerCase();
+    return MANUAL_APPROVAL_TOOL_NAME_HINTS.some((name) => lower.includes(name));
+}
 
 export function resolveToolAutoApprovalDecision(
     mode: PermissionMode | undefined,
@@ -77,10 +107,19 @@ export function resolveToolAutoApprovalDecision(
     const lowerId = toolCallId.toLowerCase();
     const decisionForMode: AutoApprovalDecision = (mode === 'yolo' || mode === 'always-proceed') ? 'approved_for_session' : 'approved';
 
-    if (
-        AUTO_APPROVE_EXACT_TOOL_NAMES.has(lowerTool)
-        || rules.alwaysToolNameHints.some((name) => lowerTool.includes(name))
-    ) {
+    // User-configured always-allow rules are explicit consent and win over
+    // the publication gate below.
+    if (rules.alwaysToolNameHints.some((name) => lowerTool.includes(name))) {
+        return decisionForMode;
+    }
+
+    // Publication is outward-facing: require a human decision even in
+    // permissive modes, before any built-in mode approval can fire.
+    if (isManualApprovalToolName(lowerTool)) {
+        return null;
+    }
+
+    if (AUTO_APPROVE_EXACT_TOOL_NAMES.has(lowerTool)) {
         return decisionForMode;
     }
 

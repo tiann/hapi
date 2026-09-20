@@ -101,3 +101,31 @@ describe('resolveToolAutoApprovalDecision list_peers', () => {
         )).toBeNull()
     })
 })
+
+describe('resolveToolAutoApprovalDecision preview publication', () => {
+    it.each([
+        'preview_static',
+        'mcp__hapi__preview_static',
+        'preview_proxy',
+        'hapi_preview_proxy',
+        'preview_stop',
+        'Mount Static Preview',
+        'Proxy Local Dev Server',
+        'Unmount Preview'
+    ])('requires manual approval for %s even in permissive modes', (toolName) => {
+        expect(resolveToolAutoApprovalDecision('yolo', toolName, 'call-1')).toBeNull()
+        expect(resolveToolAutoApprovalDecision('always-proceed', toolName, 'call-1')).toBeNull()
+        expect(resolveToolAutoApprovalDecision('safe-yolo', toolName, 'call-1')).toBeNull()
+        expect(resolveToolAutoApprovalDecision('default', toolName, 'call-1')).toBeNull()
+        expect(resolveToolAutoApprovalDecision('read-only', toolName, 'call-1')).toBeNull()
+    })
+
+    it('lets user-configured always-allow rules win over the publication gate', () => {
+        expect(resolveToolAutoApprovalDecision(
+            'yolo',
+            'preview_static',
+            'call-1',
+            { alwaysToolNameHints: ['preview_static'] }
+        )).toBe('approved_for_session')
+    })
+})

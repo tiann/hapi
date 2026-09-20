@@ -22,8 +22,23 @@ import {
   PING_PEER_TOOL_DESCRIPTION,
   SESSION_ID_PREFIX_PARAM_DESCRIPTION,
 } from '@hapi/protocol/sessionCitation';
+import {
+  PREVIEW_PROXY_TOOL_DESCRIPTION,
+  PREVIEW_STATIC_TOOL_DESCRIPTION,
+  PREVIEW_STOP_TOOL_DESCRIPTION,
+  PreviewProxyToolArgsSchema,
+  PreviewStaticToolArgsSchema,
+  PreviewStopToolArgsSchema,
+} from '@hapi/protocol/preview';
 
-const DEFAULT_TOOL_NAMES = ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer'];
+const DEFAULT_TOOL_NAMES = ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'preview_static', 'preview_proxy', 'preview_stop'];
+
+/** Preview tools share schemas/descriptions from @hapi/protocol and forward verbatim. */
+const PREVIEW_BRIDGE_TOOLS: { name: string; description: string; title: string; inputSchema: z.ZodTypeAny }[] = [
+  { name: 'preview_static', description: PREVIEW_STATIC_TOOL_DESCRIPTION, title: 'Mount Static Preview', inputSchema: PreviewStaticToolArgsSchema as z.ZodTypeAny },
+  { name: 'preview_proxy', description: PREVIEW_PROXY_TOOL_DESCRIPTION, title: 'Proxy Local Dev Server', inputSchema: PreviewProxyToolArgsSchema as z.ZodTypeAny },
+  { name: 'preview_stop', description: PREVIEW_STOP_TOOL_DESCRIPTION, title: 'Unmount Preview', inputSchema: PreviewStopToolArgsSchema as z.ZodTypeAny },
+];
 
 function parseArgs(argv: string[]): { url: string | null; toolNames: Set<string> } {
   let url: string | null = null;
@@ -310,6 +325,31 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
             return {
               content: [
                 { type: 'text' as const, text: `Failed to look up skill: ${error instanceof Error ? error.message : String(error)}` },
+              ],
+              isError: true,
+            };
+          }
+        }
+      );
+    }
+
+    for (const previewTool of PREVIEW_BRIDGE_TOOLS) {
+      if (!toolNames.has(previewTool.name)) continue;
+      server.registerTool<any, any>(
+        previewTool.name,
+        {
+          description: previewTool.description,
+          title: previewTool.title,
+          inputSchema: previewTool.inputSchema,
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            const client = await ensureHttpClient();
+            return await client.callTool({ name: previewTool.name, arguments: args }) as any;
+          } catch (error) {
+            return {
+              content: [
+                { type: 'text' as const, text: `Failed to run ${previewTool.name}: ${error instanceof Error ? error.message : String(error)}` },
               ],
               isError: true,
             };
