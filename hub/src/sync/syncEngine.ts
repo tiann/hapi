@@ -174,6 +174,15 @@ function extractClaudeUserMessageTextFromAgentOutput(content: unknown): string |
     return extractUserMessageText(message.content)
 }
 
+/**
+ * A session exchanging messages is alive, full stop. Heartbeats ride a
+ * separate channel that can stall independently of message delivery
+ * (half-open sockets after NAT state timeouts, dropped volatile packets).
+ * Message ingest therefore re-touches session liveness, but no more often
+ * than this — steady streaming must not spam session-updated broadcasts.
+ */
+const MESSAGE_LIVENESS_RETOUCH_MS = 5_000
+
 export class SyncEngine {
     private readonly eventPublisher: EventPublisher
     private readonly sessionCache: SessionCache
@@ -492,6 +501,14 @@ export class SyncEngine {
         }
 
         if (event.type === 'message-received' && event.sessionId) {
+            // Ingest traffic is itself liveness evidence. Session heartbeats
+            // ride a separate channel that can stall independently (NAT state
+            // timeouts, half-open sockets); a session that is still exchanging
+            // messages must not be expired offline between heartbeats.
+            const liveSession = this.sessionCache.getSession(event.sessionId)
+            if (!liveSession?.active || Date.now() - liveSession.activeAt > MESSAGE_LIVENESS_RETOUCH_MS) {
+                this.sessionCache.markSessionActive(event.sessionId)
+            }
             if (!this.getSession(event.sessionId)) {
                 this.sessionCache.refreshSession(event.sessionId)
             }
