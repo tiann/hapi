@@ -495,6 +495,19 @@ export class RpcGateway {
         ) as RpcListKimiModelsResponse
     }
 
+    /**
+     * Active-session Kimi discovery. The probe runs in the CLI that owns the
+     * session, so it works without a background runner on the machine.
+     */
+    async listKimiModelsForSession(sessionId: string): Promise<RpcListKimiModelsResponse> {
+        return await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.ListKimiModels,
+            {},
+            MODEL_LIST_RPC_TIMEOUT_MS
+        ) as RpcListKimiModelsResponse
+    }
+
     /** Generic Pi RPC call — routes all Pi-specific session RPCs through
      *  a single entry point instead of per-method wrappers. */
     async callPiRpc<T = unknown>(sessionId: string, method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<T> {

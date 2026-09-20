@@ -3,6 +3,7 @@ import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand'
 import { asString, isObject } from '@hapi/protocol'
 import type { KimiModelSummary, KimiModelsResponse } from '@hapi/protocol/apiTypes'
 import { readKimiLocalConfig } from '@/kimi/utils/config'
+import { logger } from '@/ui/logger'
 import { getErrorMessage } from './rpcResponses'
 
 export interface ListKimiModelsForCwdRequest {
@@ -118,6 +119,11 @@ export function parseKimiProviderListOutput(
     return { availableModels, currentModelId }
 }
 
+function describeProbeExit(code: number | null, signal: NodeJS.Signals | null): string {
+    if (signal) return `kimi provider list was terminated by ${signal}`
+    return `kimi provider list exited with code ${code}`
+}
+
 async function runKimiProviderListProbe(): Promise<ListKimiModelsForCwdResponse> {
     return await new Promise((resolve, reject) => {
         const child = spawn(getAgentLaunchCommand('kimi'), buildKimiProviderListArgs(), {
@@ -130,11 +136,30 @@ async function runKimiProviderListProbe(): Promise<ListKimiModelsForCwdResponse>
         let stderr = ''
         let settled = false
 
-        const timeout = setTimeout(() => {
+        // Exactly one of timeout / spawn error / close settles the probe, and
+        // the settling work is wrapped: a throw from an event callback would
+        // otherwise escape this promise and reach the runner's
+        // uncaughtException shutdown handler instead of the caller's catch.
+        const settle = (outcome: () => void) => {
             if (settled) return
             settled = true
-            child.kill('SIGTERM')
-            reject(new Error('Kimi model discovery timed out'))
+            clearTimeout(timeout)
+            try {
+                outcome()
+            } catch (error) {
+                reject(error)
+            }
+        }
+
+        const timeout = setTimeout(() => {
+            settle(() => {
+                try {
+                    child.kill('SIGTERM')
+                } catch (error) {
+                    logger.debug('Failed to kill the Kimi model discovery probe:', error)
+                }
+                reject(new Error('Kimi model discovery timed out'))
+            })
         }, PROBE_TIMEOUT_MS)
 
         child.stdout?.on('data', (chunk) => {
@@ -144,21 +169,19 @@ async function runKimiProviderListProbe(): Promise<ListKimiModelsForCwdResponse>
             stderr += chunk.toString()
         })
         child.on('error', (error) => {
-            if (settled) return
-            settled = true
-            clearTimeout(timeout)
-            reject(error)
+            settle(() => reject(error))
         })
-        child.on('exit', (code) => {
-            if (settled) return
-            settled = true
-            clearTimeout(timeout)
-            if (code !== 0) {
-                reject(new Error(stderr.trim() || `kimi provider list exited with code ${code}`))
-                return
-            }
-            const defaultModel = readKimiLocalConfig().model
-            resolve({ success: true, ...parseKimiProviderListOutput(stdout, defaultModel) })
+        // Parse on 'close', not 'exit': stdio must be drained first, and the
+        // parser runs inside settle() so malformed output rejects the probe.
+        child.on('close', (code, signal) => {
+            settle(() => {
+                if (code !== 0) {
+                    reject(new Error(stderr.trim() || describeProbeExit(code, signal)))
+                    return
+                }
+                const defaultModel = readKimiLocalConfig().model
+                resolve({ success: true, ...parseKimiProviderListOutput(stdout, defaultModel) })
+            })
         })
     })
 }

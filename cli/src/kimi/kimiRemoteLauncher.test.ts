@@ -43,6 +43,7 @@ vi.mock('@/ui/logger', () => ({
     logger: { debug: vi.fn(), warn: vi.fn(), info: vi.fn() }
 }))
 
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import { kimiRemoteLauncher } from './kimiRemoteLauncher'
 
 function createSession() {
@@ -83,5 +84,20 @@ describe('kimiRemoteLauncher skill lookup instruction', () => {
         expect(JSON.stringify(harness.prompts[0])).not.toContain('skill_lookup')
         expect(JSON.stringify(harness.prompts[0])).not.toContain('$name')
         expect(JSON.stringify(harness.prompts[1])).not.toContain('skill_lookup')
+    })
+})
+
+describe('kimiRemoteLauncher session model discovery', () => {
+    afterEach(() => {
+        harness.prompts = []
+    })
+
+    it('registers session-scoped Kimi model discovery on the session connection', async () => {
+        const session = createSession()
+        await kimiRemoteLauncher(session as never, { model: 'kimi-k2' })
+
+        const registered = session.client.rpcHandlerManager.registerHandler.mock.calls
+            .map((call) => call[0])
+        expect(registered).toContain(RPC_METHODS.ListKimiModels)
     })
 })

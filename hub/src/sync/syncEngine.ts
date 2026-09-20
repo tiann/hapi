@@ -4073,6 +4073,10 @@ export class SyncEngine {
         return await this.rpcGateway.listKimiModelsForCwd(machineId, cwd)
     }
 
+    async listKimiModelsForSession(sessionId: string): Promise<RpcListKimiModelsResponse> {
+        return await this.rpcGateway.listKimiModelsForSession(sessionId)
+    }
+
     /** Generic Pi RPC — delegates to rpcGateway.callPiRpc. */
     async callPiRpc<T = unknown>(sessionId: string, method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<T> {
         return await this.rpcGateway.callPiRpc<T>(sessionId, method, params, timeoutMs)

@@ -960,6 +960,12 @@ export class ApiClient {
         )
     }
 
+    async getSessionKimiModels(sessionId: string): Promise<KimiModelsResponse> {
+        return await this.request<KimiModelsResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/kimi-models`
+        )
+    }
+
     async getSessionGrokModels(sessionId: string): Promise<GrokModelsResponse> {
         return await this.request<GrokModelsResponse>(
             `/api/sessions/${encodeURIComponent(sessionId)}/grok-models`

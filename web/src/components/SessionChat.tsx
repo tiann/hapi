@@ -109,7 +109,7 @@ import { buildCursorEffortPickerOptionsWithDefaultFirst } from '@/lib/cursorMode
 import { useOpencodeModels } from '@/hooks/queries/useOpencodeModels'
 import { useGrokModels } from '@/hooks/queries/useGrokModels'
 import { useCopilotModels } from '@/hooks/queries/useCopilotModels'
-import { useKimiModelsForCwd } from '@/hooks/queries/useKimiModelsForCwd'
+import { useKimiModelsForSession } from '@/hooks/queries/useKimiModelsForSession'
 import { buildKimiSessionModelOptions } from '@/components/NewSession/grokModels'
 import { useGrokReasoningEffortOptions } from '@/hooks/queries/useGrokReasoningEffortOptions'
 import { usePiModels } from '@/hooks/queries/usePiModels'
@@ -1073,13 +1073,13 @@ function SessionChatInner(props: SessionChatProps) {
         enabled: agentFlavor === 'cursor' && props.session.active
     })
     const sessionMachineId = props.session.metadata?.machineId ?? null
-    // Kimi discovers models per machine + session cwd (kimi provider list --json);
+    // A running session discovers its models over its own connection (kimi
+    // provider list --json), so this works without a background runner;
     // switching itself still goes through the existing ACP setModel path.
-    const kimiModelsState = useKimiModelsForCwd({
+    const kimiModelsState = useKimiModelsForSession({
         api: props.api,
-        machineId: sessionMachineId,
-        cwd: typeof props.session.metadata?.path === 'string' ? props.session.metadata.path : null,
-        enabled: agentFlavor === 'kimi' && props.session.active && Boolean(sessionMachineId)
+        sessionId: props.session.id,
+        enabled: agentFlavor === 'kimi' && props.session.active
     })
     const kimiModelOptions = useMemo(() => (
         agentFlavor === 'kimi' && kimiModelsState.availableModels.length > 0

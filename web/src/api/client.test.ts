@@ -329,3 +329,33 @@ describe('ApiClient error mapping', () => {
         expect(init?.body).toBe(JSON.stringify({ openai: 'sk-test' }))
     })
 })
+
+describe('ApiClient Kimi session model discovery', () => {
+    let originalFetch: typeof globalThis.fetch
+    let fetchMock: ReturnType<typeof vi.fn>
+
+    beforeEach(() => {
+        originalFetch = globalThis.fetch
+        fetchMock = vi.fn()
+        globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
+    })
+
+    afterEach(() => {
+        globalThis.fetch = originalFetch
+    })
+
+    it('requests the running session instead of the machine kimi-models endpoint', async () => {
+        const catalog = {
+            success: true,
+            availableModels: [
+                { modelId: 'GLM-5.3-flash', name: 'thehive / GLM-5.3-flash', provider: 'thehive' }
+            ],
+            currentModelId: 'GLM-5.3-flash'
+        }
+        fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(catalog), { status: 200 }))
+
+        const api = new ApiClient('test-token')
+        await expect(api.getSessionKimiModels('session/1')).resolves.toEqual(catalog)
+        expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/sessions/session%2F1/kimi-models')
+    })
+})
