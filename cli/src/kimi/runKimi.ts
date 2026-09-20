@@ -14,6 +14,7 @@ import { PermissionModeSchema } from '@hapi/protocol/schemas';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { resolveKimiRuntimeConfig } from './utils/config';
+import { registerKimiSessionModelHandlers } from '@/modules/common/handlers/kimiModels';
 
 export async function runKimi(opts: {
     startedBy?: 'runner' | 'terminal';
@@ -84,6 +85,10 @@ export async function runKimi(opts: {
     lifecycle.registerProcessHandlers();
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
+    // Registered here, not in the remote launcher: the catalog is backend
+    // independent, and a session running in local mode must answer the web
+    // picker's request before remote control is taken over.
+    registerKimiSessionModelHandlers(session.rpcHandlerManager, () => workingDirectory);
 
     const syncSessionMode = () => {
         const sessionInstance = sessionWrapperRef.current;

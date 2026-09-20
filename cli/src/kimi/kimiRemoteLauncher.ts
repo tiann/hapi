@@ -5,7 +5,6 @@ import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import type { AgentMessage, McpServerStdio, PromptContent } from '@/agent/types';
 import { RemoteLauncherBase, type RemoteLauncherDisplayContext, type RemoteLauncherExitReason } from '@/modules/common/remote/RemoteLauncherBase';
-import { registerKimiSessionModelHandlers } from '@/modules/common/handlers/kimiModels';
 import { KimiDisplay } from '@/ui/ink/KimiDisplay';
 import type { KimiSession } from './session';
 import type { PermissionMode } from './types';
@@ -118,10 +117,6 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
             messageBuffer.addMessage(`[MODEL:${effectiveModel}]`, 'system');
         }
         this.applyDisplayMode(session.getPermissionMode() as PermissionMode, effectiveModel ?? undefined);
-
-        // Discovery for a running session runs on the session's own connection,
-        // so it also works when no background runner holds the machine socket.
-        registerKimiSessionModelHandlers(session.client.rpcHandlerManager, () => session.path);
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
