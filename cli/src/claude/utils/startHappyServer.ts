@@ -140,6 +140,7 @@ function createHapiMcpServer(
         permissionMode: PermissionModeSchema.optional()
             .describe(
                 'Permission mode for the new session. Omit to use hub/stock default (yolo). '
+                + 'Do not pass \"default\" — it is treated as omit (use stock). '
                 + 'Pass only to tighten or when the operator names a mode — do not clone the parent session.'
             ),
     });

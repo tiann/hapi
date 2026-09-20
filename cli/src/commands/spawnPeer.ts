@@ -51,7 +51,7 @@ ${chalk.bold('Options:')}
   --model ID              Model override for the resolved agent flavor
   --effort LEVEL          Effort override (flavor-dependent; e.g. claude high)
   --session-type TYPE     simple | worktree (default: simple; worktree creates a new tree from PATH)
-  --permission-mode MODE  Optional; omit = hub/stock default (yolo). Pass to tighten or when named; not cloned from parent
+  --permission-mode MODE  Optional; omit (or default) = hub/stock yolo. Pass to tighten or when named; not cloned from parent
   --wait SECONDS          Active/verify timeout (default 60, or HAPI_WAIT_ACTIVE_SECS)
 
 ${chalk.bold('Env:')}

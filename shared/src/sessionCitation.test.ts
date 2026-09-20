@@ -142,6 +142,11 @@ describe('SPAWN_PEER_TOOL_DESCRIPTION', () => {
         )
     })
 
+    it('warns agents not to pass permissionMode default (treated as omit)', () => {
+        expect(SPAWN_PEER_TOOL_DESCRIPTION.toLowerCase()).toMatch(/do not pass permissionmode/)
+        expect(SPAWN_PEER_TOOL_DESCRIPTION.toLowerCase()).toMatch(/"default"/)
+    })
+
     it('forbids inventing peer titles and teaches Parent UUID stamp', () => {
         expect(SPAWN_PEER_TOOL_DESCRIPTION.toLowerCase()).toMatch(/never invent/)
         expect(SPAWN_PEER_TOOL_DESCRIPTION.toLowerCase()).toMatch(/parent/)
