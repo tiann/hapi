@@ -261,9 +261,8 @@ export function formatSessionFull(session: Session | null, messages: DecryptedMe
 
     lines.push(`# Session ID: ${session.id}`)
     lines.push(`# Project path: ${sessionPath}`)
-    lines.push(`# Session summary:\n${sessionTitle}`)
-
     if (sessionTitle) {
+        lines.push(`# Session summary:\n${sessionTitle}`)
         lines.push('## Session Summary')
         lines.push(sessionTitle)
         lines.push('')
