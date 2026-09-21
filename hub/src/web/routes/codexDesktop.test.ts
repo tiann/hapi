@@ -450,7 +450,10 @@ describe('Codex Desktop import routes', () => {
                 flavor: 'codex',
                 codexSessionId
             }, {}, 'default')
-            store.messages.addMessage(liveSession.id, { type: 'text', text: 'live HAPI message outside transcript prefix' }, 'live-1')
+            store.messages.addMessage(liveSession.id, {
+                role: 'user',
+                content: { type: 'text', text: 'different from the transcript' }
+            }, 'live-1')
             const engine = {
                 getSessionsByNamespace: () => [{ ...liveSession, active: true }]
             } as unknown as SyncEngine
