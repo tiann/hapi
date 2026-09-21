@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import { HttpProxyAgent } from 'http-proxy-agent'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 import {
+    InvalidProxyUrlError,
     UnsupportedProxyProtocolError,
     bunWebSocketProxyOptions,
     clearProxyAgentCache,
@@ -9,6 +10,7 @@ import {
     describeEgress,
     ensureLoopbackProxyBypass,
     redactProxyUrl,
+    redactProxyValue,
     resolveProxyUrl,
     webSocketProxyOptions
 } from './proxy'
@@ -137,6 +139,22 @@ describe('NO_PROXY matching', () => {
         expect(resolveProxyUrl('https://[2001:db8::5]', withNoProxy('[2001:db8::6]'))).not.toBeNull()
     })
 
+    it('compares bypass entries by address value, not spelling', () => {
+        const sameAddress: Array<[string, string]> = [
+            ['2001:0db8:0:0:0:0:0:5', 'https://[2001:db8::5]'],
+            ['2001:db8::5', 'https://[2001:0db8:0000:0000:0000:0000:0000:0005]'],
+            ['[2001:DB8::5]:443', 'https://[2001:db8::5]'],
+            ['10.00.0.5', 'https://10.0.0.5']
+        ]
+        for (const [noProxy, target] of sameAddress) {
+            expect(resolveProxyUrl(target, withNoProxy(noProxy))).toBeNull()
+        }
+
+        expect(resolveProxyUrl('https://[2001:db8::6]', withNoProxy('2001:0db8::5'))).not.toBeNull()
+        expect(resolveProxyUrl('https://10.0.0.6', withNoProxy('10.00.0.5'))).not.toBeNull()
+        expect(resolveProxyUrl('https://[2001:db8::5]', withNoProxy('[2001:db8::6]'))).not.toBeNull()
+    })
+
     it('matches IPv4 CIDR entries', () => {
         expect(resolveProxyUrl('https://10.1.2.3', withNoProxy('10.0.0.0/8'))).toBeNull()
         expect(resolveProxyUrl('https://11.1.2.3', withNoProxy('10.0.0.0/8'))).not.toBeNull()
@@ -213,5 +231,31 @@ describe('diagnostics', () => {
 
         const invalid = describeEgress('https://hub.example.com', { HTTPS_PROXY: 'http://' })
         expect(invalid).toContain('Invalid proxy URL')
+    })
+
+    it('keeps credentials out of invalid-proxy diagnostics and errors', () => {
+        const value = 'http://user:pass@proxy.example:bad'
+        expect(describeEgress('https://hub.example.com', { HTTPS_PROXY: value }))
+            .toBe('proxy error: Invalid proxy URL: http://***:***@proxy.example:bad')
+
+        let thrown: unknown
+        try {
+            resolveProxyUrl('https://hub.example.com', { HTTPS_PROXY: value })
+        } catch (error) {
+            thrown = error
+        }
+        expect(thrown).toBeInstanceOf(InvalidProxyUrlError)
+        // Enumerable properties (what `console.error(error)` and JSON render) must
+        // not carry the raw value either.
+        const serialized = `${(thrown as Error).message} ${JSON.stringify(thrown)}`
+        expect(serialized).not.toContain('user')
+        expect(serialized).not.toContain('pass')
+        expect(serialized).toContain('***:***@')
+    })
+
+    it('masks credentials in values that cannot be parsed at all', () => {
+        expect(redactProxyValue('http://user:pass@proxy.example:bad')).toBe('http://***:***@proxy.example:bad')
+        expect(redactProxyValue('user:pass@proxy.example:bad')).toBe('***:***@proxy.example:bad')
+        expect(redactProxyValue('http://proxy.example:bad')).toBe('http://proxy.example:bad')
     })
 })

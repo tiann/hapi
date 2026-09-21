@@ -6,7 +6,7 @@
  */
 
 import chalk from 'chalk'
-import { describeEgress, redactProxyUrl } from '@hapi/protocol/net'
+import { describeEgress, redactProxyValue } from '@hapi/protocol/net'
 import { configuration } from '@/configuration'
 import { readSettings } from '@/persistence'
 import { checkIfRunnerRunningAndCleanupStaleState } from '@/runner/controlClient'
@@ -18,15 +18,6 @@ import { join } from 'node:path'
 import { isBunCompiled, projectPath, runtimePath } from '@/projectPath'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import packageJson from '../../package.json'
-
-/** Redact credentials before printing proxy values; never throw while diagnosing. */
-function redactProxyUrlSafe(value: string): string {
-    try {
-        return redactProxyUrl(value)
-    } catch {
-        return '(invalid)'
-    }
-}
 
 /**
  * Get relevant environment information for debugging
@@ -142,7 +133,7 @@ export async function runDoctorCommand(filter?: 'all' | 'runner'): Promise<void>
                 continue;
             }
             sawProxyEnv = true;
-            const display = key.toLowerCase() === 'no_proxy' ? value : redactProxyUrlSafe(value);
+            const display = key.toLowerCase() === 'no_proxy' ? value : redactProxyValue(value);
             console.log(`${key}: ${chalk.blue(display)}`);
         }
         if (!sawProxyEnv) {

@@ -33,9 +33,14 @@ const DEFAULT_PORTS: Record<string, number> = {
 }
 
 export class InvalidProxyUrlError extends Error {
-    constructor(readonly value: string) {
-        super(`Invalid proxy URL: ${value}`)
+    /** Credential-free rendering of the rejected value; the raw URL is never kept. */
+    readonly redactedValue: string
+
+    constructor(value: string) {
+        const redacted = redactProxyValue(value)
+        super(`Invalid proxy URL: ${redacted}`)
         this.name = 'InvalidProxyUrlError'
+        this.redactedValue = redacted
     }
 }
 
@@ -169,6 +174,22 @@ export function redactProxyUrl(proxy: URL | string): string {
     return `${url.protocol}//${auth}${url.host}`
 }
 
+const PROXY_USERINFO_PATTERN = /^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/|\/\/)?[^/?#@]*@/
+
+/**
+ * Credential-free rendering for diagnostics. `redactProxyUrl` needs a parseable
+ * URL, so values that fail to parse are masked textually: doctor output and
+ * error messages must never echo userinfo.
+ */
+export function redactProxyValue(value: string): string {
+    const trimmed = value.trim()
+    try {
+        return redactProxyUrl(trimmed)
+    } catch {
+        return trimmed.replace(PROXY_USERINFO_PATTERN, (_match, scheme: string | undefined) => `${scheme ?? ''}***:***@`)
+    }
+}
+
 function toUrl(target: EgressTarget): URL {
     return typeof target === 'string' ? new URL(target) : target
 }
@@ -281,7 +302,9 @@ function isNoProxyMatch(host: string, port: number, value: string): boolean {
             continue
         }
         if (isIpLiteral(parsed.host)) {
-            if (host === parsed.host) {
+            // URL parsing canonicalizes the target host, NO_PROXY entries keep the
+            // spelling the user wrote, so compare addresses by value.
+            if (ipLiteralEquals(host, parsed.host)) {
                 return true
             }
             continue
@@ -345,6 +368,17 @@ function countColons(value: string): number {
 
 function isIpLiteral(host: string): boolean {
     return parseIPv4(host) !== null || parseIPv6(host) !== null
+}
+
+function ipLiteralEquals(a: string, b: string): boolean {
+    const aV4 = parseIPv4(a)
+    const bV4 = parseIPv4(b)
+    if (aV4 !== null && bV4 !== null) {
+        return aV4 === bV4
+    }
+    const aV6 = parseIPv6(a)
+    const bV6 = parseIPv6(b)
+    return aV6 !== null && bV6 !== null && aV6 === bV6
 }
 
 function ipInCidr(host: string, network: string, prefix: number): boolean {

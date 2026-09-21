@@ -7,6 +7,7 @@ export {
     describeEgress,
     ensureLoopbackProxyBypass,
     redactProxyUrl,
+    redactProxyValue,
     resolveProxyUrl,
     webSocketProxyOptions
 } from './proxy'
