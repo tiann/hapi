@@ -211,6 +211,71 @@ describe.skipIf(!await isServerHealthy())('Runner Integration Tests', { timeout:
     expect(tracked.pid).toBe(99999);
   });
 
+  it('adopts an orphaned concurrent runner session into the resume registry', async () => {
+    // Simulate a concurrent-clients root (e.g. a shared runtime) that outlived
+    // the runner which spawned it: untracked PID, self-reporting
+    // `startedBy: 'runner'`. It must NOT be killed, and it must be adopted
+    // into the persisted resume-process registry so it becomes stop-reachable
+    // and survives the startup adoption of future runner restarts.
+    const orphan = spawn('sleep', ['30'], {
+      stdio: 'ignore',
+      env: buildTestChildEnv()
+    });
+    trackChildProcess(orphan, 'orphan-concurrent-root');
+    const orphanPid = orphan.pid!;
+    expect(isProcessAlive(orphanPid)).toBe(true);
+
+    const sessionId = 'orphan-concurrent-1';
+    await notifyRunnerSessionStarted(sessionId, {
+      path: '/test/path',
+      host: 'test-host',
+      homeDir: '/test/home',
+      happyHomeDir: '/test/happy-home',
+      happyLibDir: '/test/happy-lib',
+      happyToolsDir: '/test/happy-tools',
+      hostPid: orphanPid,
+      startedBy: 'runner',
+      capabilities: { concurrentClients: true },
+      machineId: 'test-machine-123'
+    });
+
+    // Adoption lands in the persisted resume-process registry with both the
+    // requested and confirmed session ids (the row already exists — this is
+    // a self-report, not a fresh spawn request).
+    const resumeFile = `${configuration.runnerStateFile}.resume-processes.json`;
+    await waitFor(async () => {
+      if (!existsSync(resumeFile)) return false;
+      let records: Array<{
+        pid?: number;
+        requestedSessionId?: string;
+        confirmedSessionId?: string;
+        processStartMarker?: string;
+      }>;
+      try {
+        records = JSON.parse(readFileSync(resumeFile, 'utf8'));
+      } catch {
+        return false;
+      }
+      const record = records.find(r => r.pid === orphanPid);
+      return (
+        record?.requestedSessionId === sessionId
+        && record?.confirmedSessionId === sessionId
+        && typeof record?.processStartMarker === 'string'
+        && record!.processStartMarker!.length > 0
+      );
+    });
+
+    // Adoption never kills the root, and the persisted record makes it
+    // stop-reachable even though it never entered the live tracked list.
+    expect(isProcessAlive(orphanPid)).toBe(true);
+    expect(await stopRunnerSession(sessionId)).toBe('stopped');
+    expect(isProcessAlive(orphanPid)).toBe(false);
+    const recordsAfter = existsSync(resumeFile)
+      ? (JSON.parse(readFileSync(resumeFile, 'utf8')) as Array<{ pid?: number }>)
+      : [];
+    expect(recordsAfter.find(r => r.pid === orphanPid)).toBeUndefined();
+  });
+
   it('should spawn & stop a session via HTTP (not testing RPC route, but similar enough)', async () => {
     const response = await spawnTrackedSession('/tmp', 'spawned-test-456');
 
