@@ -484,8 +484,36 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           // A shared root can report /new after a Runner restart. Unknown is
           // not proof of an orphan: never kill its sibling roots. Known spawn
           // timeouts already terminate their ChildProcess tree at the source.
-          // No registry scan/adoption lifecycle is needed for live attachment.
-          if (sessionMetadata.capabilities?.concurrentClients) return;
+          // No registry scan/adoption lifecycle is needed for live attachment
+          // — only for stop reachability, handled below.
+          if (sessionMetadata.capabilities?.concurrentClients) {
+            // The self-reporting root outlived the runner that spawned it
+            // (runner restart, or spawn-webhook-timeout cleanup that missed
+            // the detached process). It keeps serving clients, but without a
+            // tracking entry it is invisible: no liveness reporting, no stop
+            // reachability, and it is skipped by the startup resume-process
+            // adoption forever. Adopt it into the resume-process registry so
+            // it becomes stoppable and is re-adopted after future restarts.
+            // Fail closed when the process generation cannot be verified.
+            const processStartMarker = getProcessStartMarker(pid);
+            if (processStartMarker) {
+              pidToRequestedSessionId.set(pid, sessionId);
+              pidToConfirmedSessionId.set(pid, sessionId);
+              if (!persistedResumeProcesses.has(pid)) {
+                persistedResumeProcesses.set(pid, {
+                  requestedSessionId: sessionId,
+                  confirmedSessionId: sessionId,
+                  pid,
+                  processStartMarker
+                });
+                persistResumeProcesses();
+              }
+              logger.debug(
+                `[RUNNER RUN] Adopted self-reported concurrent session ${sessionId} at PID ${pid} into the resume registry`
+              );
+            }
+            return;
+          }
           logger.debug(
             `[RUNNER RUN] Ignoring late webhook from orphaned runner-spawned PID ${pid} (session ${sessionId}). Terminating child.`
           );
