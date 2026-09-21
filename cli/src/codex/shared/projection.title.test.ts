@@ -31,14 +31,15 @@ function params(item: unknown, turnId = 'turn') { return { threadId: 'thread', t
 function history(...items: unknown[]) { return { turns: [{ id: 'turn', status: 'completed', items }] }; }
 
 describe('shared Codex titles', () => {
-    it('persists a successful root tool title while preserving the manual name and transcript', async () => {
+    it('renames via metadata.name so a spawn name does not hide change_title', async () => {
         const f = fixture();
         const item = titleItem('title', ' Remote title ');
         await f.projection.notification('item/started', params(item));
         expect(f.update).not.toHaveBeenCalled();
         // Completion may omit the arguments already sent at start.
         await f.projection.notification('item/completed', params({ ...item, arguments: undefined }));
-        expect(f.metadata()).toMatchObject({ name: 'Manual name', summary: { text: 'Remote title', updatedAt: expect.any(Number) } });
+        expect(f.metadata()).toMatchObject({ name: 'Remote title' });
+        expect(f.metadata().summary).toBeUndefined();
         expect(f.send.mock.calls.map(([body]) => body.type)).toEqual(['tool-call', 'tool-call-result']);
         expect(f.update).toHaveBeenCalledTimes(1);
         await f.projection.notification('item/completed', params(item));
@@ -50,10 +51,16 @@ describe('shared Codex titles', () => {
 
     it('handles a complete item without a start and orders successive titles across deferred writes', async () => {
         const f = fixture(undefined, true);
+        // Start without a spawn name so successive renames are visible on name.
+        f.update(metadata => {
+            const { name: _ignored, ...rest } = metadata;
+            return rest as Metadata;
+        });
+        f.update.mockClear();
         await f.projection.notification('item/completed', params(titleItem('first', 'First')));
         await f.projection.notification('item/completed', params(titleItem('second', 'Second')));
         f.flush();
-        expect(f.metadata().summary?.text).toBe('Second');
+        expect(f.metadata().name).toBe('Second');
     });
 
     it.each([
@@ -86,25 +93,31 @@ describe('shared Codex titles', () => {
 
     it('restores only the last successful historical title and does not replay earlier names', async () => {
         const f = fixture();
+        f.update(metadata => {
+            const { name: _ignored, ...rest } = metadata;
+            return rest as Metadata;
+        });
+        f.update.mockClear();
         const first = titleItem('first', 'First');
         const last = titleItem('last', 'Last');
         const snapshot = history(first, last, { ...titleItem('failed', 'Failed'), result: { isError: true } });
         await f.projection.history(snapshot);
-        expect(f.metadata().summary?.text).toBe('Last');
+        expect(f.metadata().name).toBe('Last');
         expect(f.update).toHaveBeenCalledTimes(1);
         f.projection.reset();
         await f.projection.history(snapshot);
         await f.projection.notification('item/completed', params(first));
-        expect(f.metadata().summary?.text).toBe('Last');
+        expect(f.metadata().name).toBe('Last');
         expect(f.update).toHaveBeenCalledTimes(1);
     });
 
-    it('never overwrites an existing summary during a cold history replay', async () => {
+    it('never overwrites an existing display title during a cold history replay', async () => {
         const f = fixture();
         f.update(metadata => ({ ...metadata, summary: { text: 'Existing', updatedAt: 123 } }));
         f.update.mockClear();
         await f.projection.history(history(titleItem('old', 'Old')));
         expect(f.update).not.toHaveBeenCalled();
+        expect(f.metadata().name).toBe('Manual name');
         expect(f.metadata().summary).toEqual({ text: 'Existing', updatedAt: 123 });
     });
 
@@ -114,11 +127,16 @@ describe('shared Codex titles', () => {
         await f.projection.history({ turns: [{ id: 'turn', status: 'inProgress', items: [item] }] });
         expect(f.update).not.toHaveBeenCalled();
         await f.projection.notification('item/completed', params({ ...titleItem('title', 'unused'), arguments: undefined }));
-        expect(f.metadata().summary?.text).toBe('Resumed');
+        expect(f.metadata().name).toBe('Resumed');
     });
 
     it('does not roll back a live title when a suspended replay or queued metadata callback resumes', async () => {
         const f = fixture(undefined, true);
+        f.update(metadata => {
+            const { name: _ignored, ...rest } = metadata;
+            return rest as Metadata;
+        });
+        f.update.mockClear();
         let release!: () => void;
         f.committed.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
         const replay = f.projection.history(history(
@@ -129,12 +147,17 @@ describe('shared Codex titles', () => {
         await f.projection.notification('item/completed', params(titleItem('live', 'Live'), 'next'));
         release(); await replay;
         f.flush();
-        expect(f.metadata().summary?.text).toBe('Live');
+        expect(f.metadata().name).toBe('Live');
 
         const queued = fixture(undefined, true);
+        queued.update(metadata => {
+            const { name: _ignored, ...rest } = metadata;
+            return rest as Metadata;
+        });
+        queued.update.mockClear();
         await queued.projection.history(history(titleItem('old', 'Old')));
         await queued.projection.notification('item/completed', params(titleItem('live', 'Live'), 'next'));
         queued.flush();
-        expect(queued.metadata().summary?.text).toBe('Live');
+        expect(queued.metadata().name).toBe('Live');
     });
 });

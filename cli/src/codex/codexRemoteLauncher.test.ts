@@ -1144,6 +1144,7 @@ function createSessionStub(
     const sessionEvents: Array<{ type: string; [key: string]: unknown }> = [];
     const codexMessages: unknown[] = [];
     const summaryMessages: unknown[] = [];
+    const metadataUpdates: Array<Record<string, unknown>> = [];
     const thinkingChanges: boolean[] = [];
     const foundSessionIds: string[] = [];
     const resetThreadCalls: string[] = [];
@@ -1156,6 +1157,11 @@ function createSessionStub(
         requests: {},
         completedRequests: {}
     };
+    let metadata: Record<string, unknown> = {
+        path: '/tmp/hapi-update',
+        host: 'localhost',
+        name: 'issue-triage-#54'
+    };
 
     const rpcHandlers = new Map<string, (params: unknown) => unknown>();
     const client = {
@@ -1164,7 +1170,10 @@ function createSessionStub(
                 rpcHandlers.set(method, handler);
             }
         },
-        updateMetadata(_handler: (metadata: Record<string, unknown>) => Record<string, unknown>) {},
+        updateMetadata(handler: (current: Record<string, unknown>) => Record<string, unknown>) {
+            metadata = handler(metadata);
+            metadataUpdates.push({ ...metadata });
+        },
         updateAgentState(handler: (state: FakeAgentState) => FakeAgentState) {
             agentState = handler(agentState);
         },
@@ -1239,6 +1248,8 @@ function createSessionStub(
         sessionEvents,
         codexMessages,
         summaryMessages,
+        metadataUpdates,
+        getMetadata: () => metadata,
         thinkingChanges,
         foundSessionIds,
         resetThreadCalls,
@@ -3309,15 +3320,13 @@ describe('codexRemoteLauncher', () => {
 
     it('applies parent-thread hapi change_title after disabling MCP-side title writes', async () => {
         harness.emitParentTitleChange = true;
-        const { session, codexMessages, summaryMessages } = createSessionStub();
+        const { session, codexMessages, summaryMessages, getMetadata } = createSessionStub();
 
         await codexRemoteLauncher(session as never);
 
         expect(harness.bridgeOptions).toEqual([{ emitTitleSummary: false }]);
-        expect(summaryMessages).toContainEqual(expect.objectContaining({
-            type: 'summary',
-            summary: 'Parent Title'
-        }));
+        expect(summaryMessages).toEqual([]);
+        expect(getMetadata().name).toBe('Parent Title');
         expect(codexMessages).toContainEqual(expect.objectContaining({
             type: 'tool-call',
             name: 'mcp__hapi__change_title',

@@ -109,11 +109,10 @@ describe('shared plan actions', () => {
         const item = { id: 'title', type: 'mcpToolCall', server: 'hapi', tool: 'change_title',
             arguments: { title: 'Remote title' }, status: 'completed', result: { content: [], isError: false } };
         f.native.notify('item/completed', { threadId: 'thread', turnId: 'turn', item });
-        await vi.waitFor(() => expect(f.metadata().summary?.text).toBe('Remote title'));
+        await vi.waitFor(() => expect(f.metadata().name).toBe('Remote title'));
         f.native.notify('thread/name/updated', { threadId: 'thread', threadName: 'Terminal title' });
         await vi.waitFor(() => expect(f.metadata().name).toBe('Terminal title'));
         await f.root.refresh();
-        expect(f.metadata().summary?.text).toBe('Remote title');
         expect(f.metadata().name).toBe('Terminal title');
     });
 

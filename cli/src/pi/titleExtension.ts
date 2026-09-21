@@ -9,8 +9,8 @@ import packageJson from '../../package.json';
  * auto-titling capability the Claude/Codex/OpenCode launchers already have:
  * a `hapi_change_title` tool callable by the model plus a persistent
  * system-prompt instruction. The title is applied via `ctx.ui.setTitle()`,
- * which the Pi extension UI bridge (`extensionUiHandler`) syncs into session
- * metadata, so no extra title-provider round-trip is needed.
+ * which the Pi extension UI bridge (`extensionUiHandler`) renames via
+ * `metadata.name` (same field as web rename / MCP `change_title`).
  *
  * The source is kept as a string (plain JS, no template literals) so it can be
  * materialized to disk at launch time and passed to `pi --extension`, including

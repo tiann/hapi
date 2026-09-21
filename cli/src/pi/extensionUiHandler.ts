@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentState } from '@/api/types';
-import { createNativeSessionTitleMetadataSync } from '@/agent/nativeSessionTitle';
+import { applySessionDisplayRename } from '@/agent/sessionDisplayRename';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { logger } from '@/ui/logger';
 import type { PiExtensionUiRequest, PiExtensionUiResponse } from './types';
@@ -136,10 +136,8 @@ function normalizeAnswers(answers: PiPermissionResponse['answers']): Record<stri
 export class PiExtensionUiHandler {
     private readonly pending = new Map<string, PendingEntry>();
     private readonly tombstonedIds = new Set<string>();
-    private readonly syncTitle: (title: unknown) => void;
 
     constructor(private readonly options: PiExtensionUiHandlerOptions) {
-        this.syncTitle = createNativeSessionTitleMetadataSync(options.session);
         options.session.rpcHandlerManager.registerHandler<unknown, void>(RPC_METHODS.Permission, async (rawResponse) => {
             const parsed = PiPermissionResponseSchema.safeParse(rawResponse);
             if (!parsed.success) {
@@ -159,7 +157,11 @@ export class PiExtensionUiHandler {
                 });
                 return;
             case 'setTitle':
-                this.syncTitle(request.title);
+                // hapi_change_title → setTitle is an explicit agent rename,
+                // same as MCP change_title / web renameSession (metadata.name).
+                // Native Pi titles still sync via createNativeSessionTitleMetadataSync
+                // in loop.ts (summary only; name continues to win).
+                applySessionDisplayRename(this.options.session, request.title);
                 return;
             case 'setStatus':
             case 'setWidget':
