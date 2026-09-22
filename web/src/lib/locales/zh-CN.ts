@@ -658,7 +658,7 @@ export default {
   'composer.send': '发送',
   'composer.stop': '停止',
   'composer.voice': '语音助手',
-  'composer.dictate': '语音输入',
+  'composer.dictate': '语音输入 (Ctrl/Cmd+Shift+D)',
   'composer.scheduleSend': '定时发送',
   'composer.scheduleRelativeTab': '相对时间',
   'composer.scheduleSpecificTab': '指定时间',

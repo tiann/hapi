@@ -660,7 +660,7 @@ export default {
   'composer.send': 'Send',
   'composer.stop': 'Stop',
   'composer.voice': 'Voice assistant',
-  'composer.dictate': 'Dictate',
+  'composer.dictate': 'Dictate (Ctrl/Cmd+Shift+D)',
   'composer.scheduleSend': 'Schedule send',
   'composer.scheduleRelativeTab': 'Relative',
   'composer.scheduleSpecificTab': 'Specific',
