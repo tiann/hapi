@@ -47,7 +47,6 @@ export function shouldInvokeComposerDictateShortcut(args: {
     dictationActive: boolean
     voiceStatus: ConversationStatus
     canSend: boolean
-    hasText: boolean
     routesToScratchlist: boolean
 }): boolean {
     if (args.controlsDisabled || !args.voiceEnabled) return false
@@ -57,6 +56,7 @@ export function shouldInvokeComposerDictateShortcut(args: {
         if (args.canSend) return true
         return !args.routesToScratchlist
     }
-    if (args.hasText) return false
+    // UnifiedButton treats canSend (text or attachments) as Send mode for assistant voice.
+    if (args.canSend) return false
     return !args.routesToScratchlist
 }

@@ -57,7 +57,6 @@ describe('shouldInvokeComposerDictateShortcut', () => {
         dictationActive: false,
         voiceStatus: 'disconnected' as const,
         canSend: false,
-        hasText: false,
         routesToScratchlist: false,
     }
 
@@ -72,8 +71,8 @@ describe('shouldInvokeComposerDictateShortcut', () => {
         expect(shouldInvokeComposerDictateShortcut(base)).toBe(true)
     })
 
-    it('does not send assistant voice when the composer has text', () => {
-        expect(shouldInvokeComposerDictateShortcut({ ...base, hasText: true })).toBe(false)
+    it('does not start assistant voice when UnifiedButton is in send mode', () => {
+        expect(shouldInvokeComposerDictateShortcut({ ...base, canSend: true })).toBe(false)
     })
 
     it('starts dictation on an empty composer when scratchlist routing is off', () => {
@@ -88,7 +87,6 @@ describe('shouldInvokeComposerDictateShortcut', () => {
             ...base,
             dictationActive: true,
             canSend: true,
-            hasText: true,
         })).toBe(true)
     })
 

@@ -814,6 +814,7 @@ function SessionChatInner(props: SessionChatProps) {
      */
     useEffect(() => {
         const onKeyDown = (e: globalThis.KeyboardEvent) => {
+            if (e.repeat) return
             if (!isDictateToggleHotkey(e)) return
             if (isDictateHotkeyBlockedTarget(e.target)) return
             const invoke = dictateHotkeyRef.current
