@@ -76,7 +76,10 @@ vi.mock('socket.io-client', () => ({
                 return socket
             }
         }
-        Object.assign(socket, { volatile: socket })
+        Object.assign(socket, {
+            volatile: socket,
+            io: { opts: { reconnection: true } }
+        })
         socketHarness.sockets.push(state)
         return socket
     }
@@ -408,6 +411,101 @@ describe('ApiSessionClient lazy materialization', () => {
         await expect(client.flush({ timeoutMs: 20 })).resolves.toBe(false)
 
         expect(socket.connectCalls).toBeGreaterThan(0)
+        client.close()
+    })
+
+    it('emits hub-archived from update-session metadata (#1910)', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockResolvedValue({ data: { messages: [] } })
+        const session = createSession({
+            namespace: 'default',
+            metadata: { path: '/tmp', host: 'h', flavor: 'claude' },
+            metadataVersion: 1
+        })
+        const client = new ApiSessionClient('token', session)
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+
+        let archived = false
+        client.on('hub-archived', () => { archived = true })
+
+        socket.trigger('update', {
+            body: {
+                t: 'update-session',
+                sid: session.id,
+                metadata: {
+                    version: 2,
+                    value: {
+                        path: '/tmp',
+                        host: 'h',
+                        flavor: 'claude',
+                        lifecycleState: 'archived',
+                        archivedBy: 'hub',
+                        archiveReason: 'Archived from hub (CLI unreachable)'
+                    }
+                },
+                agentState: null
+            }
+        })
+
+        expect(archived).toBe(true)
+        expect(client.getMetadata()?.lifecycleState).toBe('archived')
+        client.close()
+    })
+
+    it('reconciles hub-archived metadata on reconnect (#1910)', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockResolvedValue({
+            data: {
+                session: {
+                    metadataVersion: 1,
+                    metadata: { path: '/tmp', host: 'h', flavor: 'claude' }
+                },
+                messages: []
+            }
+        })
+
+        const client = new ApiSessionClient('token', createSession({
+            namespace: 'default',
+            metadata: { path: '/tmp', host: 'h', flavor: 'claude' },
+            metadataVersion: 1
+        }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+
+        let archived = false
+        client.on('hub-archived', () => { archived = true })
+
+        // Establish first connection so hasConnectedOnce is true.
+        socket.triggerConnect()
+        await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalled())
+
+        axiosHarness.get.mockImplementation(async (url: string) => {
+            if (String(url).includes('/messages')) {
+                return { data: { messages: [] } }
+            }
+            return {
+                data: {
+                    session: {
+                        metadataVersion: 5,
+                        metadata: {
+                            path: '/tmp',
+                            host: 'h',
+                            flavor: 'claude',
+                            lifecycleState: 'archived',
+                            archivedBy: 'hub',
+                            archiveReason: 'Archived from hub (CLI unreachable)'
+                        }
+                    }
+                }
+            }
+        })
+        socket.connected = false
+        socket.trigger('disconnect', 'transport close')
+        socket.triggerConnect()
+
+        await vi.waitFor(() => expect(archived).toBe(true))
+        expect(client.getMetadata()?.archivedBy).toBe('hub')
         client.close()
     })
 })

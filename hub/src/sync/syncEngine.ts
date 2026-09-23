@@ -1749,8 +1749,36 @@ export class SyncEngine {
 
         if (cliUnreachable) {
             this.sessionCache.markSessionArchivedFromHub(sessionId, 'Archived from hub (CLI unreachable)')
+            // #1910: SSE alone is not enough — ApiSessionClient only applies
+            // hub archival from Socket.IO `update-session` (and reconnect
+            // reconcile). Push the versioned metadata to any CLI still in the
+            // session room so a briefly-disconnected child can exit.
+            this.emitCliSessionMetadataUpdate(sessionId)
         }
         this.handleSessionEnd({ sid: sessionId, time: Date.now() })
+    }
+
+    /**
+     * Broadcast versioned session metadata to CLI sockets in `session:<id>`.
+     * Mirrors the shape used by update-metadata handlers so ApiSessionClient
+     * applies the same hub-archived detection path.
+     */
+    private emitCliSessionMetadataUpdate(sessionId: string): void {
+        const session = this.sessionCache.getSession(sessionId)
+        if (!session?.metadata) return
+        if (typeof this.io.of !== 'function') return
+        const update = {
+            id: randomUUID(),
+            seq: Date.now(),
+            createdAt: Date.now(),
+            body: {
+                t: 'update-session' as const,
+                sid: sessionId,
+                metadata: { version: session.metadataVersion, value: session.metadata },
+                agentState: null as null
+            }
+        }
+        this.io.of('/cli').to(`session:${sessionId}`).emit('update', update)
     }
 
     /**

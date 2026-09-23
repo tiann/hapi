@@ -334,10 +334,19 @@ export class ApiSessionClient extends EventEmitter {
             logger.debug('Socket connected successfully')
             this.awaitingMaterializedConnection = false
             this.rpcHandlerManager.onSocketConnect(this.socket)
-            if (this.hasConnectedOnce) {
+            const isReconnect = this.hasConnectedOnce
+            if (isReconnect) {
                 this.needsBackfill = true
             }
-            void this.backfillIfNeeded()
+            // Hub may have archived while we were offline (KillSession miss +
+            // no live update-session). On reconnect, reconcile metadata before
+            // message backfill so hub-archived can stop reconnect immortality (#1910).
+            const afterMeta = isReconnect
+                ? this.reconcileSessionMetadata()
+                : Promise.resolve()
+            void afterMeta.finally(() => {
+                void this.backfillIfNeeded()
+            })
             this.hasConnectedOnce = true
             this.reconnectHandler?.()
             this.socket.emit('session-alive', {
@@ -486,27 +495,7 @@ export class ApiSessionClient extends EventEmitter {
 
                 if (data.body.t === 'update-session') {
                     if (data.body.metadata && data.body.metadata.version > this.metadataVersion) {
-                        const parsed = MetadataSchema.safeParse(data.body.metadata.value)
-                        if (parsed.success) {
-                            const wasHubArchived = this.metadata?.lifecycleState === 'archived'
-                                && this.metadata?.archivedBy === 'hub'
-                            this.metadata = parsed.data
-                            // #1910: hub may archive via metadata when KillSession
-                            // cannot reach this CLI. Stop reconnect immortality and
-                            // let runners exit instead of sitting as PPID=1 orphans.
-                            if (!wasHubArchived
-                                && parsed.data.lifecycleState === 'archived'
-                                && parsed.data.archivedBy === 'hub') {
-                                this.allowReconnect = false
-                                try {
-                                    this.socket.io.opts.reconnection = false
-                                } catch { /* socket may be mid-teardown */ }
-                                this.emit('hub-archived')
-                            }
-                        } else {
-                            logger.debug('[API] Ignoring invalid metadata update', { version: data.body.metadata.version })
-                        }
-                        this.metadataVersion = data.body.metadata.version
+                        this.applyRemoteMetadata(data.body.metadata.version, data.body.metadata.value)
                     }
                     if (data.body.agentState && data.body.agentState.version > this.agentStateVersion) {
                         const next = data.body.agentState.value
@@ -839,6 +828,62 @@ export class ApiSessionClient extends EventEmitter {
         } catch (error) {
             logger.debug('[API] Backfill failed', error)
             this.needsBackfill = true
+        }
+    }
+
+    /**
+     * Apply a remote metadata snapshot (Socket.IO update-session or reconnect
+     * REST reconcile). Advances metadataVersion and emits hub-archived when
+     * the hub flipped lifecycle while this CLI was unreachable.
+     */
+    private applyRemoteMetadata(version: number, value: unknown): void {
+        if (version <= this.metadataVersion) return
+        const parsed = MetadataSchema.safeParse(value)
+        if (!parsed.success) {
+            logger.debug('[API] Ignoring invalid metadata update', { version })
+            this.metadataVersion = version
+            return
+        }
+        const wasHubArchived = this.metadata?.lifecycleState === 'archived'
+            && this.metadata?.archivedBy === 'hub'
+        this.metadata = parsed.data
+        this.metadataVersion = version
+        // #1910: hub may archive via metadata when KillSession cannot reach
+        // this CLI. Stop reconnect immortality and let runners exit instead
+        // of sitting as PPID=1 orphans.
+        if (!wasHubArchived
+            && parsed.data.lifecycleState === 'archived'
+            && parsed.data.archivedBy === 'hub') {
+            this.noteHubArchived()
+        }
+    }
+
+    private noteHubArchived(): void {
+        this.allowReconnect = false
+        try {
+            this.socket.io.opts.reconnection = false
+        } catch { /* socket may be mid-teardown */ }
+        this.emit('hub-archived')
+    }
+
+    /** Fetch current hub metadata after reconnect; apply hub-archived if set. */
+    private async reconcileSessionMetadata(): Promise<void> {
+        try {
+            const response = await axios.get(
+                `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(this.sessionId)}`,
+                {
+                    headers: buildHubRequestHeaders({
+                        Authorization: `Bearer ${this.token}`,
+                        'Content-Type': 'application/json'
+                    }),
+                    timeout: 15_000
+                }
+            )
+            const session = response.data?.session
+            if (!session || typeof session.metadataVersion !== 'number') return
+            this.applyRemoteMetadata(session.metadataVersion, session.metadata)
+        } catch (error) {
+            logger.debug('[API] Session metadata reconcile failed', error)
         }
     }
 

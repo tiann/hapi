@@ -108,6 +108,35 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(session?.metadata?.lifecycleState).toBe('archived')
     })
 
+    it('emits Socket.IO update-session when hub-authoring archive without a machine (#1910)', async () => {
+        const emitted: Array<{ room: string; event: string; payload: unknown }> = []
+        const io = {
+            of: (ns: string) => ({
+                to: (room: string) => ({
+                    emit: (event: string, payload: unknown) => {
+                        if (ns === '/cli') {
+                            emitted.push({ room, event, payload })
+                        }
+                    }
+                })
+            })
+        }
+        engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const sessionId = insertActiveSession('sess-hub-archive-socket')
+        setKillSessionMissingTarget()
+
+        await engine.archiveSession(sessionId)
+
+        expect(emitted).toHaveLength(1)
+        expect(emitted[0]?.room).toBe(`session:${sessionId}`)
+        expect(emitted[0]?.event).toBe('update')
+        const body = (emitted[0]?.payload as { body: { t: string; metadata: { version: number; value: { archivedBy?: string; lifecycleState?: string } } } }).body
+        expect(body.t).toBe('update-session')
+        expect(body.metadata.value.lifecycleState).toBe('archived')
+        expect(body.metadata.value.archivedBy).toBe('hub')
+        expect(body.metadata.version).toBeGreaterThan(0)
+    })
+
     it('does NOT archive when the machine RPC target is missing', async () => {
         // Detached children can outlive both KillSession and a missing machine
         // socket; refuse to archive without a confirmed stop (#1910).
