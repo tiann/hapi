@@ -107,4 +107,16 @@ describe('runtime registry sibling guards (post-restart)', () => {
     it('ignores unrelated wrapper PIDs', () => {
         expect(wrapperHasActiveSiblingRoots(runtimes, 'root-a', 9999)).toBe(false)
     })
+
+    it('PID-filters shared wrappers while leaving other orphan PIDs killable', () => {
+        // Older untracked CLI (9999) and current shared wrapper (4242) both
+        // match the same HAPI session id. Session-wide sibling presence must
+        // not skip the argv scan — only the wrapper PID is excluded.
+        const orphanPids = [4242, 9999]
+        const filtered = orphanPids.filter(
+            (pid) => !wrapperHasActiveSiblingRoots(runtimes, 'root-a', pid)
+        )
+        expect(filtered).toEqual([9999])
+        expect(sessionRuntimeHasActiveSiblings(runtimes, 'root-a')).toBe(true)
+    })
 })
