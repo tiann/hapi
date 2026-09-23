@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it } from 'vitest'
 import {
     commandMatchesRunnerSpawnedSession,
     reapRunnerSpawnedOrphans,
@@ -70,7 +70,6 @@ describe('reapRunnerSpawnedOrphans (stopSession orphan path)', () => {
                 killed.push(pid)
                 return true
             },
-            isAlive: () => false,
         })
         expect(status).toBe('stopped')
         expect(killed).toEqual([4242, 4243])
@@ -80,7 +79,6 @@ describe('reapRunnerSpawnedOrphans (stopSession orphan path)', () => {
         const status = await reapRunnerSpawnedOrphans('sess-orphan-2', {
             findOrphans: async () => [9999],
             killTree: async () => false,
-            isAlive: () => true,
         })
         expect(status).toBe('still_alive')
     })

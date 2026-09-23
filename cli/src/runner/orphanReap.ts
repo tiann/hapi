@@ -84,7 +84,6 @@ export async function reapRunnerSpawnedOrphans(
     deps: {
         findOrphans?: (sessionId: string) => Promise<number[]>
         killTree?: (pid: number) => Promise<boolean>
-        isAlive?: (pid: number) => boolean
     } = {}
 ): Promise<'stopped' | 'still_alive' | null> {
     const findOrphans = deps.findOrphans ?? findRunnerSpawnedOrphanPids
@@ -92,23 +91,17 @@ export async function reapRunnerSpawnedOrphans(
         const { killProcessTreeByPid } = await import('@/utils/process')
         return killProcessTreeByPid(pid)
     })
-    const isAlive = deps.isAlive ?? ((pid: number) => {
-        try {
-            process.kill(pid, 0)
-            return true
-        } catch {
-            return false
-        }
-    })
 
     const orphanPids = await findOrphans(sessionId)
     if (orphanPids.length === 0) return null
 
-    let anyAlive = false
+    // killProcessTreeByPid returns false if any collected descendant survives,
+    // even when the stamped root PID has already exited. Trust that result —
+    // do not downgrade to stopped based on root liveness alone (#1910).
     for (const orphanPid of orphanPids) {
         if (!(await killTree(orphanPid))) {
-            if (isAlive(orphanPid)) anyAlive = true
+            return 'still_alive'
         }
     }
-    return anyAlive ? 'still_alive' : 'stopped'
+    return 'stopped'
 }

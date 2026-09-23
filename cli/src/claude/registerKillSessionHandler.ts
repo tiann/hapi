@@ -62,5 +62,7 @@ export function registerKillSessionHandler(
 
     // #1910: when archive lands as hub metadata (KillSession unreachable),
     // still exit instead of reconnecting forever.
-    session?.on('hub-archived', exitFromHubArchive);
+    if (session && typeof session.on === 'function') {
+        session.on('hub-archived', exitFromHubArchive);
+    }
 }

@@ -1729,9 +1729,11 @@ export class SyncEngine {
             try {
                 status = await this.rpcGateway.stopRunnerSession(machineId, sessionId)
             } catch (stopError) {
-                // Machine RPC missing → nothing stronger to check (hub-restart
-                // cascade). Any other failure is ambiguous — do not archive.
-                status = stopError instanceof RpcTargetMissingError ? 'already_gone' : 'still_alive'
+                // Machine RPC missing is NOT proof the detached CLI is gone
+                // (KillMode=process children survive runner death). Any stop
+                // failure is unconfirmed — refuse to archive (#1910).
+                void stopError
+                status = 'still_alive'
             }
             // After KillSession reached the CLI, `unknown` can mean the child
             // already tore down its runner maps while exiting — that is fine.

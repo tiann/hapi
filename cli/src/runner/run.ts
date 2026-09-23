@@ -1034,6 +1034,24 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     const stopSession = async (sessionId: string): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
       logger.debug(`[RUNNER RUN] Attempting to stop session ${sessionId}`);
 
+      // After a mapped/persisted PID path succeeds, still scan argv for other
+      // generations of the same HAPI id (untracked orphans from an earlier
+      // runner) before reporting stopped/already_gone (#1910).
+      const finishWithOrphanSweep = async (
+        base: 'stopped' | 'already_gone'
+      ): Promise<'stopped' | 'already_gone' | 'still_alive'> => {
+        const orphanStatus = await reapRunnerSpawnedOrphans(sessionId);
+        if (orphanStatus === 'still_alive') {
+          logger.debug(`[RUNNER RUN] Orphan argv sweep left live PIDs for session ${sessionId}`);
+          return 'still_alive';
+        }
+        if (orphanStatus === 'stopped') {
+          rememberVerifiedExit(sessionId);
+          return 'stopped';
+        }
+        return base;
+      };
+
       const { findRuntime } = await import('@/codex/shared/registry');
       const sharedRuntime = await findRuntime(sessionId);
       if (sharedRuntime) {
@@ -1042,7 +1060,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           await runtimeControl(sharedRuntime, 'hapi/stopSession', sessionId);
           const tracked = pidToTrackedSession.get(sharedRuntime.pid);
           if (tracked?.sharedSessions) delete tracked.sharedSessions[sessionId];
-          return 'stopped';
+          return await finishWithOrphanSweep('stopped');
         } catch { return 'still_alive'; }
       }
       if ((await readRuntimes()).some(runtime => runtime.hub === configuration.apiUrl && runtime.authHash === runtimeAuthHash()
@@ -1101,7 +1119,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           pidToConfirmedSessionId.delete(pid);
           if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
           logger.debug(`[RUNNER RUN] Removed terminated session ${sessionId} from tracking`);
-          return 'stopped';
+          return await finishWithOrphanSweep('stopped');
         }
       }
 
@@ -1142,7 +1160,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           pidToConfirmedSessionId.delete(pid);
           if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
           releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
-          return 'stopped';
+          return await finishWithOrphanSweep('stopped');
         }
         if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
         if (confirmedSessionId) rememberVerifiedExit(confirmedSessionId);
@@ -1151,7 +1169,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         pidToConfirmedSessionId.delete(pid);
         if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
         releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
-        return 'already_gone';
+        return await finishWithOrphanSweep('already_gone');
       }
 
       // Maps missed (or marker-mismatch cleared a stale row). Scan live argv for
