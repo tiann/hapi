@@ -54,6 +54,37 @@ export function sessionRuntimeHasActiveSiblings(
 }
 
 /**
+ * PIDs from in-memory runner tracking that still host other shared roots for
+ * this session id. Used when the durable runtime registry is missing/unreadable
+ * so argv orphan sweeps do not tree-kill a live shared wrapper.
+ */
+export function trackedSharedWrapperPidsWithSiblings(
+    tracked: Iterable<[number, {
+        happySessionId?: string
+        sharedSessions?: Record<string, unknown>
+    }]>,
+    sessionId: string
+): Set<number> {
+    const protectedPids = new Set<number>()
+    for (const [pid, session] of tracked) {
+        const shared = session.sharedSessions
+        if (!shared) continue
+        const otherShared = Object.keys(shared).filter((id) => id !== sessionId)
+        if (otherShared.length > 0) {
+            protectedPids.add(pid)
+            continue
+        }
+        // Target may already have been detached from sharedSessions while the
+        // primary happySessionId is a different live root on this wrapper.
+        if (typeof session.happySessionId === 'string'
+            && session.happySessionId !== sessionId) {
+            protectedPids.add(pid)
+        }
+    }
+    return protectedPids
+}
+
+/**
  * Mutates `sharedSessions` to drop `sessionId`. Returns whether the wrapper
  * PID must stay alive for remaining roots.
  */

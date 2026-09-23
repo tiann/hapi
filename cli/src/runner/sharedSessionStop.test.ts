@@ -3,6 +3,7 @@ import {
     detachSharedRootFromWrapper,
     keepWrapperForSharedSiblings,
     sessionRuntimeHasActiveSiblings,
+    trackedSharedWrapperPidsWithSiblings,
     wrapperHasActiveSiblingRoots,
 } from './sharedSessionStop'
 
@@ -118,5 +119,27 @@ describe('runtime registry sibling guards (post-restart)', () => {
         )
         expect(filtered).toEqual([9999])
         expect(sessionRuntimeHasActiveSiblings(runtimes, 'root-a')).toBe(true)
+    })
+
+    it('protects tracked shared wrappers when the runtime registry is empty', () => {
+        const tracked = new Map([
+            [4242, {
+                happySessionId: 'root-a',
+                sharedSessions: {
+                    'root-a': {},
+                    'root-b': {},
+                },
+            }],
+        ])
+        const protectedPids = trackedSharedWrapperPidsWithSiblings(tracked.entries(), 'root-a')
+        expect([...protectedPids]).toEqual([4242])
+
+        // Registry unavailable: empty runtimes must not leave the tracked wrapper killable.
+        const orphanPids = [4242, 9999]
+        const filtered = orphanPids.filter((pid) => (
+            !protectedPids.has(pid)
+            && !wrapperHasActiveSiblingRoots([], 'root-a', pid)
+        ))
+        expect(filtered).toEqual([9999])
     })
 })
