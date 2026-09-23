@@ -5,8 +5,7 @@
  * Detached children (PPID=1 after KillMode=process runner bounce) can survive
  * with no tracking entry. `stopSession` must still be able to reap them when
  * the hub archives by HAPI session id — matching `--started-by runner` plus
- * the session id on argv (`--existing-session-id`, `--hapi-session-id`, or
- * adjacent token).
+ * an explicit `--existing-session-id` / `--hapi-session-id` flag.
  */
 
 import psList from 'ps-list'
@@ -74,4 +73,42 @@ export async function findRunnerSpawnedOrphanPids(
     } catch {
         return []
     }
+}
+
+/**
+ * Tree-kill every argv-matched orphan for `sessionId`.
+ * Returns null when none were found (caller continues to other stop paths).
+ */
+export async function reapRunnerSpawnedOrphans(
+    sessionId: string,
+    deps: {
+        findOrphans?: (sessionId: string) => Promise<number[]>
+        killTree?: (pid: number) => Promise<boolean>
+        isAlive?: (pid: number) => boolean
+    } = {}
+): Promise<'stopped' | 'still_alive' | null> {
+    const findOrphans = deps.findOrphans ?? findRunnerSpawnedOrphanPids
+    const killTree = deps.killTree ?? (async (pid: number) => {
+        const { killProcessTreeByPid } = await import('@/utils/process')
+        return killProcessTreeByPid(pid)
+    })
+    const isAlive = deps.isAlive ?? ((pid: number) => {
+        try {
+            process.kill(pid, 0)
+            return true
+        } catch {
+            return false
+        }
+    })
+
+    const orphanPids = await findOrphans(sessionId)
+    if (orphanPids.length === 0) return null
+
+    let anyAlive = false
+    for (const orphanPid of orphanPids) {
+        if (!(await killTree(orphanPid))) {
+            if (isAlive(orphanPid)) anyAlive = true
+        }
+    }
+    return anyAlive ? 'still_alive' : 'stopped'
 }

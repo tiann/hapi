@@ -15,7 +15,7 @@ import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquireRunnerLock, releaseRunnerLock } from '@/persistence';
 import { getCliArgs } from '@/utils/cliArgs';
 import { getProcessStartMarker, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid } from '@/utils/process';
-import { findRunnerSpawnedOrphanPids } from '@/runner/orphanReap';
+import { reapRunnerSpawnedOrphans } from '@/runner/orphanReap';
 import { PERMISSION_MODES } from '@hapi/protocol/modes';
 import { RUNNER_CAPABILITIES } from '@hapi/protocol';
 import { withRetry } from '@/utils/time';
@@ -1156,21 +1156,14 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
       // Maps missed (or marker-mismatch cleared a stale row). Scan live argv for
       // `--started-by runner` + this HAPI session id and tree-kill matches.
-      const orphanPids = await findRunnerSpawnedOrphanPids(sessionId);
-      if (orphanPids.length > 0) {
-        let anyAlive = false;
-        for (const orphanPid of orphanPids) {
-          if (!(await killProcessTreeByPid(orphanPid))) {
-            if (isProcessAlive(orphanPid)) anyAlive = true;
-          }
-        }
-        if (anyAlive) {
-          logger.debug(`[RUNNER RUN] Orphan argv scan left live PIDs for session ${sessionId}: ${orphanPids.join(',')}`);
-          return 'still_alive';
-        }
+      const orphanStatus = await reapRunnerSpawnedOrphans(sessionId);
+      if (orphanStatus === 'still_alive') {
+        logger.debug(`[RUNNER RUN] Orphan argv scan left live PIDs for session ${sessionId}`);
+        return 'still_alive';
+      }
+      if (orphanStatus === 'stopped') {
         rememberVerifiedExit(sessionId);
-        for (const orphanPid of orphanPids) rememberVerifiedExit(`PID-${orphanPid}`);
-        logger.debug(`[RUNNER RUN] Reaped ${orphanPids.length} argv-orphan PID(s) for session ${sessionId}`);
+        logger.debug(`[RUNNER RUN] Reaped argv-orphan PID(s) for session ${sessionId}`);
         return 'stopped';
       }
 

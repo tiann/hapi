@@ -45,6 +45,24 @@ describe('registerKillSessionHandler (tiann/hapi#914)', () => {
         expect(lifecycle.cleanupAndExit).toHaveBeenCalled()
     })
 
+    it('still works with the legacy `(cleanupAndExit: () => Promise<void>)` call shape', async () => {
+        // Back-compat: runAgentSession.ts passes a bare closure as the second
+        // argument instead of a lifecycle object. The handler should not crash
+        // when setArchiveReason is absent.
+        const registry = makeRegistry()
+        const cleanupAndExit = vi.fn(async () => {})
+
+        registerKillSessionHandler(
+            registry as unknown as Parameters<typeof registerKillSessionHandler>[0],
+            cleanupAndExit
+        )
+
+        const handler = registry.handlers.get(RPC_METHODS.KillSession)
+        await handler?.()
+
+        expect(cleanupAndExit).toHaveBeenCalled()
+    })
+
     it('exits on hub-archived metadata when a session listener is provided (#1910)', async () => {
         const registry = makeRegistry()
         const lifecycle = {

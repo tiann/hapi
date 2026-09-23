@@ -65,10 +65,16 @@ export const claudeCommand: CommandDefinition = {
                 unknownArgs.push('--effort', effort)
             } else if (arg === '--started-by') {
                 options.startedBy = args[++i] as 'runner' | 'terminal'
-            } else if (arg === '--existing-session-id' || arg === '--hapi-session-id') {
+            } else if (arg === '--hapi-session-id') {
+                // #1910 reap stamp only — must not flip create→reuse bootstrap.
                 const sessionId = args[++i]
                 if (!sessionId) {
-                    throw new Error(`Missing ${arg} value`)
+                    throw new Error('Missing --hapi-session-id value')
+                }
+            } else if (arg === '--existing-session-id') {
+                const sessionId = args[++i]
+                if (!sessionId) {
+                    throw new Error('Missing --existing-session-id value')
                 }
                 options.existingSessionId = sessionId
             } else {

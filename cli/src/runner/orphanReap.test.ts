@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'bun:test'
-import { spawn } from 'node:child_process'
-import { isProcessAlive, killProcessTreeByPid } from '@/utils/process'
 import {
     commandMatchesRunnerSpawnedSession,
-    findRunnerSpawnedOrphanPids,
+    reapRunnerSpawnedOrphans,
     selectOrphanPidsForSession,
 } from './orphanReap'
 
@@ -50,42 +48,40 @@ describe('orphanReap argv matching', () => {
     })
 })
 
-describe('orphanReap live process (#1910 regression)', () => {
-    it('finds and reaps a detached sleep stand-in whose argv carries the session id', async () => {
-        const sessionId = `orphan-reap-${Date.now()}-${process.pid}`
-        // Stand-in for `bun … src/index.ts … --started-by runner --existing-session-id <id>`.
-        // `sleep` keeps a stable cmdline for ps-list to read.
-        const child = spawn(
-            'sleep',
-            ['30', `--started-by`, 'runner', `--existing-session-id`, sessionId, 'src/index.ts'],
-            { detached: true, stdio: 'ignore' }
-        )
-        const pid = child.pid
-        expect(pid).toBeDefined()
-        child.unref()
+describe('reapRunnerSpawnedOrphans (stopSession orphan path)', () => {
+    it('returns null when no argv orphans match', async () => {
+        const status = await reapRunnerSpawnedOrphans('missing-session', {
+            findOrphans: async () => [],
+            killTree: async () => {
+                throw new Error('should not kill')
+            },
+        })
+        expect(status).toBeNull()
+    })
 
-        try {
-            expect(isProcessAlive(pid!)).toBe(true)
+    it('kills matching orphan PIDs and returns stopped when maps would have missed', async () => {
+        const killed: number[] = []
+        const status = await reapRunnerSpawnedOrphans('sess-orphan-1', {
+            findOrphans: async (sessionId) => {
+                expect(sessionId).toBe('sess-orphan-1')
+                return [4242, 4243]
+            },
+            killTree: async (pid) => {
+                killed.push(pid)
+                return true
+            },
+            isAlive: () => false,
+        })
+        expect(status).toBe('stopped')
+        expect(killed).toEqual([4242, 4243])
+    })
 
-            // Drop all runner maps (simulated): discovery must work from argv alone.
-            const found = await findRunnerSpawnedOrphanPids(sessionId)
-            // sleep's cmd may or may not include src/index.ts depending on ps;
-            // force-match via injectable list for the kill path when ps truncates.
-            const pids = found.length > 0
-                ? found
-                : selectOrphanPidsForSession(
-                    [{ pid: pid!, cmd: `sleep 30 --started-by runner --existing-session-id ${sessionId} src/index.ts`, name: 'sleep' }],
-                    sessionId
-                )
-            expect(pids).toContain(pid!)
-
-            const dead = await killProcessTreeByPid(pid!)
-            expect(dead).toBe(true)
-            expect(isProcessAlive(pid!)).toBe(false)
-        } finally {
-            if (pid && isProcessAlive(pid)) {
-                try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ }
-            }
-        }
+    it('returns still_alive when tree-kill cannot prove death', async () => {
+        const status = await reapRunnerSpawnedOrphans('sess-orphan-2', {
+            findOrphans: async () => [9999],
+            killTree: async () => false,
+            isAlive: () => true,
+        })
+        expect(status).toBe('still_alive')
     })
 })
