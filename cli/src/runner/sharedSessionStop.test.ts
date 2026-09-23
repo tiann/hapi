@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
     detachSharedRootFromWrapper,
     keepWrapperForSharedSiblings,
+    sessionRuntimeHasActiveSiblings,
+    wrapperHasActiveSiblingRoots,
 } from './sharedSessionStop'
 
 describe('detachSharedRootFromWrapper', () => {
@@ -67,5 +69,42 @@ describe('keepWrapperForSharedSiblings', () => {
         }
         expect(keepWrapperForSharedSiblings(session, 'root-a')).toBe(false)
         expect(session.sharedSessions).toEqual({ 'root-a': {} })
+    })
+})
+
+describe('runtime registry sibling guards (post-restart)', () => {
+    const runtimes = [
+        {
+            pid: 4242,
+            sessions: {
+                'root-a': { active: false },
+                'root-b': { active: true },
+            },
+        },
+    ]
+
+    it('keeps the wrapper when archiving the original root after tracking loss', () => {
+        // KillSession / stopSession already marked root-a inactive; TrackedSession
+        // is gone after runner restart — persisted-PID and argv paths must not kill.
+        expect(sessionRuntimeHasActiveSiblings(runtimes, 'root-a')).toBe(true)
+        expect(wrapperHasActiveSiblingRoots(runtimes, 'root-a', 4242)).toBe(true)
+    })
+
+    it('allows kill when no other root is active on the wrapper', () => {
+        const lastRoot = [
+            {
+                pid: 4242,
+                sessions: {
+                    'root-a': { active: false },
+                    'root-b': { active: false },
+                },
+            },
+        ]
+        expect(sessionRuntimeHasActiveSiblings(lastRoot, 'root-a')).toBe(false)
+        expect(wrapperHasActiveSiblingRoots(lastRoot, 'root-a', 4242)).toBe(false)
+    })
+
+    it('ignores unrelated wrapper PIDs', () => {
+        expect(wrapperHasActiveSiblingRoots(runtimes, 'root-a', 9999)).toBe(false)
     })
 })

@@ -15,8 +15,8 @@ import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquireRunnerLock, releaseRunnerLock } from '@/persistence';
 import { getCliArgs } from '@/utils/cliArgs';
 import { getProcessStartMarker, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid } from '@/utils/process';
-import { reapRunnerSpawnedOrphans } from '@/runner/orphanReap';
-import { detachSharedRootFromWrapper, keepWrapperForSharedSiblings } from '@/runner/sharedSessionStop';
+import { findRunnerSpawnedOrphanPids, reapRunnerSpawnedOrphans } from '@/runner/orphanReap';
+import { detachSharedRootFromWrapper, keepWrapperForSharedSiblings, sessionRuntimeHasActiveSiblings, wrapperHasActiveSiblingRoots } from '@/runner/sharedSessionStop';
 import { PERMISSION_MODES } from '@hapi/protocol/modes';
 import { RUNNER_CAPABILITIES } from '@hapi/protocol';
 import { withRetry } from '@/utils/time';
@@ -1044,7 +1044,23 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       const finishWithOrphanSweep = async (
         base: 'stopped' | 'already_gone'
       ): Promise<'stopped' | 'already_gone' | 'still_alive'> => {
-        const orphanStatus = await reapRunnerSpawnedOrphans(sessionId);
+        const liveRuntimes = (await readRuntimes()).filter(runtime =>
+          runtime.hub === configuration.apiUrl
+          && runtime.authHash === runtimeAuthHash()
+          && runtimeMayBeAlive(runtime)
+        );
+        if (sessionRuntimeHasActiveSiblings(liveRuntimes, sessionId)) {
+          // Shared Codex: argv may still match the archived root's spawn flags
+          // on the live wrapper — do not tree-kill siblings.
+          return base;
+        }
+        const orphanStatus = await reapRunnerSpawnedOrphans(sessionId, {
+          findOrphans: async (id) => {
+            const found = await findRunnerSpawnedOrphanPids(id);
+            if (found === 'scan_failed') return found;
+            return found.filter(pid => !wrapperHasActiveSiblingRoots(liveRuntimes, id, pid));
+          },
+        });
         if (orphanStatus === 'still_alive') {
           logger.debug(`[RUNNER RUN] Orphan argv sweep left live PIDs for session ${sessionId}`);
           return 'still_alive';
@@ -1073,6 +1089,21 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
               );
               return 'stopped';
             }
+          }
+          // Post-restart: TrackedSession may be gone; registry still lists siblings.
+          const liveAfterStop = (await readRuntimes()).filter(runtime =>
+            runtime.hub === configuration.apiUrl
+            && runtime.authHash === runtimeAuthHash()
+            && runtimeMayBeAlive(runtime)
+          );
+          if (
+            wrapperHasActiveSiblingRoots(liveAfterStop, sessionId, sharedRuntime.pid)
+            || sessionRuntimeHasActiveSiblings(liveAfterStop, sessionId)
+          ) {
+            logger.debug(
+              `[RUNNER RUN] Shared runtime stopped root ${sessionId}; registry siblings keep PID ${sharedRuntime.pid}`
+            );
+            return 'stopped';
           }
           return await finishWithOrphanSweep('stopped');
         } catch { return 'still_alive'; }
@@ -1159,6 +1190,23 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         }
       }
 
+      // Post-restart: no TrackedSession, but KillSession already inactivated
+      // this root in the durable registry while siblings stay active. Do not
+      // fall through to persisted-PID / argv kills of the shared wrapper.
+      {
+        const liveRuntimes = (await readRuntimes()).filter(runtime =>
+          runtime.hub === configuration.apiUrl
+          && runtime.authHash === runtimeAuthHash()
+          && runtimeMayBeAlive(runtime)
+        );
+        if (sessionRuntimeHasActiveSiblings(liveRuntimes, sessionId)) {
+          logger.debug(
+            `[RUNNER RUN] Session ${sessionId} archived with active shared siblings; wrapper kept`
+          );
+          return 'stopped';
+        }
+      }
+
       // Webhook timeout can remove the normal TrackedSession before the process
       // actually exits. Retain the requested HAPI ID -> PID relation so Hub can
       // still terminate that exact generation by HAPI ID.
@@ -1188,6 +1236,17 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
             continue;
           }
+          const liveForPid = (await readRuntimes()).filter(runtime =>
+            runtime.hub === configuration.apiUrl
+            && runtime.authHash === runtimeAuthHash()
+            && runtimeMayBeAlive(runtime)
+          );
+          if (wrapperHasActiveSiblingRoots(liveForPid, sessionId, pid)) {
+            logger.debug(
+              `[RUNNER RUN] Persisted PID ${pid} hosts active shared siblings; not killing for ${sessionId}`
+            );
+            return 'stopped';
+          }
           if (!(await killProcessTreeByPid(pid))) return 'still_alive';
           if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
           if (confirmedSessionId) rememberVerifiedExit(confirmedSessionId);
@@ -1209,16 +1268,36 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       }
 
       // Maps missed (or marker-mismatch cleared a stale row). Scan live argv for
-      // `--started-by runner` + this HAPI session id and tree-kill matches.
-      const orphanStatus = await reapRunnerSpawnedOrphans(sessionId);
-      if (orphanStatus === 'still_alive') {
-        logger.debug(`[RUNNER RUN] Orphan argv scan left live PIDs for session ${sessionId}`);
-        return 'still_alive';
-      }
-      if (orphanStatus === 'stopped') {
-        rememberVerifiedExit(sessionId);
-        logger.debug(`[RUNNER RUN] Reaped argv-orphan PID(s) for session ${sessionId}`);
-        return 'stopped';
+      // `--started-by runner` + this HAPI session id and tree-kill matches —
+      // but never a shared wrapper that still hosts active sibling roots.
+      {
+        const liveRuntimes = (await readRuntimes()).filter(runtime =>
+          runtime.hub === configuration.apiUrl
+          && runtime.authHash === runtimeAuthHash()
+          && runtimeMayBeAlive(runtime)
+        );
+        if (sessionRuntimeHasActiveSiblings(liveRuntimes, sessionId)) {
+          logger.debug(
+            `[RUNNER RUN] Skipping argv orphan reap for ${sessionId}; shared siblings remain`
+          );
+          return 'stopped';
+        }
+        const orphanStatus = await reapRunnerSpawnedOrphans(sessionId, {
+          findOrphans: async (id) => {
+            const found = await findRunnerSpawnedOrphanPids(id);
+            if (found === 'scan_failed') return found;
+            return found.filter(pid => !wrapperHasActiveSiblingRoots(liveRuntimes, id, pid));
+          },
+        });
+        if (orphanStatus === 'still_alive') {
+          logger.debug(`[RUNNER RUN] Orphan argv scan left live PIDs for session ${sessionId}`);
+          return 'still_alive';
+        }
+        if (orphanStatus === 'stopped') {
+          rememberVerifiedExit(sessionId);
+          logger.debug(`[RUNNER RUN] Reaped argv-orphan PID(s) for session ${sessionId}`);
+          return 'stopped';
+        }
       }
 
       if (hasVerifiedExit(sessionId)) {

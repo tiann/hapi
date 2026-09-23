@@ -8,6 +8,51 @@ export type SharedStopDecision =
     | { kind: 'keep_wrapper' }
     | { kind: 'allow_kill' }
 
+/** Minimal runtime shape used when TrackedSession was lost (e.g. runner restart). */
+export type RuntimeSiblingSnapshot = {
+    pid: number
+    sessions: Record<string, { active: boolean }>
+}
+
+/**
+ * True when another root on the same wrapper PID is still active in the
+ * durable Codex runtime registry — even if this session's binding is inactive
+ * and the runner has no in-memory TrackedSession.
+ */
+export function wrapperHasActiveSiblingRoots(
+    runtimes: RuntimeSiblingSnapshot[],
+    sessionId: string,
+    wrapperPid: number
+): boolean {
+    for (const runtime of runtimes) {
+        if (runtime.pid !== wrapperPid) continue
+        return Object.entries(runtime.sessions).some(
+            ([id, binding]) => id !== sessionId && binding.active
+        )
+    }
+    return false
+}
+
+/**
+ * True when any runtime that still lists `sessionId` (active or not) has at
+ * least one other active root. Used before persisted-PID / argv kills after
+ * KillSession marked the archived root inactive.
+ */
+export function sessionRuntimeHasActiveSiblings(
+    runtimes: RuntimeSiblingSnapshot[],
+    sessionId: string
+): boolean {
+    for (const runtime of runtimes) {
+        if (!(sessionId in runtime.sessions)) continue
+        if (Object.entries(runtime.sessions).some(
+            ([id, binding]) => id !== sessionId && binding.active
+        )) {
+            return true
+        }
+    }
+    return false
+}
+
 /**
  * Mutates `sharedSessions` to drop `sessionId`. Returns whether the wrapper
  * PID must stay alive for remaining roots.
