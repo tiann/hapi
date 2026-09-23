@@ -26,11 +26,18 @@ export interface KillSessionLifecycle {
 
 export function registerKillSessionHandler(
     rpcHandlerManager: RpcHandlerManager,
-    lifecycleOrCleanup: KillSessionLifecycle | (() => Promise<void>)
+    lifecycleOrCleanup: KillSessionLifecycle | (() => Promise<void>),
+    session?: { on(event: 'hub-archived', listener: () => void): unknown }
 ) {
     const lifecycle: KillSessionLifecycle = typeof lifecycleOrCleanup === 'function'
         ? { cleanupAndExit: lifecycleOrCleanup }
         : lifecycleOrCleanup;
+
+    const exitFromHubArchive = () => {
+        logger.debug('Hub-archived metadata received; exiting CLI');
+        lifecycle.setArchiveReason?.('User terminated');
+        void lifecycle.cleanupAndExit();
+    };
 
     rpcHandlerManager.registerHandler<KillSessionRequest, KillSessionResponse>(RPC_METHODS.KillSession, async () => {
         logger.debug('Kill session request received');
@@ -52,4 +59,8 @@ export function registerKillSessionHandler(
             message: 'Killing hapi CLI process'
         };
     });
+
+    // #1910: when archive lands as hub metadata (KillSession unreachable),
+    // still exit instead of reconnecting forever.
+    session?.on('hub-archived', exitFromHubArchive);
 }

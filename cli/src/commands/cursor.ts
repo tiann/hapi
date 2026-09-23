@@ -85,10 +85,10 @@ export function parseCursorCommandArgs(commandArgs: string[]): ParsedCursorComma
             } else {
                 unknownArgs.push(arg)
             }
-        } else if (arg === '--existing-session-id') {
+        } else if (arg === '--existing-session-id' || arg === '--hapi-session-id') {
             const hapiSessionId = commandArgs[++i]
             if (!hapiSessionId || hapiSessionId.startsWith('-')) {
-                throw new Error('Missing --existing-session-id value')
+                throw new Error(`Missing ${arg} value`)
             }
             options.existingSessionId = hapiSessionId
         } else if (arg === '--continue') {

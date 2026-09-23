@@ -83,7 +83,7 @@ export async function runKimi(opts: {
     });
 
     lifecycle.registerProcessHandlers();
-    registerKillSessionHandler(session.rpcHandlerManager, lifecycle);
+    registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
     // Registered here, not in the remote launcher: the catalog is backend
     // independent, and a session running in local mode must answer the web

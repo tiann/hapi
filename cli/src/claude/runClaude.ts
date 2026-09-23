@@ -236,7 +236,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     });
 
     lifecycle.registerProcessHandlers();
-    registerKillSessionHandler(session.rpcHandlerManager, lifecycle);
+    registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
 
     const conversationHistory = toConversationHistoryCapabilities(CLAUDE_CONVERSATION_HISTORY)

@@ -65,10 +65,10 @@ export const claudeCommand: CommandDefinition = {
                 unknownArgs.push('--effort', effort)
             } else if (arg === '--started-by') {
                 options.startedBy = args[++i] as 'runner' | 'terminal'
-            } else if (arg === '--existing-session-id') {
+            } else if (arg === '--existing-session-id' || arg === '--hapi-session-id') {
                 const sessionId = args[++i]
                 if (!sessionId) {
-                    throw new Error('Missing --existing-session-id value')
+                    throw new Error(`Missing ${arg} value`)
                 }
                 options.existingSessionId = sessionId
             } else {

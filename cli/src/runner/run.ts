@@ -15,6 +15,7 @@ import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquireRunnerLock, releaseRunnerLock } from '@/persistence';
 import { getCliArgs } from '@/utils/cliArgs';
 import { getProcessStartMarker, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid } from '@/utils/process';
+import { findRunnerSpawnedOrphanPids } from '@/runner/orphanReap';
 import { PERMISSION_MODES } from '@hapi/protocol/modes';
 import { RUNNER_CAPABILITIES } from '@hapi/protocol';
 import { withRetry } from '@/utils/time';
@@ -457,6 +458,21 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         if (persisted) {
           persisted.confirmedSessionId = sessionId;
           persistResumeProcesses();
+        } else {
+          // Fresh Claude/etc. spawns often have no reserved HAPI id at spawn
+          // time, so nothing was persisted then. Once the webhook names the
+          // row, keep a durable PID mapping so stopSession can still reap
+          // after in-memory tracking is dropped (#1910).
+          const processStartMarker = getProcessStartMarker(pid);
+          if (processStartMarker) {
+            persistedResumeProcesses.set(pid, {
+              requestedSessionId: existingSession.requestedHappySessionId ?? sessionId,
+              confirmedSessionId: sessionId,
+              pid,
+              processStartMarker
+            });
+            persistResumeProcesses();
+          }
         }
         existingSession.happySessionMetadataFromLocalWebhook = sessionMetadata;
         logger.debug(`[RUNNER RUN] Updated runner-spawned session ${sessionId} with metadata`);
@@ -482,10 +498,15 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         // should be ignored + terminated instead of silently promoted.
         if (sessionMetadata.startedBy === 'runner') {
           // A shared root can report /new after a Runner restart. Unknown is
-          // not proof of an orphan: never kill its sibling roots. Known spawn
-          // timeouts already terminate their ChildProcess tree at the source.
-          // No registry scan/adoption lifecycle is needed for live attachment.
-          if (sessionMetadata.capabilities?.concurrentClients) return;
+          // not proof of an orphan: never kill sibling roots. When this PID
+          // was previously requested/confirmed by this runner generation
+          // (webhook-timeout tracking drop), reap this PID only.
+          if (sessionMetadata.capabilities?.concurrentClients
+            && !pidToRequestedSessionId.has(pid)
+            && !pidToConfirmedSessionId.has(pid)
+            && !persistedResumeProcesses.has(pid)) {
+            return;
+          }
           logger.debug(
             `[RUNNER RUN] Ignoring late webhook from orphaned runner-spawned PID ${pid} (session ${sessionId}). Terminating child.`
           );
@@ -883,43 +904,67 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           // HAPI_RUNNER_WEBHOOK_TIMEOUT_MS for users on slow models
           // (e.g. opus[1m] --resume).
           const timeout = setTimeout(() => {
-            pidToAwaiter.delete(pid);
-            pidToErrorAwaiter.delete(pid);
+            void (async () => {
+              pidToAwaiter.delete(pid);
+              pidToErrorAwaiter.delete(pid);
 
-            // Remove the tracked session entry so a late-arriving webhook
-            // from this orphaned PID cannot be silently promoted into a
-            // ghost session by onHappySessionWebhook().
-            pidToTrackedSession.delete(pid);
+              // Remove the tracked session entry so a late-arriving webhook
+              // from this orphaned PID cannot be silently promoted into a
+              // ghost session by onHappySessionWebhook(). Keep durable
+              // resume-process / requested-id maps until the process is
+              // proven dead so StopSession can still target this PID (#1910).
+              pidToTrackedSession.delete(pid);
 
-            // Terminate the entire process tree (wrapper + agent
-            // grandchildren).  Using killProcessByChildProcess instead of
-            // a bare SIGTERM ensures that detached grandchild processes
-            // (the actual claude/codex agent) are also reaped, and that
-            // SIGTERM → SIGKILL escalation kicks in if needed.
-            if (happyProcess) {
-              void killProcessByChildProcess(happyProcess).finally(() => {
-                void cleanupCopiedCodexConfig('webhook-timeout');
+              // Await tree-kill (wrapper + agent grandchildren). Do not fire-
+              // and-forget: under load an unawaited kill can fail silently and
+              // leave an immortal detached child.
+              let treeDead = false;
+              if (happyProcess) {
+                try {
+                  treeDead = await killProcessByChildProcess(happyProcess);
+                } catch (error) {
+                  logger.debug(`[RUNNER RUN] Webhook-timeout tree-kill failed for PID ${pid}:`, error);
+                }
+              }
+              if (!treeDead && isProcessAlive(pid)) {
+                try {
+                  treeDead = await killProcessTreeByPid(pid);
+                } catch (error) {
+                  logger.debug(`[RUNNER RUN] Webhook-timeout PID tree-kill failed for ${pid}:`, error);
+                }
+              }
+
+              if (!isProcessAlive(pid)) {
+                if (trackedSession.requestedHappySessionId) {
+                  rememberVerifiedExit(trackedSession.requestedHappySessionId);
+                }
+                rememberVerifiedExit(`PID-${pid}`);
+                pidToRequestedSessionId.delete(pid);
+                pidToConfirmedSessionId.delete(pid);
+                if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
+                releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
+              }
+
+              await cleanupCopiedCodexConfig('webhook-timeout');
+
+              // If this was a worktree session, the worktree can only be
+              // safely removed after the child has actually exited.
+              if (worktreeInfo && happyProcess) {
+                happyProcess.once('exit', () => {
+                  void cleanupWorktree();
+                });
+                if (!isProcessAlive(pid)) {
+                  void cleanupWorktree();
+                }
+              }
+
+              logger.debug(`[RUNNER RUN] Session webhook timeout for PID ${pid}`);
+              logStderrTail();
+              resolve({
+                type: 'error',
+                errorMessage: buildWebhookFailureMessage('timeout')
               });
-            } else {
-              void cleanupCopiedCodexConfig('webhook-timeout');
-            }
-
-            // If this was a worktree session, the worktree can only be
-            // safely removed after the child has actually exited (the
-            // child may still be writing to it).  Register a one-shot
-            // exit listener so cleanup happens once the tree-kill lands.
-            if (worktreeInfo && happyProcess) {
-              happyProcess.once('exit', () => {
-                void cleanupWorktree();
-              });
-            }
-
-            logger.debug(`[RUNNER RUN] Session webhook timeout for PID ${pid}`);
-            logStderrTail();
-            resolve({
-              type: 'error',
-              errorMessage: buildWebhookFailureMessage('timeout')
-            });
+            })();
           }, webhookTimeoutMs);
 
           // Register awaiter
@@ -986,7 +1031,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     }
 
     // Stop a session by sessionId or PID fallback
-    const stopSession = async (sessionId: string): Promise<'stopped' | 'already_gone' | 'still_alive'> => {
+    const stopSession = async (sessionId: string): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
       logger.debug(`[RUNNER RUN] Attempting to stop session ${sessionId}`);
 
       const { findRuntime } = await import('@/codex/shared/registry');
@@ -1078,14 +1123,16 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           const currentMarker = getProcessStartMarker(pid);
           if (currentMarker === null) return 'still_alive';
           if (currentMarker !== persisted.processStartMarker) {
+            // PID reuse: drop the stale mapping, but do NOT claim already_gone
+            // or write a verified-exit tombstone — the HAPI CLI for this session
+            // may still be alive under a different PID (#1910). Continue so
+            // other fallback PIDs / argv orphan scan can still reap it.
             persistedResumeProcesses.delete(pid);
             persistResumeProcesses();
             pidToRequestedSessionId.delete(pid);
             pidToConfirmedSessionId.delete(pid);
-            if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
-            if (confirmedSessionId) rememberVerifiedExit(confirmedSessionId);
             releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
-            return 'already_gone';
+            continue;
           }
           if (!(await killProcessTreeByPid(pid))) return 'still_alive';
           if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
@@ -1107,12 +1154,35 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         return 'already_gone';
       }
 
+      // Maps missed (or marker-mismatch cleared a stale row). Scan live argv for
+      // `--started-by runner` + this HAPI session id and tree-kill matches.
+      const orphanPids = await findRunnerSpawnedOrphanPids(sessionId);
+      if (orphanPids.length > 0) {
+        let anyAlive = false;
+        for (const orphanPid of orphanPids) {
+          if (!(await killProcessTreeByPid(orphanPid))) {
+            if (isProcessAlive(orphanPid)) anyAlive = true;
+          }
+        }
+        if (anyAlive) {
+          logger.debug(`[RUNNER RUN] Orphan argv scan left live PIDs for session ${sessionId}: ${orphanPids.join(',')}`);
+          return 'still_alive';
+        }
+        rememberVerifiedExit(sessionId);
+        for (const orphanPid of orphanPids) rememberVerifiedExit(`PID-${orphanPid}`);
+        logger.debug(`[RUNNER RUN] Reaped ${orphanPids.length} argv-orphan PID(s) for session ${sessionId}`);
+        return 'stopped';
+      }
+
       if (hasVerifiedExit(sessionId)) {
         logger.debug(`[RUNNER RUN] Session ${sessionId} was previously observed exited`);
         return 'already_gone';
       }
+      // No PID matched and no verified-exit tombstone — distinct from
+      // still_alive so callers reconciling stale rows are not blocked forever,
+      // while callers that just spawned this id can treat unknown defensively.
       logger.debug(`[RUNNER RUN] Session ${sessionId} not found without verified exit`);
-      return 'still_alive';
+      return 'unknown';
     };
 
     // Handle child process exit
@@ -1598,24 +1668,25 @@ export function buildCliArgs(
   // Codex shares one engine; Runner owns the wrapper, not a remote mode.
   if (agent !== 'codex') args.push('--hapi-starting-mode', startingMode);
   args.push('--started-by', 'runner');
-  // Codex, Cursor ACP, OpenCode, Pi native resume, and Claude message-level
-  // forks reuse the original HAPI row via --existing-session-id.
+  // Stamp the HAPI row id on argv whenever known so stopSession can reap
+  // detached orphans via ps argv scan after tracking maps are lost (#1910).
+  // Flavors that already emit `--existing-session-id` keep that form; others
+  // get `--hapi-session-id` (parsed by agentCommandOptions / ignored as
+  // unknown by Claude's passthrough only when we consume it explicitly).
+  const reapSessionId = options.existingSessionId ?? options.sessionId;
   if (agent === 'codex' || agent === 'cursor' || agent === 'pi'
       || agent === 'opencode'
       || agent === 'agy'
       || agent === 'dsh'
+      || agent === 'grok'
       || (agentCommand === 'claude' && options.forkSession)) {
-    const existingSessionId = options.existingSessionId ?? options.sessionId;
-    if (existingSessionId) {
-      args.push('--existing-session-id', existingSessionId);
+    if (reapSessionId) {
+      args.push('--existing-session-id', reapSessionId);
     }
-  }
-  // Grok fork children also bind the pending HAPI session id.
-  if (agent === 'grok') {
-    const existingSessionId = options.existingSessionId ?? options.sessionId;
-    if (existingSessionId && !args.includes('--existing-session-id')) {
-      args.push('--existing-session-id', existingSessionId);
-    }
+  } else if (reapSessionId) {
+    // Claude (non-fork), kimi, copilot, etc. — stamp for reaping without
+    // changing create-vs-reuse semantics of `--existing-session-id`.
+    args.push('--hapi-session-id', reapSessionId);
   }
   if (options.model) {
     args.push('--model', options.model);

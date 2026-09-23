@@ -234,6 +234,8 @@ function hasSameJsonValue(left: unknown, right: unknown): boolean {
 export class ApiSessionClient extends EventEmitter {
     private reconnectHandler: (() => void) | null = null
     onReconnect(handler: (() => void) | null): void { this.reconnectHandler = handler }
+    /** When false, socket.io must not keep the CLI immortal after hub archive (#1910). */
+    private allowReconnect = true
     private readonly token: string
     readonly sessionId: string
     private metadata: Metadata | null
@@ -353,6 +355,13 @@ export class ApiSessionClient extends EventEmitter {
             logger.debug('[API] Socket disconnected:', reason)
             this.rpcHandlerManager.onSocketDisconnect()
             this.terminalManager.closeAll()
+            if (!this.allowReconnect) {
+                try {
+                    this.socket.io.opts.reconnection = false
+                    this.socket.disconnect()
+                } catch { /* already tearing down */ }
+                return
+            }
             if (this.hasConnectedOnce) {
                 this.needsBackfill = true
             }
@@ -479,7 +488,21 @@ export class ApiSessionClient extends EventEmitter {
                     if (data.body.metadata && data.body.metadata.version > this.metadataVersion) {
                         const parsed = MetadataSchema.safeParse(data.body.metadata.value)
                         if (parsed.success) {
+                            const wasHubArchived = this.metadata?.lifecycleState === 'archived'
+                                && this.metadata?.archivedBy === 'hub'
                             this.metadata = parsed.data
+                            // #1910: hub may archive via metadata when KillSession
+                            // cannot reach this CLI. Stop reconnect immortality and
+                            // let runners exit instead of sitting as PPID=1 orphans.
+                            if (!wasHubArchived
+                                && parsed.data.lifecycleState === 'archived'
+                                && parsed.data.archivedBy === 'hub') {
+                                this.allowReconnect = false
+                                try {
+                                    this.socket.io.opts.reconnection = false
+                                } catch { /* socket may be mid-teardown */ }
+                                this.emit('hub-archived')
+                            }
                         } else {
                             logger.debug('[API] Ignoring invalid metadata update', { version: data.body.metadata.version })
                         }

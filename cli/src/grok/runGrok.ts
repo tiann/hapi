@@ -65,7 +65,7 @@ export async function runGrok(opts: {
         stopKeepAlive: () => sessionRef.current?.stopKeepAlive()
     })
     lifecycle.registerProcessHandlers()
-    registerKillSessionHandler(session.rpcHandlerManager, lifecycle)
+    registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session)
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle)
 
     const syncSessionMode = () => {

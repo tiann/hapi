@@ -1604,7 +1604,7 @@ export class SyncEngine {
     ): Promise<void> {
         if (spawnAttempted) {
             const status = await this.rpcGateway.stopRunnerSession(machineId, childId)
-            if (status === 'still_alive') {
+            if (status === 'still_alive' || status === 'unknown') {
                 throw new Error('Fork child termination was not confirmed')
             }
         }
@@ -1707,23 +1707,46 @@ export class SyncEngine {
     }
 
     async archiveSession(sessionId: string): Promise<void> {
-        // tiann/hapi#916: when the CLI is already gone (e.g. after a
-        // hub-restart cascade SIGTERMed the runner but the in-memory
-        // `active` flag has not been reconciled yet) the kill-RPC throws
-        // and the route used to surface that as HTTP 500. Treat the
-        // missing target as a benign condition: still flip the session's
-        // lifecycleState to `archived` in the hub-side metadata so the
-        // UI does not see a half-cleaned zombie, and continue to mark
-        // it inactive in the cache. Real RPC errors (timeout, protocol
-        // failure) still propagate as 5xx.
+        // tiann/hapi#916 / #1910: KillSession is a session-socket RPC. A missing
+        // target does not prove the runner child is dead (stale registration,
+        // mid-reconnect, id rotation on resume). Always fall through to the
+        // machine-level StopSession RPC when we know a machineId, and refuse
+        // to archive while the runner reports still_alive / unknown.
+        let cliUnreachable = false
         try {
             await this.rpcGateway.killSession(sessionId)
         } catch (error) {
             if (error instanceof RpcTargetMissingError) {
-                this.sessionCache.markSessionArchivedFromHub(sessionId, 'Archived from hub (CLI unreachable)')
+                cliUnreachable = true
             } else {
                 throw error
             }
+        }
+
+        const machineId = this.sessionCache.getSession(sessionId)?.metadata?.machineId
+        if (machineId) {
+            let status: 'stopped' | 'already_gone' | 'still_alive' | 'unknown'
+            try {
+                status = await this.rpcGateway.stopRunnerSession(machineId, sessionId)
+            } catch (stopError) {
+                // Machine RPC missing → nothing stronger to check (hub-restart
+                // cascade). Any other failure is ambiguous — do not archive.
+                status = stopError instanceof RpcTargetMissingError ? 'already_gone' : 'still_alive'
+            }
+            // After KillSession reached the CLI, `unknown` can mean the child
+            // already tore down its runner maps while exiting — that is fine.
+            // When KillSession missed, require a confirmed gone/stopped so we
+            // never archive a live orphan (#1910 / #1705).
+            const blocked = cliUnreachable
+                ? (status === 'still_alive' || status === 'unknown')
+                : status === 'still_alive'
+            if (blocked) {
+                throw new Error('Session process is still running and could not be stopped')
+            }
+        }
+
+        if (cliUnreachable) {
+            this.sessionCache.markSessionArchivedFromHub(sessionId, 'Archived from hub (CLI unreachable)')
         }
         this.handleSessionEnd({ sid: sessionId, time: Date.now() })
     }
@@ -2866,7 +2889,7 @@ export class SyncEngine {
         if (session.active || operation?.state !== 'reserved' || !machineId) return false
         try {
             const status = await this.rpcGateway.stopRunnerSession(machineId, session.id)
-            if (status === 'still_alive') return false
+            if (status === 'still_alive' || status === 'unknown') return false
             return this.abortOpenCodeClearSession(
                 session.id, namespace, operation.replacementSessionId, 'reserved', true
             ).type === 'success'
@@ -3153,7 +3176,7 @@ export class SyncEngine {
                 const readyResult = await this.waitForSessionReady(spawnResult.sessionId)
                 if (readyResult !== 'ready') {
                     if (resumedStartingMode === 'pty' && readyResult === 'timeout') {
-                        let status: 'stopped' | 'already_gone' | 'still_alive'
+                        let status: 'stopped' | 'already_gone' | 'still_alive' | 'unknown'
                         try {
                             status = await this.rpcGateway.stopRunnerSession(
                                 targetMachine.id,
@@ -3674,7 +3697,7 @@ export class SyncEngine {
             machineId,
             startedAt: Date.now(),
         })
-        let status: 'stopped' | 'already_gone' | 'still_alive'
+        let status: 'stopped' | 'already_gone' | 'still_alive' | 'unknown'
         try {
             status = await this.rpcGateway.stopRunnerSession(machineId, sessionId)
         } catch {
@@ -3684,7 +3707,7 @@ export class SyncEngine {
         await new Promise((resolve) => setTimeout(resolve, 0))
         const session = this.sessionCache.refreshSession(sessionId) ?? this.sessionCache.getSession(sessionId)
         const attemptClearedByEnd = session?.metadata?.piResumeAttempt === undefined
-        if (status === 'still_alive') {
+        if (status === 'still_alive' || status === 'unknown') {
             if (attemptClearedByEnd) return true
             return false
         }
@@ -3708,7 +3731,7 @@ export class SyncEngine {
             startedAt: Date.now(),
             childSessionId: sessionId,
         })
-        let status: 'stopped' | 'already_gone' | 'still_alive'
+        let status: 'stopped' | 'already_gone' | 'still_alive' | 'unknown'
         try {
             status = await this.rpcGateway.stopRunnerSession(machineId, sessionId)
         } catch {
@@ -3719,7 +3742,7 @@ export class SyncEngine {
         const session = this.sessionCache.refreshSession(sessionId) ?? this.sessionCache.getSession(sessionId)
         const original = this.sessionCache.refreshSession(originalSessionId) ?? this.sessionCache.getSession(originalSessionId)
         const attemptClearedByEnd = original?.metadata?.piResumeAttempt === undefined
-        if (status === 'still_alive' && !attemptClearedByEnd) {
+        if ((status === 'still_alive' || status === 'unknown') && !attemptClearedByEnd) {
             await this.writePiResumeAttempt(originalSessionId, namespace, {
                 ...existingAttempt,
                 state: 'quarantined',
@@ -3837,13 +3860,13 @@ export class SyncEngine {
     private async reconcilePersistedPtyResumeAttempt(session: Session): Promise<boolean> {
         const attempt = session.metadata?.ptyResumeAttempt
         if (!attempt) return true
-        let status: 'stopped' | 'already_gone' | 'still_alive'
+        let status: 'stopped' | 'already_gone' | 'still_alive' | 'unknown'
         try {
             status = await this.rpcGateway.stopRunnerSession(attempt.machineId, session.id)
         } catch {
             return false
         }
-        if (status === 'still_alive') return false
+        if (status === 'still_alive' || status === 'unknown') return false
 
         const current = this.sessionCache.getSession(session.id)
         if (current?.active) {
@@ -3863,13 +3886,13 @@ export class SyncEngine {
         const attempt = session.metadata?.piResumeAttempt
         if (!attempt) return true
         const childSessionId = attempt.childSessionId ?? session.id
-        let status: 'stopped' | 'already_gone' | 'still_alive'
+        let status: 'stopped' | 'already_gone' | 'still_alive' | 'unknown'
         try {
             status = await this.rpcGateway.stopRunnerSession(attempt.machineId, childSessionId)
         } catch {
             return false
         }
-        if (status === 'still_alive') return false
+        if (status === 'still_alive' || status === 'unknown') return false
 
         const child = this.sessionCache.getSession(childSessionId)
         if (child?.active) this.handleSessionEnd({ sid: childSessionId, time: Date.now(), reason: 'error' })

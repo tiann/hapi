@@ -61,7 +61,7 @@ export async function runDsh(opts: {
         onBeforeClose: () => launcherRef.current?.kill()
     })
     lifecycle.registerProcessHandlers()
-    registerKillSessionHandler(session.rpcHandlerManager, lifecycle)
+    registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session)
 
     const dshSession = new DshSession({
         api,
