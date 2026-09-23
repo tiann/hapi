@@ -16,6 +16,7 @@ import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquire
 import { getCliArgs } from '@/utils/cliArgs';
 import { getProcessStartMarker, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid } from '@/utils/process';
 import { reapRunnerSpawnedOrphans } from '@/runner/orphanReap';
+import { detachSharedRootFromWrapper, keepWrapperForSharedSiblings } from '@/runner/sharedSessionStop';
 import { PERMISSION_MODES } from '@hapi/protocol/modes';
 import { RUNNER_CAPABILITIES } from '@hapi/protocol';
 import { withRetry } from '@/utils/time';
@@ -1062,20 +1063,52 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           const { runtimeControl } = await import('@/codex/shared/frontend');
           await runtimeControl(sharedRuntime, 'hapi/stopSession', sessionId);
           const tracked = pidToTrackedSession.get(sharedRuntime.pid);
-          if (tracked?.sharedSessions) delete tracked.sharedSessions[sessionId];
+          if (tracked) {
+            const detach = detachSharedRootFromWrapper(tracked, sessionId);
+            if (detach.kind === 'keep_wrapper' || keepWrapperForSharedSiblings(tracked, sessionId)) {
+              // App-server ended this root; sibling roots still need the wrapper.
+              // Do not argv-orphan-sweep — that would tree-kill the shared PID.
+              logger.debug(
+                `[RUNNER RUN] Shared runtime stopped root ${sessionId}; wrapper PID ${sharedRuntime.pid} kept`
+              );
+              return 'stopped';
+            }
+          }
           return await finishWithOrphanSweep('stopped');
         } catch { return 'still_alive'; }
       }
       if ((await readRuntimes()).some(runtime => runtime.hub === configuration.apiUrl && runtime.authHash === runtimeAuthHash()
         && runtime.sessions[sessionId]?.active && runtimeMayBeAlive(runtime))) return 'still_alive';
-      // Missing registry is not permission to kill siblings in a live execution.
-      if ([...pidToTrackedSession.values()].some(session => session.sharedSessions?.[sessionId])) return 'still_alive';
+
+      // After KillSession, the shared runtime row may already be inactive so
+      // findRuntime misses. Detach this root from sharedSessions without
+      // tree-killing the wrapper while sibling roots remain.
+      for (const [pid, session] of pidToTrackedSession.entries()) {
+        if (!session.sharedSessions?.[sessionId]) continue;
+        if (detachSharedRootFromWrapper(session, sessionId).kind === 'keep_wrapper') {
+          logger.debug(
+            `[RUNNER RUN] Detached shared root ${sessionId} from wrapper PID ${pid}; siblings remain`
+          );
+          return 'stopped';
+        }
+        // Last shared entry removed — fall through so the wrapper can be stopped.
+        break;
+      }
 
       // Try to find by sessionId first
       for (const [pid, session] of pidToTrackedSession.entries()) {
         if (session.happySessionId === sessionId ||
           session.requestedHappySessionId === sessionId ||
           (sessionId.startsWith('PID-') && pid === parseInt(sessionId.replace('PID-', '')))) {
+
+          // Primary match, but live shared siblings still use this wrapper
+          // (KillSession may already have cleared this id from sharedSessions).
+          if (keepWrapperForSharedSiblings(session, sessionId)) {
+            logger.debug(
+              `[RUNNER RUN] Keeping shared wrapper PID ${pid} alive for remaining shared roots`
+            );
+            return 'stopped';
+          }
 
           if (session.startedBy === 'runner' && session.childProcess) {
             try {

@@ -1,0 +1,56 @@
+/**
+ * Shared Codex executions host multiple HAPI roots in one wrapper PID.
+ * Archiving one root must detach that root without tree-killing the wrapper
+ * while sibling roots (or a different primary) still use it.
+ */
+
+export type SharedStopDecision =
+    | { kind: 'keep_wrapper' }
+    | { kind: 'allow_kill' }
+
+/**
+ * Mutates `sharedSessions` to drop `sessionId`. Returns whether the wrapper
+ * PID must stay alive for remaining roots.
+ */
+export function detachSharedRootFromWrapper(
+    session: {
+        happySessionId?: string
+        sharedSessions?: Record<string, unknown>
+    },
+    sessionId: string
+): SharedStopDecision {
+    const shared = session.sharedSessions
+    if (!shared || !Object.prototype.hasOwnProperty.call(shared, sessionId)) {
+        return { kind: 'allow_kill' }
+    }
+
+    delete shared[sessionId]
+    const remainingShared = Object.keys(shared)
+    if (remainingShared.length === 0) {
+        delete session.sharedSessions
+    }
+
+    const primaryIsOther = typeof session.happySessionId === 'string'
+        && session.happySessionId !== sessionId
+    if (remainingShared.length > 0 || primaryIsOther) {
+        return { kind: 'keep_wrapper' }
+    }
+    return { kind: 'allow_kill' }
+}
+
+/**
+ * When stop matched the primary `happySessionId`, keep the wrapper if other
+ * shared roots are still registered on this PID.
+ */
+export function keepWrapperForSharedSiblings(
+    session: {
+        sharedSessions?: Record<string, unknown>
+    },
+    sessionId: string
+): boolean {
+    const siblings = Object.keys(session.sharedSessions ?? {})
+        .filter((id) => id !== sessionId)
+    if (siblings.length === 0) return false
+    delete session.sharedSessions?.[sessionId]
+    return true
+}
