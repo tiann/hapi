@@ -75,6 +75,16 @@ describe('reapRunnerSpawnedOrphans (stopSession orphan path)', () => {
         expect(killed).toEqual([4242, 4243])
     })
 
+    it('returns still_alive when the process scan fails', async () => {
+        const status = await reapRunnerSpawnedOrphans('sess-orphan-scan-fail', {
+            findOrphans: async () => 'scan_failed',
+            killTree: async () => {
+                throw new Error('should not kill')
+            },
+        })
+        expect(status).toBe('still_alive')
+    })
+
     it('returns still_alive when tree-kill cannot prove death', async () => {
         const status = await reapRunnerSpawnedOrphans('sess-orphan-2', {
             findOrphans: async () => [9999],

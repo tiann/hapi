@@ -275,6 +275,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // tracking, so confirmed exit can be attributed to the requested HAPI row.
     const pidToRequestedSessionId = new Map<number, string>();
     const pidToConfirmedSessionId = new Map<number, string>();
+    // Generation-local: PIDs whose TrackedSession was dropped by webhook timeout.
+    // Late runner webhooks may kill only these — never recovered shared roots
+    // that merely appear in resume-processes after a runner restart (#1911).
+    const webhookTimeoutOrphanPids = new Set<number>();
     // Only actual observed child exits may create a stop-session tombstone.
     // Tracking loss (notably webhook timeout) is deliberately not evidence.
     const exitTombstoneFile = `${configuration.runnerStateFile}.verified-exits.json`;
@@ -497,14 +501,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         // anything claiming `'runner'` here must be the second case and
         // should be ignored + terminated instead of silently promoted.
         if (sessionMetadata.startedBy === 'runner') {
-          // A shared root can report /new after a Runner restart. Unknown is
-          // not proof of an orphan: never kill sibling roots. When this PID
-          // was previously requested/confirmed by this runner generation
-          // (webhook-timeout tracking drop), reap this PID only.
-          if (sessionMetadata.capabilities?.concurrentClients
-            && !pidToRequestedSessionId.has(pid)
-            && !pidToConfirmedSessionId.has(pid)
-            && !persistedResumeProcesses.has(pid)) {
+          // Only kill PIDs this runner generation timed out. A recovered shared
+          // Codex root after restart can have resume-process state without a
+          // TrackedSession — killing it would tear down live sibling sessions.
+          if (!webhookTimeoutOrphanPids.has(pid)) {
             return;
           }
           logger.debug(
@@ -517,6 +517,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           // handler), so tree-kill via killProcessByChildProcess is not
           // available — but the timeout handler should have already
           // tree-killed the process group; this is defence-in-depth.
+          webhookTimeoutOrphanPids.delete(pid);
           void killProcess(pid);
           return;
         }
@@ -914,6 +915,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
               // resume-process / requested-id maps until the process is
               // proven dead so StopSession can still target this PID (#1910).
               pidToTrackedSession.delete(pid);
+              webhookTimeoutOrphanPids.add(pid);
 
               // Await tree-kill (wrapper + agent grandchildren). Do not fire-
               // and-forget: under load an unawaited kill can fail silently and
@@ -941,6 +943,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
                 rememberVerifiedExit(`PID-${pid}`);
                 pidToRequestedSessionId.delete(pid);
                 pidToConfirmedSessionId.delete(pid);
+                webhookTimeoutOrphanPids.delete(pid);
                 if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
                 releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
               }
@@ -1216,6 +1219,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       pidToErrorAwaiter.delete(pid);
       pidToRequestedSessionId.delete(pid);
       pidToConfirmedSessionId.delete(pid);
+      webhookTimeoutOrphanPids.delete(pid);
       if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
     };
 

@@ -66,23 +66,24 @@ export function selectOrphanPidsForSession(
 export async function findRunnerSpawnedOrphanPids(
     sessionId: string,
     listProcesses: () => Promise<ProcessSnapshot[]> = () => psList()
-): Promise<number[]> {
+): Promise<number[] | 'scan_failed'> {
     try {
         const processes = await listProcesses()
         return selectOrphanPidsForSession(processes, sessionId)
     } catch {
-        return []
+        return 'scan_failed'
     }
 }
 
 /**
  * Tree-kill every argv-matched orphan for `sessionId`.
  * Returns null when none were found (caller continues to other stop paths).
+ * Returns still_alive when the process scan fails — empty is not proof gone.
  */
 export async function reapRunnerSpawnedOrphans(
     sessionId: string,
     deps: {
-        findOrphans?: (sessionId: string) => Promise<number[]>
+        findOrphans?: (sessionId: string) => Promise<number[] | 'scan_failed'>
         killTree?: (pid: number) => Promise<boolean>
     } = {}
 ): Promise<'stopped' | 'still_alive' | null> {
@@ -93,6 +94,7 @@ export async function reapRunnerSpawnedOrphans(
     })
 
     const orphanPids = await findOrphans(sessionId)
+    if (orphanPids === 'scan_failed') return 'still_alive'
     if (orphanPids.length === 0) return null
 
     // killProcessTreeByPid returns false if any collected descendant survives,
