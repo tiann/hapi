@@ -20,6 +20,7 @@ export const copilotCommand: CommandDefinition = {
                 copilotAgentMode?: CopilotAgentMode
                 resumeSessionId?: string
                 existingSessionId?: string
+                reservedSessionId?: string
             } = {}
 
             let hasExplicitPermissionMode = false
@@ -35,10 +36,17 @@ export const copilotCommand: CommandDefinition = {
                     } else {
                         throw new Error('Invalid --hapi-starting-mode (expected local or remote)')
                     }
-                } else if (arg === '--hapi-session-id' || arg === '--existing-session-id') {
+                } else if (arg === '--hapi-session-id') {
+                    // Adopt-stub: create bootstrap with reserved id (not reopen).
                     const sessionId = commandArgs[++i]
                     if (!sessionId) {
-                        throw new Error(`Missing ${arg} value`)
+                        throw new Error('Missing --hapi-session-id value')
+                    }
+                    options.reservedSessionId = sessionId
+                } else if (arg === '--existing-session-id') {
+                    const sessionId = commandArgs[++i]
+                    if (!sessionId) {
+                        throw new Error('Missing --existing-session-id value')
                     }
                     options.existingSessionId = sessionId
                 } else if (arg === '--permission-mode') {

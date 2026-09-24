@@ -5,10 +5,11 @@ export interface SpawnSessionOptions {
     machineId?: string
     directory: string
     sessionId?: string
-    // Existing hub session id to reuse (reopen/resume). Distinct from the legacy
-    // `sessionId` field above (reserved/unused by spawn): when set, the CLI boots
-    // with `--hapi-session-id` so the child reuses the existing hub row (stable
-    // id) instead of minting a new one. Set only by the hub reopen/resume path.
+    // Hub row id for this spawn (preallocated stub or reopen/resume). Distinct
+    // from `sessionId` above (reserved/unused by spawn). Runner stamps
+    // `--existing-session-id` or `--hapi-session-id` by flavor; Claude/kimi/
+    // copilot treat `--hapi-session-id` as adopt-stub (create/getOrCreate),
+    // not reopen.
     existingSessionId?: string
     resumeSessionId?: string
     approvedNewDirectoryCreation?: boolean

@@ -231,9 +231,9 @@ export class RpcGateway {
         collaborationMode?: CodexCollaborationMode,
         copilotAgentMode?: CopilotAgentMode,
         startingMode?: 'remote' | 'pty',
-        // Hub session id to reuse for this spawn. When set, the runner boots the
-        // CLI with `--hapi-session-id`, so the child reuses the existing hub
-        // session row (same id) instead of minting a new one.
+        // Hub session id for this spawn (preallocated stub or reopen). Runner
+        // stamps `--existing-session-id` or `--hapi-session-id` by flavor; the
+        // latter is adopt-stub (create/getOrCreate with id), not reopen.
         forkSession?: boolean
     ): Promise<
         | { type: 'success'; sessionId: string }

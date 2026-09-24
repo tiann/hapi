@@ -72,7 +72,7 @@ describe('claudeCommand arguments', () => {
         }
     })
 
-    it('passes --hapi-session-id through to runClaude as existingSessionId (#1911)', async () => {
+    it('passes --hapi-session-id as reservedSessionId (adopt-stub, not reopen) (#1911)', async () => {
         await claudeCommand.run(createCommandContext([
             '--started-by', 'runner',
             '--hapi-starting-mode', 'remote',
@@ -82,7 +82,7 @@ describe('claudeCommand arguments', () => {
         expect(runClaudeMock).toHaveBeenCalledWith({
             startedBy: 'runner',
             startingMode: 'remote',
-            existingSessionId: 'preallocated-hub-id',
+            reservedSessionId: 'preallocated-hub-id',
         })
     })
 

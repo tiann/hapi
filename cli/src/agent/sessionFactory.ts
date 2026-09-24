@@ -1,6 +1,7 @@
 import os from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
+import { z } from 'zod'
 
 import { ApiClient } from '@/api/api'
 import type { ApiSessionClient } from '@/api/apiSession'
@@ -20,6 +21,9 @@ export { HAPI_SESSION_ID_ENV, exportHapiSessionEnv, exportHapiHubAuthEnv } from 
 
 export type SessionStartedBy = 'runner' | 'terminal'
 
+/** Matches shared CreateOrLoadSessionRequestSchema `id`. */
+const HubReservedSessionIdSchema = z.string().uuid()
+
 export type SessionBootstrapOptions = {
     reportStarted?: boolean
     /** Multi-session workers inject session identity into each child, never process.env. */
@@ -28,11 +32,34 @@ export type SessionBootstrapOptions = {
     startedBy?: SessionStartedBy
     workingDirectory?: string
     tag?: string
+    /**
+     * Hub-preallocated / runner-stamped id for a *fresh* create bootstrap.
+     * Passed as `getOrCreateSession({ id })` so create-time metadata still runs
+     * while binding the reserved row. Distinct from reopen via
+     * `bootstrapExistingSession` / `--existing-session-id`.
+     *
+     * Must be a UUID (hub create schema). Non-UUID stamps (legacy HTTP spawn
+     * hints) stay reap-only: argv retains the id, create mints a new hub row.
+     */
+    reservedSessionId?: string
     agentState?: AgentState | null
     model?: string
     modelReasoningEffort?: string
     effort?: string
     metadataOverrides?: Partial<Metadata>
+}
+
+/** Hub create/load accepts optional `id` only as UUID — match that gate. */
+export function resolveReservedHubSessionId(reservedSessionId: string | undefined): string | undefined {
+    if (!reservedSessionId) return undefined
+    const parsed = HubReservedSessionIdSchema.safeParse(reservedSessionId)
+    if (!parsed.success) {
+        logger.debug(
+            `[START] Ignoring non-UUID reservedSessionId for create bind (reap stamp only): ${reservedSessionId}`
+        )
+        return undefined
+    }
+    return parsed.data
 }
 
 export type SessionBootstrapResult = {
@@ -204,6 +231,7 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
     const startedBy = options.startedBy ?? 'terminal'
     const sessionTag = options.tag ?? randomUUID()
     const agentState = options.agentState === undefined ? {} : options.agentState
+    const reservedHubId = resolveReservedHubSessionId(options.reservedSessionId)
 
     const api = await ApiClient.create()
 
@@ -222,6 +250,7 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
     })
 
     const sessionInfo = await api.getOrCreateSession({
+        ...(reservedHubId ? { id: reservedHubId } : {}),
         tag: sessionTag,
         metadata,
         state: agentState,
@@ -229,6 +258,12 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
         modelReasoningEffort: options.modelReasoningEffort,
         effort: options.effort
     })
+
+    if (reservedHubId && sessionInfo.id !== reservedHubId) {
+        throw new Error(
+            `Hub returned unexpected session id ${sessionInfo.id} (reserved ${reservedHubId})`
+        )
+    }
 
     const session = api.sessionSyncClient(sessionInfo)
 

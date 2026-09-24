@@ -364,6 +364,63 @@ describe('bootstrapSession HAPI_SESSION_ID export', () => {
         expect(result.sessionInfo.id).toBe('hub-session-42')
         expect(process.env[HAPI_SESSION_ID_ENV]).toBe('hub-session-42')
     })
+
+    it('passes reservedSessionId as getOrCreateSession id (adopt-stub, #1911)', async () => {
+        const session = createSession()
+        session.id = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+        getOrCreateSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue({ isPending: () => false })
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        const result = await bootstrapSession({
+            flavor: 'claude',
+            workingDirectory: '/tmp/project',
+            reservedSessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+        })
+
+        expect(getOrCreateSessionMock).toHaveBeenCalledWith(
+            expect.objectContaining({ id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' })
+        )
+        expect(result.sessionInfo.id).toBe('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee')
+    })
+
+    it('does not bind non-UUID reservedSessionId (reap stamp only; hub rejects non-uuid id)', async () => {
+        const session = createSession()
+        session.id = 'minted-hub-id'
+        getOrCreateSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue({ isPending: () => false })
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        await bootstrapSession({
+            flavor: 'claude',
+            workingDirectory: '/tmp/project',
+            reservedSessionId: 'spawned-test-456'
+        })
+
+        expect(getOrCreateSessionMock).toHaveBeenCalledWith(
+            expect.not.objectContaining({ id: expect.anything() })
+        )
+        // Call args should omit `id` entirely:
+        const call = getOrCreateSessionMock.mock.calls[0][0] as { id?: string }
+        expect(call.id).toBeUndefined()
+    })
+
+    it('throws when hub returns a different id than reservedSessionId', async () => {
+        const session = createSession()
+        session.id = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+        getOrCreateSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue({ isPending: () => false })
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        await expect(bootstrapSession({
+            flavor: 'claude',
+            workingDirectory: '/tmp/project',
+            reservedSessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+        })).rejects.toThrow(/unexpected session id/)
+    })
 })
 
 describe('buildMachineMetadata runner-only capabilities', () => {

@@ -14,6 +14,8 @@ export type ParsedCursorCommandOptions = {
     permissionMode?: CursorPermissionMode
     resumeSessionId?: string
     existingSessionId?: string
+    /** Fresh-spawn reserved hub id (`--hapi-session-id`); not reopen. */
+    reservedSessionId?: string
     model?: string
 }
 
@@ -86,12 +88,13 @@ export function parseCursorCommandArgs(commandArgs: string[]): ParsedCursorComma
                 unknownArgs.push(arg)
             }
         } else if (arg === '--hapi-session-id') {
-            // Same hub-row bootstrap as --existing-session-id (fresh spawn stamp).
+            // Fresh-spawn reserved id when stamped; reopen stays on
+            // `--existing-session-id` (Cursor machine spawn uses that form).
             const hapiSessionId = commandArgs[++i]
             if (!hapiSessionId || hapiSessionId.startsWith('-')) {
                 throw new Error('Missing --hapi-session-id value')
             }
-            options.existingSessionId = hapiSessionId
+            options.reservedSessionId = hapiSessionId
         } else if (arg === '--existing-session-id') {
             const hapiSessionId = commandArgs[++i]
             if (!hapiSessionId || hapiSessionId.startsWith('-')) {
