@@ -12,7 +12,6 @@ import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
 } from '@hapi/protocol/runnerCapabilities'
-import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { ImplementCodexPlanResult } from '@hapi/protocol/apiTypes'
@@ -1714,8 +1713,10 @@ export class SyncEngine {
         // machine-level StopSession RPC when we know a machineId, and refuse
         // to archive while the runner reports still_alive / unknown.
         let cliUnreachable = false
+        let killPid: number | undefined
         try {
-            await this.rpcGateway.killSession(sessionId)
+            const killResult = await this.rpcGateway.killSession(sessionId)
+            killPid = killResult.pid
         } catch (error) {
             if (error instanceof RpcTargetMissingError) {
                 cliUnreachable = true
@@ -1736,24 +1737,19 @@ export class SyncEngine {
                 void stopError
                 status = 'still_alive'
             }
-            // KillSession acknowledges before cleanupAndExit finishes (fire-and-
-            // forget), so a successful KillSession + StopSession `unknown` is
-            // not exit proof — pre-stamp orphans can keep running (#1910).
-            // When KillSession missed, require confirmed gone/stopped. When it
-            // reached the CLI but the runner cannot find the PID, wait for the
-            // session KillSession handler to drop (socket teardown) before
-            // archiving; if it stays registered, refuse.
-            if (status === 'still_alive') {
-                throw new Error('Session process is still running and could not be stopped')
+            // KillSession acknowledges before cleanupAndExit finishes, and socket
+            // loss is not exit proof (CLI reconnects). When the runner cannot
+            // find the HAPI id, confirm via the KillSession-reported OS pid.
+            if (status === 'unknown' && typeof killPid === 'number' && killPid > 0) {
+                try {
+                    status = await this.rpcGateway.stopRunnerSession(machineId, `PID-${killPid}`)
+                } catch (pidStopError) {
+                    void pidStopError
+                    status = 'still_alive'
+                }
             }
-            if (status === 'unknown') {
-                if (cliUnreachable) {
-                    throw new Error('Session process is still running and could not be stopped')
-                }
-                const handlerGone = await this.waitForSessionKillHandlerGone(sessionId)
-                if (!handlerGone) {
-                    throw new Error('Session process is still running and could not be stopped')
-                }
+            if (status === 'still_alive' || status === 'unknown') {
+                throw new Error('Session process is still running and could not be stopped')
             }
         }
 
@@ -1766,30 +1762,6 @@ export class SyncEngine {
             this.emitCliSessionMetadataUpdate(sessionId)
         }
         this.handleSessionEnd({ sid: sessionId, time: Date.now() })
-    }
-
-    /**
-     * After KillSession returns, the CLI may still be running (cleanup is not
-     * awaited). Poll until the session's KillSession RPC target is gone, or
-     * until the deadline — whichever comes first.
-     *
-     * `killHandlerGoneTimeoutMs` is overridable in unit tests so the stalled-
-     * handler path does not sleep the full production window.
-     */
-    static killHandlerGoneTimeoutMs = 5_000
-
-    private async waitForSessionKillHandlerGone(
-        sessionId: string,
-        timeoutMs = SyncEngine.killHandlerGoneTimeoutMs
-    ): Promise<boolean> {
-        const deadline = Date.now() + timeoutMs
-        const reachable = () => this.rpcGateway.isSessionMethodReachable(sessionId, RPC_METHODS.KillSession)
-        if (!reachable()) return true
-        while (Date.now() < deadline) {
-            await new Promise(resolve => setTimeout(resolve, 50))
-            if (!reachable()) return true
-        }
-        return !reachable()
     }
 
     /**

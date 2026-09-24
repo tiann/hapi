@@ -9,6 +9,8 @@ interface KillSessionRequest {
 interface KillSessionResponse {
     success: boolean;
     message: string;
+    /** OS pid of this CLI — hub uses it to confirm exit via StopSession when maps miss. */
+    pid: number;
 }
 
 /**
@@ -53,10 +55,12 @@ export function registerKillSessionHandler(
         void lifecycle.cleanupAndExit();
 
         // We should still be able to respond to the client, though they
-        // should optimistically assume the session is dead.
+        // should optimistically assume the session is dead. Include pid so
+        // archive can ask the runner to verify this process exited (#1910).
         return {
             success: true,
-            message: 'Killing hapi CLI process'
+            message: 'Killing hapi CLI process',
+            pid: process.pid,
         };
     });
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
     detachSharedRootFromWrapper,
     keepWrapperForSharedSiblings,
+    pidHasActiveSharedRoots,
     sessionRuntimeHasActiveSiblings,
     trackedSharedWrapperPidsWithSiblings,
     wrapperHasActiveSiblingRoots,
@@ -177,5 +178,6 @@ describe('runtime registry sibling guards (post-restart)', () => {
         // Registry siblings on the same PID must keep the wrapper alive:
         expect(wrapperHasActiveSiblingRoots(runtimesAfterArchive, 'new-root', 4242)).toBe(true)
         expect(sessionRuntimeHasActiveSiblings(runtimesAfterArchive, 'new-root')).toBe(true)
+        expect(pidHasActiveSharedRoots(runtimesAfterArchive, 4242)).toBe(true)
     })
 })

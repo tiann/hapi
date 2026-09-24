@@ -34,7 +34,11 @@ describe('registerKillSessionHandler (tiann/hapi#914)', () => {
         expect(handler).toBeDefined()
 
         const result = await handler?.()
-        expect(result).toEqual({ success: true, message: 'Killing hapi CLI process' })
+        expect(result).toEqual({
+            success: true,
+            message: 'Killing hapi CLI process',
+            pid: process.pid,
+        })
 
         // setArchiveReason MUST be called BEFORE cleanupAndExit so the archive
         // metadata write reads the correct reason.

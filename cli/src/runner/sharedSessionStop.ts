@@ -15,6 +15,22 @@ export type RuntimeSiblingSnapshot = {
 }
 
 /**
+ * True when any root on this wrapper PID is still active in the durable
+ * registry. Used when StopSession is asked to confirm a raw OS pid (PID-N)
+ * from KillSession — tree-killing would end sibling shared Codex roots.
+ */
+export function pidHasActiveSharedRoots(
+    runtimes: RuntimeSiblingSnapshot[],
+    wrapperPid: number
+): boolean {
+    for (const runtime of runtimes) {
+        if (runtime.pid !== wrapperPid) continue
+        return Object.values(runtime.sessions).some((binding) => binding.active)
+    }
+    return false
+}
+
+/**
  * True when another root on the same wrapper PID is still active in the
  * durable Codex runtime registry — even if this session's binding is inactive
  * and the runner has no in-memory TrackedSession.

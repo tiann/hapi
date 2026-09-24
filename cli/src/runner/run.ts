@@ -20,6 +20,7 @@ import { decideUntrackedRunnerWebhook } from '@/runner/lateRunnerWebhook';
 import {
     detachSharedRootFromWrapper,
     keepWrapperForSharedSiblings,
+    pidHasActiveSharedRoots,
     sessionRuntimeHasActiveSiblings,
     trackedSharedWrapperPidsWithSiblings,
     wrapperHasActiveSiblingRoots,
@@ -1377,6 +1378,35 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         logger.debug(`[RUNNER RUN] Session ${sessionId} was previously observed exited`);
         return 'already_gone';
       }
+
+      // KillSession returns the CLI's OS pid when session maps miss. Confirm
+      // that exact process without assuming argv stamps (#1910).
+      if (sessionId.startsWith('PID-')) {
+        const pid = parseInt(sessionId.slice(4), 10);
+        if (Number.isFinite(pid) && pid > 0) {
+          if (!isProcessAlive(pid)) {
+            rememberVerifiedExit(sessionId);
+            return 'already_gone';
+          }
+          const liveForPid = (await readRuntimes()).filter(runtime =>
+            runtime.hub === configuration.apiUrl
+            && runtime.authHash === runtimeAuthHash()
+            && runtimeMayBeAlive(runtime)
+          );
+          if (pidHasActiveSharedRoots(liveForPid, pid)) {
+            // Shared Codex wrapper still hosts active roots — do not tree-kill.
+            // KillSession already ended the archived root in-process.
+            logger.debug(
+              `[RUNNER RUN] PID ${pid} still hosts active shared roots; not tree-killing`
+            );
+            return await finishWithOrphanSweep('stopped');
+          }
+          if (!(await killProcessTreeByPid(pid))) return 'still_alive';
+          rememberVerifiedExit(sessionId);
+          return await finishWithOrphanSweep('stopped');
+        }
+      }
+
       // No PID matched and no verified-exit tombstone — distinct from
       // still_alive so callers reconciling stale rows are not blocked forever,
       // while callers that just spawned this id can treat unknown defensively.

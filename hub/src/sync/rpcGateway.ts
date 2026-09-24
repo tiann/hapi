@@ -185,22 +185,12 @@ export class RpcGateway {
         return await this.sessionRpc(sessionId, RPC_METHODS.SetSessionConfig, config)
     }
 
-    async killSession(sessionId: string): Promise<void> {
-        await this.sessionRpc(sessionId, RPC_METHODS.KillSession, {})
-    }
-
-    /**
-     * True when a session-scoped RPC method still has a live /cli socket.
-     * Used after KillSession: the handler acknowledges before `cleanupAndExit`
-     * finishes, so StopSession `unknown` alone is not exit proof — a still-
-     * registered KillSession target means the CLI has not torn down yet.
-     */
-    isSessionMethodReachable(sessionId: string, method: string): boolean {
-        const qualified = `${sessionId}:${method}`
-        const socketId = this.rpcRegistry.getSocketIdForMethod(qualified)
-        if (!socketId) return false
-        if (typeof this.io?.of !== 'function') return false
-        return Boolean(this.io.of('/cli').sockets.get(socketId))
+    async killSession(sessionId: string): Promise<{ pid?: number }> {
+        const result = await this.sessionRpc(sessionId, RPC_METHODS.KillSession, {})
+        if (result && typeof result === 'object' && typeof (result as { pid?: unknown }).pid === 'number') {
+            return { pid: (result as { pid: number }).pid }
+        }
+        return {}
     }
 
     async stopRunnerSession(machineId: string, sessionId: string): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> {
