@@ -15,7 +15,7 @@ import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquireRunnerLock, releaseRunnerLock } from '@/persistence';
 import { getCliArgs } from '@/utils/cliArgs';
 import { getProcessStartMarker, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid } from '@/utils/process';
-import { findRunnerSpawnedOrphanPids, reapRunnerSpawnedOrphans } from '@/runner/orphanReap';
+import { findRunnerSpawnedOrphanTargets, reapRunnerSpawnedOrphans } from '@/runner/orphanReap';
 import { decideUntrackedRunnerWebhook } from '@/runner/lateRunnerWebhook';
 import {
     decideKeepWrapperArchive,
@@ -1122,10 +1122,11 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           sessionId
         );
         const orphanStatus = await reapRunnerSpawnedOrphans(sessionId, {
-          findOrphans: async (id) => {
-            const found = await findRunnerSpawnedOrphanPids(id);
+          findTargets: async (id) => {
+            const found = await findRunnerSpawnedOrphanTargets(id);
             if (found === 'scan_failed') return found;
-            return found.filter(pid => !shouldSkipOrphanPid(liveRuntimes, protectedTrackedPids, id, pid));
+            // Keep same-snapshot startMarker; filter by pid only (#1911 bot Major).
+            return found.filter(t => !shouldSkipOrphanPid(liveRuntimes, protectedTrackedPids, id, t.pid));
           },
         });
         if (orphanStatus === 'still_alive') {
@@ -1442,10 +1443,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           sessionId
         );
         const orphanStatus = await reapRunnerSpawnedOrphans(sessionId, {
-          findOrphans: async (id) => {
-            const found = await findRunnerSpawnedOrphanPids(id);
+          findTargets: async (id) => {
+            const found = await findRunnerSpawnedOrphanTargets(id);
             if (found === 'scan_failed') return found;
-            return found.filter(pid => !shouldSkipOrphanPid(liveRuntimes, protectedTrackedPids, id, pid));
+            return found.filter(t => !shouldSkipOrphanPid(liveRuntimes, protectedTrackedPids, id, t.pid));
           },
         });
         if (orphanStatus === 'still_alive') {

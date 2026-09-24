@@ -237,4 +237,43 @@ describe('reapRunnerSpawnedOrphans (stopSession orphan path)', () => {
         expect(killed).toEqual([2222])
         expect(status).toBe('still_alive')
     })
+
+    it('PID-filter on findTargets retains same-snapshot markers (runner stopSession shape)', async () => {
+        // Regression: run.ts used findOrphans → number[], which forced a later
+        // getStartMarker probe and discarded the argv-snapshot marker (#1911 bot).
+        const killed: number[] = []
+        const protectedPids = new Set([1111])
+        const status = await reapRunnerSpawnedOrphans('sess-orphan-filter', {
+            findTargets: async () => {
+                const found = [
+                    { pid: 1111, startMarker: 'snap-protected' },
+                    { pid: 2222, startMarker: 'snap-orphan' },
+                ]
+                return found.filter((t) => !protectedPids.has(t.pid))
+            },
+            killTree: async (pid) => {
+                killed.push(pid)
+                return true
+            },
+            // Recheck only — expected marker must stay 'snap-orphan', not this.
+            getStartMarker: () => 'snap-orphan',
+            isAlive: () => true,
+        })
+        expect(killed).toEqual([2222])
+        expect(status).toBe('stopped')
+    })
+})
+
+describe('Windows orphan startMarker format agreement', () => {
+    it('list + single-probe CIM commands stringify CreationDate the same way', async () => {
+        const { WINDOWS_CIM_CREATION_DATE_MARKER_EXPR, windowsProcessListCimCommand, windowsProcessMarkerCimCommand } =
+            await import('./orphanReap')
+        expect(WINDOWS_CIM_CREATION_DATE_MARKER_EXPR).toContain("ToString('o')")
+        expect(windowsProcessListCimCommand()).toContain(WINDOWS_CIM_CREATION_DATE_MARKER_EXPR)
+        const probe = windowsProcessMarkerCimCommand(4242)
+        expect(probe).toContain("CreationDate.ToUniversalTime().ToString('o')")
+        expect(probe).toContain('ProcessId = 4242')
+        // Must not feed raw DateTime into ConvertTo-Json (WinPS emits /Date(...)/).
+        expect(windowsProcessListCimCommand()).toMatch(/CreationDate.*ToString\('o'\)/)
+    })
 })

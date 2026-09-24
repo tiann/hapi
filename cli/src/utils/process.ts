@@ -35,24 +35,47 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
+/**
+ * Shared Win32 generation marker: CIM CreationDate as UTC round-trip ISO.
+ * Must match orphan list + recheck — ConvertTo-Json of a raw DateTime emits
+ * `/Date(...)/` on Windows PowerShell 5.1 (#1911 bot Major).
+ */
+export const WINDOWS_CIM_CREATION_DATE_MARKER_EXPR =
+  "$_.CreationDate.ToUniversalTime().ToString('o')";
+
+/** PowerShell -Command body for the argv orphan process list (CIM + JSON). */
+export function windowsProcessListCimCommand(): string {
+  return (
+    'Get-CimInstance Win32_Process | Select-Object ProcessId,Name,CommandLine,'
+    + `@{N='CreationDate';E={if ($_.CreationDate) { ${WINDOWS_CIM_CREATION_DATE_MARKER_EXPR} } else { $null }}}`
+    + ' | ConvertTo-Json -Compress'
+  );
+}
+
+/** PowerShell -Command body for a single-PID start-marker probe. */
+export function windowsProcessMarkerCimCommand(pid: number): string {
+  const expr = WINDOWS_CIM_CREATION_DATE_MARKER_EXPR.replace(/\$_/g, '$p');
+  return (
+    `$p = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}"; `
+    + `if ($p -and $p.CreationDate) { ${expr} }`
+  );
+}
+
 /** Stable marker for one OS PID generation; null means the platform probe failed. */
 export function getProcessStartMarker(pid: number): string | null {
   if (!isProcessAlive(pid)) return null;
   if (isWindows()) {
+    // Same UTC ISO 'o' string as orphanReap listWindowsProcessesWithCommandLine.
+    // Do not print raw DateTime or use WMIC DMTF (format mismatch skips reap).
     const powershell = spawn.sync('powershell', [
       '-NoProfile', '-NonInteractive', '-Command',
-      `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CreationDate`
+      windowsProcessMarkerCimCommand(pid),
     ], { stdio: 'pipe', windowsHide: true });
     if (!powershell.error && powershell.status === 0) {
       const marker = powershell.stdout?.toString().trim();
       if (marker) return marker;
     }
-    const result = spawn.sync('wmic', [
-      'process', 'where', `ProcessId=${pid}`, 'get', 'CreationDate', '/value'
-    ], { stdio: 'pipe', windowsHide: true });
-    if (result.error || result.status !== 0) return null;
-    const match = (result.stdout?.toString() ?? '').match(/CreationDate=([^\r\n]+)/);
-    return match?.[1]?.trim() || null;
+    return null;
   }
   const result = spawn.sync('ps', ['-p', String(pid), '-o', 'lstart='], {
     stdio: 'pipe',

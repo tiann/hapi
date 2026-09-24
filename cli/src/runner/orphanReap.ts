@@ -12,7 +12,7 @@
  */
 
 import spawn from 'cross-spawn'
-import { getProcessStartMarker, isProcessAlive } from '@/utils/process'
+import { getProcessStartMarker, isProcessAlive, windowsProcessListCimCommand } from '@/utils/process'
 
 export type ProcessSnapshot = {
     pid: number
@@ -21,7 +21,7 @@ export type ProcessSnapshot = {
     /**
      * Generation identity from the *same* listing that produced argv match.
      * POSIX: `ps` lstart (LC_ALL=C TZ=UTC) — same format as getProcessStartMarker.
-     * Windows: Win32_Process.CreationDate — same format as getProcessStartMarker.
+     * Windows: Win32_Process.CreationDate as UTC ISO 'o' — same as getProcessStartMarker.
      */
     startMarker?: string | null
 }
@@ -134,6 +134,16 @@ export function listPosixProcessesWithStartMarker(): ProcessSnapshot[] {
     return snapshots
 }
 
+/**
+ * Shared Win32 generation marker helpers live in `@/utils/process` so list +
+ * single-PID probe stay format-identical. Re-export for orphanReap tests.
+ */
+export {
+    WINDOWS_CIM_CREATION_DATE_MARKER_EXPR,
+    windowsProcessListCimCommand,
+    windowsProcessMarkerCimCommand,
+} from '@/utils/process'
+
 /** Win32 process list with CommandLine + CreationDate for argv orphan matching. */
 export function listWindowsProcessesWithCommandLine(): ProcessSnapshot[] {
     const result = spawn.sync(
@@ -142,7 +152,7 @@ export function listWindowsProcessesWithCommandLine(): ProcessSnapshot[] {
             '-NoProfile',
             '-NonInteractive',
             '-Command',
-            'Get-CimInstance Win32_Process | Select-Object ProcessId,Name,CommandLine,CreationDate | ConvertTo-Json -Compress',
+            windowsProcessListCimCommand(),
         ],
         { encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024 }
     )
