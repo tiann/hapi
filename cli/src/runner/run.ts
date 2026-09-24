@@ -1231,6 +1231,25 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           if (session.startedBy === 'runner') {
             // Adopted post-restart sessions have no ChildProcess handle — still
             // tree-kill so agent grandchildren cannot outlive the wrapper.
+            // Verify the adopted start marker first so PID reuse cannot nuke a
+            // stranger after the original CLI exited without an exit listener.
+            if (!session.childProcess) {
+              const persisted = persistedResumeProcesses.get(pid);
+              if (persisted?.processStartMarker) {
+                const currentMarker = getProcessStartMarker(pid);
+                if (currentMarker === null || currentMarker !== persisted.processStartMarker) {
+                  logger.debug(
+                    `[RUNNER RUN] Adopted PID ${pid} generation mismatch; dropping stale tracking for ${sessionId}`
+                  );
+                  pidToTrackedSession.delete(pid);
+                  pidToRequestedSessionId.delete(pid);
+                  pidToConfirmedSessionId.delete(pid);
+                  if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
+                  releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
+                  continue;
+                }
+              }
+            }
             try {
               const treeStopped = session.childProcess
                 ? await killProcessByChildProcess(session.childProcess)

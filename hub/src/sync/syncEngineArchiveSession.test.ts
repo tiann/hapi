@@ -76,6 +76,9 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
 
         expect(calledWith).toEqual(['machine-x', sessionId])
         expect(cache().getSession(sessionId)?.active).toBe(false)
+        // Stop confirmed before CLI could flush — hub must author archive metadata.
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
+        expect(cache().getSession(sessionId)?.metadata?.archivedBy).toBe('hub')
     })
 
     it('archives once the runner confirms the process is gone', async () => {
