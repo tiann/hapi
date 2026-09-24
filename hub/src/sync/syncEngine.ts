@@ -12,6 +12,7 @@ import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
 } from '@hapi/protocol/runnerCapabilities'
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { ImplementCodexPlanResult } from '@hapi/protocol/apiTypes'
@@ -1735,15 +1736,24 @@ export class SyncEngine {
                 void stopError
                 status = 'still_alive'
             }
-            // After KillSession reached the CLI, `unknown` can mean the child
-            // already tore down its runner maps while exiting — that is fine.
-            // When KillSession missed, require a confirmed gone/stopped so we
-            // never archive a live orphan (#1910 / #1705).
-            const blocked = cliUnreachable
-                ? (status === 'still_alive' || status === 'unknown')
-                : status === 'still_alive'
-            if (blocked) {
+            // KillSession acknowledges before cleanupAndExit finishes (fire-and-
+            // forget), so a successful KillSession + StopSession `unknown` is
+            // not exit proof — pre-stamp orphans can keep running (#1910).
+            // When KillSession missed, require confirmed gone/stopped. When it
+            // reached the CLI but the runner cannot find the PID, wait for the
+            // session KillSession handler to drop (socket teardown) before
+            // archiving; if it stays registered, refuse.
+            if (status === 'still_alive') {
                 throw new Error('Session process is still running and could not be stopped')
+            }
+            if (status === 'unknown') {
+                if (cliUnreachable) {
+                    throw new Error('Session process is still running and could not be stopped')
+                }
+                const handlerGone = await this.waitForSessionKillHandlerGone(sessionId)
+                if (!handlerGone) {
+                    throw new Error('Session process is still running and could not be stopped')
+                }
             }
         }
 
@@ -1756,6 +1766,30 @@ export class SyncEngine {
             this.emitCliSessionMetadataUpdate(sessionId)
         }
         this.handleSessionEnd({ sid: sessionId, time: Date.now() })
+    }
+
+    /**
+     * After KillSession returns, the CLI may still be running (cleanup is not
+     * awaited). Poll until the session's KillSession RPC target is gone, or
+     * until the deadline — whichever comes first.
+     *
+     * `killHandlerGoneTimeoutMs` is overridable in unit tests so the stalled-
+     * handler path does not sleep the full production window.
+     */
+    static killHandlerGoneTimeoutMs = 5_000
+
+    private async waitForSessionKillHandlerGone(
+        sessionId: string,
+        timeoutMs = SyncEngine.killHandlerGoneTimeoutMs
+    ): Promise<boolean> {
+        const deadline = Date.now() + timeoutMs
+        const reachable = () => this.rpcGateway.isSessionMethodReachable(sessionId, RPC_METHODS.KillSession)
+        if (!reachable()) return true
+        while (Date.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 50))
+            if (!reachable()) return true
+        }
+        return !reachable()
     }
 
     /**

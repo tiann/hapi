@@ -165,12 +165,36 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(session?.metadata?.lifecycleState).not.toBe('archived')
     })
 
-    it('archives when KillSession succeeded even if stopRunnerSession returns unknown', async () => {
-        // CLI accepted KillSession and is exiting; runner maps may already be gone.
-        const sessionId = insertActiveSession('sess-kill-ok-unknown', 'machine-x')
+    it('does NOT archive when KillSession succeeded but StopSession is unknown and the CLI handler remains', async () => {
+        // KillSession ack is fire-and-forget; an unreapable pre-stamp orphan can
+        // still be alive while StopSession returns unknown (#1910 bot Major).
+        const sessionId = insertActiveSession('sess-kill-ok-unknown-live', 'machine-x')
         setKillSessionOk()
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => 'unknown'
+        ;(engine as unknown as { rpcGateway: { isSessionMethodReachable: unknown } }).rpcGateway.isSessionMethodReachable =
+            () => true
+        const previousTimeout = SyncEngine.killHandlerGoneTimeoutMs
+        SyncEngine.killHandlerGoneTimeoutMs = 80
+        try {
+            await expect(engine.archiveSession(sessionId)).rejects.toThrow()
+        } finally {
+            SyncEngine.killHandlerGoneTimeoutMs = previousTimeout
+        }
+
+        const session = cache().getSession(sessionId)
+        expect(session?.active).toBe(true)
+        expect(session?.metadata?.lifecycleState).not.toBe('archived')
+    })
+
+    it('archives when KillSession succeeded, StopSession is unknown, and the CLI handler is gone', async () => {
+        // Runner maps already cleared while exiting; session socket tore down.
+        const sessionId = insertActiveSession('sess-kill-ok-unknown-gone', 'machine-x')
+        setKillSessionOk()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'unknown'
+        ;(engine as unknown as { rpcGateway: { isSessionMethodReachable: unknown } }).rpcGateway.isSessionMethodReachable =
+            () => false
 
         await engine.archiveSession(sessionId)
 
