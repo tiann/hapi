@@ -6,8 +6,12 @@
  * with no tracking entry. `stopSession` must still be able to reap them when
  * the hub archives by HAPI session id — matching `--started-by runner` plus
  * an explicit `--existing-session-id` / `--hapi-session-id` flag.
+ *
+ * Windows: do not use ps-list. Its fastlist vendor binary is often missing from
+ * single-exe bundles and never returns CommandLine — argv matching needs CIM.
  */
 
+import spawn from 'cross-spawn'
 import psList from 'ps-list'
 
 export type ProcessSnapshot = {
@@ -54,8 +58,7 @@ export function selectOrphanPidsForSession(
     const pids: number[] = []
     const self = Number(selfPid)
     for (const proc of processes) {
-        // ps-list on win32 has returned string PIDs; coerce before Finite checks
-        // in killProcessTreeByPid (Number.isFinite("123") === false).
+        // Coerce: some listers return string PIDs; Number.isFinite("123") is false.
         const pid = typeof proc.pid === 'number' ? proc.pid : Number(proc.pid)
         if (!Number.isFinite(pid) || pid <= 0) continue
         if (pid === self) continue
@@ -68,9 +71,51 @@ export function selectOrphanPidsForSession(
     return pids
 }
 
+/** Win32 process list with CommandLine for argv orphan matching. */
+export function listWindowsProcessesWithCommandLine(): ProcessSnapshot[] {
+    const result = spawn.sync(
+        'powershell',
+        [
+            '-NoProfile',
+            '-NonInteractive',
+            '-Command',
+            'Get-CimInstance Win32_Process | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress',
+        ],
+        { encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024 }
+    )
+    if (result.error || result.status !== 0) {
+        throw result.error ?? new Error(`powershell Win32_Process exit ${result.status}`)
+    }
+    const raw = (result.stdout ?? '').trim()
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as
+        | Array<{ ProcessId?: number; Name?: string; CommandLine?: string }>
+        | { ProcessId?: number; Name?: string; CommandLine?: string }
+    const rows = Array.isArray(parsed) ? parsed : [parsed]
+    return rows
+        .map((row) => ({
+            pid: Number(row.ProcessId),
+            name: row.Name ?? '',
+            cmd: row.CommandLine ?? '',
+        }))
+        .filter((proc) => Number.isFinite(proc.pid) && proc.pid > 0)
+}
+
+export async function listProcessesForOrphanScan(): Promise<ProcessSnapshot[]> {
+    if (process.platform === 'win32') {
+        return listWindowsProcessesWithCommandLine()
+    }
+    const list = await psList()
+    return list.map((proc) => ({
+        pid: proc.pid,
+        cmd: proc.cmd,
+        name: proc.name,
+    }))
+}
+
 export async function findRunnerSpawnedOrphanPids(
     sessionId: string,
-    listProcesses: () => Promise<ProcessSnapshot[]> = () => psList()
+    listProcesses: () => Promise<ProcessSnapshot[]> = listProcessesForOrphanScan
 ): Promise<number[] | 'scan_failed'> {
     try {
         const processes = await listProcesses()

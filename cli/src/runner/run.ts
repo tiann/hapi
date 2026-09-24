@@ -1442,7 +1442,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           },
         });
         if (orphanStatus === 'still_alive') {
-          logger.debug(`[RUNNER RUN] Orphan argv scan left live PIDs for session ${sessionId}`);
+          logger.debug(`[RUNNER RUN] Orphan argv reap still_alive for session ${sessionId} (scan_failed or kill left live PIDs)`);
           return 'still_alive';
         }
         if (orphanStatus === 'stopped') {

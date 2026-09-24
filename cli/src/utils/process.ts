@@ -172,8 +172,6 @@ export async function killProcess(pid: number, force: boolean = false): Promise<
     // Soft taskkill (/T without /F) is routinely refused on win32 console trees
     // ("can only be terminated forcefully"). Mirror POSIX SIGTERM→SIGKILL:
     // attempt graceful, then escalate to /F when the PID is still live.
-    // Escalate immediately on soft refusal — do not burn the full grace wait
-    // before /F (soft non-zero already means Windows rejected graceful kill).
     killProcessWindows(n, force);
     if (!force && isProcessAlive(n)) {
       killProcessWindows(n, true);

@@ -61,6 +61,25 @@ describe('orphanReap argv matching', () => {
         )
         expect(pids).toEqual([42])
     })
+
+    it('matches win32 CIM snapshots that include CommandLine', () => {
+        const pids = selectOrphanPidsForSession(
+            [
+                {
+                    pid: 99,
+                    name: 'hapi.exe',
+                    cmd: `"C:\\\\Temp\\\\hapi.exe" /c keep.cmd --started-by runner --existing-session-id ${sessionId}`,
+                },
+                {
+                    pid: 100,
+                    name: 'hapi.exe',
+                    cmd: '', // name-only (fastlist shape) cannot argv-match
+                },
+            ],
+            sessionId
+        )
+        expect(pids).toEqual([99])
+    })
 })
 
 describe('reapRunnerSpawnedOrphans (stopSession orphan path)', () => {
