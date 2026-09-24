@@ -174,7 +174,11 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 ...(parent ? { forkedFrom: parent.session.sessionId } : {}) } } as const;
         const bootstrap = existingSessionId
             ? await bootstrapExistingSession({ ...shared, sessionId: existingSessionId })
-            : await bootstrapSession({ ...shared, agentState: { controlledByUser: false } });
+            : await bootstrapSession({
+                ...shared,
+                reservedSessionId: options.reservedSessionId,
+                agentState: { controlledByUser: false },
+            });
         const root = new SharedCodexRoot(bootstrap, { directory: join(runtimeDirectory(), 'queues'), generation: id, endpoint: upstream, token: upstreamToken,
             settingsFor: threadId => nativeSettings.get(threadId), create, end });
         prepared.add(root);

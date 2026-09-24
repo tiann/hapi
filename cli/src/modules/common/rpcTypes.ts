@@ -5,12 +5,11 @@ export interface SpawnSessionOptions {
     machineId?: string
     directory: string
     sessionId?: string
-    // Hub row id for this spawn (preallocated stub or reopen/resume). Distinct
-    // from `sessionId` above (reserved/unused by spawn). Runner stamps
-    // `--existing-session-id` or `--hapi-session-id` by flavor; Claude/kimi/
-    // copilot treat `--hapi-session-id` as adopt-stub (create/getOrCreate),
-    // not reopen.
+    // Live hub row id for reopen/resume. Runner stamps `--existing-session-id`.
     existingSessionId?: string
+    // Hub-preallocated machine-spawn stub. Runner stamps `--hapi-session-id`
+    // (adopt-stub create/getOrCreate) — must NOT take the reopen path.
+    reservedSessionId?: string
     resumeSessionId?: string
     approvedNewDirectoryCreation?: boolean
     agent?: AgentFlavor

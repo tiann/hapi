@@ -8,7 +8,7 @@ import { SyncEngine } from './syncEngine'
  * to the runner so buildCliArgs can stamp argv before the first webhook.
  */
 describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns', () => {
-    it('creates a hub row and forwards that id as existingSessionId', async () => {
+    it('creates a hub row and forwards that id as reservedSessionId', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
             store,
@@ -41,10 +41,15 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
                     _effort?: string,
                     _permissionMode?: string,
                     _serviceTier?: string,
-                    existingSessionId?: string
+                    existingSessionId?: string,
+                    _collaborationMode?: string,
+                    _copilotAgentMode?: string,
+                    _startingMode?: string,
+                    _forkSession?: boolean,
+                    reservedSessionId?: string
                 ) => {
-                    forwardedExistingId = existingSessionId
-                    return { type: 'success' as const, sessionId: existingSessionId! }
+                    forwardedExistingId = reservedSessionId ?? existingSessionId
+                    return { type: 'success' as const, sessionId: forwardedExistingId! }
                 }
 
             const result = await engine.spawnSession(
@@ -117,7 +122,7 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
                     ...args: unknown[]
                 ) => {
                     callCount++
-                    forwardedExistingId = args[12] as string | undefined
+                    forwardedExistingId = (args[17] ?? args[12]) as string | undefined
                     return { type: 'success' as const, sessionId: forwardedExistingId! }
                 }
 
@@ -174,7 +179,7 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
                 .rpcGateway.spawnSession = async (
                     ...args: unknown[]
                 ) => {
-                    forwardedExistingId = args[12] as string | undefined
+                    forwardedExistingId = (args[17] ?? args[12]) as string | undefined
                     return { type: 'error' as const, message: 'spawn blew up' }
                 }
             ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } })
@@ -235,7 +240,7 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
                 .rpcGateway.spawnSession = async (
                     ...args: unknown[]
                 ) => {
-                    forwardedExistingId = args[12] as string | undefined
+                    forwardedExistingId = (args[17] ?? args[12]) as string | undefined
                     return { type: 'error' as const, message: 'webhook timeout' }
                 }
             ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } })
@@ -297,7 +302,7 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
                 .rpcGateway.spawnSession = async (
                     ...args: unknown[]
                 ) => {
-                    forwardedExistingId = args[12] as string | undefined
+                    forwardedExistingId = (args[17] ?? args[12]) as string | undefined
                     return {
                         type: 'error' as const,
                         message: 'claude is not installed',
@@ -361,7 +366,7 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
                 .rpcGateway.spawnSession = async (
                     ...args: unknown[]
                 ) => {
-                    forwardedExistingId = args[12] as string | undefined
+                    forwardedExistingId = (args[17] ?? args[12]) as string | undefined
                     return {
                         type: 'error' as const,
                         message: 'Directory creation requires approval: /tmp/new-project',
@@ -418,7 +423,7 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
             let allocatedId: string | undefined
             ;(engine as unknown as { rpcGateway: { spawnSession: unknown } }).rpcGateway.spawnSession =
                 async (...args: unknown[]) => {
-                    allocatedId = args[12] as string | undefined
+                    allocatedId = (args[17] ?? args[12]) as string | undefined
                     // Simulate CLI create/adopt before webhook success
                     const cliTag = crypto.randomUUID()
                     const adopted = engine.adoptPreallocatedSession(
@@ -497,7 +502,7 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
             let stopCalls = 0
             ;(engine as unknown as { rpcGateway: { spawnSession: unknown; stopRunnerSession: unknown } })
                 .rpcGateway.spawnSession = async (...args: unknown[]) => {
-                    forwardedExistingId = args[12] as string | undefined
+                    forwardedExistingId = (args[17] ?? args[12]) as string | undefined
                     // Same shape as rpcGateway catch/timeout: error, childStarted unset.
                     return {
                         type: 'error' as const,
@@ -560,7 +565,7 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
             let allocatedId: string | undefined
             ;(engine as unknown as { rpcGateway: { spawnSession: unknown; stopRunnerSession: unknown } })
                 .rpcGateway.spawnSession = async (...args: unknown[]) => {
-                    allocatedId = args[12] as string | undefined
+                    allocatedId = (args[17] ?? args[12]) as string | undefined
                     // Simulate cursor/codex reopen path: metadata update releases stub tag.
                     const row = store.sessions.getSession(allocatedId!)
                     expect(row?.tag).toMatch(/^machine-spawn:/)

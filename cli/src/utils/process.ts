@@ -387,6 +387,14 @@ export async function killProcessTreeByPid(pid: number, force: boolean = false):
       return false;
     }
     await signalAndWaitWindowsRoot(n, force);
+    // taskkill /T can miss grandchildren when an intermediate link is already
+    // gone. Signal any surviving PIDs from the pre-kill snapshot individually
+    // before verifying (#1911 bot Major).
+    for (const survivor of treePids) {
+      if (survivor === n) continue;
+      if (!isProcessAlive(survivor)) continue;
+      await signalAndWaitWindowsRoot(survivor, true);
+    }
     return treePids.every((candidate) => !isProcessAlive(candidate));
   }
   return killProcessTree(n, force);

@@ -857,14 +857,15 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
         // The OS process now exists, so this is the point where a new generation
         // invalidates exit evidence left by an older child with the same HAPI ID.
-        for (const id of [options.sessionId, options.existingSessionId]) {
+        for (const id of [options.sessionId, options.existingSessionId, options.reservedSessionId]) {
           if (id) invalidateVerifiedExit(id);
         }
 
         const pid = happyProcess.pid;
-        if (options.existingSessionId) {
-          existingSessionIdByChildPid.set(pid, options.existingSessionId);
-          spawnSession.markChildAlive(options.existingSessionId);
+        const trackHubId = options.existingSessionId ?? options.reservedSessionId;
+        if (trackHubId) {
+          existingSessionIdByChildPid.set(pid, trackHubId);
+          spawnSession.markChildAlive(trackHubId);
         }
         invalidateVerifiedExit(`PID-${pid}`);
         logger.debug(`[RUNNER RUN] Spawned process with PID ${pid}`);
@@ -901,7 +902,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         const trackedSession: TrackedSession = {
           startedBy: 'runner',
           pid,
-          requestedHappySessionId: options.existingSessionId ?? options.sessionId,
+          requestedHappySessionId: options.existingSessionId ?? options.reservedSessionId ?? options.sessionId,
           childProcess: happyProcess,
           directoryCreated,
           message: directoryCreated ? `The path '${directory}' did not exist. We created a new folder and spawned a new session there.` : undefined
@@ -1978,16 +1979,17 @@ export function buildCliArgs(
   // Codex shares one engine; Runner owns the wrapper, not a remote mode.
   if (agent !== 'codex') args.push('--hapi-starting-mode', startingMode);
   args.push('--started-by', 'runner');
-  // Stamp the HAPI row id on argv whenever known so stopSession can reap
-  // detached orphans via ps argv scan after tracking maps are lost (#1910).
-  // Always use `--existing-session-id` (reopen / getSession + metadata update).
-  // Do NOT stamp `--hapi-session-id` here — that flag means adopt-stub create
-  // bind in claude/kimi/copilot parsers, and 409s on live resume rows (#1911
-  // Opus Critical). Fresh machine-spawn prealloc stubs are released by
-  // updateSessionMetadata; orphan reap matches either flag.
-  const reapSessionId = options.existingSessionId ?? options.sessionId;
-  if (reapSessionId) {
-    args.push('--existing-session-id', reapSessionId);
+  // Stamp the HAPI row id on argv for orphan reap after tracking loss (#1910).
+  // Adopt-stub (`--hapi-session-id`) vs reopen (`--existing-session-id`) are
+  // different operations — never collapse them (#1911 Opus Critical + Codex Major).
+  // Local HTTP non-UUID sessionId stays on --hapi-session-id (reap-only; create
+  // ignores non-UUID reserved ids).
+  if (options.existingSessionId) {
+    args.push('--existing-session-id', options.existingSessionId);
+  } else if (options.reservedSessionId) {
+    args.push('--hapi-session-id', options.reservedSessionId);
+  } else if (options.sessionId) {
+    args.push('--hapi-session-id', options.sessionId);
   }
   if (options.model) {
     args.push('--model', options.model);

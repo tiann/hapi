@@ -234,7 +234,9 @@ export class RpcGateway {
         // Hub session id for this spawn (preallocated stub or reopen). Runner
         // stamps `--existing-session-id` or `--hapi-session-id` by flavor; the
         // latter is adopt-stub (create/getOrCreate with id), not reopen.
-        forkSession?: boolean
+        forkSession?: boolean,
+        /** Fresh machine-spawn stub — distinct from reopen existingSessionId. */
+        reservedSessionId?: string
     ): Promise<
         | { type: 'success'; sessionId: string }
         | {
@@ -264,7 +266,10 @@ export class RpcGateway {
                     permissionMode,
                     serviceTier,
                     existingSessionId,
-                    sessionId: existingSessionId,
+                    reservedSessionId,
+                    // Local HTTP / tracking may still read sessionId; prefer
+                    // reserved stub id, then reopen id.
+                    sessionId: reservedSessionId ?? existingSessionId,
                     collaborationMode,
                     copilotAgentMode,
                     startingMode,

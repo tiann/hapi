@@ -2216,10 +2216,14 @@ export class SyncEngine {
                 effort,
                 permissionMode,
                 serviceTier,
-                allocatedSessionId,
+                // Fresh prealloc stubs must not go down reopen (--existing-session-id):
+                // Codex would demand a thread binding that does not exist yet (#1911).
+                preallocated ? undefined : allocatedSessionId,
                 collaborationMode,
                 copilotAgentMode,
-                startingMode
+                startingMode,
+                undefined,
+                preallocated ? allocatedSessionId : undefined
             )
         } catch (error) {
             // Ambiguous post-dispatch failure — keep the stub (child may exist).
