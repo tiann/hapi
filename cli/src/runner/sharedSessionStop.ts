@@ -56,6 +56,40 @@ export function decideRawPidStop(opts: {
 }
 
 /**
+ * Registry evidence for a shared root: Codex KillSession marks the binding
+ * inactive before replying. findRuntime only returns active rows, so StopSession
+ * must read this directly when deciding whether siblings-alone may claim stopped.
+ */
+export type RegistryBindingState = 'active' | 'inactive' | 'absent'
+
+export function sessionRegistryBindingState(
+    runtimes: RuntimeSiblingSnapshot[],
+    sessionId: string,
+    wrapperPid?: number
+): RegistryBindingState {
+    for (const runtime of runtimes) {
+        if (wrapperPid !== undefined && runtime.pid !== wrapperPid) continue
+        const binding = runtime.sessions[sessionId]
+        if (!binding) continue
+        return binding.active ? 'active' : 'inactive'
+    }
+    return 'absent'
+}
+
+/**
+ * After detaching a shared root while keeping the wrapper for siblings:
+ * inactive binding = acknowledged archive; absent = unconfirmed (unknown);
+ * active = still running.
+ */
+export function decideKeepWrapperArchive(
+    binding: RegistryBindingState
+): 'stopped' | 'still_alive' | 'unknown' {
+    if (binding === 'active') return 'still_alive'
+    if (binding === 'inactive') return 'stopped'
+    return 'unknown'
+}
+
+/**
  * True when another root on the same wrapper PID is still active in the
  * durable Codex runtime registry — even if this session's binding is inactive
  * and the runner has no in-memory TrackedSession.

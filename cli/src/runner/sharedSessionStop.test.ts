@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
+    decideKeepWrapperArchive,
     decideRawPidStop,
     detachSharedRootFromWrapper,
     keepWrapperForSharedSiblings,
     pidHasActiveSharedRoots,
+    sessionRegistryBindingState,
     sessionRuntimeHasActiveSiblings,
     trackedSharedWrapperPidsWithSiblings,
     wrapperHasActiveSiblingRoots,
@@ -207,5 +209,35 @@ describe('runtime registry sibling guards (post-restart)', () => {
             currentMarker: null,
             hasActiveSharedRoots: false,
         })).toBe('already_gone')
+    })
+
+    it('treats inactive registry binding as stop proof while siblings keep the wrapper', () => {
+        expect(sessionRegistryBindingState(runtimes, 'root-a', 4242)).toBe('inactive')
+        expect(sessionRegistryBindingState(runtimes, 'root-b', 4242)).toBe('active')
+        expect(sessionRegistryBindingState(runtimes, 'missing', 4242)).toBe('absent')
+        expect(decideKeepWrapperArchive('inactive')).toBe('stopped')
+        expect(decideKeepWrapperArchive('active')).toBe('still_alive')
+        expect(decideKeepWrapperArchive('absent')).toBe('unknown')
+    })
+
+    it('does not claim stopped from siblings alone on retry (no binding evidence)', () => {
+        // First StopSession detached in-memory tracking and returned unknown.
+        // Retry: argv scan skips the sibling-protected wrapper; without an
+        // inactive registry row we must stay unknown — not archive the live root.
+        const siblingsOnly = [
+            {
+                pid: 4242,
+                sessions: {
+                    // Target never made it into the durable registry (or was
+                    // never written). Sibling is still active.
+                    'root-sibling': { active: true },
+                },
+            },
+        ]
+        expect(wrapperHasActiveSiblingRoots(siblingsOnly, 'root-unconfirmed', 4242)).toBe(true)
+        expect(sessionRegistryBindingState(siblingsOnly, 'root-unconfirmed')).toBe('absent')
+        expect(decideKeepWrapperArchive(
+            sessionRegistryBindingState(siblingsOnly, 'root-unconfirmed')
+        )).toBe('unknown')
     })
 })
