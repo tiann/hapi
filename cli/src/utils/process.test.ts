@@ -355,8 +355,8 @@ describe('killProcess on Windows (orphanReap / stopSession)', () => {
             if (cmd === 'powershell') {
                 const script = String(args[args.length - 1] ?? '')
                 if (script.includes('ParentProcessId')) {
-                    // collectWindowsProcessTree: children-first then root
-                    return completed('200,100')
+                    // collectWindowsProcessTree: OK: sentinel + children-first then root
+                    return completed('OK:200,100')
                 }
                 return completed('')
             }
@@ -399,6 +399,62 @@ describe('killProcess on Windows (orphanReap / stopSession)', () => {
         expect(cmd).not.toMatch(/\$bfs=@\(\)[ ]+\$queue=@/)
         // Do not terminate `while(...){` with `;` (also invalid).
         expect(cmd).not.toMatch(/while\(\$queue\.Count -gt 0\)\{\s*;/)
+        // #1911 B1: never SilentlyContinue — CIM failure must not look like childless root.
+        expect(cmd).toContain("$ErrorActionPreference='Stop'")
+        expect(cmd).toContain('trap { exit 1 }')
+        expect(cmd).not.toContain('SilentlyContinue')
+        expect(cmd).toContain('Write-Output ("OK:" + ($bfs -join ","))')
+    })
+
+    it('parseWindowsProcessTreeStdout requires OK: sentinel (B1 root-only is scan_failed)', async () => {
+        const { parseWindowsProcessTreeStdout } = await import('./process')
+        // Overseer measured: CIM failure with SilentlyContinue prints "1234" exit 0 —
+        // byte-identical to healthy childless. Without OK: that must be scan_failed.
+        expect(parseWindowsProcessTreeStdout('1234', 1234)).toBe('scan_failed')
+        expect(parseWindowsProcessTreeStdout('4000,3000,2000,1234', 1234)).toBe('scan_failed')
+        expect(parseWindowsProcessTreeStdout('', 1234)).toBe('scan_failed')
+        expect(parseWindowsProcessTreeStdout('OK:', 1234)).toBe('scan_failed')
+        expect(parseWindowsProcessTreeStdout('OK:1234', 1234)).toEqual([1234])
+        expect(parseWindowsProcessTreeStdout('OK:4000,3000,2000,1234', 1234)).toEqual([
+            4000, 3000, 2000, 1234,
+        ])
+        expect(parseWindowsProcessTreeStdout('OK:200,100', 100)).toEqual([200, 100])
+        expect(parseWindowsProcessTreeStdout('OK:200,100', 999)).toBe('scan_failed')
+    })
+
+    it('killProcessTreeByPid treats bare root stdout (B1 fail-open shape) as scan_failed', async () => {
+        const { killProcessTreeByPid } = await import('./process')
+        let alive = true
+        vi.spyOn(process, 'kill').mockImplementation((_pid: number, signal?: string | number) => {
+            if (signal === 0 || signal === undefined) {
+                if (!alive) {
+                    const err = new Error('ESRCH') as NodeJS.ErrnoException
+                    err.code = 'ESRCH'
+                    throw err
+                }
+                return true
+            }
+            return true
+        })
+        spawnSyncMock.mockImplementation((cmd: string) => {
+            // Status 0 + root-only — the measured CIM-failure shape under SilentlyContinue.
+            if (cmd === 'powershell') return completed('1234')
+            if (cmd === 'tasklist') {
+                if (!alive) {
+                    return completed('INFO: No tasks are running which match the specified criteria.')
+                }
+                return completed(`proc.exe                      1234 Console                    1     1,000 K`)
+            }
+            if (cmd === 'taskkill') {
+                alive = false
+                return completed('', 0)
+            }
+            return completed('')
+        })
+        const done = killProcessTreeByPid(1234, true)
+        await vi.advanceTimersByTimeAsync(500)
+        await expect(done).resolves.toBe(false)
+        expect(spawnSyncMock.mock.calls.some((c) => c[0] === 'taskkill')).toBe(true)
     })
 
     it('killProcessTreeByPid signals root but returns false when Windows tree scan fails', async () => {
@@ -515,6 +571,33 @@ describe('killProcessTreeByPid on POSIX (pgrep tree scan)', () => {
         await vi.advanceTimersByTimeAsync(3000)
         await expect(done).resolves.toBe(false)
         // Root still signalled — partial kill > zero kill on hosts without pgrep.
+        expect(process.kill).toHaveBeenCalledWith(4242, 'SIGKILL')
+    })
+
+    it('returns false when pgrep is signalled (status null — partial tree)', async () => {
+        const { killProcessTreeByPid } = await import('./process')
+        let dead = false
+        vi.spyOn(process, 'kill').mockImplementation((_pid: number, signal?: string | number) => {
+            if (signal === 0 || signal === undefined) {
+                if (dead) {
+                    const err = new Error('ESRCH') as NodeJS.ErrnoException
+                    err.code = 'ESRCH'
+                    throw err
+                }
+                return true
+            }
+            dead = true
+            return true
+        })
+        spawnSyncMock.mockImplementation((cmd: string) => {
+            if (cmd === 'pgrep') {
+                return { status: null, stdout: '999\n', stderr: '', error: null }
+            }
+            return completed('')
+        })
+        const done = killProcessTreeByPid(4242, true)
+        await vi.advanceTimersByTimeAsync(3000)
+        await expect(done).resolves.toBe(false)
         expect(process.kill).toHaveBeenCalledWith(4242, 'SIGKILL')
     })
 })

@@ -45,11 +45,15 @@ export const WINDOWS_CIM_CREATION_DATE_MARKER_EXPR =
 
 /** PowerShell -Command body for the argv orphan process list (CIM + JSON). */
 export function windowsProcessListCimCommand(): string {
-  return (
+  // Fail closed: non-terminating CIM errors must not yield empty stdout with
+  // exit 0 (that was misread as "no orphans" → false archive-ok). #1911 B2.
+  return [
+    "$ErrorActionPreference='Stop'",
+    'trap { exit 1 }',
     'Get-CimInstance Win32_Process | Select-Object ProcessId,Name,CommandLine,'
-    + `@{N='CreationDate';E={if ($_.CreationDate) { ${WINDOWS_CIM_CREATION_DATE_MARKER_EXPR} } else { $null }}}`
-    + ' | ConvertTo-Json -Compress'
-  );
+      + `@{N='CreationDate';E={if ($_.CreationDate) { ${WINDOWS_CIM_CREATION_DATE_MARKER_EXPR} } else { $null }}}`
+      + ' | ConvertTo-Json -Compress',
+  ].join('\n')
 }
 
 /** PowerShell -Command body for a single-PID start-marker probe. */
@@ -192,11 +196,17 @@ function killProcessWindows(pid: number, force: boolean): boolean {
  *
  * Returns `'scan_failed'` when PowerShell errors or returns nothing usable —
  * callers must fail closed (never fall back to root-only verify).
+ *
+ * Success is a positive sentinel (`OK:<pids>`), not "exit 0 + somehow looks like
+ * PIDs". With `-ErrorAction SilentlyContinue`, a CIM failure exited 0 printing
+ * only the root — byte-identical to a healthy childless tree (#1911 B1).
  */
 export function windowsProcessTreeCimCommand(pid: number): string {
   // Newlines between statements — `.join(' ')` is a parse error on WinPS
   // (`$seen=@{} $bfs=@()`). Do not join with `;` either: `while(...){;` is invalid.
   return [
+    "$ErrorActionPreference='Stop'",
+    'trap { exit 1 }',
     `$root=${pid}`,
     '$seen=@{}',
     '$bfs=@()',
@@ -206,12 +216,26 @@ export function windowsProcessTreeCimCommand(pid: number): string {
     '  if($seen.ContainsKey($p)){continue}',
     '  $seen[$p]=$true',
     '  $bfs+=$p',
-    '  Get-CimInstance Win32_Process -Filter "ParentProcessId=$p" -ErrorAction SilentlyContinue |',
+    '  Get-CimInstance Win32_Process -Filter "ParentProcessId=$p" |',
     '    ForEach-Object { $queue+=,[int]$_.ProcessId }',
     '}',
-    // children-first: reverse BFS so root is last
-    'if($bfs.Count -gt 0){ [array]::Reverse($bfs); ($bfs -join ",") }',
+    // children-first: reverse BFS so root is last; OK: marks clean completion
+    'if($bfs.Count -gt 0){ [array]::Reverse($bfs); Write-Output ("OK:" + ($bfs -join ",")) }',
   ].join('\n')
+}
+
+/** Parse tree-scan stdout. Requires the `OK:` success sentinel (#1911 B1). */
+export function parseWindowsProcessTreeStdout(
+  raw: string,
+  rootPid: number
+): number[] | 'scan_failed' {
+  const text = raw.trim()
+  if (!text.startsWith('OK:')) return 'scan_failed'
+  const body = text.slice('OK:'.length).trim()
+  if (!body) return 'scan_failed'
+  const pids = body.split(',').map((s) => Number(s.trim())).filter((p) => Number.isFinite(p) && p > 0)
+  if (pids.length === 0 || !pids.includes(rootPid)) return 'scan_failed'
+  return pids
 }
 
 export function collectWindowsProcessTree(pid: number): number[] | 'scan_failed' {
@@ -231,12 +255,7 @@ export function collectWindowsProcessTree(pid: number): number[] | 'scan_failed'
   if (result.error || result.status !== 0) {
     return 'scan_failed'
   }
-  const raw = (result.stdout ?? '').toString().trim()
-  if (!raw) return 'scan_failed'
-  const pids = raw.split(',').map((s) => Number(s.trim())).filter((p) => Number.isFinite(p) && p > 0)
-  // Must include the root — empty/garbage output is a failed scan, not root-only.
-  if (pids.length === 0 || !pids.includes(n)) return 'scan_failed'
-  return pids
+  return parseWindowsProcessTreeStdout((result.stdout ?? '').toString(), n)
 }
 
 async function signalAndWaitWindowsRoot(pid: number, force: boolean): Promise<void> {
@@ -294,8 +313,9 @@ function collectProcessTree(pid: number): number[] | 'scan_failed' {
   if (result.error) {
     return 'scan_failed';
   }
-  // pgrep: 0 = matches, 1 = no children. Other statuses are real failures.
-  if (result.status !== 0 && result.status !== 1 && result.status !== null) {
+  // pgrep: 0 = matches, 1 = no children. null = signalled / aborted → partial
+  // stdout is not a trustworthy tree (#1911 Overseer POSIX B1 twin).
+  if (result.status !== 0 && result.status !== 1) {
     return 'scan_failed';
   }
   if (result.stdout) {
@@ -378,7 +398,9 @@ export async function killProcessTreeByPid(pid: number, force: boolean = false):
  */
 async function waitForProcessToDie(pid: number, force: boolean): Promise<void> {
   const maxWait = 2000;
-  const pollInterval = 20;
+  // Windows isProcessAlive shells out to tasklist; keep the poll coarse so a
+  // stop cannot burn the runner event loop for seconds (#1911 Overseer).
+  const pollInterval = isWindows() ? 100 : 20;
   let waited = 0;
 
   while (isProcessAlive(pid) && waited < maxWait) {

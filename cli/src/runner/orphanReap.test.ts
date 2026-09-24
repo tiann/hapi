@@ -358,6 +358,8 @@ describe('Windows orphan startMarker format agreement', () => {
     it('list + single-probe CIM commands stringify CreationDate the same way', () => {
         expect(WINDOWS_CIM_CREATION_DATE_MARKER_EXPR).toContain("ToString('o')")
         expect(windowsProcessListCimCommand()).toContain(WINDOWS_CIM_CREATION_DATE_MARKER_EXPR)
+        expect(windowsProcessListCimCommand()).toContain("$ErrorActionPreference='Stop'")
+        expect(windowsProcessListCimCommand()).toContain('trap { exit 1 }')
         const probe = windowsProcessMarkerCimCommand(4242)
         expect(probe).toContain("CreationDate.ToUniversalTime().ToString('o')")
         expect(probe).toContain('ProcessId = 4242')
