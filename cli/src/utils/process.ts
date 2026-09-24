@@ -377,8 +377,9 @@ export async function killProcessTreeByPid(pid: number, force: boolean = false):
   if (!Number.isFinite(n) || n <= 0) return false;
   if (isWindows()) {
     // taskkill /T exit 0 means "signalled", not "every descendant is dead".
-    // Collect the tree first, signal the root with /T, then verify every PID
-    // from the pre-kill snapshot is gone (#1911 B2).
+    // Collect the tree + generation markers first, signal the root with /T,
+    // then individually signal any surviving pre-kill PIDs whose generation
+    // still matches (PID reuse must not be killed) (#1911 bot Major).
     const treePids = collectWindowsProcessTree(n);
     if (treePids === 'scan_failed') {
       // Still signal the (known) root — scan failure must not mean zero kill —
@@ -386,13 +387,18 @@ export async function killProcessTreeByPid(pid: number, force: boolean = false):
       await signalAndWaitWindowsRoot(n, force);
       return false;
     }
+    const markers = new Map<number, string | null>();
+    for (const candidate of treePids) {
+      markers.set(candidate, getProcessStartMarker(candidate));
+    }
     await signalAndWaitWindowsRoot(n, force);
-    // taskkill /T can miss grandchildren when an intermediate link is already
-    // gone. Signal any surviving PIDs from the pre-kill snapshot individually
-    // before verifying (#1911 bot Major).
     for (const survivor of treePids) {
       if (survivor === n) continue;
       if (!isProcessAlive(survivor)) continue;
+      const expected = markers.get(survivor);
+      const current = getProcessStartMarker(survivor);
+      // Unverifiable or reused PID — leave alone; final every() fails closed.
+      if (!expected || !current || current !== expected) continue;
       await signalAndWaitWindowsRoot(survivor, true);
     }
     return treePids.every((candidate) => !isProcessAlive(candidate));

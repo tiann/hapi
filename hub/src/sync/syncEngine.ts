@@ -1761,16 +1761,12 @@ export class SyncEngine {
             } catch (stopError) {
                 // Machine RPC missing is NOT proof the detached CLI is gone
                 // (KillMode=process children survive runner death). Refuse to
-                // archive on still_alive / unknown — EXCEPT when KillSession
-                // already reported the CLI socket missing *and* the machine RPC
-                // is also missing: then there is no live stop path left, so
-                // hub-author the archive (escape hatch for disconnected hosts).
-                if (stopError instanceof RpcTargetMissingError && cliUnreachable) {
-                    status = 'already_gone'
-                } else {
-                    void stopError
-                    status = 'still_alive'
-                }
+                // archive on any StopSession failure — including when KillSession
+                // was also unreachable. Both targets missing still leaves a
+                // possible live orphan; retry StopSession when the runner
+                // reconnects (#1911 bot Major).
+                void stopError
+                status = 'still_alive'
             }
             // KillSession acknowledges before cleanupAndExit finishes, and socket
             // loss is not exit proof. When the runner cannot find the HAPI id,

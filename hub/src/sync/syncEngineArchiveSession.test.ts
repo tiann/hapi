@@ -159,22 +159,20 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(body.metadata.version).toBeGreaterThan(0)
     })
 
-    it('archives when both KillSession and machine StopSession targets are missing (disconnect hatch)', async () => {
-        // #1911 Opus Major: no live stop path remains when the CLI socket and
-        // the machine RPC are both gone — hub-author archive (pre-PR behavior
-        // via markSessionArchivedFromHub). Still refuse when StopSession fails
-        // ambiguously while a machine might still be reachable.
+    it('does NOT archive when both KillSession and machine StopSession targets are missing', async () => {
+        // #1911 bot Major: both RPC targets missing is not proof the detached
+        // CLI exited (KillMode=process orphans survive). Keep the row
+        // unconfirmed until StopSession can run after the runner reconnects.
         const sessionId = insertActiveSession('sess-machine-unreachable', 'machine-x')
         setKillSessionMissingTarget()
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => { throw new RpcTargetMissingError('StopSession', 'handler-not-registered') }
 
-        await engine.archiveSession(sessionId)
+        await expect(engine.archiveSession(sessionId)).rejects.toThrow()
 
         const session = cache().getSession(sessionId)
-        expect(session?.active).toBe(false)
-        expect(session?.metadata?.lifecycleState).toBe('archived')
-        expect(session?.metadata?.archivedBy).toBe('hub')
+        expect(session?.active).toBe(true)
+        expect(session?.metadata?.lifecycleState).not.toBe('archived')
     })
 
     it('does NOT archive when machine StopSession is missing but KillSession was reachable', async () => {
