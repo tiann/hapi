@@ -13,6 +13,7 @@
 
 import spawn from 'cross-spawn'
 import psList from 'ps-list'
+import { getProcessStartMarker, isProcessAlive } from '@/utils/process'
 
 export type ProcessSnapshot = {
     pid: number
@@ -129,12 +130,19 @@ export async function findRunnerSpawnedOrphanPids(
  * Tree-kill every argv-matched orphan for `sessionId`.
  * Returns null when none were found (caller continues to other stop paths).
  * Returns still_alive when the process scan fails — empty is not proof gone.
+ *
+ * PID-reuse guard (same pattern as tracked/adopted kill paths): capture
+ * `getProcessStartMarker` immediately after the argv match list is known, then
+ * re-check immediately before each `killTree`. Skip the kill when the marker
+ * changed or cannot be read for a still-live PID.
  */
 export async function reapRunnerSpawnedOrphans(
     sessionId: string,
     deps: {
         findOrphans?: (sessionId: string) => Promise<number[] | 'scan_failed'>
         killTree?: (pid: number) => Promise<boolean>
+        getStartMarker?: (pid: number) => string | null
+        isAlive?: (pid: number) => boolean
     } = {}
 ): Promise<'stopped' | 'still_alive' | null> {
     const findOrphans = deps.findOrphans ?? findRunnerSpawnedOrphanPids
@@ -142,18 +150,47 @@ export async function reapRunnerSpawnedOrphans(
         const { killProcessTreeByPid } = await import('@/utils/process')
         return killProcessTreeByPid(pid)
     })
+    const getStartMarker = deps.getStartMarker ?? getProcessStartMarker
+    const isAlive = deps.isAlive ?? isProcessAlive
 
     const orphanPids = await findOrphans(sessionId)
     if (orphanPids === 'scan_failed') return 'still_alive'
     if (orphanPids.length === 0) return null
 
+    // Capture generation identity as soon as the argv match list is known —
+    // before any await that widens the scan→kill gap under PID churn.
+    const targets = orphanPids.map((pid) => ({
+        pid,
+        expectedMarker: getStartMarker(pid),
+    }))
+
     // killProcessTreeByPid returns false if any collected descendant survives,
     // even when the stamped root PID has already exited. Trust that result —
     // do not downgrade to stopped based on root liveness alone (#1910).
-    for (const orphanPid of orphanPids) {
+    let resolved = 0
+    for (const { pid: orphanPid, expectedMarker } of targets) {
+        if (expectedMarker === null) {
+            // No generation identity. If the PID is already dead the orphan is
+            // gone; if still alive, refuse to tree-kill without a marker.
+            if (!isAlive(orphanPid)) {
+                resolved++
+                continue
+            }
+            return 'still_alive'
+        }
+
+        const currentMarker = getStartMarker(orphanPid)
+        if (currentMarker === null || currentMarker !== expectedMarker) {
+            // Generation changed (PID reuse) or vanished — never kill whatever
+            // process now holds this PID. The matched orphan generation is gone.
+            resolved++
+            continue
+        }
+
         if (!(await killTree(orphanPid))) {
             return 'still_alive'
         }
+        resolved++
     }
-    return 'stopped'
+    return resolved === targets.length ? 'stopped' : 'still_alive'
 }

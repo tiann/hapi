@@ -83,12 +83,23 @@ describe('orphanReap argv matching', () => {
 })
 
 describe('reapRunnerSpawnedOrphans (stopSession orphan path)', () => {
+    const stableMarker = (marker = 'gen-a') => {
+        let reads = 0
+        return () => {
+            reads++
+            // Capture + re-check both return the same generation.
+            void reads
+            return marker
+        }
+    }
+
     it('returns null when no argv orphans match', async () => {
         const status = await reapRunnerSpawnedOrphans('missing-session', {
             findOrphans: async () => [],
             killTree: async () => {
                 throw new Error('should not kill')
             },
+            getStartMarker: () => 'unused',
         })
         expect(status).toBeNull()
     })
@@ -104,6 +115,7 @@ describe('reapRunnerSpawnedOrphans (stopSession orphan path)', () => {
                 killed.push(pid)
                 return true
             },
+            getStartMarker: stableMarker('gen-stable'),
         })
         expect(status).toBe('stopped')
         expect(killed).toEqual([4242, 4243])
@@ -123,7 +135,47 @@ describe('reapRunnerSpawnedOrphans (stopSession orphan path)', () => {
         const status = await reapRunnerSpawnedOrphans('sess-orphan-2', {
             findOrphans: async () => [9999],
             killTree: async () => false,
+            getStartMarker: stableMarker(),
         })
+        expect(status).toBe('still_alive')
+    })
+
+    it('does not kill when start marker changes between capture and kill (PID reuse)', async () => {
+        const killed: number[] = []
+        const markers = new Map<number, string[]>([
+            // First read = capture after argv match; second = pre-kill re-check
+            [4242, ['gen-orphan', 'gen-reused-unrelated']],
+        ])
+        const status = await reapRunnerSpawnedOrphans('sess-orphan-reuse', {
+            findOrphans: async () => [4242],
+            killTree: async (pid) => {
+                killed.push(pid)
+                return true
+            },
+            getStartMarker: (pid) => {
+                const queue = markers.get(pid)
+                if (!queue || queue.length === 0) return null
+                return queue.shift() ?? null
+            },
+            isAlive: () => true,
+        })
+        expect(killed).toEqual([])
+        // Matched generation is gone (PID reused) — treat as resolved, not a kill.
+        expect(status).toBe('stopped')
+    })
+
+    it('returns still_alive without killing when marker cannot be read for a live orphan', async () => {
+        const killed: number[] = []
+        const status = await reapRunnerSpawnedOrphans('sess-orphan-no-marker', {
+            findOrphans: async () => [5555],
+            killTree: async (pid) => {
+                killed.push(pid)
+                return true
+            },
+            getStartMarker: () => null,
+            isAlive: () => true,
+        })
+        expect(killed).toEqual([])
         expect(status).toBe('still_alive')
     })
 })
