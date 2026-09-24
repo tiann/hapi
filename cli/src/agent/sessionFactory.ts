@@ -389,6 +389,16 @@ export async function bootstrapExistingSession(options: {
     })
 
     const sessionInfo = await api.getSession(options.sessionId)
+    // #1911 cold-read M1: hub may have archived (KillSession miss / stub hatch)
+    // while a late child still boots. Adopt rejects archived rows; reopen must
+    // too — otherwise updateMetadata stamps lifecycleState=running and resurrects.
+    // Intentional revive goes through hub reopenSession (clears archive first).
+    if (sessionInfo.metadata?.lifecycleState === 'archived') {
+        throw new Error(
+            `HAPI session ${options.sessionId} is archived; refuse --existing-session-id reopen `
+            + '(use hub reopen to clear archive metadata first)'
+        )
+    }
     const baseMetadata = buildSessionMetadata({
         flavor: options.flavor,
         startedBy,

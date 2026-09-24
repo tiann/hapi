@@ -1808,7 +1808,8 @@ export class SyncEngine {
             // tagged machine-spawn:<id>. StopSession returns unknown forever (nothing
             // tracked). There is no OS child to confirm — allow hub archive so the
             // ghost is not permanent while the runner is online (#1911 Opus Major).
-            // If a late child exists, argv orphan reap still covers it after archive.
+            // A late-booting child that later hits reopen must not resurrect: CLI
+            // bootstrapExistingSession refuses archived rows (#1911 cold-read M1).
             if (status === 'unknown') {
                 const stored = this.store.sessions.getSession(sessionId)
                 if (

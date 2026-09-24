@@ -135,6 +135,35 @@ describe('bootstrapExistingSession', () => {
         )
     })
 
+    it('refuses to reopen an archived session (hub-archive resurrection guard)', async () => {
+        // #1911 cold-read M1: late-booting child must not updateMetadata to running.
+        const session = createSession()
+        const existing = session.metadata
+        if (!existing) throw new Error('expected metadata')
+        session.metadata = {
+            ...existing,
+            lifecycleState: 'archived',
+            archivedBy: 'hub',
+            archiveReason: 'Archived from hub',
+        }
+        const sessionClient = { updateMetadata: vi.fn() }
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue(sessionClient)
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        await expect(bootstrapExistingSession({
+            sessionId: 'hapi-session-1',
+            flavor: 'claude',
+            workingDirectory: '/tmp/project',
+            startedBy: 'runner',
+        })).rejects.toThrow(/archived/)
+
+        expect(sessionClient.updateMetadata).not.toHaveBeenCalled()
+        expect(notifyRunnerSessionStartedMock).not.toHaveBeenCalled()
+        expect(sessionSyncClientMock).not.toHaveBeenCalled()
+    })
+
     it('preserves existing native resume metadata when reactivating a session', async () => {
         const session = createSession()
         const existingMetadata = session.metadata
