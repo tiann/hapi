@@ -31,6 +31,31 @@ export function pidHasActiveSharedRoots(
 }
 
 /**
+ * Decide whether a KillSession-reported OS pid may be tree-killed.
+ * Requires a matching process-start marker so PID reuse cannot nuke a stranger.
+ */
+export type RawPidStopDecision =
+    | 'already_gone'
+    | 'unknown'
+    | 'keep_shared'
+    | 'allow_kill'
+
+export function decideRawPidStop(opts: {
+    alive: boolean
+    expectedMarker?: string
+    currentMarker: string | null
+    hasActiveSharedRoots: boolean
+}): RawPidStopDecision {
+    if (!opts.alive) return 'already_gone'
+    if (!opts.expectedMarker) return 'unknown'
+    if (opts.currentMarker === null || opts.currentMarker !== opts.expectedMarker) {
+        return 'unknown'
+    }
+    if (opts.hasActiveSharedRoots) return 'keep_shared'
+    return 'allow_kill'
+}
+
+/**
  * True when another root on the same wrapper PID is still active in the
  * durable Codex runtime registry — even if this session's binding is inactive
  * and the runner has no in-memory TrackedSession.

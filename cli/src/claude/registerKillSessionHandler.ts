@@ -1,6 +1,7 @@
 import { RpcHandlerManager } from "@/api/rpc/RpcHandlerManager";
 import { logger } from "@/lib";
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { getProcessStartMarker } from '@/utils/process';
 
 interface KillSessionRequest {
     // No parameters needed
@@ -11,6 +12,8 @@ interface KillSessionResponse {
     message: string;
     /** OS pid of this CLI — hub uses it to confirm exit via StopSession when maps miss. */
     pid: number;
+    /** Generation marker for `pid`; required before the runner will tree-kill it. */
+    processStartMarker?: string;
 }
 
 /**
@@ -54,13 +57,14 @@ export function registerKillSessionHandler(
         // This will start the cleanup process
         void lifecycle.cleanupAndExit();
 
-        // We should still be able to respond to the client, though they
-        // should optimistically assume the session is dead. Include pid so
-        // archive can ask the runner to verify this process exited (#1910).
+        // Include pid + start marker so archive can ask the runner to verify
+        // this exact process generation exited (#1910) — not a reused PID.
+        const processStartMarker = getProcessStartMarker(process.pid) ?? undefined;
         return {
             success: true,
             message: 'Killing hapi CLI process',
             pid: process.pid,
+            ...(processStartMarker ? { processStartMarker } : {}),
         };
     });
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+    decideRawPidStop,
     detachSharedRootFromWrapper,
     keepWrapperForSharedSiblings,
     pidHasActiveSharedRoots,
@@ -179,5 +180,32 @@ describe('runtime registry sibling guards (post-restart)', () => {
         expect(wrapperHasActiveSiblingRoots(runtimesAfterArchive, 'new-root', 4242)).toBe(true)
         expect(sessionRuntimeHasActiveSiblings(runtimesAfterArchive, 'new-root')).toBe(true)
         expect(pidHasActiveSharedRoots(runtimesAfterArchive, 4242)).toBe(true)
+    })
+
+    it('refuses raw PID kill when the start marker is missing or mismatched', () => {
+        expect(decideRawPidStop({
+            alive: true,
+            expectedMarker: undefined,
+            currentMarker: 'gen-a',
+            hasActiveSharedRoots: false,
+        })).toBe('unknown')
+        expect(decideRawPidStop({
+            alive: true,
+            expectedMarker: 'gen-a',
+            currentMarker: 'gen-b',
+            hasActiveSharedRoots: false,
+        })).toBe('unknown')
+        expect(decideRawPidStop({
+            alive: true,
+            expectedMarker: 'gen-a',
+            currentMarker: 'gen-a',
+            hasActiveSharedRoots: false,
+        })).toBe('allow_kill')
+        expect(decideRawPidStop({
+            alive: false,
+            expectedMarker: 'gen-a',
+            currentMarker: null,
+            hasActiveSharedRoots: false,
+        })).toBe('already_gone')
     })
 })

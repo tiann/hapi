@@ -18,6 +18,7 @@ import { getProcessStartMarker, isProcessAlive, isWindows, killProcess, killProc
 import { findRunnerSpawnedOrphanPids, reapRunnerSpawnedOrphans } from '@/runner/orphanReap';
 import { decideUntrackedRunnerWebhook } from '@/runner/lateRunnerWebhook';
 import {
+    decideRawPidStop,
     detachSharedRootFromWrapper,
     keepWrapperForSharedSiblings,
     pidHasActiveSharedRoots,
@@ -1077,7 +1078,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     }
 
     // Stop a session by sessionId or PID fallback
-    const stopSession = async (sessionId: string): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
+    const stopSession = async (
+      sessionId: string,
+      opts?: { processStartMarker?: string }
+    ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
       logger.debug(`[RUNNER RUN] Attempting to stop session ${sessionId}`);
 
       // After a mapped/persisted PID path succeeds, still scan argv for other
@@ -1224,9 +1228,13 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             return await finishWithOrphanSweep('stopped');
           }
 
-          if (session.startedBy === 'runner' && session.childProcess) {
+          if (session.startedBy === 'runner') {
+            // Adopted post-restart sessions have no ChildProcess handle — still
+            // tree-kill so agent grandchildren cannot outlive the wrapper.
             try {
-              const treeStopped = await killProcessByChildProcess(session.childProcess);
+              const treeStopped = session.childProcess
+                ? await killProcessByChildProcess(session.childProcess)
+                : await killProcessTreeByPid(pid);
               if (!treeStopped) {
                 logger.debug(`[RUNNER RUN] Process tree for session ${sessionId} is still alive after stop request`);
                 return 'still_alive';
@@ -1379,23 +1387,33 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         return 'already_gone';
       }
 
-      // KillSession returns the CLI's OS pid when session maps miss. Confirm
-      // that exact process without assuming argv stamps (#1910).
+      // KillSession returns the CLI's OS pid + start marker when session maps
+      // miss. Confirm that exact process generation (#1910).
       if (sessionId.startsWith('PID-')) {
         const pid = parseInt(sessionId.slice(4), 10);
         if (Number.isFinite(pid) && pid > 0) {
-          if (!isProcessAlive(pid)) {
-            rememberVerifiedExit(sessionId);
-            return 'already_gone';
-          }
           const liveForPid = (await readRuntimes()).filter(runtime =>
             runtime.hub === configuration.apiUrl
             && runtime.authHash === runtimeAuthHash()
             && runtimeMayBeAlive(runtime)
           );
-          if (pidHasActiveSharedRoots(liveForPid, pid)) {
-            // Shared Codex wrapper still hosts active roots — do not tree-kill.
-            // KillSession already ended the archived root in-process.
+          const decision = decideRawPidStop({
+            alive: isProcessAlive(pid),
+            expectedMarker: opts?.processStartMarker,
+            currentMarker: getProcessStartMarker(pid),
+            hasActiveSharedRoots: pidHasActiveSharedRoots(liveForPid, pid),
+          });
+          if (decision === 'already_gone') {
+            rememberVerifiedExit(sessionId);
+            return 'already_gone';
+          }
+          if (decision === 'unknown') {
+            logger.debug(
+              `[RUNNER RUN] Raw PID ${pid} stop unconfirmed (missing/mismatched start marker or probe failed)`
+            );
+            return 'unknown';
+          }
+          if (decision === 'keep_shared') {
             logger.debug(
               `[RUNNER RUN] PID ${pid} still hosts active shared roots; not tree-killing`
             );

@@ -185,16 +185,26 @@ export class RpcGateway {
         return await this.sessionRpc(sessionId, RPC_METHODS.SetSessionConfig, config)
     }
 
-    async killSession(sessionId: string): Promise<{ pid?: number }> {
+    async killSession(sessionId: string): Promise<{ pid?: number; processStartMarker?: string }> {
         const result = await this.sessionRpc(sessionId, RPC_METHODS.KillSession, {})
-        if (result && typeof result === 'object' && typeof (result as { pid?: unknown }).pid === 'number') {
-            return { pid: (result as { pid: number }).pid }
+        if (!result || typeof result !== 'object') return {}
+        const pid = (result as { pid?: unknown }).pid
+        const processStartMarker = (result as { processStartMarker?: unknown }).processStartMarker
+        return {
+            ...(typeof pid === 'number' ? { pid } : {}),
+            ...(typeof processStartMarker === 'string' ? { processStartMarker } : {}),
         }
-        return {}
     }
 
-    async stopRunnerSession(machineId: string, sessionId: string): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> {
-        const result = await this.machineRpc(machineId, RPC_METHODS.StopSession, { sessionId })
+    async stopRunnerSession(
+        machineId: string,
+        sessionId: string,
+        opts?: { processStartMarker?: string }
+    ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.StopSession, {
+            sessionId,
+            ...(opts?.processStartMarker ? { processStartMarker: opts.processStartMarker } : {}),
+        })
         const status = result && typeof result === 'object' ? (result as { status?: unknown }).status : undefined
         if (status === 'stopped' || status === 'already_gone' || status === 'still_alive' || status === 'unknown') return status
         throw new Error('Unexpected stop-session response')

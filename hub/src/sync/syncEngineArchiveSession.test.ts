@@ -36,9 +36,12 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
             async () => { throw new RpcTargetMissingError('KillSession', 'handler-not-registered') }
     }
 
-    function setKillSessionOk(pid?: number): void {
+    function setKillSessionOk(opts?: { pid?: number; processStartMarker?: string }): void {
         ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession =
-            async () => (typeof pid === 'number' ? { pid } : {})
+            async () => ({
+                ...(typeof opts?.pid === 'number' ? { pid: opts.pid } : {}),
+                ...(opts?.processStartMarker ? { processStartMarker: opts.processStartMarker } : {}),
+            })
     }
 
     beforeEach(() => {
@@ -180,19 +183,39 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(session?.metadata?.lifecycleState).not.toBe('archived')
     })
 
-    it('does NOT archive when KillSession pid confirm still reports unknown (socket drop is not exit)', async () => {
-        const sessionId = insertActiveSession('sess-kill-ok-pid-unknown', 'machine-x')
-        setKillSessionOk(4242)
-        const stopCalls: string[] = []
+    it('does NOT archive when KillSession pid confirm lacks a start marker (PID reuse guard)', async () => {
+        const sessionId = insertActiveSession('sess-kill-ok-pid-no-marker', 'machine-x')
+        setKillSessionOk({ pid: 4242 })
+        const stopCalls: Array<{ sid: string; marker?: string }> = []
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
-            async (_machineId: string, sid: string) => {
-                stopCalls.push(sid)
+            async (_machineId: string, sid: string, opts?: { processStartMarker?: string }) => {
+                stopCalls.push({ sid, marker: opts?.processStartMarker })
                 return 'unknown'
             }
 
         await expect(engine.archiveSession(sessionId)).rejects.toThrow()
 
-        expect(stopCalls).toEqual([sessionId, 'PID-4242'])
+        // Without a marker, do not attempt the raw-PID confirm kill.
+        expect(stopCalls).toEqual([{ sid: sessionId, marker: undefined }])
+        expect(cache().getSession(sessionId)?.active).toBe(true)
+    })
+
+    it('does NOT archive when KillSession pid confirm still reports unknown (socket drop is not exit)', async () => {
+        const sessionId = insertActiveSession('sess-kill-ok-pid-unknown', 'machine-x')
+        setKillSessionOk({ pid: 4242, processStartMarker: 'started-at-1' })
+        const stopCalls: Array<{ sid: string; marker?: string }> = []
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async (_machineId: string, sid: string, opts?: { processStartMarker?: string }) => {
+                stopCalls.push({ sid, marker: opts?.processStartMarker })
+                return 'unknown'
+            }
+
+        await expect(engine.archiveSession(sessionId)).rejects.toThrow()
+
+        expect(stopCalls).toEqual([
+            { sid: sessionId, marker: undefined },
+            { sid: 'PID-4242', marker: 'started-at-1' },
+        ])
         const session = cache().getSession(sessionId)
         expect(session?.active).toBe(true)
         expect(session?.metadata?.lifecycleState).not.toBe('archived')
@@ -200,17 +223,20 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
 
     it('archives when KillSession pid confirm returns already_gone after session-id unknown', async () => {
         const sessionId = insertActiveSession('sess-kill-ok-pid-gone', 'machine-x')
-        setKillSessionOk(4242)
-        const stopCalls: string[] = []
+        setKillSessionOk({ pid: 4242, processStartMarker: 'started-at-1' })
+        const stopCalls: Array<{ sid: string; marker?: string }> = []
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
-            async (_machineId: string, sid: string) => {
-                stopCalls.push(sid)
+            async (_machineId: string, sid: string, opts?: { processStartMarker?: string }) => {
+                stopCalls.push({ sid, marker: opts?.processStartMarker })
                 return sid.startsWith('PID-') ? 'already_gone' : 'unknown'
             }
 
         await engine.archiveSession(sessionId)
 
-        expect(stopCalls).toEqual([sessionId, 'PID-4242'])
+        expect(stopCalls).toEqual([
+            { sid: sessionId, marker: undefined },
+            { sid: 'PID-4242', marker: 'started-at-1' },
+        ])
         expect(cache().getSession(sessionId)?.active).toBe(false)
     })
 

@@ -1714,9 +1714,11 @@ export class SyncEngine {
         // to archive while the runner reports still_alive / unknown.
         let cliUnreachable = false
         let killPid: number | undefined
+        let killProcessStartMarker: string | undefined
         try {
             const killResult = await this.rpcGateway.killSession(sessionId)
             killPid = killResult.pid
+            killProcessStartMarker = killResult.processStartMarker
         } catch (error) {
             if (error instanceof RpcTargetMissingError) {
                 cliUnreachable = true
@@ -1738,11 +1740,19 @@ export class SyncEngine {
                 status = 'still_alive'
             }
             // KillSession acknowledges before cleanupAndExit finishes, and socket
-            // loss is not exit proof (CLI reconnects). When the runner cannot
-            // find the HAPI id, confirm via the KillSession-reported OS pid.
-            if (status === 'unknown' && typeof killPid === 'number' && killPid > 0) {
+            // loss is not exit proof. When the runner cannot find the HAPI id,
+            // confirm the KillSession-reported OS pid + start marker.
+            if (
+                status === 'unknown'
+                && typeof killPid === 'number'
+                && killPid > 0
+                && typeof killProcessStartMarker === 'string'
+                && killProcessStartMarker.length > 0
+            ) {
                 try {
-                    status = await this.rpcGateway.stopRunnerSession(machineId, `PID-${killPid}`)
+                    status = await this.rpcGateway.stopRunnerSession(machineId, `PID-${killPid}`, {
+                        processStartMarker: killProcessStartMarker,
+                    })
                 } catch (pidStopError) {
                     void pidStopError
                     status = 'still_alive'

@@ -33,12 +33,11 @@ describe('registerKillSessionHandler (tiann/hapi#914)', () => {
         const handler = registry.handlers.get(RPC_METHODS.KillSession)
         expect(handler).toBeDefined()
 
-        const result = await handler?.()
-        expect(result).toEqual({
-            success: true,
-            message: 'Killing hapi CLI process',
-            pid: process.pid,
-        })
+        const result = await handler?.() as { success: boolean; message: string; pid: number; processStartMarker?: string }
+        expect(result.success).toBe(true)
+        expect(result.message).toBe('Killing hapi CLI process')
+        expect(result.pid).toBe(process.pid)
+        expect(typeof result.processStartMarker === 'string' || result.processStartMarker === undefined).toBe(true)
 
         // setArchiveReason MUST be called BEFORE cleanupAndExit so the archive
         // metadata write reads the correct reason.
