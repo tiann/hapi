@@ -469,7 +469,9 @@ export class SharedCodexRoot {
         // (KillSession unreachable / map-miss). Latch covers bootstrap write
         // before bind/activate registers controls; B2 refuses tree-kill of the
         // shared wrapper so this subscribe is load-bearing.
-        const exitFromHubArchive = () => { void this.host.end(this); };
+        const exitFromHubArchive = () => {
+            void this.host.end(this).catch(error => logger.debug('[CODEX] hub-archived end failed:', error));
+        };
         if (this.session.hubArchived) {
             exitFromHubArchive();
         }
