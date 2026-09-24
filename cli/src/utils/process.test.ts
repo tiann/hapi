@@ -188,7 +188,8 @@ describe('killProcess on Windows (orphanReap / stopSession)', () => {
         // Soft taskkill on win32 console trees often fails with
         // "can only be terminated forcefully" — orphanReap must escalate.
         let alive = true
-        vi.spyOn(process, 'kill').mockImplementation((_pid: number, signal?: number | NodeJS.Signals) => {
+        // Match @types/node process.kill(pid, signal?: string | number): true
+        vi.spyOn(process, 'kill').mockImplementation((_pid: number, signal?: string | number) => {
             if (signal === 0 || signal === undefined) {
                 if (!alive) {
                     const err = new Error('ESRCH') as NodeJS.ErrnoException
@@ -228,7 +229,7 @@ describe('killProcess on Windows (orphanReap / stopSession)', () => {
 
     it('uses forced taskkill immediately when force=true', async () => {
         let alive = true
-        vi.spyOn(process, 'kill').mockImplementation((_pid: number, signal?: number | NodeJS.Signals) => {
+        vi.spyOn(process, 'kill').mockImplementation((_pid: number, signal?: string | number) => {
             if (signal === 0 || signal === undefined) {
                 if (!alive) {
                     const err = new Error('ESRCH') as NodeJS.ErrnoException
