@@ -304,19 +304,19 @@ describe('shared steering availability', () => {
     });
 
     it('ends the shared root on hub-archived metadata (#1911 C2 / AC6)', async () => {
-        const end = vi.fn(async () => {});
+        const end = vi.fn<RootHost['end']>(async () => {});
         const f = await fixture({ end });
         await f.root.activate();
         expect(f.hubArchivedListenerCount()).toBe(1);
         f.emitHubArchived();
         await vi.waitFor(() => expect(end).toHaveBeenCalledTimes(1));
-        expect(end.mock.calls[0][0]).toBe(f.root);
+        expect(end.mock.calls[0]?.[0]).toBe(f.root);
     });
 
     it('ends when hubArchived was latched before activate (production order, #1911 AC6)', async () => {
         // Bootstrap may refuse CAS / noteHubArchived before Codex bind+activate
         // registers controls — same late-listener miss as other flavors.
-        const end = vi.fn(async () => {});
+        const end = vi.fn<RootHost['end']>(async () => {});
         const f = await fixture({ hubArchived: true, end });
         await f.root.activate();
         await vi.waitFor(() => expect(end).toHaveBeenCalledTimes(1));
