@@ -10,7 +10,7 @@ vi.mock('cross-spawn', () => ({
     }
 }))
 
-import { getHapiRunnerProcessIdentity } from './process'
+import { getHapiRunnerProcessIdentity, killProcess } from './process'
 
 const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
 
@@ -157,6 +157,103 @@ describe('getHapiRunnerProcessIdentity on Windows', () => {
 
         expect(getHapiRunnerProcessIdentity(8328)).toBe('dead')
         expect(spawnSyncMock).not.toHaveBeenCalled()
+    })
+})
+
+describe('killProcess on Windows (orphanReap / stopSession)', () => {
+    beforeAll(() => {
+        if (!originalPlatformDescriptor?.configurable) {
+            throw new Error('process.platform is not configurable in this runtime')
+        }
+    })
+
+    beforeEach(() => {
+        setPlatform('win32')
+        spawnSyncMock.mockReset()
+        vi.useFakeTimers()
+    })
+
+    afterEach(() => {
+        vi.useRealTimers()
+        vi.restoreAllMocks()
+    })
+
+    afterAll(() => {
+        if (originalPlatformDescriptor) {
+            Object.defineProperty(process, 'platform', originalPlatformDescriptor)
+        }
+    })
+
+    it('escalates soft taskkill to /F when the process stays alive (mirrors SIGTERM→SIGKILL)', async () => {
+        // Soft taskkill on win32 console trees often fails with
+        // "can only be terminated forcefully" — orphanReap must escalate.
+        let alive = true
+        vi.spyOn(process, 'kill').mockImplementation((_pid: number, signal?: number | NodeJS.Signals) => {
+            if (signal === 0 || signal === undefined) {
+                if (!alive) {
+                    const err = new Error('ESRCH') as NodeJS.ErrnoException
+                    err.code = 'ESRCH'
+                    throw err
+                }
+                return true
+            }
+            return true
+        })
+        spawnSyncMock.mockImplementation((cmd: string, args: string[] = []) => {
+            if (cmd !== 'taskkill') {
+                return completed('')
+            }
+            if (args.includes('/F')) {
+                alive = false
+                return completed('', 0)
+            }
+            // Soft refuse — process still alive (real Windows console-tree behavior)
+            return {
+                status: 1,
+                stdout: Buffer.from(''),
+                stderr: Buffer.from('ERROR: This process can only be terminated forcefully (with /F option).')
+            }
+        })
+
+        const done = killProcess(5544, false)
+        await vi.advanceTimersByTimeAsync(2_500)
+        await vi.advanceTimersByTimeAsync(1_500)
+        await expect(done).resolves.toBe(true)
+
+        const taskkills = spawnSyncMock.mock.calls.filter((call) => call[0] === 'taskkill')
+        expect(taskkills.length).toBeGreaterThanOrEqual(2)
+        expect(taskkills[0]![1]).toEqual(['/T', '/PID', '5544'])
+        expect(taskkills.some((call) => (call[1] as string[]).includes('/F'))).toBe(true)
+    })
+
+    it('uses forced taskkill immediately when force=true', async () => {
+        let alive = true
+        vi.spyOn(process, 'kill').mockImplementation((_pid: number, signal?: number | NodeJS.Signals) => {
+            if (signal === 0 || signal === undefined) {
+                if (!alive) {
+                    const err = new Error('ESRCH') as NodeJS.ErrnoException
+                    err.code = 'ESRCH'
+                    throw err
+                }
+                return true
+            }
+            return true
+        })
+        spawnSyncMock.mockImplementation((cmd: string, args: string[] = []) => {
+            if (cmd === 'taskkill' && args.includes('/F')) {
+                alive = false
+                return completed('', 0)
+            }
+            return completed('', 1)
+        })
+
+        const done = killProcess(9901, true)
+        await vi.advanceTimersByTimeAsync(500)
+        await expect(done).resolves.toBe(true)
+
+        const taskkills = spawnSyncMock.mock.calls.filter((call) => call[0] === 'taskkill')
+        expect(taskkills).toHaveLength(1)
+        expect(taskkills[0]![1]).toEqual(['/F', '/T', '/PID', '9901'])
     })
 })
 

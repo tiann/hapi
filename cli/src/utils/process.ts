@@ -149,7 +149,12 @@ export async function killProcess(pid: number, force: boolean = false): Promise<
   }
 
   if (isWindows()) {
-    return killProcessWindows(pid, force);
+    // Soft taskkill (/T without /F) is routinely refused on win32 console trees
+    // ("can only be terminated forcefully"). Mirror POSIX SIGTERM→SIGKILL:
+    // attempt graceful, wait, then escalate to taskkill /F /T.
+    killProcessWindows(pid, force);
+    await waitForProcessToDie(pid, force);
+    return !isProcessAlive(pid);
   }
 
   try {
@@ -219,7 +224,8 @@ export async function killProcessTreeByPid(pid: number, force: boolean = false):
 }
 
 /**
- * Waits for a process to die, escalating to SIGKILL if SIGTERM doesn't work.
+ * Waits for a process to die, escalating if the graceful signal didn't work.
+ * POSIX: SIGTERM → SIGKILL. Windows: taskkill /T → taskkill /F /T.
  */
 async function waitForProcessToDie(pid: number, force: boolean): Promise<void> {
   const maxWait = 2000;
@@ -231,10 +237,14 @@ async function waitForProcessToDie(pid: number, force: boolean): Promise<void> {
     waited += pollInterval;
   }
 
-  // If SIGTERM didn't work and we haven't tried SIGKILL yet, escalate
+  // Graceful kill didn't finish — escalate (same structure on both platforms).
   if (!force && isProcessAlive(pid)) {
     try {
-      process.kill(pid, 'SIGKILL');
+      if (isWindows()) {
+        killProcessWindows(pid, true);
+      } else {
+        process.kill(pid, 'SIGKILL');
+      }
     } catch {
       return;
     }
