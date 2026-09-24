@@ -242,6 +242,8 @@ export class RpcGateway {
             message: string
             code?: 'agent_unavailable' | 'outside_workspace_roots'
             agent?: AgentFlavor
+            /** Explicit false = no OS child; stub safe to delete (#1911 B3). */
+            childStarted?: boolean
         }
     > {
         try {
@@ -279,15 +281,21 @@ export class RpcGateway {
                         ? obj.code
                         : undefined
                     const unavailableAgent = typeof obj.agent === 'string' ? obj.agent as AgentFlavor : undefined
+                    const childStarted = obj.childStarted === false ? false : undefined
                     return {
                         type: 'error',
                         message: obj.errorMessage,
                         ...(code ? { code } : {}),
                         ...(unavailableAgent ? { agent: unavailableAgent } : {}),
+                        ...(childStarted === false ? { childStarted: false } : {}),
                     }
                 }
                 if (obj.type === 'requestToApproveDirectoryCreation' && typeof obj.directory === 'string') {
-                    return { type: 'error', message: `Directory creation requires approval: ${obj.directory}` }
+                    return {
+                        type: 'error',
+                        message: `Directory creation requires approval: ${obj.directory}`,
+                        childStarted: false,
+                    }
                 }
                 if (typeof obj.error === 'string') {
                     return { type: 'error', message: obj.error }
@@ -307,6 +315,8 @@ export class RpcGateway {
                 })()
             return { type: 'error', message: `Unexpected spawn result: ${details}` }
         } catch (error) {
+            // Ambiguous: the machine RPC may have started a child before failing.
+            // Do not claim childStarted: false — hub keeps the stub.
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
     }

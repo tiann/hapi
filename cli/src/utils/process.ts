@@ -162,6 +162,65 @@ function killProcessWindows(pid: number, force: boolean): boolean {
   }
 }
 
+/**
+ * Collect a win32 process tree (children first, root last) via CIM ParentProcessId.
+ * Used to verify taskkill /T actually cleared descendants — exit 0 is "signalled",
+ * not "gone" (#1911 B2).
+ */
+export function collectWindowsProcessTree(pid: number): number[] {
+  const n = typeof pid === 'number' ? pid : Number(pid)
+  if (!Number.isFinite(n) || n <= 0) return []
+
+  const result = spawn.sync(
+    'powershell',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      [
+        `$root=${n}`,
+        '$seen=@{}',
+        '$bfs=@()',
+        '$queue=@($root)',
+        'while($queue.Count -gt 0){',
+        '  $p=$queue[0]; if($queue.Count -eq 1){$queue=@()}else{$queue=$queue[1..($queue.Count-1)]}',
+        '  if($seen.ContainsKey($p)){continue}',
+        '  $seen[$p]=$true',
+        '  $bfs+=$p',
+        '  Get-CimInstance Win32_Process -Filter "ParentProcessId=$p" -ErrorAction SilentlyContinue |',
+        '    ForEach-Object { $queue+=,[int]$_.ProcessId }',
+        '}',
+        // children-first: reverse BFS so root is last
+        'if($bfs.Count -gt 0){ [array]::Reverse($bfs); ($bfs -join ",") }',
+      ].join(' '),
+    ],
+    { encoding: 'utf8', windowsHide: true, maxBuffer: 16 * 1024 * 1024 }
+  )
+  if (result.error || result.status !== 0) {
+    // Fallback: at least verify the root PID.
+    return [n]
+  }
+  const raw = (result.stdout ?? '').toString().trim()
+  if (!raw) return [n]
+  const pids = raw.split(',').map((s) => Number(s.trim())).filter((p) => Number.isFinite(p) && p > 0)
+  return pids.length > 0 ? pids : [n]
+}
+
+async function signalAndWaitWindowsRoot(pid: number, force: boolean): Promise<void> {
+  if (force) {
+    killProcessWindows(pid, true);
+    await waitForProcessToDie(pid, true);
+    return;
+  }
+  const softOk = killProcessWindows(pid, false);
+  if (!softOk && isProcessAlive(pid)) {
+    killProcessWindows(pid, true);
+    await waitForProcessToDie(pid, true);
+    return;
+  }
+  await waitForProcessToDie(pid, false);
+}
+
 export async function killProcess(pid: number, force: boolean = false): Promise<boolean> {
   const n = typeof pid === 'number' ? pid : Number(pid)
   if (!Number.isFinite(n) || n <= 0) {
@@ -174,18 +233,8 @@ export async function killProcess(pid: number, force: boolean = false): Promise<
     // escalate immediately only when soft kill is *refused*; when soft succeeds
     // but the PID is still draining, honor the grace wait before /F so archive
     // flush can finish.
-    if (force) {
-      killProcessWindows(n, true);
-      await waitForProcessToDie(n, true);
-      return !isProcessAlive(n);
-    }
-    const softOk = killProcessWindows(n, false);
-    if (!softOk && isProcessAlive(n)) {
-      killProcessWindows(n, true);
-      await waitForProcessToDie(n, true);
-      return !isProcessAlive(n);
-    }
-    await waitForProcessToDie(n, false);
+    // Root-only verify — callers that need full-tree proof use killProcessTreeByPid.
+    await signalAndWaitWindowsRoot(n, force);
     return !isProcessAlive(n);
   }
 
@@ -252,7 +301,14 @@ async function killProcessTree(pid: number, force: boolean): Promise<boolean> {
 export async function killProcessTreeByPid(pid: number, force: boolean = false): Promise<boolean> {
   const n = typeof pid === 'number' ? pid : Number(pid)
   if (!Number.isFinite(n) || n <= 0) return false;
-  if (isWindows()) return killProcess(n, force);
+  if (isWindows()) {
+    // taskkill /T exit 0 means "signalled", not "every descendant is dead".
+    // Collect the tree first, signal the root with /T, then verify every PID
+    // from the pre-kill snapshot is gone (#1911 B2).
+    const treePids = collectWindowsProcessTree(n);
+    await signalAndWaitWindowsRoot(n, force);
+    return treePids.every((candidate) => !isProcessAlive(candidate));
+  }
   return killProcessTree(n, force);
 }
 
@@ -298,11 +354,6 @@ export async function killProcessByChildProcess(
     return false;
   }
 
-  if (isWindows()) {
-    // Windows taskkill /T already kills the entire process tree
-    return killProcess(pid, force);
-  }
-
-  // Kill entire process tree on Unix to prevent orphan processes
+  // Both platforms: tree-kill + full-tree verify (win32 must not trust root-only).
   return killProcessTreeByPid(pid, force);
 }

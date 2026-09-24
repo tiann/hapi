@@ -602,14 +602,16 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           type: 'error',
           errorMessage,
           code: 'agent_unavailable',
-          agent
+          agent,
+          childStarted: false,
         };
       }
       if (options.validateDirectory && !(await options.validateDirectory(directory))) {
         return {
           type: 'error',
           errorMessage: 'Directory is outside this machine\'s workspace roots',
-          code: 'outside_workspace_roots'
+          code: 'outside_workspace_roots',
+          childStarted: false,
         };
       }
       const yolo = options.yolo === true;
@@ -643,14 +645,16 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           logger.debug(`[RUNNER RUN] Directory creation not approved for: ${directory}`);
           return {
             type: 'requestToApproveDirectoryCreation',
-            directory
+            directory,
+            childStarted: false,
           };
         }
         if (validation.type === 'error') {
           logger.debug(`[RUNNER RUN] Workspace directory validation failed: ${validation.errorMessage}`);
           return {
             type: 'error',
-            errorMessage: validation.errorMessage
+            errorMessage: validation.errorMessage,
+            childStarted: false,
           };
         }
         directoryCreated = validation.created;
@@ -667,7 +671,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           logger.debug(`[RUNNER RUN] Worktree base directory missing: ${directory}`);
           return {
             type: 'error',
-            errorMessage: `Worktree sessions require an existing Git repository. Directory not found: ${directory}`
+            errorMessage: `Worktree sessions require an existing Git repository. Directory not found: ${directory}`,
+            childStarted: false,
           };
         }
       }
@@ -679,7 +684,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         return {
           type: 'error',
           errorMessage: 'Directory is outside this machine\'s workspace roots',
-          code: 'outside_workspace_roots'
+          code: 'outside_workspace_roots',
+          childStarted: false,
         };
       }
 
@@ -706,7 +712,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             logger.debug(`[RUNNER RUN] Worktree creation failed: ${worktreeResult.error}`);
             return {
               type: 'error',
-              errorMessage: worktreeResult.error
+              errorMessage: worktreeResult.error,
+              childStarted: false,
             };
           }
           worktreeInfo = worktreeResult.info;
@@ -1965,8 +1972,9 @@ export function buildCliArgs(
   // Stamp the HAPI row id on argv whenever known so stopSession can reap
   // detached orphans via ps argv scan after tracking maps are lost (#1910).
   // Flavors that already emit `--existing-session-id` keep that form; others
-  // get `--hapi-session-id` (parsed by agentCommandOptions / ignored as
-  // unknown by Claude's passthrough only when we consume it explicitly).
+  // get `--hapi-session-id` (adopt-stub: create/getOrCreate with reserved UUID,
+  // not reopen). Local HTTP /spawn-session may pass a non-UUID sessionId as a
+  // tracking hint — CLI treats non-UUID `--hapi-session-id` as reap-stamp only.
   const reapSessionId = options.existingSessionId ?? options.sessionId;
   if (agent === 'codex' || agent === 'cursor' || agent === 'pi'
       || agent === 'opencode'

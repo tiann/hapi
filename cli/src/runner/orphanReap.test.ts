@@ -201,4 +201,40 @@ describe('reapRunnerSpawnedOrphans (stopSession orphan path)', () => {
         expect(killed).toEqual([])
         expect(status).toBe('still_alive')
     })
+
+    it('uses same-snapshot startMarker as expected (not a later probe) for PID-reuse guard', async () => {
+        const killed: number[] = []
+        const status = await reapRunnerSpawnedOrphans('sess-orphan-snapshot', {
+            findTargets: async () => [
+                { pid: 4242, startMarker: 'snapshot-gen' },
+            ],
+            killTree: async (pid) => {
+                killed.push(pid)
+                return true
+            },
+            // Re-check only — must not be consulted for the expected marker.
+            getStartMarker: () => 'snapshot-gen',
+            isAlive: () => true,
+        })
+        expect(status).toBe('stopped')
+        expect(killed).toEqual([4242])
+    })
+
+    it('continues other orphans when one live PID has an unreadable marker', async () => {
+        const killed: number[] = []
+        const status = await reapRunnerSpawnedOrphans('sess-orphan-partial', {
+            findTargets: async () => [
+                { pid: 1111, startMarker: null },
+                { pid: 2222, startMarker: 'gen-ok' },
+            ],
+            killTree: async (pid) => {
+                killed.push(pid)
+                return true
+            },
+            getStartMarker: (pid) => (pid === 2222 ? 'gen-ok' : null),
+            isAlive: () => true,
+        })
+        expect(killed).toEqual([2222])
+        expect(status).toBe('still_alive')
+    })
 })

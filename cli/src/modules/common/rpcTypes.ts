@@ -34,10 +34,16 @@ export interface SpawnSessionOptions {
 
 export type SpawnSessionResult =
     | { type: 'success'; sessionId: string }
-    | { type: 'requestToApproveDirectoryCreation'; directory: string }
+    | { type: 'requestToApproveDirectoryCreation'; directory: string; childStarted: false }
     | {
         type: 'error'
         errorMessage: string
         code?: 'agent_unavailable' | 'outside_workspace_roots'
         agent?: AgentFlavor
+        /**
+         * Explicit false = runner rejected before exec (no OS child). Hub may
+         * delete a preallocated stub. Omitted/true = child may exist — keep stub
+         * until StopSession confirms gone (#1911 B3).
+         */
+        childStarted?: boolean
     }

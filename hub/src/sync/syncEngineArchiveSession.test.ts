@@ -20,13 +20,23 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         return (engine as unknown as { sessionCache: SessionCache }).sessionCache
     }
 
-    function insertActiveSession(tag: string, machineId?: string, hostPid?: number): string {
+    function insertActiveSession(
+        tag: string,
+        machineId?: string,
+        hostPid?: number,
+        opts?: { startedBy?: 'runner' | 'terminal'; startedFromRunner?: boolean }
+    ): string {
+        const startedBy = opts?.startedBy ?? 'runner'
         const created = cache().getOrCreateSession(
             tag,
             {
                 path: '/tmp/proj',
                 host: 'localhost',
                 flavor: 'claude',
+                startedBy,
+                ...(opts?.startedFromRunner !== undefined
+                    ? { startedFromRunner: opts.startedFromRunner }
+                    : startedBy === 'runner' ? { startedFromRunner: true } : {}),
                 ...(machineId ? { machineId } : {}),
                 ...(typeof hostPid === 'number' ? { hostPid } : {}),
             },
@@ -299,5 +309,19 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         const session = cache().getSession(sessionId)
         expect(session?.active).toBe(true)
         expect(session?.metadata?.lifecycleState).not.toBe('archived')
+    })
+
+    it('archives a terminal session when no runner is connected', async () => {
+        const sessionId = insertActiveSession('sess-terminal-no-runner', 'machine-x', undefined, {
+            startedBy: 'terminal',
+        })
+        setKillSessionOk()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => { throw new Error('machine offline') }
+
+        await engine.archiveSession(sessionId)
+
+        expect(cache().getSession(sessionId)?.active).toBe(false)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
     })
 })

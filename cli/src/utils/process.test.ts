@@ -334,6 +334,53 @@ describe('killProcess on Windows (orphanReap / stopSession)', () => {
         expect(taskkills).toHaveLength(1)
         expect(taskkills[0]![1]).toEqual(['/F', '/T', '/PID', '9901'])
     })
+
+    it('killProcessTreeByPid returns false when a descendant survives after taskkill /T', async () => {
+        // #1911 B2: taskkill /T exit 0 is "signalled", not "tree gone". Root may
+        // die while claude.exe/node grandchild stays alive — must not report stopped.
+        const { killProcessTreeByPid } = await import('./process')
+        const alive = new Set([100, 200]) // 100=root, 200=descendant
+        vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: string | number) => {
+            if (signal === 0 || signal === undefined) {
+                if (!alive.has(pid)) {
+                    const err = new Error('ESRCH') as NodeJS.ErrnoException
+                    err.code = 'ESRCH'
+                    throw err
+                }
+                return true
+            }
+            return true
+        })
+        spawnSyncMock.mockImplementation((cmd: string, args: string[] = []) => {
+            if (cmd === 'powershell') {
+                const script = String(args[args.length - 1] ?? '')
+                if (script.includes('ParentProcessId')) {
+                    // collectWindowsProcessTree: children-first then root
+                    return completed('200,100')
+                }
+                return completed('')
+            }
+            if (cmd === 'tasklist') {
+                const filter = args.find((a) => a.startsWith('PID eq '))
+                const pid = filter ? Number(filter.replace('PID eq ', '')) : NaN
+                if (!alive.has(pid)) {
+                    return completed('INFO: No tasks are running which match the specified criteria.')
+                }
+                return completed(`proc.exe                       ${pid} Console                    1     1,000 K`)
+            }
+            if (cmd === 'taskkill') {
+                // Root dies; descendant refuses — the false-stopped class.
+                alive.delete(100)
+                return completed('', 0)
+            }
+            return completed('')
+        })
+
+        const done = killProcessTreeByPid(100, true)
+        await vi.advanceTimersByTimeAsync(500)
+        await expect(done).resolves.toBe(false)
+        expect(alive.has(200)).toBe(true)
+    })
 })
 
 describe('getHapiRunnerProcessIdentity on POSIX', () => {

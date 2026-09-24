@@ -1729,7 +1729,9 @@ export class SyncEngine {
 
         const sessionMeta = this.sessionCache.getSession(sessionId)?.metadata
         const machineId = sessionMeta?.machineId
-        if (machineId) {
+        const runnerSpawned = sessionMeta?.startedBy === 'runner'
+            || sessionMeta?.startedFromRunner === true
+        if (machineId && runnerSpawned) {
             let status: 'stopped' | 'already_gone' | 'still_alive' | 'unknown'
             try {
                 status = await this.rpcGateway.stopRunnerSession(machineId, sessionId)
@@ -1778,6 +1780,15 @@ export class SyncEngine {
             }
             if (status === 'still_alive' || status === 'unknown') {
                 throw new Error('Session process is still running and could not be stopped')
+            }
+        } else if (machineId && !runnerSpawned) {
+            // Terminal / non-runner sessions: KillSession is the primary stop.
+            // Best-effort machine StopSession when a runner is connected; do not
+            // refuse archive when no runner exists (#1911 bot Major).
+            try {
+                await this.rpcGateway.stopRunnerSession(machineId, sessionId)
+            } catch {
+                // ignore — terminal archive proceeds after KillSession
             }
         }
 
@@ -2160,29 +2171,57 @@ export class SyncEngine {
             preallocated = true
         }
 
-        const result = await this.rpcGateway.spawnSession(
-            machineId,
-            directory,
-            agent,
-            model,
-            modelReasoningEffort,
-            yolo,
-            sessionType,
-            worktreeName,
-            resumeSessionId,
-            effort,
-            permissionMode,
-            serviceTier,
-            allocatedSessionId,
-            collaborationMode,
-            copilotAgentMode,
-            startingMode
-        )
+        let result: Awaited<ReturnType<RpcGateway['spawnSession']>>
+        try {
+            result = await this.rpcGateway.spawnSession(
+                machineId,
+                directory,
+                agent,
+                model,
+                modelReasoningEffort,
+                yolo,
+                sessionType,
+                worktreeName,
+                resumeSessionId,
+                effort,
+                permissionMode,
+                serviceTier,
+                allocatedSessionId,
+                collaborationMode,
+                copilotAgentMode,
+                startingMode
+            )
+        } catch (error) {
+            // Ambiguous post-dispatch failure — keep the stub (child may exist).
+            if (preallocated && allocatedSessionId) {
+                return {
+                    type: 'error',
+                    message: error instanceof Error ? error.message : String(error),
+                }
+            }
+            throw error
+        }
 
         if (result.type !== 'success' && preallocated && allocatedSessionId) {
-            // Only delete the stub when StopSession confirms the child is gone.
-            // still_alive / unknown / RPC failure → keep the row so archive can
-            // retry (deleting would recreate an unreapable orphan — #1911).
+            const deleteStub = async (): Promise<void> => {
+                try {
+                    const row = this.sessionCache.refreshSession(allocatedSessionId!)
+                    if (row?.active) {
+                        this.handleSessionEnd({ sid: allocatedSessionId!, time: Date.now(), reason: 'error' })
+                    }
+                    await this.deleteSession(allocatedSessionId!)
+                } catch {
+                    // Leave the stub visible rather than claiming cleanup succeeded.
+                }
+            }
+
+            // Pre-exec rejection: runner never started an OS child — safe to delete.
+            // Post-exec ambiguity: only delete when StopSession confirms gone (#1911 B3).
+            if (result.childStarted === false) {
+                await deleteStub()
+                return result
+            }
+
             let stopStatus: 'stopped' | 'already_gone' | 'still_alive' | 'unknown' = 'still_alive'
             try {
                 stopStatus = await this.rpcGateway.stopRunnerSession(machineId, allocatedSessionId)
@@ -2192,15 +2231,7 @@ export class SyncEngine {
             if (stopStatus === 'still_alive' || stopStatus === 'unknown') {
                 return result
             }
-            try {
-                const row = this.sessionCache.refreshSession(allocatedSessionId)
-                if (row?.active) {
-                    this.handleSessionEnd({ sid: allocatedSessionId, time: Date.now(), reason: 'error' })
-                }
-                await this.deleteSession(allocatedSessionId)
-            } catch {
-                // Leave the stub visible rather than claiming cleanup succeeded.
-            }
+            await deleteStub()
         }
 
         return result

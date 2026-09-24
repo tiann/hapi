@@ -260,4 +260,126 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
             engine.stop()
         }
     })
+
+    it('deletes the stub on pre-exec rejection without StopSession (childStarted:false)', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            engine.getOrCreateMachine(
+                'machine-preexec',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+
+            let forwardedExistingId: string | undefined
+            let stopCalls = 0
+            ;(engine as unknown as { rpcGateway: { spawnSession: unknown; stopRunnerSession: unknown } })
+                .rpcGateway.spawnSession = async (
+                    ...args: unknown[]
+                ) => {
+                    forwardedExistingId = args[12] as string | undefined
+                    return {
+                        type: 'error' as const,
+                        message: 'claude is not installed',
+                        code: 'agent_unavailable' as const,
+                        childStarted: false as const,
+                    }
+                }
+            ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } })
+                .rpcGateway.stopRunnerSession = async () => {
+                    stopCalls++
+                    return 'unknown'
+                }
+
+            const result = await engine.spawnSession(
+                'machine-preexec',
+                '/tmp/project',
+                'claude',
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                'default'
+            )
+
+            expect(result.type).toBe('error')
+            expect(stopCalls).toBe(0)
+            expect(store.sessions.getSession(forwardedExistingId!)).toBeFalsy()
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('deletes the stub on directory-approval pre-exec (childStarted:false)', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            engine.getOrCreateMachine(
+                'machine-dir-approve',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+
+            let forwardedExistingId: string | undefined
+            ;(engine as unknown as { rpcGateway: { spawnSession: unknown; stopRunnerSession: unknown } })
+                .rpcGateway.spawnSession = async (
+                    ...args: unknown[]
+                ) => {
+                    forwardedExistingId = args[12] as string | undefined
+                    return {
+                        type: 'error' as const,
+                        message: 'Directory creation requires approval: /tmp/new-project',
+                        childStarted: false as const,
+                    }
+                }
+
+            const result = await engine.spawnSession(
+                'machine-dir-approve',
+                '/tmp/new-project',
+                'claude',
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                'default'
+            )
+
+            expect(result.type).toBe('error')
+            expect(store.sessions.getSession(forwardedExistingId!)).toBeFalsy()
+        } finally {
+            engine.stop()
+        }
+    })
 })
