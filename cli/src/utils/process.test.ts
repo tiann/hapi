@@ -381,6 +381,55 @@ describe('killProcess on Windows (orphanReap / stopSession)', () => {
         await expect(done).resolves.toBe(false)
         expect(alive.has(200)).toBe(true)
     })
+
+    it('windowsProcessTreeCimCommand is newline-separated (WinPS-parseable)', async () => {
+        // #1911 bot Major: `.join(' ')` yields `$seen=@{} $bfs=@()` — parse error.
+        // Assert generated command text, not mocked stdout (mocks never parse PS).
+        const { windowsProcessTreeCimCommand } = await import('./process')
+        const cmd = windowsProcessTreeCimCommand(4242)
+        expect(cmd).toContain('$root=4242')
+        expect(cmd).toContain('ParentProcessId=$p')
+        // Statements must be on separate lines — spaces between `$x=@{}` tokens fail.
+        expect(cmd).toContain('\n$seen=@{}')
+        expect(cmd).toContain('\n$bfs=@()')
+        expect(cmd).toContain('\n$queue=@($root)')
+        expect(cmd).toContain('\nwhile($queue.Count -gt 0){')
+        // Space-join regression: adjacent statement tokens on one line (not newline).
+        expect(cmd).not.toMatch(/\$seen=@\{\}[ ]+\$bfs=@\(\)/)
+        expect(cmd).not.toMatch(/\$bfs=@\(\)[ ]+\$queue=@/)
+        // Do not terminate `while(...){` with `;` (also invalid).
+        expect(cmd).not.toMatch(/while\(\$queue\.Count -gt 0\)\{\s*;/)
+    })
+
+    it('killProcessTreeByPid returns false when Windows tree scan fails (no root-only)', async () => {
+        const { killProcessTreeByPid } = await import('./process')
+        vi.spyOn(process, 'kill').mockReturnValue(true)
+        spawnSyncMock.mockImplementation((cmd: string) => {
+            if (cmd === 'powershell') {
+                // Parse error / CIM failure — non-zero status.
+                return { status: 1, stdout: Buffer.from(''), stderr: Buffer.from('parse error'), error: null }
+            }
+            if (cmd === 'tasklist') {
+                return completed(`proc.exe                       100 Console                    1     1,000 K`)
+            }
+            if (cmd === 'taskkill') {
+                throw new Error('should not taskkill after scan_failed')
+            }
+            return completed('')
+        })
+        await expect(killProcessTreeByPid(100, true)).resolves.toBe(false)
+        expect(spawnSyncMock.mock.calls.some((c) => c[0] === 'taskkill')).toBe(false)
+    })
+
+    it('killProcessTreeByPid returns false when Windows tree scan returns empty stdout', async () => {
+        const { killProcessTreeByPid } = await import('./process')
+        spawnSyncMock.mockImplementation((cmd: string) => {
+            if (cmd === 'powershell') return completed('') // status 0, empty — was fail-open to [root]
+            if (cmd === 'taskkill') throw new Error('should not taskkill')
+            return completed('')
+        })
+        await expect(killProcessTreeByPid(100, true)).resolves.toBe(false)
+    })
 })
 
 describe('killProcessTreeByPid on POSIX (pgrep tree scan)', () => {

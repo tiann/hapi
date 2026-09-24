@@ -189,10 +189,34 @@ function killProcessWindows(pid: number, force: boolean): boolean {
  * Collect a win32 process tree (children first, root last) via CIM ParentProcessId.
  * Used to verify taskkill /T actually cleared descendants — exit 0 is "signalled",
  * not "gone" (#1911 B2).
+ *
+ * Returns `'scan_failed'` when PowerShell errors or returns nothing usable —
+ * callers must fail closed (never fall back to root-only verify).
  */
-export function collectWindowsProcessTree(pid: number): number[] {
+export function windowsProcessTreeCimCommand(pid: number): string {
+  // Newlines between statements — `.join(' ')` is a parse error on WinPS
+  // (`$seen=@{} $bfs=@()`). Do not join with `;` either: `while(...){;` is invalid.
+  return [
+    `$root=${pid}`,
+    '$seen=@{}',
+    '$bfs=@()',
+    '$queue=@($root)',
+    'while($queue.Count -gt 0){',
+    '  $p=$queue[0]; if($queue.Count -eq 1){$queue=@()}else{$queue=$queue[1..($queue.Count-1)]}',
+    '  if($seen.ContainsKey($p)){continue}',
+    '  $seen[$p]=$true',
+    '  $bfs+=$p',
+    '  Get-CimInstance Win32_Process -Filter "ParentProcessId=$p" -ErrorAction SilentlyContinue |',
+    '    ForEach-Object { $queue+=,[int]$_.ProcessId }',
+    '}',
+    // children-first: reverse BFS so root is last
+    'if($bfs.Count -gt 0){ [array]::Reverse($bfs); ($bfs -join ",") }',
+  ].join('\n')
+}
+
+export function collectWindowsProcessTree(pid: number): number[] | 'scan_failed' {
   const n = typeof pid === 'number' ? pid : Number(pid)
-  if (!Number.isFinite(n) || n <= 0) return []
+  if (!Number.isFinite(n) || n <= 0) return 'scan_failed'
 
   const result = spawn.sync(
     'powershell',
@@ -200,33 +224,19 @@ export function collectWindowsProcessTree(pid: number): number[] {
       '-NoProfile',
       '-NonInteractive',
       '-Command',
-      [
-        `$root=${n}`,
-        '$seen=@{}',
-        '$bfs=@()',
-        '$queue=@($root)',
-        'while($queue.Count -gt 0){',
-        '  $p=$queue[0]; if($queue.Count -eq 1){$queue=@()}else{$queue=$queue[1..($queue.Count-1)]}',
-        '  if($seen.ContainsKey($p)){continue}',
-        '  $seen[$p]=$true',
-        '  $bfs+=$p',
-        '  Get-CimInstance Win32_Process -Filter "ParentProcessId=$p" -ErrorAction SilentlyContinue |',
-        '    ForEach-Object { $queue+=,[int]$_.ProcessId }',
-        '}',
-        // children-first: reverse BFS so root is last
-        'if($bfs.Count -gt 0){ [array]::Reverse($bfs); ($bfs -join ",") }',
-      ].join(' '),
+      windowsProcessTreeCimCommand(n),
     ],
     { encoding: 'utf8', windowsHide: true, maxBuffer: 16 * 1024 * 1024 }
   )
   if (result.error || result.status !== 0) {
-    // Fallback: at least verify the root PID.
-    return [n]
+    return 'scan_failed'
   }
   const raw = (result.stdout ?? '').toString().trim()
-  if (!raw) return [n]
+  if (!raw) return 'scan_failed'
   const pids = raw.split(',').map((s) => Number(s.trim())).filter((p) => Number.isFinite(p) && p > 0)
-  return pids.length > 0 ? pids : [n]
+  // Must include the root — empty/garbage output is a failed scan, not root-only.
+  if (pids.length === 0 || !pids.includes(n)) return 'scan_failed'
+  return pids
 }
 
 async function signalAndWaitWindowsRoot(pid: number, force: boolean): Promise<void> {
@@ -342,6 +352,10 @@ export async function killProcessTreeByPid(pid: number, force: boolean = false):
     // Collect the tree first, signal the root with /T, then verify every PID
     // from the pre-kill snapshot is gone (#1911 B2).
     const treePids = collectWindowsProcessTree(n);
+    if (treePids === 'scan_failed') {
+      // Failed/empty CIM scan must not collapse to root-only verify (#1911 bot).
+      return false;
+    }
     await signalAndWaitWindowsRoot(n, force);
     return treePids.every((candidate) => !isProcessAlive(candidate));
   }
