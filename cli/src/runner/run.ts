@@ -16,6 +16,7 @@ import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquire
 import { getCliArgs } from '@/utils/cliArgs';
 import { getProcessStartMarker, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid } from '@/utils/process';
 import { findRunnerSpawnedOrphanPids, reapRunnerSpawnedOrphans } from '@/runner/orphanReap';
+import { decideUntrackedRunnerWebhook } from '@/runner/lateRunnerWebhook';
 import {
     detachSharedRootFromWrapper,
     keepWrapperForSharedSiblings,
@@ -508,24 +509,58 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         // anything claiming `'runner'` here must be the second case and
         // should be ignored + terminated instead of silently promoted.
         if (sessionMetadata.startedBy === 'runner') {
-          // Only kill PIDs this runner generation timed out. A recovered shared
-          // Codex root after restart can have resume-process state without a
-          // TrackedSession — killing it would tear down live sibling sessions.
-          if (!webhookTimeoutOrphanPids.has(pid)) {
+          // Untracked runner-spawned webhook: either this generation timed the
+          // spawn out, or the runner restarted before the webhook (no stamp).
+          // Shared Codex must never be killed here (siblings). Nonshared
+          // post-restart CLIs must be adopted so StopSession can find them —
+          // Claude often has no HAPI id on argv yet (#1910 / #1911).
+          const timedOutByThisRunner = webhookTimeoutOrphanPids.has(pid);
+          webhookTimeoutOrphanPids.delete(pid);
+          const decision = decideUntrackedRunnerWebhook({
+            concurrentClients: Boolean(sessionMetadata.capabilities?.concurrentClients),
+            timedOutByThisRunner,
+          });
+          if (decision === 'kill') {
+            logger.debug(
+              `[RUNNER RUN] Ignoring late webhook from orphaned runner-spawned PID ${pid} (session ${sessionId}). Terminating child.`
+            );
+            // Use killProcess (SIGTERM → SIGKILL escalation) rather than a
+            // bare process.kill() so the orphan is reliably reaped even if
+            // it ignores SIGTERM. We don't have a ChildProcess reference
+            // here (tracking entry was already removed by the timeout
+            // handler), so tree-kill via killProcessByChildProcess is not
+            // available — but the timeout handler should have already
+            // tree-killed the process group; this is defence-in-depth.
+            void killProcess(pid);
             return;
           }
+
+          const processStartMarker = getProcessStartMarker(pid);
+          const adopted: TrackedSession = {
+            ...(sessionMetadata.capabilities?.concurrentClients
+              ? { sharedSessions: { [sessionId]: sessionMetadata } }
+              : {}),
+            startedBy: 'runner',
+            happySessionId: sessionId,
+            happySessionMetadataFromLocalWebhook: sessionMetadata,
+            pid,
+          };
+          invalidateVerifiedExit(sessionId);
+          invalidateVerifiedExit(`PID-${pid}`);
+          pidToTrackedSession.set(pid, adopted);
+          pidToConfirmedSessionId.set(pid, sessionId);
+          if (processStartMarker) {
+            persistedResumeProcesses.set(pid, {
+              requestedSessionId: sessionId,
+              confirmedSessionId: sessionId,
+              pid,
+              processStartMarker,
+            });
+            persistResumeProcesses();
+          }
           logger.debug(
-            `[RUNNER RUN] Ignoring late webhook from orphaned runner-spawned PID ${pid} (session ${sessionId}). Terminating child.`
+            `[RUNNER RUN] Adopted untracked runner-spawned session ${sessionId} (PID ${pid}) after restart or shared recovery`
           );
-          // Use killProcess (SIGTERM → SIGKILL escalation) rather than a
-          // bare process.kill() so the orphan is reliably reaped even if
-          // it ignores SIGTERM.  We don't have a ChildProcess reference
-          // here (tracking entry was already removed by the timeout
-          // handler), so tree-kill via killProcessByChildProcess is not
-          // available — but the timeout handler should have already
-          // tree-killed the process group; this is defence-in-depth.
-          webhookTimeoutOrphanPids.delete(pid);
-          void killProcess(pid);
           return;
         }
 
