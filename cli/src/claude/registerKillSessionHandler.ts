@@ -75,9 +75,11 @@ export function registerKillSessionHandler(
     // still exit instead of reconnecting forever.
     // #1911 criterion 6: EventEmitter does not replay past emits — if
     // noteHubArchived already latched before this registration, exit now.
+    // Still subscribe so a later emit (or a race with the latch write) is covered.
     if (session?.hubArchived) {
         exitFromHubArchive();
-    } else if (session && typeof session.on === 'function') {
+    }
+    if (session && typeof session.on === 'function') {
         session.on('hub-archived', exitFromHubArchive);
     }
 }

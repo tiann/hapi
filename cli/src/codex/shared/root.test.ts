@@ -53,7 +53,7 @@ afterEach(async () => {
     finally { vi.useRealTimers(); }
 });
 
-async function fixture() {
+async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) {
     const directory = await mkdtemp('/tmp/hapi-shared-root-');
     let state: AgentState = { steeringActive: true };
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
@@ -61,21 +61,27 @@ async function fixture() {
     const updateState = vi.fn((fn: (value: AgentState) => AgentState) => { state = fn(state); });
     const rpc = new Map<string, (raw: unknown) => Promise<unknown>>();
     const send = vi.fn();
+    const hubArchivedListeners: Array<() => void> = [];
     const session = {
         sessionId: 'sid', getMetadata: () => metadata,
+        hubArchived: opts?.hubArchived ?? false,
         updateMetadata: (fn: (value: Metadata) => Metadata) => { metadata = fn(metadata); },
         updateAgentState: updateState, keepAlive() {},
         onUserMessage() {}, onCancelQueuedMessage() {}, onRetryQueuedMessage() {},
         onReconnect: (fn: (() => void) | null) => { reconnect = fn; },
+        on(event: string, listener: () => void) {
+            if (event === 'hub-archived') hubArchivedListeners.push(listener);
+        },
         rpcHandlerManager: { registerHandler: (name: string, handler: (raw: unknown) => Promise<unknown>) => rpc.set(name, handler) },
         sendSessionEvent() {}, sendAgentMessage: send, emitSessionReady() {},
         sendUserMessage() {}, emitMessagesConsumed() {}, emitSteerIndeterminate() {}, syncNativeQueuedMessage() {},
         sendSessionDeath() {}, async flush() {}, close() {}
     } as unknown as ApiSessionClient;
+    const end = opts?.end ?? (async () => { throw new Error('Unexpected root archive'); });
     const root = new SharedCodexRoot({ session, workingDirectory: directory } as SessionBootstrapResult, {
         directory, generation: 'test', endpoint: 'mock', settingsFor: () => undefined,
         create: async () => { throw new Error('Unexpected root creation'); },
-        end: async () => { throw new Error('Unexpected root archive'); }
+        end
     } satisfies RootHost);
     cleanups.push(async () => { await root.close(false); await rm(directory, { recursive: true, force: true }); });
     await root.prepare();
@@ -87,7 +93,13 @@ async function fixture() {
         notify(method: string, params: unknown): void;
         abandoned(): void;
     };
-    return { root, native, rpc, send, metadata: () => metadata, state: () => state, updateState, reconnect: () => reconnect?.() };
+    return {
+        root, native, rpc, send, metadata: () => metadata, state: () => state, updateState,
+        reconnect: () => reconnect?.(),
+        emitHubArchived: () => { for (const listener of hubArchivedListeners) listener(); },
+        hubArchivedListenerCount: () => hubArchivedListeners.length,
+        end,
+    };
 }
 
 async function completePlan(f: Awaited<ReturnType<typeof fixture>>, status = 'completed') {
@@ -289,5 +301,24 @@ describe('shared steering availability', () => {
         f.native.thread.turns = [{ id: 'busy', status: 'completed', items: [] }];
         f.reconnect();
         await vi.waitFor(() => expect(f.state().steeringActive).toBe(false));
+    });
+
+    it('ends the shared root on hub-archived metadata (#1911 C2 / AC6)', async () => {
+        const end = vi.fn(async () => {});
+        const f = await fixture({ end });
+        await f.root.activate();
+        expect(f.hubArchivedListenerCount()).toBe(1);
+        f.emitHubArchived();
+        await vi.waitFor(() => expect(end).toHaveBeenCalledTimes(1));
+        expect(end.mock.calls[0][0]).toBe(f.root);
+    });
+
+    it('ends when hubArchived was latched before activate (production order, #1911 AC6)', async () => {
+        // Bootstrap may refuse CAS / noteHubArchived before Codex bind+activate
+        // registers controls — same late-listener miss as other flavors.
+        const end = vi.fn(async () => {});
+        const f = await fixture({ hubArchived: true, end });
+        await f.root.activate();
+        await vi.waitFor(() => expect(end).toHaveBeenCalledTimes(1));
     });
 });
