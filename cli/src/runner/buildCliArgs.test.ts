@@ -381,6 +381,18 @@ describe('buildCliArgs', () => {
         expect(args).not.toContain('--existing-session-id')
     })
 
+    it('does not stamp UUID local-HTTP sessionId as adopt (would 404/409)', () => {
+        // #1911 Opus Major: controlServer passes sessionId through; UUID entered
+        // resolveReservedHubSessionId → adoptPreallocatedSession against a
+        // non-stub / missing row.
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        })
+        expect(args).not.toContain('--hapi-session-id')
+        expect(args).not.toContain('--existing-session-id')
+    })
+
     it('stamps --hapi-session-id for reservedSessionId (fresh machine-spawn stub)', () => {
         const args = buildCliArgs('codex', {
             directory: '/tmp',

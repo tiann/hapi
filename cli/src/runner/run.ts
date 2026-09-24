@@ -2001,12 +2001,14 @@ export function buildCliArgs(
   // Adopt-stub (`--hapi-session-id`) vs reopen (`--existing-session-id`) are
   // different operations — never collapse them (#1911 Opus Critical + Codex Major).
   // Local HTTP non-UUID sessionId stays on --hapi-session-id (reap-only; create
-  // ignores non-UUID reserved ids).
+  // ignores non-UUID reserved ids). A UUID sessionId must NOT stamp adopt — that
+  // would 404/409 against a non-stub row (#1911 Opus Major @ 09141964c).
+  const hubUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   if (options.existingSessionId) {
     args.push('--existing-session-id', options.existingSessionId);
   } else if (options.reservedSessionId) {
     args.push('--hapi-session-id', options.reservedSessionId);
-  } else if (options.sessionId) {
+  } else if (options.sessionId && !hubUuid.test(options.sessionId)) {
     args.push('--hapi-session-id', options.sessionId);
   }
   if (options.model) {

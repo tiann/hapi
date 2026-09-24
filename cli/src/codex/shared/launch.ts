@@ -21,6 +21,16 @@ export const SharedLaunchSchema = z.object({
 });
 export type SharedLaunchOptions = z.infer<typeof SharedLaunchSchema>;
 
+/**
+ * Take the machine-spawn reservation for one create-path prepare().
+ * Clears it so a second root/fork cannot re-adopt (#1911 Opus Major).
+ */
+export function takeReservedSessionId(options: SharedLaunchOptions): string | undefined {
+    const id = options.reservedSessionId;
+    options.reservedSessionId = undefined;
+    return id;
+}
+
 /** Resolve once: a desktop server and a different PATH TUI are never mixed. */
 export function resolveSharedCodex(): CodexCommand {
     const command = resolveCodexCommand();

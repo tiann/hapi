@@ -589,10 +589,18 @@ describe('session model', () => {
                 _effort?: string,
                 _permissionMode?: string,
                 _serviceTier?: string,
-                existingSessionId?: string
+                existingSessionId?: string,
+                _collaborationMode?: string,
+                _copilotAgentMode?: string,
+                _startingMode?: string,
+                _forkSession?: boolean,
+                reservedSessionId?: string
             ) => {
                 capturedModel = model
-                return { type: 'success', sessionId: existingSessionId ?? 'spawned-cursor-session' }
+                return {
+                    type: 'success',
+                    sessionId: reservedSessionId ?? existingSessionId ?? 'spawned-cursor-session',
+                }
             }
 
             const result = await engine.spawnSession(
