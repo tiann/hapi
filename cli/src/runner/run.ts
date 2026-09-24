@@ -1284,8 +1284,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
                 logger.debug(
                   `[RUNNER RUN] Adopted PID ${pid} has no start marker; refusing tracked kill for ${sessionId}`
                 );
-                const orphan = await finishWithOrphanSweep('stopped');
+                const orphan = await finishWithOrphanSweep('unknown');
                 if (orphan === 'still_alive') return 'still_alive';
+                if (orphan === 'stopped') return 'stopped';
                 return 'unknown';
               }
               const currentMarker = getProcessStartMarker(pid);
