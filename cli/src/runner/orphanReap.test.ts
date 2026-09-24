@@ -46,6 +46,21 @@ describe('orphanReap argv matching', () => {
         )
         expect(pids).toEqual([42])
     })
+
+    it('selectOrphanPidsForSession coerces string PIDs from win32 ps-list', () => {
+        const pids = selectOrphanPidsForSession(
+            [
+                {
+                    // ps-list has returned string PIDs on Windows; Number.isFinite("42") is false
+                    pid: '42' as unknown as number,
+                    cmd: `hapi.exe cursor --started-by runner --existing-session-id ${sessionId}`,
+                    name: 'hapi.exe',
+                },
+            ],
+            sessionId
+        )
+        expect(pids).toEqual([42])
+    })
 })
 
 describe('reapRunnerSpawnedOrphans (stopSession orphan path)', () => {

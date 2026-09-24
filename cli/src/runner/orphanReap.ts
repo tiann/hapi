@@ -52,13 +52,18 @@ export function selectOrphanPidsForSession(
     selfPid: number = process.pid
 ): number[] {
     const pids: number[] = []
+    const self = Number(selfPid)
     for (const proc of processes) {
-        if (proc.pid === selfPid) continue
+        // ps-list on win32 has returned string PIDs; coerce before Finite checks
+        // in killProcessTreeByPid (Number.isFinite("123") === false).
+        const pid = typeof proc.pid === 'number' ? proc.pid : Number(proc.pid)
+        if (!Number.isFinite(pid) || pid <= 0) continue
+        if (pid === self) continue
         const cmd = proc.cmd || ''
         const name = proc.name || ''
         if (!isHapiDriverCliCommand(cmd, name)) continue
         if (!commandMatchesRunnerSpawnedSession(cmd, sessionId)) continue
-        pids.push(proc.pid)
+        pids.push(pid)
     }
     return pids
 }

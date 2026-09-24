@@ -163,7 +163,8 @@ function killProcessWindows(pid: number, force: boolean): boolean {
 }
 
 export async function killProcess(pid: number, force: boolean = false): Promise<boolean> {
-  if (!Number.isFinite(pid) || pid <= 0) {
+  const n = typeof pid === 'number' ? pid : Number(pid)
+  if (!Number.isFinite(n) || n <= 0) {
     return false;
   }
 
@@ -173,17 +174,17 @@ export async function killProcess(pid: number, force: boolean = false): Promise<
     // attempt graceful, then escalate to /F when the PID is still live.
     // Escalate immediately on soft refusal — do not burn the full grace wait
     // before /F (soft non-zero already means Windows rejected graceful kill).
-    killProcessWindows(pid, force);
-    if (!force && isProcessAlive(pid)) {
-      killProcessWindows(pid, true);
+    killProcessWindows(n, force);
+    if (!force && isProcessAlive(n)) {
+      killProcessWindows(n, true);
     }
-    await waitForProcessToDie(pid, true);
-    return !isProcessAlive(pid);
+    await waitForProcessToDie(n, true);
+    return !isProcessAlive(n);
   }
 
   try {
-    process.kill(pid, force ? 'SIGKILL' : 'SIGTERM');
-    await waitForProcessToDie(pid, force);
+    process.kill(n, force ? 'SIGKILL' : 'SIGTERM');
+    await waitForProcessToDie(n, force);
     return true;
   } catch {
     return false;
@@ -242,9 +243,10 @@ async function killProcessTree(pid: number, force: boolean): Promise<boolean> {
 
 /** Kill a PID and all descendants, verifying the complete tree is gone. */
 export async function killProcessTreeByPid(pid: number, force: boolean = false): Promise<boolean> {
-  if (!Number.isFinite(pid) || pid <= 0) return false;
-  if (isWindows()) return killProcess(pid, force);
-  return killProcessTree(pid, force);
+  const n = typeof pid === 'number' ? pid : Number(pid)
+  if (!Number.isFinite(n) || n <= 0) return false;
+  if (isWindows()) return killProcess(n, force);
+  return killProcessTree(n, force);
 }
 
 /**
