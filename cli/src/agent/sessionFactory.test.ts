@@ -3,6 +3,7 @@ import type { Session } from '@/api/types'
 
 const {
     getSessionMock,
+    getSessionSizeGuardMock,
     getOrCreateSessionMock,
     getOrCreateMachineMock,
     sessionSyncClientMock,
@@ -10,6 +11,7 @@ const {
     readSettingsMock
 } = vi.hoisted(() => ({
     getSessionMock: vi.fn(),
+    getSessionSizeGuardMock: vi.fn(),
     getOrCreateSessionMock: vi.fn(),
     getOrCreateMachineMock: vi.fn(),
     sessionSyncClientMock: vi.fn(),
@@ -21,6 +23,7 @@ vi.mock('@/api/api', () => ({
     ApiClient: {
         create: async () => ({
             getSession: getSessionMock,
+            getSessionSizeGuard: getSessionSizeGuardMock,
             getOrCreateSession: getOrCreateSessionMock,
             getOrCreateMachine: getOrCreateMachineMock,
             sessionSyncClient: sessionSyncClientMock
@@ -52,6 +55,7 @@ vi.mock('@/ui/logger', () => ({
 }))
 
 import {
+    FORCE_LARGE_SESSION_ENV,
     HAPI_SESSION_ID_ENV,
     bootstrapExistingSession,
     bootstrapLazySession,
@@ -94,12 +98,15 @@ function createSession(): Session {
 describe('bootstrapExistingSession', () => {
     beforeEach(() => {
         getSessionMock.mockReset()
+        getSessionSizeGuardMock.mockReset()
+        getSessionSizeGuardMock.mockResolvedValue({ messageCount: 1, contentBytes: 100, verdict: 'ok' })
         getOrCreateSessionMock.mockReset()
         getOrCreateMachineMock.mockReset()
         sessionSyncClientMock.mockReset()
         notifyRunnerSessionStartedMock.mockClear()
         readSettingsMock.mockReset()
         delete process.env[HAPI_SESSION_ID_ENV]
+        delete process.env[FORCE_LARGE_SESSION_ENV]
     })
 
     it('loads an existing HAPI session and reports it to the runner', async () => {
@@ -234,6 +241,84 @@ describe('bootstrapExistingSession', () => {
                 conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' }
             })
         )
+    })
+
+    it.each(['soft', 'hard'] as const)('refuses a terminal attach when the resume-size guard verdict is %s', async (verdict) => {
+        getSessionSizeGuardMock.mockResolvedValue({
+            messageCount: 212_000,
+            contentBytes: 214 * 1024 * 1024,
+            verdict
+        })
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        await expect(bootstrapExistingSession({
+            sessionId: 'hapi-session-1',
+            flavor: 'codex',
+            workingDirectory: '/tmp/project'
+        })).rejects.toThrow(/hapi resume --force/)
+
+        // Refused before any metadata write or agent hand-off.
+        expect(getSessionMock).not.toHaveBeenCalled()
+        expect(getOrCreateMachineMock).not.toHaveBeenCalled()
+        expect(notifyRunnerSessionStartedMock).not.toHaveBeenCalled()
+    })
+
+    it('skips the resume-size guard when the operator forces the attach', async () => {
+        process.env[FORCE_LARGE_SESSION_ENV] = '1'
+        const session = createSession()
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue({ updateMetadata: vi.fn() })
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        const result = await bootstrapExistingSession({
+            sessionId: 'hapi-session-1',
+            flavor: 'codex',
+            workingDirectory: '/tmp/project'
+        })
+
+        expect(result.sessionInfo.id).toBe('hapi-session-1')
+        expect(getSessionSizeGuardMock).not.toHaveBeenCalled()
+    })
+
+    it('skips the resume-size guard for runner-spawned attaches (hub already guarded)', async () => {
+        getSessionSizeGuardMock.mockResolvedValue({
+            messageCount: 212_000,
+            contentBytes: 214 * 1024 * 1024,
+            verdict: 'hard'
+        })
+        const session = createSession()
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue({ updateMetadata: vi.fn() })
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        const result = await bootstrapExistingSession({
+            sessionId: 'hapi-session-1',
+            flavor: 'codex',
+            startedBy: 'runner',
+            workingDirectory: '/tmp/project'
+        })
+
+        expect(result.sessionInfo.id).toBe('hapi-session-1')
+        expect(getSessionSizeGuardMock).not.toHaveBeenCalled()
+    })
+
+    it('fails open when the resume-size guard probe errors', async () => {
+        getSessionSizeGuardMock.mockRejectedValue(new Error('hub hiccup'))
+        const session = createSession()
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue({ updateMetadata: vi.fn() })
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        const result = await bootstrapExistingSession({
+            sessionId: 'hapi-session-1',
+            flavor: 'codex',
+            workingDirectory: '/tmp/project'
+        })
+
+        expect(result.sessionInfo.id).toBe('hapi-session-1')
     })
 
     it('advertises remote terminal capability in session metadata', () => {

@@ -56,6 +56,7 @@ vi.mock('@/agy/runAgy', () => ({ runAgy: runAgyMock }))
 vi.mock('@/codex/utils/codexVersion', () => ({ assertCodexLocalSupported: assertCodexLocalSupportedMock }))
 vi.mock('node:fs', () => ({ existsSync: existsSyncMock }))
 
+import { FORCE_LARGE_SESSION_ENV } from '@/agent/sessionFactory'
 import { resumeCommand } from './resume'
 
 function createContext(commandArgs: string[]) {
@@ -86,6 +87,7 @@ describe('resumeCommand', () => {
         runAgyMock.mockClear()
         assertCodexLocalSupportedMock.mockClear()
         existsSyncMock.mockReturnValue(true)
+        delete process.env[FORCE_LARGE_SESSION_ENV]
     })
 
     it('resumes a Codex target by HAPI session id', async () => {
@@ -118,6 +120,44 @@ describe('resumeCommand', () => {
             modelReasoningEffort: 'xhigh',
             collaborationMode: 'default'
         })
+    })
+
+    it('passes --force to the resume-size guard via the env override and strips the flag', async () => {
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-1',
+            flavor: 'codex',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: false,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: 'codex-thread-1'
+        })
+
+        await resumeCommand.run(createContext(['--force', 'hapi-session-1']))
+
+        expect(process.env[FORCE_LARGE_SESSION_ENV]).toBe('1')
+        expect(getLocalResumeTargetMock).toHaveBeenCalledWith('hapi-session-1')
+        expect(runCodexMock).toHaveBeenCalledWith(expect.objectContaining({
+            existingSessionId: 'hapi-session-1'
+        }))
+    })
+
+    it('does not set the resume-size override without --force', async () => {
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-1',
+            flavor: 'codex',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: false,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: 'codex-thread-1'
+        })
+
+        await resumeCommand.run(createContext(['hapi-session-1']))
+
+        expect(process.env[FORCE_LARGE_SESSION_ENV]).toBeUndefined()
     })
 
     it('rejects resuming an active AGY session (turn could start before handoff)', async () => {

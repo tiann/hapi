@@ -2,6 +2,7 @@ import os from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 
+import { sessionSizeGuardMessage } from '@hapi/protocol'
 import { ApiClient } from '@/api/api'
 import type { ApiSessionClient } from '@/api/apiSession'
 import type { AgentState, MachineMetadata, Metadata, Session } from '@/api/types'
@@ -333,6 +334,44 @@ export async function bootstrapLazySession(options: SessionBootstrapOptions): Pr
     }
 }
 
+/** Explicit operator override for the resume-size guard (also set by `hapi resume --force`). */
+export const FORCE_LARGE_SESSION_ENV = 'HAPI_FORCE_LARGE_SESSION'
+
+function isLargeSessionForced(): boolean {
+    const value = process.env[FORCE_LARGE_SESSION_ENV]
+    return value === '1' || value === 'true'
+}
+
+/**
+ * Resume-size guard (see shared/src/sessionSizeGuard.ts): attaching a terminal
+ * to an oversized existing session makes the agent replay the full thread into
+ * the hub, which has OOMed the hub before. Refuse before any metadata write or
+ * agent launch unless the operator explicitly forced it.
+ *
+ * Runner-spawned attaches (`startedBy === 'runner'`) are exempt: they only
+ * happen after the hub's own `resumeSession` guard already passed (possibly
+ * forced), and re-blocking here would make a forced hub resume impossible.
+ *
+ * Fails open when the probe request itself fails — a transient hub hiccup must
+ * not block resuming a normal-sized session, and the hub-side guard still
+ * protects every hub-initiated path.
+ */
+async function assertSessionSizeAllowsAttach(api: ApiClient, sessionId: string): Promise<void> {
+    if (isLargeSessionForced()) return
+    let guard: Awaited<ReturnType<ApiClient['getSessionSizeGuard']>>
+    try {
+        guard = await api.getSessionSizeGuard(sessionId)
+    } catch (error) {
+        logger.debug('[START] Session size-guard probe failed; proceeding', error)
+        return
+    }
+    if (guard.verdict === 'ok') return
+    throw new Error(
+        `${sessionSizeGuardMessage(guard, guard.verdict)} `
+        + `Use hapi resume --force (or set ${FORCE_LARGE_SESSION_ENV}=1) to attach anyway.`
+    )
+}
+
 export async function bootstrapExistingSession(options: {
     reportStarted?: boolean
     exportSessionEnv?: boolean
@@ -344,6 +383,9 @@ export async function bootstrapExistingSession(options: {
 }): Promise<SessionBootstrapResult> {
     const startedBy = options.startedBy ?? 'terminal'
     const api = await ApiClient.create()
+    if (startedBy === 'terminal') {
+        await assertSessionSizeAllowsAttach(api, options.sessionId)
+    }
     const machineId = await getMachineIdOrExit()
 
     await api.getOrCreateMachine({

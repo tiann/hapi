@@ -94,6 +94,47 @@ describe('cli resume routes', () => {
         })
     })
 
+    it('returns the resume-size guard verdict with stats', async () => {
+        const app = createApp({
+            getSessionSizeGuard: () => ({
+                type: 'success',
+                stats: { messageCount: 212_000, contentBytes: 214 * 1024 * 1024 },
+                verdict: 'hard'
+            })
+        } as never)
+
+        const response = await app.request('/cli/sessions/session-1/size-guard', {
+            headers: authHeaders()
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            messageCount: 212_000,
+            contentBytes: 214 * 1024 * 1024,
+            verdict: 'hard'
+        })
+    })
+
+    it('maps resume-size guard lookup errors to status codes', async () => {
+        const app = createApp({
+            getSessionSizeGuard: () => ({
+                type: 'error',
+                message: 'Session not found',
+                code: 'session_not_found'
+            })
+        } as never)
+
+        const response = await app.request('/cli/sessions/missing/size-guard', {
+            headers: authHeaders()
+        })
+
+        expect(response.status).toBe(404)
+        expect(await response.json()).toEqual({
+            error: 'Session not found',
+            code: 'session_not_found'
+        })
+    })
+
     it('returns handoff errors with status codes', async () => {
         const app = createApp({
             handoffSessionToLocal: async () => ({

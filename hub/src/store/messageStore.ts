@@ -29,6 +29,7 @@ import {
     countFutureScheduledLocalMessages,
     minFutureScheduledAtBySessionIds,
     countMessages,
+    getSessionSizeStats,
     markMessagesInvoked,
     markMessagesIndeterminate,
     setMessagesDeliveryState,
@@ -46,6 +47,7 @@ import {
     type LookupQueuedMessageResult,
     type LocalMessageState,
     type MessagePosition,
+    type SessionSizeStats,
 } from './messages'
 
 export class MessageStore {
@@ -180,6 +182,10 @@ export class MessageStore {
 
     countMessages(sessionId: string): number {
         return countMessages(this.db, sessionId)
+    }
+
+    getSessionSizeStats(sessionId: string): SessionSizeStats {
+        return getSessionSizeStats(this.db, sessionId)
     }
 
     cancelQueuedMessage(sessionId: string, messageId: string): CancelQueuedMessageResult {

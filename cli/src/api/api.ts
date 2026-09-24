@@ -1,7 +1,8 @@
 import axios from 'axios'
 import type { AgentState, ClearOpencodeSessionCallbackRequest, ClearOpencodeSessionResponse, CreateMachineResponse, CreateSessionResponse, RunnerState, Machine, MachineMetadata, Metadata, Session } from '@/api/types'
 import { applyHubSessionSummaryContract } from '@/modules/common/sessionSummaryInstruction'
-import type { LocalResumeTarget, ResumableSession } from '@hapi/protocol'
+import type { LocalResumeTarget, ResumableSession, SessionSizeGuardResponse } from '@hapi/protocol'
+import { SessionSizeGuardResponseSchema } from '@hapi/protocol'
 import {
     AgentStateSchema,
     ClearOpencodeSessionResponseSchema,
@@ -250,6 +251,22 @@ export class ApiClient {
             throw apiValidationError('Invalid /cli/sessions/resumable response', response)
         }
         return parsed.data.sessions
+    }
+
+    /** Resume-size guard probe (see shared/src/sessionSizeGuard.ts). */
+    async getSessionSizeGuard(sessionId: string): Promise<SessionSizeGuardResponse> {
+        const response = await axios.get(
+            `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/size-guard`,
+            {
+                headers: this.authHeaders(),
+                timeout: 60_000
+            }
+        )
+        const parsed = SessionSizeGuardResponseSchema.safeParse(response.data)
+        if (!parsed.success) {
+            throw apiValidationError('Invalid /cli/sessions/:id/size-guard response', response)
+        }
+        return parsed.data
     }
 
     async getLocalResumeTarget(sessionId: string): Promise<LocalResumeTarget> {

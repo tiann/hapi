@@ -14,6 +14,7 @@ import type {
     OpencodePermissionMode
 } from '@hapi/protocol/types'
 import { ApiClient } from '@/api/api'
+import { FORCE_LARGE_SESSION_ENV } from '@/agent/sessionFactory'
 import type { ReasoningEffort } from '@/codex/appServerTypes'
 import { authAndSetupMachineIfNeeded } from '@/ui/auth'
 import { initializeToken } from '@/ui/tokenInit'
@@ -234,11 +235,19 @@ export const resumeCommand: CommandDefinition = {
     requiresRuntimeAssets: true,
     run: async ({ commandArgs }) => {
         try {
+            // --force bypasses the resume-size guard (see shared/src/
+            // sessionSizeGuard.ts). The dispatched run* entrypoints execute
+            // in-process, so hand the override to bootstrapExistingSession
+            // through its documented env var.
+            const args = commandArgs.filter((arg) => arg !== '--force')
+            if (args.length !== commandArgs.length) {
+                process.env[FORCE_LARGE_SESSION_ENV] = '1'
+            }
             await initializeToken()
             await maybeAutoStartServer()
             const { machineId } = await authAndSetupMachineIfNeeded()
             const api = await ApiClient.create()
-            const sessionId = await resolveSessionId(api, machineId, commandArgs)
+            const sessionId = await resolveSessionId(api, machineId, args)
             const target = await api.getLocalResumeTarget(sessionId)
 
             assertTargetMachine(target, machineId)
