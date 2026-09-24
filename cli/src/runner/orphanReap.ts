@@ -196,6 +196,22 @@ export async function findRunnerSpawnedOrphanTargets(
     }
 }
 
+/**
+ * Production stopSession orphan discovery: argv match + same-snapshot markers,
+ * then optional PID skip (shared wrappers / sibling roots). Callers must use
+ * this (or an equivalent findTargets that keeps startMarker) — never strip to
+ * bare PIDs via findRunnerSpawnedOrphanPids / findOrphans (#1911 Overseer).
+ */
+export async function findStopSessionOrphanTargets(
+    sessionId: string,
+    shouldSkipPid: (sessionId: string, pid: number) => boolean,
+    listProcesses: () => Promise<ProcessSnapshot[]> = listProcessesForOrphanScan
+): Promise<OrphanTarget[] | 'scan_failed'> {
+    const found = await findRunnerSpawnedOrphanTargets(sessionId, listProcesses)
+    if (found === 'scan_failed') return found
+    return found.filter((t) => !shouldSkipPid(sessionId, t.pid))
+}
+
 export async function findRunnerSpawnedOrphanPids(
     sessionId: string,
     listProcesses: () => Promise<ProcessSnapshot[]> = listProcessesForOrphanScan

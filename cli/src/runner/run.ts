@@ -15,7 +15,7 @@ import { spawnHappyCLI } from '@/utils/spawnHappyCLI';
 import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquireRunnerLock, releaseRunnerLock } from '@/persistence';
 import { getCliArgs } from '@/utils/cliArgs';
 import { getProcessStartMarker, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid } from '@/utils/process';
-import { findRunnerSpawnedOrphanTargets, reapRunnerSpawnedOrphans } from '@/runner/orphanReap';
+import { findStopSessionOrphanTargets, reapRunnerSpawnedOrphans } from '@/runner/orphanReap';
 import { decideUntrackedRunnerWebhook } from '@/runner/lateRunnerWebhook';
 import {
     decideKeepWrapperArchive,
@@ -1122,12 +1122,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           sessionId
         );
         const orphanStatus = await reapRunnerSpawnedOrphans(sessionId, {
-          findTargets: async (id) => {
-            const found = await findRunnerSpawnedOrphanTargets(id);
-            if (found === 'scan_failed') return found;
-            // Keep same-snapshot startMarker; filter by pid only (#1911 bot Major).
-            return found.filter(t => !shouldSkipOrphanPid(liveRuntimes, protectedTrackedPids, id, t.pid));
-          },
+          findTargets: (id) => findStopSessionOrphanTargets(
+            id,
+            (sid, pid) => shouldSkipOrphanPid(liveRuntimes, protectedTrackedPids, sid, pid)
+          ),
         });
         if (orphanStatus === 'still_alive') {
           logger.debug(`[RUNNER RUN] Orphan argv sweep left live PIDs for session ${sessionId}`);
@@ -1443,11 +1441,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           sessionId
         );
         const orphanStatus = await reapRunnerSpawnedOrphans(sessionId, {
-          findTargets: async (id) => {
-            const found = await findRunnerSpawnedOrphanTargets(id);
-            if (found === 'scan_failed') return found;
-            return found.filter(t => !shouldSkipOrphanPid(liveRuntimes, protectedTrackedPids, id, t.pid));
-          },
+          findTargets: (id) => findStopSessionOrphanTargets(
+            id,
+            (sid, pid) => shouldSkipOrphanPid(liveRuntimes, protectedTrackedPids, sid, pid)
+          ),
         });
         if (orphanStatus === 'still_alive') {
           logger.debug(`[RUNNER RUN] Orphan argv reap still_alive for session ${sessionId} (scan_failed or kill left live PIDs)`);
