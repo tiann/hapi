@@ -251,6 +251,54 @@ describe('killProcess on Windows (orphanReap / stopSession)', () => {
         expect(taskkills.some((call) => (call[1] as string[]).includes('/F'))).toBe(true)
     })
 
+    it('waits for grace when soft taskkill succeeds before escalating to /F', async () => {
+        // Soft status=0 but PID still draining archive flush — do not /F immediately.
+        let alive = true
+        let softCalls = 0
+        vi.spyOn(process, 'kill').mockImplementation((_pid: number, signal?: string | number) => {
+            if (signal === 0 || signal === undefined) {
+                if (!alive) {
+                    const err = new Error('ESRCH') as NodeJS.ErrnoException
+                    err.code = 'ESRCH'
+                    throw err
+                }
+                return true
+            }
+            return true
+        })
+        spawnSyncMock.mockImplementation((cmd: string, args: string[] = []) => {
+            if (cmd === 'tasklist') {
+                if (!alive) {
+                    return completed('INFO: No tasks are running which match the specified criteria.')
+                }
+                return completed(`hapi.exe                      7788 Console                    1     5,000 K`)
+            }
+            if (cmd === 'taskkill' && args.includes('/F')) {
+                alive = false
+                return completed('', 0)
+            }
+            if (cmd === 'taskkill') {
+                softCalls += 1
+                // Succeeds, but process remains alive until grace elapses
+                return completed('', 0)
+            }
+            return completed('')
+        })
+
+        const done = killProcess(7788, false)
+        // During grace, process exits without needing /F
+        await vi.advanceTimersByTimeAsync(100)
+        alive = false
+        await vi.advanceTimersByTimeAsync(2_500)
+        await expect(done).resolves.toBe(true)
+
+        expect(softCalls).toBeGreaterThanOrEqual(1)
+        const forceKills = spawnSyncMock.mock.calls.filter(
+            (call) => call[0] === 'taskkill' && (call[1] as string[]).includes('/F')
+        )
+        expect(forceKills).toHaveLength(0)
+    })
+
     it('uses forced taskkill immediately when force=true', async () => {
         let alive = true
         vi.spyOn(process, 'kill').mockImplementation((_pid: number, signal?: string | number) => {
