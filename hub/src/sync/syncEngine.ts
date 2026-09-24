@@ -1716,7 +1716,7 @@ export class SyncEngine {
         let killPid: number | undefined
         let killProcessStartMarker: string | undefined
         try {
-            const killResult = await this.rpcGateway.killSession(sessionId)
+            const killResult = (await this.rpcGateway.killSession(sessionId)) ?? {}
             killPid = killResult.pid
             killProcessStartMarker = killResult.processStartMarker
         } catch (error) {
@@ -1727,7 +1727,8 @@ export class SyncEngine {
             }
         }
 
-        const machineId = this.sessionCache.getSession(sessionId)?.metadata?.machineId
+        const sessionMeta = this.sessionCache.getSession(sessionId)?.metadata
+        const machineId = sessionMeta?.machineId
         if (machineId) {
             let status: 'stopped' | 'already_gone' | 'still_alive' | 'unknown'
             try {
@@ -1742,13 +1743,13 @@ export class SyncEngine {
             // KillSession acknowledges before cleanupAndExit finishes, and socket
             // loss is not exit proof. When the runner cannot find the HAPI id,
             // confirm the KillSession-reported OS pid + start marker.
-            if (
-                status === 'unknown'
-                && typeof killPid === 'number'
+            const killPidConfirmable = (
+                typeof killPid === 'number'
                 && killPid > 0
                 && typeof killProcessStartMarker === 'string'
                 && killProcessStartMarker.length > 0
-            ) {
+            )
+            if (status === 'unknown' && killPidConfirmable) {
                 try {
                     status = await this.rpcGateway.stopRunnerSession(machineId, `PID-${killPid}`, {
                         processStartMarker: killProcessStartMarker,
@@ -1756,6 +1757,23 @@ export class SyncEngine {
                 } catch (pidStopError) {
                     void pidStopError
                     status = 'still_alive'
+                }
+            }
+            // Estate dogfood (#1911 / Peer #1820): KillSession often supplies no
+            // pid+marker when the CLI socket is already gone. If session-id stop
+            // is unknown, ask the runner about metadata.hostPid as a tombstone —
+            // without a start marker the runner returns already_gone only when
+            // the OS pid is dead (alive → unknown; never tree-kills). Refuse
+            // still_alive / unknown on that confirm.
+            if (status === 'unknown' && !killPidConfirmable) {
+                const hostPid = sessionMeta?.hostPid
+                if (typeof hostPid === 'number' && hostPid > 0) {
+                    try {
+                        status = await this.rpcGateway.stopRunnerSession(machineId, `PID-${hostPid}`)
+                    } catch (hostPidStopError) {
+                        void hostPidStopError
+                        status = 'still_alive'
+                    }
                 }
             }
             if (status === 'still_alive' || status === 'unknown') {

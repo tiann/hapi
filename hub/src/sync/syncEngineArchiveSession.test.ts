@@ -20,10 +20,16 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         return (engine as unknown as { sessionCache: SessionCache }).sessionCache
     }
 
-    function insertActiveSession(tag: string, machineId?: string): string {
+    function insertActiveSession(tag: string, machineId?: string, hostPid?: number): string {
         const created = cache().getOrCreateSession(
             tag,
-            { path: '/tmp/proj', host: 'localhost', flavor: 'claude', ...(machineId ? { machineId } : {}) },
+            {
+                path: '/tmp/proj',
+                host: 'localhost',
+                flavor: 'claude',
+                ...(machineId ? { machineId } : {}),
+                ...(typeof hostPid === 'number' ? { hostPid } : {}),
+            },
             null,
             NAMESPACE
         )
@@ -241,6 +247,45 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
             { sid: 'PID-4242', marker: 'started-at-1' },
         ])
         expect(cache().getSession(sessionId)?.active).toBe(false)
+    })
+
+    it('archives via metadata.hostPid tombstone when KillSession supplies no confirmable pid (#1911 dogfood)', async () => {
+        // Peer #1820 estate gap: StopSession(hapiId)=unknown, process already dead,
+        // KillSession missed — hub must check metadata.hostPid before 409.
+        const sessionId = insertActiveSession('sess-hostpid-tombstone', 'machine-x', 3704400)
+        setKillSessionMissingTarget()
+        const stopCalls: Array<{ sid: string; marker?: string }> = []
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async (_machineId: string, sid: string, opts?: { processStartMarker?: string }) => {
+                stopCalls.push({ sid, marker: opts?.processStartMarker })
+                return sid === 'PID-3704400' ? 'already_gone' : 'unknown'
+            }
+
+        await engine.archiveSession(sessionId)
+
+        expect(stopCalls).toEqual([
+            { sid: sessionId, marker: undefined },
+            { sid: 'PID-3704400', marker: undefined },
+        ])
+        expect(cache().getSession(sessionId)?.active).toBe(false)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
+    })
+
+    it('does NOT archive when metadata.hostPid confirm reports still_alive', async () => {
+        const sessionId = insertActiveSession('sess-hostpid-alive', 'machine-x', 3704400)
+        setKillSessionMissingTarget()
+        const stopCalls: string[] = []
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async (_machineId: string, sid: string) => {
+                stopCalls.push(sid)
+                return sid === 'PID-3704400' ? 'still_alive' : 'unknown'
+            }
+
+        await expect(engine.archiveSession(sessionId)).rejects.toThrow()
+
+        expect(stopCalls).toEqual([sessionId, 'PID-3704400'])
+        expect(cache().getSession(sessionId)?.active).toBe(true)
+        expect(cache().getSession(sessionId)?.metadata?.lifecycleState).not.toBe('archived')
     })
 
     it('does NOT archive when StopSession fails ambiguously', async () => {
