@@ -58,6 +58,28 @@ describe('shared frontend execution ownership', () => {
         await runSharedCodex({ startedBy: 'runner', workingDirectory: '/work' });
         expect(state.run).toHaveBeenCalledOnce(); expect(state.spawn).not.toHaveBeenCalled();
     });
+    it('fresh reservedSessionId starts create path (not reopen without thread binding)', async () => {
+        // #1911 Critical: prealloc stub stamped as existingSessionId threw
+        // "no Codex thread binding". reservedSessionId must fall through to create.
+        state.run.mockResolvedValueOnce(undefined);
+        await runSharedCodex({
+            startedBy: 'runner',
+            workingDirectory: '/work',
+            reservedSessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        });
+        expect(state.run).toHaveBeenCalledOnce();
+        expect(state.run.mock.calls[0][0]).toMatchObject({
+            reservedSessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        });
+    });
+    it('existingSessionId without thread binding still throws (reopen path)', async () => {
+        await expect(runSharedCodex({
+            startedBy: 'runner',
+            workingDirectory: '/work',
+            existingSessionId: 'sid',
+        })).rejects.toThrow('no Codex thread binding');
+        expect(state.run).not.toHaveBeenCalled();
+    });
     it('stops the engine on TUI spawn error and leaves no execution on startup failure', async () => {
         state.run.mockRejectedValueOnce(new Error('startup failed'));
         await expect(runSharedCodex({ workingDirectory: '/work' })).rejects.toThrow('startup failed');

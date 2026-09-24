@@ -3,15 +3,18 @@
  * Mocks agree with themselves; this is the structural antidote to #1911 B1
  * (CIM failure looking like a healthy childless root).
  *
- * Skips when docker/pwsh image is unavailable (local CI without docker).
+ * Locally: skips when docker/image missing.
+ * In CI (`CI=true`): fails hard — silent skip is fake coverage (#1911 Overseer).
  */
 import { execFileSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 import { windowsProcessListCimCommand, windowsProcessTreeCimCommand } from './process'
 
+const POWERSHELL_IMAGE = 'mcr.microsoft.com/powershell:latest'
+
 function dockerPwshAvailable(): boolean {
     try {
-        execFileSync('docker', ['image', 'inspect', 'mcr.microsoft.com/powershell:latest'], {
+        execFileSync('docker', ['image', 'inspect', POWERSHELL_IMAGE], {
             stdio: 'ignore',
         })
         return true
@@ -20,11 +23,21 @@ function dockerPwshAvailable(): boolean {
     }
 }
 
+function ensureDockerPwsh(): void {
+    if (dockerPwshAvailable()) return
+    if (process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true') {
+        throw new Error(
+            `CI requires ${POWERSHELL_IMAGE} for windowsProcessTree.pwsh.test.ts — `
+            + 'pull it in the workflow before bun run test (silent skip is not coverage)'
+        )
+    }
+}
+
 function runPwsh(script: string): { status: number; stdout: string; stderr: string } {
     try {
         const stdout = execFileSync(
             'docker',
-            ['run', '--rm', 'mcr.microsoft.com/powershell:latest', 'pwsh', '-NoProfile', '-Command', script],
+            ['run', '--rm', POWERSHELL_IMAGE, 'pwsh', '-NoProfile', '-Command', script],
             { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 }
         )
         return { status: 0, stdout: stdout.toString(), stderr: '' }
@@ -38,6 +51,7 @@ function runPwsh(script: string): { status: number; stdout: string; stderr: stri
     }
 }
 
+ensureDockerPwsh()
 const describePwsh = dockerPwshAvailable() ? describe : describe.skip
 
 describePwsh('windowsProcessTreeCimCommand under real pwsh (#1911 B1)', () => {

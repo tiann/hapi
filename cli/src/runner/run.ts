@@ -1112,6 +1112,15 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
       // Strict registry read for sibling protection — soft [] after parse/readdir
       // failure would tree-kill a shared wrapper hosting live roots (#1911 Opus).
+      // Fail-closed only for Codex stop contexts; other flavors must not become
+      // permanently un-archivable on a single corrupt runtime JSON (#1911 Major).
+      const isCodexStopContext = (): boolean => {
+        for (const [, session] of pidToTrackedSession) {
+          if (session.sharedSessions?.[sessionId]) return true
+        }
+        return false
+      }
+
       const readLiveRuntimesForStop = async () => {
         try {
           return (await readRuntimes({ strict: true })).filter(runtime =>
@@ -1125,7 +1134,16 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
               error instanceof Error ? error.message : String(error)
             }`
           );
-          return null;
+          // findRuntime also soft-fails; if a shared Codex root may still exist,
+          // refuse the orphan sweep. Non-Codex stops proceed with [] so archive
+          // is not machine-wide blocked by schema drift.
+          try {
+            const { findRuntime } = await import('@/codex/shared/registry');
+            if (await findRuntime(sessionId) || isCodexStopContext()) return null;
+          } catch {
+            if (isCodexStopContext()) return null;
+          }
+          return [];
         }
       };
 

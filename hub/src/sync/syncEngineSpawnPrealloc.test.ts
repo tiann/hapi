@@ -88,6 +88,85 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
         }
     })
 
+    it('forwards fresh Codex prealloc as reservedSessionId (not existingSessionId)', async () => {
+        // #1911 Critical: existingSessionId → reopen → "no Codex thread binding".
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            engine.getOrCreateMachine(
+                'machine-codex-prealloc',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-codex-prealloc', time: Date.now() })
+
+            let forwardedExisting: string | undefined
+            let forwardedReserved: string | undefined
+            ;(engine as unknown as { rpcGateway: { spawnSession: unknown } }).rpcGateway.spawnSession =
+                async (
+                    _machineId: string,
+                    _directory: string,
+                    _agent?: string,
+                    _model?: string,
+                    _modelReasoningEffort?: string,
+                    _yolo?: boolean,
+                    _sessionType?: string,
+                    _worktreeName?: string,
+                    _resumeSessionId?: string,
+                    _effort?: string,
+                    _permissionMode?: string,
+                    _serviceTier?: string,
+                    existingSessionId?: string,
+                    _collaborationMode?: string,
+                    _copilotAgentMode?: string,
+                    _startingMode?: string,
+                    _forkSession?: boolean,
+                    reservedSessionId?: string
+                ) => {
+                    forwardedExisting = existingSessionId
+                    forwardedReserved = reservedSessionId
+                    return { type: 'success' as const, sessionId: (reservedSessionId ?? existingSessionId)! }
+                }
+
+            const result = await engine.spawnSession(
+                'machine-codex-prealloc',
+                '/tmp/project',
+                'codex',
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                'default'
+            )
+
+            expect(result.type).toBe('success')
+            expect(forwardedExisting).toBeUndefined()
+            expect(typeof forwardedReserved).toBe('string')
+            expect(forwardedReserved!.length).toBeGreaterThan(0)
+            const row = store.sessions.getSession(forwardedReserved!)
+            expect(row?.tag).toBe(`machine-spawn:${forwardedReserved}`)
+            expect((row?.metadata as { flavor?: string } | null)?.flavor).toBe('codex')
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('does not mint a second id when existingSessionId is already supplied', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(

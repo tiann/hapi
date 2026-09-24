@@ -416,6 +416,8 @@ export class ApiMachineClient {
                     type: 'error',
                     errorMessage: 'Directory is outside this machine\'s workspace roots',
                     code: 'outside_workspace_roots',
+                    // Pre-exec: no OS child — hub must delete the prealloc stub (#1911).
+                    childStarted: false,
                 }
             }
 
