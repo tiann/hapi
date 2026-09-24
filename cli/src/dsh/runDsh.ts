@@ -15,6 +15,8 @@ export async function runDsh(opts: {
     startedBy?: 'runner' | 'terminal'
     startingMode?: 'remote'
     existingSessionId?: string
+    /** Fresh machine-spawn stub (`--hapi-session-id`); adopt via bootstrapSession. */
+    reservedSessionId?: string
     workingDirectory?: string
 } = {}): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd()
@@ -36,7 +38,8 @@ export async function runDsh(opts: {
             flavor: 'dsh',
             startedBy,
             workingDirectory,
-            agentState: initialState
+            agentState: initialState,
+            reservedSessionId: opts.reservedSessionId
         })
     const { api, session } = bootstrap
     setControlledByUser(session, startingMode)

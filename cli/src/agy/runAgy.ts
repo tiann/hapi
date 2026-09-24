@@ -22,6 +22,8 @@ export async function runAgy(opts: {
     effort?: string;
     resumeSessionId?: string;
     existingSessionId?: string;
+    /** Fresh machine-spawn stub (`--hapi-session-id`); adopt via bootstrapSession. */
+    reservedSessionId?: string;
     workingDirectory?: string;
 } = {}): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd();
@@ -54,7 +56,8 @@ export async function runAgy(opts: {
             tag: `__hapi_agy_${randomUUID()}`,
             agentState: initialState,
             model: initialModel ?? undefined,
-            effort: opts.effort ?? undefined
+            effort: opts.effort ?? undefined,
+            reservedSessionId: opts.reservedSessionId
         });
     const { api, session } = bootstrap;
 

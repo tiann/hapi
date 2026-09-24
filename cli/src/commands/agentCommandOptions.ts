@@ -11,7 +11,14 @@ export type RemoteAgentCommandOptions<
     effort?: string
     modelReasoningEffort?: string
     resumeSessionId?: string
+    /** Intentional reopen/resume of an existing hub row (`--existing-session-id`). */
     existingSessionId?: string
+    /**
+     * Fresh machine-spawn prealloc stub (`--hapi-session-id`). Distinct from
+     * existingSessionId — must route to bootstrapSession({ reservedSessionId }),
+     * never bootstrapExistingSession (#1911 M3).
+     */
+    reservedSessionId?: string
 }
 
 export function parseRemoteAgentCommandOptions<
@@ -62,26 +69,19 @@ export function parseRemoteAgentCommandOptions<
                 options.permissionMode = yoloEquivalent as TPermissionMode
             }
         } else if (arg === '--hapi-session-id') {
-            // Hub row to reuse on reopen/resume of a pty session (agy), so the id
-            // stays stable instead of spawn-new + merge-delete (+ the 404 flash).
-            // The runner only emits this for pty flavors whose parser consumes it.
+            // Fresh prealloc / adopt-stub. Intentional reopen uses
+            // --existing-session-id (buildCliArgs already splits them).
             const id = args[++i]
             if (!id) {
                 throw new Error('Missing --hapi-session-id value')
             }
-            options.existingSessionId = id
+            options.reservedSessionId = id
         } else if (arg === '--resume') {
             const sessionId = args[++i]
             if (!sessionId) {
                 throw new Error('Missing --resume value')
             }
             options.resumeSessionId = sessionId
-        } else if (arg === '--existing-session-id') {
-            const sessionId = args[++i]
-            if (!sessionId || sessionId.startsWith('-')) {
-                throw new Error('Missing --existing-session-id value')
-            }
-            options.existingSessionId = sessionId
         } else if (arg === '-s' || arg === '--session') {
             // OpenCode-native resume flags (hapi opencode -s / --session <id>)
             const sessionId = args[++i]

@@ -27,6 +27,8 @@ export async function runOpencode(opts: {
     modelReasoningEffort?: string | null;
     resumeSessionId?: string;
     existingSessionId?: string;
+    /** Fresh machine-spawn stub (`--hapi-session-id`); adopt via bootstrapSession. */
+    reservedSessionId?: string;
     workingDirectory?: string;
 } = {}): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd();
@@ -69,7 +71,8 @@ export async function runOpencode(opts: {
             workingDirectory,
             agentState: initialState,
             model: initialModel ?? undefined,
-            modelReasoningEffort: initialModelReasoningEffort ?? undefined
+            modelReasoningEffort: initialModelReasoningEffort ?? undefined,
+            reservedSessionId: opts.reservedSessionId
         });
     const { api, session } = bootstrap;
 

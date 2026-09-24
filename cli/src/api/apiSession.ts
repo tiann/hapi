@@ -1376,14 +1376,10 @@ export class ApiSessionClient extends EventEmitter {
         }
         this.metadataLock.inLock(async () => {
             await backoff(async () => {
-                // #1911 M1: hub may archive mid-CAS. version-mismatch applies the
-                // archived snapshot; infinite retry would keep stamping running.
-                // Stop once local metadata is archived (hub guard + this exit).
-                if (this.metadata?.lifecycleState === 'archived') {
-                    if (this.metadata.archivedBy === 'hub') {
-                        this.noteHubArchived()
-                    }
-                    logger.debug('[API] Skipping metadata update; session is archived')
+                // #1911 M1 criterion 6: hub-archived → EXIT (same as applyRemoteMetadata).
+                if (this.metadata?.lifecycleState === 'archived' && this.metadata.archivedBy === 'hub') {
+                    this.noteHubArchived()
+                    logger.debug('[API] Skipping metadata update; session hub-archived')
                     return
                 }
 
@@ -1404,7 +1400,19 @@ export class ApiSessionClient extends EventEmitter {
                             return parsed.success ? parsed.data : null
                         },
                         applyValue: (value) => {
+                            // Route success+preserve (and mismatch) through the same
+                            // hub-archived detector as applyRemoteMetadata so the CLI
+                            // exits rather than booting against an archived row.
+                            const wasHubArchived = this.metadata?.lifecycleState === 'archived'
+                                && this.metadata?.archivedBy === 'hub'
                             this.metadata = value
+                            if (
+                                !wasHubArchived
+                                && value?.lifecycleState === 'archived'
+                                && value?.archivedBy === 'hub'
+                            ) {
+                                this.noteHubArchived()
+                            }
                         },
                         applyVersion: (version) => {
                             this.metadataVersion = version
@@ -1418,14 +1426,20 @@ export class ApiSessionClient extends EventEmitter {
                         versionMismatchMessage: 'Metadata version mismatch'
                     })
                 } catch (error) {
-                    if (this.metadata?.lifecycleState === 'archived') {
-                        if (this.metadata.archivedBy === 'hub') {
-                            this.noteHubArchived()
-                        }
-                        logger.debug('[API] Stopping metadata CAS; hub returned archived metadata')
+                    // True version races still throw; if hub archived mid-flight,
+                    // applied metadata is archived — exit, do not spin.
+                    if (this.metadata?.lifecycleState === 'archived' && this.metadata.archivedBy === 'hub') {
+                        this.noteHubArchived()
                         return
                     }
                     throw error
+                }
+
+                // Success+preserve terminates backoff without throw; ensure EXIT
+                // if ack applied hub-archived (detector above already fired).
+                if (this.metadata?.lifecycleState === 'archived' && this.metadata.archivedBy === 'hub') {
+                    this.noteHubArchived()
+                    return
                 }
             })
         })

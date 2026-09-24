@@ -333,10 +333,11 @@ describe('getOrCreateSession: requested identity', () => {
 })
 
 describe('updateSessionMetadata: refuse un-archive (#1911 M1)', () => {
-    it('rejects metadata writes that clear archived lifecycle without allowUnarchive', () => {
+    it('merge-preserves hub archive on unauthorized running write (success, not mismatch)', () => {
         const store = makeStore()
+        const allocatedId = randomUUID()
         const session = store.sessions.getOrCreateSession(
-            'archived-cas-guard',
+            `machine-spawn:${allocatedId}`,
             {
                 path: '/tmp/project',
                 host: 'localhost',
@@ -344,12 +345,18 @@ describe('updateSessionMetadata: refuse un-archive (#1911 M1)', () => {
                 lifecycleState: 'archived',
                 archivedBy: 'hub',
                 archiveReason: 'KillSession miss',
+                startedBy: 'runner',
+                startedFromRunner: true,
             },
             null,
-            'default'
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            allocatedId
         )
 
-        const rejected = store.sessions.updateSessionMetadata(
+        const preserved = store.sessions.updateSessionMetadata(
             session.id,
             {
                 path: '/tmp/project',
@@ -360,11 +367,15 @@ describe('updateSessionMetadata: refuse un-archive (#1911 M1)', () => {
             session.metadataVersion,
             'default'
         )
-        expect(rejected.result).toBe('version-mismatch')
-        if (rejected.result !== 'version-mismatch') throw new Error('expected version-mismatch')
-        expect(rejected.version).toBe(session.metadataVersion)
-        expect((rejected.value as { lifecycleState?: string } | null)?.lifecycleState).toBe('archived')
+        expect(preserved.result).toBe('success')
+        if (preserved.result !== 'success') throw new Error('expected success')
+        expect((preserved.value as { lifecycleState?: string; archivedBy?: string } | null)?.lifecycleState)
+            .toBe('archived')
+        expect((preserved.value as { archivedBy?: string } | null)?.archivedBy).toBe('hub')
         expect(getMetadata(store, session.id)?.lifecycleState).toBe('archived')
+        expect(getMetadata(store, session.id)?.archivedBy).toBe('hub')
+        // Tag may already be released by archive-via-metadata; assert archive held.
+        expect(store.sessions.getSession(session.id)?.tag).toBe(`machine-spawn:${allocatedId}`)
 
         const allowed = store.sessions.updateSessionMetadata(
             session.id,
@@ -374,7 +385,8 @@ describe('updateSessionMetadata: refuse un-archive (#1911 M1)', () => {
                 flavor: 'claude',
                 lifecycleStateSince: Date.now(),
             },
-            session.metadataVersion,
+            // version advanced by preserve write
+            (preserved.version),
             'default',
             { allowUnarchive: true }
         )
@@ -383,7 +395,39 @@ describe('updateSessionMetadata: refuse un-archive (#1911 M1)', () => {
         store.close()
     })
 
-    it('still allows non-lifecycle updates while archived', () => {
+    it('does not preserve CLI self-archive (archivedBy=cli) when writing running', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'cli-self-archive',
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                lifecycleState: 'archived',
+                archivedBy: 'cli',
+                archiveReason: 'clean exit',
+            },
+            null,
+            'default'
+        )
+
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                lifecycleState: 'running',
+            },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+        expect(getMetadata(store, session.id)?.lifecycleState).toBe('running')
+        store.close()
+    })
+
+    it('still allows non-lifecycle updates while hub-archived', () => {
         const store = makeStore()
         const session = store.sessions.getOrCreateSession(
             'archived-keep-fields',

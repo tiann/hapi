@@ -297,6 +297,28 @@ function isArchivedSessionMetadata(metadata: unknown): boolean {
     return metadata.lifecycleState === 'archived'
 }
 
+/** Hub-authored archive only — CLI may archive itself on clean exit. */
+function isHubArchivedSessionMetadata(metadata: unknown): boolean {
+    if (!isPlainObject(metadata)) return false
+    return metadata.lifecycleState === 'archived' && metadata.archivedBy === 'hub'
+}
+
+/**
+ * When a CLI write would clear a hub archive, keep the forensic archive fields
+ * on the merged payload so the CAS ack returns success + still-archived
+ * (version-mismatch / error would spin forever in client backoff).
+ */
+function preserveHubArchiveOnMerged(prior: unknown, merged: unknown): unknown {
+    if (!isPlainObject(prior) || !isPlainObject(merged)) return prior
+    const next: Record<string, unknown> = { ...merged }
+    next.lifecycleState = prior.lifecycleState
+    next.archivedBy = prior.archivedBy
+    if (prior.archiveReason !== undefined) next.archiveReason = prior.archiveReason
+    else delete next.archiveReason
+    if (prior.lifecycleStateSince !== undefined) next.lifecycleStateSince = prior.lifecycleStateSince
+    return next
+}
+
 /**
  * Bind a CLI create bootstrap to a hub-preallocated stub row.
  * Overwrites tag + metadata (create-time fields) without minting a new id.
@@ -405,22 +427,20 @@ export function updateSessionMetadata(
             }
 
             const prior = existing.metadata
-            const merged = mergeSessionMetadata(prior, metadata)
+            let merged = mergeSessionMetadata(prior, metadata)
 
-            // #1911 cold-read M1 (CAS): CLI updateMetadata retries forever on
-            // version-mismatch. A late child that started before hub archive
-            // would otherwise re-stamp lifecycleState=running and win. Reject
-            // un-archive unless the hub explicitly allows it (reopen clear).
+            // #1911 M1: unauthorized un-archive of hub-archived rows.
+            // Return success + merge-preserved archive fields — NOT version-mismatch
+            // or error (both spin forever in CLI updateMetadata backoff).
+            // Authorized revive uses allowUnarchive (clearSessionArchiveMetadata
+            // before spawn). Narrow to archivedBy=hub so CLI self-archive still
+            // transitions to running on clean reopen paths.
             if (
-                isArchivedSessionMetadata(prior)
+                isHubArchivedSessionMetadata(prior)
                 && !isArchivedSessionMetadata(merged)
                 && !allowUnarchive
             ) {
-                return {
-                    result: 'version-mismatch',
-                    version: existing.metadataVersion,
-                    value: prior,
-                }
+                merged = preserveHubArchiveOnMerged(prior, merged)
             }
 
             const result = updateVersionedField({
@@ -450,7 +470,13 @@ export function updateSessionMetadata(
             // Reopen flavors (--existing-session-id) never call adopt; they only
             // updateMetadata. Release the machine-spawn stub tag here so live
             // sessions are not permanently adoptable (#1911 Overseer Major).
-            if (result.result === 'success' && isMachineSpawnPreallocatedStub(existing)) {
+            // Skip when the write was a hub-archive preserve (still archived) —
+            // that is refuse-in-place, not live adopt (#1911 M1).
+            if (
+                result.result === 'success'
+                && isMachineSpawnPreallocatedStub(existing)
+                && !isHubArchivedSessionMetadata(merged)
+            ) {
                 const liveTag = randomUUID()
                 prepareCached(db, `
                     UPDATE sessions
