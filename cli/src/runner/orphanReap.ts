@@ -160,7 +160,12 @@ export function listWindowsProcessesWithCommandLine(): ProcessSnapshot[] {
         throw result.error ?? new Error(`powershell Win32_Process exit ${result.status}`)
     }
     const raw = (result.stdout ?? '').trim()
-    if (!raw) return []
+    // Empty stdout is a failed scan, not "no processes" — a live Windows host
+    // always has System/Idle. Match process.ts collectWindowsProcessTree
+    // fail-closed semantics so orphan reap does not claim archive-ok (#1911).
+    if (!raw) {
+        throw new Error('powershell Win32_Process returned empty stdout')
+    }
     const parsed = JSON.parse(raw) as
         | Array<{ ProcessId?: number; Name?: string; CommandLine?: string; CreationDate?: string }>
         | { ProcessId?: number; Name?: string; CommandLine?: string; CreationDate?: string }

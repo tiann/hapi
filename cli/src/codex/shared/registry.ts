@@ -43,8 +43,8 @@ export function runtimeMayBeAlive(owner: CodexRuntimeRecord): boolean {
         || Boolean(owner.serverPid && generationMayBeAlive(owner.serverPid, owner.serverMarker));
 }
 
-export async function readRuntimes(): Promise<CodexRuntimeRecord[]> {
-    return readRecords(runtimeDirectory());
+export async function readRuntimes(options?: { strict?: boolean }): Promise<CodexRuntimeRecord[]> {
+    return readRecords(runtimeDirectory(), options?.strict === true);
 }
 async function readRecords(directory: string, strict = false): Promise<CodexRuntimeRecord[]> {
     const names = await readdir(directory).catch((error: NodeJS.ErrnoException) => {

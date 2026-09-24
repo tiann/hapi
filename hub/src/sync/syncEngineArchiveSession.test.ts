@@ -159,11 +159,29 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(body.metadata.version).toBeGreaterThan(0)
     })
 
-    it('does NOT archive when the machine RPC target is missing', async () => {
-        // Detached children can outlive both KillSession and a missing machine
-        // socket; refuse to archive without a confirmed stop (#1910).
+    it('archives when both KillSession and machine StopSession targets are missing (disconnect hatch)', async () => {
+        // #1911 Opus Major: no live stop path remains when the CLI socket and
+        // the machine RPC are both gone — hub-author archive (pre-PR behavior
+        // via markSessionArchivedFromHub). Still refuse when StopSession fails
+        // ambiguously while a machine might still be reachable.
         const sessionId = insertActiveSession('sess-machine-unreachable', 'machine-x')
         setKillSessionMissingTarget()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => { throw new RpcTargetMissingError('StopSession', 'handler-not-registered') }
+
+        await engine.archiveSession(sessionId)
+
+        const session = cache().getSession(sessionId)
+        expect(session?.active).toBe(false)
+        expect(session?.metadata?.lifecycleState).toBe('archived')
+        expect(session?.metadata?.archivedBy).toBe('hub')
+    })
+
+    it('does NOT archive when machine StopSession is missing but KillSession was reachable', async () => {
+        // Machine socket alone missing is not proof the detached child is gone
+        // (KillMode=process). KillSession succeeded → refuse without confirm.
+        const sessionId = insertActiveSession('sess-machine-only-missing', 'machine-x')
+        setKillSessionOk()
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => { throw new RpcTargetMissingError('StopSession', 'handler-not-registered') }
 

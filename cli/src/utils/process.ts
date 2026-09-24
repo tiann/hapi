@@ -321,7 +321,15 @@ async function killProcessTree(pid: number, force: boolean): Promise<boolean> {
   // Collect all PIDs first (sync) - returns in child-first order
   const pids = collectProcessTree(pid);
   if (pids === 'scan_failed') {
-    // Cannot prove the full tree — refuse to claim stopped (fail closed).
+    // Signal the known root anyway (partial kill > zero kill), but never claim
+    // stopped without a full-tree verify (#1911 Opus Major / debian-slim no pgrep).
+    const signal = force ? 'SIGKILL' : 'SIGTERM';
+    try {
+      process.kill(pid, signal);
+    } catch {
+      // already gone
+    }
+    await waitForProcessToDie(pid, force);
     return false;
   }
 
@@ -353,7 +361,9 @@ export async function killProcessTreeByPid(pid: number, force: boolean = false):
     // from the pre-kill snapshot is gone (#1911 B2).
     const treePids = collectWindowsProcessTree(n);
     if (treePids === 'scan_failed') {
-      // Failed/empty CIM scan must not collapse to root-only verify (#1911 bot).
+      // Still signal the (known) root — scan failure must not mean zero kill —
+      // but never claim stopped without a full-tree verify (#1911 Opus Major).
+      await signalAndWaitWindowsRoot(n, force);
       return false;
     }
     await signalAndWaitWindowsRoot(n, force);

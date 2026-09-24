@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
     commandMatchesRunnerSpawnedSession,
+    findRunnerSpawnedOrphanTargets,
     findStopSessionOrphanTargets,
     reapRunnerSpawnedOrphans,
     selectOrphanPidsForSession,
@@ -42,6 +43,15 @@ describe('orphanReap argv matching', () => {
     it('rejects substring false positives', () => {
         const cmd = `bun src/index.ts claude --started-by runner --existing-session-id ${sessionId}-extra`
         expect(commandMatchesRunnerSpawnedSession(cmd, sessionId)).toBe(false)
+    })
+
+    it('treats empty Windows process-list stdout as scan_failed (not no-orphans)', async () => {
+        // listWindowsProcessesWithCommandLine throws on empty stdout; catch →
+        // scan_failed so archive does not fail-open as already_gone (#1911).
+        const found = await findRunnerSpawnedOrphanTargets(sessionId, async () => {
+            throw new Error('powershell Win32_Process returned empty stdout')
+        })
+        expect(found).toBe('scan_failed')
     })
 
     it('selectOrphanPidsForSession filters non-hapi and self', () => {

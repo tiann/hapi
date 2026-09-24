@@ -401,34 +401,75 @@ describe('killProcess on Windows (orphanReap / stopSession)', () => {
         expect(cmd).not.toMatch(/while\(\$queue\.Count -gt 0\)\{\s*;/)
     })
 
-    it('killProcessTreeByPid returns false when Windows tree scan fails (no root-only)', async () => {
+    it('killProcessTreeByPid signals root but returns false when Windows tree scan fails', async () => {
         const { killProcessTreeByPid } = await import('./process')
-        vi.spyOn(process, 'kill').mockReturnValue(true)
+        let alive = true
+        vi.spyOn(process, 'kill').mockImplementation((_pid: number, signal?: string | number) => {
+            if (signal === 0 || signal === undefined) {
+                if (!alive) {
+                    const err = new Error('ESRCH') as NodeJS.ErrnoException
+                    err.code = 'ESRCH'
+                    throw err
+                }
+                return true
+            }
+            return true
+        })
         spawnSyncMock.mockImplementation((cmd: string) => {
             if (cmd === 'powershell') {
-                // Parse error / CIM failure — non-zero status.
-                return { status: 1, stdout: Buffer.from(''), stderr: Buffer.from('parse error'), error: null }
+                return { status: 1, stdout: Buffer.from(''), stderr: Buffer.from('parse error') }
             }
             if (cmd === 'tasklist') {
+                if (!alive) {
+                    return completed('INFO: No tasks are running which match the specified criteria.')
+                }
                 return completed(`proc.exe                       100 Console                    1     1,000 K`)
             }
             if (cmd === 'taskkill') {
-                throw new Error('should not taskkill after scan_failed')
+                alive = false
+                return completed('', 0)
             }
             return completed('')
         })
-        await expect(killProcessTreeByPid(100, true)).resolves.toBe(false)
-        expect(spawnSyncMock.mock.calls.some((c) => c[0] === 'taskkill')).toBe(false)
+        const done = killProcessTreeByPid(100, true)
+        await vi.advanceTimersByTimeAsync(500)
+        await expect(done).resolves.toBe(false)
+        // Partial kill: root signalled, but never claim stopped without tree verify.
+        expect(spawnSyncMock.mock.calls.some((c) => c[0] === 'taskkill')).toBe(true)
     })
 
-    it('killProcessTreeByPid returns false when Windows tree scan returns empty stdout', async () => {
+    it('killProcessTreeByPid signals root but returns false when Windows tree scan returns empty stdout', async () => {
         const { killProcessTreeByPid } = await import('./process')
+        let alive = true
+        vi.spyOn(process, 'kill').mockImplementation((_pid: number, signal?: string | number) => {
+            if (signal === 0 || signal === undefined) {
+                if (!alive) {
+                    const err = new Error('ESRCH') as NodeJS.ErrnoException
+                    err.code = 'ESRCH'
+                    throw err
+                }
+                return true
+            }
+            return true
+        })
         spawnSyncMock.mockImplementation((cmd: string) => {
-            if (cmd === 'powershell') return completed('') // status 0, empty — was fail-open to [root]
-            if (cmd === 'taskkill') throw new Error('should not taskkill')
+            if (cmd === 'powershell') return completed('') // status 0, empty — scan_failed
+            if (cmd === 'tasklist') {
+                if (!alive) {
+                    return completed('INFO: No tasks are running which match the specified criteria.')
+                }
+                return completed(`proc.exe                       100 Console                    1     1,000 K`)
+            }
+            if (cmd === 'taskkill') {
+                alive = false
+                return completed('', 0)
+            }
             return completed('')
         })
-        await expect(killProcessTreeByPid(100, true)).resolves.toBe(false)
+        const done = killProcessTreeByPid(100, true)
+        await vi.advanceTimersByTimeAsync(500)
+        await expect(done).resolves.toBe(false)
+        expect(spawnSyncMock.mock.calls.some((c) => c[0] === 'taskkill')).toBe(true)
     })
 })
 
@@ -451,15 +492,30 @@ describe('killProcessTreeByPid on POSIX (pgrep tree scan)', () => {
         }
     })
 
-    it('returns false when pgrep is missing (fail closed — do not verify root-only)', async () => {
+    it('returns false when pgrep is missing (signal root, never claim stopped)', async () => {
         const { killProcessTreeByPid } = await import('./process')
+        let dead = false
+        vi.spyOn(process, 'kill').mockImplementation((_pid: number, signal?: string | number) => {
+            if (signal === 0 || signal === undefined) {
+                if (dead) {
+                    const err = new Error('ESRCH') as NodeJS.ErrnoException
+                    err.code = 'ESRCH'
+                    throw err
+                }
+                return true
+            }
+            dead = true
+            return true
+        })
         spawnSyncMock.mockImplementation((cmd: string) => {
             if (cmd === 'pgrep') return unavailable('pgrep')
             return completed('')
         })
-        await expect(killProcessTreeByPid(4242, true)).resolves.toBe(false)
-        // Must not have signalled the root after a failed tree scan.
-        expect(process.kill).not.toHaveBeenCalled()
+        const done = killProcessTreeByPid(4242, true)
+        await vi.advanceTimersByTimeAsync(3000)
+        await expect(done).resolves.toBe(false)
+        // Root still signalled — partial kill > zero kill on hosts without pgrep.
+        expect(process.kill).toHaveBeenCalledWith(4242, 'SIGKILL')
     })
 })
 

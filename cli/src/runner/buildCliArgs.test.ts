@@ -368,14 +368,45 @@ describe('buildCliArgs', () => {
         ])
     })
 
-    it('emits --hapi-session-id for Claude when a HAPI id is known (orphan reap stamp)', () => {
+    it('emits --existing-session-id for Claude when a HAPI id is known (reopen + reap stamp)', () => {
+        // Fresh spawn and resume both pass a hub row id. Must NOT use
+        // --hapi-session-id (adopt-stub) — that 409s on live resume rows.
         const args = buildCliArgs('claude', {
             directory: '/tmp',
             sessionId: 'hapi-session-reap',
         })
-        expect(args).toContain('--hapi-session-id')
-        expect(args[args.indexOf('--hapi-session-id') + 1]).toBe('hapi-session-reap')
+        expect(args).toContain('--existing-session-id')
+        expect(args[args.indexOf('--existing-session-id') + 1]).toBe('hapi-session-reap')
+        expect(args).not.toContain('--hapi-session-id')
         expect(args).toContain('--started-by')
+    })
+
+    it('stamps --existing-session-id for Claude reopen/resume (not adopt --hapi-session-id)', () => {
+        // #1911 Opus Critical: syncEngine resume passes access.sessionId as
+        // existingSessionId; adopt-stub stamp → SessionNotAdoptableError → 409.
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            existingSessionId: 'live-hub-row-uuid',
+            resumeSessionId: 'native-claude-resume-token',
+            startingMode: 'remote',
+        })
+        expect(args).toContain('--existing-session-id')
+        expect(args[args.indexOf('--existing-session-id') + 1]).toBe('live-hub-row-uuid')
+        expect(args).not.toContain('--hapi-session-id')
+        expect(args).toContain('--resume')
+    })
+
+    it('stamps --existing-session-id for kimi and copilot reopen (same adopt trap)', () => {
+        for (const agent of ['kimi', 'copilot'] as const) {
+            const args = buildCliArgs(agent, {
+                directory: '/tmp',
+                existingSessionId: 'live-hub-row-uuid',
+                startingMode: 'remote',
+            })
+            expect(args).toContain('--existing-session-id')
+            expect(args[args.indexOf('--existing-session-id') + 1]).toBe('live-hub-row-uuid')
+            expect(args).not.toContain('--hapi-session-id')
+        }
     })
 
     it('does not emit --hapi-session-id for a non-pty flavor that already uses --existing-session-id', () => {
