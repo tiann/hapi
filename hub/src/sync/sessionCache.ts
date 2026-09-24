@@ -101,6 +101,29 @@ export class SessionCache {
         return this.refreshSession(stored.id) ?? (() => { throw new Error('Failed to load session') })()
     }
 
+    adoptPreallocatedSession(
+        id: string,
+        tag: string,
+        metadata: unknown,
+        agentState: unknown,
+        namespace: string,
+        model?: string,
+        effort?: string,
+        modelReasoningEffort?: string
+    ): Session {
+        const stored = this.store.sessions.adoptPreallocatedSession(
+            id,
+            tag,
+            metadata,
+            agentState,
+            namespace,
+            model,
+            effort,
+            modelReasoningEffort
+        )
+        return this.refreshSession(stored.id) ?? (() => { throw new Error('Failed to load adopted session') })()
+    }
+
     /**
      * After fork hydrate / rewind truncate, re-scan the transcript for the
      * latest TodoWrite (or clear todos). Bypasses the one-shot backfill flag

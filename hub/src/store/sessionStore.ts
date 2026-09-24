@@ -4,6 +4,7 @@ import type { StoredSession, VersionedUpdateResult } from './types'
 import {
     deleteSession,
     getOrCreateSession,
+    adoptPreallocatedSession,
     getSession,
     getSessionByNamespace,
     getSessions,
@@ -42,6 +43,21 @@ export class SessionStore {
         requestedId?: string
     ): StoredSession {
         return getOrCreateSession(this.db, tag, metadata, agentState, namespace, model, effort, modelReasoningEffort, requestedId)
+    }
+
+    adoptPreallocatedSession(
+        id: string,
+        tag: string,
+        metadata: unknown,
+        agentState: unknown,
+        namespace: string,
+        model?: string,
+        effort?: string,
+        modelReasoningEffort?: string
+    ): StoredSession {
+        return adoptPreallocatedSession(
+            this.db, id, tag, metadata, agentState, namespace, model, effort, modelReasoningEffort
+        )
     }
 
     updateSessionMetadata(

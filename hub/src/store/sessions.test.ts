@@ -114,6 +114,132 @@ describe('getOrCreateSession: requested identity', () => {
         )).toThrow(SessionIdentityConflictError)
         store.close()
     })
+
+    it('reproduces hub-prealloc vs CLI-tag conflict (machine-spawn stub, #1911)', () => {
+        // Hub preallocates with tag machine-spawn:<uuid>; CLI create used a random
+        // tag + the same id → 409. This documents the bug adopt must fix.
+        const store = makeStore()
+        const allocatedId = randomUUID()
+        store.sessions.getOrCreateSession(
+            `machine-spawn:${allocatedId}`,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                machineId: 'machine-1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+            },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            allocatedId
+        )
+
+        expect(() => store.sessions.getOrCreateSession(
+            randomUUID(), // CLI bootstrap tag
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                machineId: 'machine-1',
+                startedBy: 'runner',
+                hostPid: 12345,
+            },
+            {},
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            allocatedId
+        )).toThrow(SessionIdentityConflictError)
+        store.close()
+    })
+
+    it('adopts a machine-spawn preallocated stub and overwrites tag + metadata', () => {
+        const store = makeStore()
+        const allocatedId = randomUUID()
+        const cliTag = randomUUID()
+        store.sessions.getOrCreateSession(
+            `machine-spawn:${allocatedId}`,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                machineId: 'machine-1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+            },
+            null,
+            'default',
+            'stub-model',
+            undefined,
+            undefined,
+            allocatedId
+        )
+
+        const adopted = store.sessions.adoptPreallocatedSession(
+            allocatedId,
+            cliTag,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                machineId: 'machine-1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+                hostPid: 4242,
+            },
+            { controlledByUser: false },
+            'default',
+            'claude-sonnet',
+            undefined,
+            undefined
+        )
+
+        expect(adopted.id).toBe(allocatedId)
+        expect(adopted.tag).toBe(cliTag)
+        expect(adopted.model).toBe('claude-sonnet')
+        const meta = adopted.metadata as { hostPid?: number }
+        expect(meta.hostPid).toBe(4242)
+        // Idempotent adopt with same tag returns the row
+        const again = store.sessions.adoptPreallocatedSession(
+            allocatedId,
+            cliTag,
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            {},
+            'default'
+        )
+        expect(again.id).toBe(allocatedId)
+        expect(again.tag).toBe(cliTag)
+        store.close()
+    })
+
+    it('rejects adopt when the row is not a preallocated stub', () => {
+        const store = makeStore()
+        const id = randomUUID()
+        store.sessions.getOrCreateSession(
+            'live-terminal-tag',
+            { path: '/tmp', startedBy: 'terminal' },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            id
+        )
+
+        expect(() => store.sessions.adoptPreallocatedSession(
+            id,
+            randomUUID(),
+            { path: '/tmp', startedBy: 'runner' },
+            {},
+            'default'
+        )).toThrow(/not a preallocated stub|not adoptable/i)
+        store.close()
+    })
 })
 
 describe('updateSessionMetadata: protocol resume token preservation', () => {

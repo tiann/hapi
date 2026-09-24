@@ -250,7 +250,9 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
     })
 
     const sessionInfo = await api.getOrCreateSession({
-        ...(reservedHubId ? { id: reservedHubId } : {}),
+        ...(reservedHubId
+            ? { id: reservedHubId, adopt: true as const }
+            : {}),
         tag: sessionTag,
         metadata,
         state: agentState,

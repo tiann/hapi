@@ -380,7 +380,10 @@ describe('bootstrapSession HAPI_SESSION_ID export', () => {
         })
 
         expect(getOrCreateSessionMock).toHaveBeenCalledWith(
-            expect.objectContaining({ id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' })
+            expect.objectContaining({
+                id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+                adopt: true,
+            })
         )
         expect(result.sessionInfo.id).toBe('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee')
     })

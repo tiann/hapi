@@ -382,4 +382,82 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
             engine.stop()
         }
     })
+
+    it('CLI adopt binds preallocated stub under a new tag (create request path)', async () => {
+        // End-to-end of the real machine-spawn path: hub preallocates, then CLI
+        // create with adopt=true overwrites tag/metadata without 409.
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            engine.getOrCreateMachine(
+                'machine-adopt',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+
+            let allocatedId: string | undefined
+            ;(engine as unknown as { rpcGateway: { spawnSession: unknown } }).rpcGateway.spawnSession =
+                async (...args: unknown[]) => {
+                    allocatedId = args[12] as string | undefined
+                    // Simulate CLI create/adopt before webhook success
+                    const cliTag = crypto.randomUUID()
+                    const adopted = engine.adoptPreallocatedSession(
+                        allocatedId!,
+                        cliTag,
+                        {
+                            path: '/tmp/project',
+                            host: 'localhost',
+                            flavor: 'claude',
+                            machineId: 'machine-adopt',
+                            startedBy: 'runner',
+                            startedFromRunner: true,
+                            hostPid: 999,
+                        },
+                        { controlledByUser: false },
+                        'default',
+                        'claude-sonnet'
+                    )
+                    expect(adopted.id).toBe(allocatedId!)
+                    expect((adopted.metadata as { hostPid?: number } | null)?.hostPid).toBe(999)
+                    const stored = store.sessions.getSession(allocatedId!)
+                    expect(stored?.tag).toBe(cliTag)
+                    return { type: 'success' as const, sessionId: allocatedId! }
+                }
+
+            const result = await engine.spawnSession(
+                'machine-adopt',
+                '/tmp/project',
+                'claude',
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                'default'
+            )
+
+            expect(result.type).toBe('success')
+            expect(typeof allocatedId).toBe('string')
+            const row = store.sessions.getSession(allocatedId!)
+            expect(row?.id).toBe(allocatedId)
+            expect(row?.tag).not.toMatch(/^machine-spawn:/)
+        } finally {
+            engine.stop()
+        }
+    })
 })

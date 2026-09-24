@@ -276,6 +276,96 @@ export class SessionIdentityConflictError extends Error {
     }
 }
 
+export class SessionNotAdoptableError extends Error {
+    constructor(message: string) {
+        super(message)
+        this.name = 'SessionNotAdoptableError'
+    }
+}
+
+/** Hub-internal stub tag for fresh machine spawn preallocation (#1911). */
+export function machineSpawnPreallocTag(sessionId: string): string {
+    return `machine-spawn:${sessionId}`
+}
+
+function isMachineSpawnPreallocatedStub(session: StoredSession): boolean {
+    return session.tag === machineSpawnPreallocTag(session.id)
+}
+
+/**
+ * Bind a CLI create bootstrap to a hub-preallocated stub row.
+ * Overwrites tag + metadata (create-time fields) without minting a new id.
+ * Rejects rows that are not machine-spawn stubs — live sessions stay protected.
+ */
+export function adoptPreallocatedSession(
+    db: Database,
+    id: string,
+    tag: string,
+    metadata: unknown,
+    agentState: unknown,
+    namespace: string,
+    model?: string,
+    effort?: string,
+    modelReasoningEffort?: string
+): StoredSession {
+    const existing = getSessionByNamespace(db, id, namespace)
+    if (!existing) {
+        throw new SessionNotAdoptableError('Session not found')
+    }
+
+    // Already adopted with this tag — idempotent reload (same as getOrCreate match).
+    if (existing.tag === tag) {
+        return existing
+    }
+
+    if (!isMachineSpawnPreallocatedStub(existing)) {
+        throw new SessionNotAdoptableError('Session is not a preallocated stub')
+    }
+
+    // New tag must not already belong to another session in this namespace.
+    const tagOwner = prepareCached(db,
+        'SELECT id FROM sessions WHERE tag = ? AND namespace = ? LIMIT 1'
+    ).get(tag, namespace) as { id: string } | undefined
+    if (tagOwner && tagOwner.id !== id) {
+        throw new SessionIdentityConflictError('Session tag is already bound to a different id')
+    }
+
+    const now = Date.now()
+    const metadataJson = JSON.stringify(metadata)
+    const agentStateJson = agentState === null || agentState === undefined ? null : JSON.stringify(agentState)
+
+    prepareCached(db, `
+        UPDATE sessions SET
+            tag = @tag,
+            metadata = @metadata,
+            metadata_version = metadata_version + 1,
+            agent_state = @agent_state,
+            agent_state_version = agent_state_version + 1,
+            model = @model,
+            model_reasoning_effort = @model_reasoning_effort,
+            effort = @effort,
+            updated_at = @updated_at,
+            seq = seq + 1
+        WHERE id = @id AND namespace = @namespace
+    `).run({
+        id,
+        namespace,
+        tag,
+        metadata: metadataJson,
+        agent_state: agentStateJson,
+        model: model ?? null,
+        model_reasoning_effort: modelReasoningEffort ?? null,
+        effort: effort ?? null,
+        updated_at: now,
+    })
+
+    const updated = getSessionByNamespace(db, id, namespace)
+    if (!updated) {
+        throw new Error('Failed to adopt preallocated session')
+    }
+    return updated
+}
+
 export function updateSessionMetadata(
     db: Database,
     id: string,
