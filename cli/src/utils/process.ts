@@ -8,6 +8,25 @@ export function isProcessAlive(pid: number): boolean {
     return false;
   }
 
+  // Windows: prefer tasklist. Bun/Node `process.kill(pid, 0)` is unreliable as a
+  // liveness probe on win32 and can disagree with the console tree taskkill sees.
+  if (isWindows()) {
+    try {
+      const result = spawn.sync(
+        'tasklist',
+        ['/FI', `PID eq ${pid}`, '/NH'],
+        { stdio: 'pipe', windowsHide: true, encoding: 'utf8' }
+      );
+      if (!result.error && result.status === 0) {
+        const out = (result.stdout?.toString() ?? '').trim();
+        if (!out || /no tasks/i.test(out)) return false;
+        return new RegExp(`(^|\\D)${pid}(\\D|$)`).test(out);
+      }
+    } catch {
+      // fall through to signal-0 probe
+    }
+  }
+
   try {
     process.kill(pid, 0);
     return true;
@@ -151,9 +170,14 @@ export async function killProcess(pid: number, force: boolean = false): Promise<
   if (isWindows()) {
     // Soft taskkill (/T without /F) is routinely refused on win32 console trees
     // ("can only be terminated forcefully"). Mirror POSIX SIGTERM→SIGKILL:
-    // attempt graceful, wait, then escalate to taskkill /F /T.
+    // attempt graceful, then escalate to /F when the PID is still live.
+    // Escalate immediately on soft refusal — do not burn the full grace wait
+    // before /F (soft non-zero already means Windows rejected graceful kill).
     killProcessWindows(pid, force);
-    await waitForProcessToDie(pid, force);
+    if (!force && isProcessAlive(pid)) {
+      killProcessWindows(pid, true);
+    }
+    await waitForProcessToDie(pid, true);
     return !isProcessAlive(pid);
   }
 
