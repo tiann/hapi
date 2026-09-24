@@ -3,6 +3,9 @@ import spawn from 'cross-spawn';
 
 export const isWindows = (): boolean => process.platform === 'win32';
 
+/** Bound hung WMI/tasklist/ps so a wedged spawn cannot darken the runner (#1911 Overseer B3). */
+const SPAWN_SYNC_TIMEOUT_MS = 10_000;
+
 export function isProcessAlive(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) {
     return false;
@@ -15,7 +18,7 @@ export function isProcessAlive(pid: number): boolean {
       const result = spawn.sync(
         'tasklist',
         ['/FI', `PID eq ${pid}`, '/NH'],
-        { stdio: 'pipe', windowsHide: true, encoding: 'utf8' }
+        { stdio: 'pipe', windowsHide: true, encoding: 'utf8', timeout: SPAWN_SYNC_TIMEOUT_MS }
       );
       if (!result.error && result.status === 0) {
         const out = (result.stdout?.toString() ?? '').trim();
@@ -47,6 +50,9 @@ export const WINDOWS_CIM_CREATION_DATE_MARKER_EXPR =
 export function windowsProcessListCimCommand(): string {
   // Fail closed: non-terminating CIM errors must not yield empty stdout with
   // exit 0 (that was misread as "no orphans" → false archive-ok). #1911 B2.
+  // Note: Stop on the whole enumeration means one transient per-instance WMI
+  // error aborts the scan → still_alive until it clears (availability trap,
+  // fail-closed; #1911 Overseer non-blocker).
   return [
     "$ErrorActionPreference='Stop'",
     'trap { exit 1 }',
@@ -74,7 +80,7 @@ export function getProcessStartMarker(pid: number): string | null {
     const powershell = spawn.sync('powershell', [
       '-NoProfile', '-NonInteractive', '-Command',
       windowsProcessMarkerCimCommand(pid),
-    ], { stdio: 'pipe', windowsHide: true });
+    ], { stdio: 'pipe', windowsHide: true, timeout: SPAWN_SYNC_TIMEOUT_MS });
     if (!powershell.error && powershell.status === 0) {
       const marker = powershell.stdout?.toString().trim();
       if (marker) return marker;
@@ -83,7 +89,8 @@ export function getProcessStartMarker(pid: number): string | null {
   }
   const result = spawn.sync('ps', ['-p', String(pid), '-o', 'lstart='], {
     stdio: 'pipe',
-    env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' }
+    env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' },
+    timeout: SPAWN_SYNC_TIMEOUT_MS,
   });
   if (result.error || result.status !== 0) return null;
   return result.stdout?.toString().trim() || null;
@@ -102,7 +109,7 @@ function getWindowsProcessCommandLine(pid: number): string | null {
     '-NonInteractive',
     '-Command',
     `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CommandLine`
-  ], { stdio: 'pipe', windowsHide: true });
+  ], { stdio: 'pipe', windowsHide: true, timeout: SPAWN_SYNC_TIMEOUT_MS });
   if (!powershell.error && powershell.status === 0) {
     const commandLine = powershell.stdout?.toString() ?? '';
     if (commandLine.trim()) return commandLine;
@@ -110,7 +117,7 @@ function getWindowsProcessCommandLine(pid: number): string | null {
 
   const wmic = spawn.sync('wmic', [
     'process', 'where', `ProcessId=${pid}`, 'get', 'CommandLine'
-  ], { stdio: 'pipe', windowsHide: true });
+  ], { stdio: 'pipe', windowsHide: true, timeout: SPAWN_SYNC_TIMEOUT_MS });
   if (!wmic.error && wmic.status === 0) {
     const commandLine = readWmicCommandLine(wmic.stdout?.toString() ?? '');
     if (commandLine) return commandLine;
@@ -152,7 +159,10 @@ export function getHapiRunnerProcessIdentity(pid: number): RunnerProcessIdentity
 }
 
 function getPosixProcessCommandLine(pid: number): string | null {
-  const result = spawn.sync('ps', ['-p', String(pid), '-o', 'command='], { stdio: 'pipe' });
+  const result = spawn.sync('ps', ['-p', String(pid), '-o', 'command='], {
+    stdio: 'pipe',
+    timeout: SPAWN_SYNC_TIMEOUT_MS,
+  });
   if (result.error || result.status !== 0) return null;
   const commandLine = result.stdout?.toString() ?? '';
   return commandLine.trim() ? commandLine : null;
@@ -170,7 +180,8 @@ function killProcessWindows(pid: number, force: boolean): boolean {
   try {
     const result = spawn.sync('taskkill', args, {
       stdio: 'pipe',
-      windowsHide: true
+      windowsHide: true,
+      timeout: SPAWN_SYNC_TIMEOUT_MS,
     });
     if (result.error) {
       return false;
@@ -250,7 +261,7 @@ export function collectWindowsProcessTree(pid: number): number[] | 'scan_failed'
       '-Command',
       windowsProcessTreeCimCommand(n),
     ],
-    { encoding: 'utf8', windowsHide: true, maxBuffer: 16 * 1024 * 1024 }
+    { encoding: 'utf8', windowsHide: true, maxBuffer: 16 * 1024 * 1024, timeout: SPAWN_SYNC_TIMEOUT_MS }
   )
   if (result.error || result.status !== 0) {
     return 'scan_failed'
@@ -308,7 +319,10 @@ export async function killProcess(pid: number, force: boolean = false): Promise<
 function collectProcessTree(pid: number): number[] | 'scan_failed' {
   const pids: number[] = [];
 
-  const result = spawn.sync('pgrep', ['-P', pid.toString()], { encoding: 'utf8' });
+  const result = spawn.sync('pgrep', ['-P', pid.toString()], {
+    encoding: 'utf8',
+    timeout: SPAWN_SYNC_TIMEOUT_MS,
+  });
   // spawn.sync returns {error} rather than throwing when the binary is missing.
   if (result.error) {
     return 'scan_failed';

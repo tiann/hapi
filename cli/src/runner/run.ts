@@ -1134,6 +1134,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
               error instanceof Error ? error.message : String(error)
             }`
           );
+          // KillSession PID-* fallback cannot prove the OS pid is not a shared
+          // Codex wrapper when the registry is unreadable — soft [] would
+          // tree-kill sibling roots (#1911 Overseer B2).
+          if (sessionId.startsWith('PID-')) return null;
           // findRuntime also soft-fails; if a shared Codex root may still exist,
           // refuse the orphan sweep. Non-Codex stops proceed with [] so archive
           // is not machine-wide blocked by schema drift.

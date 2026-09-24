@@ -107,10 +107,16 @@ export function listPosixProcessesWithStartMarker(): ProcessSnapshot[] {
             encoding: 'utf8',
             env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' },
             maxBuffer: 64 * 1024 * 1024,
+            timeout: 10_000,
         }
     )
-    if (result.error || (result.status !== 0 && result.status !== null)) {
-        throw result.error ?? new Error(`ps exit ${result.status}`)
+    if (result.error || result.status !== 0) {
+        // status === null means the ps child was signal-killed; stdout is
+        // truncated and must not be parsed as a complete process table
+        // (#1911 Overseer B1 — twin of process.ts collectProcessTree).
+        throw result.error ?? new Error(
+            result.status === null ? 'ps aborted (signal)' : `ps exit ${result.status}`
+        )
     }
     const stdout = (result.stdout ?? '').toString()
     const snapshots: ProcessSnapshot[] = []
@@ -154,7 +160,7 @@ export function listWindowsProcessesWithCommandLine(): ProcessSnapshot[] {
             '-Command',
             windowsProcessListCimCommand(),
         ],
-        { encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024 }
+        { encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024, timeout: 10_000 }
     )
     if (result.error || result.status !== 0) {
         throw result.error ?? new Error(`powershell Win32_Process exit ${result.status}`)

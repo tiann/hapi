@@ -135,9 +135,8 @@ describe('bootstrapExistingSession', () => {
         )
     })
 
-    it('refuses to reopen an archived session (hub-archive resurrection guard)', async () => {
-        // #1911 M1 pre-check only: catches already-archived at getSession. Hub
-        // store reject + ApiSessionClient CAS stop close mid-flight races.
+    it('refuses to reopen a hub-archived session (hub-archive resurrection guard)', async () => {
+        // #1911 M1 belt: hub-archived only (matches store merge-preserve scope).
         const session = createSession()
         const existing = session.metadata
         if (!existing) throw new Error('expected metadata')
@@ -158,11 +157,37 @@ describe('bootstrapExistingSession', () => {
             flavor: 'claude',
             workingDirectory: '/tmp/project',
             startedBy: 'runner',
-        })).rejects.toThrow(/archived/)
+        })).rejects.toThrow(/hub-archived|archived/)
 
         expect(sessionClient.updateMetadata).not.toHaveBeenCalled()
         expect(notifyRunnerSessionStartedMock).not.toHaveBeenCalled()
         expect(sessionSyncClientMock).not.toHaveBeenCalled()
+    })
+
+    it('allows reopen of CLI self-archived sessions (archivedBy=cli)', async () => {
+        const session = createSession()
+        const existing = session.metadata
+        if (!existing) throw new Error('expected metadata')
+        session.metadata = {
+            ...existing,
+            lifecycleState: 'archived',
+            archivedBy: 'cli',
+            archiveReason: 'clean exit',
+        }
+        const sessionClient = { updateMetadata: vi.fn() }
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue(sessionClient)
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        await expect(bootstrapExistingSession({
+            sessionId: 'hapi-session-1',
+            flavor: 'claude',
+            workingDirectory: '/tmp/project',
+            startedBy: 'runner',
+        })).resolves.toMatchObject({ session: sessionClient })
+
+        expect(sessionClient.updateMetadata).toHaveBeenCalledOnce()
     })
 
     it('preserves existing native resume metadata when reactivating a session', async () => {

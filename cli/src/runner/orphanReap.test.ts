@@ -54,6 +54,13 @@ describe('orphanReap argv matching', () => {
         expect(found).toBe('scan_failed')
     })
 
+    it('treats signalled ps (status null) as scan_failed (#1911 Overseer B1)', async () => {
+        const found = await findRunnerSpawnedOrphanTargets(sessionId, async () => {
+            throw new Error('ps aborted (signal)')
+        })
+        expect(found).toBe('scan_failed')
+    })
+
     it('selectOrphanPidsForSession filters non-hapi and self', () => {
         const pids = selectOrphanPidsForSession(
             [
