@@ -88,6 +88,53 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
         }
     })
 
+    it('rejects success when runner reports a different id than the prealloc stub', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            engine.getOrCreateMachine(
+                'machine-id-mismatch',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-id-mismatch', time: Date.now() })
+
+            let reserved: string | undefined
+            ;(engine as unknown as { rpcGateway: { spawnSession: unknown } }).rpcGateway.spawnSession =
+                async (
+                    _m: string, _d: string, _a?: string, _mo?: string, _mr?: string, _y?: boolean,
+                    _st?: string, _wn?: string, _rs?: string, _e?: string, _pm?: string, _svc?: string,
+                    _existing?: string, _cm?: string, _ca?: string, _sm?: string, _fs?: boolean,
+                    reservedSessionId?: string
+                ) => {
+                    reserved = reservedSessionId
+                    return { type: 'success' as const, sessionId: 'totally-different-id' }
+                }
+
+            const result = await engine.spawnSession(
+                'machine-id-mismatch',
+                '/tmp/project',
+                'claude',
+                undefined, undefined, undefined, undefined, undefined, undefined,
+                undefined, undefined, undefined, undefined, undefined, undefined,
+                undefined, 'default'
+            )
+
+            expect(result.type).toBe('error')
+            expect(typeof reserved).toBe('string')
+            expect(store.sessions.getSession(reserved!)?.tag).toBe(`machine-spawn:${reserved}`)
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('forwards fresh Codex prealloc as reservedSessionId (not existingSessionId)', async () => {
         // #1911 Critical: existingSessionId → reopen → "no Codex thread binding".
         const store = new Store(':memory:')

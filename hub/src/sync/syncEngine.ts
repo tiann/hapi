@@ -1808,6 +1808,21 @@ export class SyncEngine {
                     }
                 }
             }
+            // Ambiguous machine-spawn keep-stub: startedBy=runner, no hostPid, still
+            // tagged machine-spawn:<id>. StopSession returns unknown forever (nothing
+            // tracked). There is no OS child to confirm — allow hub archive so the
+            // ghost is not permanent while the runner is online (#1911 Opus Major).
+            // If a late child exists, argv orphan reap still covers it after archive.
+            if (status === 'unknown') {
+                const stored = this.store.sessions.getSession(sessionId)
+                if (
+                    stored
+                    && isMachineSpawnPreallocatedStub(stored)
+                    && !(typeof sessionMeta?.hostPid === 'number' && sessionMeta.hostPid > 0)
+                ) {
+                    status = 'already_gone'
+                }
+            }
             if (status === 'still_alive' || status === 'unknown') {
                 throw new Error('Session process is still running and could not be stopped')
             }
@@ -2263,7 +2278,26 @@ export class SyncEngine {
             // Do NOT call stopRunnerSession — that would kill a healthy late-booting
             // CLI — and do NOT deleteSession (ON DELETE CASCADE wipes transcript).
             // Matches the throw-path keep-stub policy above (#1911 Critical).
+            // Archive of these stubs is allowed via isMachineSpawnPreallocatedStub
+            // hatch in archiveSession (no hostPid → no process to confirm).
             return result
+        }
+
+        // Runner must bind the preallocated id — a divergent success id leaves
+        // the stub as a silent ghost (#1911 Opus robustness note).
+        if (
+            result.type === 'success'
+            && preallocated
+            && allocatedSessionId
+            && result.sessionId !== allocatedSessionId
+        ) {
+            console.warn(
+                `[spawn] runner reported sessionId ${result.sessionId} but prealloc was ${allocatedSessionId}; treating as error and keeping stub`
+            )
+            return {
+                type: 'error',
+                message: `Runner reported unexpected session id ${result.sessionId} (expected ${allocatedSessionId})`,
+            }
         }
 
         return result

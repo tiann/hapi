@@ -342,4 +342,49 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         expect(cache().getSession(sessionId)?.active).toBe(false)
         expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
     })
+
+    it('archives a never-started machine-spawn stub when StopSession returns unknown (no hostPid)', async () => {
+        // #1911 Opus Major: keep-stub after ambiguous spawn has startedBy=runner,
+        // no hostPid → StopSession unknown forever while runner online.
+        const stubId = crypto.randomUUID()
+        const created = cache().getOrCreateSession(
+            `machine-spawn:${stubId}`,
+            {
+                path: '/tmp/proj',
+                host: 'localhost',
+                flavor: 'claude',
+                startedBy: 'runner',
+                startedFromRunner: true,
+                machineId: 'machine-x',
+            },
+            null,
+            NAMESPACE,
+            undefined,
+            undefined,
+            undefined,
+            stubId
+        )
+        cache().markSessionActive(created.id)
+        expect(created.id).toBe(stubId)
+        expect(store.sessions.getSession(stubId)?.tag).toBe(`machine-spawn:${stubId}`)
+
+        setKillSessionMissingTarget()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'unknown'
+
+        await engine.archiveSession(stubId)
+
+        expect(cache().getSession(stubId)?.active).toBe(false)
+        expect(cache().getSession(stubId)?.metadata?.lifecycleState).toBe('archived')
+    })
+
+    it('does NOT archive a non-stub runner session on unknown without hostPid', async () => {
+        const sessionId = insertActiveSession('sess-live-unknown-no-pid', 'machine-x')
+        setKillSessionMissingTarget()
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
+            async () => 'unknown'
+
+        await expect(engine.archiveSession(sessionId)).rejects.toThrow()
+        expect(cache().getSession(sessionId)?.active).toBe(true)
+    })
 })
