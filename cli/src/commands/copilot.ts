@@ -19,6 +19,7 @@ export const copilotCommand: CommandDefinition = {
                 model?: string
                 copilotAgentMode?: CopilotAgentMode
                 resumeSessionId?: string
+                existingSessionId?: string
             } = {}
 
             let hasExplicitPermissionMode = false
@@ -34,6 +35,12 @@ export const copilotCommand: CommandDefinition = {
                     } else {
                         throw new Error('Invalid --hapi-starting-mode (expected local or remote)')
                     }
+                } else if (arg === '--hapi-session-id' || arg === '--existing-session-id') {
+                    const sessionId = commandArgs[++i]
+                    if (!sessionId) {
+                        throw new Error(`Missing ${arg} value`)
+                    }
+                    options.existingSessionId = sessionId
                 } else if (arg === '--permission-mode') {
                     const mode = commandArgs[++i]
                     if (!mode || !(COPILOT_PERMISSION_MODES as readonly string[]).includes(mode)) {

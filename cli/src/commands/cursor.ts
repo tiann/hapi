@@ -86,12 +86,12 @@ export function parseCursorCommandArgs(commandArgs: string[]): ParsedCursorComma
                 unknownArgs.push(arg)
             }
         } else if (arg === '--hapi-session-id') {
-            // #1910 reap stamp only when emitted for non-reuse flavors — do not
-            // treat as hub-row bootstrap (that remains `--existing-session-id`).
+            // Same hub-row bootstrap as --existing-session-id (fresh spawn stamp).
             const hapiSessionId = commandArgs[++i]
             if (!hapiSessionId || hapiSessionId.startsWith('-')) {
                 throw new Error('Missing --hapi-session-id value')
             }
+            options.existingSessionId = hapiSessionId
         } else if (arg === '--existing-session-id') {
             const hapiSessionId = commandArgs[++i]
             if (!hapiSessionId || hapiSessionId.startsWith('-')) {

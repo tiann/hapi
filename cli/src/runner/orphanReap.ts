@@ -180,9 +180,19 @@ export async function reapRunnerSpawnedOrphans(
         }
 
         const currentMarker = getStartMarker(orphanPid)
-        if (currentMarker === null || currentMarker !== expectedMarker) {
-            // Generation changed (PID reuse) or vanished — never kill whatever
-            // process now holds this PID. The matched orphan generation is gone.
+        if (currentMarker === null) {
+            // Probe failed mid-flight. Null is not proof of PID reuse (psutil
+            // lesson: unknown create_time ≠ recycled). Skip kill; if still
+            // alive, refuse to claim reaped.
+            if (!isAlive(orphanPid)) {
+                resolved++
+                continue
+            }
+            return 'still_alive'
+        }
+        if (currentMarker !== expectedMarker) {
+            // Generation changed (PID reuse) — never kill whatever process now
+            // holds this PID. The matched orphan generation is gone.
             resolved++
             continue
         }

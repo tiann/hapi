@@ -149,7 +149,7 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
         }
     })
 
-    it('deletes the preallocated stub when runner spawn fails', async () => {
+    it('deletes the preallocated stub when runner spawn fails and stop confirms gone', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
             store,
@@ -200,6 +200,62 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
             expect(result.type).toBe('error')
             expect(typeof forwardedExistingId).toBe('string')
             expect(store.sessions.getSession(forwardedExistingId!)).toBeFalsy()
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('keeps the preallocated stub when StopSession cannot confirm the child is gone', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            engine.getOrCreateMachine(
+                'machine-fail-alive',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+
+            let forwardedExistingId: string | undefined
+            ;(engine as unknown as { rpcGateway: { spawnSession: unknown; stopRunnerSession: unknown } })
+                .rpcGateway.spawnSession = async (
+                    ...args: unknown[]
+                ) => {
+                    forwardedExistingId = args[12] as string | undefined
+                    return { type: 'error' as const, message: 'webhook timeout' }
+                }
+            ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } })
+                .rpcGateway.stopRunnerSession = async () => 'still_alive'
+
+            const result = await engine.spawnSession(
+                'machine-fail-alive',
+                '/tmp/project',
+                'claude',
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                'default'
+            )
+
+            expect(result.type).toBe('error')
+            expect(typeof forwardedExistingId).toBe('string')
+            expect(store.sessions.getSession(forwardedExistingId!)?.id).toBe(forwardedExistingId)
         } finally {
             engine.stop()
         }

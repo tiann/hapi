@@ -66,11 +66,14 @@ export const claudeCommand: CommandDefinition = {
             } else if (arg === '--started-by') {
                 options.startedBy = args[++i] as 'runner' | 'terminal'
             } else if (arg === '--hapi-session-id') {
-                // #1910 reap stamp only — must not flip create→reuse bootstrap.
+                // Hub-preallocated row id (fresh machine spawn / #1911). Must
+                // reach bootstrapExistingSession — consuming without assigning
+                // minted a second row and defeated the argv reap stamp.
                 const sessionId = args[++i]
                 if (!sessionId) {
                     throw new Error('Missing --hapi-session-id value')
                 }
+                options.existingSessionId = sessionId
             } else if (arg === '--existing-session-id') {
                 const sessionId = args[++i]
                 if (!sessionId) {

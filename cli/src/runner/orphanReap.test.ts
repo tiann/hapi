@@ -164,6 +164,29 @@ describe('reapRunnerSpawnedOrphans (stopSession orphan path)', () => {
         expect(status).toBe('stopped')
     })
 
+    it('returns still_alive when pre-kill marker probe fails while PID is alive', async () => {
+        const killed: number[] = []
+        const markers = new Map<number, Array<string | null>>([
+            [4242, ['gen-orphan', null]],
+        ])
+        const status = await reapRunnerSpawnedOrphans('sess-orphan-probe-fail', {
+            findOrphans: async () => [4242],
+            killTree: async (pid) => {
+                killed.push(pid)
+                return true
+            },
+            getStartMarker: (pid) => {
+                const queue = markers.get(pid)
+                if (!queue || queue.length === 0) return null
+                return queue.shift() ?? null
+            },
+            isAlive: () => true,
+        })
+        expect(killed).toEqual([])
+        // Null re-check is not proof of death — must not claim stopped.
+        expect(status).toBe('still_alive')
+    })
+
     it('returns still_alive without killing when marker cannot be read for a live orphan', async () => {
         const killed: number[] = []
         const status = await reapRunnerSpawnedOrphans('sess-orphan-no-marker', {

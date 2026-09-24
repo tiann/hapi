@@ -2180,10 +2180,17 @@ export class SyncEngine {
         )
 
         if (result.type !== 'success' && preallocated && allocatedSessionId) {
+            // Only delete the stub when StopSession confirms the child is gone.
+            // still_alive / unknown / RPC failure → keep the row so archive can
+            // retry (deleting would recreate an unreapable orphan — #1911).
+            let stopStatus: 'stopped' | 'already_gone' | 'still_alive' | 'unknown' = 'still_alive'
             try {
-                await this.rpcGateway.stopRunnerSession(machineId, allocatedSessionId)
+                stopStatus = await this.rpcGateway.stopRunnerSession(machineId, allocatedSessionId)
             } catch {
-                // Best-effort: spawn already failed; do not mask that error.
+                stopStatus = 'still_alive'
+            }
+            if (stopStatus === 'still_alive' || stopStatus === 'unknown') {
+                return result
             }
             try {
                 const row = this.sessionCache.refreshSession(allocatedSessionId)
