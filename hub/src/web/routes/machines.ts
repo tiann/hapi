@@ -97,6 +97,7 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: `${parsed.data.agent.toUpperCase()} only supports remote mode` }, 400)
         }
         const startingMode = parsed.data.startingMode
+        const namespace = c.get('namespace')
 
         const result = await engine.spawnSession(
             machineId,
@@ -114,7 +115,8 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             undefined,
             parsed.data.collaborationMode,
             parsed.data.copilotAgentMode,
-            startingMode
+            startingMode,
+            namespace
         )
         return c.json(result)
     })

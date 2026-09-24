@@ -2124,9 +2124,43 @@ export class SyncEngine {
         existingSessionId?: string,
         collaborationMode?: CodexCollaborationMode,
         copilotAgentMode?: CopilotAgentMode,
-        startingMode?: 'remote' | 'pty'
+        startingMode?: 'remote' | 'pty',
+        // Required for fresh machine spawns so the runner stamps the HAPI id on
+        // argv before the first webhook (#1911 Major: unreapable window).
+        namespace?: string
     ): ReturnType<RpcGateway['spawnSession']> {
-        return await this.rpcGateway.spawnSession(
+        // Fresh machine spawns historically omitted existingSessionId, so
+        // buildCliArgs could not stamp --hapi-session-id / --existing-session-id.
+        // A runner restart before the first webhook then left no persisted PID
+        // map and no argv id — StopSession returned unknown. Preallocate the
+        // hub row (same pattern as fork / OpenCode clear) and pass that id.
+        let allocatedSessionId = existingSessionId
+        let preallocated = false
+        if (!allocatedSessionId && namespace) {
+            const machine = this.getMachineByNamespace(machineId, namespace)
+                ?? this.getMachine(machineId)
+            allocatedSessionId = randomUUID()
+            this.sessionCache.getOrCreateSession(
+                `machine-spawn:${allocatedSessionId}`,
+                {
+                    path: directory,
+                    host: machine?.metadata?.host ?? 'unknown',
+                    flavor: agent,
+                    machineId,
+                    startedBy: 'runner',
+                    startedFromRunner: true,
+                },
+                null,
+                namespace,
+                model,
+                effort,
+                modelReasoningEffort,
+                allocatedSessionId
+            )
+            preallocated = true
+        }
+
+        const result = await this.rpcGateway.spawnSession(
             machineId,
             directory,
             agent,
@@ -2139,11 +2173,30 @@ export class SyncEngine {
             effort,
             permissionMode,
             serviceTier,
-            existingSessionId,
+            allocatedSessionId,
             collaborationMode,
             copilotAgentMode,
             startingMode
         )
+
+        if (result.type !== 'success' && preallocated && allocatedSessionId) {
+            try {
+                await this.rpcGateway.stopRunnerSession(machineId, allocatedSessionId)
+            } catch {
+                // Best-effort: spawn already failed; do not mask that error.
+            }
+            try {
+                const row = this.sessionCache.refreshSession(allocatedSessionId)
+                if (row?.active) {
+                    this.handleSessionEnd({ sid: allocatedSessionId, time: Date.now(), reason: 'error' })
+                }
+                await this.deleteSession(allocatedSessionId)
+            } catch {
+                // Leave the stub visible rather than claiming cleanup succeeded.
+            }
+        }
+
+        return result
     }
 
     /**

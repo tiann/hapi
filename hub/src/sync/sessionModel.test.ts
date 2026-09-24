@@ -580,21 +580,49 @@ describe('session model', () => {
                 _machineId: string,
                 _directory: string,
                 agent: string,
-                model?: string
+                model?: string,
+                _modelReasoningEffort?: string,
+                _yolo?: boolean,
+                _sessionType?: string,
+                _worktreeName?: string,
+                _resumeSessionId?: string,
+                _effort?: string,
+                _permissionMode?: string,
+                _serviceTier?: string,
+                existingSessionId?: string
             ) => {
                 capturedModel = model
-                return { type: 'success', sessionId: 'spawned-cursor-session' }
+                return { type: 'success', sessionId: existingSessionId ?? 'spawned-cursor-session' }
             }
 
             const result = await engine.spawnSession(
                 'machine-cursor',
                 '/tmp/project',
                 'cursor',
-                'composer-2.5[fast=false]'
+                'composer-2.5[fast=false]',
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                'default'
             )
 
-            expect(result).toEqual({ type: 'success', sessionId: 'spawned-cursor-session' })
+            expect(result.type).toBe('success')
             expect(capturedModel).toBe('composer-2.5[fast=false]')
+            if (result.type === 'success') {
+                expect(typeof result.sessionId).toBe('string')
+                expect(result.sessionId.length).toBeGreaterThan(0)
+                const meta = store.sessions.getSession(result.sessionId)?.metadata as { flavor?: string } | null
+                expect(meta?.flavor).toBe('cursor')
+            }
         } finally {
             engine.stop()
         }
