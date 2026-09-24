@@ -133,10 +133,10 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
 
     it('clears archive metadata on PTY reopen before spawn (#1911 M1)', async () => {
         // Hub store rejects un-archive without allowUnarchive, so reopen must
-        // clear archive before spawn (same as non-PTY). Rollback still uses
-        // the in-memory archiveSnapshot on resume failure.
+        // clear archive before spawn (same as non-PTY). Attempt row carries
+        // archiveSnapshot for rollback / quarantine durability.
         const sessionId = insertSession(
-            'pty-session-archive-durable',
+            'pty-session-archive-clear',
             baseMetadata({ lifecycleState: 'archived', archivedBy: 'hub', archiveReason: 'inactivity' }),
             { startingMode: 'pty' }
         ).id
@@ -148,6 +148,105 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
         expect(metadata?.lifecycleState).not.toBe('archived')
         expect(metadata?.archivedBy).toBeUndefined()
         expect(metadata?.archiveReason).toBeUndefined()
+    })
+
+    it('keeps archiveSnapshot on PTY quarantine after clear-before-spawn (#1911 Major 2)', async () => {
+        // Clear-before-spawn + rollbackSafe:false must not lose archive fields —
+        // they live on ptyResumeAttempt.archiveSnapshot (mirror Pi).
+        const sessionId = insertSession(
+            'pty-session-archive-durable',
+            baseMetadata({ lifecycleState: 'archived', archivedBy: 'hub', archiveReason: 'inactivity' }),
+            { startingMode: 'pty' }
+        ).id
+        ;(engine as any).rpcGateway.spawnSession = async () => {
+            engine.handleSessionAlive({ sid: sessionId, time: Date.now() })
+            return { type: 'success', sessionId }
+        }
+        ;(engine as any).waitForSessionReady = async () => 'timeout'
+        ;(engine as any).rpcGateway.stopRunnerSession = async () => 'still_alive'
+
+        const first = await engine.reopenSession(sessionId, NAMESPACE)
+
+        expect(first).toMatchObject({ type: 'error', code: 'resume_failed', rollbackSafe: false })
+        const metadata = engine.getSessionByNamespace(sessionId, NAMESPACE)?.metadata as any
+        expect(metadata?.lifecycleState).not.toBe('archived')
+        expect(metadata?.ptyResumeAttempt).toMatchObject({
+            state: 'quarantined',
+            machineId: 'machine-x',
+            archiveSnapshot: {
+                lifecycleState: 'archived',
+                archivedBy: 'hub',
+                archiveReason: 'inactivity',
+            },
+        })
+    })
+
+    it('restores archive from PTY archiveSnapshot when a failed resume child is gone', async () => {
+        // Clear-before-spawn drops live archive fields; when the child is then
+        // confirmed gone, writePtyResumeAttempt(..., restoreArchive) must put
+        // them back from the attempt snapshot (mirror Pi).
+        const sessionId = insertSession(
+            'pty-session-archive-restore',
+            baseMetadata({ lifecycleState: 'archived', archivedBy: 'hub', archiveReason: 'inactivity' }),
+            { startingMode: 'pty' }
+        ).id
+        ;(engine as any).rpcGateway.spawnSession = async () => ({ type: 'success', sessionId })
+        ;(engine as any).waitForSessionActive = async () => false
+        ;(engine as any).rpcGateway.stopRunnerSession = async () => 'already_gone'
+
+        const result = await engine.reopenSession(sessionId, NAMESPACE)
+
+        expect(result).toMatchObject({ type: 'error', code: 'resume_failed' })
+        expect((engine.getSessionByNamespace(sessionId, NAMESPACE)?.metadata as any)?.ptyResumeAttempt)
+            .toBeUndefined()
+        const metadata = engine.getSessionByNamespace(sessionId, NAMESPACE)?.metadata as any
+        expect(metadata?.lifecycleState).toBe('archived')
+        expect(metadata?.archivedBy).toBe('hub')
+        expect(metadata?.archiveReason).toBe('inactivity')
+    })
+
+    it('restores archive from a persisted PTY quarantine snapshot when the child is already gone', async () => {
+        const sessionId = insertSession(
+            'pty-session-archive-restore-persisted',
+            baseMetadata({
+                lifecycleState: 'running',
+                ptyResumeAttempt: {
+                    state: 'quarantined',
+                    machineId: 'machine-x',
+                    startedAt: 1,
+                    archiveSnapshot: {
+                        lifecycleState: 'archived',
+                        lifecycleStateSince: 100,
+                        archivedBy: 'hub',
+                        archiveReason: 'inactivity',
+                    },
+                },
+            }),
+            { startingMode: 'pty' }
+        ).id
+        engine.handleSessionAlive({ sid: sessionId, time: Date.now() })
+        let spawnCalls = 0
+        ;(engine as any).rpcGateway.stopRunnerSession = async () => 'already_gone'
+        ;(engine as any).rpcGateway.spawnSession = async () => {
+            spawnCalls += 1
+            // After reconcile restores archive, reopen continues into resume —
+            // refuse spawn so we can assert the restored archive stuck.
+            return { type: 'error', message: 'spawn refused for assert' }
+        }
+
+        const result = await engine.reopenSession(sessionId, NAMESPACE)
+
+        expect(result).toMatchObject({ type: 'error', message: 'spawn refused for assert' })
+        expect(spawnCalls).toBe(1)
+        const metadata = engine.getSessionByNamespace(sessionId, NAMESPACE)?.metadata as any
+        // resumeSession clear-before-spawn will have cleared again after the
+        // reconcile restore; the attempt snapshot must still re-restore on the
+        // failed spawn finally path.
+        expect(metadata?.ptyResumeAttempt).toBeUndefined()
+        expect(metadata?.lifecycleState).toBe('archived')
+        expect(metadata?.lifecycleStateSince).toBe(100)
+        expect(metadata?.archivedBy).toBe('hub')
+        expect(metadata?.archiveReason).toBe('inactivity')
     })
 
     it('stops a same-id PTY child when the active-state barrier times out', async () => {

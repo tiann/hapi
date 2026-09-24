@@ -90,4 +90,32 @@ describe('registerKillSessionHandler (tiann/hapi#914)', () => {
         expect(lifecycle.setArchiveReason).toHaveBeenCalledWith('User terminated')
         expect(lifecycle.cleanupAndExit).toHaveBeenCalled()
     })
+
+    it('exits synchronously when hubArchived is already latched at registration (#1911 criterion 6)', async () => {
+        // Bootstrap may noteHubArchived before flavor runners register; EventEmitter
+        // does not replay past emits, so the latch must be checked at registration.
+        const registry = makeRegistry()
+        const lifecycle = {
+            setArchiveReason: vi.fn(),
+            cleanupAndExit: vi.fn(async () => {})
+        }
+        const listeners = new Map<string, () => void>()
+        const session = {
+            hubArchived: true,
+            on(event: string, listener: () => void) {
+                listeners.set(event, listener)
+            }
+        }
+
+        registerKillSessionHandler(
+            registry as unknown as Parameters<typeof registerKillSessionHandler>[0],
+            lifecycle,
+            session
+        )
+
+        expect(lifecycle.setArchiveReason).toHaveBeenCalledWith('User terminated')
+        expect(lifecycle.cleanupAndExit).toHaveBeenCalled()
+        // Already latched — no need to subscribe for a replay that will never come.
+        expect(listeners.has('hub-archived')).toBe(false)
+    })
 })

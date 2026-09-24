@@ -236,6 +236,13 @@ export class ApiSessionClient extends EventEmitter {
     onReconnect(handler: (() => void) | null): void { this.reconnectHandler = handler }
     /** When false, socket.io must not keep the CLI immortal after hub archive (#1910). */
     private allowReconnect = true
+    /**
+     * Latch for hub-archived EXIT (#1911 criterion 6). Bootstrap may apply
+     * hub-archived via updateMetadata CAS before flavor runners call
+     * registerKillSessionHandler; EventEmitter does not replay past emits, so
+     * the handler must read this synchronously at registration.
+     */
+    hubArchived = false
     private readonly token: string
     readonly sessionId: string
     private metadata: Metadata | null
@@ -859,6 +866,7 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     private noteHubArchived(): void {
+        this.hubArchived = true
         this.allowReconnect = false
         try {
             this.socket.io.opts.reconnection = false

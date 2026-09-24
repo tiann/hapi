@@ -576,6 +576,7 @@ export class SyncEngine {
             (session) => session.metadata?.piResumeAttempt?.childSessionId === payload.sid
         )
         const restorePiArchive = ownsPiAttempt && !this.sessionReadyIds.has(payload.sid)
+        const restorePtyArchive = ownsPtyAttempt && !this.sessionReadyIds.has(payload.sid)
         const isCursorAcp = before?.metadata?.flavor === 'cursor'
             && before.metadata.cursorSessionProtocol === 'acp'
         const shouldRetryDedup = !ownsPiAttempt && !isPiAttemptChild && (!isCursorAcp || this.sessionReadyIds.has(payload.sid))
@@ -599,7 +600,7 @@ export class SyncEngine {
             void this.clearPiAttemptForEndedSession(payload.sid, restorePiArchive)
         }
         if (ownsPtyAttempt) {
-            void this.writePtyResumeAttempt(payload.sid, before!.namespace, null).catch(() => {})
+            void this.writePtyResumeAttempt(payload.sid, before!.namespace, null, restorePtyArchive).catch(() => {})
         }
 
         // Notify agent-terminal subscribers so the web UI shows a clear
@@ -3290,6 +3291,12 @@ export class SyncEngine {
                     state: 'resuming',
                     machineId: targetMachine.id,
                     startedAt: Date.now(),
+                    archiveSnapshot: {
+                        lifecycleState: metadata.lifecycleState,
+                        lifecycleStateSince: metadata.lifecycleStateSince,
+                        archivedBy: metadata.archivedBy,
+                        archiveReason: metadata.archiveReason,
+                    },
                 })
             } catch {
                 this.ptyResumeInFlightIds.delete(access.sessionId)
@@ -3301,6 +3308,7 @@ export class SyncEngine {
             this.sessionReadyIds.delete(access.sessionId)
         }
         let piResumeSucceeded = false
+        let ptyResumeSucceeded = false
         try {
             // #1911 M1: clear archived lifecycle immediately before spawn so the
             // CLI is not refused / cannot CAS-resurrect. Pi/PTY attempt rows
@@ -3435,7 +3443,10 @@ export class SyncEngine {
                         if (!inactive) {
                             this.ptyResumeQuarantinedIds.add(access.sessionId)
                             try {
+                                const existingAttempt = this.sessionCache.getSession(access.sessionId)
+                                    ?.metadata?.ptyResumeAttempt
                                 await this.writePtyResumeAttempt(access.sessionId, namespace, {
+                                    ...existingAttempt,
                                     state: 'quarantined',
                                     machineId: targetMachine.id,
                                     startedAt: Date.now(),
@@ -3465,7 +3476,9 @@ export class SyncEngine {
                     }
                     if (resumedStartingMode === 'pty') {
                         try {
-                            await this.writePtyResumeAttempt(access.sessionId, namespace, null)
+                            // Child stopped after timeout — restore archive from
+                            // the attempt snapshot (clear-before-spawn already ran).
+                            await this.writePtyResumeAttempt(access.sessionId, namespace, null, true)
                         } catch {
                             this.ptyResumeQuarantinedIds.add(access.sessionId)
                             return {
@@ -3510,6 +3523,7 @@ export class SyncEngine {
                 try {
                     await this.writePtyResumeAttempt(access.sessionId, namespace, null)
                     this.ptyResumeQuarantinedIds.delete(access.sessionId)
+                    ptyResumeSucceeded = true
                 } catch {
                     this.ptyResumeQuarantinedIds.add(access.sessionId)
                     return {
@@ -3524,6 +3538,17 @@ export class SyncEngine {
         } finally {
             if (resumedStartingMode === 'pty') {
                 this.ptyResumeInFlightIds.delete(access.sessionId)
+                // Do not clear a deliberate fail-closed `resuming` marker left
+                // when quarantine write failed or still_alive refused stop —
+                // those paths add ptyResumeQuarantinedIds and keep the durable
+                // attempt (with archiveSnapshot) as the restart-safe truth.
+                if (
+                    !ptyResumeSucceeded
+                    && !this.ptyResumeQuarantinedIds.has(access.sessionId)
+                    && this.sessionCache.getSession(access.sessionId)?.metadata?.ptyResumeAttempt?.state === 'resuming'
+                ) {
+                    await this.writePtyResumeAttempt(access.sessionId, namespace, null, true).catch(() => {})
+                }
             }
             if (requiresPiNativeReady) {
                 this.piResumeInFlightIds.delete(access.sessionId)
@@ -4061,7 +4086,8 @@ export class SyncEngine {
     private async writePtyResumeAttempt(
         sessionId: string,
         namespace: string,
-        attempt: PtyResumeAttempt | null
+        attempt: PtyResumeAttempt | null,
+        restoreArchive = false
     ): Promise<void> {
         for (let i = 0; i < 5; i += 1) {
             const current = this.sessionCache.getSessionByNamespace(sessionId, namespace)
@@ -4069,7 +4095,20 @@ export class SyncEngine {
             if (!current?.metadata) throw new Error('PTY resume attempt session metadata is unavailable')
             const next = { ...current.metadata }
             if (attempt) next.ptyResumeAttempt = attempt
-            else delete next.ptyResumeAttempt
+            else {
+                const snapshot = current.metadata.ptyResumeAttempt?.archiveSnapshot
+                delete next.ptyResumeAttempt
+                if (restoreArchive && snapshot) {
+                    if (snapshot.lifecycleState === undefined) delete next.lifecycleState
+                    else next.lifecycleState = snapshot.lifecycleState
+                    if (snapshot.lifecycleStateSince === undefined) delete next.lifecycleStateSince
+                    else next.lifecycleStateSince = snapshot.lifecycleStateSince
+                    if (snapshot.archivedBy === undefined) delete next.archivedBy
+                    else next.archivedBy = snapshot.archivedBy
+                    if (snapshot.archiveReason === undefined) delete next.archiveReason
+                    else next.archiveReason = snapshot.archiveReason
+                }
+            }
             const result = this.store.sessions.updateSessionMetadata(
                 sessionId,
                 next,
@@ -4103,7 +4142,9 @@ export class SyncEngine {
             this.handleSessionEnd({ sid: session.id, time: Date.now(), reason: 'error' })
         }
         try {
-            await this.writePtyResumeAttempt(session.id, session.namespace, null)
+            // Restore archive from the attempt snapshot when cleaning a failed
+            // resume (clear-before-spawn already dropped live archive fields).
+            await this.writePtyResumeAttempt(session.id, session.namespace, null, true)
             this.ptyResumeQuarantinedIds.delete(session.id)
             return true
         } catch {

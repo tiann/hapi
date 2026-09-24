@@ -32,7 +32,10 @@ export interface KillSessionLifecycle {
 export function registerKillSessionHandler(
     rpcHandlerManager: RpcHandlerManager,
     lifecycleOrCleanup: KillSessionLifecycle | (() => Promise<void>),
-    session?: { on(event: 'hub-archived', listener: () => void): unknown }
+    session?: {
+        hubArchived?: boolean
+        on(event: 'hub-archived', listener: () => void): unknown
+    }
 ) {
     const lifecycle: KillSessionLifecycle = typeof lifecycleOrCleanup === 'function'
         ? { cleanupAndExit: lifecycleOrCleanup }
@@ -70,7 +73,11 @@ export function registerKillSessionHandler(
 
     // #1910: when archive lands as hub metadata (KillSession unreachable),
     // still exit instead of reconnecting forever.
-    if (session && typeof session.on === 'function') {
+    // #1911 criterion 6: EventEmitter does not replay past emits — if
+    // noteHubArchived already latched before this registration, exit now.
+    if (session?.hubArchived) {
+        exitFromHubArchive();
+    } else if (session && typeof session.on === 'function') {
         session.on('hub-archived', exitFromHubArchive);
     }
 }
