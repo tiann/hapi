@@ -3302,6 +3302,20 @@ export class SyncEngine {
         }
         let piResumeSucceeded = false
         try {
+            // #1911 M1: clear archived lifecycle immediately before spawn so the
+            // CLI is not refused / cannot CAS-resurrect. Pi/PTY attempt rows
+            // above already captured archiveSnapshot while the row was archived.
+            const liveBeforeSpawn = this.sessionCache.getSessionByNamespace(access.sessionId, namespace)
+                ?? this.sessionCache.refreshSession(access.sessionId)
+            if (liveBeforeSpawn?.metadata?.lifecycleState === 'archived') {
+                try {
+                    await this.sessionCache.clearSessionArchiveMetadata(access.sessionId)
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : 'Failed to clear archive metadata'
+                    return { type: 'error', message, code: 'resume_failed' }
+                }
+            }
+
             const spawnResult = await this.rpcGateway.spawnSession(
                 targetMachine.id,
                 directory,
@@ -3635,23 +3649,10 @@ export class SyncEngine {
                 lifecycleStateSince: metadata.lifecycleStateSince
             }
 
-            let applied: { cursorSessionProtocol?: 'acp' | 'stream-json' } = {}
-            // Pi and PTY resumes both reuse the original HAPI row. Keep the archive
-            // snapshot persisted until the CLI successfully bootstraps that row as
-            // running; this avoids an inactive, non-archived gap if the Hub restarts
-            // before spawn — the in-memory snapshot below cannot survive that, and
-            // ptyResumeAttempt carries no copy of it. The CLI's sessionFactory
-            // re-stamps lifecycleState='running' on boot and does not carry over
-            // archivedBy/archiveReason, so the row still leaves the archived state.
-            if (metadata.flavor !== 'pi' && !isPtyResume) {
-                try {
-                    applied = await this.sessionCache.clearSessionArchiveMetadata(access.sessionId)
-                } catch (error) {
-                    const message = error instanceof Error ? error.message : 'Failed to clear archive metadata'
-                    return { type: 'error', message, code: 'metadata_conflict' }
-                }
-            }
-
+            // #1911 M1: clear runs inside resumeSession immediately before spawn
+            // (after Pi/PTY attempt rows capture archiveSnapshot). Hub restart
+            // between clear and spawn leaves a non-archived inactive row;
+            // archiveSnapshot still rolls back on resume failure while alive.
             const resumeResult = await this.resumeSession(access.sessionId, namespace)
             if (resumeResult.type === 'error') {
                 // Never restore archived metadata over a live Pi child. A live
@@ -3667,11 +3668,17 @@ export class SyncEngine {
                 return resumeResult
             }
 
+            const after = this.sessionCache.getSessionByNamespace(access.sessionId, namespace)?.metadata
+            const cursorSessionProtocol = after?.flavor === 'cursor'
+                && (after.cursorSessionProtocol === 'acp' || after.cursorSessionProtocol === 'stream-json')
+                ? after.cursorSessionProtocol
+                : undefined
+
             return {
                 type: 'success',
                 sessionId: resumeResult.sessionId,
                 resumed: true,
-                ...(applied.cursorSessionProtocol ? { cursorSessionProtocol: applied.cursorSessionProtocol } : {})
+                ...(cursorSessionProtocol ? { cursorSessionProtocol } : {})
             }
         }
 

@@ -136,7 +136,8 @@ describe('bootstrapExistingSession', () => {
     })
 
     it('refuses to reopen an archived session (hub-archive resurrection guard)', async () => {
-        // #1911 cold-read M1: late-booting child must not updateMetadata to running.
+        // #1911 M1 pre-check only: catches already-archived at getSession. Hub
+        // store reject + ApiSessionClient CAS stop close mid-flight races.
         const session = createSession()
         const existing = session.metadata
         if (!existing) throw new Error('expected metadata')

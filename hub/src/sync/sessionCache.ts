@@ -1107,7 +1107,8 @@ export class SessionCache {
                 next,
                 session.metadataVersion,
                 session.namespace,
-                { touchUpdatedAt: false }
+                // #1911 M1: store rejects un-archive unless hub reopen opts in.
+                { touchUpdatedAt: false, allowUnarchive: true }
             )
 
             if (result.result === 'error') {

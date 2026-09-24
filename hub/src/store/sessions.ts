@@ -391,10 +391,11 @@ export function updateSessionMetadata(
     metadata: unknown,
     expectedVersion: number,
     namespace: string,
-    options?: { touchUpdatedAt?: boolean }
+    options?: { touchUpdatedAt?: boolean; allowUnarchive?: boolean }
 ): VersionedUpdateResult<unknown | null> {
     const now = Date.now()
     const touchUpdatedAt = options?.touchUpdatedAt !== false
+    const allowUnarchive = options?.allowUnarchive === true
 
     try {
         return db.transaction((): VersionedUpdateResult<unknown | null> => {
@@ -405,6 +406,22 @@ export function updateSessionMetadata(
 
             const prior = existing.metadata
             const merged = mergeSessionMetadata(prior, metadata)
+
+            // #1911 cold-read M1 (CAS): CLI updateMetadata retries forever on
+            // version-mismatch. A late child that started before hub archive
+            // would otherwise re-stamp lifecycleState=running and win. Reject
+            // un-archive unless the hub explicitly allows it (reopen clear).
+            if (
+                isArchivedSessionMetadata(prior)
+                && !isArchivedSessionMetadata(merged)
+                && !allowUnarchive
+            ) {
+                return {
+                    result: 'version-mismatch',
+                    version: existing.metadataVersion,
+                    value: prior,
+                }
+            }
 
             const result = updateVersionedField({
                 db,

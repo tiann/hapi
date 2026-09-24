@@ -389,10 +389,11 @@ export async function bootstrapExistingSession(options: {
     })
 
     const sessionInfo = await api.getSession(options.sessionId)
-    // #1911 cold-read M1: hub may have archived (KillSession miss / stub hatch)
-    // while a late child still boots. Adopt rejects archived rows; reopen must
-    // too — otherwise updateMetadata stamps lifecycleState=running and resurrects.
-    // Intentional revive goes through hub reopenSession (clears archive first).
+    // #1911 M1 defense-in-depth: refuse archived rows at bootstrap. This is a
+    // one-shot pre-check — it does NOT close CAS resurrection alone (hub may
+    // archive after getSession). Hub updateSessionMetadata rejects un-archive
+    // transactionally; ApiSessionClient stops CAS when ack applies archived.
+    // Intentional revive: hub reopenSession → clearSessionArchiveMetadata first.
     if (sessionInfo.metadata?.lifecycleState === 'archived') {
         throw new Error(
             `HAPI session ${options.sessionId} is archived; refuse --existing-session-id reopen `

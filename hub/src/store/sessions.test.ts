@@ -332,6 +332,94 @@ describe('getOrCreateSession: requested identity', () => {
     })
 })
 
+describe('updateSessionMetadata: refuse un-archive (#1911 M1)', () => {
+    it('rejects metadata writes that clear archived lifecycle without allowUnarchive', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'archived-cas-guard',
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                lifecycleState: 'archived',
+                archivedBy: 'hub',
+                archiveReason: 'KillSession miss',
+            },
+            null,
+            'default'
+        )
+
+        const rejected = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                lifecycleState: 'running',
+            },
+            session.metadataVersion,
+            'default'
+        )
+        expect(rejected.result).toBe('version-mismatch')
+        if (rejected.result !== 'version-mismatch') throw new Error('expected version-mismatch')
+        expect(rejected.version).toBe(session.metadataVersion)
+        expect((rejected.value as { lifecycleState?: string } | null)?.lifecycleState).toBe('archived')
+        expect(getMetadata(store, session.id)?.lifecycleState).toBe('archived')
+
+        const allowed = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                lifecycleStateSince: Date.now(),
+            },
+            session.metadataVersion,
+            'default',
+            { allowUnarchive: true }
+        )
+        expect(allowed.result).toBe('success')
+        expect(getMetadata(store, session.id)?.lifecycleState).toBeUndefined()
+        store.close()
+    })
+
+    it('still allows non-lifecycle updates while archived', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'archived-keep-fields',
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                lifecycleState: 'archived',
+                archivedBy: 'hub',
+                archiveReason: 'inactivity',
+            },
+            null,
+            'default'
+        )
+
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                lifecycleState: 'archived',
+                archivedBy: 'hub',
+                archiveReason: 'inactivity',
+                hostPid: 4242,
+            },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+        expect(getMetadata(store, session.id)?.lifecycleState).toBe('archived')
+        expect(getMetadata(store, session.id)?.hostPid).toBe(4242)
+        store.close()
+    })
+})
+
 describe('updateSessionMetadata: protocol resume token preservation', () => {
     it('preserves cursorSessionId when archive payload omits it (Cursor crash-archive)', () => {
         const store = makeStore()

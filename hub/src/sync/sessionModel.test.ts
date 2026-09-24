@@ -2432,9 +2432,9 @@ describe('session model', () => {
             const result = await engine.reopenSession(session.id, 'default')
             expect(result).toMatchObject({ type: 'error', message: expect.stringContaining('still active') })
             expect(engine.getSessionByNamespace(session.id, 'default')?.active).toBe(true)
-            // Pi keeps the persisted archive snapshot until bootstrap succeeds,
-            // so a failed stop never needs to reconstruct it from memory.
-            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.lifecycleState).toBe('archived')
+            // #1911 M1: reopen clears archive before spawn; a live Pi child that
+            // failed stop stays active and must not be re-archived from memory.
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.lifecycleState).not.toBe('archived')
             expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.piResumeAttempt?.state).toBe('quarantined')
             expect(await engine.reopenSession(session.id, 'default')).toMatchObject({ type: 'error', message: 'Pi resume is already in progress' })
 
@@ -2486,7 +2486,11 @@ describe('session model', () => {
                 type: 'error', message: 'webhook timeout'
             })
             expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.piResumeAttempt?.state).toBe('quarantined')
-            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.lifecycleState).toBe('archived')
+            // #1911 M1: archive cleared before spawn; quarantine refuses reopen
+            // rollback (rollbackSafe:false). Snapshot lives on the attempt.
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.lifecycleState).not.toBe('archived')
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.piResumeAttempt?.archiveSnapshot)
+                .toMatchObject({ lifecycleState: 'archived', archivedBy: 'cli' })
             expect(await engine.reopenSession(session.id, 'default')).toMatchObject({
                 type: 'error', message: 'Pi resume is already in progress'
             })

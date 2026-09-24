@@ -1376,6 +1376,17 @@ export class ApiSessionClient extends EventEmitter {
         }
         this.metadataLock.inLock(async () => {
             await backoff(async () => {
+                // #1911 M1: hub may archive mid-CAS. version-mismatch applies the
+                // archived snapshot; infinite retry would keep stamping running.
+                // Stop once local metadata is archived (hub guard + this exit).
+                if (this.metadata?.lifecycleState === 'archived') {
+                    if (this.metadata.archivedBy === 'hub') {
+                        this.noteHubArchived()
+                    }
+                    logger.debug('[API] Skipping metadata update; session is archived')
+                    return
+                }
+
                 const current = this.metadata ?? ({} as Metadata)
                 const updated = handler(current)
 
@@ -1385,26 +1396,37 @@ export class ApiSessionClient extends EventEmitter {
                     metadata: updated
                 }) as unknown
 
-                applyVersionedAck(answer, {
-                    valueKey: 'metadata',
-                    parseValue: (value) => {
-                        const parsed = MetadataSchema.safeParse(value)
-                        return parsed.success ? parsed.data : null
-                    },
-                    applyValue: (value) => {
-                        this.metadata = value
-                    },
-                    applyVersion: (version) => {
-                        this.metadataVersion = version
-                    },
-                    logInvalidValue: (context, version) => {
-                        const suffix = context === 'success' ? 'ack' : 'version-mismatch ack'
-                        logger.debug(`[API] Ignoring invalid metadata value from ${suffix}`, { version })
-                    },
-                    invalidResponseMessage: 'Invalid update-metadata response',
-                    errorMessage: 'Metadata update failed',
-                    versionMismatchMessage: 'Metadata version mismatch'
-                })
+                try {
+                    applyVersionedAck(answer, {
+                        valueKey: 'metadata',
+                        parseValue: (value) => {
+                            const parsed = MetadataSchema.safeParse(value)
+                            return parsed.success ? parsed.data : null
+                        },
+                        applyValue: (value) => {
+                            this.metadata = value
+                        },
+                        applyVersion: (version) => {
+                            this.metadataVersion = version
+                        },
+                        logInvalidValue: (context, version) => {
+                            const suffix = context === 'success' ? 'ack' : 'version-mismatch ack'
+                            logger.debug(`[API] Ignoring invalid metadata value from ${suffix}`, { version })
+                        },
+                        invalidResponseMessage: 'Invalid update-metadata response',
+                        errorMessage: 'Metadata update failed',
+                        versionMismatchMessage: 'Metadata version mismatch'
+                    })
+                } catch (error) {
+                    if (this.metadata?.lifecycleState === 'archived') {
+                        if (this.metadata.archivedBy === 'hub') {
+                            this.noteHubArchived()
+                        }
+                        logger.debug('[API] Stopping metadata CAS; hub returned archived metadata')
+                        return
+                    }
+                    throw error
+                }
             })
         })
     }
