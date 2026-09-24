@@ -383,6 +383,37 @@ describe('killProcess on Windows (orphanReap / stopSession)', () => {
     })
 })
 
+describe('killProcessTreeByPid on POSIX (pgrep tree scan)', () => {
+    beforeEach(() => {
+        setPlatform('linux')
+        spawnSyncMock.mockReset()
+        vi.spyOn(process, 'kill').mockReturnValue(true)
+        vi.useFakeTimers()
+    })
+
+    afterEach(() => {
+        vi.useRealTimers()
+        vi.restoreAllMocks()
+    })
+
+    afterAll(() => {
+        if (originalPlatformDescriptor) {
+            Object.defineProperty(process, 'platform', originalPlatformDescriptor)
+        }
+    })
+
+    it('returns false when pgrep is missing (fail closed — do not verify root-only)', async () => {
+        const { killProcessTreeByPid } = await import('./process')
+        spawnSyncMock.mockImplementation((cmd: string) => {
+            if (cmd === 'pgrep') return unavailable('pgrep')
+            return completed('')
+        })
+        await expect(killProcessTreeByPid(4242, true)).resolves.toBe(false)
+        // Must not have signalled the root after a failed tree scan.
+        expect(process.kill).not.toHaveBeenCalled()
+    })
+})
+
 describe('getHapiRunnerProcessIdentity on POSIX', () => {
     beforeEach(() => {
         setPlatform('linux')

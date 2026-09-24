@@ -272,21 +272,30 @@ export async function killProcess(pid: number, force: boolean = false): Promise<
 
 /**
  * Recursively collects all descendant PIDs of a process (depth-first).
- * Returns PIDs in child-first order (leaves first, root last).
+ * Returns PIDs in child-first order (leaves first, root last), or
+ * `'scan_failed'` when pgrep could not be run (so callers fail closed
+ * instead of verifying root-only — #1911 Opus / Overseer).
  */
-function collectProcessTree(pid: number): number[] {
+function collectProcessTree(pid: number): number[] | 'scan_failed' {
   const pids: number[] = [];
 
-  try {
-    const result = spawn.sync('pgrep', ['-P', pid.toString()], { encoding: 'utf8' });
-    if (result.stdout) {
-      const childPids = result.stdout.trim().split('\n').filter(Boolean).map(Number);
-      for (const childPid of childPids) {
-        pids.push(...collectProcessTree(childPid));
-      }
+  const result = spawn.sync('pgrep', ['-P', pid.toString()], { encoding: 'utf8' });
+  // spawn.sync returns {error} rather than throwing when the binary is missing.
+  if (result.error) {
+    return 'scan_failed';
+  }
+  // pgrep: 0 = matches, 1 = no children. Other statuses are real failures.
+  if (result.status !== 0 && result.status !== 1 && result.status !== null) {
+    return 'scan_failed';
+  }
+  if (result.stdout) {
+    const childPids = result.stdout.trim().split('\n').filter(Boolean).map(Number);
+    for (const childPid of childPids) {
+      if (!Number.isFinite(childPid) || childPid <= 0) continue;
+      const nested = collectProcessTree(childPid);
+      if (nested === 'scan_failed') return 'scan_failed';
+      pids.push(...nested);
     }
-  } catch {
-    // pgrep may not be available
   }
 
   pids.push(pid);
@@ -301,6 +310,10 @@ function collectProcessTree(pid: number): number[] {
 async function killProcessTree(pid: number, force: boolean): Promise<boolean> {
   // Collect all PIDs first (sync) - returns in child-first order
   const pids = collectProcessTree(pid);
+  if (pids === 'scan_failed') {
+    // Cannot prove the full tree — refuse to claim stopped (fail closed).
+    return false;
+  }
 
   // Signal all processes synchronously (children first, then root)
   const signal = force ? 'SIGKILL' : 'SIGTERM';

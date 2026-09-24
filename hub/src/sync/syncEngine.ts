@@ -32,6 +32,7 @@ import { MessageService, type RetryIndeterminateMessageResult } from './messageS
 import { createTitleSuggestionService, type TitleSuggestionService } from './titleSuggestion'
 import { selectForkTranscriptPrefix } from './forkTranscript'
 import { buildForkSessionSummary } from './forkSessionSummary'
+import { isMachineSpawnPreallocatedStub } from '../store/sessions'
 import {
     RpcGateway,
     RpcTargetMissingError,
@@ -2225,10 +2226,14 @@ export class SyncEngine {
         }
 
         if (result.type !== 'success' && preallocated && allocatedSessionId) {
-            const deleteStub = async (): Promise<void> => {
+            const deleteStubIfStillPrealloc = async (): Promise<void> => {
                 try {
+                    // Session wire type has no tag — read the store row for stub check.
+                    const stored = this.store.sessions.getSession(allocatedSessionId!)
+                    if (!stored || !isMachineSpawnPreallocatedStub(stored)) return
                     const row = this.sessionCache.refreshSession(allocatedSessionId!)
-                    if (row?.active) {
+                    if (!row) return
+                    if (row.active) {
                         this.handleSessionEnd({ sid: allocatedSessionId!, time: Date.now(), reason: 'error' })
                     }
                     await this.deleteSession(allocatedSessionId!)
@@ -2238,22 +2243,16 @@ export class SyncEngine {
             }
 
             // Pre-exec rejection: runner never started an OS child — safe to delete.
-            // Post-exec ambiguity: only delete when StopSession confirms gone (#1911 B3).
             if (result.childStarted === false) {
-                await deleteStub()
+                await deleteStubIfStillPrealloc()
                 return result
             }
 
-            let stopStatus: 'stopped' | 'already_gone' | 'still_alive' | 'unknown' = 'still_alive'
-            try {
-                stopStatus = await this.rpcGateway.stopRunnerSession(machineId, allocatedSessionId)
-            } catch {
-                stopStatus = 'still_alive'
-            }
-            if (stopStatus === 'still_alive' || stopStatus === 'unknown') {
-                return result
-            }
-            await deleteStub()
+            // Ambiguous (RPC timeout, post-exec failure, etc.): keep the stub.
+            // Do NOT call stopRunnerSession — that would kill a healthy late-booting
+            // CLI — and do NOT deleteSession (ON DELETE CASCADE wipes transcript).
+            // Matches the throw-path keep-stub policy above (#1911 Critical).
+            return result
         }
 
         return result

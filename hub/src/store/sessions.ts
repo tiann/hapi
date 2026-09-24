@@ -288,14 +288,20 @@ export function machineSpawnPreallocTag(sessionId: string): string {
     return `machine-spawn:${sessionId}`
 }
 
-function isMachineSpawnPreallocatedStub(session: StoredSession): boolean {
+export function isMachineSpawnPreallocatedStub(session: Pick<StoredSession, 'id' | 'tag'>): boolean {
     return session.tag === machineSpawnPreallocTag(session.id)
+}
+
+function isArchivedSessionMetadata(metadata: unknown): boolean {
+    if (!isPlainObject(metadata)) return false
+    return metadata.lifecycleState === 'archived'
 }
 
 /**
  * Bind a CLI create bootstrap to a hub-preallocated stub row.
  * Overwrites tag + metadata (create-time fields) without minting a new id.
  * Rejects rows that are not machine-spawn stubs — live sessions stay protected.
+ * Rejects archived stubs so adopt cannot resurrect and wipe archive metadata.
  */
 export function adoptPreallocatedSession(
     db: Database,
@@ -320,6 +326,10 @@ export function adoptPreallocatedSession(
 
     if (!isMachineSpawnPreallocatedStub(existing)) {
         throw new SessionNotAdoptableError('Session is not a preallocated stub')
+    }
+
+    if (isArchivedSessionMetadata(existing.metadata)) {
+        throw new SessionNotAdoptableError('Session is archived')
     }
 
     // New tag must not already belong to another session in this namespace.
@@ -379,14 +389,15 @@ export function updateSessionMetadata(
 
     try {
         return db.transaction((): VersionedUpdateResult<unknown | null> => {
-            const priorRow = prepareCached(db, 
-                'SELECT metadata FROM sessions WHERE id = ? AND namespace = ?'
-            ).get(id, namespace) as { metadata: string | null } | undefined
+            const existing = getSessionByNamespace(db, id, namespace)
+            if (!existing) {
+                return { result: 'error' }
+            }
 
-            const prior = priorRow ? safeJsonParse(priorRow.metadata) : null
+            const prior = existing.metadata
             const merged = mergeSessionMetadata(prior, metadata)
 
-            return updateVersionedField({
+            const result = updateVersionedField({
                 db,
                 table: 'sessions',
                 id,
@@ -409,6 +420,31 @@ export function updateSessionMetadata(
                     touch_updated_at: touchUpdatedAt ? 1 : 0
                 }
             })
+
+            // Reopen flavors (--existing-session-id) never call adopt; they only
+            // updateMetadata. Release the machine-spawn stub tag here so live
+            // sessions are not permanently adoptable (#1911 Overseer Major).
+            if (result.result === 'success' && isMachineSpawnPreallocatedStub(existing)) {
+                const liveTag = randomUUID()
+                prepareCached(db, `
+                    UPDATE sessions
+                    SET tag = @tag,
+                        updated_at = CASE WHEN @touch_updated_at = 1 THEN @updated_at ELSE updated_at END,
+                        seq = seq + 1
+                    WHERE id = @id
+                      AND namespace = @namespace
+                      AND tag = @stub_tag
+                `).run({
+                    id,
+                    namespace,
+                    tag: liveTag,
+                    stub_tag: existing.tag,
+                    updated_at: now,
+                    touch_updated_at: touchUpdatedAt ? 1 : 0,
+                })
+            }
+
+            return result
         })()
     } catch {
         return { result: 'error' }

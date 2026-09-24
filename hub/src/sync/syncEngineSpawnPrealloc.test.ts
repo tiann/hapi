@@ -149,7 +149,9 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
         }
     })
 
-    it('deletes the preallocated stub when runner spawn fails and stop confirms gone', async () => {
+    it('keeps the preallocated stub on ambiguous spawn failure even if StopSession would say gone', async () => {
+        // Critical: never call stop+delete on ambiguous errors — stop kills healthy
+        // late-booting children and delete CASCADE-wipes transcripts.
         const store = new Store(':memory:')
         const engine = new SyncEngine(
             store,
@@ -167,6 +169,7 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
             )
 
             let forwardedExistingId: string | undefined
+            let stopCalls = 0
             ;(engine as unknown as { rpcGateway: { spawnSession: unknown; stopRunnerSession: unknown } })
                 .rpcGateway.spawnSession = async (
                     ...args: unknown[]
@@ -175,7 +178,10 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
                     return { type: 'error' as const, message: 'spawn blew up' }
                 }
             ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } })
-                .rpcGateway.stopRunnerSession = async () => 'already_gone'
+                .rpcGateway.stopRunnerSession = async () => {
+                    stopCalls++
+                    return 'already_gone'
+                }
 
             const result = await engine.spawnSession(
                 'machine-fail',
@@ -199,7 +205,8 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
 
             expect(result.type).toBe('error')
             expect(typeof forwardedExistingId).toBe('string')
-            expect(store.sessions.getSession(forwardedExistingId!)).toBeFalsy()
+            expect(stopCalls).toBe(0)
+            expect(store.sessions.getSession(forwardedExistingId!)?.id).toBe(forwardedExistingId)
         } finally {
             engine.stop()
         }
@@ -223,6 +230,7 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
             )
 
             let forwardedExistingId: string | undefined
+            let stopCalls = 0
             ;(engine as unknown as { rpcGateway: { spawnSession: unknown; stopRunnerSession: unknown } })
                 .rpcGateway.spawnSession = async (
                     ...args: unknown[]
@@ -231,7 +239,10 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
                     return { type: 'error' as const, message: 'webhook timeout' }
                 }
             ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } })
-                .rpcGateway.stopRunnerSession = async () => 'still_alive'
+                .rpcGateway.stopRunnerSession = async () => {
+                    stopCalls++
+                    return 'still_alive'
+                }
 
             const result = await engine.spawnSession(
                 'machine-fail-alive',
@@ -255,6 +266,8 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
 
             expect(result.type).toBe('error')
             expect(typeof forwardedExistingId).toBe('string')
+            // Ambiguous spawn: never poke StopSession (would kill a healthy child).
+            expect(stopCalls).toBe(0)
             expect(store.sessions.getSession(forwardedExistingId!)?.id).toBe(forwardedExistingId)
         } finally {
             engine.stop()
@@ -456,6 +469,144 @@ describe('SyncEngine.spawnSession preallocates HAPI id for fresh machine spawns'
             const row = store.sessions.getSession(allocatedId!)
             expect(row?.id).toBe(allocatedId)
             expect(row?.tag).not.toMatch(/^machine-spawn:/)
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('keeps the stub on ambiguous spawn error (no childStarted:false) without StopSession or delete', async () => {
+        // Critical: RPC timeout / post-dispatch error must not kill a healthy
+        // late-booting CLI or CASCADE-delete its transcript (#1911 Overseer).
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            engine.getOrCreateMachine(
+                'machine-ambiguous',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+
+            let forwardedExistingId: string | undefined
+            let stopCalls = 0
+            ;(engine as unknown as { rpcGateway: { spawnSession: unknown; stopRunnerSession: unknown } })
+                .rpcGateway.spawnSession = async (...args: unknown[]) => {
+                    forwardedExistingId = args[12] as string | undefined
+                    // Same shape as rpcGateway catch/timeout: error, childStarted unset.
+                    return {
+                        type: 'error' as const,
+                        message: 'RPC call timed out after 30000ms',
+                    }
+                }
+            ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } })
+                .rpcGateway.stopRunnerSession = async () => {
+                    stopCalls++
+                    return 'stopped'
+                }
+
+            const result = await engine.spawnSession(
+                'machine-ambiguous',
+                '/tmp/project',
+                'cursor',
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                'default'
+            )
+
+            expect(result.type).toBe('error')
+            expect(stopCalls).toBe(0)
+            expect(store.sessions.getSession(forwardedExistingId!)?.id).toBe(forwardedExistingId)
+            expect(store.sessions.getSession(forwardedExistingId!)?.tag).toMatch(/^machine-spawn:/)
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('does not delete after StopSession when the row is no longer a prealloc stub', async () => {
+        // Even if an older path called stop+delete, live rows must stay.
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            engine.getOrCreateMachine(
+                'machine-live-protect',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+
+            let allocatedId: string | undefined
+            ;(engine as unknown as { rpcGateway: { spawnSession: unknown; stopRunnerSession: unknown } })
+                .rpcGateway.spawnSession = async (...args: unknown[]) => {
+                    allocatedId = args[12] as string | undefined
+                    // Simulate cursor/codex reopen path: metadata update releases stub tag.
+                    const row = store.sessions.getSession(allocatedId!)
+                    expect(row?.tag).toMatch(/^machine-spawn:/)
+                    store.sessions.updateSessionMetadata(
+                        allocatedId!,
+                        {
+                            ...(row!.metadata as object),
+                            hostPid: 4242,
+                            flavor: 'cursor',
+                        },
+                        row!.metadataVersion,
+                        'default'
+                    )
+                    const after = store.sessions.getSession(allocatedId!)
+                    expect(after?.tag).not.toMatch(/^machine-spawn:/)
+                    return {
+                        type: 'error' as const,
+                        message: 'spawn failed after child started',
+                        // childStarted unset = ambiguous
+                    }
+                }
+            ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } })
+                .rpcGateway.stopRunnerSession = async () => 'stopped'
+
+            const result = await engine.spawnSession(
+                'machine-live-protect',
+                '/tmp/project',
+                'cursor',
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                'default'
+            )
+
+            expect(result.type).toBe('error')
+            expect(store.sessions.getSession(allocatedId!)?.id).toBe(allocatedId)
         } finally {
             engine.stop()
         }

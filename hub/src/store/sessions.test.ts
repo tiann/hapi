@@ -240,6 +240,96 @@ describe('getOrCreateSession: requested identity', () => {
         )).toThrow(/not a preallocated stub|not adoptable/i)
         store.close()
     })
+
+    it('releases machine-spawn stub tag on metadata update (reopen-flavor path)', () => {
+        // codex/cursor/pi/… use --existing-session-id → bootstrapExistingSession
+        // → updateMetadata, never adopt. Stub tag must not stick forever.
+        const store = makeStore()
+        const allocatedId = randomUUID()
+        const created = store.sessions.getOrCreateSession(
+            `machine-spawn:${allocatedId}`,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'cursor',
+                machineId: 'm1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+            },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            allocatedId
+        )
+        expect(created.tag).toBe(`machine-spawn:${allocatedId}`)
+
+        const updated = store.sessions.updateSessionMetadata(
+            allocatedId,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'cursor',
+                machineId: 'm1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+                hostPid: 999,
+            },
+            created.metadataVersion,
+            'default'
+        )
+        expect(updated.result).toBe('success')
+        const row = store.sessions.getSession(allocatedId)
+        expect(row?.tag).not.toMatch(/^machine-spawn:/)
+        expect((row?.metadata as { hostPid?: number } | null)?.hostPid).toBe(999)
+
+        // Live row must no longer be adoptable.
+        expect(() => store.sessions.adoptPreallocatedSession(
+            allocatedId,
+            randomUUID(),
+            { path: '/tmp', flavor: 'cursor' },
+            {},
+            'default'
+        )).toThrow(/not a preallocated stub|not adoptable/i)
+        store.close()
+    })
+
+    it('rejects adopt of an archived preallocated stub', () => {
+        const store = makeStore()
+        const allocatedId = randomUUID()
+        store.sessions.getOrCreateSession(
+            `machine-spawn:${allocatedId}`,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                startedBy: 'runner',
+                startedFromRunner: true,
+                lifecycleState: 'archived',
+                archivedBy: 'hub',
+                archiveReason: 'user archived while booting',
+            },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            allocatedId
+        )
+
+        expect(() => store.sessions.adoptPreallocatedSession(
+            allocatedId,
+            randomUUID(),
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            {},
+            'default'
+        )).toThrow(/archived|not adoptable/i)
+        const row = store.sessions.getSession(allocatedId)
+        expect(row?.tag).toBe(`machine-spawn:${allocatedId}`)
+        expect((row?.metadata as { lifecycleState?: string } | null)?.lifecycleState).toBe('archived')
+        store.close()
+    })
 })
 
 describe('updateSessionMetadata: protocol resume token preservation', () => {
