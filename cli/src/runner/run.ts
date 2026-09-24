@@ -1179,24 +1179,30 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
       // After KillSession, the shared runtime row may already be inactive so
       // findRuntime misses. Detach this root from sharedSessions without
-      // tree-killing the wrapper while sibling roots remain.
+      // tree-killing the wrapper while sibling roots remain. Sibling presence
+      // alone is not proof this root ended — return unknown so the hub can
+      // confirm via KillSession pid (or refuse if KillSession also missed).
+      const finishKeepWrapperUnconfirmed = async (): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
+        const orphan = await finishWithOrphanSweep('stopped');
+        if (orphan === 'still_alive') return 'still_alive';
+        return 'unknown';
+      };
+
       for (const [pid, session] of pidToTrackedSession.entries()) {
         if (!session.sharedSessions?.[sessionId]) continue;
         if (detachSharedRootFromWrapper(session, sessionId).kind === 'keep_wrapper') {
           logger.debug(
-            `[RUNNER RUN] Detached shared root ${sessionId} from wrapper PID ${pid}; siblings remain`
+            `[RUNNER RUN] Detached shared root ${sessionId} from wrapper PID ${pid}; siblings remain (stop unconfirmed without runtimeControl)`
           );
-          // Argv sweep must not kill this tracked wrapper (registry may be
-          // empty); other untracked orphan PIDs are still reaped.
-          return await finishWithOrphanSweep('stopped');
+          return await finishKeepWrapperUnconfirmed();
         }
         // In-memory map had only this root (typical after restart adoption of a
         // newly reported root). Registry may still list older active siblings.
         if (await registrySiblingsKeepPid(pid)) {
           logger.debug(
-            `[RUNNER RUN] Detached shared root ${sessionId}; registry siblings keep wrapper PID ${pid}`
+            `[RUNNER RUN] Detached shared root ${sessionId}; registry siblings keep wrapper PID ${pid} (stop unconfirmed)`
           );
-          return await finishWithOrphanSweep('stopped');
+          return await finishKeepWrapperUnconfirmed();
         }
         // Last shared entry removed — fall through so the wrapper can be stopped.
         break;
@@ -1212,9 +1218,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           // (KillSession may already have cleared this id from sharedSessions).
           if (keepWrapperForSharedSiblings(session, sessionId)) {
             logger.debug(
-              `[RUNNER RUN] Keeping shared wrapper PID ${pid} alive for remaining shared roots`
+              `[RUNNER RUN] Keeping shared wrapper PID ${pid} alive for remaining shared roots (stop unconfirmed without runtimeControl)`
             );
-            return await finishWithOrphanSweep('stopped');
+            return await finishKeepWrapperUnconfirmed();
           }
 
           // Post-restart: TrackedSession may only list the newly reported root
@@ -1223,31 +1229,37 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           if (await registrySiblingsKeepPid(pid)) {
             detachSharedRootFromWrapper(session, sessionId);
             logger.debug(
-              `[RUNNER RUN] Keeping recovered shared wrapper PID ${pid} for registry siblings of ${sessionId}`
+              `[RUNNER RUN] Keeping recovered shared wrapper PID ${pid} for registry siblings of ${sessionId} (stop unconfirmed)`
             );
-            return await finishWithOrphanSweep('stopped');
+            return await finishKeepWrapperUnconfirmed();
           }
 
           if (session.startedBy === 'runner') {
             // Adopted post-restart sessions have no ChildProcess handle — still
             // tree-kill so agent grandchildren cannot outlive the wrapper.
-            // Verify the adopted start marker first so PID reuse cannot nuke a
-            // stranger after the original CLI exited without an exit listener.
+            // Require a persisted start marker; without it (or on mismatch), do
+            // not kill by tracked PID — fall through to argv discovery.
             if (!session.childProcess) {
               const persisted = persistedResumeProcesses.get(pid);
-              if (persisted?.processStartMarker) {
-                const currentMarker = getProcessStartMarker(pid);
-                if (currentMarker === null || currentMarker !== persisted.processStartMarker) {
-                  logger.debug(
-                    `[RUNNER RUN] Adopted PID ${pid} generation mismatch; dropping stale tracking for ${sessionId}`
-                  );
-                  pidToTrackedSession.delete(pid);
-                  pidToRequestedSessionId.delete(pid);
-                  pidToConfirmedSessionId.delete(pid);
-                  if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
-                  releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
-                  continue;
-                }
+              if (!persisted?.processStartMarker) {
+                logger.debug(
+                  `[RUNNER RUN] Adopted PID ${pid} has no start marker; refusing tracked kill for ${sessionId}`
+                );
+                const orphan = await finishWithOrphanSweep('stopped');
+                if (orphan === 'still_alive') return 'still_alive';
+                return 'unknown';
+              }
+              const currentMarker = getProcessStartMarker(pid);
+              if (currentMarker === null || currentMarker !== persisted.processStartMarker) {
+                logger.debug(
+                  `[RUNNER RUN] Adopted PID ${pid} generation mismatch; dropping stale tracking for ${sessionId}`
+                );
+                pidToTrackedSession.delete(pid);
+                pidToRequestedSessionId.delete(pid);
+                pidToConfirmedSessionId.delete(pid);
+                if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
+                releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
+                continue;
               }
             }
             try {
