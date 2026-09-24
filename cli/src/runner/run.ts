@@ -1103,8 +1103,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       );
 
       const finishWithOrphanSweep = async (
-        base: 'stopped' | 'already_gone'
-      ): Promise<'stopped' | 'already_gone' | 'still_alive'> => {
+        base: 'stopped' | 'already_gone' | 'unknown'
+      ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
         const liveRuntimes = (await readRuntimes()).filter(runtime =>
           runtime.hub === configuration.apiUrl
           && runtime.authHash === runtimeAuthHash()
@@ -1222,8 +1222,11 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         const live = await liveRegistryRuntimes();
         const binding = sessionRegistryBindingState(live, sessionId, pid);
         if (binding === 'active') return 'still_alive';
-        const orphan = await finishWithOrphanSweep('stopped');
+        // Base unknown so an argv orphan reap returning stopped is distinguishable
+        // from "no orphans" (which would otherwise echo a stopped base).
+        const orphan = await finishWithOrphanSweep('unknown');
         if (orphan === 'still_alive') return 'still_alive';
+        if (orphan === 'stopped') return 'stopped';
         const decision = decideKeepWrapperArchive(binding);
         if (decision === 'stopped') {
           logger.debug(
@@ -1387,8 +1390,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             // this root — require an inactive registry binding (KillSession ack).
             const binding = sessionRegistryBindingState(liveForPid, sessionId, pid);
             if (binding === 'active') return 'still_alive';
-            const orphan = await finishWithOrphanSweep('stopped');
+            const orphan = await finishWithOrphanSweep('unknown');
             if (orphan === 'still_alive') return 'still_alive';
+            if (orphan === 'stopped') return 'stopped';
             const decision = decideKeepWrapperArchive(binding);
             logger.debug(
               `[RUNNER RUN] Persisted PID ${pid} hosts active shared siblings for ${sessionId}; archive=${decision}`
