@@ -1161,6 +1161,17 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       if ((await readRuntimes()).some(runtime => runtime.hub === configuration.apiUrl && runtime.authHash === runtimeAuthHash()
         && runtime.sessions[sessionId]?.active && runtimeMayBeAlive(runtime))) return 'still_alive';
 
+      // Live Codex runtimes for this hub — used when in-memory sharedSessions
+      // only knows the root being archived (post-restart adoption of a new root
+      // while older roots remain active only in the durable registry).
+      const liveRegistryRuntimes = async () => (await readRuntimes()).filter(runtime =>
+        runtime.hub === configuration.apiUrl
+        && runtime.authHash === runtimeAuthHash()
+        && runtimeMayBeAlive(runtime)
+      );
+      const registrySiblingsKeepPid = async (pid: number): Promise<boolean> =>
+        wrapperHasActiveSiblingRoots(await liveRegistryRuntimes(), sessionId, pid);
+
       // After KillSession, the shared runtime row may already be inactive so
       // findRuntime misses. Detach this root from sharedSessions without
       // tree-killing the wrapper while sibling roots remain.
@@ -1172,6 +1183,14 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           );
           // Argv sweep must not kill this tracked wrapper (registry may be
           // empty); other untracked orphan PIDs are still reaped.
+          return await finishWithOrphanSweep('stopped');
+        }
+        // In-memory map had only this root (typical after restart adoption of a
+        // newly reported root). Registry may still list older active siblings.
+        if (await registrySiblingsKeepPid(pid)) {
+          logger.debug(
+            `[RUNNER RUN] Detached shared root ${sessionId}; registry siblings keep wrapper PID ${pid}`
+          );
           return await finishWithOrphanSweep('stopped');
         }
         // Last shared entry removed — fall through so the wrapper can be stopped.
@@ -1189,6 +1208,17 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           if (keepWrapperForSharedSiblings(session, sessionId)) {
             logger.debug(
               `[RUNNER RUN] Keeping shared wrapper PID ${pid} alive for remaining shared roots`
+            );
+            return await finishWithOrphanSweep('stopped');
+          }
+
+          // Post-restart: TrackedSession may only list the newly reported root
+          // while older roots remain active in the durable registry on this PID.
+          // Archiving the new root must not tree-kill those siblings.
+          if (await registrySiblingsKeepPid(pid)) {
+            detachSharedRootFromWrapper(session, sessionId);
+            logger.debug(
+              `[RUNNER RUN] Keeping recovered shared wrapper PID ${pid} for registry siblings of ${sessionId}`
             );
             return await finishWithOrphanSweep('stopped');
           }

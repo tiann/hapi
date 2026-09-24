@@ -142,4 +142,40 @@ describe('runtime registry sibling guards (post-restart)', () => {
         ))
         expect(filtered).toEqual([9999])
     })
+
+    it('keeps recovered shared wrapper when only the new root is tracked (restart + webhook + archive)', () => {
+        // Runner restart wiped TrackedSession. A later /new webhook adopts only
+        // the newly reported root onto the live shared Codex PID. Older roots
+        // remain active solely in the durable registry. Archiving the new root
+        // must not fall through to killProcess on that PID.
+        const tracked = {
+            happySessionId: 'new-root',
+            sharedSessions: {
+                'new-root': {},
+            },
+        }
+        const runtimesAfterArchive = [
+            {
+                pid: 4242,
+                sessions: {
+                    'old-root': { active: true },
+                    'new-root': { active: false },
+                },
+            },
+        ]
+
+        // Solo in-memory entry (adoption of the new root only) does not protect the PID:
+        expect(trackedSharedWrapperPidsWithSiblings(
+            new Map([[4242, { ...tracked, sharedSessions: { ...tracked.sharedSessions } }]]).entries(),
+            'new-root'
+        ).size).toBe(0)
+
+        // Detach + keepWrapper in-memory path alone would allow killing the wrapper:
+        expect(detachSharedRootFromWrapper(tracked, 'new-root')).toEqual({ kind: 'allow_kill' })
+        expect(keepWrapperForSharedSiblings(tracked, 'new-root')).toBe(false)
+
+        // Registry siblings on the same PID must keep the wrapper alive:
+        expect(wrapperHasActiveSiblingRoots(runtimesAfterArchive, 'new-root', 4242)).toBe(true)
+        expect(sessionRuntimeHasActiveSiblings(runtimesAfterArchive, 'new-root')).toBe(true)
+    })
 })
