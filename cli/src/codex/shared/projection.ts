@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { normalizeSessionDisplayTitle } from '@/agent/sessionDisplayRename';
 import { registerGeneratedImageFromPath } from '@/modules/common/generatedImages';
+import { isForkSeedSummary } from '@/agent/sessionTitlePolicy';
 import { AppServerEventConverter } from '../utils/appServerEventConverter';
 import { record, string } from './gateway';
 import { codexPlanProposalId } from './plan';
@@ -210,15 +211,17 @@ export class SharedCodexProjection {
         // Repair sessions created while remote title projection was missing.
         // Recheck inside the metadata lock: live updates may still be queued,
         // and a replay must never replace an existing or newer display title.
-        if (latestTitle && titleRevision === this.titleRevision && !metadataHasDisplayTitle(this.session.getMetadata())) {
+        const currentMetadata = this.session.getMetadata();
+        if (latestTitle && titleRevision === this.titleRevision
+            && (!metadataHasDisplayTitle(currentMetadata) || isForkSeedSummary(currentMetadata))) {
             const title = latestTitle;
             this.session.updateMetadata(metadata => {
-                if (titleRevision !== this.titleRevision || metadataHasDisplayTitle(metadata)) {
+                if (titleRevision !== this.titleRevision || metadata.name?.trim()
+                    || (metadata.summary?.text?.trim() && !isForkSeedSummary(metadata))) {
                     return metadata;
                 }
                 const normalized = normalizeSessionDisplayTitle(title);
-                if (!normalized) return metadata;
-                return { ...metadata, name: normalized };
+                return normalized ? { ...metadata, name: normalized } : metadata;
             });
         }
     }
