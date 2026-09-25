@@ -733,6 +733,14 @@ export function getMaxSeq(db: Database, sessionId: string): number {
     return row?.maxSeq ?? 0
 }
 
+/** Lowest seq still stored for the session (null when the session is empty). */
+export function getMinSeq(db: Database, sessionId: string): number | null {
+    const row = db.prepare(
+        'SELECT MIN(seq) AS minSeq FROM messages WHERE session_id = ?'
+    ).get(sessionId) as { minSeq: number | null } | undefined
+    return row?.minSeq ?? null
+}
+
 export type CancelQueuedMessageResult =
     | { status: 'cancelled'; localId: string | null }
     | { status: 'invoked'; message: StoredMessage }
