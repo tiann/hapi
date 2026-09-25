@@ -308,6 +308,7 @@ function createHapiMcpServer(
             const result = await pingPeer({
                 sessionIdPrefix: args.sessionIdPrefix,
                 message: args.message,
+                sourceSessionId: client.sessionId,
             });
             return {
                 content: [
