@@ -10,6 +10,25 @@ type MachineAlivePayload = {
     machineId: string
     time: number
     health?: unknown
+    aliveSessions?: string[]
+}
+
+/** Upper bounds so a buggy runner can't flood the declaration cache. */
+const MAX_ALIVE_SESSIONS = 256
+const MAX_ALIVE_SESSION_ID_LENGTH = 128
+
+function sanitizeAliveSessions(value: unknown): string[] | undefined {
+    if (!Array.isArray(value)) return undefined
+    const ids: string[] = []
+    const seen = new Set<string>()
+    for (const item of value) {
+        if (typeof item !== 'string' || item.length === 0 || item.length > MAX_ALIVE_SESSION_ID_LENGTH) continue
+        if (seen.has(item)) continue
+        seen.add(item)
+        ids.push(item)
+        if (ids.length >= MAX_ALIVE_SESSIONS) break
+    }
+    return ids
 }
 
 type ResolveMachineAccess = (machineId: string) => AccessResult<StoredMachine>
@@ -55,7 +74,15 @@ export function registerMachineHandlers(socket: CliSocketWithData, deps: Machine
             emitAccessError('machine', data.machineId, machineAccess.reason)
             return
         }
-        onMachineAlive?.(data)
+        const aliveSessions = sanitizeAliveSessions(data.aliveSessions)
+        if (aliveSessions === undefined) {
+            // Absent or malformed: strip the key so downstream consumers never
+            // see a non-array value where the protocol promises a list.
+            const { aliveSessions: _malformed, ...rest } = data
+            onMachineAlive?.(rest)
+        } else {
+            onMachineAlive?.({ ...data, aliveSessions })
+        }
     })
 
     const handleMachineMetadataUpdate: MachineUpdateMetadataHandler = (data, cb) => {

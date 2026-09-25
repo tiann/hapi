@@ -117,7 +117,8 @@ export class ApiMachineClient {
     constructor(
         private readonly token: string,
         private readonly machine: Machine,
-        private readonly workspaceRoots?: string[]
+        private readonly workspaceRoots?: string[],
+        private readonly getAliveSessionIds?: () => string[]
     ) {
         this.pathPolicy = new MachinePathPolicy({
             workspaceRoots,
@@ -663,11 +664,19 @@ export class ApiMachineClient {
     private startKeepAlive(): void {
         this.stopKeepAlive()
         const emitAlive = () => {
-            this.socket.emit('machine-alive', {
+            const payload: { machineId: string; time: number; health?: unknown; aliveSessions?: string[] } = {
                 machineId: this.machine.id,
                 time: Date.now(),
                 health: collectMachineHealth()
-            })
+            }
+            // The runner daemon supervises the agent processes, so its heartbeat is
+            // the channel that can vouch for sessions whose own socket is down.
+            // Omitted entirely when no provider is wired (non-runner machine clients).
+            const aliveSessions = this.getAliveSessionIds?.()
+            if (aliveSessions) {
+                payload.aliveSessions = aliveSessions
+            }
+            this.socket.emit('machine-alive', payload)
             const installedCliMtimeMs = getInstalledCliMtimeMs()
             if (
                 typeof installedCliMtimeMs === 'number'

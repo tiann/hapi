@@ -280,7 +280,7 @@ export interface ClientToServerEvents {
     'messages-steer-state': (data: { sid: string; localIds: string[]; state: 'queued' | 'dispatching' }, cb: (response: { ok: boolean }) => void) => void
     'update-metadata': (data: { sid: string; expectedVersion: number; metadata: unknown }, cb: (answer: UpdateMetadataAck) => void) => void
     'update-state': (data: { sid: string; expectedVersion: number; agentState: unknown | null }, cb: (answer: UpdateStateAck) => void) => void
-    'machine-alive': (data: { machineId: string; time: number; health?: unknown }) => void
+    'machine-alive': (data: { machineId: string; time: number; health?: unknown; aliveSessions?: string[] }) => void
     'machine-update-metadata': (data: { machineId: string; expectedVersion: number; metadata: unknown }, cb: (answer: MachineUpdateMetadataAck) => void) => void
     'machine-update-state': (data: { machineId: string; expectedVersion: number; runnerState: unknown | null }, cb: (answer: MachineUpdateStateAck) => void) => void
     /** The machine's `agy models` listing changed on a background re-check. */

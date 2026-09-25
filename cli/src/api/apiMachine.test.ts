@@ -834,6 +834,45 @@ describe('ApiMachineClient keepAlive lifecycle', () => {
         expect(emit).toHaveBeenCalledTimes(1)
         expect(priv.keepAliveInterval).toBeNull()
     })
+
+    it('carries aliveSessions on the machine-alive heartbeat when a provider is wired', () => {
+        const machine = makeMachine('machine-keepalive-alive-sessions')
+        const client = new ApiMachineClient('cli-token', machine, undefined, () => ['session-a', 'session-b'])
+        const emit = vi.fn()
+        ;(client as unknown as { socket: { emit: typeof emit; close: () => void } }).socket = {
+            emit,
+            close: vi.fn(),
+        } as never
+
+        const priv = client as unknown as { startKeepAlive: () => void }
+        priv.startKeepAlive()
+        vi.advanceTimersByTime(50)
+
+        expect(emit).toHaveBeenCalledWith('machine-alive', expect.objectContaining({
+            machineId: machine.id,
+            aliveSessions: ['session-a', 'session-b']
+        }))
+        client.shutdown()
+    })
+
+    it('omits aliveSessions entirely when no provider is wired', () => {
+        const machine = makeMachine('machine-keepalive-no-provider')
+        const client = new ApiMachineClient('cli-token', machine)
+        const emit = vi.fn()
+        ;(client as unknown as { socket: { emit: typeof emit; close: () => void } }).socket = {
+            emit,
+            close: vi.fn(),
+        } as never
+
+        const priv = client as unknown as { startKeepAlive: () => void }
+        priv.startKeepAlive()
+        vi.advanceTimersByTime(50)
+
+        const payload = emit.mock.calls.find(([event]) => event === 'machine-alive')?.[1] as Record<string, unknown>
+        expect(payload).toBeTruthy()
+        expect('aliveSessions' in payload).toBe(false)
+        client.shutdown()
+    })
 })
 
 describe('ApiMachineClient list-directory handler', () => {

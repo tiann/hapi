@@ -36,6 +36,7 @@ type SessionReadyPayload = {
 type MachineAlivePayload = {
     machineId: string
     time: number
+    aliveSessions?: string[]
 }
 
 export type CliHandlersDeps = {
