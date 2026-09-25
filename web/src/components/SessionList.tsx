@@ -14,10 +14,21 @@ import { useLongPress } from '@/hooks/useLongPress'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
+import { GroupActionMenu } from '@/components/GroupActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
+import { RenameGroupDialog } from '@/components/RenameGroupDialog'
+import {
+    applyGroupDisplayNames,
+    getGroupCustomName,
+    isGroupPinned,
+    loadGroupSettings,
+    saveGroupSettings,
+    sortPinnedGroupsFirst,
+    type GroupSettings
+} from '@/lib/groupSettings'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
-import { CopyIcon, CheckIcon, MarkAllReadIcon } from '@/components/icons'
+import { MarkAllReadIcon } from '@/components/icons'
 
 function PinnedSectionIcon(props: { className?: string }) {
     return (
@@ -436,32 +447,15 @@ function groupByMachine(
     })
 }
 
-function CopyPathButton({ path, className }: { path: string; className?: string }) {
-    const [copied, setCopied] = useState(false)
-    const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
-
-    const handleClick = (e: React.MouseEvent) => {
-        e.stopPropagation()
-        navigator.clipboard.writeText(path)
-        setCopied(true)
-        clearTimeout(timerRef.current)
-        timerRef.current = setTimeout(() => setCopied(false), 1500)
-    }
-
-    useEffect(() => () => clearTimeout(timerRef.current), [])
-
+// Same pin glyph language as the session action menu, so a pinned group and a
+// pinned session read as the same gesture.
+function GroupMoreIcon(props: { className?: string }) {
     return (
-        <button
-            type="button"
-            className={`shrink-0 p-0.5 rounded transition-colors ${copied ? 'text-[var(--app-badge-success-text)]' : 'text-[var(--app-hint)] hover:text-[var(--app-fg)]'} ${className ?? ''}`}
-            title={copied ? 'Copied!' : `Copy: ${path}`}
-            onClick={handleClick}
-        >
-            {copied
-                ? <CheckIcon className="h-3.5 w-3.5" />
-                : <CopyIcon className="h-3.5 w-3.5" />
-            }
-        </button>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className={props.className}>
+            <circle cx="12" cy="5" r="1.6" />
+            <circle cx="12" cy="12" r="1.6" />
+            <circle cx="12" cy="19" r="1.6" />
+        </svg>
     )
 }
 
@@ -1223,6 +1217,7 @@ export function SessionList(props: {
     selectedSessionId?: string | null
 }) {
     const { t } = useTranslation()
+    const { haptic } = usePlatform()
     const {
         renderHeader = true,
         api,
@@ -1372,6 +1367,125 @@ export function SessionList(props: {
             ),
         [unreadFilteredSessions, activeMachineFilter]
     )
+    // Per-browser group display preferences (pin to top / custom name),
+    // keyed by group key like collapse state. See lib/groupSettings.
+    const [groupSettings, setGroupSettings] = useState<GroupSettings>(() => loadGroupSettings())
+    const [renameGroupTarget, setRenameGroupTarget] = useState<{
+        key: string
+        directory: string
+        displayName: string
+    } | null>(null)
+    useEffect(() => {
+        saveGroupSettings(groupSettings)
+    }, [groupSettings])
+    const toggleGroupPinned = (key: string) => {
+        setGroupSettings(prev => {
+            const nextEntry: GroupSettings[string] = { ...prev[key] }
+            if (nextEntry.pinned === true) {
+                delete nextEntry.pinned
+            } else {
+                nextEntry.pinned = true
+            }
+            const next = { ...prev }
+            if (nextEntry.pinned === undefined && nextEntry.name === undefined) {
+                delete next[key]
+            } else {
+                next[key] = nextEntry
+            }
+            return next
+        })
+    }
+    const renameGroup = (key: string, name: string | null) => {
+        setGroupSettings(prev => {
+            const entry = prev[key] ?? {}
+            const nextEntry: GroupSettings[string] = { ...entry }
+            if (name === null) {
+                delete nextEntry.name
+            } else {
+                nextEntry.name = name
+            }
+            const next = { ...prev }
+            if (nextEntry.pinned === undefined && nextEntry.name === undefined) {
+                delete next[key]
+            } else {
+                next[key] = nextEntry
+            }
+            return next
+        })
+    }
+    // The group action menu (pin / rename / copy path) opens from the header's
+    // "more" button or from a long-press / right-click on the header itself,
+    // mirroring the session row's action menu.
+    const [groupMenu, setGroupMenu] = useState<{
+        key: string
+        directory: string
+        displayName: string
+        pinned: boolean
+        point: { x: number; y: number }
+        align: 'center' | 'start'
+    } | null>(null)
+    const openGroupMenu = (
+        group: SessionGroup,
+        point: { x: number; y: number },
+        align: 'center' | 'start'
+    ) => {
+        setGroupMenu({
+            key: group.key,
+            directory: group.directory,
+            displayName: group.displayName,
+            pinned: isGroupPinned(groupSettings, group.key),
+            point,
+            align
+        })
+    }
+    const groupPressRef = useRef<{ group: SessionGroup; onActivate?: () => void } | null>(null)
+    const groupHeaderPress = useLongPress({
+        onLongPress: (point) => {
+            const entry = groupPressRef.current
+            if (!entry || entry.group.directory === 'Other') return
+            haptic.impact('medium')
+            openGroupMenu(entry.group, point, 'start')
+        },
+        onClick: () => { groupPressRef.current?.onActivate?.() },
+        threshold: 500
+    })
+    // Long-press / right-click on a group header opens the group action menu,
+    // while a plain press keeps the header's own activation (collapse toggle).
+    // Presses starting on an interactive child (menu / new-session buttons)
+    // are left to that child.
+    const bindGroupHeaderPress = (group: SessionGroup, onActivate?: () => void) => {
+        const fromPlainSurface = (event: React.SyntheticEvent) => {
+            const element = event.target as HTMLElement
+            return !element.closest('button')
+        }
+        return {
+            onMouseDown: (event: React.MouseEvent) => {
+                if (!fromPlainSurface(event)) return
+                groupPressRef.current = { group, onActivate }
+                groupHeaderPress.onMouseDown(event)
+            },
+            onMouseUp: (event: React.MouseEvent) => {
+                if (!fromPlainSurface(event)) return
+                groupHeaderPress.onMouseUp(event)
+            },
+            onMouseLeave: groupHeaderPress.onMouseLeave,
+            onTouchStart: (event: React.TouchEvent) => {
+                if (!fromPlainSurface(event)) return
+                groupPressRef.current = { group, onActivate }
+                groupHeaderPress.onTouchStart(event)
+            },
+            onTouchEnd: (event: React.TouchEvent) => {
+                if (!fromPlainSurface(event)) return
+                groupHeaderPress.onTouchEnd(event)
+            },
+            onTouchMove: groupHeaderPress.onTouchMove,
+            onTouchCancel: groupHeaderPress.onTouchCancel,
+            onContextMenu: (event: React.MouseEvent) => {
+                groupPressRef.current = { group, onActivate }
+                groupHeaderPress.onContextMenu(event)
+            }
+        }
+    }
     const globalPinnedSessions = useMemo(() => {
         const pinned = machineFilteredSessions.filter((session) => Boolean(session.globalPinned))
         if (searchScoreIndex && hasTextQuery) {
@@ -1393,19 +1507,19 @@ export function SessionList(props: {
     const activeSessionTotal = runningSessions.active.length + runningSessions.idle.length
     const groups = useMemo(
         () => {
-            const grouped = groupSessionsByDirectory(
+            const grouped = applyGroupDisplayNames(groupSessionsByDirectory(
                 machineFilteredSessions.filter((session) => {
                     if (session.globalPinned) return false
                     if (pinInProgressSessions && !session.pinned && isPinnedInProgressSession(session)) return false
                     return true
                 })
-            )
+            ), groupSettings)
             if (searchScoreIndex && hasTextQuery) {
                 return rankSessionGroupsBySearchRelevance(grouped, searchScoreIndex)
             }
-            return grouped
+            return sortPinnedGroupsFirst(grouped, groupSettings)
         },
-        [machineFilteredSessions, pinInProgressSessions, searchScoreIndex, hasTextQuery]
+        [machineFilteredSessions, pinInProgressSessions, searchScoreIndex, hasTextQuery, groupSettings]
     )
     // Directory groups whose rows all floated to the pinned sections still
     // render an action-only header so copy-path / new-session-in-directory
@@ -1413,10 +1527,10 @@ export function SessionList(props: {
     // Based on the same machineFilteredSessions set as `groups` so machine /
     // unread filters stay consistent.
     const allDirectoryGroups = useMemo(
-        () => groupSessionsByDirectory(
+        () => sortPinnedGroupsFirst(applyGroupDisplayNames(groupSessionsByDirectory(
             machineFilteredSessions.filter((session) => !session.globalPinned)
-        ),
-        [machineFilteredSessions]
+        ), groupSettings), groupSettings),
+        [machineFilteredSessions, groupSettings]
     )
     const actionOnlyGroups = useMemo(() => {
         if (!pinInProgressSessions) {
@@ -1595,6 +1709,27 @@ export function SessionList(props: {
         )
     }
 
+    const renderGroupMenuButton = (group: SessionGroup) => {
+        if (group.directory === 'Other') return null
+        return (
+            <button
+                type="button"
+                data-testid="group-menu-button"
+                aria-haspopup="menu"
+                onClick={(event) => {
+                    event.stopPropagation()
+                    const rect = event.currentTarget.getBoundingClientRect()
+                    openGroupMenu(group, { x: rect.left + rect.width / 2, y: rect.bottom }, 'center')
+                }}
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] opacity-70 transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-link)] hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                title={t('sessions.group.more')}
+                aria-label={t('sessions.group.more')}
+            >
+                <GroupMoreIcon className="h-3.5 w-3.5" />
+            </button>
+        )
+    }
+
     const renderActionOnlyGroupHeader = (group: SessionGroup) => {
         // With multiple machines in the unfiltered view, disambiguate
         // same-named directories by suffixing the machine label.
@@ -1605,12 +1740,14 @@ export function SessionList(props: {
             <div key={group.key} data-session-scroll-anchor>
                 <div
                     className="group/project sticky top-0 z-10 flex items-center gap-2 bg-[var(--app-bg)] py-1.5 pl-2 pr-2 text-left rounded-lg transition-colors hover:bg-[var(--app-secondary-bg)] min-w-0 w-full select-none"
+                    style={{ WebkitTouchCallout: 'none' }}
+                    {...bindGroupHeaderPress(group)}
                     title={group.directory}
                 >
                     <span className="font-medium text-sm truncate flex-1">
                         {groupTitle}
                     </span>
-                    <CopyPathButton path={group.directory} className="opacity-0 group-hover/project:opacity-100 transition-opacity duration-150" />
+                    {renderGroupMenuButton(group)}
                     {onNewSessionInDirectory && group.directory !== 'Other' ? (
                         <button
                             type="button"
@@ -1659,14 +1796,15 @@ export function SessionList(props: {
             <div key={group.key} data-session-scroll-anchor>
                 <div
                     className="group/project sticky top-0 z-10 flex items-center gap-2 bg-[var(--app-bg)] py-1.5 pl-2 pr-2 text-left rounded-lg transition-colors hover:bg-[var(--app-secondary-bg)] cursor-pointer min-w-0 w-full select-none"
-                    onClick={() => toggleGroup(group.key, isCollapsed)}
+                    style={{ WebkitTouchCallout: 'none' }}
+                    {...bindGroupHeaderPress(group, () => toggleGroup(group.key, isCollapsed))}
                     title={group.directory}
                 >
                     <ChevronIcon className="h-3.5 w-3.5 text-[var(--app-hint)] shrink-0" collapsed={isCollapsed} />
                     <span className="font-medium text-sm truncate flex-1">
                         {groupTitle}
                     </span>
-                    <CopyPathButton path={group.directory} className="opacity-0 group-hover/project:opacity-100 transition-opacity duration-150" />
+                    {renderGroupMenuButton(group)}
                     {onNewSessionInDirectory && canStartInGroupDirectory ? (
                         <button
                             type="button"
@@ -2133,6 +2271,42 @@ export function SessionList(props: {
                 isPending={false}
                 centerTitle
                 destructive
+            />
+            <RenameGroupDialog
+                isOpen={renameGroupTarget !== null}
+                onClose={() => setRenameGroupTarget(null)}
+                currentName={renameGroupTarget?.displayName ?? ''}
+                directory={renameGroupTarget?.directory ?? null}
+                onRename={(name) => {
+                    if (renameGroupTarget) {
+                        renameGroup(renameGroupTarget.key, name)
+                    }
+                }}
+            />
+            <GroupActionMenu
+                isOpen={groupMenu !== null}
+                onClose={() => setGroupMenu(null)}
+                directory={groupMenu?.directory ?? ''}
+                pinned={groupMenu?.pinned ?? false}
+                anchorPoint={groupMenu?.point ?? { x: 0, y: 0 }}
+                align={groupMenu?.align}
+                onTogglePin={() => {
+                    if (groupMenu) {
+                        toggleGroupPinned(groupMenu.key)
+                    }
+                    setGroupMenu(null)
+                }}
+                onRename={() => {
+                    const target = groupMenu
+                    setGroupMenu(null)
+                    if (target) {
+                        setRenameGroupTarget({
+                            key: target.key,
+                            directory: target.directory,
+                            displayName: target.displayName
+                        })
+                    }
+                }}
             />
         </div>
     )
