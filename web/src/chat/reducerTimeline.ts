@@ -655,6 +655,7 @@ export function reduceTimeline(
                     const startedAt = getAgentRunStartedAt(event) ?? msg.createdAt
                     patchAgentRunInput(block, {
                         agentId,
+                        statusUnknown: false,
                         agentStatus: status,
                         statusText: getEventString(event, 'statusText') ?? getEventString(event, 'status_text') ?? 'Starting',
                         ...getAgentRunDisplayPatch(event)
@@ -679,6 +680,7 @@ export function reduceTimeline(
                     }
                     patchAgentRunInput(block, {
                         agentId,
+                        statusUnknown: false,
                         agentStatus: status,
                         statusText: getEventString(event, 'statusText') ?? getEventString(event, 'status_text') ?? status,
                         ...getAgentRunDisplayPatch(event)
@@ -714,13 +716,19 @@ export function reduceTimeline(
                         meta: msg.meta,
                         input: agentRunBlocksByCardId.has(traceCardId) ? undefined : { agentId: traceAgentId }
                     })
+                    // A trace may be replayed history, or its lifecycle messages may
+                    // be outside the loaded page. It alone does not prove liveness.
+                    const input = isObject(traceBlock.tool.input) ? traceBlock.tool.input : {}
+                    const statusUnknown = input.statusUnknown === true || typeof input.agentStatus !== 'string'
                     const tracePatch: Record<string, unknown> = {
                         agentId: traceAgentId,
-                        agentStatus: traceBlock.tool.state,
+                        agentStatus: statusUnknown ? 'pending' : traceBlock.tool.state,
+                        statusUnknown,
                         ...getAgentRunDisplayPatch(event)
                     }
                     if (!isTerminalAgentRunState(traceBlock.tool.state)) {
-                        tracePatch.statusText = getEventString(event, 'statusText') ?? getEventString(event, 'status_text') ?? 'Running'
+                        tracePatch.statusText = statusUnknown ? 'History — status unavailable'
+                            : getEventString(event, 'statusText') ?? getEventString(event, 'status_text') ?? 'Running'
                     }
                     patchAgentRunInput(traceBlock, {
                         ...tracePatch
@@ -730,8 +738,12 @@ export function reduceTimeline(
                     agentRunTraceMessagesByCardId.set(traceCardId, traceMessages)
                     refreshAgentRunChildren(traceCardId)
                     if (traceBlock.tool.state !== 'completed' && traceBlock.tool.state !== 'error') {
-                        traceBlock.tool.state = 'running'
-                        setEarliestStartedAt(traceBlock, startedAt ?? msg.createdAt)
+                        traceBlock.tool.state = statusUnknown ? 'pending' : 'running'
+                        if (statusUnknown) {
+                            traceBlock.tool.startedAt = null
+                        } else {
+                            setEarliestStartedAt(traceBlock, startedAt ?? msg.createdAt)
+                        }
                     }
                     continue
                 }
