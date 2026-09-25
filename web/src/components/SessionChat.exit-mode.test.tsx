@@ -53,6 +53,7 @@ describe('ScratchlistDrawerHost.onPromoteToComposer', () => {
         const onSend = vi.fn(async () => true)
         const onMove = vi.fn()
         const onDelete = vi.fn()
+        const onExternalComposerEdit = vi.fn()
 
         render(
             <I18nProvider>
@@ -64,6 +65,7 @@ describe('ScratchlistDrawerHost.onPromoteToComposer', () => {
                     onDelete={onDelete}
                     onSend={onSend}
                     onExitScratchlistMode={onExitScratchlistMode}
+                    onExternalComposerEdit={onExternalComposerEdit}
                 />
             </I18nProvider>,
         )
@@ -75,6 +77,7 @@ describe('ScratchlistDrawerHost.onPromoteToComposer', () => {
         fireEvent.click(promoteButtons[0]!)
 
         expect(setText).toHaveBeenCalledWith('queued thought')
+        expect(onExternalComposerEdit).toHaveBeenCalledOnce()
         expect(onExitScratchlistMode).toHaveBeenCalledTimes(1)
         // Promote-to-composer must NOT call onSend (that's promote-to-queue).
         expect(onSend).not.toHaveBeenCalled()

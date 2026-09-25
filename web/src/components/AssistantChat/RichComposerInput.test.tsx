@@ -72,6 +72,23 @@ function ProgrammaticEditHarness() {
     )
 }
 
+function ReplaceTextHarness() {
+    const [value, setValue] = useState('draft')
+    const ref = useRef<RichComposerInputHandle>(null)
+
+    return (
+        <>
+            <button type="button" onClick={() => ref.current?.replaceText('restored history')}>Restore history</button>
+            <RichComposerInput
+                ref={ref}
+                value={value}
+                onValueChange={(next) => flushSync(() => setValue(next))}
+                onMirrorChange={() => {}}
+            />
+        </>
+    )
+}
+
 function LineBreakDeletionHarness() {
     const [value, setValue] = useState('hello')
 
@@ -227,6 +244,16 @@ describe('RichComposerInput controlled synchronization', () => {
         fireEvent.keyDown(editor, { key: 'Backspace' })
 
         expect(screen.getByText('Type a message')).toBeInTheDocument()
+    })
+
+    it('replaces the complete composer value and moves the caret to the restored text end', () => {
+        render(<ReplaceTextHarness />)
+
+        const editor = screen.getByTestId('rich-composer-input')
+        fireEvent.click(screen.getByRole('button', { name: 'Restore history' }))
+
+        expect(serializeComposerSegments(segmentsFromEditor(editor))).toBe('restored history')
+        expect(selectionOffset(editor)).toBe('restored history'.length)
     })
 
     it('deletes exactly one trailing line break per Backspace', () => {

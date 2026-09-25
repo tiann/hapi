@@ -36,6 +36,11 @@ import type { SessionSummary } from '@/types/api'
 
 export type RichComposerInputHandle = {
     focus: () => void
+    /** Replace the complete serialized composer value and place the mirror caret. */
+    replaceText: (
+        text: string,
+        selection?: ComposerSelection,
+    ) => { text: string; selection: ComposerSelection }
     /**
      * Re-read the contenteditable → serialize session chips to
      * `[title](/sessions/<id>)` and push into composer state. Call before
@@ -774,6 +779,19 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         focus: () => {
             rootRef.current?.focus()
         },
+        replaceText: (next, selection) => {
+            const root = rootRef.current
+            if (!root) {
+                const mirror = mirrorComposerSegments(parseComposerSegments(next))
+                const fallbackSelection = selection ?? { start: mirror.length, end: mirror.length }
+                return { text: next, selection: fallbackSelection }
+            }
+            const mirror = mirrorComposerSegments(parseComposerSegments(next))
+            const nextSelection = selection ?? { start: mirror.length, end: mirror.length }
+            syncFromValue(next, nextSelection)
+            onValueChange(next)
+            return { text: next, selection: nextSelection }
+        },
         flushSerializedText: () => {
             const root = rootRef.current
             if (!root) return value
@@ -825,7 +843,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
             })
             return { text: serialized, selection: result.selection }
         },
-    }), [onMirrorChange, onValueChange, renderEditorSegments, value])
+    }), [onMirrorChange, onValueChange, renderEditorSegments, syncFromValue, value])
 
     useEffect(() => () => {
         if (tooltipTimerRef.current) clearTimeout(tooltipTimerRef.current)
