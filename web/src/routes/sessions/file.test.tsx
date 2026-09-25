@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMethods'
+import { ApiError } from '@/api/client'
 import { I18nProvider } from '@/lib/i18n-context'
 import { formatFileMetadata } from '@/lib/file-metadata'
 import { encodeBase64 } from '@/lib/utils'
@@ -8,6 +10,17 @@ import FilePage from './file'
 
 const goBackMock = vi.fn()
 const copyMock = vi.hoisted(() => vi.fn())
+const navigateMock = vi.hoisted(() => vi.fn())
+const reopenSessionMock = vi.hoisted(() => vi.fn())
+const readSessionFileMock = vi.hoisted(() => vi.fn())
+const getGitDiffFileMock = vi.hoisted(() => vi.fn())
+const cursorStatusMock = vi.hoisted(() => ({
+    status: { onDisk: true as boolean | undefined },
+    isApplicable: true,
+    error: null as string | null,
+    isLoading: false,
+}))
+const sessionActiveMock = vi.hoisted(() => ({ active: false }))
 
 const sampleMarkdown = '# Heading\n\n| Col A | Col B |\n| --- | --- |\n| one | two |'
 const filePath = 'docs/README.md'
@@ -18,22 +31,47 @@ const fileModified = 1_784_175_060_000
 
 vi.mock('@tanstack/react-router', () => ({
     useParams: () => ({ sessionId: 'session-1' }),
+    useNavigate: () => navigateMock,
     useSearch: () => ({
         path: encodedPath,
         staged: undefined,
     }),
 }))
 
+vi.mock('@/hooks/queries/useSession', () => ({
+    useSession: () => ({
+        session: {
+            id: 'session-1',
+            active: sessionActiveMock.active,
+            metadata: {
+                path: '/project',
+                flavor: 'cursor',
+                cursorSessionId: 'cursor-thread-1',
+            },
+        },
+        isLoading: false,
+        error: null,
+        notFound: false,
+        refetch: vi.fn(),
+    }),
+}))
+
+vi.mock('@/hooks/queries/useCursorChatStoreStatus', () => ({
+    useCursorChatStoreStatus: () => cursorStatusMock,
+}))
+
+vi.mock('@/hooks/mutations/useSessionActions', () => ({
+    useSessionActions: () => ({
+        reopenSession: reopenSessionMock,
+        isPending: false,
+    }),
+}))
+
 vi.mock('@/lib/app-context', () => ({
     useAppContext: () => ({
         api: {
-            getGitDiffFile: vi.fn(async () => ({ success: true, stdout: '' })),
-            readSessionFile: vi.fn(async () => ({
-                success: true,
-                content: encodedContent,
-                size: fileSize,
-                modified: fileModified,
-            })),
+            getGitDiffFile: getGitDiffFileMock,
+            readSessionFile: readSessionFileMock,
         },
     }),
 }))
@@ -66,13 +104,18 @@ function renderWithProviders() {
             queries: { retry: false },
         },
     })
-    return render(
+    const tree = (
         <QueryClientProvider client={queryClient}>
             <I18nProvider>
                 <FilePage />
             </I18nProvider>
         </QueryClientProvider>
     )
+    const view = render(tree)
+    return {
+        ...view,
+        rerenderPage: () => view.rerender(tree),
+    }
 }
 
 describe('FilePage markdown preview', () => {
@@ -80,6 +123,19 @@ describe('FilePage markdown preview', () => {
         vi.clearAllMocks()
         window.localStorage.clear()
         window.sessionStorage.clear()
+        getGitDiffFileMock.mockResolvedValue({ success: true, stdout: '' })
+        readSessionFileMock.mockResolvedValue({
+            success: true,
+            content: encodedContent,
+            size: fileSize,
+            modified: fileModified,
+        })
+        reopenSessionMock.mockResolvedValue({ ok: true, sessionId: 'session-1', resumed: true })
+        cursorStatusMock.status = { onDisk: true }
+        cursorStatusMock.isApplicable = true
+        cursorStatusMock.error = null
+        cursorStatusMock.isLoading = false
+        sessionActiveMock.active = false
     })
 
     it('renders markdown preview by default and toggles to source', async () => {
@@ -159,5 +215,146 @@ describe('FilePage markdown preview', () => {
         })
         const secondScrollRegion = document.querySelector('[data-hapi-file-scroll="true"]') as HTMLElement
         expect(secondScrollRegion.scrollTop).toBe(123)
+    })
+})
+
+describe('FilePage offline session', () => {
+    beforeEach(() => {
+        vi.clearAllMocks()
+        window.localStorage.clear()
+        window.sessionStorage.clear()
+        const rpcError = new ApiError(
+            'HTTP 503: rpc target missing',
+            503,
+            RPC_TARGET_MISSING_ERROR_CODE,
+            JSON.stringify({ success: false, code: RPC_TARGET_MISSING_ERROR_CODE })
+        )
+        getGitDiffFileMock.mockRejectedValue(rpcError)
+        readSessionFileMock.mockRejectedValue(rpcError)
+        reopenSessionMock.mockResolvedValue({ ok: true, sessionId: 'session-1', resumed: true })
+        cursorStatusMock.status = { onDisk: true }
+        cursorStatusMock.isApplicable = true
+        cursorStatusMock.error = null
+        cursorStatusMock.isLoading = false
+        sessionActiveMock.active = false
+    })
+
+    it('shows friendly offline copy and reopen affordance instead of raw RPC errors', async () => {
+        renderWithProviders()
+
+        await waitFor(() => {
+            expect(screen.getByText(/not connected to your computer right now/i)).toBeInTheDocument()
+        })
+        expect(screen.queryByText(/RPC handler not registered/i)).toBeNull()
+        expect(screen.getByRole('button', { name: 'Reopen session' })).toBeInTheDocument()
+    })
+
+    it('refetches file queries after reopen succeeds', async () => {
+        renderWithProviders()
+
+        await waitFor(() => {
+            expect(screen.getByRole('button', { name: 'Reopen session' })).toBeInTheDocument()
+        })
+
+        readSessionFileMock.mockResolvedValue({
+            success: true,
+            content: encodedContent,
+            size: fileSize,
+            modified: fileModified,
+        })
+        getGitDiffFileMock.mockResolvedValue({ success: true, stdout: '' })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Reopen session' }))
+
+        await waitFor(() => {
+            expect(reopenSessionMock).toHaveBeenCalled()
+            expect(readSessionFileMock).toHaveBeenCalledTimes(2)
+        })
+    })
+
+    it('navigates to the replacement session when reopen returns a new id', async () => {
+        reopenSessionMock.mockResolvedValue({ ok: true, sessionId: 'session-2', resumed: true })
+        renderWithProviders()
+
+        await waitFor(() => {
+            expect(screen.getByRole('button', { name: 'Reopen session' })).toBeInTheDocument()
+        })
+        fireEvent.click(screen.getByRole('button', { name: 'Reopen session' }))
+
+        await waitFor(() => {
+            expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({
+                to: '/sessions/$sessionId/file',
+                params: { sessionId: 'session-2' },
+                replace: true,
+            }))
+        })
+    })
+
+    it('does not show the Cursor checking state when the probe is not applicable', async () => {
+        cursorStatusMock.isApplicable = false
+        cursorStatusMock.status = { onDisk: undefined }
+        renderWithProviders()
+
+        await waitFor(() => {
+            expect(screen.getByRole('button', { name: 'Reopen session' })).toBeInTheDocument()
+        })
+        expect(screen.queryByText(/Checking whether Cursor chat data/i)).toBeNull()
+    })
+
+    it('keeps loaded file content when only the diff request is offline', async () => {
+        const rpcError = new ApiError(
+            'HTTP 503: rpc target missing',
+            503,
+            RPC_TARGET_MISSING_ERROR_CODE,
+            JSON.stringify({ success: false, code: RPC_TARGET_MISSING_ERROR_CODE })
+        )
+        readSessionFileMock.mockResolvedValue({
+            success: true,
+            content: encodedContent,
+            size: fileSize,
+            modified: fileModified,
+        })
+        getGitDiffFileMock.mockRejectedValue(rpcError)
+
+        renderWithProviders()
+
+        await waitFor(() => {
+            expect(screen.getByTestId('markdown-preview')).toHaveTextContent('# Heading')
+        })
+        expect(screen.getByText(/not connected to your computer right now/i)).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'Reopen session' })).toBeNull()
+    })
+
+    it('refetches when the session becomes active before the offline responses arrive', async () => {
+        const rpcError = new ApiError(
+            'HTTP 503: rpc target missing',
+            503,
+            RPC_TARGET_MISSING_ERROR_CODE,
+            JSON.stringify({ success: false, code: RPC_TARGET_MISSING_ERROR_CODE })
+        )
+        let rejectRead: (error: unknown) => void = () => {}
+        let rejectDiff: (error: unknown) => void = () => {}
+        readSessionFileMock.mockImplementation(() => new Promise((_resolve, reject) => {
+            rejectRead = reject
+        }))
+        getGitDiffFileMock.mockImplementation(() => new Promise((_resolve, reject) => {
+            rejectDiff = reject
+        }))
+
+        const view = renderWithProviders()
+        await waitFor(() => {
+            expect(readSessionFileMock).toHaveBeenCalledTimes(1)
+            expect(getGitDiffFileMock).toHaveBeenCalledTimes(1)
+        })
+
+        sessionActiveMock.active = true
+        view.rerenderPage()
+        rejectRead(rpcError)
+        rejectDiff(rpcError)
+
+        await waitFor(() => {
+            expect(readSessionFileMock).toHaveBeenCalledTimes(2)
+            expect(getGitDiffFileMock).toHaveBeenCalledTimes(2)
+        })
     })
 })

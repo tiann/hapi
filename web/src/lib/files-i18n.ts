@@ -78,6 +78,9 @@ export function formatReadFileError(error: string | null | undefined, t: Transla
     if (!detail || detail === 'Failed to read file' || detail === 'Missing session or path' || detail === 'Session unavailable') {
         return t('file.error.readFailed')
     }
+    if (detail.startsWith('RPC handler not registered:') || detail.startsWith('RPC socket disconnected:')) {
+        return t('file.error.sessionOffline')
+    }
     return t('file.error.readFailedWithDetail', { error: detail })
 }
 
@@ -86,5 +89,12 @@ export function formatDiffError(error: string | null | undefined, t: Translate):
     if (!detail || detail === 'Failed to load diff' || detail === 'Missing session or path' || detail === 'Session unavailable') {
         return t('file.error.diffUnavailable')
     }
+    if (detail.startsWith('RPC handler not registered:') || detail.startsWith('RPC socket disconnected:')) {
+        return t('file.error.sessionOffline')
+    }
     return t('file.error.diffUnavailableWithDetail', { error: detail })
+}
+
+export function formatFileSessionOfflineError(t: Translate): string {
+    return t('file.error.sessionOffline')
 }
