@@ -11,6 +11,7 @@ export function useSessionFileSearch(
 ): {
     files: FileSearchItem[]
     error: string | null
+    isPathSearch: boolean
     isLoading: boolean
     refetch: () => Promise<unknown>
 } {
@@ -26,9 +27,17 @@ export function useSessionFileSearch(
             }
             const response = await api.searchSessionFiles(sessionId, query, limit)
             if (!response.success) {
-                return { files: [], error: response.error ?? 'Failed to search files' }
+                return {
+                    files: [],
+                    error: response.error ?? 'Failed to search files',
+                    isPathSearch: response.pathSearch === true
+                }
             }
-            return { files: response.files ?? [], error: null }
+            return {
+                files: response.files ?? [],
+                error: null,
+                isPathSearch: response.pathSearch === true
+            }
         },
         enabled,
     })
@@ -42,6 +51,7 @@ export function useSessionFileSearch(
     return {
         files: result.data?.files ?? [],
         error: queryError ?? result.data?.error ?? null,
+        isPathSearch: result.data?.isPathSearch ?? false,
         isLoading: result.isLoading,
         refetch: result.refetch
     }

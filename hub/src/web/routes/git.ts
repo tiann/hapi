@@ -30,6 +30,133 @@ function isWindowsSessionPath(path: string): boolean {
     return /^[A-Za-z]:[\\/]/.test(path) || path.startsWith('\\\\')
 }
 
+function hasPathSeparator(query: string, windowsSession: boolean): boolean {
+    return query.includes('/') || (windowsSession && query.includes('\\'))
+}
+
+function normalizeSearchPath(path: string, windowsSession: boolean): string {
+    return windowsSession ? path.replaceAll('\\', '/') : path
+}
+
+function trimTrailingSeparators(path: string): string {
+    if (path === '/' || /^[A-Za-z]:\/$/.test(path)) {
+        return path
+    }
+    return path.replace(/\/+$/, '')
+}
+
+function isAbsoluteSearchPath(path: string, windowsSession: boolean): boolean {
+    return path.startsWith('/') || (windowsSession && (/^[A-Za-z]:\//.test(path) || path.startsWith('//')))
+}
+
+function pathsEqual(left: string, right: string, caseInsensitive: boolean): boolean {
+    return caseInsensitive ? left.toLowerCase() === right.toLowerCase() : left === right
+}
+
+function pathStartsWith(left: string, prefix: string, caseInsensitive: boolean): boolean {
+    const normalizedLeft = caseInsensitive ? left.toLowerCase() : left
+    const normalizedPrefix = caseInsensitive ? prefix.toLowerCase() : prefix
+    return normalizedLeft.startsWith(normalizedPrefix)
+}
+
+function normalizeRelativeSearchPath(path: string, allowEmpty = false): string | null {
+    const parts: string[] = []
+    for (const part of path.split('/')) {
+        if (!part || part === '.') {
+            continue
+        }
+        if (part === '..') {
+            if (parts.length === 0) {
+                return null
+            }
+            parts.pop()
+            continue
+        }
+        parts.push(part)
+    }
+    return parts.length > 0 ? parts.join('/') : allowEmpty ? '' : null
+}
+
+/**
+ * Return a workspace-relative path for strict path queries.
+ * `undefined` means the query should keep using fuzzy search; `null` means it
+ * looked like a path but cannot identify a path inside the session workspace.
+ */
+function resolveWorkspaceRelativeSearchPath(
+    query: string,
+    sessionPath: string,
+    allowEmpty: boolean
+): string | null {
+    const windowsSession = isWindowsSessionPath(sessionPath)
+    const normalizedQuery = normalizeSearchPath(query, windowsSession)
+    const normalizedSessionPath = trimTrailingSeparators(normalizeSearchPath(sessionPath, windowsSession))
+    const caseInsensitive = windowsSession
+
+    if (!isAbsoluteSearchPath(normalizedQuery, windowsSession)) {
+        return normalizeRelativeSearchPath(normalizedQuery, allowEmpty)
+    }
+
+    const normalizedAbsoluteQuery = trimTrailingSeparators(normalizedQuery)
+    const sessionPrefix = normalizedSessionPath.endsWith('/')
+        ? normalizedSessionPath
+        : `${normalizedSessionPath}/`
+    if (!pathsEqual(normalizedAbsoluteQuery, normalizedSessionPath, caseInsensitive)
+        && !pathStartsWith(normalizedAbsoluteQuery, sessionPrefix, caseInsensitive)) {
+        return null
+    }
+
+    const relativePath = pathsEqual(normalizedAbsoluteQuery, normalizedSessionPath, caseInsensitive)
+        ? ''
+        : normalizedAbsoluteQuery.slice(sessionPrefix.length)
+    return normalizeRelativeSearchPath(relativePath, allowEmpty)
+}
+
+function getDirectorySearchPath(query: string, sessionPath: string): string | null | undefined {
+    const windowsSession = isWindowsSessionPath(sessionPath)
+    if (isWildcardSearch(query) || !hasPathSeparator(query, windowsSession)) {
+        return undefined
+    }
+
+    const normalizedQuery = normalizeSearchPath(query, windowsSession)
+    if (!normalizedQuery.endsWith('/')) {
+        return undefined
+    }
+
+    return resolveWorkspaceRelativeSearchPath(
+        trimTrailingSeparators(normalizedQuery),
+        sessionPath,
+        true
+    )
+}
+
+function getExactFileSearchPath(query: string, sessionPath: string): string | null | undefined {
+    const windowsSession = isWindowsSessionPath(sessionPath)
+    if (isWildcardSearch(query) || !hasPathSeparator(query, windowsSession)) {
+        return undefined
+    }
+
+    const normalizedQuery = normalizeSearchPath(query, windowsSession)
+    if (normalizedQuery.endsWith('/')) {
+        return undefined
+    }
+
+    return resolveWorkspaceRelativeSearchPath(normalizedQuery, sessionPath, false)
+}
+
+function toFileSearchItem(fullPath: string, metadata?: { size?: number; modified?: number }) {
+    const parts = fullPath.split('/')
+    const fileName = parts[parts.length - 1] || fullPath
+    const filePath = parts.slice(0, -1).join('/')
+    return {
+        fileName,
+        filePath,
+        fullPath,
+        fileType: 'file' as const,
+        size: metadata?.size,
+        modified: metadata?.modified
+    }
+}
+
 function parseBooleanParam(value: string | undefined): boolean | undefined {
     if (value === 'true') return true
     if (value === 'false') return false
@@ -235,6 +362,100 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
             ? normalizeFileSearchPath(query)
             : query
         const limit = parsed.data.limit ?? 200
+
+        const directorySearchPath = getDirectorySearchPath(normalizedQuery, sessionPath)
+        if (directorySearchPath !== undefined) {
+            if (directorySearchPath === null) {
+                return c.json({ success: true, files: [], pathSearch: true })
+            }
+
+            if (directorySearchPath) {
+                const directoryMetadataResult = await runRpc(() => engine.statFiles(
+                    sessionResult.sessionId,
+                    [directorySearchPath]
+                ))
+                if (!directoryMetadataResult.success) {
+                    return c.json({
+                        success: false,
+                        error: directoryMetadataResult.error ?? 'Failed to list files',
+                        pathSearch: true
+                    })
+                }
+
+                const directoryMetadata = directoryMetadataResult.entries?.find((entry) => (
+                    entry.path === directorySearchPath && entry.type === 'directory'
+                ))
+                if (!directoryMetadata) {
+                    return c.json({ success: true, files: [], pathSearch: true })
+                }
+            }
+
+            const directoryArgs = ['--files']
+            if (directorySearchPath) {
+                directoryArgs.push('--', directorySearchPath)
+            }
+            const directoryResult = await runRpc(() => engine.runRipgrep(
+                sessionResult.sessionId,
+                directoryArgs,
+                sessionPath,
+                { query: '', limit }
+            ))
+            if (!directoryResult.success) {
+                return c.json({
+                    success: false,
+                    error: directoryResult.error ?? 'Failed to list files',
+                    pathSearch: true
+                })
+            }
+
+            const normalizePath = isWindowsSessionPath(sessionPath)
+                ? normalizeFileSearchPath
+                : (path: string) => path
+            const directoryPaths = (directoryResult.stdout ?? '')
+                .split('\n')
+                .map((line) => line.trim())
+                .filter((line) => line.length > 0)
+                .map(normalizePath)
+                .slice(0, limit)
+            const metadataResult = await runRpc(() => engine.statFiles(sessionResult.sessionId, directoryPaths))
+            const metadataByPath = new Map(
+                metadataResult.success
+                    ? (metadataResult.entries ?? []).map((entry) => [entry.path, entry] as const)
+                    : []
+            )
+
+            return c.json({
+                success: true,
+                files: directoryPaths.map((fullPath) => toFileSearchItem(fullPath, metadataByPath.get(fullPath))),
+                pathSearch: true
+            })
+        }
+
+        const exactFileSearchPath = getExactFileSearchPath(normalizedQuery, sessionPath)
+        if (exactFileSearchPath !== undefined) {
+            if (exactFileSearchPath === null) {
+                return c.json({ success: true, files: [], pathSearch: true })
+            }
+
+            const metadataResult = await runRpc(() => engine.statFiles(sessionResult.sessionId, [exactFileSearchPath]))
+            if (!metadataResult.success) {
+                return c.json({
+                    success: false,
+                    error: metadataResult.error ?? 'Failed to list files',
+                    pathSearch: true
+                })
+            }
+
+            const metadata = metadataResult.entries?.find((entry) => (
+                entry.path === exactFileSearchPath && entry.type === 'file'
+            ))
+            return c.json({
+                success: true,
+                files: metadata ? [toFileSearchItem(exactFileSearchPath, metadata)] : [],
+                pathSearch: true
+            })
+        }
+
         const args = ['--files']
         if (normalizedQuery && !isWildcardSearch(normalizedQuery)) {
             args.push('--iglob', toSearchGlob(normalizedQuery))
@@ -269,20 +490,7 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
                 : []
         )
 
-        const files = paths.map((fullPath) => {
-            const parts = fullPath.split('/')
-            const fileName = parts[parts.length - 1] || fullPath
-            const filePath = parts.slice(0, -1).join('/')
-            const metadata = metadataByPath.get(fullPath)
-            return {
-                fileName,
-                filePath,
-                fullPath,
-                fileType: 'file' as const,
-                size: metadata?.size,
-                modified: metadata?.modified
-            }
-        })
+        const files = paths.map((fullPath) => toFileSearchItem(fullPath, metadataByPath.get(fullPath)))
 
         return c.json({ success: true, files })
     })
