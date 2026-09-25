@@ -73,16 +73,17 @@ receipt.
 
 | Key | Example | Purpose |
 |-----|---------|---------|
-| `type` | `ready` | `ready`, `permission-request`, `input-request`, `task-notification` |
+| `type` | `ready` | `ready`, `permission-request`, `input-request`, `task-notification`, `model-error` |
 | `sessionId` | uuid | Target session |
 | `sessionName` | string | Display name (`agent - project`) |
 | `url` | `/sessions/{id}` | Deep link path |
 | `requestId` | request-id | Pending request map key: approve/deny for permission, correlation only for input |
 | `title` | string | Notification title |
 | `body` | string | Notification body |
-| `severity` | `info` | `info` (ready/input), `warning` (permission), `success` / `error` (task) |
+| `severity` | `info` | `info` (ready/input), `warning` (permission), `success` / `error` (task), `error` (`model-error`) |
 | `contractVersion` | `1` | Present on every message; see [Versioning](#versioning) |
 | `notifySummary` | JSON string | Only on `ready`: parsed `AGENT_NOTIFY_SUMMARY` line from agent text, when present |
+| `tag` | `model-error-<sessionId>-<eventId>` | Coalescing identity. Required for `model-error` so distinct errors do not overwrite. Clients must prefer `tag` over reconstructing `type-<sessionId>`. |
 
 Direct FCM is data-only. Android relay messages contain the encrypted wrapper
 below; after decryption the same data contract drives rendering and actions.
@@ -248,9 +249,10 @@ decrypts `hapi.e` with the Keychain `pushKey` and replaces title/body with
 the real content; `hapi.v` is the envelope version (currently `1`).
 
 Delivery headers: `apns-push-type: alert`, `apns-priority: 10`,
-`apns-expiration: 0`, `apns-collapse-id: "<type>-<sessionId>"` (truncated to
-64 bytes) - so newer notifications for the same session/type replace older
-ones.
+`apns-expiration: 0`, `apns-collapse-id: "<type>-<sessionId>"` (or the
+payload `tag` when present, e.g. `model-error-<sessionId>-<eventId>`),
+truncated to 64 bytes - so newer notifications for the same coalescing
+identity replace older ones.
 
 ### Transports: self-host (direct APNs) vs official relay
 

@@ -14,6 +14,9 @@ import app.hapi.data.push.PushPayload
  *  - `permission_requests` — HIGH: an agent is blocked on the operator; the
  *    heads-up + sound interruption is the point.
  *  - `input_requests` — HIGH: an agent needs an answer, not tool approval.
+ *  - `model_errors` — HIGH: the agent hit a model-side failure (rate limit,
+ *    quota, crash); same urgency as a blocked permission, event-tagged so
+ *    distinct errors do not overwrite each other.
  *  - `ready` — DEFAULT: the agent finished and is waiting for input.
  *  - `task_notifications` — DEFAULT: task completed/failed; also the bucket
  *    for unknown types / contract versions (never heads-up for those).
@@ -41,6 +44,13 @@ object NotificationChannels {
                     NotificationManager.IMPORTANCE_HIGH,
                 ).apply {
                     description = context.getString(R.string.channel_input_requests_desc)
+                },
+                NotificationChannel(
+                    PushPayload.CHANNEL_MODEL_ERROR,
+                    context.getString(R.string.channel_model_errors),
+                    NotificationManager.IMPORTANCE_HIGH,
+                ).apply {
+                    description = context.getString(R.string.channel_model_errors_desc)
                 },
                 NotificationChannel(
                     PushPayload.CHANNEL_READY,
