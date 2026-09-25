@@ -1277,6 +1277,41 @@ describe('normalizeDecryptedMessage', () => {
         })
     })
 
+    it('normalizes top-level scope_role on Codex token_count into usage for reducer filtering', () => {
+        // Local launcher stamps scope_role: 'child' when a foreign thread_id is
+        // the only child signal; web latestUsage must keep ignoring those.
+        const message = makeMessage({
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'token_count',
+                    thread_id: 'child-thread',
+                    scope_role: 'child',
+                    info: {
+                        total_token_usage: {
+                            input_tokens: 111,
+                            output_tokens: 2,
+                            total_tokens: 113
+                        },
+                        model_context_window: 128_000
+                    }
+                }
+            }
+        })
+
+        const normalized = normalizeDecryptedMessage(message)
+
+        expect(normalized).toMatchObject({
+            role: 'event',
+            isSidechain: false,
+            usage: {
+                thread_id: 'child-thread',
+                scope_role: 'child'
+            }
+        })
+    })
+
     it('normalizes token_count payloads with explicit contextTokens', () => {
         const message = makeMessage({
             role: 'agent',
