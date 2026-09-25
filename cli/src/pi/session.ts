@@ -45,8 +45,18 @@ export class PiSession {
     // Pi's set_model requires provider + modelId; learned from get_state
     currentProvider: string | null = null;
     // Startup model from opts.model — prevents get_state from overwriting it
-    // with Pi's default. Applied once when get_available_models returns.
-    readonly initialModel: string | null;
+    // with Pi's default. Bootstrap-only: consumed (set to null) on the first
+    // get_available_models response that attempts to apply it, so a later
+    // model-list refresh can never re-apply it over the user's own choice.
+    initialModel: string | null;
+    /**
+     * True once this session has an explicit model selection from the user
+     * (web picker → SetSessionConfig, or the `/model` slash command). While set,
+     * the startup model is never (re-)applied — otherwise a model-list refresh
+     * arriving after the switch would silently revert the user's selection to
+     * the launch-time `--model`.
+     */
+    explicitModelSelection = false;
     /**
      * Settles once the startup model attempt has finished (applied, rejected,
      * or absent). Startup effort waits on it so set_thinking_level never races
@@ -126,6 +136,7 @@ export class PiSession {
         // resume before Pi reports its real state.
         this.currentModel = undefined;
         this.initialModel = opts.model?.trim() || null;
+        this.explicitModelSelection = false;
         this.startupModelSettled = new Promise<void>((resolve) => {
             this.resolveStartupModelSettled = resolve;
         });

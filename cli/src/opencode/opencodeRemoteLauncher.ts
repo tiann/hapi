@@ -24,6 +24,7 @@ import {
 import { OpencodePermissionHandler } from './utils/permissionHandler';
 import { getOpencodeNativeToolInstruction, PLAN_MODE_INSTRUCTION } from './utils/systemPrompt';
 import { resolveThoughtLevelEffort } from './thoughtLevelEffort';
+import { listOpencodeModelsForCwd } from '@/modules/common/opencodeModels';
 
 type OpencodeRemoteLauncherOptions = {
     onModelRollback?: (model: string | null) => void;
@@ -308,10 +309,45 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             this.options.onCompactAvailabilityChange?.(true);
         }
 
-        // Expose the cached models metadata via per-session RPC so the hub can
-        // forward it to the web UI's model selector without round-tripping ACP.
+        // Expose the model catalog via per-session RPC so the hub can forward
+        // it to the web UI's model selector without round-tripping ACP.
+        //
+        // The ACP metadata snapshot freezes at session/new, but opencode
+        // watches its config and picks up provider/model changes at runtime
+        // (config.updated) — so the in-session picker must not serve that
+        // stale snapshot. Probe instead (shared with the create-session form,
+        // 60s cache, same-source list); fall back to the snapshot if the
+        // probe fails. currentModelId still comes from the live session so
+        // an inline switch (or its rollback) is reflected accurately.
         session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListOpencodeModels, async () => {
             const metadata = backend.getSessionModelsMetadata?.(acpSessionId);
+            // The hub enforces a 30s deadline on this session RPC, while the probe
+            // itself allows two sequential 30s ACP requests — a stalled probe would
+            // eat the whole deadline before the snapshot fallback below could run,
+            // turning a working picker into a hard RPC failure. Bound the probe to
+            // 5s; a timeout, an error, or a failed probe result falls back to the
+            // snapshot below, while a *successful* probe is authoritative even when
+            // its catalog is empty — the snapshot may be stale by then.
+            let probeTimer: ReturnType<typeof setTimeout> | undefined;
+            try {
+                const probe = await Promise.race([
+                    listOpencodeModelsForCwd(session.path),
+                    new Promise<null>((resolve) => {
+                        probeTimer = setTimeout(() => resolve(null), 5_000);
+                    }),
+                ]);
+                if (probe?.success) {
+                    return {
+                        success: true,
+                        availableModels: probe.availableModels ?? [],
+                        currentModelId: metadata?.currentModelId ?? probe.currentModelId ?? null
+                    };
+                }
+            } catch (error) {
+                logger.debug('[opencode-remote] Live model probe failed, falling back to session snapshot:', error);
+            } finally {
+                clearTimeout(probeTimer);
+            }
             if (!metadata) {
                 return { success: false, error: 'OpenCode model metadata is not available' };
             }

@@ -30,7 +30,12 @@ export function usePiModels(args: {
             return await api.callPiEndpoint<PiModelsResponse>(sessionId, 'models')
         },
         enabled,
-        staleTime: 60_000,
+        // Track models.json changes quickly: the in-session picker must stay in
+        // sync with the create-session form, which probes the live config.
+        // staleTime alone never triggers a refetch while this hook stays
+        // mounted, so poll explicitly (the endpoint is a cheap in-process RPC).
+        staleTime: 15_000,
+        refetchInterval: enabled ? 15_000 : false,
         retry: false,
     })
 

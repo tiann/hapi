@@ -251,6 +251,38 @@ export async function buildCopilotModelsResponseFromBackend(
         }] : []
     });
 
+    // The ACP metadata snapshot freezes at session/new; the probe (shared with
+    // the create-session form, 60s cache) stays fresh as the subscription
+    // catalog changes. Probe first, fall back to the snapshot when it fails;
+    // currentModelId always comes from the live session either way.
+    //
+    // The probe is bounded to 5s (Promise.race): listCopilotModelsForCwd can
+    // spend 30s in the headless SDK probe plus up to 120s per ACP request,
+    // while the hub session RPC deadline is 120s — a stalled probe must never
+    // consume it before the snapshot fallback below runs.
+    let probeResponse: ListCopilotModelsForCwdResponse | null = null;
+    let probeTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        const probe = await Promise.race([
+            listCopilotModelsForCwd(cwd ?? process.cwd()),
+            new Promise<null>((resolve) => {
+                probeTimer = setTimeout(() => resolve(null), 5_000);
+            }),
+        ]);
+        if (probe?.success) {
+            return {
+                success: true,
+                availableModels: probe.availableModels ?? [],
+                currentModelId: parsed.currentModelId ?? metadata?.currentModelId ?? null
+            };
+        }
+        probeResponse = probe;
+    } catch {
+        // fall through to the ACP snapshot below
+    } finally {
+        clearTimeout(probeTimer);
+    }
+
     if (parsed.availableModels.length > 0) {
         return {
             success: true,
@@ -259,10 +291,10 @@ export async function buildCopilotModelsResponseFromBackend(
         };
     }
 
-    // ACP has no catalog — reuse subscription-aware SDK list (cached).
-    const response = await listCopilotModelsForCwd(cwd ?? process.cwd());
+    // Probe failed and ACP has no catalog — surface the probe's error (or a
+    // generic one) rather than throwing past the RPC handler.
     return {
-        ...response,
-        currentModelId: parsed.currentModelId ?? response.currentModelId ?? null
+        ...(probeResponse ?? { success: false as const, error: 'Failed to list Copilot models' }),
+        currentModelId: parsed.currentModelId ?? metadata?.currentModelId ?? null
     };
 }

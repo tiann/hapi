@@ -1,4 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { logger } from '@/ui/logger';
+import { decodeGeneratedImageBase64, detectImageMimeType, registerGeneratedImage } from '@/modules/common/generatedImages';
 import type { AgentMessage } from '@/agent/types';
 import {
     PiToolExecutionEndEventSchema,
@@ -96,4 +98,72 @@ export function convertPiEvent(event: PiAgentEvent): AgentMessage[] {
             logger.debug(`[pi] Unknown event type: ${event.type}`);
             return [];
     }
+}
+
+const PI_IMAGE_EXTENSIONS: Record<string, string> = {
+    'image/png': '.png',
+    'image/jpeg': '.jpg',
+    'image/gif': '.gif',
+    'image/webp': '.webp',
+    'image/avif': '.avif',
+};
+
+/**
+ * Pi hands images back inside tool results as inline base64 content blocks
+ * (e.g. `read` on an image file yields `{ type: 'image', data, mimeType }`).
+ * Register each block as generated media and emit a `generated_image`
+ * AgentMessage so the web client can render it via the generated-image blob
+ * endpoint — mirroring the Codex `generated_image` flow.
+ */
+export function extractPiGeneratedImages(
+    event: PiAgentEvent,
+    resolveArgs: (toolCallId: string) => unknown,
+): AgentMessage[] {
+    if (event.type !== 'tool_execution_end') return [];
+    const parsed = PiToolExecutionEndEventSchema.safeParse(event);
+    if (!parsed.success) return [];
+    const endEvent = parsed.data;
+    const result = endEvent.result;
+    const content = result !== null && typeof result === 'object'
+        ? (result as { content?: unknown }).content
+        : undefined;
+    if (!Array.isArray(content)) return [];
+
+    const args = resolveArgs(endEvent.toolCallId);
+    const sourcePath = args !== null && typeof args === 'object'
+        && typeof (args as { path?: unknown }).path === 'string'
+        ? (args as { path: string }).path
+        : undefined;
+
+    const messages: AgentMessage[] = [];
+    for (const block of content) {
+        if (!block || typeof block !== 'object' || (block as { type?: unknown }).type !== 'image') continue;
+        const record = block as { data?: unknown; mimeType?: unknown };
+        const data = typeof record.data === 'string' ? record.data : undefined;
+        const mimeType = typeof record.mimeType === 'string' ? record.mimeType : undefined;
+        if (!data || !mimeType || !mimeType.toLowerCase().startsWith('image/')) continue;
+        try {
+            const bytes = decodeGeneratedImageBase64(data);
+            if (!bytes) continue;
+            const detectedMimeType = detectImageMimeType(bytes);
+            if (!detectedMimeType || detectedMimeType !== mimeType.toLowerCase()) continue;
+            const media = registerGeneratedImage({
+                id: randomUUID(),
+                path: sourcePath ?? `${endEvent.toolCallId}${PI_IMAGE_EXTENSIONS[detectedMimeType] ?? '.bin'}`,
+                fileName: sourcePath ? undefined : null,
+                mimeType: detectedMimeType,
+                bytes,
+            });
+            messages.push({
+                type: 'generated_image',
+                imageId: media.id,
+                fileName: media.fileName,
+                mimeType: media.mimeType,
+                source: { ingress: 'tool_result', flavor: 'pi', toolCallId: endEvent.toolCallId },
+            });
+        } catch (error) {
+            logger.debug(`[pi] Skipping undisplayable image from ${endEvent.toolName} (${endEvent.toolCallId}): ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+    return messages;
 }
