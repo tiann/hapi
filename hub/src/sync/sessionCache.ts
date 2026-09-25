@@ -779,11 +779,18 @@ export class SessionCache {
 
     expireInactive(now: number = Date.now()): string[] {
         const sessionTimeoutMs = 30_000
+        // Thinking sessions get a longer offline grace: turns routinely outlive brief
+        // transport blackouts on the runner host (outbound messages are buffered and
+        // flushed on reconnect), so expiring them on the plain keepalive timeout flips
+        // sessions offline mid-turn only for them to come back the moment the socket
+        // reconnects. Bounded so a genuinely dead process still expires.
+        const thinkingSessionTimeoutMs = 300_000
         const expired: string[] = []
 
         for (const session of this.sessions.values()) {
             if (!session.active) continue
-            if (now - session.activeAt <= sessionTimeoutMs) continue
+            const timeoutMs = session.thinking ? thinkingSessionTimeoutMs : sessionTimeoutMs
+            if (now - session.activeAt <= timeoutMs) continue
             session.active = false
             this.store.sessions.setSessionActive(session.id, false, now, session.namespace)
             session.thinking = false
