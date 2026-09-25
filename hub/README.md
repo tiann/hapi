@@ -326,6 +326,9 @@ The hub build output is `hub/dist/index.js`, and the web assets are in `web/dist
 
 - Telegram Mini Apps require HTTPS and a public URL. If the hub has no public IP, use Cloudflare Tunnel or Tailscale and set `HAPI_PUBLIC_URL` to the HTTPS endpoint.
 - If the web app is hosted on a different origin, set `CORS_ORIGINS` (or `HAPI_PUBLIC_URL`) to include that static host origin.
+- `HAPI_PUBLIC_URL` must be an absolute `http(s)` URL (`https://your-domain.example`). A value without a scheme is repaired on startup (`https://` by default, `http://` for loopback and private hosts), persisted back to `settings.json` and logged as a warning. Values that cannot be a hub URL — typos, `ws://...`, embedded credentials — fail startup with an explicit error instead of silently emptying the CORS allowlist.
+- `CORS_ORIGINS` entries must include the scheme; entries that cannot be used as origins (including the opaque `null` origin) are ignored with a warning, and repaired entries (`app.example.com`, `https://app.example.com/`) are logged with the value the hub actually uses. The hub logs the effective allowlist on startup (`[Hub] CORS origins: ...`) and warns when it is empty.
+- Requests whose `Origin` matches the host the client used are always accepted, so the hub's own web app keeps working even when the allowlist is incomplete. This is defence in depth, not authentication: behind a reverse proxy the hub cannot tell which scheme the browser used, and every socket namespace still requires its CLI token or client JWT.
 
 ## Standalone web hosting
 

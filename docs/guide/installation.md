@@ -165,12 +165,12 @@ On first run, HAPI:
 | Variable | Default | settings.json | Description |
 |----------|---------|---------------|-------------|
 | `CLI_API_TOKEN` | Auto-generated | `cliApiToken` | Shared secret for authentication |
-| `HAPI_API_URL` | `http://localhost:3006` | `apiUrl` | Hub URL for CLI connections |
+| `HAPI_API_URL` | `http://localhost:3006` | `apiUrl` | Hub URL for CLI connections (absolute `http(s)` URL; a missing scheme is repaired with a warning) |
 | `HAPI_EXTRA_HEADERS_JSON` | - | `extraHeaders` | JSON object of extra outbound headers for CLI → hub HTTP/WebSocket requests |
 | `HAPI_LISTEN_HOST` | `127.0.0.1` | `listenHost` | Hub HTTP bind address |
 | `HAPI_LISTEN_PORT` | `3006` | `listenPort` | Hub HTTP port |
-| `HAPI_PUBLIC_URL` | - | `publicUrl` | Public URL for external access |
-| `CORS_ORIGINS` | - | `corsOrigins` | Allowed CORS origins (comma-separated) |
+| `HAPI_PUBLIC_URL` | - | `publicUrl` | Public URL for external access (absolute `http(s)` URL; derives the default CORS allowlist) |
+| `CORS_ORIGINS` | - | `corsOrigins` | Allowed CORS origins (comma-separated, scheme included; unusable entries, including the opaque `null` origin, are ignored with a warning) |
 | `TELEGRAM_BOT_TOKEN` | - | `telegramBotToken` | Telegram Bot API token |
 | `TELEGRAM_NOTIFICATION` | `true` | `telegramNotification` | Enable Telegram notifications |
 | `SERVERCHAN_SENDKEY` | - | `serverChanSendKey` | Server酱 (ServerChan) SendKey for push notifications |
@@ -233,6 +233,13 @@ When ENV values are set and not present in settings.json, they are automatically
   }
 }
 ```
+
+`publicUrl` / `HAPI_API_URL` must be absolute URLs. When the scheme is
+missing the hub and the CLI repair it on startup (`https://` by default,
+`http://` for loopback and private hosts), persist the fixed value where it
+came from a file and print a warning. Values that cannot be a hub URL
+(typos, `ws://...`, embedded credentials) fail hub startup and the CLI with
+an explicit error instead of failing later.
 
 JSON Schema: [settings.schema.json](https://hapi.run/docs/schemas/settings.schema.json)
 </details>
