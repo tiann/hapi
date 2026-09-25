@@ -28,6 +28,8 @@ function createSession(id: string, updatedAt: number): SessionSummary {
         nextScheduledAt: null,
         model: null,
         effort: null,
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
     }
 }
 

@@ -79,6 +79,14 @@ export async function setup() {
         HOME: process.env.HOME,
         ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}),
         ...(process.env.BUN_INSTALL ? { BUN_INSTALL: process.env.BUN_INSTALL } : {}),
+        // Self-hosted / estate runners pin bun's cache off-HOME; without this
+        // passthrough `bun run hub` can hang before any log output.
+        ...(process.env.BUN_INSTALL_CACHE_DIR
+            ? { BUN_INSTALL_CACHE_DIR: process.env.BUN_INSTALL_CACHE_DIR }
+            : {}),
+        ...(process.env.XDG_CACHE_HOME
+            ? { XDG_CACHE_HOME: process.env.XDG_CACHE_HOME }
+            : {}),
         HAPI_HOME: tmpHome,
         DB_PATH: join(tmpHome, 'hapi.db'),
         HAPI_LISTEN_PORT: String(port),

@@ -98,6 +98,22 @@ export type StoredScratchlistEntry = {
     attachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
 }
 
+export type StoredSessionJob = {
+    sessionId: string
+    key: string
+    label: string
+    status: import('@hapi/protocol').AttachedJobStatus
+    done?: number
+    total?: number
+    remaining?: number
+    unit?: string
+    detail?: string
+    runId?: string
+    heartbeatAt: number
+    startedAt: number
+    updatedAt: number
+}
+
 export type VersionedUpdateResult<T> =
     | { result: 'success'; version: number; value: T }
     | { result: 'version-mismatch'; version: number; value: T }

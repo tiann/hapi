@@ -24,6 +24,7 @@ Start with the task's files; read only relevant sections of these references, no
 | Shared wire types and validation | `shared/src/types.ts`, `schemas.ts`, `socket.ts`, `modes.ts` |
 | Native API contract, chat conformance | [client contract](docs/api/client-contract/index.md), [iOS](ios/README.md), [Android](android/README.md) |
 | Encrypted native push relay | [relay/README.md](relay/README.md) |
+| Session-attached jobs (outliving work) | [session jobs guide](docs/guide/session-jobs.md), `cli/src/commands/job.ts` |
 | User docs / marketing site | `docs/` (VitePress) / `website/` |
 
 ## Repository conventions
@@ -38,6 +39,20 @@ Start with the task's files; read only relevant sections of these references, no
 - CLI↔hub uses Socket.IO `/cli` with the CLI access token. Web terminals use `/terminal` with a client JWT; ordinary web/native updates use REST + SSE. Preserve namespace isolation (`CLI_API_TOKEN:<namespace>`).
 - Metadata/state updates are versioned; preserve stale-update rejection. Permission controls use per-flavor catalogs in `shared/src/modes.ts`, further constrained by session capabilities.
 - `shared/fixtures/**` is generated from the web chat pipeline, the source of truth for native conformance. Never hand-edit fixtures. For changes to fixture inputs or generation (paths in [.github/workflows/fixtures.yml](.github/workflows/fixtures.yml)), run `bun run gen:fixtures` and include any generated changes in the deliverable. CI checks drift and runs native conformance on fixture changes.
+
+## Session-attached jobs (outliving work)
+
+When an agent starts process-shaped work that will keep running after the agent goes idle (`nohup`, batch imports, long scripts, external daemons), attach it so the session list stays truthful while `active: false`. This is **not** thinking progress / todos / in-agent background tools.
+
+Agent contract (idle agents cannot heartbeat — bare set + nohup freezes the bar):
+
+1. **Required for process-shaped work:** Shell `hapi job run <session-id> <key> --label … -- <cmd>` (auto-heartbeat + exit status). Use `"$HAPI_SESSION_ID"` only when it matches the operator chat row (`/sessions/<id>` in the web URL).
+2. MCP `session_job` **refuses `action=set`**. Use it only for `update` / `clear` / `list` on a job the supervisor already created.
+3. Manual CLI `set` only with a self-heartbeating wrapper (`update` ≥~10m); never MCP set + nohup.
+4. Prefer honest `--remaining` or `--done`/`--total`; omit counts if unknown — never invent a percent.
+5. Elapsed wall clock is always shown from `startedAt` (not an ETA).
+
+Full guide: [docs/guide/session-jobs.md](docs/guide/session-jobs.md). CLI: `hapi job --help`.
 
 ## Verification and completion
 
