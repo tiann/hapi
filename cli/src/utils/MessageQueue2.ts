@@ -8,7 +8,16 @@ export interface QueueItem<T> {
     isolate?: boolean; // If true, this message must be processed alone
     /** Stable FIFO key used when an async reservation is restored later. */
     enqueueOrder?: number;
+    /**
+     * True when HAPI enqueued this item as an internal control message
+     * (e.g. Cursor Auto-review toggle slash), not a user-authored turn.
+     */
+    internal?: boolean;
 }
+
+export type QueueItemOptions = {
+    internal?: boolean;
+};
 
 export type QueueReservation<T> = {
     item: QueueItem<T>;
@@ -137,7 +146,7 @@ export class MessageQueue2<T> {
      * Use this when a slash command must run alone but earlier prompts must
      * still be delivered in order.
      */
-    pushIsolated(message: string, mode: T, localId?: string): void {
+    pushIsolated(message: string, mode: T, localId?: string, options?: QueueItemOptions): void {
         if (this.closed) {
             throw new Error('Cannot push to closed queue');
         }
@@ -151,6 +160,7 @@ export class MessageQueue2<T> {
             modeHash,
             localId,
             isolate: true,
+            internal: options?.internal,
             enqueueOrder: this.nextEnqueueOrder++
         };
         Object.defineProperty(item, 'enqueueOrder', { value: item.enqueueOrder, enumerable: false, writable: true });
@@ -261,7 +271,7 @@ export class MessageQueue2<T> {
      * that failed transiently and must retry without batching against sibling
      * prompts).
      */
-    unshiftIsolated(message: string, mode: T, localId?: string): void {
+    unshiftIsolated(message: string, mode: T, localId?: string, options?: QueueItemOptions): void {
         if (this.closed) {
             throw new Error('Cannot unshift to closed queue');
         }
@@ -275,6 +285,7 @@ export class MessageQueue2<T> {
             modeHash,
             localId,
             isolate: true,
+            internal: options?.internal,
             enqueueOrder: this.previousEnqueueOrder--
         };
         Object.defineProperty(item, 'enqueueOrder', { value: item.enqueueOrder, enumerable: false, writable: true });
@@ -517,6 +528,37 @@ export class MessageQueue2<T> {
             .filter((id): id is string => typeof id === 'string');
     }
 
+    /** True if any pending (not yet dequeued) message matches the predicate. */
+    hasMessageMatching(predicate: (message: string) => boolean): boolean {
+        return this.queue.some((item) => predicate(item.message));
+    }
+
+    /**
+     * Drop pending items matching the predicate (e.g. reconcile an internal
+     * slash that a fresh spawn already satisfies). Does not hub-ack.
+     */
+    removeItemsMatching(predicate: (item: QueueItem<T>) => boolean): number {
+        const kept: QueueItem<T>[] = [];
+        let removed = 0;
+        for (const item of this.queue) {
+            if (!predicate(item)) {
+                kept.push(item);
+                continue;
+            }
+            removed += 1;
+            if (item.localId) {
+                const reservation = this.reservations.get(item.localId);
+                if (reservation) {
+                    reservation.cancelReason = 'explicit';
+                    reservation.state = 'cancelled';
+                    this.reservations.delete(item.localId);
+                }
+            }
+        }
+        this.queue = kept;
+        return removed;
+    }
+
     /**
      * Close the queue - no more messages can be pushed
      */
@@ -551,7 +593,7 @@ export class MessageQueue2<T> {
      * Wait for messages and return all messages with the same mode as a single string
      * Returns { message: string, mode: T } or null if aborted/closed
      */
-    async waitForMessagesAndGetAsString(abortSignal?: AbortSignal): Promise<{ message: string, mode: T, isolate: boolean, hash: string, items: Array<{ message: string, localId?: string }> } | null> {
+    async waitForMessagesAndGetAsString(abortSignal?: AbortSignal): Promise<{ message: string, mode: T, isolate: boolean, hash: string, items: Array<{ message: string, localId?: string, internal?: boolean }> } | null> {
         // If we have messages, return them immediately
         if (this.queue.length > 0) {
             return this.collectBatch();
@@ -575,7 +617,7 @@ export class MessageQueue2<T> {
     /**
      * Collect a batch of messages with the same mode, respecting isolation requirements
      */
-    private collectBatch(): { message: string, mode: T, hash: string, isolate: boolean, items: Array<{ message: string, localId?: string }> } | null {
+    private collectBatch(): { message: string, mode: T, hash: string, isolate: boolean, items: Array<{ message: string, localId?: string, internal?: boolean }> } | null {
         if (this.queue.length === 0) {
             return null;
         }
@@ -587,7 +629,7 @@ export class MessageQueue2<T> {
         // `message` string below so callers that need to requeue individual
         // messages (e.g. restoring a failed batch with each item's own
         // localId intact) don't have to re-split an already-joined string.
-        const items: Array<{ message: string, localId?: string }> = [];
+        const items: Array<{ message: string, localId?: string, internal?: boolean }> = [];
         let mode = firstItem.mode;
         let isolate = firstItem.isolate ?? false;
         const targetModeHash = firstItem.modeHash;
@@ -596,7 +638,7 @@ export class MessageQueue2<T> {
         if (firstItem.isolate) {
             const item = this.queue.shift()!;
             sameModeMessages.push(item.message);
-            items.push({ message: item.message, localId: item.localId });
+            items.push({ message: item.message, localId: item.localId, internal: item.internal });
             if (item.localId) consumedLocalIds.push(item.localId);
             logger.debug(`[MessageQueue2] Collected isolated message with mode hash: ${targetModeHash}`);
         } else {
@@ -606,7 +648,7 @@ export class MessageQueue2<T> {
                 !this.queue[0].isolate) {
                 const item = this.queue.shift()!;
                 sameModeMessages.push(item.message);
-                items.push({ message: item.message, localId: item.localId });
+                items.push({ message: item.message, localId: item.localId, internal: item.internal });
                 if (item.localId) consumedLocalIds.push(item.localId);
             }
             logger.debug(`[MessageQueue2] Collected batch of ${sameModeMessages.length} messages with mode hash: ${targetModeHash}`);
