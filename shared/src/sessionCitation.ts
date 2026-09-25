@@ -41,8 +41,8 @@ export const SPAWN_PEER_TOOL_DESCRIPTION =
     'Returns the new sessionId + name. Fails if the remit does not land (a sessionId with 0 user messages is a failed spawn). ' +
     'Do not call POST /api/machines/.../spawn with a message field - the hub rejects it. Use spawn_peer to create and deliver the remit. ' +
     'Prefer this (or `hapi spawn-peer`) over JWT+curl. Same hub/namespace as this session. ' +
-    'Default permissionMode is yolo via hub peerSpawnDefaults / stock - omit the field to keep that default so peers work without approval prompts. ' +
-    'Pass permissionMode only to tighten (e.g. default/plan) or when the operator names a mode; do not clone the parent session\'s mode. ' +
+    'Omit permissionMode to inherit hub peerSpawnDefaults.permissionMode, falling back to stock yolo only when the hub has no override. ' +
+    'Do not pass permissionMode \"default\" (treated as omit — same hub-then-stock chain, not an unconditional stock yolo). Pass permissionMode only to tighten (e.g. plan/ask) or when the operator names a mode; do not clone the parent session\'s mode. ' +
     'When agent/model are omitted, resolves from hub peerSpawnDefaults (Settings → General → Agents), then stock (claude + sonnet). ' +
     'In-session calls auto-stamp a durable Parent [title](/sessions/<uuid>) chip for this session onto the remit (fail-closed if parent id is missing). ' +
     PEER_IDENTITY_UUID_RULE

@@ -368,6 +368,12 @@ export async function spawnPeer(options: SpawnPeerOptions): Promise<SpawnPeerRes
     if (options.agent && !(CREATABLE_AGENT_FLAVORS as readonly string[]).includes(options.agent)) {
         throw new SpawnPeerError('bad_args', `unsupported agent: ${options.agent}`)
     }
+    // Agents often pass MCP enum "default" from habit; treat as omit so hub/stock
+    // yolo wins. Do not put this in resolvePeerSpawnConfig — machine/New Session
+    // must keep an explicit native Default selection.
+    const peerPermissionMode = options.permissionMode === 'default'
+        ? undefined
+        : options.permissionMode
 
     const waitActiveSecs = options.waitActiveSecs ?? DEFAULT_WAIT_ACTIVE_SECS
     if (!Number.isFinite(waitActiveSecs) || waitActiveSecs <= 0) {
@@ -400,20 +406,21 @@ export async function spawnPeer(options: SpawnPeerOptions): Promise<SpawnPeerRes
         : await fetchHubPeerSpawnDefaults(apiUrl, jwt, http)
     const resolved = resolvePeerSpawnConfig({
         agent: options.agent,
-        permissionMode: options.permissionMode,
+        permissionMode: peerPermissionMode,
         model: options.model,
         effort: options.effort
     }, hubDefaults)
 
     // Validate explicit permission against the resolved agent (hub default when
     // agent is omitted) — not a Claude preview before settings load.
+    // Use peerPermissionMode so MCP "default" (treated as omit) skips validation.
     if (
-        options.permissionMode
-        && !getLaunchPermissionModesForFlavor(resolved.agent).includes(options.permissionMode)
+        peerPermissionMode
+        && !getLaunchPermissionModesForFlavor(resolved.agent).includes(peerPermissionMode)
     ) {
         throw new SpawnPeerError(
             'bad_args',
-            `permission mode ${options.permissionMode} is not supported by ${resolved.agent}`
+            `permission mode ${peerPermissionMode} is not supported by ${resolved.agent}`
         )
     }
 

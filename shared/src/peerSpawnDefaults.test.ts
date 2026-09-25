@@ -123,6 +123,29 @@ describe('resolvePeerSpawnConfig', () => {
             effort: 'high'
         })
     })
+
+    it('keeps explicit permissionMode default for machine/New Session callers', () => {
+        // Peer spawn normalizes default→omit in CLI spawnPeer, not here.
+        expect(resolvePeerSpawnConfig(
+            { permissionMode: 'default' },
+            { permissionMode: 'yolo' }
+        )).toEqual({
+            agent: 'claude',
+            permissionMode: 'default',
+            model: 'sonnet'
+        })
+    })
+
+    it('still honors explicit non-default permissionMode', () => {
+        expect(resolvePeerSpawnConfig(
+            { permissionMode: 'plan' },
+            { permissionMode: 'yolo' }
+        )).toEqual({
+            agent: 'claude',
+            permissionMode: 'plan',
+            model: 'sonnet'
+        })
+    })
 })
 
 describe('PeerSpawnDefaultsSchema', () => {

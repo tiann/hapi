@@ -64,6 +64,33 @@ describe('ensureParentStamp', () => {
         expect(result.message).toBe(body)
     })
 
+    it('stays idempotent when the parent title contains brackets (escaped in the chip label)', () => {
+        const identity = { sessionId: PARENT_ID, name: 'Team [Infra]' }
+        const first = ensureParentStamp('Do the work.', identity)
+        expect(first.stamped).toBe(true)
+        expect(first.message).toContain(`[Team \\[Infra\\]](/sessions/${PARENT_ID})`)
+        const second = ensureParentStamp(first.message, {
+            sessionId: PARENT_ID,
+            name: 'Renamed [Again]',
+        })
+        expect(second.stamped).toBe(false)
+        expect(second.alreadyPresent).toBe(true)
+        expect(second.message).toBe(first.message)
+        expect(second.message.match(/## Parent/g)?.length).toBe(1)
+    })
+
+    it('does not hang on a long nonmatching backslash run under ## Parent', () => {
+        const body = `## Parent\n- [${'\\'.repeat(40)}\n\nDo the work.`
+        const started = Date.now()
+        const result = ensureParentStamp(body, {
+            sessionId: PARENT_ID,
+            name: 'Parent',
+        })
+        expect(Date.now() - started).toBeLessThan(200)
+        expect(result.stamped).toBe(true)
+        expect(result.message).toContain(`[Parent](/sessions/${PARENT_ID})`)
+    })
+
     it('still stamps when the remit only has a bare parent citation (no ## Parent block)', () => {
         // Bare /sessions/<uuid> must not suppress the Parent chip - chat UI only
         // promotes citations under ## Parent into the sender-style chip.
