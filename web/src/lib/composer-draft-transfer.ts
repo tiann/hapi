@@ -102,6 +102,13 @@ export function clearComposerDraftSnapshot(sessionId: string): void {
     pendingTransfers.delete(sessionId)
 }
 
+/** Clear a send snapshot only when it still contains that send's text. */
+export function clearComposerDraftSnapshotIfText(sessionId: string, text: string): void {
+    const snapshot = liveSnapshots.get(sessionId)
+    if (!snapshot || snapshot.text !== text) return
+    clearComposerDraftSnapshot(sessionId)
+}
+
 /** True after a cross-session transfer retired this source id. */
 export function composerDraftWasHandedOff(sessionId: string): boolean {
     return completedHandoffs.has(sessionId)

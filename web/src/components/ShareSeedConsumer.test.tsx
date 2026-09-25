@@ -8,11 +8,12 @@ import {
     setSharePendingTransfer,
 } from '@/lib/sharePendingState'
 
-const { setText, addAttachment, getShareTransfer, deleteShareTransfer } = vi.hoisted(() => ({
+const { setText, addAttachment, getShareTransfer, deleteShareTransfer, onProgrammaticEdit } = vi.hoisted(() => ({
     setText: vi.fn(),
     addAttachment: vi.fn(async () => undefined),
     getShareTransfer: vi.fn(),
     deleteShareTransfer: vi.fn(async () => undefined),
+    onProgrammaticEdit: vi.fn(),
 }))
 
 vi.mock('@assistant-ui/react', () => ({
@@ -40,6 +41,7 @@ afterEach(() => {
     addAttachment.mockReset()
     getShareTransfer.mockReset()
     deleteShareTransfer.mockReset()
+    onProgrammaticEdit.mockReset()
     try { window.sessionStorage.clear() } catch { /* noop */ }
 })
 
@@ -76,11 +78,12 @@ describe('ShareSeedConsumer', () => {
         other.unmount()
 
         retargetSharePendingTransfer('session-a', 'session-b')
-        render(<ShareSeedConsumer sessionId="session-b" sessionActive={true} />)
+        render(<ShareSeedConsumer sessionId="session-b" sessionActive={true} onProgrammaticEdit={onProgrammaticEdit} />)
 
         await waitFor(() => {
             expect(getShareTransfer).toHaveBeenCalledWith('xfer-handoff')
             expect(setText).toHaveBeenCalledWith('shared payload')
+            expect(onProgrammaticEdit).toHaveBeenCalledOnce()
         })
         expect(window.sessionStorage.getItem(SHARE_PENDING_TRANSFER_KEY)).toBeNull()
     })
@@ -94,11 +97,12 @@ describe('ShareSeedConsumer', () => {
         expect(peekSharePendingTransfer()?.transferId).toBe('xfer-same-id')
         expect(getShareTransfer).not.toHaveBeenCalled()
 
-        rerender(<ShareSeedConsumer sessionId="session-a" sessionActive={true} />)
+        rerender(<ShareSeedConsumer sessionId="session-a" sessionActive={true} onProgrammaticEdit={onProgrammaticEdit} />)
 
         await waitFor(() => {
             expect(getShareTransfer).toHaveBeenCalledWith('xfer-same-id')
             expect(setText).toHaveBeenCalledWith('shared payload')
+            expect(onProgrammaticEdit).toHaveBeenCalledOnce()
         })
         expect(window.sessionStorage.getItem(SHARE_PENDING_TRANSFER_KEY)).toBeNull()
     })
@@ -108,12 +112,13 @@ describe('ShareSeedConsumer', () => {
 
         render(
             <StrictMode>
-                <ShareSeedConsumer sessionId="session-a" sessionActive={true} />
+                <ShareSeedConsumer sessionId="session-a" sessionActive={true} onProgrammaticEdit={onProgrammaticEdit} />
             </StrictMode>,
         )
 
         await waitFor(() => {
             expect(setText).toHaveBeenCalledWith('shared payload')
+            expect(onProgrammaticEdit).toHaveBeenCalledOnce()
         })
         expect(getShareTransfer).toHaveBeenCalledTimes(1)
         expect(setText).toHaveBeenCalledTimes(1)
