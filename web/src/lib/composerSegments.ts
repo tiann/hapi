@@ -1,6 +1,7 @@
 import { buildSessionReferencePath, parseSessionPathHref } from '@/lib/sessionReference'
 import { truncateGraphemes } from '@/lib/graphemes'
 import { findActiveWord } from '@/utils/findActiveWord'
+import { DEFAULT_AUTOCOMPLETE_PREFIXES } from '@/lib/autocomplete'
 
 /** Object Replacement Character — one mirror slot per session atom. */
 export const COMPOSER_MENTION_MIRROR_CHAR = '\uFFFC'
@@ -167,7 +168,7 @@ export function insertSessionMentionInComposerSegments(
     segments: readonly ComposerSegment[],
     selection: ComposerSelection,
     mention: { id: string; title: string },
-    prefixes: string[] = ['@', '/', '$']
+    prefixes: string[] = [...DEFAULT_AUTOCOMPLETE_PREFIXES]
 ): { segments: ComposerSegment[]; selection: ComposerSelection } {
     const mirror = mirrorComposerSegments(segments)
     const active = findActiveWord(mirror, selection, prefixes)
@@ -226,7 +227,7 @@ export function insertPlainTextInComposerSegments(
     segments: readonly ComposerSegment[],
     selection: ComposerSelection,
     text: string,
-    prefixes: string[] = ['@', '/', '$'],
+    prefixes: string[] = [...DEFAULT_AUTOCOMPLETE_PREFIXES],
     addSpace: boolean = true
 ): { segments: ComposerSegment[]; selection: ComposerSelection } {
     const mirror = mirrorComposerSegments(segments)
