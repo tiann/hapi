@@ -4,7 +4,7 @@ import type { Machine, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { createMachinesRoutes } from './machines'
 import { RpcTargetMissingError } from '../../sync/rpcGateway'
-import { MACHINE_CAPABILITIES } from '@hapi/protocol'
+import { DEFAULT_USAGE_QUERY_TEMPLATE, MACHINE_CAPABILITIES } from '@hapi/protocol'
 
 function createMachine(overrides?: Partial<Machine>): Machine {
     return {
@@ -29,6 +29,146 @@ function createMachine(overrides?: Partial<Machine>): Machine {
 }
 
 describe('machines routes', () => {
+    describe('usage query routes', () => {
+        function createUsageApp(engine: Partial<SyncEngine>, namespace = 'default', machineNamespace = namespace) {
+            const usageMachine = createMachine({
+                namespace: machineNamespace,
+                metadata: {
+                    ...createMachine().metadata!,
+                    capabilities: [MACHINE_CAPABILITIES.AgentAvailability, MACHINE_CAPABILITIES.UsageQuery]
+                }
+            })
+            const usageEngine = { ...engine, getMachine: () => usageMachine }
+            const app = new Hono<WebAppEnv>()
+            app.use('*', async (c, next) => {
+                c.set('namespace', namespace)
+                await next()
+            })
+            app.route('/api', createMachinesRoutes(() => usageEngine as unknown as SyncEngine))
+            return app
+        }
+
+        it('forwards settings, test, and cached query requests to the machine engine', async () => {
+            const machine = createMachine()
+            const calls: string[] = []
+            const settings = {
+                agent: 'claude' as const,
+                enabled: true,
+                templateId: DEFAULT_USAGE_QUERY_TEMPLATE.id,
+                template: DEFAULT_USAGE_QUERY_TEMPLATE,
+                credentials: {
+                    baseUrl: { configured: true, source: 'config' as const },
+                    apiKey: { configured: true, source: 'config' as const }
+                }
+            }
+            const result = {
+                agent: 'claude' as const,
+                templateId: DEFAULT_USAGE_QUERY_TEMPLATE.id,
+                status: 'success' as const,
+                fiveHour: { usedPercent: 30, resetsAt: 1_780_000_000_000 },
+                sevenDay: { usedPercent: 12, resetsAt: 1_780_100_000_000 },
+                queriedAt: 1_780_000_000_000,
+                stale: false
+            }
+            const app = createUsageApp({
+                getMachine: () => machine,
+                getUsageQuerySettings: async () => { calls.push('settings'); return settings },
+                saveUsageQuerySettings: async () => { calls.push('save'); return settings },
+                testUsageQueryTemplate: async () => { calls.push('test'); return result },
+                queryUsage: async (_machineId: string, _agent: 'claude', force?: boolean) => { calls.push(force ? 'force' : 'query'); return result }
+            } as Partial<SyncEngine>)
+
+            const settingsResponse = await app.request('/api/machines/machine-1/usage-query/settings?agent=claude')
+            expect(settingsResponse.status).toBe(200)
+            expect(await settingsResponse.json()).toEqual(settings)
+
+            const saveResponse = await app.request('/api/machines/machine-1/usage-query/settings', {
+                method: 'PUT',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ agent: 'claude', enabled: true, templateId: DEFAULT_USAGE_QUERY_TEMPLATE.id, template: DEFAULT_USAGE_QUERY_TEMPLATE })
+            })
+            expect(saveResponse.status).toBe(200)
+
+            const testResponse = await app.request('/api/machines/machine-1/usage-query/test', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ agent: 'claude', template: DEFAULT_USAGE_QUERY_TEMPLATE })
+            })
+            expect(testResponse.status).toBe(200)
+            expect(await testResponse.json()).toEqual(result)
+
+            const queryResponse = await app.request('/api/machines/machine-1/usage-query/query', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ agent: 'claude', force: true })
+            })
+            expect(queryResponse.status).toBe(200)
+            expect(await queryResponse.json()).toEqual(result)
+            expect(calls).toEqual(['settings', 'save', 'test', 'force'])
+        })
+
+        it('rejects invalid agents and preserves namespace machine isolation', async () => {
+            const machine = createMachine()
+            const app = createUsageApp({ getMachine: () => machine } as Partial<SyncEngine>)
+            const invalid = await app.request('/api/machines/machine-1/usage-query/settings?agent=gemini')
+            expect(invalid.status).toBe(400)
+
+            const deniedApp = createUsageApp({ getMachine: () => machine } as Partial<SyncEngine>, 'other', 'default')
+            const denied = await deniedApp.request('/api/machines/machine-1/usage-query/settings?agent=claude')
+            expect(denied.status).toBe(403)
+        })
+
+        it('rejects mismatched save template IDs at the HTTP boundary', async () => {
+            const machine = createMachine()
+            let saveCalls = 0
+            const app = createUsageApp({
+                getMachine: () => machine,
+                saveUsageQuerySettings: async () => {
+                    saveCalls += 1
+                    return null as never
+                }
+            } as Partial<SyncEngine>)
+            const response = await app.request('/api/machines/machine-1/usage-query/settings', {
+                method: 'PUT',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    agent: 'claude',
+                    enabled: true,
+                    templateId: 'different-template',
+                    template: DEFAULT_USAGE_QUERY_TEMPLATE
+                })
+            })
+            expect(response.status).toBe(400)
+            expect(saveCalls).toBe(0)
+        })
+
+        it('returns RPC target missing as a retryable 503', async () => {
+            const machine = createMachine()
+            const app = createUsageApp({
+                getMachine: () => machine,
+                getUsageQuerySettings: async () => { throw new RpcTargetMissingError('machine-1:usage-query-get-settings', 'handler-not-registered') }
+            } as Partial<SyncEngine>)
+            const response = await app.request('/api/machines/machine-1/usage-query/settings?agent=codex')
+            expect(response.status).toBe(503)
+            expect(await response.json()).toMatchObject({ code: 'rpc_target_missing' })
+        })
+
+        it('returns a runner-upgrade response when the usage RPC capability is absent', async () => {
+            const machine = createMachine()
+            const app = new Hono<WebAppEnv>()
+            app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+            app.route('/api', createMachinesRoutes(() => ({
+                getMachine: () => machine
+            } as unknown as SyncEngine)))
+            const response = await app.request('/api/machines/machine-1/usage-query/settings?agent=claude')
+            expect(response.status).toBe(409)
+            expect(await response.json()).toEqual({
+                error: 'This runner must be upgraded before querying agent quota',
+                code: 'runner_upgrade_required'
+            })
+        })
+    })
+
     it('blocks spawn and availability inspection when the runner needs an upgrade', async () => {
         const machine = createMachine({
             metadata: {
