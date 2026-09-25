@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 export type SessionHeaderMetadataKey =
     | 'showLabels'
     | 'agent'
+    | 'agentIcon'
     | 'model'
     | 'reasoning'
     | 'fastMode'
@@ -17,6 +18,7 @@ export type SessionHeaderMetadataPreferences = Record<SessionHeaderMetadataKey, 
 export const DEFAULT_SESSION_HEADER_METADATA: SessionHeaderMetadataPreferences = {
     showLabels: true,
     agent: true,
+    agentIcon: true,
     model: true,
     reasoning: true,
     fastMode: true,
@@ -43,6 +45,11 @@ export function parseSessionHeaderMetadata(raw: string | null): SessionHeaderMet
         }
 
         const record = parsed as Record<string, unknown>
+        // Preserve the pre-agentIcon preference for existing browsers: before
+        // this field existed, `agent` controlled both the label and icon.
+        if (typeof record.agentIcon !== 'boolean' && typeof record.agent === 'boolean') {
+            record.agentIcon = record.agent
+        }
         return Object.fromEntries(
             Object.entries(DEFAULT_SESSION_HEADER_METADATA).map(([key, fallback]) => [
                 key,
