@@ -29,6 +29,7 @@ describe('markdown-text CodeHeader + Pre wrap toggle', () => {
             </I18nProvider>
         )
 
+        expect(container.querySelector('.aui-code-shell-header')).toHaveClass('pl-[22px]', 'pr-[10px]')
         expect(container.querySelector('.overflow-x-auto')).not.toBeNull()
         expect(container.querySelector('.aui-md-pre')).toHaveClass('w-max')
         expect((container.querySelector('.aui-md-pre') as HTMLElement | null)?.style.whiteSpace).not.toBe('pre-wrap')
