@@ -22,19 +22,44 @@ export const INSPECT_PEER_TOOL_DESCRIPTION =
     'Fires when the user cites a peer via markdown [title](/sessions/<id>), Copy-reference prose ' +
     'See session "…" (/sessions/<id>) for context, or a bare /sessions/<id>. ' +
     'Extract <id> and pass it as sessionIdPrefix. /sessions/<id> is a hub path - do NOT Grep, Glob, or Read it as a local filesystem path. ' +
-    'Read-only: does not resume. Prefer this (or `hapi inspect-peer`) over JWT+curl.'
+    'Read-only: does not resume. Prefer this (or `hapi inspect-peer`) over JWT+curl. ' +
+    'Never invent peer titles; always use the /sessions/<uuid> from the citation.'
+
+/**
+ * Hard rule for peer tools: UUID is identity; titles are decoration.
+ * Shared across spawn_peer / ping_peer / inspect_peer descriptions.
+ */
+export const PEER_IDENTITY_UUID_RULE =
+    'Never invent peer titles (upstream, orchestrator, nicknames). '
+    + 'Always copy [title](/sessions/<uuid>) from the handoff or inspect_peer / search_peers; '
+    + 'title is decoration - UUID is identity. Rename of a parent is a non-event.'
+
+/** MCP `spawn_peer` tool description. Remit is required; empty shell is failure. */
+export const SPAWN_PEER_TOOL_DESCRIPTION =
+    'Spawn a new HAPI session on this machine and deliver a required first user message (the remit). ' +
+    'Creates the session, optionally names it, then uses the same delivery path as ping_peer. ' +
+    'Returns the new sessionId + name. Fails if the remit does not land (a sessionId with 0 user messages is a failed spawn). ' +
+    'Do not call POST /api/machines/.../spawn with a message field - the hub rejects it. Use spawn_peer to create and deliver the remit. ' +
+    'Prefer this (or `hapi spawn-peer`) over JWT+curl. Same hub/namespace as this session. ' +
+    'Default permissionMode is yolo via hub peerSpawnDefaults / stock - omit the field to keep that default so peers work without approval prompts. ' +
+    'Pass permissionMode only to tighten (e.g. default/plan) or when the operator names a mode; do not clone the parent session\'s mode. ' +
+    'When agent/model are omitted, resolves from hub peerSpawnDefaults (Settings → General → Agents), then stock (claude + sonnet). ' +
+    'In-session calls auto-stamp a durable Parent [title](/sessions/<uuid>) chip for this session onto the remit (fail-closed if parent id is missing). ' +
+    PEER_IDENTITY_UUID_RULE
 
 /** MCP `ping_peer` tool description (same citation forms as inspect_peer). */
 export const PING_PEER_TOOL_DESCRIPTION =
     'Send a message to another HAPI session (peer handoff / nudge). Resolves by session id prefix, resumes if inactive, then POSTs on the same hub/namespace. ' +
     'When the user cites a peer via [title](/sessions/<id>), Copy-reference prose See session "…" (/sessions/<id>) for context, or a bare /sessions/<id>, ' +
     'extract <id> and pass it as sessionIdPrefix. /sessions/<id> is a hub path - do NOT search the local filesystem for it. ' +
-    'Prefer this (or `hapi ping-peer`) over reinventing JWT+curl. Targets another session - not the current chat.'
+    'Prefer this (or `hapi ping-peer`) over reinventing JWT+curl. Targets another session - not the current chat. ' +
+    PEER_IDENTITY_UUID_RULE
 
 /** Zod `.describe` for sessionIdPrefix on inspect_peer / ping_peer. */
 export const SESSION_ID_PREFIX_PARAM_DESCRIPTION =
     'Target HAPI session id or unique id prefix (another session - not this chat). ' +
-    'Prefer the full UUID from [title](/sessions/<id>) or Copy-reference See session "…" (/sessions/<id>) for context.'
+    'Prefer the full UUID from [title](/sessions/<id>) or Copy-reference See session "…" (/sessions/<id>) for context. ' +
+    'Do not pass invented titles or nicknames - UUID only.'
 
 /**
  * Hub session ids have no dots. Reject dotted tails so source paths like
@@ -131,6 +156,8 @@ export type SessionCitationSteerTools = {
     pingTool: string
     /** Flavor-specific discovery tool when no citation is available. */
     listPeersTool?: string
+    /** Flavor-specific spawn-with-remit tool, e.g. `mcp__hapi__spawn_peer`. */
+    spawnTool?: string
 }
 
 /**
@@ -150,6 +177,14 @@ export function buildSessionCitationSteerInstruction(tools: SessionCitationSteer
             ` To discover peers without a citation, call "${tools.listPeersTool}" ` +
             `(same hub/namespace; works from runner-spawned sessions). ` +
             `Shell fallback: hapi ping-peer --list.`
+    }
+    if (tools.spawnTool) {
+        text +=
+            ` To spawn a new peer with work attached, call "${tools.spawnTool}" ` +
+            `with directory and a required message (the remit). ` +
+            `Do not POST /api/machines/.../spawn with a message/prompt/text field - ` +
+            `the hub rejects it (HTTP 400). Use spawn_peer instead. ` +
+            `Shell fallback: hapi spawn-peer --dir PATH --name TITLE --message-file -.`
     }
     return text
 }

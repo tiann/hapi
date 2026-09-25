@@ -337,6 +337,115 @@ describe('pingPeer', () => {
         })
     })
 
+    it('delivers to a known sessionId without listing sessions', async () => {
+        const sessionId = 'dddddddd-1111-1111-1111-111111111111'
+        const http = createHttpMock({
+            post: (url, body) => {
+                if (url.endsWith('/api/auth')) {
+                    return { status: 200, data: { token: 'jwt' } }
+                }
+                if (url.endsWith(`/api/sessions/${sessionId}/messages`)) {
+                    expect(body).toEqual({ text: 'remit' })
+                    return { status: 200, data: { ok: true } }
+                }
+                throw new Error(`unexpected POST ${url}`)
+            },
+            get: (url) => {
+                if (url.endsWith('/api/sessions') && !url.includes(sessionId)) {
+                    throw new Error('list must not be called when sessionId is known')
+                }
+                if (url.endsWith(`/api/sessions/${sessionId}`)) {
+                    return {
+                        status: 200,
+                        data: {
+                            session: {
+                                id: sessionId,
+                                active: true,
+                                metadata: { name: 'Spawned', flavor: 'cursor' }
+                            }
+                        }
+                    }
+                }
+                throw new Error(`unexpected GET ${url}`)
+            }
+        })
+
+        const result = await pingPeer({
+            sessionId,
+            message: 'remit',
+            accessToken: 'tok',
+            apiUrl: 'http://hub.test',
+            http: http as never
+        })
+        expect(result).toEqual({
+            sessionId,
+            name: 'Spawned',
+            resumed: false
+        })
+    })
+
+    it('waitForInitialActive polls until active without posting /resume', async () => {
+        const sessionId = 'eeeeeeee-1111-1111-1111-111111111111'
+        let active = false
+        let polls = 0
+        let resumeCalls = 0
+
+        const http = createHttpMock({
+            post: (url) => {
+                if (url.endsWith('/api/auth')) {
+                    return { status: 200, data: { token: 'jwt' } }
+                }
+                if (url.endsWith(`/api/sessions/${sessionId}/resume`)) {
+                    resumeCalls += 1
+                    throw new Error('resume must not run for a just-spawned session')
+                }
+                if (url.endsWith(`/api/sessions/${sessionId}/messages`)) {
+                    expect(active).toBe(true)
+                    return { status: 200, data: { ok: true } }
+                }
+                throw new Error(`unexpected POST ${url}`)
+            },
+            get: (url) => {
+                if (url.endsWith(`/api/sessions/${sessionId}`)) {
+                    polls += 1
+                    if (polls >= 3) {
+                        active = true
+                    }
+                    return {
+                        status: 200,
+                        data: {
+                            session: {
+                                id: sessionId,
+                                active,
+                                metadata: { name: 'Fresh', flavor: 'claude' }
+                            }
+                        }
+                    }
+                }
+                throw new Error(`unexpected GET ${url}`)
+            }
+        })
+
+        const result = await pingPeer({
+            sessionId,
+            message: 'remit',
+            waitForInitialActive: true,
+            waitActiveSecs: 10,
+            accessToken: 'tok',
+            apiUrl: 'http://hub.test',
+            http: http as never,
+            now: () => nowMs,
+            sleep: async (ms) => {
+                sleepCalls.push(ms)
+                nowMs += ms
+            }
+        })
+
+        expect(result.resumed).toBe(false)
+        expect(resumeCalls).toBe(0)
+        expect(sleepCalls.length).toBeGreaterThan(0)
+    })
+
     it('maps resume failures to resume_failed', async () => {
         const sessionId = 'deadbeef-1111-1111-1111-111111111111'
         const http = createHttpMock({

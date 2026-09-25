@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it, mock } from 'bun:test'
 import { Hono } from 'hono'
 import type { Machine, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
@@ -152,6 +152,275 @@ describe('machines routes', () => {
 
         expect(response.status).toBe(200)
         expect(capturedPermissionMode).toBe('auto')
+    })
+
+    it('applies hub peerSpawnDefaults when agent and permissionMode are omitted', async () => {
+        const machine = createMachine()
+        let capturedAgent: string | undefined
+        let capturedPermissionMode: string | undefined
+        let capturedModel: string | undefined
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            spawnSession: async (
+                _machineId: string,
+                _directory: string,
+                agent?: string,
+                model?: string,
+                _modelReasoningEffort?: string,
+                _yolo?: boolean,
+                _sessionType?: string,
+                _worktreeName?: string,
+                _resumeSessionId?: string,
+                _effort?: string,
+                permissionMode?: string
+            ) => {
+                capturedAgent = agent
+                capturedModel = model
+                capturedPermissionMode = permissionMode
+                return { type: 'success' as const, sessionId: 'session-1' }
+            }
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine, {
+            getPeerSpawnDefaults: () => ({
+                agent: 'claude',
+                permissionMode: 'yolo',
+                models: { claude: 'sonnet[1m]' }
+            })
+        }))
+
+        const response = await app.request('/api/machines/machine-1/spawn', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ directory: '/tmp/project' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(capturedAgent).toBe('claude')
+        expect(capturedPermissionMode).toBe('bypassPermissions')
+        expect(capturedModel).toBe('sonnet[1m]')
+    })
+
+    it('keeps explicit spawn overrides over hub peerSpawnDefaults', async () => {
+        const machine = createMachine()
+        let capturedAgent: string | undefined
+        let capturedPermissionMode: string | undefined
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            spawnSession: async (
+                _machineId: string,
+                _directory: string,
+                agent?: string,
+                _model?: string,
+                _modelReasoningEffort?: string,
+                _yolo?: boolean,
+                _sessionType?: string,
+                _worktreeName?: string,
+                _resumeSessionId?: string,
+                _effort?: string,
+                permissionMode?: string
+            ) => {
+                capturedAgent = agent
+                capturedPermissionMode = permissionMode
+                return { type: 'success' as const, sessionId: 'session-1' }
+            }
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine, {
+            getPeerSpawnDefaults: () => ({
+                agent: 'cursor',
+                permissionMode: 'yolo'
+            })
+        }))
+
+        const response = await app.request('/api/machines/machine-1/spawn', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                directory: '/tmp/project',
+                agent: 'claude',
+                permissionMode: 'default'
+            })
+        })
+
+        expect(response.status).toBe(200)
+        expect(capturedAgent).toBe('claude')
+        expect(capturedPermissionMode).toBe('default')
+    })
+
+    it('preserves explicit yolo boolean when permissionMode is omitted', async () => {
+        const machine = createMachine()
+        let capturedYolo: boolean | undefined
+        let capturedPermissionMode: string | undefined
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            spawnSession: async (
+                _machineId: string,
+                _directory: string,
+                _agent?: string,
+                _model?: string,
+                _modelReasoningEffort?: string,
+                yolo?: boolean,
+                _sessionType?: string,
+                _worktreeName?: string,
+                _resumeSessionId?: string,
+                _effort?: string,
+                permissionMode?: string
+            ) => {
+                capturedYolo = yolo
+                capturedPermissionMode = permissionMode
+                return { type: 'success' as const, sessionId: 'session-1' }
+            }
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine, {
+            getPeerSpawnDefaults: () => ({
+                agent: 'claude',
+                permissionMode: 'yolo',
+                models: { claude: 'sonnet' }
+            })
+        }))
+
+        for (const yolo of [false, true] as const) {
+            const response = await app.request('/api/machines/machine-1/spawn', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    directory: '/tmp/project',
+                    agent: 'claude',
+                    yolo
+                })
+            })
+            expect(response.status).toBe(200)
+            expect(capturedYolo).toBe(yolo)
+            expect(capturedPermissionMode).toBeUndefined()
+        }
+    })
+
+
+    it('rejects incompatible explicit permissionMode for the resolved agent', async () => {
+        const machine = createMachine()
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            spawnSession: () => { throw new Error('must not spawn') }
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine, {
+            getPeerSpawnDefaults: () => ({
+                agent: 'claude',
+                permissionMode: 'yolo',
+                models: { claude: 'sonnet' }
+            })
+        }))
+
+        const response = await app.request('/api/machines/machine-1/spawn', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                directory: '/tmp/project',
+                agent: 'claude',
+                permissionMode: 'read-only'
+            })
+        })
+        expect(response.status).toBe(400)
+        expect(await response.json()).toMatchObject({ code: 'invalid_permission_mode' })
+    })
+
+
+    it('does not inject hub model when agent is explicit and model omitted', async () => {
+        const machine = createMachine()
+        let capturedModel: string | undefined
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            spawnSession: async (
+                _machineId: string,
+                _directory: string,
+                _agent?: string,
+                model?: string
+            ) => {
+                capturedModel = model
+                return { type: 'success' as const, sessionId: 'session-1' }
+            }
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine, {
+            getPeerSpawnDefaults: () => ({
+                agent: 'opencode',
+                permissionMode: 'default',
+                models: { opencode: 'provider/hub-model' }
+            })
+        }))
+
+        const response = await app.request('/api/machines/machine-1/spawn', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                directory: '/tmp/project',
+                agent: 'opencode'
+            })
+        })
+        expect(response.status).toBe(200)
+        expect(capturedModel).toBeUndefined()
+    })
+
+    it('returns 500 when hub spawn defaults cannot be loaded', async () => {
+        const machine = createMachine()
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            spawnSession: () => { throw new Error('must not spawn') }
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine, {
+            getPeerSpawnDefaults: () => {
+                throw new Error('settings unreadable')
+            }
+        }))
+
+        const response = await app.request('/api/machines/machine-1/spawn', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ directory: '/tmp/project' })
+        })
+        expect(response.status).toBe(500)
+        expect(await response.json()).toMatchObject({
+            code: 'hub_spawn_defaults_unavailable'
+        })
     })
 
     it('returns Codex models for an online machine', async () => {
@@ -393,6 +662,31 @@ describe('machines routes', () => {
         expect(captured![15]).toBeUndefined()
     })
 
+    it('rejects spawn bodies that include message/prompt/text instead of silently stripping', async () => {
+        const machine = createMachine()
+        const spawnSession = () => { throw new Error('must not spawn') }
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            spawnSession,
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        for (const key of ['message', 'prompt', 'text'] as const) {
+            const response = await app.request('/api/machines/machine-1/spawn', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ directory: '/tmp/x', [key]: 'do the work' })
+            })
+            expect(response.status).toBe(400)
+            const body = await response.json() as { error?: string; code?: string }
+            expect(body.code).toBe('spawn_remit_not_supported')
+            expect(body.error).toMatch(/spawn-peer|messages/i)
+        }
+    })
+
     it('accepts an explicit remote AGY machine spawn', async () => {
         const machine = createMachine()
         let captured: unknown[] | null = null
@@ -440,6 +734,36 @@ describe('machines routes', () => {
                 expect(response.status).toBe(400)
             }
         }
+    })
+
+    it('rejects non-remote startingMode when hub default agent is AGY and request omits agent', async () => {
+        const machine = createMachine()
+        const spawnSession = mock(async () => ({ type: 'success' as const, sessionId: 'session-1' }))
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            spawnSession,
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine, {
+            getPeerSpawnDefaults: () => ({
+                agent: 'agy',
+                permissionMode: 'default',
+                models: {}
+            })
+        }))
+
+        const response = await app.request('/api/machines/machine-1/spawn', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ directory: '/tmp/x', startingMode: 'pty' })
+        })
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({
+            error: 'AGY only supports remote mode'
+        })
+        expect(spawnSession).not.toHaveBeenCalled()
     })
 
     it('returns 400 when /opencode-models is called without cwd', async () => {

@@ -43,6 +43,7 @@ Choose a supported coding agent from your terminal and control its sessions remo
   DSH is remote-only and its ACP server must be configured separately.
 - `hapi resume [sessionId]` - List resumable sessions for this machine or resume one locally.
 - `hapi ping-peer <session-id-prefix> <message>` - Resume (if needed) and message another session. Prefer this or MCP `ping_peer` / `list_peers` over reinventing JWT+curl. Also `--message-file` / `--list`.
+- `hapi spawn-peer --dir PATH --name TITLE --message-file -` - Spawn a session and deliver a required first message. Machine spawn HTTP 200 is not a working peer; this command fails if the remit does not land. Prefer MCP `spawn_peer`.
 - `hapi inspect-peer <session-id-or-prefix>` - Read-only peer metadata + recent message text (no resume). Prefer this or MCP `inspect_peer` when a user cites `[title](/sessions/<id>)` or Copy-reference `See session "…" (/sessions/<id>) for context`. `/sessions/<id>` is a hub path, not a local file. Optional `--limit`.
 
 The picker lists agents alphabetically by command name. Use Up/Down and Enter
@@ -69,12 +70,14 @@ hapi resume <session-id>
 
 `hapi resume` lists resumable sessions for the current machine. `hapi resume <session-id>` hands off an active remote session and opens the same HAPI session in the local terminal.
 
-For Codex, the terminal and Web stay usable at the same time. Closing the
-original terminal stops a terminal-started run, but its history remains
-resumable. Sessions started from the Web run under the Runner; closing a
-terminal attached later does not stop them. **End session** archives the
-selected conversation. See [Codex usage and limits](../docs/guide/codex-shared-sessions.md)
-for details.
+**Codex exception:** Codex 0.154.0+ uses shared sessions, not handoff. `hapi
+resume <id>` attaches another official TUI to its live execution; Web and other
+terminals remain usable. The original terminal owns a terminal-created execution:
+its exit stops that execution, leaving resumable history. Web-created/resumed
+executions use the existing Runner; additional terminals only detach on exit.
+**End session** archives the selected root. Native profile-v2 launch selection and in-place rewind are currently
+unavailable. See [Codex shared sessions](../docs/guide/codex-shared-sessions.md)
+for queue semantics, environment isolation, recovery, supported flags and tests.
 
 ### Answer local Claude prompts from HAPI
 
@@ -105,9 +108,8 @@ See `src/commands/auth.ts`.
 
 ### Runner management
 
-- `hapi runner start` - Replace any existing runner and start a detached process with the supplied flags/environment.
-- `hapi runner stop` - Stop runner gracefully; agent sessions stay alive.
-- `hapi runner start-sync` - Run in the foreground (for a process supervisor).
+- `hapi runner start` - Start runner as detached process.
+- `hapi runner stop` - Stop runner gracefully.
 - `hapi runner status` - Show runner diagnostics.
 - `hapi runner list` - List active sessions managed by runner.
 - `hapi runner stop-session <sessionId>` - Terminate specific session.
@@ -190,7 +192,7 @@ controls for DSH.
 
 ### Optional
 
-- `HAPI_API_URL` - Hub base URL (default: http://localhost:3006; also configurable as `apiUrl` in settings).
+- `HAPI_API_URL` - Hub base URL (default: http://localhost:3006). Also accepted via `~/.hapi/settings.json` (`serverUrl` / settings-backed URL); env wins when set.
 - `HAPI_HOME` - Config/data directory (default: ~/.hapi).
 - `HAPI_EXPERIMENTAL` - Enable experimental features (true/1/yes).
 - `HAPI_EXTRA_HEADERS_JSON` - JSON object of extra headers to send on CLI → hub requests, e.g. `{"Cookie":"CF_Authorization=..."}`. Can also be set as the `extraHeaders` object in `~/.hapi/settings.json` (environment variable wins).
@@ -204,9 +206,6 @@ controls for DSH.
 
 - `HAPI_RUNNER_HEARTBEAT_INTERVAL` - Heartbeat interval in ms (default: 60000).
 - `HAPI_RUNNER_HTTP_TIMEOUT` - HTTP timeout for runner control in ms (default: 10000).
-- `HAPI_RUNNER_WEBHOOK_TIMEOUT_MS` - Session-start webhook timeout in ms (default: 15000); raise for slow agent startup/resume.
-- `HAPI_DISABLE_VERSION_HANDOFF` - Set to `1` to disable automatic runner replacement on CLI binary changes.
-- `HAPI_RUNNER_SUPERVISED` - Set to `1` only when a supervisor restarts the runner after exit; enables the web Restart control's supervised path.
 
 ### Worktree (set by runner)
 
@@ -218,20 +217,17 @@ controls for DSH.
 
 ### Set for the wrapped agent
 
-- `HAPI_SESSION_ID` - The current HAPI session ID, available inside agent shells. Use it in scripts that target the current conversation without listing sessions.
-- An explicitly configured `HAPI_API_URL` is also made available to agent shells. HAPI does not copy settings-backed `CLI_API_TOKEN` secrets into the agent environment; credentials already present in the parent environment may still be inherited. Web terminal PTYs strip hub secrets.
+- `HAPI_SESSION_ID` - The hub session id for the current run, exported into the wrapped agent/CLI child environment at spawn for every flavor (claude / codex / copilot / cursor / gemini / opencode / kimi / grok / pi), both runner-spawned and locally started sessions. Agents can read it to self-target "this chat" over the hub REST API or shell helpers without listing `/api/sessions`. Prefer the MCP `display_image` tool for inline media when it is available; use `HAPI_SESSION_ID` for hub REST / shell tooling where MCP is not. To **list** peers on the same hub/namespace, prefer MCP `list_peers` (works from runner-spawned sessions without sitting on the hub host; excludes the calling session). To **read** another session, prefer MCP `inspect_peer` or `hapi inspect-peer`. To **message** another session, prefer MCP `ping_peer` or `hapi ping-peer`. To **spawn** a new peer with work, prefer MCP `spawn_peer` or `hapi spawn-peer` — do not reinvent JWT+curl, and never treat machine-spawn HTTP 200 as a working peer. User citations look like `[title](/sessions/<id>)` or Copy-reference `See session "…" (/sessions/<id>) for context`; pass that `<id>` as `sessionIdPrefix`. Do not Grep/Glob `/sessions/<id>` as a local filesystem path. On a remote runner, configure matching `HAPI_API_URL` + `CLI_API_TOKEN` (or `hapi auth login` / `~/.hapi/settings.json`) on the runner host so shell `hapi ping-peer --list` works; session CLI may export an explicit non-default hub URL into child env, but never mirrors `CLI_API_TOKEN` into wrapped agents.
 
-For peer discovery and messaging, use the session's MCP `list_peers`,
-`inspect_peer`, and `ping_peer` tools, or the corresponding CLI commands.
-On a remote runner host, configure the matching hub URL and token so shell
-commands reach the same hub (`hapi auth login` saves the token).
+  Lazy Codex (terminal) sessions export the id only after the hub row is materialized, which happens when the MCP bridge starts — before the agent process is spawned — so path-only self-targeting does not race a missing hub row.
 
-For example, this source-checkout helper displays an image in the current
-session when MCP is unavailable:
+  Example (shell fallback when MCP is unavailable) — path-only, self-targets the current session:
 
-```bash
-bun scripts/tooling/hapi-display-image.mjs /absolute/path/to/image.png "optional title"
-```
+  ```bash
+  bun scripts/tooling/hapi-display-image.mjs /absolute/path/to/image.png "optional title"
+  ```
+
+  Explicit other session (prefix or full uuid) still works; that path may list sessions.
 
 ## Session lifecycle invariants
 
@@ -275,7 +271,7 @@ bun run build:single-exe
 
 ## Source structure
 
-- `src/api/` - Hub communication (Socket.IO + REST).
+- `src/api/` - Bot communication (Socket.IO + REST).
 - `src/claude/` - Claude Code integration.
 - `src/codex/` - Codex mode integration.
 - `src/cursor/` - Cursor Agent integration.

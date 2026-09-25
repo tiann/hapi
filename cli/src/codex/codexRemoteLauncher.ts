@@ -3541,7 +3541,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             // leak into the parent HAPI session. Defer the side effect until
             // parent-thread mcp_tool_call_end reaches this launcher; child
             // events are filtered above by thread id.
-            emitTitleSummary: false
+            emitTitleSummary: false,
+            workingDirectory: session.path,
         });
         this.happyServer = happyServer;
         let mcpServers: CodexMcpServersConfig = hapiMcpServers;
