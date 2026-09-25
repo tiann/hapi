@@ -55,3 +55,7 @@ export const DISPLAY_MEDIA_PROMPT_HAPI_MCP = trimIdent(`
 export const DISPLAY_MEDIA_PROMPT_CURSOR = trimIdent(`
     When you create or find a local audio file or other non-image file that the user should receive, call the tool "display_media" with the absolute filesystem path so HAPI can show a player or download card.
 `);
+
+export const DISPLAY_LINKS_PROMPT_CURSOR = trimIdent(`
+    When the operator needs a tappable URL or a byte-accurate copyable string in this HAPI chat, call this session's display-links MCP tool (name ends with _display_links — unique per HAPI session so Cursor does not route a bare display_links collision to another chat) with { urls: [{ href, title? }], texts: [{ value, title? }], sessionId } (at least one of urls or texts). sessionId MUST be this chat's HAPI_SESSION_ID. Do not type URLs, secrets, tokens, SHAs, tags, or MagicDNS labels in assistant prose — Cursor-routed models drop doubled letters (tiann→tian, VKK→VK) and headset operators paste a 403/404. Construct values by concatenation in the tool arguments ("tia"+"nn", "VK"+"K"), never copy from your own text. Never echo secrets in assistant prose after painting the card. urls are http/https only.
+`);

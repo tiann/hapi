@@ -34,7 +34,7 @@
             }
         ]
     },
-    "fixtureVersion": 1,
+    "fixtureVersion": 2,
     "input": {
         "agentState": null,
         "messages": [

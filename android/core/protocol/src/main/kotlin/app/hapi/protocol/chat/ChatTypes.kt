@@ -200,6 +200,23 @@ sealed class NormalizedAgentContent {
         val source: InlineMediaSource? = null,
     ) : NormalizedAgentContent()
 
+    data class DisplayLinkItem(
+        val href: String,
+        val title: String? = null,
+    )
+
+    data class DisplayTextItem(
+        val value: String,
+        val title: String? = null,
+    )
+
+    data class DisplayLinks(
+        val urls: List<DisplayLinkItem>,
+        val texts: List<DisplayTextItem> = emptyList(),
+        val uuid: String,
+        val parentUUID: String? = null,
+    ) : NormalizedAgentContent()
+
     data class CodexReviewContent(
         val review: CodexReview,
         val uuid: String,
@@ -221,6 +238,7 @@ internal fun NormalizedAgentContent.uuidOrNull(): String? = when (this) {
     is NormalizedAgentContent.ToolUse -> uuid
     is NormalizedAgentContent.ToolResult -> uuid
     is NormalizedAgentContent.GeneratedImage -> uuid
+    is NormalizedAgentContent.DisplayLinks -> uuid
     is NormalizedAgentContent.CodexReviewContent -> uuid
     is NormalizedAgentContent.Sidechain -> uuid
     is NormalizedAgentContent.Summary -> null
@@ -232,6 +250,7 @@ internal fun NormalizedAgentContent.parentUuidOrNull(): String? = when (this) {
     is NormalizedAgentContent.ToolUse -> parentUUID
     is NormalizedAgentContent.ToolResult -> parentUUID
     is NormalizedAgentContent.GeneratedImage -> parentUUID
+    is NormalizedAgentContent.DisplayLinks -> parentUUID
     is NormalizedAgentContent.CodexReviewContent -> parentUUID
     is NormalizedAgentContent.Sidechain -> parentUUID
     is NormalizedAgentContent.Summary -> null
@@ -539,6 +558,18 @@ class GeneratedImageBlock(
     override var meta: JsonElement?,
 ) : ChatBlock() {
     override val kind: String get() = "generated-image"
+}
+
+class DisplayLinksBlock(
+    override val id: String,
+    val localId: String?,
+    override var createdAt: Long,
+    override var invokedAt: Long?,
+    val urls: List<NormalizedAgentContent.DisplayLinkItem>,
+    val texts: List<NormalizedAgentContent.DisplayTextItem>,
+    override var meta: JsonElement?,
+) : ChatBlock() {
+    override val kind: String get() = "display-links"
 }
 
 class AgentEventBlock(
