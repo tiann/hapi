@@ -14,6 +14,7 @@ describe('runnerCapabilities', () => {
         expect(REQUIRED_MACHINE_CAPABILITIES).toContain(MACHINE_CAPABILITIES.CursorChatStoreStatus)
         expect(CURRENT_MACHINE_CAPABILITIES).toEqual(expect.arrayContaining([
             ...REQUIRED_MACHINE_CAPABILITIES,
+            MACHINE_CAPABILITIES.WorkspaceFileAccess,
         ]))
     })
 
