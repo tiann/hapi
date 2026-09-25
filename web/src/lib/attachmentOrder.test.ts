@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { moveAttachmentId, orderItemsById, reconcileAttachmentOrder } from './attachmentOrder'
+import { moveAttachmentId, orderItemsById, reconcileAttachmentOrder, replaceAttachmentId } from './attachmentOrder'
 
 describe('attachment order helpers', () => {
     it('keeps existing order while appending newly added attachments', () => {
@@ -15,5 +15,14 @@ describe('attachment order helpers', () => {
     it('orders objects without dropping ids unknown to the order list', () => {
         const items = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
         expect(orderItemsById(items, ['c', 'a'])).toEqual([{ id: 'c' }, { id: 'a' }, { id: 'b' }])
+    })
+
+    it('replaces a retried attachment at its original index', () => {
+        expect(replaceAttachmentId(['first', 'failed', 'last'], 'failed', 'retried')).toEqual([
+            'first', 'retried', 'last',
+        ])
+        expect(replaceAttachmentId(['first', 'last', 'retried'], 'failed', 'retried', 1)).toEqual([
+            'first', 'retried', 'last',
+        ])
     })
 })
