@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import type { Server } from 'socket.io'
 import { PERMISSION_REQUEST_NOT_FOUND_MESSAGE } from '@hapi/protocol/rpcMethods'
 import type { RpcRegistry } from '../socket/rpcRegistry'
-import { PermissionRequestNotFoundError, RpcGateway, RpcTargetMissingError } from './rpcGateway'
+import { PermissionRequestNotFoundError, RpcGateway, RpcTargetMissingError, RpcTimeoutError } from './rpcGateway'
 
 function createGateway() {
     const timeouts: number[] = []
@@ -207,5 +207,46 @@ describe('RpcGateway permission RPC error surfacing (tiann/hapi#1735)', () => {
     it('resolves normally when the CLI accepts the answer', async () => {
         const { gateway } = createGateway()
         await expect(gateway.approvePermission('session-1', 'request-1')).resolves.toBeUndefined()
+    })
+})
+
+// The ack-deadline rejection from socket.io (`Error('operation has timed out')`)
+// must surface as a typed RpcTimeoutError so HTTP layers can distinguish
+// "waited out the deadline, engine may be wedged" from any other failure.
+describe('RpcGateway ack-deadline wrapping', () => {
+    function createGatewayWithRejection(rejection: unknown) {
+        const socket = {
+            timeout() {
+                return {
+                    emitWithAck() {
+                        return Promise.reject(rejection)
+                    }
+                }
+            }
+        }
+        const io = {
+            of() {
+                return { sockets: { get() { return socket } } }
+            }
+        } as unknown as Server
+        const rpcRegistry = {
+            getSocketIdForMethod() { return 'socket-1' }
+        } as unknown as RpcRegistry
+        return new RpcGateway(io, rpcRegistry)
+    }
+
+    it('wraps the socket.io ack-deadline rejection as RpcTimeoutError', async () => {
+        const gateway = createGatewayWithRejection(new Error('operation has timed out'))
+        const error = await gateway.approvePermission('session-1', 'request-1').catch((e: unknown) => e)
+        expect(error).toBeInstanceOf(RpcTimeoutError)
+        expect((error as RpcTimeoutError).method).toBe('session-1:permission')
+        expect((error as RpcTimeoutError).timeoutMs).toBe(30_000)
+    })
+
+    it('passes unrelated RPC rejections through unchanged', async () => {
+        const boom = new Error('socket write failed')
+        const gateway = createGatewayWithRejection(boom)
+        const error = await gateway.denyPermission('session-1', 'request-1').catch((e: unknown) => e)
+        expect(error).toBe(boom)
     })
 })

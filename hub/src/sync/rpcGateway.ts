@@ -78,6 +78,27 @@ export class PermissionRequestNotFoundError extends Error {
     }
 }
 
+/**
+ * The target socket accepted the RPC frame but never acknowledged it within
+ * the deadline — most often an engine whose socket is still registered and
+ * transport-alive but no longer processing events (e.g. a wedged event loop).
+ * Distinct from {@link RpcTargetMissingError}: there the hub knows up front
+ * that nobody can answer, here the hub can only learn it by waiting out the
+ * deadline. Callers can narrow on this to respond with honest semantics
+ * (e.g. HTTP 504) instead of a generic 500.
+ */
+export class RpcTimeoutError extends Error {
+    readonly method: string
+    readonly timeoutMs: number
+
+    constructor(method: string, timeoutMs: number) {
+        super(`RPC timed out after ${Math.round(timeoutMs / 1000)}s without an ack: ${method}`)
+        this.name = 'RpcTimeoutError'
+        this.method = method
+        this.timeoutMs = timeoutMs
+    }
+}
+
 // Matches on the specific shared message rather than treating any error on
 // the Permission RPC method as "not found" — a future, unrelated throw in
 // handlePermissionResponse's success path should surface as a genuine error,
@@ -602,10 +623,23 @@ export class RpcGateway {
             throw new RpcTargetMissingError(method, 'socket-disconnected')
         }
 
-        const response = await socket.timeout(timeoutMs).emitWithAck('rpc-request', {
-            method,
-            params: JSON.stringify(params)
-        }) as unknown
+        let response: unknown
+        try {
+            response = await socket.timeout(timeoutMs).emitWithAck('rpc-request', {
+                method,
+                params: JSON.stringify(params)
+            }) as unknown
+        } catch (error) {
+            // socket.io rejects the emitWithAck promise with a plain
+            // `Error('operation has timed out')` when the ack deadline passes
+            // (it exports no typed error for this). Narrow on the message and
+            // rethrow as RpcTimeoutError so HTTP layers can distinguish
+            // "waited out the deadline" from any other transport failure.
+            if (error instanceof Error && error.message.includes('operation has timed out')) {
+                throw new RpcTimeoutError(method, timeoutMs)
+            }
+            throw error
+        }
 
         if (typeof response !== 'string') {
             return response
