@@ -8,7 +8,7 @@
  * it will be saved to settings.json for future use
  */
 
-import { getSettingsFile, updateSettings } from './settings'
+import { getSettingsFile, updateSettings, type TitleProviderSettings } from './settings'
 
 const OLD_SETTINGS_FIELDS = ['webappHost', 'webappPort', 'webappUrl'] as const
 
@@ -41,6 +41,7 @@ export interface ServerSettings {
     listenPort: number
     publicUrl: string
     corsOrigins: string[]
+    titleProvider: TitleProviderSettings
     androidPushMode: string | null
     fcmServiceAccountPath: string | null
     iosPushMode: string | null
@@ -101,6 +102,19 @@ function deriveCorsOrigins(publicUrl: string): string[] {
         return [new URL(publicUrl).origin]
     } catch {
         return []
+    }
+}
+
+function normalizeTitleProviderSettings(value: unknown): TitleProviderSettings {
+    if (!value || typeof value !== 'object') return {}
+    const raw = value as Record<string, unknown>
+    return {
+        baseUrl: typeof raw.baseUrl === 'string' ? raw.baseUrl : undefined,
+        apiKey: typeof raw.apiKey === 'string' ? raw.apiKey : undefined,
+        model: typeof raw.model === 'string' ? raw.model : undefined,
+        timeoutMs: typeof raw.timeoutMs === 'number' && Number.isSafeInteger(raw.timeoutMs) && raw.timeoutMs > 0
+            ? raw.timeoutMs
+            : undefined,
     }
 }
 
@@ -279,6 +293,7 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
             corsOrigins = deriveCorsOrigins(publicUrl)
         }
 
+        const titleProvider = normalizeTitleProviderSettings(settings.titleProvider)
         // Push settings: env > file > null, env persisted on first sight —
         // one loop instead of nine copies of the per-field block above.
         const push: Record<PushSettingKey, string | null> = {
@@ -321,6 +336,7 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
                     listenPort,
                     publicUrl,
                     corsOrigins,
+                    titleProvider,
                     ...push,
                 },
                 sources,
