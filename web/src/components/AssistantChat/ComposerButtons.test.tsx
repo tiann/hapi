@@ -49,6 +49,53 @@ function getButton(label: RegExp | string): HTMLButtonElement {
     return screen.getByRole('button', { name: label }) as HTMLButtonElement
 }
 
+function stubViewport(matches: boolean) {
+    const mediaQueryList = {
+        matches,
+        media: '(max-width: 640px)',
+        onchange: null,
+        addListener: () => {},
+        removeListener: () => {},
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        dispatchEvent: () => false,
+    } as unknown as MediaQueryList
+    vi.spyOn(window, 'matchMedia').mockReturnValue(mediaQueryList)
+}
+
+function renderAttachmentToolbar(overrides: Partial<ComponentProps<typeof ComposerButtons>> = {}) {
+    const noop = () => {}
+    render(
+        <RuntimeProviders>
+            <ComposerButtons
+                canSend={false}
+                controlsDisabled={false}
+                showSettingsButton={false}
+                onSettingsToggle={noop}
+                expanded={false}
+                onExpandedToggle={noop}
+                showTerminalButton={false}
+                terminalDisabled={false}
+                terminalLabel="Terminal"
+                onTerminal={noop}
+                showAbortButton={false}
+                abortDisabled={false}
+                isAborting={false}
+                onAbort={noop}
+                showSwitchButton={false}
+                switchDisabled={false}
+                isSwitching={false}
+                onSwitch={noop}
+                voiceEnabled={false}
+                voiceStatus="disconnected"
+                onVoiceToggle={noop}
+                onSend={noop}
+                {...overrides}
+            />
+        </RuntimeProviders>,
+    )
+}
+
 describe('UnifiedButton — routesToScratchlist visual state', () => {
     const noop = () => {}
 
@@ -259,5 +306,41 @@ describe('ComposerButtons responsive toolbar', () => {
         expect(getComposerToolbarJustifyContent('right')).toBe('safe end')
         expect(getComposerToolbarJustifyContent('left')).toBe('flex-start')
         expect(getComposerToolbarJustifyContent('split')).toBe('flex-start')
+    })
+})
+
+describe('ComposerButtons attachment entrypoint', () => {
+    afterEach(() => {
+        cleanup()
+        vi.restoreAllMocks()
+    })
+
+    it('keeps the original assistant-ui attachment trigger on wide viewports', () => {
+        stubViewport(false)
+        renderAttachmentToolbar()
+
+        expect(getButton('Attach file')).toBeInTheDocument()
+        expect(screen.queryByTestId('composer-attachment-picker-trigger')).not.toBeInTheDocument()
+        expect(screen.queryByTestId('composer-attachment-picker')).not.toBeInTheDocument()
+    })
+
+    it('uses the HAPI source panel on narrow viewports', () => {
+        stubViewport(true)
+        renderAttachmentToolbar()
+
+        expect(screen.getByTestId('composer-attachment-picker-trigger')).toBeInTheDocument()
+        expect(screen.queryByRole('dialog', { name: 'Add attachment' })).not.toBeInTheDocument()
+
+        fireEvent.click(screen.getByTestId('composer-attachment-picker-trigger'))
+
+        expect(screen.getByRole('dialog', { name: 'Add attachment' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Photos' })).toBeInTheDocument()
+    })
+
+    it('disables the mobile entry when the session has no attachment adapter', () => {
+        stubViewport(true)
+        renderAttachmentToolbar({ attachmentsEnabled: false })
+
+        expect(screen.getByTestId('composer-attachment-picker-trigger')).toBeDisabled()
     })
 })
