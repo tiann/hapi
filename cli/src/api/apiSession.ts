@@ -279,6 +279,9 @@ export class ApiSessionClient extends EventEmitter {
     private agentStateLock = new AsyncLock()
     private metadataLock = new AsyncLock()
     private state: ApiSessionClientState
+    // Timestamp of the last accepted wake() — throttles repeated hub
+    // 'session-wake' notifications for the same queued-message burst.
+    private lastWakeAt: number | undefined
     private readonly materializer?: ApiSessionClientOptions['materialize']
     private readonly onMaterialized?: ApiSessionClientOptions['onMaterialized']
     private materializationTask: Promise<boolean> | null = null
@@ -535,6 +538,31 @@ export class ApiSessionClient extends EventEmitter {
         if (this.state === 'active') {
             this.socket.connect()
         }
+    }
+
+    /**
+     * Force an immediate reconnection attempt, bypassing the socket.io
+     * reconnection backoff. The runner daemon invokes this (via SIGUSR2)
+     * when the hub signals 'session-wake': messages are queued for this
+     * session but its socket is not connected. No-op when already connected
+     * or when a wake arrived very recently — a forced attempt is already in
+     * flight, and the regular 1-5s backoff covers the gap.
+     */
+    wake(): void {
+        if (this.state !== 'active' || this.socket.connected) {
+            return
+        }
+        const now = Date.now()
+        if (this.lastWakeAt !== undefined && now - this.lastWakeAt < 2_000) {
+            return
+        }
+        this.lastWakeAt = now
+        logger.debug('[API] Wake requested; forcing immediate socket reconnect')
+        // disconnect() cancels any pending backoff/reconnect timer;
+        // connect() then retries right away and re-arms automatic
+        // reconnection if this attempt fails too.
+        this.socket.disconnect()
+        this.socket.connect()
     }
 
     getState(): ApiSessionClientState {

@@ -1642,8 +1642,43 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     );
     logger.debug(`[RUNNER RUN] Machine registered: ${machine.id}`);
 
+    // Hub 'session-wake' relay: the hub has queued messages for a session but
+    // its session-scoped socket is not connected. Find the owning child
+    // process and nudge it with SIGUSR2, whose handler in the session process
+    // forces an immediate socket reconnect (ApiSessionClient.wake). Best
+    // effort — a session that is still spawning (no pid yet) or already gone
+    // keeps the pre-existing recovery path: the socket's own reconnection
+    // replays queued messages via the session-alive handshake.
+    const wakeSessionSocket = (sessionId: string): void => {
+        const pids = new Set<number>();
+        for (const [pid, tracked] of pidToTrackedSession) {
+            if (tracked.happySessionId === sessionId || tracked.requestedHappySessionId === sessionId) {
+                pids.add(pid);
+            } else if (tracked.sharedSessions && sessionId in tracked.sharedSessions) {
+                pids.add(pid);
+            }
+        }
+        for (const [pid, sid] of pidToRequestedSessionId) {
+            if (sid === sessionId) pids.add(pid);
+        }
+        for (const [pid, sid] of pidToConfirmedSessionId) {
+            if (sid === sessionId) pids.add(pid);
+        }
+        for (const [pid, sid] of existingSessionIdByChildPid) {
+            if (sid === sessionId) pids.add(pid);
+        }
+        for (const pid of pids) {
+            try {
+                process.kill(pid, 'SIGUSR2');
+                logger.debug(`[RUNNER RUN] Sent session-wake signal to pid ${pid} for session ${sessionId}`);
+            } catch (error) {
+                logger.debug(`[RUNNER RUN] Session-wake signal to pid ${pid} failed:`, error);
+            }
+        }
+    };
+
     // Create realtime machine session
-    const apiMachine = api.machineSyncClient(machine, { workspaceRoots });
+    const apiMachine = api.machineSyncClient(machine, { workspaceRoots, onSessionWake: wakeSessionSocket });
 
     // Set RPC handlers
     apiMachine.setRPCHandlers({

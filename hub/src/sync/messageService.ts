@@ -924,6 +924,7 @@ export class MessageService {
                 }
             }
             this.io.of('/cli').to(`session:${actualSessionId}`).emit('update', update)
+            this.emitSessionWakeIfDisconnected(actualSessionId)
         }
 
         // Always emit message-received to Web SSE so the floating bar renders.
@@ -1076,11 +1077,37 @@ export class MessageService {
                 }
             }
             this.io.of('/cli').to(`session:${msg.sessionId}`).emit('update', update)
+            this.emitSessionWakeIfDisconnected(msg.sessionId)
             // NOTE: do NOT call markMessagesInvoked here (pitfall #2).
             // CLI ack (messages-consumed) will handle invoked_at stamping.
         }
         for (const sessionId of maturedSessionIds) {
             this.publisher.emit({ type: 'scheduled-matured', sessionId })
         }
+    }
+
+    /**
+     * Nudge the owning runner when a message just became deliverable but no
+     * session-scoped socket is around to receive it. The hub cannot tell a
+     * "session process is gone" from a "session process is alive but its
+     * socket is reconnecting" — both leave the session room empty — so this
+     * is best-effort: the runner relays the notification to the session
+     * process (SIGUSR2), which forces an immediate reconnect attempt instead
+     * of waiting out the socket.io reconnection backoff. Sessions without a
+     * machineId (non-runner sessions) and runners whose machine socket is
+     * also down simply fall back to the pre-existing recovery path: the
+     * session socket's own reconnection, whose `session-alive` handshake
+     * replays immediate queued messages.
+     */
+    private emitSessionWakeIfDisconnected(sessionId: string): void {
+        const room = this.io.of('/cli').adapter.rooms.get(`session:${sessionId}`)
+        if (room && room.size > 0) {
+            return
+        }
+        const machineId = (this.store.sessions.getSession(sessionId)?.metadata as Metadata | null)?.machineId
+        if (!machineId) {
+            return
+        }
+        this.io.of('/cli').to(`machine:${machineId}`).emit('session-wake', { sessionId })
     }
 }

@@ -248,6 +248,12 @@ export interface ServerToClientEvents {
     // Sent to the CLI when the last agent-terminal viewer leaves, so it stops
     // streaming PTY output to the hub until someone subscribes again.
     'agent-terminal:idle': (data: AgentTerminalRefreshPayload) => void
+    // Sent to the runner's machine-scoped socket when a message becomes
+    // deliverable for a session whose session-scoped socket is not connected.
+    // The runner relays it to the session process so it retries its socket
+    // connection immediately instead of waiting out the socket.io
+    // reconnection backoff (see ApiSessionClient.wake on the CLI side).
+    'session-wake': (data: { sessionId: string }) => void
     error: (data: { message: string; code?: SocketErrorReason; scope?: 'session' | 'machine'; id?: string }) => void
 }
 
