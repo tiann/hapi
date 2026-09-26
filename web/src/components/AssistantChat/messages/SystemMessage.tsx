@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { MessagePrimitive, useAuiState } from '@assistant-ui/react'
 import { getEventPresentation } from '@/chat/presentation'
 import type { AgentEvent } from '@/chat/types'
@@ -13,6 +14,41 @@ function formatTokenDelta(event: AgentEvent | undefined): string | null {
     if (typeof event.estimatedTokensAfter === 'number') parts.push(event.estimatedTokensAfter.toLocaleString())
     if (parts.length === 0) return null
     return parts.length === 2 ? `${parts[0]} → ${parts[1]} tokens` : `${parts[0]} tokens`
+}
+
+// Compaction summaries are long; keep them collapsed by default and let the
+// chevron reveal the body on demand. Toggle state is intentionally local and
+// non-persistent — revisiting a session collapses the card again.
+export function CompactSummaryCard({ delta, text }: { delta: string | null; text: string }) {
+    const [expanded, setExpanded] = useState(false)
+    return (
+        <div className="mx-auto max-w-[92%] rounded-lg border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-3 py-2">
+            <button
+                type="button"
+                aria-expanded={expanded}
+                onClick={() => setExpanded((v) => !v)}
+                className="flex w-full items-center gap-1.5 text-left text-xs text-[var(--app-hint)]"
+            >
+                <span aria-hidden="true">📦</span>
+                <span className="font-medium">Context compacted</span>
+                {delta ? <span className="font-normal">· {delta}</span> : null}
+                <MessageTimestamp className="text-[10px]" />
+                <svg
+                    aria-hidden="true"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    className={`ml-auto h-3.5 w-3.5 shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`}
+                >
+                    <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+            </button>
+            {expanded && text ? (
+                <div className="max-h-96 overflow-y-auto pr-1">
+                    <MarkdownRenderer standalone content={text} />
+                </div>
+            ) : null}
+        </div>
+    )
 }
 
 export function HappySystemMessage() {
@@ -43,19 +79,7 @@ export function HappySystemMessage() {
         const delta = formatTokenDelta(compactSummary)
         return (
             <MessagePrimitive.Root id={getConversationMessageAnchorId(messageId)} className="scroll-mt-4 py-1">
-                <div className="mx-auto max-w-[92%] rounded-lg border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-3 py-2">
-                    <div className="flex items-center gap-1.5 text-xs text-[var(--app-hint)]">
-                        <span aria-hidden="true">📦</span>
-                        <span className="font-medium">Context compacted</span>
-                        {delta ? <span className="font-normal">{delta}</span> : null}
-                        <MessageTimestamp className="text-[10px]" />
-                    </div>
-                    {text ? (
-                        <div className="max-h-96 overflow-y-auto pr-1">
-                            <MarkdownRenderer standalone content={text} />
-                        </div>
-                    ) : null}
-                </div>
+                <CompactSummaryCard delta={delta} text={text} />
             </MessagePrimitive.Root>
         )
     }
