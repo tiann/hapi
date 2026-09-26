@@ -8,7 +8,8 @@ import {
 describe('conversationHistory capabilities', () => {
     it('only exposes supported flags', () => {
         expect(toConversationHistoryCapabilities(CLAUDE_CONVERSATION_HISTORY)).toEqual({
-            forkCurrent: true
+            forkCurrent: true,
+            rewindToMessage: true
         })
     })
 
