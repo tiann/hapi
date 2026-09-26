@@ -176,6 +176,72 @@ describe('claudeLocalLauncher message filtering', () => {
         expect(sentMessages).toHaveLength(2)
     })
 
+    it('publishes local Claude context details from assistant context_usage', async () => {
+        const { session, sentMessages, getMetadata } = createSessionStub()
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!({
+            type: 'assistant',
+            uuid: 'assistant-context-details',
+            context_usage: {
+                total_tokens: 26_697,
+                raw_max_tokens: 262_144,
+                mcp_tools: [{ name: 'mcp__hapi__list_peers', server_name: 'hapi' }]
+            },
+            message: {
+                role: 'assistant',
+                content: [{ type: 'text', text: 'hello' }]
+            }
+        })
+
+        expect(getMetadata().contextDetails).toMatchObject({
+            provider: 'claude',
+            contextWindow: 262_144,
+            usage: { contextTokens: 26_697 },
+            claude: {
+                mcpTools: [{ name: 'mcp__hapi__list_peers', serverName: 'hapi' }]
+            }
+        })
+        expect(sentMessages[0]).not.toHaveProperty('context_usage')
+    })
+
+    it('does not let Claude sidechain context details replace parent metadata', async () => {
+        const { session, getMetadata } = createSessionStub()
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!({
+            type: 'assistant',
+            uuid: 'parent-assistant',
+            context_usage: {
+                total_tokens: 100,
+                raw_max_tokens: 1_000,
+                mcp_tools: [{ name: 'mcp__parent__tool', server_name: 'parent' }]
+            },
+            message: {
+                role: 'assistant',
+                content: [{ type: 'text', text: 'parent' }]
+            }
+        })
+        const parentDetails = getMetadata().contextDetails
+
+        harness.scannerOnMessage!({
+            type: 'assistant',
+            uuid: 'sidechain-assistant',
+            isSidechain: true,
+            context_usage: {
+                total_tokens: 900,
+                raw_max_tokens: 9_000,
+                mcp_tools: [{ name: 'mcp__child__tool', server_name: 'child' }]
+            },
+            message: {
+                role: 'assistant',
+                content: [{ type: 'text', text: 'child' }]
+            }
+        })
+
+        expect(getMetadata().contextDetails).toEqual(parentDetails)
+    })
+
     it('filters out isMeta messages (e.g. skill injections)', async () => {
         const { session, sentMessages } = createSessionStub()
         await claudeLocalLauncher(session as never)

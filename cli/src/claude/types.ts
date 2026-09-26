@@ -68,7 +68,8 @@ export const RawJSONLinesSchema = z.discriminatedUnion("type", [
     type: z.literal("assistant"),
     message: RawMessageSchema.optional(),
     requestId: z.string().optional(),
-  }),
+    context_usage: z.unknown().optional(),
+  }).passthrough(),
 
   // Summary message - validates summary and leafUuid
   RawJSONLinesBaseSchema.extend({

@@ -183,6 +183,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 agentState: { controlledByUser: false },
             });
         const root = new SharedCodexRoot(bootstrap, { directory: join(runtimeDirectory(), 'queues'), generation: id, endpoint: upstream, token: upstreamToken,
+            codexInventoryArgs: launch.serverArgs,
             settingsFor: threadId => nativeSettings.get(threadId), create, end });
         prepared.add(root);
         try { assertRunning(); await root.prepare(); assertRunning(); return root; }

@@ -4,14 +4,36 @@ import { createSessionScanner } from "./utils/sessionScanner";
 import { isClaudeChatVisibleMessage } from "./utils/chatVisibility";
 import { BaseLocalLauncher } from "@/modules/common/launcher/BaseLocalLauncher";
 import { applySessionTitleFallback } from './utils/sessionTitleFallback';
+import { buildClaudeContextDetails, publishContextDetails } from '@/agent/contextDetails';
 
 export async function claudeLocalLauncher(session: Session): Promise<'switch' | 'exit'> {
+    let lastSystemModel = session.getModel();
 
     // Create scanner
     const scanner = await createSessionScanner({
         sessionId: session.sessionId,
         workingDirectory: session.path,
         onMessage: (message) => {
+            const rawMessage = message as unknown as Record<string, unknown>;
+            const isSidechain = rawMessage.isSidechain === true;
+            if (!isSidechain) {
+                if (rawMessage.type === 'system' && typeof rawMessage.model === 'string') {
+                    lastSystemModel = rawMessage.model;
+                }
+                if (rawMessage.type === 'assistant' || rawMessage.type === 'system' || rawMessage.type === 'result') {
+                    const details = buildClaudeContextDetails({
+                        contextUsage: rawMessage.context_usage,
+                        system: rawMessage.type === 'system' ? rawMessage : undefined,
+                        result: rawMessage.type === 'result' ? rawMessage : undefined,
+                        messageUsage: (rawMessage.message as Record<string, unknown> | undefined)?.usage ?? rawMessage.usage,
+                        model: typeof rawMessage.model === 'string' ? rawMessage.model : lastSystemModel
+                    });
+                    if (details) {
+                        publishContextDetails(session.client, details);
+                    }
+                }
+            }
+
             session.localPermissionBridge.onTranscript(message);
             // Preserve the AI-generated title emitted by Claude Code's native
             // interactive CLI. It is metadata, not a visible chat message.
@@ -33,6 +55,11 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
             // Filter out invisible system messages (e.g. init, stop_hook_summary)
             // to avoid them showing as raw JSON in the web UI
             if (!isClaudeChatVisibleMessage(message)) {
+                return
+            }
+            if (message.type === 'assistant') {
+                const { context_usage: _contextUsage, ...outboundMessage } = message
+                session.client.sendClaudeSessionMessage(outboundMessage)
                 return
             }
             session.client.sendClaudeSessionMessage(message)
