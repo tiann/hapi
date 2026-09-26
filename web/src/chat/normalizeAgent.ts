@@ -94,6 +94,50 @@ function normalizeRoundSummary(value: unknown): RoundSummary | undefined {
     }
 }
 
+function normalizeOpencodeRoundSummary(value: unknown): RoundSummary | undefined {
+    if (!isObject(value) || Array.isArray(value)) return undefined
+    const usage = normalizeResultUsage(value.usage)
+    if (
+        !usage
+        || usage.cache_creation_input_tokens === undefined
+        || usage.cache_read_input_tokens === undefined
+    ) return undefined
+
+    if (!isObject(value.modelUsage) || Array.isArray(value.modelUsage)) return undefined
+    const entries: Array<[string, RoundModelUsage]> = []
+    for (const [model, rawUsage] of Object.entries(value.modelUsage)) {
+        if (!model || !isObject(rawUsage) || Array.isArray(rawUsage)) return undefined
+        const inputTokens = nonNegativeSafeInteger(rawUsage.inputTokens)
+        const outputTokens = nonNegativeSafeInteger(rawUsage.outputTokens)
+        const cacheReadInputTokens = nonNegativeSafeInteger(rawUsage.cacheReadInputTokens)
+        const cacheCreationInputTokens = nonNegativeSafeInteger(rawUsage.cacheCreationInputTokens)
+        if (
+            inputTokens === undefined
+            || outputTokens === undefined
+            || cacheReadInputTokens === undefined
+            || cacheCreationInputTokens === undefined
+        ) return undefined
+        entries.push([model, { inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens }])
+    }
+    if (entries.length === 0) return undefined
+
+    const numTurns = nonNegativeSafeInteger(value.num_turns)
+    const durationMs = nonNegativeNumber(value.duration_ms)
+    if (numTurns === undefined || numTurns <= 0 || durationMs === undefined) return undefined
+
+    const hasCost = Object.prototype.hasOwnProperty.call(value, 'total_cost_usd')
+    const totalCostUsd = hasCost ? nonNegativeNumber(value.total_cost_usd) : undefined
+    if (hasCost && (totalCostUsd === undefined || totalCostUsd <= 0)) return undefined
+
+    return {
+        usage,
+        modelUsage: Object.fromEntries(entries),
+        totalCostUsd,
+        numTurns,
+        durationMs
+    }
+}
+
 function normalizeThreadGoal(value: unknown) {
     if (!isObject(value)) return null
     const threadId = asString(value.threadId ?? value.thread_id)
@@ -1011,6 +1055,20 @@ export function normalizeAgentRecord(
                 createdAt,
                 role: 'event',
                 content: data as AgentEvent,
+                isSidechain: false,
+                meta
+            }
+        }
+
+        if (data.type === 'round-summary') {
+            const summary = normalizeOpencodeRoundSummary(data.summary)
+            if (!summary) return null
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'event',
+                content: { type: 'turn-summary', summary },
                 isSidechain: false,
                 meta
             }

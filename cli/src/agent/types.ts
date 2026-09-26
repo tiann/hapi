@@ -29,6 +29,21 @@ export type PlanItem = {
     status: 'pending' | 'in_progress' | 'completed';
 };
 
+export type AgentRoundModelUsage = {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadInputTokens: number;
+    cacheCreationInputTokens: number;
+};
+
+export type AgentRoundSummary = {
+    usage: AgentRoundModelUsage;
+    modelUsage: Record<string, AgentRoundModelUsage>;
+    totalCostUsd?: number;
+    numTurns: number;
+    durationMs: number;
+};
+
 export type AgentMessage =
     | { type: 'text'; text: string; id?: string; live?: boolean; streamSnapshot?: boolean }
     | { type: 'reasoning'; text: string; id?: string; live?: boolean }
@@ -57,6 +72,7 @@ export type AgentMessage =
     | { type: 'plan'; items: PlanItem[] }
     | { type: 'generated_image'; imageId: string; fileName: string; mimeType: string; source?: InlineMediaSource }
     | { type: 'turn_complete'; stopReason: string }
+    | { type: 'round_summary'; summary: AgentRoundSummary }
     | { type: 'error'; message: string };
 
 export type PermissionOption = {
