@@ -88,17 +88,17 @@ export class PiMessageAccumulator {
 
         if (event.type === 'message_end' || event.type === 'turn_end') {
             const wasActive = this.active;
+            const errorMessage = 'message' in event ? extractPiTurnError(event.message) : null;
+            // Error-finalized turns still need a non-live terminal text row so
+            // the last visible partial response remains searchable.
             const messages = this.flush();
             // Pi reports the failure on both message_end and turn_end; emit the
             // error once (first boundary wins) so the web shows a failed turn
             // instead of silent partial text. turn_end doubles as the safety
             // net for Pi builds that skip message_end on stream failure.
-            if (wasActive && !this.errorEmitted && 'message' in event) {
-                const errorMessage = extractPiTurnError(event.message);
-                if (errorMessage) {
-                    messages.push({ type: 'error', message: errorMessage });
-                    this.errorEmitted = true;
-                }
+            if (wasActive && !this.errorEmitted && errorMessage) {
+                messages.push({ type: 'error', message: errorMessage });
+                this.errorEmitted = true;
             }
             return messages;
         }
@@ -111,9 +111,9 @@ export class PiMessageAccumulator {
     }
 
     /** Explicit transport-close/error safety net. Idempotent after a flush. */
-    flush(): AgentMessage[] {
+    flush(emitUnchangedTerminalText = true): AgentMessage[] {
         if (!this.active) return [];
-        const snapshots = this.createSnapshots(false);
+        const snapshots = this.createSnapshots(false, emitUnchangedTerminalText);
         this.resetMessage();
         return snapshots;
     }
@@ -142,10 +142,10 @@ export class PiMessageAccumulator {
         return this.createSnapshots(true);
     }
 
-    private createSnapshots(live: boolean): AgentMessage[] {
+    private createSnapshots(live: boolean, emitUnchangedTerminalText = true): AgentMessage[] {
         const messages: AgentMessage[] = [];
-        this.addSnapshots(messages, 'reasoning', this.reasoningSegments, live);
-        this.addSnapshots(messages, 'text', this.textSegments, live);
+        this.addSnapshots(messages, 'reasoning', this.reasoningSegments, live, emitUnchangedTerminalText);
+        this.addSnapshots(messages, 'text', this.textSegments, live, emitUnchangedTerminalText);
         return messages;
     }
 
@@ -154,9 +154,12 @@ export class PiMessageAccumulator {
         kind: 'reasoning' | 'text',
         segments: Map<number, Segment>,
         live: boolean,
+        emitUnchangedTerminalText: boolean,
     ): void {
         for (const [index, segment] of Array.from(segments.entries()).sort(([left], [right]) => left - right)) {
-            if (!segment.text.trim() || segment.text === segment.lastSnapshot) continue;
+            const unchanged = segment.text === segment.lastSnapshot;
+            const isUnchangedTerminalText = !live && kind === 'text' && emitUnchangedTerminalText;
+            if (!segment.text.trim() || (unchanged && !isUnchangedTerminalText)) continue;
             segment.lastSnapshot = segment.text;
             const id = `pi-${this.streamNonce}-turn-${this.turnSequence}-message-${this.messageSequence}-${kind}-${index}`;
             output.push({

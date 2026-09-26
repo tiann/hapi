@@ -43,6 +43,20 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }))
     })
 
+    app.get('/sessions/:id/messages/:messageId/context', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        return c.json(engine.getMessageContext(sessionResult.sessionId, c.req.param('messageId')))
+    })
+
     app.delete('/sessions/:id/messages/:messageId', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {

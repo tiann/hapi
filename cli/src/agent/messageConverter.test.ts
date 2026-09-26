@@ -15,6 +15,7 @@ describe('convertAgentMessage', () => {
             type: 'message',
             message: 'partial response',
             id: 'text-stream-1',
+            live: true,
             streamSnapshot: true
         });
     });
