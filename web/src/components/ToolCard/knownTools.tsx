@@ -291,7 +291,15 @@ export const knownTools: Record<string, {
     Read: {
         icon: () => <EyeIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => {
-            const file = getInputStringAny(opts.input, ['file_path', 'path', 'file'])
+            const file = getInputStringAny(opts.input, ['file_path', 'filePath', 'path', 'file'])
+            return file ? resolveDisplayPath(file, opts.metadata) : 'Read file'
+        },
+        minimal: true
+    },
+    read: {
+        icon: () => <EyeIcon className={DEFAULT_ICON_CLASS} />,
+        title: (opts) => {
+            const file = getInputStringAny(opts.input, ['filePath', 'file_path', 'path', 'file'])
             return file ? resolveDisplayPath(file, opts.metadata) : 'Read file'
         },
         minimal: true
