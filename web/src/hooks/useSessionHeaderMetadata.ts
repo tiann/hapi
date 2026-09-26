@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 export type SessionHeaderMetadataKey =
     | 'showLabels'
     | 'agent'
+    | 'project'
     | 'model'
     | 'reasoning'
     | 'fastMode'
@@ -17,6 +18,7 @@ export type SessionHeaderMetadataPreferences = Record<SessionHeaderMetadataKey, 
 export const DEFAULT_SESSION_HEADER_METADATA: SessionHeaderMetadataPreferences = {
     showLabels: true,
     agent: true,
+    project: true,
     model: true,
     reasoning: true,
     fastMode: true,
