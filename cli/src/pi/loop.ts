@@ -691,6 +691,12 @@ export function wireTransportEvents(
     };
     const flushAccumulator = (): void => sendMessages(assistantMessageAccumulator.flush());
 
+    // Serializes chat publishing so tool results (which may await image
+    // registration) can never overtake the assistant snapshot of the next
+    // event in the same stdout chunk; JsonLineParser.feed() dispatches a chunk
+    // synchronously line-by-line, so without this chain an assistant
+    // `message_end` arriving after a `tool_execution_end` would publish first.
+    let publishChain: Promise<void> = Promise.resolve();
     transport.onEvent((event) => {
         // Legacy Pi emitted auto_compaction_*; normalize it before every
         // lifecycle consumer so both the maintenance gate and timeline see the
@@ -841,16 +847,26 @@ export function wireTransportEvents(
         } else if (event.type === 'summarization_retry_finished') {
             maintenanceActive.delete('summary');
         }
-        lifecycleTimeline.emit(event, session);
-        sendMessages(assistantMessageAccumulator.handleEvent(event));
+        publishChain = publishChain
+            .then(async () => {
+                // lifecycle notices (retry/compaction) and assistant/chat output
+                // share the same ordered queue so a notice arriving later in the
+                // same stdout chunk cannot overtake earlier assistant or image
+                // messages in the transcript.
+                lifecycleTimeline.emit(event, session);
+                sendMessages(assistantMessageAccumulator.handleEvent(event));
 
-        if (event.type !== 'message_start' && event.type !== 'message_update' && event.type !== 'message_end') {
-            const messages = convertPiEvent(event);
-            for (const message of messages) {
-                const converted = convertAgentMessage(message, session.currentModel);
-                if (converted) session.sendAgentMessage(converted);
-            }
-        }
+                if (event.type !== 'message_start' && event.type !== 'message_update' && event.type !== 'message_end') {
+                    const messages = await convertPiEvent(event);
+                    for (const message of messages) {
+                        const converted = convertAgentMessage(message, session.currentModel);
+                        if (converted) session.sendAgentMessage(converted);
+                    }
+                }
+            })
+            .catch((error) => {
+                logger.debug('[pi] Failed to publish event:', error instanceof Error ? error.message : String(error));
+            });
 
         if (event.type === 'agent_start') {
             session.updateThinkingState(true);
