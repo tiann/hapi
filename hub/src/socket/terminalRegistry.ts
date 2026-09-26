@@ -1,17 +1,18 @@
 export type TerminalRegistryEntry = {
     terminalId: string
     sessionId: string
-    socketId: string
+    viewerSocketIds: Set<string>
     cliSocketId: string
+    createdAt: number
     idleTimer: ReturnType<typeof setTimeout> | null
 }
 
 type TerminalRegistryOptions = {
     idleTimeoutMs: number
     onIdle?: (entry: TerminalRegistryEntry) => void
-    // Fired whenever an entry is genuinely removed (close / idle / CLI gone), but NOT on a same-id reconnect re-register, so per-terminal
-    // resources (e.g. the scrollback buffer) are released without wiping a
-    // reconnecting client's state.
+    // Fired whenever an entry is genuinely removed (close / idle / CLI gone),
+    // but NOT when a browser detaches or re-attaches, so per-terminal resources
+    // (e.g. the scrollback buffer) survive navigation and transport reconnects.
     onRemove?: (entry: TerminalRegistryEntry) => void
 }
 
@@ -20,6 +21,12 @@ export class TerminalRegistry {
     private readonly terminalsBySocket = new Map<string, Set<string>>()
     private readonly terminalsBySession = new Map<string, Set<string>>()
     private readonly terminalsByCliSocket = new Map<string, Set<string>>()
+    // Resource ownership is durable across viewer/socket reconnects. Keep it
+    // separate from viewer attachment so detach never releases the resource cap.
+    private readonly terminalOwnerKeys = new Map<string, string>()
+    private readonly terminalsByOwner = new Map<string, Set<string>>()
+    private readonly sessionSubscribers = new Map<string, Set<string>>()
+    private readonly sessionsBySocket = new Map<string, Set<string>>()
     private readonly idleTimeoutMs: number
     private readonly onIdle?: (entry: TerminalRegistryEntry) => void
     private readonly onRemove?: (entry: TerminalRegistryEntry) => void
@@ -30,38 +37,97 @@ export class TerminalRegistry {
         this.onRemove = options.onRemove
     }
 
-    register(terminalId: string, sessionId: string, socketId: string, cliSocketId: string): TerminalRegistryEntry | null {
+    register(
+        terminalId: string,
+        sessionId: string,
+        socketId: string | null,
+        cliSocketId: string,
+        ownerKey?: string
+    ): TerminalRegistryEntry | null {
         const existing = this.terminals.get(terminalId)
         if (existing) {
-            if (existing.socketId === socketId) {
-                return existing
-            }
             if (existing.sessionId !== sessionId) {
                 return null
             }
-            // Same session, different socket — stale entry from a previous
-            // connection (e.g. socket reconnect in a PWA). Terminal IDs are
-            // client-generated UUIDs so cross-client collisions are not a
-            // realistic concern; clean up and re-register. Skip onRemove so the
-            // reconnecting client keeps its scrollback buffer.
-            this.remove(terminalId, false)
+            // Backwards compatibility for older web clients that use
+            // terminal:create for transport reconnects. A detached create does
+            // not implicitly become a viewer; legacy attached creates still do.
+            // Existing resources retain their original durable owner.
+            return socketId ? this.attach(terminalId, sessionId, socketId) : existing
+        }
+
+        // Initial empty-page bootstraps use a unique `-auto-<nonce>` resource ID.
+        // The nonce keeps PTY identities unique across lifecycles, while this
+        // synchronous registry gate makes simultaneous empty-page requests
+        // create-if-empty: after the first request registers a PTY, later auto
+        // requests for the same session are rejected and their clients refresh
+        // the server inventory instead of opening duplicate shells.
+        if (terminalId.startsWith(`term-${sessionId}-auto-`) && this.countForSession(sessionId) > 0) {
+            return null
         }
 
         const entry: TerminalRegistryEntry = {
             terminalId,
             sessionId,
-            socketId,
+            viewerSocketIds: socketId ? new Set([socketId]) : new Set<string>(),
             cliSocketId,
+            createdAt: Date.now(),
             idleTimer: null
         }
+        // Direct registry users/tests predate durable owner accounting. Production
+        // terminal:create always supplies a stable authenticated owner key.
+        const resolvedOwnerKey = ownerKey ?? socketId ?? `cli:${cliSocketId}:${sessionId}`
 
         this.terminals.set(terminalId, entry)
-        this.addToIndex(this.terminalsBySocket, socketId, terminalId)
+        this.terminalOwnerKeys.set(terminalId, resolvedOwnerKey)
+        this.addToIndex(this.terminalsByOwner, resolvedOwnerKey, terminalId)
+        if (socketId) {
+            this.addToIndex(this.terminalsBySocket, socketId, terminalId)
+        }
         this.addToIndex(this.terminalsBySession, sessionId, terminalId)
         this.addToIndex(this.terminalsByCliSocket, cliSocketId, terminalId)
         this.scheduleIdle(entry)
 
         return entry
+    }
+
+    attach(terminalId: string, sessionId: string, socketId: string): TerminalRegistryEntry | null {
+        const entry = this.terminals.get(terminalId)
+        if (!entry || entry.sessionId !== sessionId) {
+            return null
+        }
+
+        if (entry.viewerSocketIds.has(socketId)) {
+            return entry
+        }
+
+        entry.viewerSocketIds.add(socketId)
+        this.addToIndex(this.terminalsBySocket, socketId, terminalId)
+        return entry
+    }
+
+    detach(terminalId: string, socketId: string): TerminalRegistryEntry | null {
+        const entry = this.terminals.get(terminalId)
+        if (!entry || !entry.viewerSocketIds.has(socketId)) {
+            return null
+        }
+
+        entry.viewerSocketIds.delete(socketId)
+        this.removeFromIndex(this.terminalsBySocket, socketId, terminalId)
+        return entry
+    }
+
+    isViewer(terminalId: string, socketId: string): boolean {
+        return this.terminals.get(terminalId)?.viewerSocketIds.has(socketId) ?? false
+    }
+
+    subscribeSession(sessionId: string, socketId: string): void {
+        this.addToIndex(this.sessionSubscribers, sessionId, socketId)
+        this.addToIndex(this.sessionsBySocket, socketId, sessionId)
+    }
+
+    subscribersForSession(sessionId: string): string[] {
+        return Array.from(this.sessionSubscribers.get(sessionId) ?? [])
     }
 
     markActivity(terminalId: string): void {
@@ -76,6 +142,17 @@ export class TerminalRegistry {
         return this.terminals.get(terminalId) ?? null
     }
 
+    listForSession(sessionId: string): TerminalRegistryEntry[] {
+        const ids = this.terminalsBySession.get(sessionId)
+        if (!ids || ids.size === 0) {
+            return []
+        }
+        return Array.from(ids)
+            .map((terminalId) => this.terminals.get(terminalId))
+            .filter((entry): entry is TerminalRegistryEntry => Boolean(entry))
+            .sort((a, b) => a.createdAt - b.createdAt)
+    }
+
     remove(terminalId: string, fireOnRemove = true): TerminalRegistryEntry | null {
         const entry = this.terminals.get(terminalId)
         if (!entry) {
@@ -83,7 +160,14 @@ export class TerminalRegistry {
         }
 
         this.terminals.delete(terminalId)
-        this.removeFromIndex(this.terminalsBySocket, entry.socketId, terminalId)
+        const ownerKey = this.terminalOwnerKeys.get(terminalId)
+        if (ownerKey) {
+            this.removeFromIndex(this.terminalsByOwner, ownerKey, terminalId)
+            this.terminalOwnerKeys.delete(terminalId)
+        }
+        for (const socketId of entry.viewerSocketIds) {
+            this.removeFromIndex(this.terminalsBySocket, socketId, terminalId)
+        }
         this.removeFromIndex(this.terminalsBySession, entry.sessionId, terminalId)
         this.removeFromIndex(this.terminalsByCliSocket, entry.cliSocketId, terminalId)
         if (entry.idleTimer) {
@@ -98,13 +182,25 @@ export class TerminalRegistry {
 
     detachBySocket(socketId: string): TerminalRegistryEntry[] {
         const ids = this.terminalsBySocket.get(socketId)
-        if (!ids || ids.size === 0) {
-            return []
+        const entries = ids
+            ? Array.from(ids)
+                .map((terminalId) => this.terminals.get(terminalId))
+                .filter((entry): entry is TerminalRegistryEntry => Boolean(entry))
+            : []
+
+        for (const entry of entries) {
+            entry.viewerSocketIds.delete(socketId)
         }
-        const entries = Array.from(ids)
-            .map((terminalId) => this.terminals.get(terminalId))
-            .filter(Boolean) as TerminalRegistryEntry[]
         this.terminalsBySocket.delete(socketId)
+
+        const sessionIds = this.sessionsBySocket.get(socketId)
+        if (sessionIds) {
+            for (const sessionId of sessionIds) {
+                this.removeFromIndex(this.sessionSubscribers, sessionId, socketId)
+            }
+        }
+        this.sessionsBySocket.delete(socketId)
+
         return entries
     }
 
@@ -118,6 +214,10 @@ export class TerminalRegistry {
 
     countForSocket(socketId: string): number {
         return this.terminalsBySocket.get(socketId)?.size ?? 0
+    }
+
+    countForOwner(ownerKey: string): number {
+        return this.terminalsByOwner.get(ownerKey)?.size ?? 0
     }
 
     countForSession(sessionId: string): number {
@@ -143,21 +243,21 @@ export class TerminalRegistry {
         }, this.idleTimeoutMs)
     }
 
-    private addToIndex(index: Map<string, Set<string>>, key: string, terminalId: string): void {
+    private addToIndex(index: Map<string, Set<string>>, key: string, value: string): void {
         const set = index.get(key)
         if (set) {
-            set.add(terminalId)
+            set.add(value)
         } else {
-            index.set(key, new Set([terminalId]))
+            index.set(key, new Set([value]))
         }
     }
 
-    private removeFromIndex(index: Map<string, Set<string>>, key: string, terminalId: string): void {
+    private removeFromIndex(index: Map<string, Set<string>>, key: string, value: string): void {
         const set = index.get(key)
         if (!set) {
             return
         }
-        set.delete(terminalId)
+        set.delete(value)
         if (set.size === 0) {
             index.delete(key)
         }

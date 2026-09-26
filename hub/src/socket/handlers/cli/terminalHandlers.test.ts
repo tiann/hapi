@@ -66,10 +66,6 @@ class FakeNamespace {
     }
 }
 
-function lastEmit(socket: FakeSocket, event: string): EmittedEvent | undefined {
-    return [...socket.emitted].reverse().find((entry) => entry.event === event)
-}
-
 function lastRoomEmit(namespace: FakeNamespace, event: string): RoomEmit | undefined {
     return [...namespace.roomEmits].reverse().find((entry) => entry.event === event)
 }
@@ -224,7 +220,7 @@ describe('cli terminal handlers', () => {
         expect(getUserTerminalBuffer('session-1', 'terminal-1')).toBe('')
     })
 
-    it('removes stale registry entries after terminal errors', () => {
+    it('removes stale registry entries after terminal errors and notifies the session room', () => {
         const cliSocket = new FakeSocket('cli-socket')
         const terminalSocket = new FakeSocket('terminal-socket')
         const terminalNamespace = new FakeNamespace()
@@ -249,7 +245,9 @@ describe('cli terminal handlers', () => {
         })
 
         expect(terminalRegistry.get('terminal-1')).toBeNull()
-        expect(lastEmit(terminalSocket, 'terminal:error')?.data).toEqual({
+        const emit = lastRoomEmit(terminalNamespace, 'terminal:error')
+        expect(emit?.room).toBe('session:session-1')
+        expect(emit?.data).toEqual({
             sessionId: 'session-1',
             terminalId: 'terminal-1',
             message: 'Remote terminal is not supported on Windows yet.'
