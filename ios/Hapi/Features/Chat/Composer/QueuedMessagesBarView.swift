@@ -6,7 +6,8 @@ import SwiftUI
 /// SwiftUI twin of `QueuedMessagesBar.tsx` via the Android port. Per row:
 /// Steer (while a turn is active), Edit (cancel + prefill composer) and
 /// Cancel. Rows without a server echo yet (`id == localId`) keep their
-/// actions disabled until the SSE echo lands.
+/// actions disabled until the SSE echo lands. Scheduled rows with attachments
+/// keep Edit disabled because native edit cannot restore the attachment.
 struct QueuedMessagesBarView: View {
     let interactor: ChatInteractor
     @Environment(\.hapiTheme) private var theme
@@ -96,7 +97,7 @@ struct QueuedRowView: View {
                 interactor.steerQueuedMessage(row.id)
             }
         }
-        action("Edit", id: "edit", horizontal: horizontal) {
+        action("Edit", id: "edit", horizontal: horizontal, enabled: row.canEdit) {
             interactor.editQueuedMessage(row.id)
         }
         action("Cancel", id: "cancel", horizontal: horizontal, destructive: true) {
@@ -106,9 +107,11 @@ struct QueuedRowView: View {
 
     private func action(
         _ title: LocalizedStringKey, id: String, horizontal: Bool,
-        destructive: Bool = false, perform: @escaping () -> Void
+        destructive: Bool = false, enabled: Bool = true,
+        perform: @escaping () -> Void
     ) -> some View {
-        Button(action: perform) {
+        let isEnabled = row.canAct && enabled
+        return Button(action: perform) {
             Text(title)
                 .font(typography.toolTitleFont)
                 .multilineTextAlignment(.center)
@@ -119,8 +122,8 @@ struct QueuedRowView: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(destructive ? theme.danger : theme.link)
-        .disabled(!row.canAct)
-        .opacity(row.canAct ? 1 : 0.5)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.5)
         .accessibilityIdentifier("queued-\(id)-\(row.id)")
     }
 

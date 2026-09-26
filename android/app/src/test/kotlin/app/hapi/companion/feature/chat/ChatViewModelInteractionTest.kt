@@ -834,8 +834,27 @@ class ChatViewModelInteractionTest {
     // ---------------------------------------------------------- queued bar --
 
     /** Server-echoed queued row (id != localId, explicit `invokedAt: null`). */
-    private fun queuedServerRow(id: String, localId: String, text: String): DecryptedMessage =
-        DecryptedMessage(
+    private fun queuedServerRow(
+        id: String,
+        localId: String,
+        text: String,
+        scheduledAt: Long? = null,
+        withAttachment: Boolean = false,
+    ): DecryptedMessage {
+        val messageContent = buildJsonObject {
+            put("type", "text")
+            put("text", text)
+            if (withAttachment) {
+                put("attachments", kotlinx.serialization.json.JsonArray(listOf(buildJsonObject {
+                    put("id", "att-queued")
+                    put("filename", "queued.jpg")
+                    put("mimeType", "image/jpeg")
+                    put("size", 3)
+                    put("path", "/uploads/queued.jpg")
+                })))
+            }
+        }
+        return DecryptedMessage(
             id = id,
             seq = 7,
             localId = localId,
@@ -843,12 +862,11 @@ class ChatViewModelInteractionTest {
             invokedAt = OptionalField.Present(null),
             content = buildJsonObject {
                 put("role", "user")
-                putJsonObject("content") {
-                    put("type", "text")
-                    put("text", text)
-                }
+                put("content", messageContent)
             },
+            scheduledAt = scheduledAt,
         )
+    }
 
     @Test
     fun `queued cancel invoked-race ingests the authoritative row as sent`() = runTest {
@@ -910,6 +928,29 @@ class ChatViewModelInteractionTest {
         harness.viewModel.editQueuedMessage("srv-3")
         harness.viewModel.composer.first { it.text == "edit me" }
         assertEquals(listOf("srv-3"), harness.api.cancelCalls.value)
+    }
+
+    @Test
+    fun `scheduled attachment queued row cannot be edited`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+        harness.window().ingestSseMessages(
+            listOf(app.hapi.protocol.window.WindowMessage(queuedServerRow(
+                id = "srv-attachment", localId = "l-attachment", text = "keep image",
+                scheduledAt = 1_800_000_000_000, withAttachment = true,
+            ))),
+        )
+        val row = harness.viewModel.queuedRows.first { rows ->
+            rows.any { it.id == "srv-attachment" && it.canAct }
+        }.single { it.id == "srv-attachment" }
+        assertFalse(row.canEdit)
+
+        harness.viewModel.editQueuedMessage("srv-attachment")
+        testScheduler.advanceUntilIdle()
+
+        assertEquals("", harness.viewModel.composer.value.text)
+        assertTrue(harness.api.cancelCalls.value.isEmpty())
+        assertTrue(harness.viewModel.queuedRows.value.any { it.id == "srv-attachment" })
     }
 
     // --------------------------------------------------------- permissions --

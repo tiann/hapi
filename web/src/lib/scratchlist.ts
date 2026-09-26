@@ -4,13 +4,13 @@
  * The scratchlist is the operator's *workbench*: notes / drafts / parking lot
  * entries that are explicitly **not** queued for sending. Compare to the
  * queue (`QueuedMessagesBar`), which is a conveyor belt that auto-fires
- * messages in order. Scratchlist entries are held until the operator
- * promotes them (to the composer or into the queue) or deletes them.
+ * messages in order. Scratchlist entries are held until the operator edits,
+ * copies, deletes, or otherwise acts on them from the composer.
  *
  * Storage is per-session in `localStorage` under
  * `hapi.scratchlist.v1.<sessionId>` so entries survive reloads but stay
- * scoped to a single conversation. Hub-sync is intentionally deferred
- * (v2) to keep this PR small.
+ * scoped to a single conversation. The hub-backed hook uses this shape as
+ * its offline-cache representation.
  */
 const STORAGE_KEY_PREFIX = 'hapi.scratchlist.v1.'
 
@@ -20,20 +20,17 @@ export const SCRATCHLIST_MAX_ENTRIES = 200
 /** Per-entry text cap: matches what a long composer paste can produce. */
 export const SCRATCHLIST_MAX_TEXT_LENGTH = 10_000
 
-import type { ScratchlistAttachmentMetadata } from '@hapi/protocol'
+import type { ScratchlistAttachmentWithPreview } from '@/lib/scratchlistAttachmentPreview'
 
 export type ScratchlistEntry = {
     id: string
     text: string
     createdAt: number
-    /**
-     * Last-saved timestamp surfaced by the entry-age indicator (clock
-     * icon + tooltip). Optional so v1-only callers (the standalone
-     * panel fixture, legacy localStorage rows that pre-date v2) keep
-     * working - readers fall back to `createdAt` when absent.
-     */
+    /** Last modification timestamp retained for hub sync and legacy caches. */
     updatedAt?: number
-    attachments?: ScratchlistAttachmentMetadata[]
+    /** Dense hub-backed display order; absent for legacy v1-only rows. */
+    position?: number
+    attachments?: ScratchlistAttachmentWithPreview[]
 }
 
 function getStorageKey(sessionId: string): string {
@@ -63,6 +60,11 @@ function isEntry(value: unknown): value is ScratchlistEntry {
     ) return false
     if (entry.updatedAt !== undefined) {
         if (typeof entry.updatedAt !== 'number' || !Number.isFinite(entry.updatedAt)) {
+            return false
+        }
+    }
+    if (entry.position !== undefined) {
+        if (typeof entry.position !== 'number' || !Number.isInteger(entry.position) || entry.position < 0) {
             return false
         }
     }
@@ -179,6 +181,66 @@ export function moveScratchlistEntry(
     next[swapWith] = tmp
     return next
 }
+/**
+ * Move an entry to a specific list index. The target index is interpreted
+ * after removing the entry from its current position, which keeps drag/drop
+ * callers from having to adjust the index when dragging an item downward.
+ */
+export function reorderScratchlistEntry(
+    entries: ScratchlistEntry[],
+    id: string,
+    targetIndex: number
+): ScratchlistEntry[] {
+    const sourceIndex = entries.findIndex((entry) => entry.id === id)
+    if (sourceIndex < 0 || !Number.isInteger(targetIndex)) return entries
+
+    const next = entries.filter((entry) => entry.id !== id)
+    const clampedIndex = Math.max(0, Math.min(targetIndex, next.length))
+    const entry = entries[sourceIndex]
+    if (!entry) return entries
+
+    next.splice(clampedIndex, 0, entry)
+    if (next.every((item, index) => item.id === entries[index]?.id)) return entries
+    return next
+}
+
+/**
+ * Update an existing entry while applying the same normalization and length
+ * cap as addScratchlistEntry. Empty edits are ignored so an accidental blur
+ * cannot erase a note.
+ */
+export function updateScratchlistEntry(
+    entries: ScratchlistEntry[],
+    id: string,
+    rawText: string,
+    now: number = Date.now(),
+    attachments?: ScratchlistAttachmentWithPreview[],
+): ScratchlistEntry[] {
+    const text = rawText.trim()
+    if (text.length === 0 && (!attachments || attachments.length === 0)) return entries
+    const truncated = text.length > SCRATCHLIST_MAX_TEXT_LENGTH
+        ? text.slice(0, SCRATCHLIST_MAX_TEXT_LENGTH)
+        : text
+
+    let changed = false
+    const next = entries.map((entry) => {
+        if (entry.id !== id) return entry
+        const currentAttachments = entry.attachments ?? []
+        const nextAttachments = attachments ?? currentAttachments
+        const attachmentsChanged = attachments !== undefined
+            && (currentAttachments.length !== nextAttachments.length
+                || currentAttachments.some((attachment, index) => attachment.id !== nextAttachments[index]?.id))
+        if (entry.text === truncated && !attachmentsChanged) return entry
+        changed = true
+        return {
+            ...entry,
+            text: truncated,
+            ...(attachments !== undefined ? { attachments: nextAttachments } : {}),
+            updatedAt: now,
+        }
+    })
+    return changed ? next : entries
+}
 
 export function persistScratchlist(sessionId: string, entries: ScratchlistEntry[]): void {
     writeScratchlist(sessionId, entries)
@@ -193,16 +255,4 @@ export function clearScratchlist(sessionId: string): void {
     } catch {
         // Non-fatal.
     }
-}
-
-/**
- * Confirm-on-delete threshold. Trivial entries delete instantly; longer
- * notes deserve a confirmation prompt so a stray click doesn't lose work.
- * Threshold tuned to "anything longer than a one-line reminder".
- */
-export const SCRATCHLIST_CONFIRM_DELETE_THRESHOLD = 100
-
-export function shouldConfirmDelete(entry: ScratchlistEntry | null | undefined): boolean {
-    if (!entry) return false
-    return entry.text.length > SCRATCHLIST_CONFIRM_DELETE_THRESHOLD
 }

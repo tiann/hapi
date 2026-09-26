@@ -15,9 +15,8 @@
  * "stale entries leak from session A into session B" bug fixed in
  * `SessionChat.tsx` by keying the host by `session.id`.
  *
- * Promote callbacks are exposed on `window.__scratchlistE2E` so the
- * spec can assert that the right text reached `setText` (composer)
- * and `onSend` (queue) without involving the real composer / queue.
+ * The fixture intentionally mounts only the scratchlist surface so the
+ * interaction tests do not need the full composer / queue graph.
  */
 
 import React from 'react'
@@ -30,9 +29,6 @@ declare global {
     interface Window {
         __scratchlistE2E?: {
             sessionId: string
-            promotedToComposer: string[]
-            promotedToQueue: string[]
-            queueSendMode: 'success' | 'failure'
             /** Whether the fixture's host wrapper applies `key={sessionId}`.
              * Mirrors the SessionChat fix; toggle via `?key=0` to repro the
              * pre-fix bug for red/green tests. Defaults to `true`. */
@@ -56,32 +52,15 @@ function getKeyByedSessionId(): boolean {
 }
 
 /*
- * Mirror of SessionChat's ScratchlistHost: a thin wrapper that owns
- * the promote callbacks. The spec drives sessionId changes through
+ * Mirror of SessionChat's ScratchlistHost. The spec drives sessionId changes through
  * the parent (App), while this host either keys by sessionId
  * (production behaviour) or doesn't (pre-fix repro).
  */
 function ScratchlistHost({ sessionId, keyed }: { sessionId: string; keyed: boolean }) {
-    const handlePromoteToComposer = React.useCallback((text: string) => {
-        window.__scratchlistE2E?.promotedToComposer.push(text)
-    }, [])
-
-    const handlePromoteToQueue = React.useCallback(async (text: string) => {
-        const harness = window.__scratchlistE2E
-        if (!harness) return false
-        if (harness.queueSendMode === 'failure') {
-            return false
-        }
-        harness.promotedToQueue.push(text)
-        return true
-    }, [])
-
     return (
         <ScratchlistPanel
             key={keyed ? sessionId : undefined}
             sessionId={sessionId}
-            onPromoteToComposer={handlePromoteToComposer}
-            onPromoteToQueue={handlePromoteToQueue}
         />
     )
 }
@@ -93,15 +72,9 @@ function App() {
     React.useEffect(() => {
         const harness: NonNullable<Window['__scratchlistE2E']> = {
             sessionId,
-            promotedToComposer: [],
-            promotedToQueue: [],
-            queueSendMode: 'success',
             keyByedSessionId: keyed,
             setSessionId: (id: string) => setSessionId(id),
             reset() {
-                this.promotedToComposer = []
-                this.promotedToQueue = []
-                this.queueSendMode = 'success'
             },
         }
         window.__scratchlistE2E = harness

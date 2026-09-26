@@ -386,8 +386,12 @@ function ScratchlistToggleButton(props: {
     const showFueDot = fue.status !== 'acknowledged'
     // Counter and FUE dot are mutually exclusive (see FueDot doc comment).
     // Onboarding signal beats inventory signal: the user can't read the
-    // counter as "you have N items" until they understand the feature.
-    const showCounter = !showFueDot && props.scratchlistCount > 0
+    // counter as "you have N items" until they understand the feature. Once
+    // the drawer is open, the entries are already visible, so the floating
+    // counter badge is redundant and hidden.
+    const showCounter = !showFueDot && !props.scratchlistMode && props.scratchlistCount > 0
+    const counterLabel = props.scratchlistCount > 99 ? '99+' : String(props.scratchlistCount)
+    const isSingleDigitCounter = props.scratchlistCount < 10
 
     return (
         <>
@@ -417,10 +421,13 @@ function ScratchlistToggleButton(props: {
                 ) : null}
                 {showCounter ? (
                     <span
+                        data-testid="scratchlist-counter"
                         aria-hidden="true"
-                        className="absolute -top-0.5 -right-0.5 min-w-[12px] h-3 px-[3px] flex items-center justify-center rounded-full bg-amber-500 text-white text-[8px] font-semibold leading-none tabular-nums shadow-sm"
+                        className={`absolute top-0 right-0 z-10 flex h-3 items-center justify-center rounded-full bg-amber-500 text-[8px] font-semibold leading-none tabular-nums text-white shadow-sm ${
+                            isSingleDigitCounter ? 'w-3 p-0' : 'min-w-[18px] px-1'
+                        }`}
                     >
-                        {props.scratchlistCount > 99 ? '99+' : props.scratchlistCount}
+                        {counterLabel}
                     </span>
                 ) : null}
             </button>

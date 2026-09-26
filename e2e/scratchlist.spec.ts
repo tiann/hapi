@@ -8,21 +8,13 @@
  *
  * These specs drive a real Chromium against the
  * `web/e2e-fixtures/scratchlist-fixture.html` page (vite dev), which
- * mounts the production ScratchlistPanel + I18nProvider with stub
- * promote callbacks exposed on `window.__scratchlistE2E`.
+ * mounts the production ScratchlistPanel + I18nProvider.
  *
  * Each test uses a unique `?session=...` query param so the keyed
  * localStorage state is naturally isolated.
  */
 
 import { test, expect, Page } from '@playwright/test'
-
-type Harness = {
-    sessionId: string
-    promotedToComposer: string[]
-    promotedToQueue: string[]
-    queueSendMode: 'success' | 'failure'
-}
 
 async function gotoFixture(page: Page, sessionId: string): Promise<void> {
     // We use a unique session id per test (the localStorage keys are
@@ -31,26 +23,6 @@ async function gotoFixture(page: Page, sessionId: string): Promise<void> {
     // would defeat the persistence + cross-navigation tests below.
     await page.goto(`/e2e-fixtures/scratchlist-fixture.html?session=${encodeURIComponent(sessionId)}`)
     await expect(page.getByTestId('scratchlist-panel')).toBeVisible()
-}
-
-async function readHarness(page: Page): Promise<Harness> {
-    return await page.evaluate(() => {
-        const h = window.__scratchlistE2E!
-        return {
-            sessionId: h.sessionId,
-            promotedToComposer: [...h.promotedToComposer],
-            promotedToQueue: [...h.promotedToQueue],
-            queueSendMode: h.queueSendMode,
-        }
-    })
-}
-
-async function setQueueMode(page: Page, mode: 'success' | 'failure'): Promise<void> {
-    await page.evaluate((m) => {
-        if (window.__scratchlistE2E) {
-            window.__scratchlistE2E.queueSendMode = m
-        }
-    }, mode)
 }
 
 async function expandPanel(page: Page): Promise<void> {
@@ -162,45 +134,111 @@ test.describe('scratchlist e2e', () => {
         await expect(items.nth(1)).toContainText('First note')
     })
 
-    test('promote-to-composer fires callback with entry text', async ({ page }) => {
-        await gotoFixture(page, 'promote-composer')
+    test('clicking an entry text opens inline editing and Enter saves it', async ({ page }) => {
+        await gotoFixture(page, 'inline-edit')
         await expandPanel(page)
-        await addEntry(page, 'Draft a status update')
+        await addEntry(page, 'Draft a status update\nwith a second line')
 
-        await page.getByRole('button', { name: 'Copy into composer' }).first().click()
+        await page.getByTestId('scratchlist-entry-text').click()
+        const editor = page.getByRole('textbox', { name: 'Edit scratchlist entry' })
+        await expect(editor).toBeFocused()
+        await expect(editor).toHaveJSProperty('selectionStart', 'Draft a status update\nwith a second line'.length)
+        await expect(editor).toHaveJSProperty('selectionEnd', 'Draft a status update\nwith a second line'.length)
+        await expect(editor).toHaveCSS('overflow-y', 'hidden')
+        await expect.poll(async () => await editor.evaluate((element) => element.clientHeight >= element.scrollHeight)).toBe(true)
+        await editor.fill('Updated status update')
+        await editor.press('Enter')
 
-        const harness = await readHarness(page)
-        expect(harness.promotedToComposer).toEqual(['Draft a status update'])
-        // Promote-to-composer is a copy: the entry stays.
-        await expect(page.getByText('Draft a status update')).toBeVisible()
+        await expect(page.getByTestId('scratchlist-entry-text')).toHaveText('Updated status update')
     })
 
-    test('promote-to-queue (success) fires callback and removes entry', async ({ page }) => {
-        await gotoFixture(page, 'promote-queue')
+    test('long-press drag reorders entries and removes the old row actions', async ({ page }) => {
+        await gotoFixture(page, 'long-press-reorder')
         await expandPanel(page)
-        await addEntry(page, 'Ship the patch release')
+        await addEntry(page, 'First note')
+        await addEntry(page, 'Second note')
+        await addEntry(page, 'Third note')
 
-        await setQueueMode(page, 'success')
-        await page.getByRole('button', { name: 'Send to queue' }).first().click()
+        await expect(page.getByRole('button', { name: 'Move entry up' })).toHaveCount(0)
+        await expect(page.getByRole('button', { name: 'Move entry down' })).toHaveCount(0)
+        await expect(page.getByRole('button', { name: 'Copy into composer' })).toHaveCount(0)
+        await expect(page.getByRole('button', { name: 'Send to queue' })).toHaveCount(0)
+        await expect(page.getByTestId('scratchlist-entry-age')).toHaveCount(0)
 
-        await expect(page.getByText('Ship the patch release')).toHaveCount(0)
-        const harness = await readHarness(page)
-        expect(harness.promotedToQueue).toEqual(['Ship the patch release'])
+        const rows = page.getByTestId('scratchlist-entry')
+        const source = rows.nth(0)
+        const destination = rows.nth(2)
+        const sourceBox = await source.boundingBox()
+        const destinationBox = await destination.boundingBox()
+        expect(sourceBox).not.toBeNull()
+        expect(destinationBox).not.toBeNull()
+        await page.mouse.move(sourceBox!.x + sourceBox!.width / 2, sourceBox!.y + sourceBox!.height / 2)
+        await page.mouse.down()
+        await page.waitForTimeout(550)
+        await page.mouse.move(destinationBox!.x + destinationBox!.width / 2, destinationBox!.y + destinationBox!.height / 2)
+        await page.mouse.up()
+
+        await expect(rows.nth(0)).toContainText('Second note')
+        await expect(rows.nth(1)).toContainText('First note')
+        await expect(rows.nth(2)).toContainText('Third note')
     })
 
-    test('promote-to-queue (failure) keeps the entry on the scratchlist', async ({ page }) => {
-        await gotoFixture(page, 'promote-queue-fail')
-        await expandPanel(page)
-        await addEntry(page, 'This send will fail')
+    test('mobile touch long-press drag reorders entries', async ({ browser }) => {
+        const context = await browser.newContext({
+            viewport: { width: 412, height: 800 },
+            hasTouch: true,
+            isMobile: true,
+        })
+        const page = await context.newPage()
+        try {
+            await gotoFixture(page, 'mobile-touch-reorder')
+            await expandPanel(page)
+            await addEntry(page, 'First note')
+            await addEntry(page, 'Second note')
+            await addEntry(page, 'Third note')
 
-        await setQueueMode(page, 'failure')
-        await page.getByRole('button', { name: 'Send to queue' }).first().click()
+            const rows = page.getByTestId('scratchlist-entry')
+            const sourceBox = await rows.nth(0).boundingBox()
+            const destinationBox = await rows.nth(2).boundingBox()
+            expect(sourceBox).not.toBeNull()
+            expect(destinationBox).not.toBeNull()
 
-        // Failure path: the queue callback returned false, so the entry
-        // must remain on the scratchlist (operator can retry).
-        await expect(page.getByText('This send will fail')).toBeVisible()
-        const harness = await readHarness(page)
-        expect(harness.promotedToQueue).toEqual([])
+            const client = await context.newCDPSession(page)
+            const sourceX = sourceBox!.x + sourceBox!.width / 2
+            const sourceY = sourceBox!.y + sourceBox!.height / 2
+            const destinationX = destinationBox!.x + destinationBox!.width / 2
+            const destinationY = destinationBox!.y + destinationBox!.height / 2
+            const touchPoint = (x: number, y: number) => ({
+                x,
+                y,
+                id: 1,
+                radiusX: 1,
+                radiusY: 1,
+                force: 1,
+            })
+
+            await client.send('Input.dispatchTouchEvent', {
+                type: 'touchStart',
+                touchPoints: [touchPoint(sourceX, sourceY)],
+            })
+            await page.waitForTimeout(550)
+            await client.send('Input.dispatchTouchEvent', {
+                type: 'touchMove',
+                touchPoints: [touchPoint(destinationX, destinationY)],
+            })
+            await client.send('Input.dispatchTouchEvent', {
+                type: 'touchEnd',
+                touchPoints: [],
+            })
+
+            await expect(rows.nth(0)).toContainText('Second note')
+            await expect(rows.nth(1)).toContainText('First note')
+            await expect(rows.nth(2)).toContainText('Third note')
+            await expect(page.getByRole('textbox', { name: 'Edit scratchlist entry' })).toHaveCount(0)
+            await expect(page.getByTestId('scratchlist-action-menu')).toHaveCount(0)
+        } finally {
+            await context.close()
+        }
     })
 
     test('Ctrl+Shift+S expands the panel and focuses the input', async ({ page }) => {

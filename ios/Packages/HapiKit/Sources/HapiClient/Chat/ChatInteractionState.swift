@@ -33,6 +33,9 @@ public struct QueuedMessageRow: Equatable, Sendable, Identifiable {
     /// Server echo has landed (`id != localId`) and no queued operation is in
     /// flight — Cancel/Edit act only then (web `computeCanCancel`).
     public let canAct: Bool
+    /// Scheduled rows with attachments cannot be edited because native edit
+    /// is cancel + text prefill and cannot restore the durable attachment.
+    public let canEdit: Bool
     /// Steer offered: turn active, not future-scheduled, actionable.
     public let canSteer: Bool
     public let indeterminate: Bool
@@ -45,6 +48,7 @@ public struct QueuedMessageRow: Equatable, Sendable, Identifiable {
         scheduledAt: Int?,
         canAct: Bool,
         canSteer: Bool,
+        canEdit: Bool = true,
         indeterminate: Bool = false
     ) {
         self.id = id
@@ -54,6 +58,7 @@ public struct QueuedMessageRow: Equatable, Sendable, Identifiable {
         self.scheduledAt = scheduledAt
         self.canAct = canAct
         self.canSteer = canSteer
+        self.canEdit = canEdit
         self.indeterminate = indeterminate
     }
 }

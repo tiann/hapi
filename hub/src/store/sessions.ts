@@ -199,7 +199,7 @@ export function getOrCreateSession(
     modelReasoningEffort?: string,
     requestedId?: string
 ): StoredSession {
-    const existing = prepareCached(db, 
+    const existing = prepareCached(db,
         'SELECT * FROM sessions WHERE tag = ? AND namespace = ? ORDER BY created_at DESC LIMIT 1'
     ).get(tag, namespace) as DbSessionRow | undefined
 
@@ -854,7 +854,7 @@ export function getSession(db: Database, id: string): StoredSession | null {
 }
 
 export function getSessionByNamespace(db: Database, id: string, namespace: string): StoredSession | null {
-    const row = prepareCached(db, 
+    const row = prepareCached(db,
         'SELECT * FROM sessions WHERE id = ? AND namespace = ?'
     ).get(id, namespace) as DbSessionRow | undefined
     return row ? toStoredSession(row) : null
@@ -866,7 +866,7 @@ export function getSessions(db: Database): StoredSession[] {
 }
 
 export function getSessionsByNamespace(db: Database, namespace: string): StoredSession[] {
-    const rows = prepareCached(db, 
+    const rows = prepareCached(db,
         'SELECT * FROM sessions WHERE namespace = ? ORDER BY updated_at DESC'
     ).all(namespace) as DbSessionRow[]
     return rows.map(toStoredSession)

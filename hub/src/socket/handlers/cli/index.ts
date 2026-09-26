@@ -23,6 +23,8 @@ type SessionAlivePayload = {
     collaborationMode?: CodexCollaborationMode
 }
 
+type SessionConnectedHandler = (sessionId: string, clientInstanceId?: string) => void
+
 type SessionEndPayload = {
     sid: string
     time: number
@@ -43,6 +45,7 @@ export type CliHandlersDeps = {
     store: Store
     rpcRegistry: RpcRegistry
     terminalRegistry: TerminalRegistry
+    onSessionConnected?: SessionConnectedHandler
     onSessionAlive?: (payload: SessionAlivePayload) => void
     onSessionReady?: (payload: SessionReadyPayload) => void
     onSessionEnd?: (payload: SessionEndPayload) => void
@@ -84,7 +87,7 @@ const SESSION_ACCESS_CACHE_TTL_MS = 1_000
 const SESSION_ACCESS_CACHE_MAX_SESSIONS = 64
 
 export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlersDeps): void {
-    const { io, store, rpcRegistry, terminalRegistry, onSessionAlive, onSessionReady, onSessionEnd, onMachineAlive, onWebappEvent, onBackgroundTaskDelta, onSessionActivity, onAgentProgress, onSweepImmediateQueued, onMessagesConsumed } = deps
+    const { io, store, rpcRegistry, terminalRegistry, onSessionConnected, onSessionAlive, onSessionReady, onSessionEnd, onMachineAlive, onWebappEvent, onBackgroundTaskDelta, onSessionActivity, onAgentProgress, onSweepImmediateQueued, onMessagesConsumed } = deps
     const terminalNamespace = io.of('/terminal')
     const namespace = typeof socket.data.namespace === 'string' ? socket.data.namespace : null
 
@@ -151,8 +154,12 @@ export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlers
 
     const auth = socket.handshake.auth as Record<string, unknown> | undefined
     const sessionId = typeof auth?.sessionId === 'string' ? auth.sessionId : null
+    const clientInstanceId = typeof auth?.clientInstanceId === 'string' && auth.clientInstanceId.length > 0
+        ? auth.clientInstanceId
+        : undefined
     if (sessionId && resolveSessionAccess(sessionId).ok) {
         socket.join(`session:${sessionId}`)
+        onSessionConnected?.(sessionId, clientInstanceId)
     }
 
     const machineId = typeof auth?.machineId === 'string' ? auth.machineId : null

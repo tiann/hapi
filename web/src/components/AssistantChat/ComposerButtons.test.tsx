@@ -254,6 +254,85 @@ describe('ComposerButtons responsive toolbar', () => {
         }
     })
 
+    it('hides the scratchlist counter while the drawer is open', () => {
+        const noop = () => {}
+        window.localStorage.setItem('hapi.fue.v1.scratchlist-toggle', '1')
+        try {
+            const { rerender } = render(
+                <RuntimeProviders>
+                    <ComposerButtons
+                        canSend={false}
+                        controlsDisabled={false}
+                        showSettingsButton={false}
+                        onSettingsToggle={noop}
+                        expanded={false}
+                        onExpandedToggle={noop}
+                        showTerminalButton={false}
+                        terminalDisabled={false}
+                        terminalLabel="Terminal"
+                        onTerminal={noop}
+                        showAbortButton={false}
+                        abortDisabled={false}
+                        isAborting={false}
+                        onAbort={noop}
+                        showSwitchButton={false}
+                        switchDisabled={false}
+                        isSwitching={false}
+                        onSwitch={noop}
+                        voiceEnabled={false}
+                        dictationEnabled={false}
+                        voiceStatus="disconnected"
+                        onVoiceToggle={noop}
+                        onSend={noop}
+                        scratchlistMode={false}
+                        scratchlistCount={1}
+                        onScratchlistToggle={noop}
+                    />
+                </RuntimeProviders>,
+            )
+
+            const getScratchlistButton = () => screen.getByRole('button', { name: 'Scratchlist drawer' })
+            expect(within(getScratchlistButton()).getByTestId('scratchlist-counter')).toBeTruthy()
+
+            rerender(
+                <RuntimeProviders>
+                    <ComposerButtons
+                        canSend={false}
+                        controlsDisabled={false}
+                        showSettingsButton={false}
+                        onSettingsToggle={noop}
+                        expanded={false}
+                        onExpandedToggle={noop}
+                        showTerminalButton={false}
+                        terminalDisabled={false}
+                        terminalLabel="Terminal"
+                        onTerminal={noop}
+                        showAbortButton={false}
+                        abortDisabled={false}
+                        isAborting={false}
+                        onAbort={noop}
+                        showSwitchButton={false}
+                        switchDisabled={false}
+                        isSwitching={false}
+                        onSwitch={noop}
+                        voiceEnabled={false}
+                        dictationEnabled={false}
+                        voiceStatus="disconnected"
+                        onVoiceToggle={noop}
+                        onSend={noop}
+                        scratchlistMode
+                        scratchlistCount={1}
+                        onScratchlistToggle={noop}
+                    />
+                </RuntimeProviders>,
+            )
+
+            expect(within(getScratchlistButton()).queryByTestId('scratchlist-counter')).toBeNull()
+        } finally {
+            window.localStorage.removeItem('hapi.fue.v1.scratchlist-toggle')
+        }
+    })
+
     it('uses overflow-safe alignment for centered and right-aligned layouts', () => {
         expect(getComposerToolbarJustifyContent('center')).toBe('safe center')
         expect(getComposerToolbarJustifyContent('right')).toBe('safe end')
