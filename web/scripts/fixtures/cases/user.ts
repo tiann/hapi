@@ -25,7 +25,7 @@ export const userCases: FixtureCase[] = [
     },
     {
         name: 'user-text-with-attachments',
-        description: 'User message with attachments: AttachmentMetadata keeps {id, filename, mimeType, size, path}; previewUrl on the wire is web-serving detail and is dropped by the projection.',
+        description: 'User message with a legacy path attachment and a preview; previewUrl on the wire is web-serving detail and is dropped by the projection.',
         messages: [
             wireMessage({
                 id: 'msg-user-101',
@@ -53,6 +53,36 @@ export const userCases: FixtureCase[] = [
                                 mimeType: 'image/png',
                                 size: 204800,
                                 path: '/uploads/att-01HZXK4R/screenshot.png'
+                            }
+                        ]
+                    },
+                    meta: { sentFrom: 'webapp' }
+                }
+            })
+        ]
+    },
+    {
+        name: 'user-text-with-durable-attachments',
+        description: 'User message with a durable Hub attachment reference; attachmentId replaces the legacy local path.',
+        messages: [
+            wireMessage({
+                id: 'msg-user-102',
+                seq: 1,
+                createdAt: T0,
+                localId: 'local-8e3c0f5a-14d7-4b29-a6e1-9c2f7d4b5a10',
+                invokedAt: T0 + 520,
+                content: {
+                    role: 'user',
+                    content: {
+                        type: 'text',
+                        text: 'Here is the durable screenshot attachment.',
+                        attachments: [
+                            {
+                                id: 'att-01HZXK5S',
+                                filename: 'durable-screenshot.png',
+                                mimeType: 'image/png',
+                                size: 307200,
+                                attachmentId: 'attachment-01HZXK5S'
                             }
                         ]
                     },

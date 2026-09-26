@@ -396,4 +396,23 @@ describe('createScratchlistAttachmentAdapter.send migrates chat-path chips (#122
         expect(deleteScratchlistAttachment).not.toHaveBeenCalled()
         expect(deleteUploadFile).not.toHaveBeenCalled()
     })
+
+    it('deletes a durable chat attachment when its chip is removed in scratchlist mode', async () => {
+        const deleteAttachment = vi.fn().mockResolvedValue(undefined)
+        const deleteUploadFile = vi.fn()
+        const api = { deleteAttachment, deleteUploadFile } as never
+        const adapter = createScratchlistAttachmentAdapter(api, 'session-1')
+
+        await adapter.remove({
+            id: 'composer-chat-attachment',
+            type: 'file',
+            name: 'photo.png',
+            contentType: 'image/png',
+            attachmentId: 'durable-attachment-1',
+            status: { type: 'requires-action', reason: 'composer-send' }
+        } as never)
+
+        expect(deleteAttachment).toHaveBeenCalledWith('session-1', 'durable-attachment-1')
+        expect(deleteUploadFile).not.toHaveBeenCalled()
+    })
 })
