@@ -34,6 +34,19 @@ describe('getBuiltinSlashCommands', () => {
         expect(commands.map((command) => command.name)).toContain('compact')
     })
 
+    it('exposes OpenCode compact and clear builtins for the remote web menu', () => {
+        const commands = getBuiltinSlashCommands('opencode')
+        expect(commands.map((command) => command.name)).toEqual(expect.arrayContaining([
+            'compact',
+            'clear',
+            'help',
+            'status',
+            'plan',
+            'default',
+            'init',
+        ]))
+    })
+
     it('does not fall back to Claude commands for kimi', () => {
         expect(getBuiltinSlashCommands('kimi')).toEqual([])
     })
