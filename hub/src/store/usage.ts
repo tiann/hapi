@@ -18,6 +18,12 @@ export type UsageEvent = {
     lastOutputTokens: number | null
     lastCacheReadTokens: number | null
     lastCacheCreationTokens: number | null
+    /** True when the source message carried context-window values but zero
+     *  processed tokens (ACP agents that only report usage_update). */
+    contextOnly: boolean
+    /** Cumulative session cost from the source message, when supplied. */
+    cost: number | null
+    costCurrency: string | null
 }
 
 export type UsageScanState = {
@@ -41,6 +47,9 @@ type UsageEventRow = {
     last_output_tokens: number | null
     last_cache_read_tokens: number | null
     last_cache_creation_tokens: number | null
+    context_only: number | null
+    cost: number | null
+    cost_currency: string | null
 }
 
 function toUsageEvent(row: UsageEventRow): UsageEvent {
@@ -59,7 +68,10 @@ function toUsageEvent(row: UsageEventRow): UsageEvent {
         lastInputTokens: row.last_input_tokens,
         lastOutputTokens: row.last_output_tokens,
         lastCacheReadTokens: row.last_cache_read_tokens,
-        lastCacheCreationTokens: row.last_cache_creation_tokens
+        lastCacheCreationTokens: row.last_cache_creation_tokens,
+        contextOnly: row.context_only === 1,
+        cost: row.cost,
+        costCurrency: row.cost_currency
     }
 }
 
@@ -93,7 +105,10 @@ export function recordUsageScan(
                     last_input_tokens,
                     last_output_tokens,
                     last_cache_read_tokens,
-                    last_cache_creation_tokens
+                    last_cache_creation_tokens,
+                    context_only,
+                    cost,
+                    cost_currency
                 ) VALUES (
                     @session_id,
                     @source_key,
@@ -109,7 +124,10 @@ export function recordUsageScan(
                     @last_input_tokens,
                     @last_output_tokens,
                     @last_cache_read_tokens,
-                    @last_cache_creation_tokens
+                    @last_cache_creation_tokens,
+                    @context_only,
+                    @cost,
+                    @cost_currency
                 )
                 ON CONFLICT(session_id, source_key)
                 DO UPDATE SET
@@ -125,7 +143,10 @@ export function recordUsageScan(
                     last_input_tokens = excluded.last_input_tokens,
                     last_output_tokens = excluded.last_output_tokens,
                     last_cache_read_tokens = excluded.last_cache_read_tokens,
-                    last_cache_creation_tokens = excluded.last_cache_creation_tokens
+                    last_cache_creation_tokens = excluded.last_cache_creation_tokens,
+                    context_only = excluded.context_only,
+                    cost = excluded.cost,
+                    cost_currency = excluded.cost_currency
                 WHERE usage_events.kind = 'delta'
             `)
             const updateCumulativeModel = db.prepare(`
@@ -152,7 +173,10 @@ export function recordUsageScan(
                     last_input_tokens: event.lastInputTokens,
                     last_output_tokens: event.lastOutputTokens,
                     last_cache_read_tokens: event.lastCacheReadTokens,
-                    last_cache_creation_tokens: event.lastCacheCreationTokens
+                    last_cache_creation_tokens: event.lastCacheCreationTokens,
+                    context_only: event.contextOnly ? 1 : 0,
+                    cost: event.cost,
+                    cost_currency: event.costCurrency
                 })
                 if (event.kind === 'cumulative' && event.model !== null) {
                     updateCumulativeModel.run(event.model, event.sessionId, event.sourceKey)
@@ -195,7 +219,10 @@ export function getUsageEvents(db: Database, sessionIds: string[]): UsageEvent[]
             last_input_tokens,
             last_output_tokens,
             last_cache_read_tokens,
-            last_cache_creation_tokens
+            last_cache_creation_tokens,
+            context_only,
+            cost,
+            cost_currency
         FROM usage_events
         WHERE session_id IN (${placeholders})
         ORDER BY created_at ASC, source_seq ASC
@@ -240,7 +267,10 @@ export function transferUsageSession(db: Database, fromSessionId: string, toSess
                 last_input_tokens,
                 last_output_tokens,
                 last_cache_read_tokens,
-                last_cache_creation_tokens
+                last_cache_creation_tokens,
+                context_only,
+                cost,
+                cost_currency
             )
             SELECT
                 ?,
@@ -257,7 +287,10 @@ export function transferUsageSession(db: Database, fromSessionId: string, toSess
                 last_input_tokens,
                 last_output_tokens,
                 last_cache_read_tokens,
-                last_cache_creation_tokens
+                last_cache_creation_tokens,
+                context_only,
+                cost,
+                cost_currency
             FROM usage_events
             WHERE session_id = ?
         `).run(toSessionId, fromSessionId)
