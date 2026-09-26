@@ -17,10 +17,17 @@ private const val SESSION = "sess-att"
 
 /** Scriptable two-method fake for the upload seam. */
 private class FakeUploadApi : AttachmentUploadApi {
-    class UploadCall(val sessionId: String, val filename: String, val contentBase64: String, val mimeType: String)
+    class UploadCall(
+        val sessionId: String,
+        val filename: String,
+        val contentBase64: String,
+        val mimeType: String,
+    )
+    data class DeleteCall(val path: String?, val attachmentId: String?)
 
     val uploads = MutableStateFlow<List<UploadCall>>(emptyList())
     val deletes = MutableStateFlow<List<String>>(emptyList())
+    val deleteCalls = MutableStateFlow<List<DeleteCall>>(emptyList())
 
     /** Results consumed per call; empty ⇒ success with a derived path. */
     val results = ArrayDeque<Result<UploadFileResponse>>()
@@ -34,15 +41,28 @@ private class FakeUploadApi : AttachmentUploadApi {
         contentBase64: String,
         mimeType: String,
     ): UploadFileResponse {
-        uploads.value = uploads.value + UploadCall(sessionId, filename, contentBase64, mimeType)
+        uploads.value += UploadCall(
+            sessionId,
+            filename,
+            contentBase64,
+            mimeType,
+        )
         gate?.await()
         val scripted = results.removeFirstOrNull()
             ?: Result.success(UploadFileResponse(success = true, path = "/uploads/$filename"))
         return scripted.getOrThrow()
     }
 
-    override suspend fun deleteUpload(sessionId: String, path: String): DeleteUploadResponse {
-        deletes.value = deletes.value + path
+    override suspend fun deleteUpload(sessionId: String, path: String): DeleteUploadResponse =
+        deleteUpload(sessionId, path = path, attachmentId = null)
+
+    override suspend fun deleteUpload(
+        sessionId: String,
+        path: String?,
+        attachmentId: String?,
+    ): DeleteUploadResponse {
+        deleteCalls.value += DeleteCall(path, attachmentId)
+        path?.let { deletes.value += it }
         return DeleteUploadResponse(success = true)
     }
 }
@@ -101,6 +121,38 @@ class ComposerAttachmentsTest {
         assertEquals(AttachmentPolicy.dataUrl("image/jpeg", byteArrayOf(9, 9)), metadata.previewUrl)
         assertTrue(tray.items.first { it.isEmpty() }.isEmpty())
         assertNull(tray.consume())
+    }
+
+    @Test
+    fun `durable upload keeps only the attachment id`() = runTest {
+        val api = FakeUploadApi()
+        api.results += Result.success(
+            UploadFileResponse(success = true, attachmentId = "durable-1"),
+        )
+        val tray = harness(backgroundScope, api)
+
+        tray.add(prepared(previewBytes = byteArrayOf(9, 9)))
+        tray.items.first { it.size == 1 && it[0].status == ComposerAttachmentStatus.Ready }
+
+        val metadata = tray.consume()!!.single()
+        assertNull(metadata.path)
+        assertEquals("durable-1", metadata.attachmentId)
+        assertNull(metadata.previewUrl)
+    }
+
+    @Test
+    fun `removing a durable chip deletes by attachment id`() = runTest {
+        val api = FakeUploadApi()
+        api.results += Result.success(UploadFileResponse(success = true, attachmentId = "durable-2"))
+        val tray = harness(backgroundScope, api)
+
+        tray.add(prepared())
+        tray.items.first { it.size == 1 && it[0].status == ComposerAttachmentStatus.Ready }
+        tray.remove("att-1")
+
+        val delete = api.deleteCalls.first { it.isNotEmpty() }.single()
+        assertNull(delete.path)
+        assertEquals("durable-2", delete.attachmentId)
     }
 
     @Test

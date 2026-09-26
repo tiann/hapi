@@ -207,6 +207,46 @@ struct ComposerAttachmentsTests {
         #expect(harness.tray.consume() == nil)
     }
 
+    @Test func durableUploadKeepsOnlyTheAttachmentId() async throws {
+        let harness = try TrayHarness()
+        await harness.performer.scriptUpload(
+            json: #"{"success":true,"attachmentId":"durable-1"}"#
+        )
+
+        harness.tray.add(prepared(previewBytes: Data([9, 9])))
+        #expect(await eventually {
+            harness.tray.items.count == 1 && harness.tray.items[0].status == .ready
+        })
+
+        let metadata = try #require(harness.tray.consume()?.first)
+        #expect(metadata.path == nil)
+        #expect(metadata.attachmentId == "durable-1")
+        #expect(metadata.previewUrl == nil)
+
+        let expectedContent = Data([10, 20, 30]).base64EncodedString()
+        let uploads = await harness.performer.bodies(pathSuffix: "/upload")
+        #expect(uploads == [
+            "{\"content\":\"\(expectedContent)\",\"filename\":\"shot.jpg\",\"mimeType\":\"image/jpeg\"}"
+        ])
+    }
+
+    @Test func removingADurableChipDeletesByAttachmentId() async throws {
+        let harness = try TrayHarness()
+        await harness.performer.scriptUpload(
+            json: #"{"success":true,"attachmentId":"durable-2"}"#
+        )
+
+        harness.tray.add(prepared())
+        #expect(await eventually {
+            harness.tray.items.count == 1 && harness.tray.items[0].status == .ready
+        })
+        harness.tray.remove("att-1")
+
+        #expect(await eventually {
+            await harness.performer.bodies(pathSuffix: "/upload/delete") == [#"{"attachmentId":"durable-2"}"#]
+        })
+    }
+
     @Test func uploadFailureSettlesFailedAndRetryReUploadsToReady() async throws {
         let harness = try TrayHarness()
         await harness.performer.scriptUpload(status: 500, json: #"{"error":"boom"}"#)

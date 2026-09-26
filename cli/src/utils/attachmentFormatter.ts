@@ -8,7 +8,10 @@ export function formatAttachmentsForClaude(attachments: AttachmentMetadata[] | u
     if (!attachments || attachments.length === 0) {
         return ''
     }
-    return attachments.map(a => `@${a.path}`).join(' ')
+    return attachments
+        .filter((attachment): attachment is typeof attachment & { path: string } => typeof attachment.path === 'string' && attachment.path.length > 0)
+        .map(a => `@${a.path}`)
+        .join(' ')
 }
 
 /**

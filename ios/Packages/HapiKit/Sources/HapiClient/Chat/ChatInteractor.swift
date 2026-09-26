@@ -1165,7 +1165,10 @@ public final class ChatInteractor {
                     targetSessionId: target, snapshot: snapshot)
                 guard composerText == text, attachments.snapshot == snapshot, !attachments.hasUnsettled else {
                     for (source, staged) in zip(snapshot, staged) {
-                        if case .scratchlist = source.source { _ = try? await api.deleteUpload(sessionId: target, path: staged.path) }
+                        if case .scratchlist = source.source {
+                            _ = try? await api.deleteUpload(sessionId: target, path: staged.path,
+                                                             attachmentId: staged.attachmentId)
+                        }
                     }
                     scratchlistError = "Your input changed — review it and try again"
                     scratchlistErrorDestination = .chat

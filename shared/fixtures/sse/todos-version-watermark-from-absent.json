@@ -46,7 +46,7 @@
         "todosUpdatedAt": 1755000300000,
         "updatedAt": 1755000000000
     },
-    "fixtureVersion": 1,
+    "fixtureVersion": 2,
     "initialSession": {
         "active": true,
         "activeAt": 1755000000000,

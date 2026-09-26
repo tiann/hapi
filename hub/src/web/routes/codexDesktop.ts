@@ -7,7 +7,7 @@ import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import type { CodexCollaborationMode } from '@hapi/protocol/types'
 import { Hono } from 'hono'
 import type { Machine, SyncEngine } from '../../sync/syncEngine'
-import type { Store, StoredMessage } from '../../store'
+import type { Store, StoredAttachment, StoredMessage } from '../../store'
 import { truncateOversizedMessageContent } from '../../store/contentCodec'
 import type { WebAppEnv } from '../middleware/auth'
 
@@ -1091,6 +1091,36 @@ function normalizeComparableContent(content: unknown): string | null {
     return null
 }
 
+function hasUserAttachments(content: unknown): boolean {
+    const record = asRecord(content)
+    const body = asRecord(record?.content)
+    return record?.role === 'user' && Array.isArray(body?.attachments) && body.attachments.length > 0
+}
+
+function mergeUserAttachments(existingContent: unknown, incomingContent: unknown): unknown {
+    const existing = asRecord(existingContent)
+    const incoming = asRecord(incomingContent)
+    const existingBody = asRecord(existing?.content)
+    const incomingBody = asRecord(incoming?.content)
+    const incomingAttachments = Array.isArray(incomingBody?.attachments)
+        ? incomingBody.attachments
+        : []
+    if (existing?.role !== 'user' || incoming?.role !== 'user' || incomingAttachments.length === 0) {
+        return existingContent
+    }
+
+    const existingAttachments = Array.isArray(existingBody?.attachments)
+        ? existingBody.attachments
+        : []
+    return {
+        ...existing,
+        content: {
+            ...existingBody,
+            attachments: [...existingAttachments, ...incomingAttachments]
+        }
+    }
+}
+
 function getComparableStoredMessageKey(message: StoredMessage): string {
     // 中文注释：重复会话合并时优先按标准 user/agent 结构去重；遇到非标准消息再回退到稳定序列化，确保不会遗漏相同内容。
     // Fallback also truncates so a pre-codec (full) row and a post-codec
@@ -1310,40 +1340,150 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
         throw new Error(`No duplicate Hapi session found for Codex thread: ${options.group.codexSessionId}`)
     }
 
-    const knownKeys = new Set(canonical.comparableKeys)
+    const knownMessages = new Map<string, StoredMessage[]>()
+    for (const message of canonical.storedMessages) {
+        const comparableKey = getComparableStoredMessageKey(message)
+        const bucket = knownMessages.get(comparableKey) ?? []
+        bucket.push(message)
+        knownMessages.set(comparableKey, bucket)
+    }
     const removedSessionIds: string[] = []
     const appendedMessages: StoredMessage[] = []
+    let updatedCanonicalMessage = false
     let latestActivity = canonical.updatedAt
 
     for (const source of sessionStates.slice(1)) {
         latestActivity = Math.max(latestActivity, source.updatedAt)
-        for (const message of source.storedMessages) {
-            const comparableKey = getComparableStoredMessageKey(message)
-            if (knownKeys.has(comparableKey)) {
-                continue
+        const clonedAttachments = new Map<string, StoredAttachment>()
+        const sourceOccurrences = new Map<string, number>()
+        const updates: Array<{ messageId: string; content: unknown }> = []
+        const inserts: Array<Pick<StoredMessage, 'content' | 'createdAt' | 'localId' | 'invokedAt' | 'scheduledAt' | 'deliveryState'>> = []
+        const stagedCanonicalMessages: Array<{
+            comparableKey: string
+            occurrence: number
+            kind: 'update'
+            message: StoredMessage
+        } | {
+            comparableKey: string
+            occurrence: number
+            kind: 'insert'
+        }> = []
+        const scratchlistAttachments = options.store.scratchlist
+            .list(source.sessionId)
+            .flatMap((entry) => entry.attachments)
+        let committed = false
+
+        try {
+            for (const message of source.storedMessages) {
+                const comparableKey = getComparableStoredMessageKey(message)
+                const occurrence = sourceOccurrences.get(comparableKey) ?? 0
+                sourceOccurrences.set(comparableKey, occurrence + 1)
+                const existing = knownMessages.get(comparableKey)?.[occurrence]
+                if (existing && !hasUserAttachments(message.content)) {
+                    continue
+                }
+
+                const copiedContent = await options.store.attachments.cloneMessageAttachments(
+                    options.namespace,
+                    source.sessionId,
+                    canonical.sessionId,
+                    message.content,
+                    clonedAttachments
+                )
+                if (existing) {
+                    const mergedContent = mergeUserAttachments(existing.content, copiedContent)
+                    updates.push({
+                        messageId: existing.id,
+                        content: mergedContent
+                    })
+                    stagedCanonicalMessages.push({
+                        comparableKey,
+                        occurrence,
+                        kind: 'update',
+                        message: { ...existing, content: mergedContent }
+                    })
+                    latestActivity = Math.max(latestActivity, message.invokedAt ?? message.createdAt)
+                    continue
+                }
+
+                const insert = {
+                    content: copiedContent,
+                    createdAt: message.createdAt,
+                    localId: message.localId,
+                    invokedAt: message.invokedAt,
+                    scheduledAt: message.scheduledAt,
+                    deliveryState: message.deliveryState
+                }
+                inserts.push(insert)
+                stagedCanonicalMessages.push({
+                    comparableKey,
+                    occurrence,
+                    kind: 'insert'
+                })
+                latestActivity = Math.max(latestActivity, message.invokedAt ?? message.createdAt)
             }
 
-            const copied = options.store.messages.copyMessageToSession(canonical.sessionId, {
-                content: message.content,
-                createdAt: message.createdAt,
-                localId: message.localId,
-                invokedAt: message.invokedAt,
-                scheduledAt: message.scheduledAt
+            if (engine && [source.sessionId, canonical.sessionId].some((sessionId) => (
+                engine.getSessionByNamespace(sessionId, options.namespace)?.active
+            ))) {
+                throw new Error('Cannot merge a session that became active')
+            }
+
+            const copiedMessages = options.store.commitDuplicateSessionMerge({
+                namespace: options.namespace,
+                sourceSessionId: source.sessionId,
+                targetSessionId: canonical.sessionId,
+                updates,
+                inserts
             })
-            knownKeys.add(comparableKey)
-            appendedMessages.push(copied)
-            latestActivity = Math.max(latestActivity, copied.invokedAt ?? copied.createdAt)
-        }
+            committed = true
 
-        if (engine) {
-            await engine.deleteSession(source.sessionId)
-        } else {
-            const deleted = options.store.sessions.deleteSession(source.sessionId, options.namespace)
-            if (!deleted) {
-                throw new Error(`Failed to delete duplicate Hapi session: ${source.sessionId}`)
+            let copiedIndex = 0
+            for (const staged of stagedCanonicalMessages) {
+                let canonicalMessage: StoredMessage
+                if (staged.kind === 'insert') {
+                    const copied = copiedMessages[copiedIndex++]
+                    if (!copied) throw new Error('Missing copied duplicate Codex message after merge')
+                    canonicalMessage = copied
+                    appendedMessages.push(copied)
+                } else {
+                    canonicalMessage = staged.message
+                    updatedCanonicalMessage = true
+                }
+                const bucket = knownMessages.get(staged.comparableKey) ?? []
+                bucket[staged.occurrence] = canonicalMessage
+                knownMessages.set(staged.comparableKey, bucket)
             }
+
+            try {
+                await options.store.attachments.deleteAllForSession(options.namespace, source.sessionId)
+            } catch (error) {
+                console.warn('[attachments] Failed to clean up merged duplicate session attachments', {
+                    sessionId: source.sessionId,
+                    error
+                })
+            }
+
+            if (engine && typeof (engine as SyncEngine & {
+                finalizeDeletedSession?: (
+                    sessionId: string,
+                    namespace: string,
+                    scratchlistAttachments?: import('@hapi/protocol').ScratchlistAttachmentMetadata[]
+                ) => void
+            }).finalizeDeletedSession === 'function') {
+                engine.finalizeDeletedSession(source.sessionId, options.namespace, scratchlistAttachments)
+            } else if (engine) {
+                // Keep compatibility with lightweight test doubles and older
+                // embedders while the real SyncEngine uses the atomic path.
+                await engine.deleteSession(source.sessionId)
+            }
+            removedSessionIds.push(source.sessionId)
+        } catch (error) {
+            if (!committed) {
+                await cleanupClonedAttachments(options.store, clonedAttachments, options.namespace, canonical.sessionId)
+            }
+            throw error
         }
-        removedSessionIds.push(source.sessionId)
     }
 
     if (appendedMessages.length > 0) {
@@ -1351,6 +1491,12 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
     }
 
     if (engine) {
+        if (updatedCanonicalMessage) {
+            engine.handleRealtimeEvent({
+                type: 'messages-invalidated',
+                sessionId: canonical.sessionId
+            })
+        }
         engine.recordSessionActivity(canonical.sessionId, latestActivity)
         // 中文注释：即使这次只是删除重复分身、没有新增消息，也主动刷新 canonical 会话，确保左侧列表立刻收敛到合并后的状态。
         engine.handleRealtimeEvent({
@@ -1366,6 +1512,17 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
         hapiSessionIds: sessionStates.map((candidate) => candidate.sessionId),
         canonicalSessionId: canonical.sessionId,
         removedSessionIds
+    }
+}
+
+async function cleanupClonedAttachments(
+    store: Store,
+    clonedAttachments: Map<string, StoredAttachment>,
+    namespace: string,
+    sessionId: string
+): Promise<void> {
+    for (const attachment of clonedAttachments.values()) {
+        await store.attachments.deleteForSession(attachment.id, namespace, sessionId).catch(() => {})
     }
 }
 
