@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test'
+import { Database } from 'bun:sqlite'
 import { randomUUID } from 'node:crypto'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -8,6 +9,8 @@ import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { Store } from '../../store'
 import { SyncEngine, type Machine } from '../../sync/syncEngine'
 import { RpcRegistry } from '../../socket/rpcRegistry'
+import { SessionCache } from '../../sync/sessionCache'
+import type { EventPublisher } from '../../sync/eventPublisher'
 import type { WebAppEnv } from '../middleware/auth'
 import { createCodexDesktopRoutes, getDarwinCodexOpenArgs, importSelectedCodexSessions } from './codexDesktop'
 
@@ -41,6 +44,36 @@ function createTranscript(codexHome: string, sessionId: string, cwd = 'C:\\work\
                 type: 'message',
                 role: 'assistant',
                 content: [{ type: 'output_text', text: 'normal assistant message' }]
+            }
+        }
+    ]
+    writeFileSync(transcriptPath, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`, 'utf-8')
+}
+
+function createPlanTranscript(codexHome: string, sessionId: string): void {
+    const sessionDir = join(codexHome, 'sessions', '2026', '06', '04')
+    mkdirSync(sessionDir, { recursive: true })
+    const transcriptPath = join(sessionDir, `rollout-${sessionId}.jsonl`)
+    const lines = [
+        {
+            type: 'session_meta',
+            payload: { id: sessionId, cwd: 'C:/work/project', originator: 'codex_cli_rs', cli_version: '0.0.0-test' }
+        },
+        {
+            type: 'response_item',
+            payload: {
+                type: 'message',
+                role: 'user',
+                content: [{ type: 'input_text', text: 'import this plan' }]
+            }
+        },
+        {
+            type: 'response_item',
+            payload: {
+                type: 'function_call',
+                name: 'update_plan',
+                call_id: 'call-import-plan',
+                arguments: JSON.stringify({ plan: [{ step: 'Imported task', status: 'in_progress' }] })
             }
         }
     ]
@@ -339,6 +372,7 @@ function createMachine(id: string, workspaceRoots: string[], namespace = 'defaul
 }
 
 function createImportSyncEngine(store: Store, machines: Machine[]): SyncEngine {
+    const sessionCache = new SessionCache(store, { emit: () => {} } as unknown as EventPublisher)
     return {
         getOnlineMachinesByNamespace: (namespace: string) => machines.filter((machine) => (
             machine.namespace === namespace && machine.active
@@ -357,6 +391,9 @@ function createImportSyncEngine(store: Store, machines: Machine[]): SyncEngine {
         handleRealtimeEvent: () => {},
         recordSessionActivity: (sessionId: string, updatedAt: number) => {
             store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
+        },
+        rebuildSessionTodos: (sessionId: string) => {
+            sessionCache.rebuildTodosFromTranscript(sessionId)
         }
     } as unknown as SyncEngine
 }
@@ -470,6 +507,76 @@ describe('Codex Desktop import routes', () => {
             expect(result.error).toContain('matching HAPI session is active')
             expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(1)
             expect(store.messages.getAllMessages(liveSession.id)).toHaveLength(1)
+        } finally {
+            store.close()
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
+
+    it('rebuilds structured tasks after a direct transcript import and restart', async () => {
+        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-plan-import-test-'))
+        const dbDir = mkdtempSync(join(tmpdir(), 'hapi-codex-plan-db-test-'))
+        const dbPath = join(dbDir, 'hapi.db')
+        const store = new Store(dbPath)
+        const codexSessionId = '13131313-1313-4131-8131-131313131313'
+        process.env.CODEX_HOME = codexHome
+
+        try {
+            createPlanTranscript(codexHome, codexSessionId)
+            store.migrations.markCompleted('structured-session-todos-v1')
+
+            const result = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => createImportSyncEngine(store, [])
+            })
+
+            expect(result.success).toBe(true)
+            const imported = store.sessions.getSessionsByNamespace('default')[0]
+            expect(imported).toBeDefined()
+            expect(imported?.todos).toEqual([
+                { content: 'Imported task', priority: 'medium', status: 'in_progress', id: 'plan-1' }
+            ])
+
+            store.close()
+            const restartedStore = new Store(dbPath)
+            try {
+                const restartedCache = new SessionCache(restartedStore, { emit: () => {} } as unknown as EventPublisher)
+                restartedCache.reloadAll()
+                expect(restartedCache.getSession(imported!.id)?.todos).toEqual([
+                    { content: 'Imported task', priority: 'medium', status: 'in_progress', id: 'plan-1' }
+                ])
+            } finally {
+                restartedStore.close()
+            }
+        } finally {
+            try { store.close() } catch {}
+            rmSync(codexHome, { recursive: true, force: true })
+            rmSync(dbDir, { recursive: true, force: true })
+        }
+    })
+
+    it('rebuilds imported structured tasks when the sync engine is unavailable', async () => {
+        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-plan-no-engine-test-'))
+        const store = new Store(':memory:')
+        const codexSessionId = '14141414-1414-4141-8141-141414141414'
+        process.env.CODEX_HOME = codexHome
+
+        try {
+            createPlanTranscript(codexHome, codexSessionId)
+            const result = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => null
+            })
+
+            expect(result.success).toBe(true)
+            const imported = store.sessions.getSessionsByNamespace('default')[0]
+            expect(imported?.todos).toEqual([
+                { content: 'Imported task', priority: 'medium', status: 'in_progress', id: 'plan-1' }
+            ])
         } finally {
             store.close()
             rmSync(codexHome, { recursive: true, force: true })
@@ -1358,9 +1465,24 @@ describe('Codex Desktop import routes', () => {
         const store = new Store(':memory:')
         const storedSession = store.sessions.getOrCreateSession('stored-session', { codexSessionId: 'codex-thread-1' }, {}, 'default')
         const engineSession = store.sessions.getOrCreateSession('engine-session', { codexSessionId: 'codex-thread-1' }, {}, 'default')
-        store.messages.addMessage(storedSession.id, { type: 'text', text: 'first stored message' }, 'stored-1')
-        store.messages.addMessage(storedSession.id, { type: 'text', text: 'second stored message' }, 'stored-2')
-        store.messages.addMessage(engineSession.id, { type: 'text', text: 'engine-only message' }, 'engine-1')
+        store.messages.addMessage(storedSession.id, { type: 'text', text: 'first stored message' }, 'stored-1', undefined, 100)
+        store.messages.addMessage(storedSession.id, { type: 'text', text: 'second stored message' }, 'stored-2', undefined, 150)
+        store.messages.addMessage(engineSession.id, {
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'tool-call',
+                    name: 'update_plan',
+                    input: { plan: [{ step: 'Imported duplicate plan', status: 'in_progress' }] }
+                }
+            }
+        }, 'engine-plan', undefined, 200)
+        const internalDb = (store as unknown as { db: Database }).db
+        internalDb.prepare('UPDATE sessions SET updated_at = 1000 WHERE id IN (?, ?)').run(storedSession.id, engineSession.id)
+        engineSession.updatedAt = 1_000
+        const canonicalUpdatedAt = store.sessions.getSession(storedSession.id)?.updatedAt
+        const engineSessionCache = new SessionCache(store, { emit: () => {} } as unknown as EventPublisher)
         const engine = {
             getSessionsByNamespace: () => [engineSession],
             deleteSession: async (sessionId: string) => {
@@ -1369,6 +1491,9 @@ describe('Codex Desktop import routes', () => {
             handleRealtimeEvent: () => {},
             recordSessionActivity: (sessionId: string, updatedAt: number) => {
                 store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
+            },
+            rebuildSessionTodos: (sessionId: string, options?: { touchUpdatedAt?: boolean }) => {
+                engineSessionCache.rebuildTodosFromTranscript(sessionId, options)
             }
         } as unknown as SyncEngine
         app.route('/api', createCodexDesktopRoutes({
@@ -1391,6 +1516,55 @@ describe('Codex Desktop import routes', () => {
             const sessions = store.sessions.getSessionsByNamespace('default')
             expect(sessions.map((session) => session.id)).toEqual([storedSession.id])
             expect(store.messages.getAllMessages(storedSession.id)).toHaveLength(3)
+            expect(store.sessions.getSession(storedSession.id)?.todos).toEqual([
+                { content: 'Imported duplicate plan', priority: 'medium', status: 'in_progress', id: 'plan-1' }
+            ])
+            expect(store.sessions.getSession(storedSession.id)?.updatedAt).toBe(canonicalUpdatedAt)
+        } finally {
+            store.close()
+        }
+    })
+
+    it('rebuilds duplicate tasks when the SyncEngine is unavailable', async () => {
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const store = new Store(':memory:')
+        const canonical = store.sessions.getOrCreateSession('canonical-session', { codexSessionId: 'codex-thread-2' }, {}, 'default')
+        const duplicate = store.sessions.getOrCreateSession('duplicate-session', { codexSessionId: 'codex-thread-2' }, {}, 'default')
+        store.messages.addMessage(canonical.id, { type: 'text', text: 'canonical message' }, 'canonical-1', undefined, 100)
+        store.messages.addMessage(duplicate.id, {
+            role: 'agent',
+            content: {
+                type: 'codex',
+                data: {
+                    type: 'tool-call',
+                    name: 'update_plan',
+                    input: { plan: [{ step: 'Fallback duplicate plan', status: 'in_progress' }] }
+                }
+            }
+        }, 'duplicate-plan', undefined, 200)
+        app.route('/api', createCodexDesktopRoutes({
+            store,
+            getSyncEngine: () => null
+        }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-2'] })
+            })
+
+            expect(response.status).toBe(200)
+            const body = await response.json() as { success: true; merged: Array<{ canonicalSessionId?: string }> }
+            expect(body.success).toBe(true)
+            expect(body.merged[0]?.canonicalSessionId).toBe(canonical.id)
+            expect(store.sessions.getSession(canonical.id)?.todos).toEqual([
+                { content: 'Fallback duplicate plan', priority: 'medium', status: 'in_progress', id: 'plan-1' }
+            ])
         } finally {
             store.close()
         }

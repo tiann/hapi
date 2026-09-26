@@ -623,6 +623,11 @@ export class SyncEngine {
         this.sessionCache.recordSessionActivity(sessionId, updatedAt)
     }
 
+    /** Rebuild structured task state after a transcript is imported directly. */
+    rebuildSessionTodos(sessionId: string, options?: { touchUpdatedAt?: boolean }): void {
+        this.sessionCache.rebuildTodosFromTranscript(sessionId, options)
+    }
+
     /**
      * tiann/hapi#1820: any message on the wire is agent progress, whichever
      * side authored it. Separate from `recordSessionActivity`, which also
