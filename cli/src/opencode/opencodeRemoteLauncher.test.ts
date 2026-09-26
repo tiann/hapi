@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
+import { MessageBuffer } from '@/ui/ink/messageBuffer';
 import type { OpencodeMode, PermissionMode } from './types';
 
 const harness = vi.hoisted(() => ({
@@ -21,6 +22,9 @@ const harness = vi.hoisted(() => ({
     stderrHandler: null as null | ((error: { type: string; message: string; raw: string }) => void),
     hangPrompt: false,
     resolvePrompt: null as null | (() => void),
+    // The message callback backend.prompt() receives, so tests can emit
+    // AgentMessages (e.g. live vs settled text) without a real backend.
+    promptOnMessage: null as null | ((message: unknown) => void),
     cancelPrompt: vi.fn(async (_sessionId: string) => {}),
     // Lets a test take full manual control of when a given prompt() call
     // resolves, instead of the fixed-one-tick setImmediate delay below —
@@ -104,7 +108,8 @@ vi.mock('./utils/opencodeBackend', () => ({
                 harness.thoughtLevelOption = { ...harness.thoughtLevelOption, currentValue: value };
             }
         }),
-        prompt: vi.fn(async (_sessionId: string, content: unknown[]) => {
+        prompt: vi.fn(async (_sessionId: string, content: unknown[], onMessage?: (message: unknown) => void) => {
+            harness.promptOnMessage = onMessage ?? null;
             harness.promptContents.push(content);
             harness.events.push('prompt:start');
             harness.promptCount++;
@@ -423,6 +428,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         compactHarness.triggerImpl = null;
         compactHarness.resultImpl = null;
         harness.promptImpl = null;
+        harness.promptOnMessage = null;
         harness.sessionModelsMetadata = undefined;
         harness.cancelPromptImpl = null;
         harness.newSessionImpl = null;
@@ -2340,6 +2346,36 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             'prompt:start',
             'prompt:end'
         ]);
+    });
+
+    it('skips interim idle text snapshots in the local log while still forwarding them to the hub', async () => {
+        const addMessage = vi.spyOn(MessageBuffer.prototype, 'addMessage');
+        const { session, agentMessages } = createSessionStub([
+            { message: 'first', mode: createMode() }
+        ]);
+
+        const launcherPromise = opencodeRemoteLauncher(session as never);
+
+        while (!harness.events.includes('prompt:start')) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+
+        const onMessage = harness.promptOnMessage;
+        if (!onMessage) {
+            throw new Error('prompt() was not called with a message callback');
+        }
+        onMessage({ type: 'text', text: 'partial', id: 'stream-1', streamSnapshot: true, live: true });
+        onMessage({ type: 'text', text: 'partial settled', id: 'stream-1', streamSnapshot: true });
+
+        // The idle snapshot must reach the hub (web reducer keeps one block per
+        // stream id) but must not duplicate the answer in the local terminal log.
+        expect(agentMessages).toContainEqual({ type: 'message', message: 'partial', id: 'stream-1', streamSnapshot: true });
+        expect(agentMessages).toContainEqual({ type: 'message', message: 'partial settled', id: 'stream-1', streamSnapshot: true });
+        expect(addMessage).not.toHaveBeenCalledWith('partial', 'assistant');
+        expect(addMessage).toHaveBeenCalledWith('partial settled', 'assistant');
+
+        await launcherPromise;
+        addMessage.mockRestore();
     });
 });
 
