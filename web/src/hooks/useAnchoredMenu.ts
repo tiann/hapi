@@ -114,7 +114,7 @@ export function useAnchoredMenu(options: {
         if (!isOpen) return
 
         const frame = window.requestAnimationFrame(() => {
-            const firstItem = menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')
+            const firstItem = menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])')
             firstItem?.focus()
         })
 

@@ -16,6 +16,30 @@ function createPublisher(events: SyncEvent[]): EventPublisher {
 }
 
 describe('alive incremental events', () => {
+    it('preserves the entire archived group when a member reconnects before deletion', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+        try {
+            const sessions = ['archived-first', 'reconnected-second'].map(name => cache.getOrCreateSession(
+                name, { path: '/tmp/project', host: 'localhost', lifecycleState: 'archived' }, null, 'default'
+            ))
+            for (const session of sessions) store.messages.addMessage(session.id, { text: 'preserve history' })
+            cache.handleSessionAlive({ sid: sessions[1]!.id, time: Date.now(), thinking: false })
+            expect(cache.getSession(sessions[1]!.id)?.active).toBe(true)
+            expect(store.sessions.getSession(sessions[1]!.id)?.active).toBe(false)
+            events.length = 0
+            await expect(cache.deleteArchivedSessions(sessions.map(session => session.id), 'default'))
+                .rejects.toThrow('Sessions are no longer archived')
+            for (const session of sessions) {
+                expect(cache.getSession(session.id)).toBeDefined()
+                expect(store.sessions.getSession(session.id)).not.toBeNull()
+                expect(store.messages.getMessages(session.id)).toHaveLength(1)
+            }
+            expect(events).toEqual([])
+        } finally { store.close() }
+    })
+
     it('replays durable immediate prompts on every attach until consumed', () => {
         const store = new Store(':memory:')
         const emitted: Array<{ body?: { t?: string; message?: { localId?: string | null } } }> = []
