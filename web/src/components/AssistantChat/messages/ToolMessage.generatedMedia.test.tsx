@@ -108,10 +108,15 @@ describe('GeneratedImageCard video fetch', () => {
     it('loads unknown files on demand and renders a download link', async () => {
         renderCard({ mimeType: 'application/octet-stream' })
 
-        fireEvent.click(screen.getByRole('button', { name: 'Prepare download' }))
+        const prepareButton = screen.getByRole('button', { name: 'Prepare download' })
+        expect(prepareButton.closest('[data-hapi-generated-media-id]')).toHaveAttribute('data-hapi-generated-media-id', 'img-1')
+        expect(prepareButton).toHaveAttribute('data-hapi-generated-media-download', 'true')
+        fireEvent.click(prepareButton)
 
         await waitFor(() => {
             expect(screen.getByRole('link', { name: /Download clip\.mp4/ })).toHaveAttribute('download', 'clip.mp4')
         })
+        expect(screen.getByRole('link', { name: /Download clip\.mp4/ }).closest('[data-hapi-generated-media-id]')).toHaveAttribute('data-hapi-generated-media-loaded', 'true')
+        expect(screen.getByRole('link', { name: /Download clip\.mp4/ })).toHaveAttribute('data-hapi-generated-media-download', 'true')
     })
 })
