@@ -441,6 +441,101 @@ describe('reduceChatBlocks', () => {
         expect(block?.kind === 'tool-call' ? block.tool.permission?.status : null).toBe('pending')
     })
 
+    it('synthesizes a card for a pending permission whose sidechain tool_use was dropped by the tracer', () => {
+        // Regression (hapi#1073): background subagents arrive with no
+        // parentToolUseId and no prompt-holding sidechain root, so the tracer
+        // cannot attribute the chain to its parent Task and drops it as
+        // orphans. The raw transcript still contains the tool_use id, which
+        // used to suppress the orphan fallback — leaving the request pending
+        // in agentState with no answerable card anywhere.
+        const messages: NormalizedMessage[] = [
+            userMessage('u1', 'hello', 1_700_000_000_000),
+            {
+                id: 'agent-tool', localId: null, createdAt: 1_700_000_000_100, role: 'agent', isSidechain: false,
+                content: [{
+                    type: 'tool-call', id: 'toolu-task-1', name: 'Agent',
+                    input: { prompt: 'research a topic', subagent_type: 'general-purpose' },
+                    description: null, uuid: 'root-uuid-1', parentUUID: null
+                }]
+            },
+            {
+                id: 'sidechain-call', localId: null, createdAt: 1_700_000_000_200, role: 'agent', isSidechain: true,
+                parentToolUseId: null,
+                content: [{
+                    type: 'tool-call', id: 'toolu-sub-1', name: 'WebFetch',
+                    input: { url: 'https://example.com', prompt: 'summarize' },
+                    description: null, uuid: 'side-uuid-2', parentUUID: 'side-uuid-1'
+                }]
+            }
+        ]
+        const agentState = {
+            requests: {
+                'toolu-sub-1': {
+                    tool: 'WebFetch',
+                    arguments: { url: 'https://example.com', prompt: 'summarize' },
+                    createdAt: 1_700_000_000_200
+                }
+            },
+            completedRequests: {}
+        } as unknown as AgentState
+
+        const reduced = reduceChatBlocks(messages, agentState)
+        const block = reduced.blocks.find(b => b.kind === 'tool-call' && b.id === 'toolu-sub-1')
+        expect(block).toBeDefined()
+        expect(block?.kind === 'tool-call' ? block.tool.permission?.status : null).toBe('pending')
+    })
+
+    it('does not duplicate a pending permission card when its sidechain tool_use renders nested', () => {
+        const messages: NormalizedMessage[] = [
+            {
+                id: 'agent-tool', localId: null, createdAt: 1_700_000_000_100, role: 'agent', isSidechain: false,
+                content: [{
+                    type: 'tool-call', id: 'toolu-task-1', name: 'Agent',
+                    input: { prompt: 'inspect the code', subagent_type: 'general-purpose' },
+                    description: null, uuid: 'root-uuid-1', parentUUID: null
+                }]
+            },
+            {
+                id: 'sidechain-call', localId: null, createdAt: 1_700_000_000_200, role: 'agent', isSidechain: true,
+                parentToolUseId: 'toolu-task-1',
+                content: [{
+                    type: 'tool-call', id: 'toolu-sub-2', name: 'WebFetch',
+                    input: { url: 'https://example.com', prompt: 'summarize' },
+                    description: null, uuid: 'side-uuid-1', parentUUID: null
+                }]
+            }
+        ]
+        const agentState = {
+            requests: {
+                'toolu-sub-2': {
+                    tool: 'WebFetch',
+                    arguments: { url: 'https://example.com', prompt: 'summarize' },
+                    createdAt: 1_700_000_000_200
+                }
+            },
+            completedRequests: {}
+        } as unknown as AgentState
+
+        const reduced = reduceChatBlocks(messages, agentState)
+
+        const countBlocksWithId = (list: typeof reduced.blocks, id: string): number =>
+            list.reduce((count, block) => {
+                const self = block.kind === 'tool-call' && block.id === id ? 1 : 0
+                const nested = block.kind === 'tool-call' ? countBlocksWithId(block.children, id) : 0
+                return count + self + nested
+            }, 0)
+        expect(countBlocksWithId(reduced.blocks, 'toolu-sub-2')).toBe(1)
+
+        // The single card must be nested under the Agent card, not a root-level orphan.
+        const agentCard = reduced.blocks.find(b => b.kind === 'tool-call' && b.id === 'toolu-task-1')
+        expect(
+            agentCard?.kind === 'tool-call'
+                ? agentCard.children.some(c => c.kind === 'tool-call' && c.id === 'toolu-sub-2')
+                : false
+        ).toBe(true)
+        expect(reduced.blocks.some(b => b.kind === 'tool-call' && b.id === 'toolu-sub-2')).toBe(false)
+    })
+
     it('attaches a result summary to the first block in the preceding contiguous assistant group', () => {
         const summary = {
             usage: { input_tokens: 100, output_tokens: 20 },
