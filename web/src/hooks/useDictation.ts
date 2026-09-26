@@ -58,6 +58,7 @@ export function useDictation(config: {
     const mountedRef = useRef(true)
     const operationRef = useRef(0)
     const transcribingRef = useRef(false)
+    const stopResolverRef = useRef<((success: boolean) => void) | null>(null)
 
     const stopTracks = useCallback(() => {
         streamRef.current?.getTracks().forEach((track) => track.stop())
@@ -98,14 +99,23 @@ export function useDictation(config: {
                 const blob = new Blob(chunksRef.current, { type })
                 recorderRef.current = null
                 chunksRef.current = []
-                if (!mountedRef.current) return
+                if (!mountedRef.current) {
+                    const resolve = stopResolverRef.current
+                    stopResolverRef.current = null
+                    resolve?.(false)
+                    return
+                }
                 if (!blob.size) {
                     transcribingRef.current = false
                     setError('No audio was recorded')
                     setStatus('error')
+                    const resolve = stopResolverRef.current
+                    stopResolverRef.current = null
+                    resolve?.(false)
                     return
                 }
                 transcribingRef.current = true
+                let success = false
                 try {
                     const result = await config.api!.transcribeVoice({
                         file: new File([blob], `speech.${recordingExtension(type)}`, { type }),
@@ -114,14 +124,24 @@ export function useDictation(config: {
                         language
                     })
                     if (!mountedRef.current) return
-                    config.onTextChange(appendTranscript(config.getCurrentText(), result.text))
+                    const transcript = result.text.trim()
+                    if (!transcript) {
+                        setError('No speech was transcribed')
+                        setStatus('error')
+                        return
+                    }
+                    config.onTextChange(appendTranscript(config.getCurrentText(), transcript))
                     setStatus('disconnected')
+                    success = true
                 } catch (transcriptionError) {
                     if (!mountedRef.current) return
                     setError(transcriptionError instanceof Error ? transcriptionError.message : 'Transcription failed')
                     setStatus('error')
                 } finally {
                     transcribingRef.current = false
+                    const resolve = stopResolverRef.current
+                    stopResolverRef.current = null
+                    resolve?.(success)
                 }
             }
             recorder.start()
@@ -134,23 +154,31 @@ export function useDictation(config: {
         }
     }, [config, standardSupported, status, stopTracks])
 
-    const stop = useCallback(async () => {
-        if (transcribingRef.current) return
+    const stop = useCallback(async (): Promise<boolean> => {
+        if (transcribingRef.current) return false
         operationRef.current += 1
         const recorder = recorderRef.current
         if (recorder && recorder.state !== 'inactive') {
             transcribingRef.current = true
             setStatus('connecting')
+            const completionPromise = new Promise<boolean>((resolve) => {
+                stopResolverRef.current = resolve
+            })
             recorder.stop()
+            return await completionPromise
         } else {
             setStatus('disconnected')
             stopTracks()
+            return false
         }
     }, [stopTracks])
 
-    const toggle = useCallback(async () => {
-        if (status === 'connected' || status === 'connecting') await stop()
-        else await start()
+    const toggle = useCallback(async (): Promise<boolean> => {
+        if (status === 'connected' || status === 'connecting') return await stop()
+        else {
+            await start()
+            return false
+        }
     }, [start, status, stop])
 
     useEffect(() => {
