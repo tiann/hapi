@@ -1,6 +1,7 @@
 import packageJson from '../../package.json'
 import { getCliArgs } from '@/utils/cliArgs'
 import { ensureLoopbackProxyBypass } from '@/utils/proxyEnv'
+import { installProxyAwareAxios } from '@/net/proxy'
 import { printCliHelp } from './help'
 
 export async function runCli(): Promise<void> {
@@ -43,6 +44,7 @@ export async function runCli(): Promise<void> {
     }
 
     ensureLoopbackProxyBypass()
+    installProxyAwareAxios()
     const { isBunCompiled } = await import('@/projectPath')
     if (isBunCompiled()) {
         process.env.DEV = 'false'

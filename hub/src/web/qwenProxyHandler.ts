@@ -7,6 +7,7 @@
 
 import type { ServerWebSocket } from 'bun'
 import { buildQwenSessionUpdateMessage, isQwenSafeClientFrame } from '@hapi/protocol/voice'
+import { bunWebSocketProxyOptions } from '@hapi/protocol/net'
 
 type WebSocketCtor = new (url: string, opts?: unknown) => WebSocketLike
 
@@ -58,7 +59,8 @@ export function createQwenProxyWebSocketHandler(
             upstreamUrl.searchParams.set('model', data.model)
 
             const upstream = new WebSocketImpl(upstreamUrl.toString(), {
-                headers: { 'Authorization': `Bearer ${data.apiKey}` }
+                headers: { 'Authorization': `Bearer ${data.apiKey}` },
+                ...bunWebSocketProxyOptions(upstreamUrl)
             })
 
             upstreamMap.set(clientWs, upstream)

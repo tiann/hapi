@@ -14,6 +14,7 @@ jobs:
             - uses: oven-sh/setup-bun@v2
             - run: bun install --frozen-lockfile
             - run: bun typecheck
+            - run: bun run test:proxy-smoke
             - run: bunx playwright install --with-deps chromium
             # Required by cli/src/utils/windowsProcessTree.pwsh.test.ts — image
             # inspect alone does not pull; silent skip was fake B1 coverage (#1911).
