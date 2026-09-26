@@ -129,7 +129,7 @@ class SessionListViewModel(
                 // refresh fails but the stream works, unseeded watermarks
                 // would light every row's unread dot (once-per-scope inside
                 // the store, so repeated calls are no-ops).
-                if (sessions.isNotEmpty()) {
+                if (sessions.isNotEmpty() && hasRefreshedOnce.value) {
                     runCatching { lastSeenStore.initializeBaseline(hubKey, sessions) }
                 }
             }
@@ -144,11 +144,10 @@ class SessionListViewModel(
         combine(isRefreshing, isOffline, hasRefreshedOnce) { refreshing, offline, loaded ->
             Triple(refreshing, offline, loaded)
         },
-    ) { sessions, machines, lastSeen, filter, (refreshing, offline, refreshedOnce) ->
+    ) { sessions, machines, _, filter, (refreshing, offline, refreshedOnce) ->
         buildUiState(
             sessions = sessions,
             machines = machines,
-            lastSeen = lastSeen.lastSeen,
             filter = filter,
             isRefreshing = refreshing,
             isOffline = offline,
@@ -223,7 +222,7 @@ class SessionListViewModel(
     /** Call when navigating into a session: stamps the last-seen watermark. */
     fun onSessionOpened(sessionId: String) {
         val summary = sessionStore.sessions.value.firstOrNull { it.id == sessionId } ?: return
-        lastSeenStore.markSeen(sessionId, summary.updatedAt)
+        lastSeenStore.markSeen(sessionId, LastSeenStore.seenTimestamp(summary))
     }
 
     /** `PUT /sessions/:id/pin` with optimistic re-sort; failures surface on [errors]. */
@@ -309,7 +308,6 @@ class SessionListViewModel(
     private fun buildUiState(
         sessions: List<SessionSummary>,
         machines: List<Machine>,
-        lastSeen: Map<String, Long>,
         filter: String?,
         isRefreshing: Boolean,
         isOffline: Boolean,
@@ -372,7 +370,7 @@ class SessionListViewModel(
                     summary.metadata?.worktree?.let { add(it.name.ifBlank { it.branch }) }
                 }.takeIf { it.isNotEmpty() }?.joinToString(" · "),
                 flavor = summary.metadata?.flavor,
-                unread = LastSeenStore.isUnread(summary, lastSeen[summary.id] ?: 0),
+                unread = lastSeenStore.isUnread(hubKey, summary),
                 machine = if (showMachine) filters.find { it.id == (summary.metadata?.machineId ?: UNKNOWN_MACHINE_ID) } else null,
             )
         }

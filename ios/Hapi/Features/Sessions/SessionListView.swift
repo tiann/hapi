@@ -11,10 +11,11 @@ import SwiftUI
 ///   home owns the filter menu and connection notice;
 /// - pinned section first (the sort already puts globalPinned/pinned rows on
 ///   top; a header makes the boundary visible);
-/// - per row: flavor brand icon + title, trailing relative `updatedAt` and
-///   an optional unread dot; a quiet second line has project left and a small status
-///   indicator right. No preview, task progress, machine/path details or badges.
-///   Disconnected titles/icons are secondary, without dimming attention;
+/// - per row: flavor brand icon + title, spinner while a turn is in flight,
+///   summary line, `project · worktree · machine` meta line (machine only
+///   when it disambiguates), relative latest-reply/activity time, pending-request badge,
+///   todo-progress chip, unread dot; disconnected rows are dimmed —
+///   connected is the resting state, so no presence dot (web parity);
 /// - long-press context menu → pin (none/project/global) + archive with
 ///   optimistic store updates; failures land in an alert.
 struct SessionListView: View {
@@ -243,7 +244,7 @@ struct SessionRowView: View {
                 .lineLimit(1)
             Spacer(minLength: 4)
             HStack(spacing: 6) {
-                Text(verbatim: formatRelativeAge(now: now, thenEpochMs: row.summary.updatedAt))
+                Text(verbatim: formatRelativeAge(now: now, thenEpochMs: row.summary.lastAssistantMessageAt ?? row.summary.updatedAt))
                     .font(.caption2)
                     .foregroundStyle(theme.textSecondary)
                     .monospacedDigit()

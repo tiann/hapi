@@ -1,5 +1,6 @@
 package app.hapi.data.store
 
+import app.hapi.protocol.wire.Session
 import app.hapi.protocol.wire.SessionSummary
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
@@ -13,6 +14,10 @@ import kotlinx.serialization.Serializable
 data class LastSeenState(
     val lastSeen: Map<String, Long> = emptyMap(),
     val baselines: Set<String> = emptySet(),
+    /** Rows skipped because their legacy reply clock was not ready yet. */
+    val pendingBaselines: Map<String, Set<String>> = emptyMap(),
+    /** Replies observed live before the first authoritative list refresh. */
+    val observedUnread: Set<String> = emptySet(),
 )
 
 /**
@@ -20,13 +25,13 @@ data class LastSeenState(
  * (localStorage → per-hub JSON snapshot) plus the unread derivation from
  * `web/src/lib/sessionAttention.ts`.
  *
- * The watermark is the session `updatedAt` the operator last had on screen;
- * a session is **unread** when its current `updatedAt` moved past it
- * ([isUnread] — the reference compares `updatedAt` only; message `seq` never
- * reaches the summary). [initializeBaseline] seeds missing watermarks from
- * the first session list so a fresh install does not mark every historical
- * session unread — once per [LastSeenState.baselines] scope, exactly like the
- * web's per-scope baseline flag.
+ * The watermark is the latest visible assistant reply the operator last had
+ * on screen, falling back to `updatedAt` for sessions without a visible
+ * reply. A session is **unread** when that same activity clock moves past the
+ * watermark. [initializeBaseline] seeds missing watermarks from the first
+ * session list so a fresh install does not mark every historical session
+ * unread — once per [LastSeenState.baselines] scope, exactly like the web's
+ * per-scope baseline flag.
  */
 class LastSeenStore(
     scope: CoroutineScope,
@@ -34,7 +39,9 @@ class LastSeenStore(
 ) {
     private val snapshot: JsonSnapshotStore<LastSeenState>? = snapshotDir?.let { dir ->
         JsonSnapshotStore(
-            file = File(dir, "last-seen.json"),
+            // v2 changes the watermark from raw updatedAt to the reply/activity
+            // clock. Do not load v1 values under the new meaning.
+            file = File(dir, "last-seen-v2.json"),
             serializer = LastSeenState.serializer(),
             scope = scope,
         )
@@ -56,24 +63,72 @@ class LastSeenStore(
         updateState { state ->
             val current = state.lastSeen[sessionId] ?: 0
             val next = maxOf(current, seenAt)
-            if (next == current && state.lastSeen.containsKey(sessionId)) state
-            else state.copy(lastSeen = state.lastSeen + (sessionId to next))
+            if (next == current && state.lastSeen.containsKey(sessionId) && sessionId !in state.observedUnread) state
+            else state.copy(
+                lastSeen = state.lastSeen + (sessionId to next),
+                observedUnread = state.observedUnread - sessionId,
+            )
         }
+    }
+
+    /** Preserve a live reply below the watermark while legacy backfill is pending. */
+    fun markUnread(sessionId: String, activityAt: Long) {
+        if (sessionId.isEmpty()) return
+        val unreadBefore = activityAt - 1
+        updateState { state ->
+            val current = state.lastSeen[sessionId]
+            if (current != null && current <= unreadBefore && sessionId in state.observedUnread) state
+            else state.copy(
+                lastSeen = state.lastSeen + (sessionId to unreadBefore),
+                observedUnread = state.observedUnread + sessionId,
+            )
+        }
+    }
+
+    /** Unread derivation for a list row, gated until this hub has a baseline. */
+    fun isUnread(scopeKey: String, summary: SessionSummary): Boolean {
+        val current = _state.value
+        if (scopeKey !in current.baselines && summary.id !in current.observedUnread) return false
+        return isUnread(summary, current.lastSeen[summary.id] ?: 0)
     }
 
     /**
      * `initializeSessionLastSeen`: on the first list load for [scopeKey]
      * (e.g. the hub id), seed every session without a watermark at its
-     * current `updatedAt`, then never again for that scope.
+     * current reply/activity clock, then never again for that scope.
      */
     fun initializeBaseline(scopeKey: String, sessions: Iterable<SessionSummary>) {
         updateState { state ->
-            if (scopeKey in state.baselines) return@updateState state
+            val pending = state.pendingBaselines[scopeKey].orEmpty().toMutableSet()
             val seeded = state.lastSeen.toMutableMap()
+            var pendingChanged = false
             for (session in sessions) {
-                seeded.getOrPut(session.id) { session.updatedAt }
+                val replyClockReady = session.assistantReplyClockBackfilled != false
+                if (scopeKey !in state.baselines) {
+                    if (!replyClockReady) {
+                        if (pending.add(session.id)) pendingChanged = true
+                        continue
+                    }
+                    if (!seeded.containsKey(session.id)) {
+                        seeded[session.id] = seenTimestamp(session)
+                    }
+                    continue
+                }
+
+                if (!replyClockReady || !pending.remove(session.id)) continue
+                pendingChanged = true
+                if (!seeded.containsKey(session.id)) {
+                    seeded[session.id] = seenTimestamp(session)
+                }
             }
-            state.copy(lastSeen = seeded, baselines = state.baselines + scopeKey)
+            if (scopeKey in state.baselines && !pendingChanged) return@updateState state
+            val nextPending = state.pendingBaselines.toMutableMap()
+            if (pending.isEmpty()) nextPending.remove(scopeKey) else nextPending[scopeKey] = pending
+            state.copy(
+                lastSeen = seeded,
+                baselines = state.baselines + scopeKey,
+                pendingBaselines = nextPending,
+            )
         }
     }
 
@@ -90,8 +145,17 @@ class LastSeenStore(
     }
 
     companion object {
+        /** Timestamp shared by list recency, read state, and unread checks. */
+        fun seenTimestamp(session: Session): Long =
+            session.lastAssistantMessageAt ?: session.updatedAt
+
+        /** Timestamp shared by list recency, read state, and unread checks. */
+        fun seenTimestamp(summary: SessionSummary): Long =
+            summary.lastAssistantMessageAt ?: summary.updatedAt
+
         /** `sessionIsUnread`: activity newer than the operator's watermark. */
         fun isUnread(summary: SessionSummary, lastSeenAt: Long): Boolean =
-            summary.updatedAt > lastSeenAt
+            summary.assistantReplyClockBackfilled != false
+                && seenTimestamp(summary) > lastSeenAt
     }
 }

@@ -5,6 +5,8 @@ export type StoredSession = {
     machineId: string | null
     createdAt: number
     updatedAt: number
+    lastAssistantMessageAt: number | null
+    assistantReplyClockBackfilled: boolean
     pinned: boolean
     globalPinned: boolean
     metadata: unknown | null

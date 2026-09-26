@@ -6,10 +6,39 @@ import Observation
 public struct LastSeenState: Codable, Equatable, Sendable {
     public var lastSeen: [String: Int]
     public var baselines: Set<String>
+    /// Rows skipped because their legacy reply clock was not ready yet.
+    public var pendingBaselines: [String: Set<String>]
+    /// Replies observed live before the first authoritative list refresh.
+    public var observedUnread: Set<String>
 
-    public init(lastSeen: [String: Int] = [:], baselines: Set<String> = []) {
+    private enum CodingKeys: String, CodingKey {
+        case lastSeen
+        case baselines
+        case pendingBaselines
+        case observedUnread
+    }
+
+    public init(
+        lastSeen: [String: Int] = [:],
+        baselines: Set<String> = [],
+        pendingBaselines: [String: Set<String>] = [:],
+        observedUnread: Set<String> = []
+    ) {
         self.lastSeen = lastSeen
         self.baselines = baselines
+        self.pendingBaselines = pendingBaselines
+        self.observedUnread = observedUnread
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.lastSeen = try container.decodeIfPresent([String: Int].self, forKey: .lastSeen) ?? [:]
+        self.baselines = try container.decodeIfPresent(Set<String>.self, forKey: .baselines) ?? []
+        self.pendingBaselines = try container.decodeIfPresent(
+            [String: Set<String>].self,
+            forKey: .pendingBaselines
+        ) ?? [:]
+        self.observedUnread = try container.decodeIfPresent(Set<String>.self, forKey: .observedUnread) ?? []
     }
 }
 
@@ -18,10 +47,10 @@ public struct LastSeenState: Codable, Equatable, Sendable {
 /// `web/src/lib/sessionAttention.ts`, mirroring the Android port
 /// (`LastSeenStore`).
 ///
-/// The watermark is the session `updatedAt` the operator last had on screen;
-/// a session is **unread** when its current `updatedAt` moved past it
-/// (``isUnread(_:lastSeenAt:)`` — the reference compares `updatedAt` only;
-/// message `seq` never reaches the summary).
+/// The watermark is the latest visible assistant reply the operator last had
+/// on screen, falling back to `updatedAt` for sessions without a visible
+/// reply. A session is **unread** when that same activity clock moves past it
+/// (``isUnread(_:lastSeenAt:)``).
 /// ``initializeBaseline(scopeKey:sessions:)`` seeds missing watermarks from
 /// the first session list so a fresh install does not mark every historical
 /// session unread — once per ``LastSeenState/baselines`` scope, exactly like
@@ -34,7 +63,9 @@ public final class LastSeenStore {
 
     public init(snapshotDirectory: URL? = nil) {
         let cache = snapshotDirectory.map {
-            DiskCache<LastSeenState>(directory: $0, filename: "last-seen.json")
+            // v2 changes the watermark from raw updatedAt to the reply/activity
+            // clock. Do not load v1 values under the new meaning.
+            DiskCache<LastSeenState>(directory: $0, filename: "last-seen-v2.json")
         }
         self.snapshot = cache
         self.state = cache?.load() ?? LastSeenState()
@@ -56,28 +87,82 @@ public final class LastSeenStore {
         let current = state.lastSeen[sessionId] ?? 0
         let next = max(current, seenAt)
         if next == current, state.lastSeen[sessionId] != nil {
-            return
+            if state.observedUnread.remove(sessionId) == nil { return }
         }
         state.lastSeen[sessionId] = next
+        state.observedUnread.remove(sessionId)
         snapshot?.scheduleWrite(state)
+    }
+
+    /// Preserve a live reply below the watermark while legacy backfill is pending.
+    public func markUnread(sessionId: String, activityAt: Int) {
+        guard !sessionId.isEmpty else { return }
+        let unreadBefore = activityAt - 1
+        let current = state.lastSeen[sessionId]
+        if let current, current <= unreadBefore, state.observedUnread.contains(sessionId) { return }
+        state.lastSeen[sessionId] = unreadBefore
+        state.observedUnread.insert(sessionId)
+        snapshot?.scheduleWrite(state)
+    }
+
+    /// Unread derivation for a list row, gated until this hub has a baseline.
+    public func isUnread(_ summary: SessionSummary, scopeKey: String) -> Bool {
+        guard state.baselines.contains(scopeKey) || state.observedUnread.contains(summary.id) else {
+            return false
+        }
+        return Self.isUnread(summary, lastSeenAt: state.lastSeen[summary.id] ?? 0)
     }
 
     /// `initializeSessionLastSeen`: on the first list load for `scopeKey`
     /// (e.g. the hub origin), seed every session without a watermark at its
-    /// current `updatedAt`, then never again for that scope.
+    /// current reply/activity clock, then never again for that scope.
     public func initializeBaseline(scopeKey: String, sessions: [SessionSummary]) {
-        guard !state.baselines.contains(scopeKey) else { return }
         var next = state
-        for session in sessions where next.lastSeen[session.id] == nil {
-            next.lastSeen[session.id] = session.updatedAt
+        var pending = next.pendingBaselines[scopeKey] ?? []
+        var pendingChanged = false
+        for session in sessions {
+            let replyClockReady = session.assistantReplyClockBackfilled != false
+            if !state.baselines.contains(scopeKey) {
+                if !replyClockReady {
+                    if pending.insert(session.id).inserted { pendingChanged = true }
+                    continue
+                }
+                if next.lastSeen[session.id] == nil {
+                    next.lastSeen[session.id] = Self.seenTimestamp(session)
+                }
+                continue
+            }
+
+            guard replyClockReady, pending.remove(session.id) != nil else { continue }
+            pendingChanged = true
+            if next.lastSeen[session.id] == nil {
+                next.lastSeen[session.id] = Self.seenTimestamp(session)
+            }
         }
+        if state.baselines.contains(scopeKey), !pendingChanged { return }
         next.baselines.insert(scopeKey)
+        if pending.isEmpty {
+            next.pendingBaselines.removeValue(forKey: scopeKey)
+        } else {
+            next.pendingBaselines[scopeKey] = pending
+        }
         state = next
         snapshot?.scheduleWrite(next)
     }
 
+    /// Timestamp shared by list recency, read state, and unread checks.
+    public static func seenTimestamp(_ session: Session) -> Int {
+        session.lastAssistantMessageAt ?? session.updatedAt
+    }
+
+    /// Timestamp shared by list recency, read state, and unread checks.
+    public static func seenTimestamp(_ summary: SessionSummary) -> Int {
+        summary.lastAssistantMessageAt ?? summary.updatedAt
+    }
+
     /// `sessionIsUnread`: activity newer than the operator's watermark.
     public static func isUnread(_ summary: SessionSummary, lastSeenAt: Int) -> Bool {
-        summary.updatedAt > lastSeenAt
+        summary.assistantReplyClockBackfilled != false
+            && seenTimestamp(summary) > lastSeenAt
     }
 }

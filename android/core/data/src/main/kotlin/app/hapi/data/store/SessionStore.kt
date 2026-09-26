@@ -4,6 +4,7 @@ import app.hapi.data.api.HapiApi
 import app.hapi.data.sse.SseSubscriptionKey
 import app.hapi.protocol.patch.applySessionDetailPatch
 import app.hapi.protocol.wire.HapiJson
+import app.hapi.protocol.wire.OptionalField
 import app.hapi.protocol.wire.ReopenSessionResponse
 import app.hapi.protocol.wire.Session
 import app.hapi.protocol.wire.SessionPatch
@@ -14,6 +15,7 @@ import app.hapi.protocol.wire.SyncEvent
 import app.hapi.protocol.wire.sortSessionSummaries
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -24,6 +26,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -40,7 +43,7 @@ interface SessionListStore {
     /** Sorted with `sortSessionSummaries` (globalPinned > pinned > active > pending > recency). */
     val sessions: StateFlow<List<SessionSummary>>
 
-    /** `GET /api/sessions` — replaces the list wholesale. Throws on failure. */
+    /** `GET /api/sessions` — refreshes membership and merges reply-clock versions. Throws on failure. */
     suspend fun refresh()
 
     /** Coalesced fire-and-forget [refresh] (the web's 16 ms invalidation batch). */
@@ -157,18 +160,66 @@ class SessionStore(
      */
     val scratchlistInvalidations: SharedFlow<String> = _scratchlistInvalidations.asSharedFlow()
 
+    /** Wired by the app so live replies cannot be absorbed by a pending baseline. */
+    var onLiveReplyDuringBackfill: ((String, Long) -> Unit)? = null
+    /** True while the first authoritative unread baseline is still missing. */
+    var shouldPreserveLiveReplyUnread: (() -> Boolean)? = null
+
     private val refreshMutex = Mutex()
     private val refreshQueued = AtomicBoolean(false)
+    private val detailRefreshQueued: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     override fun sessionDetail(sessionId: String): Flow<Session?> =
-        _details.map { it[sessionId] }.distinctUntilChanged()
+        combine(_details, _sessions) { details, sessions ->
+            visibleDetail(sessionId, details[sessionId], sessions)
+        }.distinctUntilChanged()
 
-    override fun currentDetail(sessionId: String): Session? = _details.value[sessionId]
+    override fun currentDetail(sessionId: String): Session? =
+        visibleDetail(sessionId, _details.value[sessionId], _sessions.value)
+
+    private fun visibleDetail(
+        sessionId: String,
+        detail: Session?,
+        summaries: List<SessionSummary>,
+    ): Session? {
+        val summaryVersion = summaries.firstOrNull { it.id == sessionId }?.lastAssistantMessageVersion ?: 0L
+        return detail?.takeIf { it.seq >= summaryVersion }
+    }
 
     override suspend fun loadSessionDetail(sessionId: String): Session {
-        val session = api.getSession(sessionId).session
-        _details.update { it + (sessionId to session) }
-        return session
+        var session = api.getSession(sessionId).session
+        var attempt = 0
+        while (true) {
+            var stale = false
+            var accepted = session
+            _details.update { current ->
+                val cached = current[sessionId]
+                val summaryVersion = _sessions.value
+                    .firstOrNull { it.id == sessionId }
+                    ?.lastAssistantMessageVersion
+                    ?: 0L
+                val watermark = maxOf(cached?.seq ?: 0L, summaryVersion)
+                stale = session.seq < watermark
+                if (stale) {
+                    if (cached != null && cached.seq >= summaryVersion) accepted = cached
+                    current
+                } else {
+                    current + (sessionId to session)
+                }
+            }
+            if (!stale) return accepted
+            if (attempt == 1) {
+                if (_details.value[sessionId]?.seq ?: 0L >= (_sessions.value.firstOrNull { it.id == sessionId }?.lastAssistantMessageVersion ?: 0L)) {
+                    return accepted
+                }
+                throw IllegalStateException("Session detail response is older than the cached session list")
+            }
+            attempt += 1
+            // The rejected snapshot may still contain unrelated fields that
+            // arrived before the newer SSE reply-clock patch. Retry once to
+            // recover that complete server state without creating a loop.
+            session = api.getSession(sessionId).session
+        }
     }
 
     override fun releaseDetail(sessionId: String) {
@@ -189,8 +240,46 @@ class SessionStore(
 
     override suspend fun refresh() {
         refreshMutex.withLock {
-            val response = api.getSessions()
-            updateSummaries { sortSessionSummaries(response.sessions) }
+            var response = api.getSessions()
+            val cachedById = _sessions.value.associateBy { it.id }
+            val detailsById = _details.value
+            if (response.sessions.any { incoming ->
+                    val cached = cachedById[incoming.id]
+                    val detail = detailsById[incoming.id]
+                    val watermark = maxOf(
+                        cached?.lastAssistantMessageVersion ?: 0L,
+                        detail?.seq ?: 0L,
+                    )
+                    (incoming.lastAssistantMessageVersion ?: 0L) < watermark
+                }) {
+                // The rejected snapshot may omit unrelated fields that were
+                // present at its older sequence. Retry once, then merge the
+                // result against the latest cache.
+                response = api.getSessions()
+            }
+            updateSummaries { list ->
+                val latestById = list.associateBy { it.id }
+                val latestDetailsById = _details.value
+                sortSessionSummaries(
+                    response.sessions.map { incoming ->
+                        val cached = latestById[incoming.id]
+                        val detail = latestDetailsById[incoming.id]
+                        val cachedVersion = cached?.lastAssistantMessageVersion ?: 0L
+                        val detailVersion = detail?.seq ?: 0L
+                        val watermark = maxOf(cachedVersion, detailVersion)
+                        if ((incoming.lastAssistantMessageVersion ?: 0L) >= watermark) {
+                            incoming
+                        } else if (detail != null && detailVersion >= cachedVersion) {
+                            SummaryPatching.toSessionSummary(detail).copy(
+                                futureScheduledMessageCount = incoming.futureScheduledMessageCount,
+                                nextScheduledAt = incoming.nextScheduledAt,
+                            )
+                        } else {
+                            cached ?: incoming
+                        }
+                    }
+                )
+            }
         }
     }
 
@@ -362,12 +451,28 @@ class SessionStore(
         // parse, then the REST fallback.
         val full = parseFullSession(data)?.takeIf { it.id == sessionId }
         if (full != null) {
-            _details.update { it + (sessionId to full) }
+            // The global and per-session SSE pipes are delivered on separate
+            // coroutines. Keep the sequence check inside the atomic update so
+            // an older full record cannot pass a stale pre-read and write last.
+            _details.update { current ->
+                val cached = current[sessionId]
+                val summaryVersion = _sessions.value
+                    .firstOrNull { it.id == sessionId }
+                    ?.lastAssistantMessageVersion
+                    ?: 0L
+                val watermark = maxOf(cached?.seq ?: 0L, summaryVersion)
+                if (full.seq < watermark) {
+                    current
+                } else {
+                    current + (sessionId to full)
+                }
+            }
             upsertSummary(full)
             return
         }
         val patch = SessionPatches.parse(data)
         if (patch != null) {
+            preserveLiveReplyUnreadDuringBackfill(sessionId, patch)
             patchDetail(sessionId, patch)
             val summaryPatched = patchSummary(sessionId, patch)
             if (!summaryPatched) {
@@ -396,6 +501,36 @@ class SessionStore(
         scheduleRefresh()
     }
 
+    private fun preserveLiveReplyUnreadDuringBackfill(sessionId: String, patch: SessionPatch) {
+        val baselinePending = shouldPreserveLiveReplyUnread?.invoke() == true
+        if (patch.assistantReplyClockBackfilled != null && !baselinePending) return
+        val replyAt = (patch.lastAssistantMessageAt as? OptionalField.Present)?.value ?: return
+        val currentSummary = _sessions.value.firstOrNull { it.id == sessionId }
+        val currentDetail = _details.value[sessionId]
+        if (currentSummary == null && currentDetail == null) {
+            onLiveReplyDuringBackfill?.invoke(sessionId, replyAt)
+            return
+        }
+        if (!baselinePending &&
+            currentSummary?.assistantReplyClockBackfilled != false
+            && currentDetail?.assistantReplyClockBackfilled != false
+        ) return
+
+        val currentReplyAt = maxOf(
+            currentSummary?.lastAssistantMessageAt ?: Long.MIN_VALUE,
+            currentDetail?.lastAssistantMessageAt ?: Long.MIN_VALUE,
+        )
+        val currentReplyVersion = maxOf(
+            currentSummary?.lastAssistantMessageVersion ?: 0L,
+            currentDetail?.seq ?: 0L,
+        )
+        val replyVersion = patch.lastAssistantMessageVersion
+        if (replyVersion != null && replyVersion < currentReplyVersion) return
+        if (replyAt > currentReplyAt) {
+            onLiveReplyDuringBackfill?.invoke(sessionId, replyAt)
+        }
+    }
+
     private fun parseFullSession(data: JsonElement?): Session? {
         if (data == null) return null
         return try {
@@ -409,6 +544,16 @@ class SessionStore(
         updateSummaries { list ->
             val index = list.indexOfFirst { it.id == session.id }
             val existing = if (index >= 0) list[index] else null
+            val detailVersion = _details.value[session.id]?.seq ?: 0L
+            val watermark = maxOf(existing?.lastAssistantMessageVersion ?: 0L, detailVersion)
+            if (session.seq < watermark) {
+                // A newer full record may already be cached in the detail pipe
+                // even when the list row is absent or still at an older seq.
+                // Refetch the list rather than allowing this stale projection
+                // to restore its reply clock and ordering.
+                scheduleRefresh()
+                return@updateSummaries list
+            }
             // The projection cannot derive the hub-computed scheduled-message
             // fields — carry them over from the previous row (web
             // `upsertSessionSummary`).
@@ -446,7 +591,12 @@ class SessionStore(
             val next = SummaryPatching.applySessionSummaryPatch(current, patch)
             // Keep-alive noise: activeAt-only movement keeps the previous
             // list identity (no emission, no re-sort, no snapshot write).
-            if (SummaryPatching.isRenderIrrelevantPatch(current, next)) return@updateSummaries list
+            if (
+                SummaryPatching.isRenderIrrelevantPatch(current, next)
+                && current.lastAssistantMessageVersion == next.lastAssistantMessageVersion
+            ) {
+                return@updateSummaries list
+            }
             sortSessionSummaries(list.toMutableList().also { it[index] = next })
         }
         return present
@@ -460,7 +610,27 @@ class SessionStore(
             if (next === previous) return
             if (_sessions.compareAndSet(previous, next)) {
                 snapshot?.scheduleWrite(next)
+                scheduleStaleDetailRefreshes(next)
                 return
+            }
+        }
+    }
+
+    private fun scheduleStaleDetailRefreshes(summaries: List<SessionSummary>) {
+        for (summary in summaries) {
+            val detail = _details.value[summary.id] ?: continue
+            val watermark = summary.lastAssistantMessageVersion ?: 0L
+            if (detail.seq >= watermark || !detailRefreshQueued.add(summary.id)) continue
+            scope.launch {
+                try {
+                    loadSessionDetail(summary.id)
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (_: Exception) {
+                    // A later SSE event or manual refresh retries the detail.
+                } finally {
+                    detailRefreshQueued.remove(summary.id)
+                }
             }
         }
     }

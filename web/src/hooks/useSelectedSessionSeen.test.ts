@@ -22,11 +22,11 @@ describe('useSelectedSessionSeen', () => {
     it('does not mark hidden selected-session updates as seen', () => {
         setVisibilityState('hidden')
         const { rerender } = renderHook(
-            ({ updatedAt }) => useSelectedSessionSeen('session-a', updatedAt),
-            { initialProps: { updatedAt: 100 } },
+            ({ activityAt }) => useSelectedSessionSeen('session-a', activityAt),
+            { initialProps: { activityAt: 100 } },
         )
 
-        rerender({ updatedAt: 200 })
+        rerender({ activityAt: 200 })
 
         expect(getSessionLastSeenAt('session-a')).toBe(0)
     })
@@ -34,11 +34,11 @@ describe('useSelectedSessionSeen', () => {
     it('marks the latest selected-session update when visibility resumes', () => {
         setVisibilityState('hidden')
         const { rerender } = renderHook(
-            ({ updatedAt }) => useSelectedSessionSeen('session-a', updatedAt),
-            { initialProps: { updatedAt: 100 } },
+            ({ activityAt }) => useSelectedSessionSeen('session-a', activityAt),
+            { initialProps: { activityAt: 100 } },
         )
 
-        rerender({ updatedAt: 200 })
+        rerender({ activityAt: 200 })
         setVisibilityState('visible')
         act(() => document.dispatchEvent(new Event('visibilitychange')))
 

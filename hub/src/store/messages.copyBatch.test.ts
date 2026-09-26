@@ -9,7 +9,10 @@ describe('copyMessagesToSession', () => {
 
         store.messages.addMessage(source.id, { role: 'user', content: { type: 'text', text: 'one' } }, 'local-1')
         store.messages.markMessagesInvoked(source.id, ['local-1'], Date.now())
-        store.messages.addMessage(source.id, { role: 'agent', content: { type: 'text', text: 'a1' } })
+        store.messages.addMessage(source.id, {
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'message', message: 'a1' } }
+        })
         store.messages.addMessage(source.id, { role: 'user', content: { type: 'text', text: 'two' } }, 'local-2')
         store.messages.markMessagesInvoked(source.id, ['local-2'], Date.now())
 
@@ -29,5 +32,9 @@ describe('copyMessagesToSession', () => {
         expect(copied).toBe(2)
         expect(store.messages.getAllMessages(child.id)).toHaveLength(2)
         expect(store.messages.getMessageEpoch(child.id)).toBe(beforeEpoch + 1)
+        expect(store.sessions.getSession(child.id)?.lastAssistantMessageAt)
+            .toBe(prefix[1]?.createdAt)
+
+        store.close()
     })
 })

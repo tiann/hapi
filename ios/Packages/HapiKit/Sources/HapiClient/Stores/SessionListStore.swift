@@ -12,7 +12,9 @@ public protocol SessionListStoring: AnyObject {
     /// pending > recency).
     var sessions: [SessionSummary] { get }
 
-    /// `GET /api/sessions` — replaces the list wholesale. Throws on failure.
+    /// `GET /api/sessions` — refreshes membership and merges each row by its
+    /// reply-clock version so an older response cannot overwrite newer SSE
+    /// state. Throws on failure.
     func refresh() async throws
 
     /// Coalesced fire-and-forget ``refresh()`` (the web's 16 ms invalidation
@@ -83,6 +85,14 @@ public final class SessionListStore: SessionListStoring {
     /// `HubSession` to `ScratchlistStore.handleInvalidation` (the iOS seam
     /// for the Android `SessionStore.scratchlistInvalidations` flow).
     @ObservationIgnored public var onScratchlistInvalidation: (@MainActor (String) -> Void)?
+    /// Fired after the list changes once its first REST hydration has been
+    /// applied. Wired by `HubSession` to reconcile pending read baselines when
+    /// a legacy reply-clock backfill completes through SSE.
+    @ObservationIgnored public var onSessionsChanged: (@MainActor ([SessionSummary]) -> Void)?
+    /// Wired by the app so live replies cannot be absorbed by a pending baseline.
+    @ObservationIgnored public var onLiveReplyDuringBackfill: (@MainActor (String, Int) -> Void)?
+    /// True while the first authoritative unread baseline is still missing.
+    @ObservationIgnored public var shouldPreserveLiveReplyUnread: (@MainActor () -> Bool)?
 
     /// Authoritative removal only: SSE from either pipe, or a successful
     /// archive. Optimistic list removal/rollback, filters and failed refreshes
@@ -93,6 +103,10 @@ public final class SessionListStore: SessionListStoring {
     @ObservationIgnored private let snapshot: DiskCache<[SessionSummary]>?
     @ObservationIgnored private let refreshBatch: Duration
     @ObservationIgnored private var refreshQueued = false
+    @ObservationIgnored private var detailRefreshQueued: Set<String> = []
+    /// Snapshot and early SSE rows are not a complete list baseline. This is
+    /// set only after the first successful REST response is applied.
+    @ObservationIgnored private var hasHydratedFromServer = false
     /// Serializes overlapping refreshes "monotonic by start": a response is
     /// applied only when no later-started refresh already applied its own
     /// (the value-type equivalent of the reference's mutex ordering).
@@ -116,13 +130,35 @@ public final class SessionListStore: SessionListStoring {
     // MARK: - Details
 
     public func detail(for sessionId: String) -> Session? {
-        details[sessionId]
+        guard let detail = details[sessionId] else { return nil }
+        let summaryVersion = sessions.first { $0.id == sessionId }?.lastAssistantMessageVersion ?? 0
+        return detail.seq >= summaryVersion ? detail : nil
     }
 
     /// `GET /api/sessions/:id` into the detail cache (chat open / resync).
     @discardableResult
     public func loadSessionDetail(_ sessionId: String) async throws -> Session {
-        let session = try await api.session(id: sessionId)
+        var session = try await api.session(id: sessionId)
+        let detailWatermark: () -> Int = {
+            max(
+                self.details[sessionId]?.seq ?? 0,
+                self.sessions.first { $0.id == sessionId }?.lastAssistantMessageVersion ?? 0
+            )
+        }
+        if session.seq < detailWatermark() {
+            // The rejected snapshot may still contain unrelated fields that
+            // arrived before the newer SSE reply-clock patch. Retry once to
+            // recover that complete server state without creating a loop.
+            session = try await api.session(id: sessionId)
+        }
+        if session.seq < detailWatermark() {
+            if let cached = details[sessionId], cached.seq >= (sessions.first { $0.id == sessionId }?.lastAssistantMessageVersion ?? 0) {
+                return cached
+            }
+            throw NSError(domain: "HapiClient", code: 409, userInfo: [
+                NSLocalizedDescriptionKey: "Session detail response is older than the cached session list"
+            ])
+        }
         details[sessionId] = session
         return session
     }
@@ -153,11 +189,46 @@ public final class SessionListStore: SessionListStoring {
     public func refresh() async throws {
         refreshGeneration += 1
         let generation = refreshGeneration
-        let list = try await api.listSessions()
+        var list = try await api.listSessions()
+        let cachedByIdBeforeRetry = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
+        let detailsByIdBeforeRetry = details
+        if list.contains(where: { incoming in
+            let cached = cachedByIdBeforeRetry[incoming.id]
+            let detail = detailsByIdBeforeRetry[incoming.id]
+            let watermark = max(
+                cached?.lastAssistantMessageVersion ?? 0,
+                detail?.seq ?? 0
+            )
+            return (incoming.lastAssistantMessageVersion ?? 0) < watermark
+        }) {
+            // Recover unrelated row fields after discarding an older list
+            // snapshot, while keeping the retry bounded to one request.
+            list = try await api.listSessions()
+        }
         // A later-started refresh already applied fresher server truth.
         guard generation > lastAppliedRefresh else { return }
         lastAppliedRefresh = generation
-        setSessions(sortSessionSummaries(list))
+        let cachedById = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
+        let detailsById = details
+        let merged = list.map { incoming in
+            let cached = cachedById[incoming.id]
+            let detail = detailsById[incoming.id]
+            let cachedVersion = cached?.lastAssistantMessageVersion ?? 0
+            let detailVersion = detail?.seq ?? 0
+            let watermark = max(cachedVersion, detailVersion)
+            if (incoming.lastAssistantMessageVersion ?? 0) >= watermark {
+                return incoming
+            }
+            if let detail, detailVersion >= cachedVersion {
+                var projected = SummaryPatching.toSessionSummary(detail)
+                projected.futureScheduledMessageCount = incoming.futureScheduledMessageCount
+                projected.nextScheduledAt = incoming.nextScheduledAt
+                return projected
+            }
+            return cached ?? incoming
+        }
+        hasHydratedFromServer = true
+        setSessions(sortSessionSummaries(merged))
     }
 
     public func scheduleRefresh() {
@@ -252,9 +323,16 @@ public final class SessionListStore: SessionListStoring {
         // already encodes the session-vs-strict-patch discrimination.
         switch data {
         case .session(let full) where full.id == sessionId:
-            details[full.id] = full
+            let watermark = max(
+                details[full.id]?.seq ?? 0,
+                sessions.first { $0.id == full.id }?.lastAssistantMessageVersion ?? 0
+            )
+            if full.seq >= watermark {
+                details[full.id] = full
+            }
             upsertSummary(full)
         case .patch(let patch) where patch != SessionPatch():
+            preserveLiveReplyUnreadDuringBackfill(sessionId: sessionId, patch: patch)
             patchDetail(sessionId: sessionId, patch: patch)
             if !patchSummary(sessionId: sessionId, patch: patch) {
                 // Row not in the list yet (fresh spawn raced the refetch).
@@ -278,10 +356,49 @@ public final class SessionListStore: SessionListStoring {
         }
     }
 
+    private func preserveLiveReplyUnreadDuringBackfill(sessionId: String, patch: SessionPatch) {
+        let baselinePending = shouldPreserveLiveReplyUnread?() == true
+        guard (patch.assistantReplyClockBackfilled == nil || baselinePending),
+              let field = patch.lastAssistantMessageAt,
+              let replyAt = field.wireValue else { return }
+        let currentSummary = sessions.first { $0.id == sessionId }
+        let currentDetail = details[sessionId]
+        if currentSummary == nil, currentDetail == nil {
+            onLiveReplyDuringBackfill?(sessionId, replyAt)
+            return
+        }
+        guard baselinePending
+                || currentSummary?.assistantReplyClockBackfilled == false
+                || currentDetail?.assistantReplyClockBackfilled == false else { return }
+
+        let currentReplyAt = max(
+            currentSummary?.lastAssistantMessageAt ?? Int.min,
+            currentDetail?.lastAssistantMessageAt ?? Int.min
+        )
+        let currentReplyVersion = max(
+            currentSummary?.lastAssistantMessageVersion ?? 0,
+            currentDetail?.seq ?? 0
+        )
+        if let replyVersion = patch.lastAssistantMessageVersion, replyVersion < currentReplyVersion {
+            return
+        }
+        if replyAt > currentReplyAt {
+            onLiveReplyDuringBackfill?(sessionId, replyAt)
+        }
+    }
+
     private func upsertSummary(_ session: Session) {
         var list = sessions
         let index = list.firstIndex { $0.id == session.id }
         let existing = index.map { list[$0] }
+        let detailVersion = details[session.id]?.seq ?? 0
+        let watermark = max(existing?.lastAssistantMessageVersion ?? 0, detailVersion)
+        if session.seq < watermark {
+            // A newer full record may already be cached in the detail pipe
+            // while this list projection is absent or still behind.
+            scheduleRefresh()
+            return
+        }
         // The projection cannot derive the hub-computed scheduled-message
         // fields — carry them over from the previous row (web
         // `upsertSessionSummary`).
@@ -316,7 +433,8 @@ public final class SessionListStore: SessionListStoring {
         let next = SummaryPatching.applySessionSummaryPatch(current, patch)
         // Keep-alive noise: activeAt-only movement keeps the previous list
         // (no revision bump, no re-sort, no snapshot write).
-        if SummaryPatching.isRenderIrrelevantPatch(current: current, next: next) {
+        if SummaryPatching.isRenderIrrelevantPatch(current: current, next: next)
+            && current.lastAssistantMessageVersion == next.lastAssistantMessageVersion {
             return true
         }
         var list = sessions
@@ -329,5 +447,21 @@ public final class SessionListStore: SessionListStoring {
         sessions = next
         listRevision += 1
         snapshot?.scheduleWrite(next)
+        scheduleStaleDetailRefreshes(next)
+        if hasHydratedFromServer {
+            onSessionsChanged?(next)
+        }
+    }
+
+    private func scheduleStaleDetailRefreshes(_ summaries: [SessionSummary]) {
+        for summary in summaries {
+            guard let detail = details[summary.id],
+                  detail.seq < (summary.lastAssistantMessageVersion ?? 0),
+                  detailRefreshQueued.insert(summary.id).inserted else { continue }
+            Task { @MainActor [weak self] in
+                defer { self?.detailRefreshQueued.remove(summary.id) }
+                _ = try? await self?.loadSessionDetail(summary.id)
+            }
+        }
     }
 }

@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { SessionListScrollAnchor } from './SessionListScrollAnchor'
 import type { SessionSummary } from '@/types/api'
+import {
+    getSessionActivityTimestamp,
+    getSessionListSortTimestamp,
+    isWildcardSearch,
+    matchesSearchQuery,
+} from '@hapi/protocol'
 import { SESSION_LIFECYCLE_IDLE } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import {
@@ -71,6 +77,9 @@ type SessionGroup = {
     displayName: string
     machineId: string | null
     sessions: SessionSummary[]
+    latestSortAt: number
+    // The search ranker uses this generic recency field for tie-breaking.
+    // Keep it aligned with the list's last-assistant-reply sort timestamp.
     latestUpdatedAt: number
     hasActiveSession: boolean
     hasPinnedSession: boolean
@@ -230,7 +239,7 @@ type MachineGroup = {
     totalSessions: number
     hasActiveSession: boolean
     hasPinnedSession: boolean
-    latestUpdatedAt: number
+    latestSortAt: number
 }
 
 export const UNKNOWN_MACHINE_ID = '__unknown__'
@@ -272,7 +281,7 @@ export function deduplicateSessionsByAgentId(sessions: SessionSummary[], selecte
             // Preserve an explicit pin when otherwise choosing by recency
             if (Boolean(a.globalPinned) !== Boolean(b.globalPinned)) return a.globalPinned ? -1 : 1
             if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1
-            return b.updatedAt - a.updatedAt
+            return getSessionListSortTimestamp(b) - getSessionListSortTimestamp(a)
         })
         result.push(group[0])
     }
@@ -355,10 +364,13 @@ function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
                 const rankA = a.active ? (a.pendingRequestsCount > 0 ? 0 : 1) : 2
                 const rankB = b.active ? (b.pendingRequestsCount > 0 ? 0 : 1) : 2
                 if (rankA !== rankB) return rankA - rankB
-                return b.updatedAt - a.updatedAt
+                return getSessionListSortTimestamp(b) - getSessionListSortTimestamp(a)
             })
-            const latestUpdatedAt = group.sessions.reduce(
-                (max, s) => (s.updatedAt > max ? s.updatedAt : max),
+            const latestSortAt = group.sessions.reduce(
+                (max, s) => {
+                    const sortAt = getSessionListSortTimestamp(s)
+                    return sortAt > max ? sortAt : max
+                },
                 -Infinity
             )
             const hasActiveSession = group.sessions.some(s => s.active)
@@ -371,7 +383,8 @@ function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
                 displayName,
                 machineId: group.machineId,
                 sessions: sortedSessions,
-                latestUpdatedAt,
+                latestSortAt,
+                latestUpdatedAt: latestSortAt,
                 hasActiveSession,
                 hasPinnedSession
             }
@@ -383,7 +396,7 @@ function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
             if (a.hasActiveSession !== b.hasActiveSession) {
                 return a.hasActiveSession ? -1 : 1
             }
-            return b.latestUpdatedAt - a.latestUpdatedAt
+            return b.latestSortAt - a.latestSortAt
         })
 }
 
@@ -419,7 +432,7 @@ function groupByMachine(
                 totalSessions: 0,
                 hasActiveSession: false,
                 hasPinnedSession: false,
-                latestUpdatedAt: 0,
+                latestSortAt: 0,
             }
             map.set(key, mg)
         }
@@ -427,12 +440,12 @@ function groupByMachine(
         mg.totalSessions += g.sessions.length
         if (g.hasActiveSession) mg.hasActiveSession = true
         if (g.hasPinnedSession) mg.hasPinnedSession = true
-        if (g.latestUpdatedAt > mg.latestUpdatedAt) mg.latestUpdatedAt = g.latestUpdatedAt
+        if (g.latestSortAt > mg.latestSortAt) mg.latestSortAt = g.latestSortAt
     }
     return [...map.values()].sort((a, b) => {
         if (a.hasPinnedSession !== b.hasPinnedSession) return a.hasPinnedSession ? -1 : 1
         if (a.hasActiveSession !== b.hasActiveSession) return a.hasActiveSession ? -1 : 1
-        return b.latestUpdatedAt - a.latestUpdatedAt
+        return b.latestSortAt - a.latestSortAt
     })
 }
 
@@ -1096,7 +1109,7 @@ function SessionItem(props: {
                 onSetPinMode={(mode) => void handleSetPinMode(mode)}
                 onRename={() => setRenameOpen(true)}
                 onExport={() => setExportOpen(true)}
-                onMarkUnread={() => markSessionUnread(s.id, s.updatedAt)}
+                onMarkUnread={() => markSessionUnread(s.id, getSessionActivityTimestamp(s))}
                 onArchive={() => setArchiveOpen(true)}
                 onReopen={cursorReopenDisabledReason ? undefined : handleReopen}
                 reopenDisabledReason={cursorReopenDisabledReason}
@@ -1377,14 +1390,14 @@ export function SessionList(props: {
         if (searchScoreIndex && hasTextQuery) {
             return sortSessionsBySearchRelevance(pinned, searchScoreIndex)
         }
-        return [...pinned].sort((a, b) => b.updatedAt - a.updatedAt)
+        return [...pinned].sort((a, b) => getSessionListSortTimestamp(b) - getSessionListSortTimestamp(a))
     }, [machineFilteredSessions, searchScoreIndex, hasTextQuery])
     const runningSessions = useMemo(() => {
         const byRelevanceOrRecent = (a: SessionSummary, b: SessionSummary) => {
             if (searchScoreIndex && hasTextQuery) {
                 return compareSessionsBySearchRelevance(a, b, searchScoreIndex)
             }
-            return b.updatedAt - a.updatedAt
+            return getSessionListSortTimestamp(b) - getSessionListSortTimestamp(a)
         }
         return bucketRunningSessions(machineFilteredSessions, pinInProgressSessions, byRelevanceOrRecent)
     }, [machineFilteredSessions, pinInProgressSessions, searchScoreIndex, hasTextQuery])
