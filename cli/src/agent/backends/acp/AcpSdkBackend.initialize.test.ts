@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 const transportState = vi.hoisted(() => ({
-    calls: [] as Array<{ method: string; params?: unknown }>
+    calls: [] as Array<{ method: string; params?: unknown }>,
+    onClose: null as ((error: Error) => void) | null
 }));
 
 vi.mock('./AcpStdioTransport', () => {
@@ -11,6 +12,9 @@ vi.mock('./AcpStdioTransport', () => {
         }
         onNotification = vi.fn();
         onStderrError = vi.fn();
+        onClose = vi.fn((handler: (error: Error) => void) => {
+            transportState.onClose = handler;
+        });
         registerRequestHandler = vi.fn();
         sendRequest = vi.fn(async (method: string, params?: unknown) => {
             transportState.calls.push({ method, params });
@@ -42,5 +46,17 @@ describe('AcpSdkBackend.initialize', () => {
                 })
             })
         });
+    });
+
+    it('forwards unexpected ACP transport closes to the registered owner', async () => {
+        const backend = new AcpSdkBackend({ command: 'dsh-acp-demo' });
+        const onClosed = vi.fn();
+        const error = new Error('ACP process exited');
+
+        backend.onTransportClosed(onClosed);
+        await backend.initialize();
+        transportState.onClose?.(error);
+
+        expect(onClosed).toHaveBeenCalledWith(error);
     });
 });
