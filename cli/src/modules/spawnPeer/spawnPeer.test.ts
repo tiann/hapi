@@ -1448,7 +1448,7 @@ it('resolves relative directory against cwd (MCP session working directory)', as
         expect(spawnedBody).not.toHaveProperty('effort')
     })
 
-    it('passes an explicit permissionMode and does not clone yolo', async () => {
+    it('treats permissionMode default as omit so stock yolo (bypassPermissions) wins', async () => {
         let spawnedBody: Record<string, unknown> | undefined
         const http = createHttpMock({
             post: (url, body) => {
@@ -1513,7 +1513,7 @@ it('resolves relative directory against cwd (MCP session working directory)', as
             directory: '/tmp/project',
             agent: 'claude',
             sessionType: 'simple',
-            permissionMode: 'default',
+            permissionMode: 'bypassPermissions',
             model: 'sonnet'
         })
         expect(spawnedBody).not.toHaveProperty('yolo')

@@ -163,6 +163,7 @@ export function NewSession(props: {
     const editedPermissionRef = useRef(false)
     const editedAgentRef = useRef(false)
     const editedModelRef = useRef(false)
+    const editedEffortRef = useRef(false)
     const [cursorSelectedBase, setCursorSelectedBase] = useState('auto')
     const pendingCursorBaseRef = useRef<string | null>(null)
     const [effort, setEffort] = useState<LaunchEffort>('auto')
@@ -328,12 +329,13 @@ export function NewSession(props: {
         seededFromHubRef.current = true
         const seeded = seedNewSessionFromPeerSpawnDefaults(hubPeerSpawnDefaults)
         const { hasStickyAgent, hasStickyYolo } = initialStickyPreferences
-        // If the operator already edited permission/Yolo/model, do not swap the
-        // agent — agent-change effects would wipe the restrictive choice.
+        // If the operator already edited permission/Yolo/model/effort, do not
+        // swap the agent — agent-change effects would wipe the explicit choice.
         const applyHubAgent = !hasStickyAgent
             && !editedAgentRef.current
             && !editedPermissionRef.current
             && !editedModelRef.current
+            && !editedEffortRef.current
         if (applyHubAgent) {
             setAgent(seeded.agent)
         }
@@ -2151,9 +2153,15 @@ export function NewSession(props: {
                 <EffortField
                     agent={agent}
                     effort={effort}
-                    onEffortChange={setEffort}
+                    onEffortChange={(value) => {
+                        editedEffortRef.current = true
+                        setEffort(value as LaunchEffort)
+                    }}
                     reasoningEffort={modelReasoningEffort}
-                    onReasoningEffortChange={setModelReasoningEffort}
+                    onReasoningEffortChange={(value) => {
+                        editedEffortRef.current = true
+                        setModelReasoningEffort(value as CodexReasoningEffort)
+                    }}
                     isDisabled={isFormDisabled || (agent === 'codex' && codexModelsState.isLoading)}
                     grokOptions={agent === 'grok' ? grokEffortOptions : undefined}
                     codexReasoningOptions={agent === 'codex' ? codexReasoningEffortOptions : undefined}

@@ -259,10 +259,19 @@ vi.mock('./AgyModelSelector', () => ({
     )
 }))
 vi.mock('./EffortField', () => ({
-    EffortField: (props: { effort: string; reasoningEffort: string; opencodeVariantOptions?: string[] | null; onReasoningEffortChange: (v: string) => void }) => (
+    EffortField: (props: {
+        effort: string
+        reasoningEffort: string
+        opencodeVariantOptions?: string[] | null
+        onEffortChange: (v: string) => void
+        onReasoningEffortChange: (v: string) => void
+    }) => (
         <>
             <div data-testid="launch-effort">{props.effort}</div>
             <div data-testid="opencode-variants">{props.opencodeVariantOptions?.join(',') ?? 'static'}</div>
+            <button type="button" data-testid="effort-high" onClick={() => props.onEffortChange('high')}>
+                high
+            </button>
             <button type="button" data-testid="reasoning" onClick={() => props.onReasoningEffortChange('max')}>
                 {props.reasoningEffort}
             </button>
@@ -1836,6 +1845,61 @@ describe('NewSession launch preferences', () => {
             // Hub read-only — not Cursor sticky YOLO → yolo
             expect(screen.getByTestId('permission-mode')).toHaveTextContent('read-only')
         })
+    })
+
+    it('keeps Claude after an explicit effort pick when hub settings resolve late with Codex', async () => {
+        localStorage.clear()
+        let resolveSettings!: (value: unknown) => void
+        const deferred = new Promise((resolve) => {
+            resolveSettings = resolve
+        })
+        const slowApi = {
+            getHubSettings: vi.fn(() => deferred)
+        } as unknown as ApiClient
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'session-1' })
+
+        const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        render(
+            <QueryClientProvider client={client}>
+                <NewSession
+                    api={slowApi}
+                    machines={[machine]}
+                    initialMachineId="machine-1"
+                    initialDirectory="C:\\repo"
+                    onSuccess={mocks.onSuccess}
+                    onCancel={() => {}}
+                />
+            </QueryClientProvider>
+        )
+
+        expect(screen.getByDisplayValue('claude')).toBeChecked()
+        fireEvent.click(screen.getByTestId('effort-high'))
+        expect(screen.getByTestId('launch-effort')).toHaveTextContent('high')
+
+        await act(async () => {
+            resolveSettings({
+                sessionSummaryContract: false,
+                sessionSummaryInChat: false,
+                peerSpawnDefaults: {
+                    agent: 'codex',
+                    permissionMode: 'read-only',
+                    models: { codex: 'gpt-5' }
+                }
+            })
+            await deferred
+        })
+
+        await waitFor(() => {
+            expect(screen.getByDisplayValue('claude')).toBeChecked()
+            expect(screen.getByTestId('launch-effort')).toHaveTextContent('high')
+        })
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('session-1'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'claude',
+            effort: 'high'
+        }))
     })
 
     it('keeps an explicit Claude model when hub settings resolve late with Codex', async () => {
