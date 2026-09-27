@@ -1,7 +1,14 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, PiLocalSessionSummary } from '@/types/api'
-import type { CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
+import {
+    type CodexCollaborationMode,
+    type GrokPermissionMode,
+    type PermissionMode,
+    type CopilotAgentMode,
+    resolveHapiYoloPermissionMode
+} from '@hapi/protocol'
 import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
@@ -21,6 +28,7 @@ import { useActiveSuggestions, type Suggestion } from '@/hooks/useActiveSuggesti
 import { useDirectorySuggestions } from '@/hooks/useDirectorySuggestions'
 import { useRecentPaths } from '@/hooks/useRecentPaths'
 import { useTranslation } from '@/lib/use-translation'
+import { queryKeys } from '@/lib/query-keys'
 import { getCodexModelReasoningEfforts } from '@/lib/codexModelCapabilities'
 import {
     buildNewSessionCursorModelCatalog,
@@ -65,14 +73,18 @@ import {
     loadPreferredAgent,
     loadPreferredLaunchSettings,
     loadPreferredYoloMode,
+    hasSavedPreferredYoloMode,
     resolvePreferredLaunchSettings,
     savePreferredAgent,
     savePreferredLaunchSettings,
     savePreferredYoloMode,
+    seedNewSessionFromPeerSpawnDefaults,
+    isYoloStylePermissionMode,
 } from './preferences'
+import { resolvePermissionModeForFlavor } from '@hapi/protocol/peerSpawnDefaults'
 import { SessionTypeSelector } from './SessionTypeSelector'
 import { PermissionField } from './PermissionField'
-import { usesNativePermissionSelect, usesSharedPermissionModeState } from '@/lib/codexFamilyPermissionAgents'
+import { usesNativePermissionSelect, usesSharedPermissionModeState, LEGACY_YOLO_BRIDGE_AGENTS } from '@/lib/codexFamilyPermissionAgents'
 import { CodexSessionSyncDialog } from '@/components/CodexSessionSyncDialog'
 import { PiSessionImportDialog } from '@/components/PiSessionImportDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
@@ -99,21 +111,58 @@ export function NewSession(props: {
     const { spawnSession, isPending, error: spawnError } = useSpawnSession(props.api)
     const { sessions, refetch: refetchSessions } = useSessions(props.api)
     const { getRecentPaths, addRecentPath, getLastUsedMachineId, setLastUsedMachineId } = useRecentPaths()
+    const hubSettingsQuery = useQuery({
+        queryKey: queryKeys.hubSettings,
+        queryFn: async () => props.api.getHubSettings(),
+        staleTime: 30_000,
+        retry: false
+    })
+    const hubPeerSpawnDefaults = hubSettingsQuery.data?.peerSpawnDefaults
+    // Block Create until hub peerSpawnDefaults settle once. Fresh browsers would
+    // otherwise POST mount defaults (claude + default) before seeding and bypass a
+    // restrictive hub config. Errors unlock Create with local/sticky defaults.
+    const hubDefaultsPending = hubSettingsQuery.isPending
+    const seededFromHubRef = useRef(false)
+    // Snapshot sticky localStorage keys before mount effects call
+    // savePreferredAgent / savePreferredYoloMode (those write keys even on a
+    // fresh browser, which would permanently skip hub seeding).
+    const [initialStickyPreferences] = useState(() => {
+        try {
+            return {
+                hasStickyAgent: localStorage.getItem('hapi:newSession:agent') !== null,
+                hasStickyYolo: localStorage.getItem('hapi:newSession:yolo') !== null
+            }
+        } catch {
+            return { hasStickyAgent: false, hasStickyYolo: false }
+        }
+    })
+    // Hub permission mode for preferred-launch restore — read via ref so a
+    // late getHubSettings resolve does not re-run the effect and wipe edits.
+    const hubPermissionModeRef = useRef(hubPeerSpawnDefaults?.permissionMode)
+    hubPermissionModeRef.current = hubPeerSpawnDefaults?.permissionMode
+    const hubModelsRef = useRef(hubPeerSpawnDefaults?.models)
+    hubModelsRef.current = hubPeerSpawnDefaults?.models
 
     const [machineId, setMachineId] = useState<string | null>(props.initialMachineId ?? null)
     const [directory, setDirectory] = useState(props.initialDirectory ?? '')
     const [suppressSuggestions, setSuppressSuggestions] = useState(false)
     const [isDirectoryFocused, setIsDirectoryFocused] = useState(false)
     const [agent, setAgent] = useState<AgentType>(loadPreferredAgent)
-    // Snapshot taken once at mount, before any savePreferredAgent() call this
-    // component makes can overwrite the stored agent. savePreferredAgent()
-    // runs on every agent change (below), so reading loadPreferredAgent()
-    // again later would always equal the current agent and make the
-    // legacyYoloAgent === agent gate at the restore effect below vacuous.
-    const [legacyYoloAgent] = useState(
-        () => (loadPreferredYoloMode() ? loadPreferredAgent() : null)
-    )
+    // Snapshot a saved HAPI YOLO toggle for bridge flavors (incl. Cursor after
+    // native-select move). null = no sticky key; true/false = migrate into native mode.
+    const [legacyYoloBridge] = useState(() => {
+        if (!hasSavedPreferredYoloMode()) {
+            return null
+        }
+        return {
+            agent: loadPreferredAgent(),
+            enabled: loadPreferredYoloMode()
+        }
+    })
     const [model, setModel] = useState('auto')
+    const editedPermissionRef = useRef(false)
+    const editedAgentRef = useRef(false)
+    const editedModelRef = useRef(false)
     const [cursorSelectedBase, setCursorSelectedBase] = useState('auto')
     const pendingCursorBaseRef = useRef<string | null>(null)
     const [effort, setEffort] = useState<LaunchEffort>('auto')
@@ -266,6 +315,80 @@ export function NewSession(props: {
         props.initialMachineId,
         machineId
     ])
+
+    // Seed from hub peerSpawnDefaults once (Settings → General).
+    // Sticky New Session localStorage agent wins when present (last-used UI);
+    // peer spawn / machine spawn always resolve hub server-side.
+    // Browse-draft restore wins; explicit form edits after seed are not overwritten.
+    // A sticky agent must not suppress hub defaults for unset permission/model.
+    useEffect(() => {
+        if (seededFromHubRef.current || restoredFromBrowseRef.current || !hubPeerSpawnDefaults) {
+            return
+        }
+        seededFromHubRef.current = true
+        const seeded = seedNewSessionFromPeerSpawnDefaults(hubPeerSpawnDefaults)
+        const { hasStickyAgent, hasStickyYolo } = initialStickyPreferences
+        // If the operator already edited permission/Yolo/model, do not swap the
+        // agent — agent-change effects would wipe the restrictive choice.
+        const applyHubAgent = !hasStickyAgent
+            && !editedAgentRef.current
+            && !editedPermissionRef.current
+            && !editedModelRef.current
+        if (applyHubAgent) {
+            setAgent(seeded.agent)
+        }
+        const targetAgent: AgentType = applyHubAgent ? seeded.agent : agent
+        const remappedPermission = resolvePermissionModeForFlavor(
+            hubPeerSpawnDefaults.permissionMode,
+            targetAgent
+        )
+        const savedLaunch = machineId
+            ? loadPreferredLaunchSettings(machineId, targetAgent)
+            : null
+        if (!editedPermissionRef.current && !savedLaunch?.permissionMode) {
+            if (
+                legacyYoloBridge?.agent === targetAgent
+                && usesSharedPermissionModeState(targetAgent)
+                && LEGACY_YOLO_BRIDGE_AGENTS.includes(targetAgent)
+            ) {
+                const bridged = legacyYoloBridge.enabled
+                    ? resolveHapiYoloPermissionMode(targetAgent)
+                    : 'default'
+                if (bridged) {
+                    setNativePermissionMode(bridged)
+                }
+            } else if (usesSharedPermissionModeState(targetAgent)) {
+                setNativePermissionMode(remappedPermission)
+            } else if (targetAgent === 'grok') {
+                if (
+                    remappedPermission === 'default'
+                    || remappedPermission === 'auto'
+                    || remappedPermission === 'plan'
+                    || remappedPermission === 'bypassPermissions'
+                ) {
+                    setGrokPermissionMode(remappedPermission)
+                } else if (isYoloStylePermissionMode(remappedPermission)) {
+                    setGrokPermissionMode('bypassPermissions')
+                }
+            }
+        }
+        const hubModelForTarget = hubPeerSpawnDefaults.models[targetAgent]?.trim()
+        if (!editedModelRef.current && !savedLaunch?.model && hubModelForTarget) {
+            if (targetAgent === 'opencode') {
+                setOpencodeSelectedModel(hubModelForTarget)
+            } else if (targetAgent === 'agy') {
+                setAgySelectedModel(hubModelForTarget)
+            } else {
+                setModel(hubModelForTarget)
+                if (targetAgent === 'cursor') {
+                    setCursorSelectedBase(hubModelForTarget)
+                }
+            }
+        }
+        if (!hasStickyYolo && !editedPermissionRef.current) {
+            setYoloMode(isYoloStylePermissionMode(remappedPermission))
+        }
+    }, [agent, hubPeerSpawnDefaults, initialStickyPreferences, legacyYoloBridge, machineId])
 
     useEffect(() => {
         if (props.machines.length === 0) return
@@ -874,27 +997,74 @@ export function NewSession(props: {
             return
         }
 
+        const savedLaunch = loadPreferredLaunchSettings(machineId, agent)
         const preferred = resolvePreferredLaunchSettings(
             agent,
-            loadPreferredLaunchSettings(machineId, agent),
-            legacyYoloAgent === agent
+            savedLaunch,
+            legacyYoloBridge?.agent === agent ? legacyYoloBridge.enabled : null,
+            hubPermissionModeRef.current
         )
 
-        setModel(agent === 'opencode' ? 'auto' : preferred.model)
-        setCursorSelectedBase(preferred.cursorSelectedBase)
+        const hubModel = hubModelsRef.current?.[agent]?.trim()
+        // Explicit saved `auto` is native Default — do not replace with hub model.
+        // Absent saved model may still inherit the hub flavor model.
+        const nextModel = agent === 'opencode'
+            ? 'auto'
+            : savedLaunch?.model !== undefined
+                ? preferred.model
+                : (hubModel || preferred.model)
+        setModel(nextModel)
+        setCursorSelectedBase(
+            preferred.cursorSelectedBase !== 'auto'
+                ? preferred.cursorSelectedBase
+                : savedLaunch?.cursorSelectedBase !== undefined
+                    ? preferred.cursorSelectedBase
+                    : (agent === 'cursor' && hubModel ? hubModel : preferred.cursorSelectedBase)
+        )
         setEffort(preferred.effort)
         setModelReasoningEffort(preferred.modelReasoningEffort)
         if (usesSharedPermissionMode) {
             setNativePermissionMode(preferred.permissionMode ?? 'default')
         }
-        setOpencodeSelectedModel(
-            agent === 'opencode' && preferred.model !== 'auto' ? preferred.model : null
-        )
+        if (agent === 'grok' && !editedPermissionRef.current) {
+            const hubMode = hubPermissionModeRef.current
+            if (
+                hubMode === 'default'
+                || hubMode === 'auto'
+                || hubMode === 'plan'
+                || hubMode === 'bypassPermissions'
+            ) {
+                setGrokPermissionMode(hubMode)
+            } else if (hubMode && isYoloStylePermissionMode(hubMode)) {
+                setGrokPermissionMode('bypassPermissions')
+            }
+        }
+        // Flavor-specific selectors own the spawn model for OpenCode / AGY.
+        // Prefer a concrete saved model, else hub, else native Default (null).
+        if (agent === 'opencode') {
+            if (savedLaunch?.model !== undefined && savedLaunch.model !== 'auto') {
+                setOpencodeSelectedModel(savedLaunch.model)
+            } else if (savedLaunch?.model === 'auto') {
+                setOpencodeSelectedModel(null)
+            } else {
+                setOpencodeSelectedModel(hubModel || null)
+            }
+        } else {
+            setOpencodeSelectedModel(null)
+        }
         agyModelPickedByUserRef.current = false
-        setAgySelectedModel(
-            agent === 'agy' && preferred.model !== 'auto' ? preferred.model : null
-        )
-    }, [agent, legacyYoloAgent, machineId, usesSharedPermissionMode])
+        if (agent === 'agy') {
+            if (savedLaunch?.model !== undefined && savedLaunch.model !== 'auto') {
+                setAgySelectedModel(savedLaunch.model)
+            } else if (savedLaunch?.model === 'auto') {
+                setAgySelectedModel(null)
+            } else {
+                setAgySelectedModel(hubModel || null)
+            }
+        } else {
+            setAgySelectedModel(null)
+        }
+    }, [agent, legacyYoloBridge, machineId, usesSharedPermissionMode])
 
     useEffect(() => {
         if (
@@ -1361,6 +1531,7 @@ export function NewSession(props: {
 
     const handleAgentChange = useCallback((newAgent: AgentType) => {
         preserveRestoredDraftRef.current = false
+        editedAgentRef.current = true
         setAgent(newAgent)
     }, [])
 
@@ -1384,6 +1555,7 @@ export function NewSession(props: {
     }, [getRecentPaths])
 
     const handleCursorBaseChange = useCallback((baseKey: string) => {
+        editedModelRef.current = true
         if (baseKey === 'auto') {
             pendingCursorBaseRef.current = null
             setCursorSelectedBase('auto')
@@ -1525,6 +1697,7 @@ export function NewSession(props: {
 
     async function handleCreate() {
         if (!machineId || !trimmedDirectory || createInFlightRef.current) return
+        if (hubDefaultsPending) return
 
         createInFlightRef.current = true
         setIsCreating(true)
@@ -1761,6 +1934,7 @@ export function NewSession(props: {
         && selectedAgentAvailable
         && !isLaunchPreferenceValidationPending
         && !fastModeSelectionPending
+        && !hubDefaultsPending
     )
 
     return (
@@ -1863,6 +2037,7 @@ export function NewSession(props: {
                     availableModels={agyModelsState.availableModels}
                     selectedModel={agySelectedModel}
                     onModelChange={(modelId) => {
+                        editedModelRef.current = true
                         agyModelPickedByUserRef.current = modelId !== null
                         setAgySelectedModel(modelId)
                     }}
@@ -1877,7 +2052,10 @@ export function NewSession(props: {
                     availableModels={opencodeModelsState.availableModels}
                     currentModelId={opencodeModelsState.currentModelId}
                     selectedModel={opencodeSelectedModel}
-                    onModelChange={setOpencodeSelectedModel}
+                    onModelChange={(modelId) => {
+                        editedModelRef.current = true
+                        setOpencodeSelectedModel(modelId)
+                    }}
                     onRetry={opencodeModelsState.refetch}
                 />
             ) : (
@@ -1897,6 +2075,7 @@ export function NewSession(props: {
                                     handleCursorBaseChange(value)
                                     return
                                 }
+                                editedModelRef.current = true
                                 setModel(value)
                                 setCursorSelectedBase(
                                     value === 'auto' ? 'auto' : resolveCursorBaseFromWire(value, cursorPicker.catalog)
@@ -1961,7 +2140,10 @@ export function NewSession(props: {
                                         : agent === 'pi' && piModelsState.error
                                             ? `${t('newSession.model.loadFailed')}: ${piModelsState.error}`
                                     : null}
-                        onModelChange={setModel}
+                        onModelChange={(value) => {
+                            editedModelRef.current = true
+                            setModel(value)
+                        }}
                     />
                 )
             )}
@@ -1986,13 +2168,17 @@ export function NewSession(props: {
                 autoPermissionModeSupported={agent === 'grok' ? grokModelsState.autoPermissionModeSupported : null}
                 isDisabled={isFormDisabled}
                 onNativeChange={(mode) => {
+                    editedPermissionRef.current = true
                     if (agent === 'grok') {
                         setGrokPermissionMode(mode as GrokPermissionMode)
                     } else {
                         setNativePermissionMode(mode)
                     }
                 }}
-                onYoloToggle={setYoloMode}
+                onYoloToggle={(value) => {
+                    editedPermissionRef.current = true
+                    setYoloMode(value)
+                }}
             />
             <CollaborationModeSelector
                 agent={agent}
