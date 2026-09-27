@@ -178,11 +178,13 @@ export HAPI_DSH_ACP_COMMAND=pnpm
 export HAPI_DSH_ACP_ARGS_JSON='["--dir", "/path/to/deepseek-harness", "run", "demo:acp"]'
 ```
 
-The official ACP demo is fresh-session-only and does not support native resume,
-model switching, MCP injection, or live tool/reasoning telemetry. HAPI uses the
-standard chat and pending one-shot permission surfaces; the ACP composition
-owns the overall permission policy and HAPI does not advertise resume or model
-controls for DSH.
+The current DSH ACP profile supports native persistence through its
+`session/resume` method. HAPI stores the native DSH session id and keeps the Hub
+message history as the transcript source; `session/resume` restores model
+context but does not replay historical updates. The legacy ACP demo may be
+fresh-session-only, in which case HAPI reports the failed resume and starts a
+new session. DSH owns model switching, MCP injection, live tool/reasoning
+telemetry, and the overall permission policy.
 
 ### Required
 
