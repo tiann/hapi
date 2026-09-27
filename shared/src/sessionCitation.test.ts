@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import {
-    SESSION_REFERENCE_STEER_SUFFIX,
-    buildSessionCitationSteerInstruction,
+    SPAWN_PEER_TOOL_DESCRIPTION,
     extractSessionCitationIds,
     normalizeSessionIdPrefix,
 } from './sessionCitation'
@@ -11,12 +10,6 @@ const UUID = '7ee03698-0fe7-4f76-b8a8-d84f4eddbf5c'
 describe('extractSessionCitationIds', () => {
     it('extracts id from Copy-reference prose (tiann/hapi#1144)', () => {
         const text = `See session "Coding" (/sessions/${UUID}) for context`
-        expect(extractSessionCitationIds(text)).toEqual([UUID])
-    })
-
-    it('extracts id from Copy-reference prose with steer suffix', () => {
-        const text =
-            `See session "Coding" (/sessions/${UUID}) for context.${SESSION_REFERENCE_STEER_SUFFIX}`
         expect(extractSessionCitationIds(text)).toEqual([UUID])
     })
 
@@ -70,7 +63,7 @@ describe('normalizeSessionIdPrefix', () => {
     it('prefers the parenthesized Copy-reference path over /sessions/ inside the title', () => {
         const other = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
         const text =
-            `See session ${JSON.stringify(`Review /sessions/${other}`)} (/sessions/${UUID}) for context.${SESSION_REFERENCE_STEER_SUFFIX}`
+            `See session ${JSON.stringify(`Review /sessions/${other}`)} (/sessions/${UUID}) for context.`
         expect(normalizeSessionIdPrefix(text)).toBe(UUID)
     })
 
@@ -97,19 +90,9 @@ describe('normalizeSessionIdPrefix', () => {
     })
 })
 
-describe('buildSessionCitationSteerInstruction', () => {
-    it('mentions both citation forms and forbids local FS search', () => {
-        const text = buildSessionCitationSteerInstruction({
-            inspectTool: 'mcp__hapi__inspect_peer',
-            pingTool: 'mcp__hapi__ping_peer',
-            listPeersTool: 'mcp__hapi__list_peers',
-        })
-        expect(text).toContain('[title](/sessions/<id>)')
-        expect(text).toContain('See session')
-        expect(text).toContain('/sessions/<id>')
-        expect(text).toContain('mcp__hapi__inspect_peer')
-        expect(text).toContain('mcp__hapi__ping_peer')
-        expect(text).toContain('mcp__hapi__list_peers')
-        expect(text.toLowerCase()).toMatch(/not.*(grep|glob|filesystem|local file)/i)
+describe('SPAWN_PEER_TOOL_DESCRIPTION', () => {
+    it('describes a fresh atomic spawn without embedding workflow prose', () => {
+        expect(SPAWN_PEER_TOOL_DESCRIPTION).toContain('fresh HAPI session')
+        expect(SPAWN_PEER_TOOL_DESCRIPTION).toContain('atomically')
     })
 })

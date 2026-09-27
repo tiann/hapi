@@ -196,6 +196,10 @@ export class RpcGateway {
         }
     }
 
+    async stopSessionProcess(sessionId: string): Promise<void> {
+        await this.sessionRpc(sessionId, RPC_METHODS.KillSession, { archive: false })
+    }
+
     async stopRunnerSession(
         machineId: string,
         sessionId: string,

@@ -18,7 +18,7 @@ import { parseReasoningEffortValue } from '../utils/reasoningEffort';
 import { SharedCodexPermissions } from './permissions';
 import { SharedCodexQueue } from './queue';
 import { SharedCodexProjection, inputText } from './projection';
-import { getCodexSystemPrompt } from '../utils/systemPrompt';
+import { CodexSessionTitles } from '../utils/codexSessionTitles';
 import { record, string } from './gateway';
 import { initializeSharedClient, type SharedLaunchOptions } from './launch';
 import { inheritedSandbox, settingsMatch } from './settings';
@@ -43,6 +43,8 @@ const SettingsSchema = z.object({
 export class SharedCodexRoot {
     readonly client: CodexAppServerClient;
     readonly session: ApiSessionClient;
+    private readonly titles: CodexSessionTitles;
+    private titleRequest = '';
     bridge!: HapiMcpBridge;
     threadId = '';
     private permissions!: SharedCodexPermissions;
@@ -76,6 +78,8 @@ export class SharedCodexRoot {
 
     constructor(readonly bootstrap: SessionBootstrapResult, private readonly host: RootHost) {
         this.session = bootstrap.session;
+        this.titles = new CodexSessionTitles(this.session, bootstrap.workingDirectory, () => this.threadId || null,
+            { endpoint: host.endpoint, token: host.token });
         this.client = new CodexAppServerClient({ endpoint: host.endpoint, token: host.token, cwd: bootstrap.workingDirectory });
         this.client.setNotificationHandler((method, params) => {
             if (method === 'serverRequest/resolved') {
@@ -177,7 +181,7 @@ export class SharedCodexRoot {
     }
     config(params: Record<string, unknown>): Record<string, unknown> {
         return { ...params, cwd: params.cwd ?? this.bootstrap.workingDirectory,
-            developerInstructions: params.developerInstructions ?? getCodexSystemPrompt(), config: {
+            config: {
             ...record(params.config), 'mcp_servers.hapi': this.bridge.mcpServers.hapi,
             'shell_environment_policy.set.HAPI_SESSION_ID': this.session.sessionId
         } };
@@ -269,8 +273,14 @@ export class SharedCodexRoot {
             await projection.notification(method, params); return;
         }
         if (method === 'turn/completed') this.session.sendSessionEvent({ type: 'ready' });
+        if (eventThread === this.threadId && method === 'item/completed' && record(p.item).type === 'userMessage') {
+            this.titleRequest = inputText(record(p.item).content);
+        }
+        if (eventThread === this.threadId && method === 'turn/completed' && record(p.turn).status === 'completed') {
+            void this.titles.generate(this.threadId, this.titleRequest, this.settings.model ?? undefined);
+        }
         if (method === 'thread/name/updated' && (typeof p.threadName === 'string' || p.threadName === null)) {
-            const name = p.threadName ?? undefined; this.session.updateMetadata(metadata => ({ ...metadata, name }));
+            this.titles.sync(eventThread ?? '', p.threadName);
         }
         if (method === 'thread/archived') { await this.host.end(this, false); return; }
         if (method === 'thread/queue/changed') await this.queue.reconcile();
@@ -296,6 +306,7 @@ export class SharedCodexRoot {
         if (!this.threadId || this.closed || !this.client.isInitialized()) return;
         const revision = this.turnRevision;
         const thread = await this.readThread();
+        this.titles.sync(this.threadId, thread.name);
         const turns = Array.isArray(thread.turns) ? thread.turns.map(record) : [];
         if (revision === this.turnRevision) {
             this.currentTurn = string(turns.find(turn => turn.status === 'inProgress')?.id);
@@ -520,7 +531,6 @@ export class SharedCodexRoot {
         return { ...sandbox, cwd: this.settingsNative.cwd ?? this.bootstrap.workingDirectory, model: this.settingsNative.model, modelProvider: this.settingsNative.modelProvider,
             approvalPolicy: this.settingsNative.approvalPolicy, serviceTier: this.settingsNative.serviceTier,
             approvalsReviewer: this.settingsNative.approvalsReviewer, personality: this.settingsNative.personality,
-            developerInstructions: getCodexSystemPrompt(),
             config: { ...record(sandbox.config), model_reasoning_effort: this.settings.modelReasoningEffort ?? undefined } };
     }
     private notice(message: string): void { this.session.sendSessionEvent({ type: 'message', message }); }
@@ -548,7 +558,6 @@ export class SharedCodexRoot {
                 : await this.client.request('thread/goal/set', { ...params, ...(slash.action === 'set' ? { objective: slash.objective } : { status: slash.action === 'pause' ? 'paused' : 'active' }) });
             this.notice(JSON.stringify(response)); return null;
         }
-        if (slash.updates?.proactiveMultiAgent !== undefined) throw new Error('This Codex version uses Ultra reasoning effort instead of a multi-agent toggle');
         if (slash.updates?.model === null) throw new Error('Choose an explicit model in a shared thread');
         if (slash.updates) await this.applySettings(slash.updates);
         if (slash.message) this.notice(slash.message);
@@ -571,6 +580,7 @@ export class SharedCodexRoot {
         return this.closing ??= (async () => {
             this.stopAccepting(); this.closed = true; clearInterval(this.heartbeat);
             this.permissions?.close();
+            await this.titles.stop();
             await this.client.disconnect(); await this.notifications; await this.queue?.flush(); this.bridge?.server.stop();
             if (archived) this.session.updateMetadata(metadata => ({ ...metadata, lifecycleState: 'archived', lifecycleStateSince: Date.now() }));
             // Inactive is resumable; uploads referenced by pending input must survive.

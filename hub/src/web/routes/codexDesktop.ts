@@ -1328,7 +1328,8 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
                 createdAt: message.createdAt,
                 localId: message.localId,
                 invokedAt: message.invokedAt,
-                scheduledAt: message.scheduledAt
+                scheduledAt: message.scheduledAt,
+                ...(message.steered ? { steered: true } : {})
             })
             knownKeys.add(comparableKey)
             appendedMessages.push(copied)

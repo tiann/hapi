@@ -175,11 +175,8 @@ describe('grokRemoteLauncher runtime config', () => {
             message: expect.stringContaining('402 Payment Required')
         }))
         expect(JSON.stringify(harness.prompts[0])).toContain('/always-approve off')
-        expect(JSON.stringify(harness.prompts[1])).toContain('hapi_change_title')
-        expect(JSON.stringify(harness.prompts[1])).toContain('$name')
-        expect(JSON.stringify(harness.prompts[1])).toContain('skill_lookup')
-        expect(JSON.stringify(harness.prompts[2])).not.toContain('hapi_change_title')
-        expect(JSON.stringify(harness.prompts[2])).not.toContain('skill_lookup')
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'first' }])
+        expect(harness.prompts[2]).toEqual([{ type: 'text', text: 'second' }])
         expect(await rpcHandlers.get('listGrokModels')?.()).toMatchObject({ success: true, currentModelId: 'grok-a' })
         expect(await rpcHandlers.get('listGrokReasoningEffortOptions')?.()).toMatchObject({ success: true, currentValue: 'low' })
     })
@@ -212,7 +209,7 @@ describe('grokRemoteLauncher runtime config', () => {
         ])
     })
 
-    it('forwards ACP native titles while retaining the prompt fallback', async () => {
+    it('forwards ACP native titles without a prompt fallback', async () => {
         harness.nativeTitle = 'Native Grok title'
         const { session } = createSession()
 
@@ -223,7 +220,7 @@ describe('grokRemoteLauncher runtime config', () => {
             summary: 'Native Grok title',
             leafUuid: expect.any(String)
         })
-        expect(JSON.stringify(harness.prompts[1])).toContain('hapi_change_title')
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'first' }])
     })
 
     it('rolls Auto back to Default when Grok does not advertise the feature', async () => {

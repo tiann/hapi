@@ -146,6 +146,7 @@ describe('codexLocal', () => {
         expect(args.some((arg) => arg.startsWith('hooks.PostToolUse='))).toBe(true);
         expect(args).toContain("mcp_servers.hapi.args=['mcp','--url','http://127.0.0.1:63995/']");
         expect(args).toContain('mcp_servers.hapi.tools.change_title.approval_mode="approve"');
+        expect(args.some((arg) => arg.includes('developer_instructions'))).toBe(false);
     });
 
     it('passes reasoning effort through Codex config instead of an unsupported CLI flag', async () => {

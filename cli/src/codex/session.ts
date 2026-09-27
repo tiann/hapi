@@ -1,3 +1,4 @@
+import { CodexSessionTitles } from './utils/codexSessionTitles';
 import { ApiClient, ApiSessionClient } from '@/lib';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { AgentSessionBase } from '@/agent/sessionBase';
@@ -12,6 +13,7 @@ type LocalLaunchFailure = {
 };
 
 export class CodexSession extends AgentSessionBase<EnhancedMode> {
+    readonly titles: CodexSessionTitles;
     transcriptPath: string | null = null;
     readonly codexArgs?: string[];
     readonly codexCliOverrides?: CodexCliOverrides;
@@ -64,6 +66,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
             collaborationMode: opts.collaborationMode
         });
 
+        this.titles = new CodexSessionTitles(opts.client, opts.path, () => this.sessionId);
         this.codexArgs = opts.codexArgs;
         this.codexCliOverrides = opts.codexCliOverrides;
         this.startedBy = opts.startedBy;

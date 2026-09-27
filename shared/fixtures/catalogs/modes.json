@@ -160,11 +160,6 @@
                 "tone": "warning"
             },
             {
-                "label": "Plan Mode",
-                "mode": "plan",
-                "tone": "info"
-            },
-            {
                 "label": "Yolo",
                 "mode": "bypassPermissions",
                 "tone": "danger"
@@ -197,11 +192,6 @@
                 "label": "Default",
                 "mode": "default",
                 "tone": "neutral"
-            },
-            {
-                "label": "Plan Mode",
-                "mode": "plan",
-                "tone": "info"
             },
             {
                 "label": "Yolo",
