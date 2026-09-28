@@ -388,7 +388,8 @@ export class MessageService {
                 nextAfterAt: null,
                 snapshotHeadSeq: snapshotHead?.seq ?? null,
                 snapshotHeadAt: snapshotHead?.at ?? null,
-                hasMore
+                hasMore,
+                totalCount: this.store.messages.countMessages(sessionId)
             }
         }
     }
@@ -419,7 +420,8 @@ export class MessageService {
                     nextAfterAt: after.at,
                     snapshotHeadSeq: snapshotHead?.seq ?? null,
                     snapshotHeadAt: snapshotHead?.at ?? null,
-                    hasMore: false
+                    hasMore: false,
+                    totalCount: this.store.messages.countMessages(sessionId)
                 }
             }
         }
@@ -447,7 +449,8 @@ export class MessageService {
                 nextAfterAt: nextAfter.at,
                 snapshotHeadSeq: snapshotHead.seq,
                 snapshotHeadAt: snapshotHead.at,
-                hasMore
+                hasMore,
+                totalCount: this.store.messages.countMessages(sessionId)
             }
         }
     }

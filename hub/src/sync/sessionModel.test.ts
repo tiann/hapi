@@ -3299,6 +3299,67 @@ describe('session model', () => {
         }
     })
 
+    it('refuses Claude resume before spawning when the transcript is missing on disk', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'claude-missing-transcript',
+                {
+                    path: '/tmp/project',
+                    host: 'claude-host',
+                    machineId: 'claude-machine',
+                    homeDir: '/home/claude-owner',
+                    flavor: 'claude',
+                    claudeSessionId: 'c66b46bc-7647-491a-9cd4-06ba640b9910'
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'claude-machine',
+                { host: 'claude-host', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'claude-machine', time: Date.now() })
+
+            let spawnCalled = false
+            let probeArgs: unknown[] | null = null
+            ;(engine as any).rpcGateway.getClaudeTranscriptStatus = async (...args: unknown[]) => {
+                probeArgs = args
+                return { onDisk: false }
+            }
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                spawnCalled = true
+                return { type: 'success', sessionId: session.id }
+            }
+
+            const result = await engine.resumeSession(session.id, 'default')
+
+            expect(result).toEqual({
+                type: 'error',
+                message: 'Claude session transcript is no longer available on the recorded machine',
+                code: 'resume_unavailable'
+            })
+            expect(probeArgs as unknown).toEqual([
+                'claude-machine',
+                '/tmp/project',
+                'c66b46bc-7647-491a-9cd4-06ba640b9910',
+                '/home/claude-owner'
+            ])
+            expect(spawnCalled).toBe(false)
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('soft-fails Cursor reopen when chat-store probe throws (missing handler / skew)', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(

@@ -570,11 +570,23 @@ export type InspectPeerResult = {
     lifecycleState: string | null
     updatedAt: number | null
     messages: InspectPeerMessage[]
+    /** Total durable hub message rows when the API reports it. */
+    messageTotal: number | null
+    /** Hub seq head from the messages page (depth signal when total unknown). */
+    snapshotHeadSeq: number | null
+    /** Rows scanned while collecting text snippets (includes non-text). */
+    rowsScanned: number
+    /** Non-text / empty rows skipped while filling snippet quota. */
+    snippetsSkipped: number
+    /** True when older pages remain after the scan. */
+    hasMore: boolean
 }
 
 const DEFAULT_INSPECT_MESSAGE_LIMIT = 30
 const MAX_INSPECT_MESSAGE_LIMIT = 100
 const MAX_SNIPPET_CHARS = 1_200
+/** Cap how many hub pages we walk while hunting for text snippets. */
+const MAX_INSPECT_PAGES = 8
 
 function clampInspectMessageLimit(raw: number | undefined): number {
     const n = raw ?? DEFAULT_INSPECT_MESSAGE_LIMIT
@@ -620,41 +632,117 @@ export function extractInspectMessageSnippet(content: unknown): InspectPeerMessa
     }
 }
 
+type InspectMessagesFetch = {
+    messages: InspectPeerMessage[]
+    messageTotal: number | null
+    snapshotHeadSeq: number | null
+    rowsScanned: number
+    snippetsSkipped: number
+    hasMore: boolean
+}
+
 async function fetchSessionMessages(
     apiUrl: string,
     jwt: string,
     sessionId: string,
     limit: number,
     http: AxiosInstance
-): Promise<InspectPeerMessage[]> {
-    const response = await http.get(
-        `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages`,
-        {
-            headers: authHeaders(jwt),
-            params: { limit },
-            timeout: 20_000,
-            validateStatus: () => true
-        }
-    )
-    if (response.status < 200 || response.status >= 300) {
-        const detail = typeof response.data?.error === 'string'
-            ? response.data.error
-            : `HTTP ${response.status}`
-        throw new PingPeerError('not_found', `failed to load messages for ${sessionId} (${detail})`)
-    }
-    const rows = Array.isArray(response.data?.messages) ? response.data.messages : []
+): Promise<InspectMessagesFetch> {
     const out: InspectPeerMessage[] = []
-    for (const row of rows) {
-        if (!isObject(row)) continue
-        const snippet = extractInspectMessageSnippet(row.content)
-        if (!snippet) continue
-        out.push({
-            ...snippet,
-            id: typeof row.id === 'string' ? row.id : snippet.id,
-            createdAt: typeof row.createdAt === 'number' ? row.createdAt : null
-        })
+    const seenIds = new Set<string>()
+    let rowsScanned = 0
+    let snippetsSkipped = 0
+    let messageTotal: number | null = null
+    let snapshotHeadSeq: number | null = null
+    let hasMore = false
+    let beforeAt: number | undefined
+    let beforeSeq: number | undefined
+
+    for (let pageIndex = 0; pageIndex < MAX_INSPECT_PAGES; pageIndex++) {
+        const params: Record<string, unknown> = { limit }
+        if (beforeAt !== undefined && beforeSeq !== undefined) {
+            params.beforeAt = beforeAt
+            params.beforeSeq = beforeSeq
+        }
+        const response = await http.get(
+            `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages`,
+            {
+                headers: authHeaders(jwt),
+                params,
+                timeout: 20_000,
+                validateStatus: () => true
+            }
+        )
+        if (response.status < 200 || response.status >= 300) {
+            const detail = typeof response.data?.error === 'string'
+                ? response.data.error
+                : `HTTP ${response.status}`
+            throw new PingPeerError('not_found', `failed to load messages for ${sessionId} (${detail})`)
+        }
+
+        const rows = Array.isArray(response.data?.messages) ? response.data.messages : []
+        const page = isObject(response.data?.page) ? response.data.page : null
+        if (typeof page?.totalCount === 'number') {
+            messageTotal = page.totalCount
+        }
+        if (typeof page?.snapshotHeadSeq === 'number') {
+            snapshotHeadSeq = page.snapshotHeadSeq
+        }
+        hasMore = page?.hasMore === true
+
+        // Hub returns oldest→newest within a page; walk newest first for snippets.
+        for (let i = rows.length - 1; i >= 0; i--) {
+            const row = rows[i]
+            if (!isObject(row)) continue
+            rowsScanned += 1
+            const rowId = typeof row.id === 'string' ? row.id : null
+            // Hub may re-include uninvoked queued messages on older pages.
+            if (rowId && seenIds.has(rowId)) {
+                continue
+            }
+            const snippet = extractInspectMessageSnippet(row.content)
+            if (!snippet) {
+                snippetsSkipped += 1
+                continue
+            }
+            if (out.length >= limit) {
+                // Still count remaining rows on this page as scanned/skipped? No —
+                // stop once quota is filled; hasMore may still be true for older text.
+                hasMore = true
+                break
+            }
+            if (rowId) {
+                seenIds.add(rowId)
+            }
+            out.push({
+                ...snippet,
+                id: rowId ?? snippet.id,
+                createdAt: typeof row.createdAt === 'number' ? row.createdAt : null
+            })
+        }
+
+        if (out.length >= limit || !hasMore) {
+            break
+        }
+
+        if (typeof page?.nextBeforeAt !== 'number' || typeof page?.nextBeforeSeq !== 'number') {
+            break
+        }
+        beforeAt = page.nextBeforeAt
+        beforeSeq = page.nextBeforeSeq
     }
-    return out
+
+    // Present oldest→newest for readable reports (we collected newest-first).
+    out.reverse()
+
+    return {
+        messages: out,
+        messageTotal,
+        snapshotHeadSeq,
+        rowsScanned,
+        snippetsSkipped,
+        hasMore: hasMore && out.length >= limit ? true : hasMore
+    }
 }
 
 /**
@@ -677,7 +765,7 @@ export async function inspectPeer(options: InspectPeerOptions): Promise<InspectP
     const matched = resolveSessionByPrefix(sessions, prefix)
     const live = await getSession(apiUrl, jwt, matched.id, http)
     const meta = live.metadata ?? matched.metadata ?? null
-    const messages = await fetchSessionMessages(apiUrl, jwt, matched.id, messageLimit, http)
+    const fetched = await fetchSessionMessages(apiUrl, jwt, matched.id, messageLimit, http)
 
     return {
         sessionId: matched.id,
@@ -692,12 +780,22 @@ export async function inspectPeer(options: InspectPeerOptions): Promise<InspectP
             : typeof matched.updatedAt === 'number'
                 ? matched.updatedAt
                 : null,
-        messages
+        messages: fetched.messages,
+        messageTotal: fetched.messageTotal,
+        snapshotHeadSeq: fetched.snapshotHeadSeq,
+        rowsScanned: fetched.rowsScanned,
+        snippetsSkipped: fetched.snippetsSkipped,
+        hasMore: fetched.hasMore
     }
 }
 
 /** Human/agent-readable report for MCP tool results and CLI stdout. */
 export function formatInspectPeerReport(result: InspectPeerResult): string {
+    const depth = result.messageTotal !== null
+        ? `messageTotal: ${result.messageTotal}`
+        : result.snapshotHeadSeq !== null
+            ? `snapshotHeadSeq: ${result.snapshotHeadSeq}`
+            : 'messageTotal: (unknown)'
     const lines: string[] = [
         `sessionId: ${result.sessionId}`,
         `path: /sessions/${result.sessionId}`,
@@ -708,10 +806,14 @@ export function formatInspectPeerReport(result: InspectPeerResult): string {
         `lifecycle: ${result.lifecycleState ?? '(none)'}`,
         `cwd: ${result.path ?? '(unknown)'}`,
         `updatedAt: ${result.updatedAt ?? '(unknown)'}`,
-        `messages (text snippets, newest page): ${result.messages.length}`
+        depth,
+        `rowsScanned: ${result.rowsScanned}`,
+        `snippetsSkipped: ${result.snippetsSkipped}`,
+        `hasMore: ${result.hasMore}`,
+        `messages (text snippets): ${result.messages.length}`
     ]
     if (result.messages.length === 0) {
-        lines.push('(no extractable user/assistant text in this page)')
+        lines.push('(no extractable user/assistant text in scanned pages)')
     } else {
         for (const message of result.messages) {
             lines.push(`[${message.role}] ${message.text}`)

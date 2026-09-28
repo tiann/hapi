@@ -12,6 +12,7 @@ export const RPC_METHODS = {
     PathExists: 'path-exists',
     AgentAvailability: 'agent-availability',
     CursorChatStoreStatus: 'cursor-chat-store-status',
+    ClaudeTranscriptStatus: 'claude-transcript-status',
     GitStatus: 'git-status',
     GitDiffNumstat: 'git-diff-numstat',
     GitDiffFile: 'git-diff-file',

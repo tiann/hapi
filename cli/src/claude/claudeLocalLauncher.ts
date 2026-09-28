@@ -4,6 +4,7 @@ import { createSessionScanner } from "./utils/sessionScanner";
 import { isClaudeChatVisibleMessage } from "./utils/chatVisibility";
 import { BaseLocalLauncher } from "@/modules/common/launcher/BaseLocalLauncher";
 import { applySessionTitleFallback } from './utils/sessionTitleFallback';
+import { resolveClaudeLocalResumeGuardId } from "./utils/claudeResumeGuard";
 
 export async function claudeLocalLauncher(session: Session): Promise<'switch' | 'exit'> {
 
@@ -56,9 +57,13 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
             session.localPermissionBridge.start(session.sessionId);
             abortSignal.addEventListener('abort', session.localPermissionBridge.stop, { once: true });
             try {
+                const resumeSessionId = session.getClaudeResumeSessionId();
+                session.armResumeGuard(
+                    resolveClaudeLocalResumeGuardId(resumeSessionId, session.claudeArgs)
+                );
                 await claudeLocal({
                     path: session.path,
-                    sessionId: session.sessionId,
+                    sessionId: resumeSessionId,
                     abort: abortSignal,
                     claudeEnvVars: session.claudeEnvVars,
                     claudeArgs: session.claudeArgs,

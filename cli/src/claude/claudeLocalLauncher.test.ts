@@ -61,7 +61,9 @@ function createSessionStub() {
             addSessionFoundCallback: () => {},
             removeSessionFoundCallback: () => {},
             consumeOneTimeFlags: () => {},
-            recordLocalLaunchFailure: () => {}
+            recordLocalLaunchFailure: () => {},
+            armResumeGuard: vi.fn(),
+            getClaudeResumeSessionId: () => 'test-session'
         },
         sentMessages,
         getMetadata: () => metadata,
