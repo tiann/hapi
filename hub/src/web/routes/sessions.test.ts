@@ -3,6 +3,7 @@ import { Hono } from 'hono'
 import type { Session, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { createSessionsRoutes } from './sessions'
+import { RpcTargetMissingError } from '../../sync/rpcGateway'
 
 function createSession(overrides?: Partial<Session>): Session {
     const baseMetadata = {
@@ -369,6 +370,24 @@ describe('sessions routes', () => {
         expect(await response.json()).toEqual({
             success: true,
             models: [{ id: 'gpt-5.5', displayName: 'GPT-5.5', isDefault: true }]
+        })
+    })
+
+    it('returns a stable code when the Codex session model RPC target is absent', async () => {
+        const session = createSession()
+        const { app } = createApp(session, {
+            listCodexModelsForSession: async () => {
+                throw new RpcTargetMissingError('session-1:listCodexModels', 'handler-not-registered')
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/codex-models')
+
+        expect(response.status).toBe(503)
+        expect(await response.json()).toEqual({
+            success: false,
+            error: 'RPC handler not registered: session-1:listCodexModels',
+            code: 'rpc_target_missing'
         })
     })
 
