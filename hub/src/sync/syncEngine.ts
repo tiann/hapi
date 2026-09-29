@@ -1069,7 +1069,12 @@ export class SyncEngine {
         if (this.historyActionsInFlight.has(sessionId)) {
             throw new Error('Conversation history action already in progress')
         }
-        const { actualSessionId, createdAt: activeTurnStartedAt } = await this.messageService.sendMessage(sessionId, payload)
+        const { actualSessionId, createdAt: activeTurnStartedAt, inserted, invokedAt } = await this.messageService.sendMessage(sessionId, payload)
+        // A retry of a message the agent already consumed resolved to that old row:
+        // nothing is queued, so it is neither a fresh turn nor agent progress (it must
+        // not wake an idle session or re-arm `thinking`). A retry of a still-queued
+        // message keeps starting a fresh grace window.
+        if (!inserted && invokedAt !== null) return
         this.sessionCache.markMessageQueued(actualSessionId, Date.now(), activeTurnStartedAt)
         this.sessionCache.recordSessionActivity(actualSessionId, Date.now())
     }
@@ -1181,6 +1186,10 @@ export class SyncEngine {
 
     async abortSession(sessionId: string): Promise<void> {
         await this.rpcGateway.abortSession(sessionId)
+        // The CLI answered: its agent process tree (background shells
+        // included) is going down, so no task notification will close the
+        // counter any more.
+        this.sessionCache.clearBackgroundTasks(sessionId)
     }
 
     private assertConversationHistoryIdle(session: Session): void {
