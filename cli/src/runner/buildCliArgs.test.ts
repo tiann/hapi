@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -456,6 +456,60 @@ describe('buildCliArgs', () => {
 
 
 describe('createSpawnDeduplicator', () => {
+    it.each([true, false])('reconnects an existing execution before acknowledging resume (recovered=%s)', async recovered => {
+        let active = false
+        const spawn = vi.fn(async () => {
+            dedupe.markChildAlive('sid')
+            return { type: 'success' as const, sessionId: 'sid' }
+        })
+        const reconnect = vi.fn(async (_options, result) => { active = true; return result })
+        const dedupe = createSpawnDeduplicator(spawn, reconnect)
+        const options = { directory: '/tmp', existingSessionId: 'sid', agent: 'codex' as const }
+        if (recovered) dedupe.recoverChild('sid', { type: 'success', sessionId: 'sid' })
+        else await dedupe(options)
+
+        await expect(dedupe(options)).resolves.toEqual({ type: 'success', sessionId: 'sid' })
+        expect(active).toBe(true)
+        expect(reconnect).toHaveBeenCalledOnce()
+        expect(spawn).toHaveBeenCalledTimes(recovered ? 0 : 1)
+    })
+
+    it('coalesces concurrent reconnects and retries a failed connection without spawning another execution', async () => {
+        let finish!: (value: { type: 'error'; errorMessage: string }) => void
+        const spawn = vi.fn(async () => ({ type: 'success' as const, sessionId: 'sid' }))
+        const reconnect = vi.fn(() => new Promise<{ type: 'error'; errorMessage: string }>(resolve => { finish = resolve }))
+        const dedupe = createSpawnDeduplicator(spawn, reconnect)
+        dedupe.recoverChild('sid', { type: 'success', sessionId: 'sid' })
+        const options = { directory: '/tmp', existingSessionId: 'sid' }
+        const first = dedupe(options)
+        const second = dedupe(options)
+        await vi.waitFor(() => expect(reconnect).toHaveBeenCalledOnce())
+        finish({ type: 'error', errorMessage: 'Hub still unreachable' })
+        await expect(first).resolves.toMatchObject({ type: 'error' })
+        await expect(second).resolves.toMatchObject({ type: 'error' })
+        const retry = dedupe(options)
+        await vi.waitFor(() => expect(reconnect).toHaveBeenCalledTimes(2))
+        finish({ type: 'error', errorMessage: 'Hub still unreachable' })
+        await retry
+        expect(spawn).not.toHaveBeenCalled()
+    })
+
+    it('does not acknowledge a generation that exited while reconnecting', async () => {
+        let finish!: (value: { type: 'success'; sessionId: string }) => void
+        const reconnect = vi.fn(() => new Promise<{ type: 'success'; sessionId: string }>(resolve => { finish = resolve }))
+        const spawn = vi.fn(async () => ({ type: 'success' as const, sessionId: 'sid' }))
+        const dedupe = createSpawnDeduplicator(spawn, reconnect)
+        dedupe.recoverChild('sid', { type: 'success', sessionId: 'sid' })
+        const options = { directory: '/tmp', existingSessionId: 'sid' }
+        const pending = dedupe(options)
+        await vi.waitFor(() => expect(reconnect).toHaveBeenCalledOnce())
+        dedupe.onChildExited('sid')
+        finish({ type: 'success', sessionId: 'sid' })
+        await expect(pending).resolves.toMatchObject({ type: 'error' })
+        await expect(dedupe(options)).resolves.toMatchObject({ type: 'success' })
+        expect(spawn).toHaveBeenCalledOnce()
+    })
+
     it('rehydrates a live child after runner restart without spawning again', async () => {
         let calls = 0
         const dedupe = createSpawnDeduplicator(async () => {
@@ -479,6 +533,7 @@ describe('createSpawnDeduplicator', () => {
         let resolveSpawn: ((result: { type: 'success'; sessionId: string }) => void) | undefined
         const dedupe = createSpawnDeduplicator(async () => {
             calls += 1
+            dedupe.markChildAlive('fresh-hapi-session')
             return await new Promise<{ type: 'success'; sessionId: string }>((resolve) => {
                 resolveSpawn = resolve
             })
@@ -495,6 +550,30 @@ describe('createSpawnDeduplicator', () => {
             type: 'success', sessionId: 'fresh-hapi-session'
         })
         expect(calls).toBe(1)
+    })
+
+    it('does not retain a shared-root result without a child owned by this runner', async () => {
+        const spawn = vi.fn(async () => ({ type: 'success' as const, sessionId: 'sid' }))
+        const dedupe = createSpawnDeduplicator(spawn)
+        const options = { directory: '/tmp', existingSessionId: 'sid' }
+        await dedupe(options)
+        await dedupe(options)
+        expect(spawn).toHaveBeenCalledTimes(2)
+    })
+
+    it('does not let a late root-stop acknowledgement release the next execution', async () => {
+        const spawn = vi.fn(async () => {
+            dedupe.markChildAlive('sid')
+            return { type: 'success' as const, sessionId: 'sid' }
+        })
+        const dedupe = createSpawnDeduplicator(spawn)
+        dedupe.recoverChild('sid', { type: 'success', sessionId: 'sid' })
+        const finishOldStop = dedupe.captureChildExit('sid')
+        dedupe.onChildExited('sid')
+        await dedupe({ directory: '/tmp', existingSessionId: 'sid' })
+        finishOldStop()
+        await dedupe({ directory: '/tmp', existingSessionId: 'sid' })
+        expect(spawn).toHaveBeenCalledOnce()
     })
 
     it('retries immediately when spawning fails before a child PID is registered', async () => {

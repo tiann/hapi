@@ -5,6 +5,7 @@ const socketHarness = vi.hoisted(() => ({
     sockets: [] as Array<{
         connected: boolean
         connectCalls: number
+        disconnectCalls: number
         connectImmediately: boolean
         emitted: Array<{ event: string; args: unknown[] }>
         listeners: Map<string, Array<(...args: any[]) => void>>
@@ -24,6 +25,7 @@ vi.mock('socket.io-client', () => ({
         const state: (typeof socketHarness.sockets)[number] = {
             connected: false,
             connectCalls: 0,
+            disconnectCalls: 0,
             connectImmediately: true,
             emitted: [] as Array<{ event: string; args: unknown[] }>,
             listeners: new Map<string, Array<(...args: any[]) => void>>(),
@@ -76,6 +78,7 @@ vi.mock('socket.io-client', () => ({
                 return socket
             },
             disconnect: () => {
+                state.disconnectCalls += 1
                 state.connected = false
                 return socket
             }
@@ -128,6 +131,72 @@ function createSession(overrides: Partial<Session> = {}): Session {
         ...overrides
     }
 }
+
+describe('ApiSessionClient reconnectHub', () => {
+    it('returns a bounded failure and permits a later successful reconnect', async () => {
+        const client = new ApiSessionClient('test', createSession())
+        const socket = socketHarness.sockets.at(-1)!
+        socket.connected = false
+        socket.connectImmediately = false
+        try {
+            await expect(client.reconnectHub(20)).resolves.toBe(false)
+            expect(client.getState()).toBe('active')
+            socket.connectImmediately = true
+            await expect(client.reconnectHub(20)).resolves.toBe(true)
+        } finally { client.close() }
+    })
+
+    it('does not report success or restart after close races with a failed ping', async () => {
+        const client = new ApiSessionClient('test', createSession())
+        const socket = socketHarness.sockets.at(-1)!
+        socket.emitWithAckImpl = async () => { client.close(); throw new Error('closed') }
+        await expect(client.reconnectHub()).resolves.toBe(false)
+        expect(socket.connectCalls).toBe(1)
+        expect(client.getState()).toBe('closed')
+    })
+
+    it('repairs a disconnected Hub socket without closing the session', async () => {
+        const client = new ApiSessionClient('test', createSession())
+        const socket = socketHarness.sockets.at(-1)!
+        socket.connected = false
+        try {
+            await expect(client.reconnectHub()).resolves.toBe(true)
+            expect(socket.connectCalls).toBe(2)
+            expect(client.getState()).toBe('active')
+            expect(socket.emitted.some(event => event.event === 'session-alive')).toBe(true)
+        } finally { client.close() }
+    })
+
+    it('keeps a responsive connection and rebuilds only a connection that fails its ping', async () => {
+        const client = new ApiSessionClient('test', createSession())
+        const socket = socketHarness.sockets.at(-1)!
+        try {
+            await expect(client.reconnectHub()).resolves.toBe(true)
+            expect(socket.disconnectCalls).toBe(0)
+            socket.emitWithAckImpl = async event => {
+                if (event === 'ping' && socket.connectCalls === 1) throw new Error('transport stuck')
+                return {}
+            }
+            await expect(client.reconnectHub()).resolves.toBe(true)
+            expect(socket.disconnectCalls).toBe(1)
+            expect(socket.connectCalls).toBe(2)
+            expect(client.getState()).toBe('active')
+        } finally { client.close() }
+    })
+
+    it.each(['closed', 'archived'] as const)('never reconnects a %s session', async state => {
+        const client = new ApiSessionClient('test', createSession())
+        const socket = socketHarness.sockets.at(-1)!
+        try {
+            if (state === 'closed') client.close()
+            else socket.trigger('update', { body: { t: 'update-session', metadata: {
+                version: 1, value: { path: '/tmp', host: 'test', lifecycleState: 'archived', archivedBy: 'hub' }
+            } } })
+            await expect(client.reconnectHub()).resolves.toBe(false)
+            expect(socket.connectCalls).toBe(1)
+        } finally { client.close() }
+    })
+})
 
 function deferred<T>() {
     let resolve!: (value: T) => void
