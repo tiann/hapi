@@ -519,11 +519,26 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           // post-restart CLIs must be adopted so StopSession can find them —
           // Claude often has no HAPI id on argv yet (#1910 / #1911).
           const timedOutByThisRunner = webhookTimeoutOrphanPids.has(pid);
-          webhookTimeoutOrphanPids.delete(pid);
+          // Adoption persists this marker as the generation a later stopSession
+          // may tree-kill, so the webhook must prove it still owns the PID
+          // (metadata.hostStartMarker). A late webhook after PID reuse would
+          // otherwise pin a foreign process to the session.
+          const processStartMarker = getProcessStartMarker(pid);
           const decision = decideUntrackedRunnerWebhook({
             concurrentClients: Boolean(sessionMetadata.capabilities?.concurrentClients),
             timedOutByThisRunner,
+            reportedStartMarker: sessionMetadata.hostStartMarker,
+            currentStartMarker: processStartMarker,
           });
+          if (decision === 'ignore') {
+            // Keep the timeout stamp: a transient probe failure must not turn
+            // the ghost's next webhook into an adoption.
+            logger.debug(
+              `[RUNNER RUN] Untracked runner-spawned PID ${pid} (session ${sessionId}) did not prove its process generation (reported ${sessionMetadata.hostStartMarker ?? 'none'}, live ${processStartMarker ?? 'none'}); leaving it alone`
+            );
+            return;
+          }
+          webhookTimeoutOrphanPids.delete(pid);
           if (decision === 'kill') {
             logger.debug(
               `[RUNNER RUN] Ignoring late webhook from orphaned runner-spawned PID ${pid} (session ${sessionId}). Terminating child.`
@@ -539,7 +554,6 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             return;
           }
 
-          const processStartMarker = getProcessStartMarker(pid);
           const adopted: TrackedSession = {
             ...(sessionMetadata.capabilities?.concurrentClients
               ? { sharedSessions: { [sessionId]: sessionMetadata } }

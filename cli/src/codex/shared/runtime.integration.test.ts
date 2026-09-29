@@ -9,8 +9,10 @@ import { CodexAppServerClient } from '../codexAppServerClient';
 import { initializeSharedClient } from './launch';
 import { record } from './gateway';
 import { isProcessAlive } from '@/utils/process';
+import { notifyRunnerSessionStarted } from '@/runner/controlClient';
 
 const state = vi.hoisted(() => ({ home: '', sessions: new Map<string, MockSession>(), beforeBootstrap: undefined as (() => Promise<void>) | undefined }));
+const BOOTSTRAP_START_MARKER = vi.hoisted(() => 'Tue Sep 29 09:00:00 2026');
 class MockSession {
     readonly sessionId = randomUUID();
     state: AgentState = { requests: { 'old-worker': { tool: 'request_user_input', arguments: {}, createdAt: 0 } } }; metadata: Metadata;
@@ -23,7 +25,7 @@ class MockSession {
     updateMetadata(fn: (m: Metadata) => Metadata) { this.metadata = fn(this.metadata); }
     updateAgentState(fn: (s: AgentState) => AgentState) { this.state = fn(this.state); }
     onUserMessage(fn: MockSession['user']) { this.user = fn; }
-    onCancelQueuedMessage() {} onRetryQueuedMessage() {} onReconnect() {}
+    onCancelQueuedMessage() {} onRetryQueuedMessage() {} onReconnect() {} on() {}
     sendUserMessage(text: string) { this.messages.push({ user: text }); }
     sendAgentMessage(body: unknown) { this.messages.push(body); }
     sendSessionEvent(body: unknown) { this.messages.push(body); }
@@ -39,7 +41,9 @@ vi.mock('@/agent/sessionFactory', () => ({ bootstrapSession: async (options: { w
     await state.beforeBootstrap?.();
     const session = new MockSession(options.workingDirectory); session.metadata = { ...session.metadata, ...options.metadataOverrides };
     state.sessions.set(session.sessionId, session);
-    return { session: session as unknown as ApiSessionClient, sessionInfo: { id: session.sessionId, namespace: 'test' }, metadata: session.metadata,
+    // session.getMetadata() is the hub's view; a hub without the field strips
+    // hostStartMarker, so only the local bootstrap metadata still carries it.
+    return { session: session as unknown as ApiSessionClient, sessionInfo: { id: session.sessionId, namespace: 'test' }, metadata: { ...session.metadata, hostStartMarker: BOOTSTRAP_START_MARKER },
         workingDirectory: options.workingDirectory, machineId: 'test', startedBy: 'terminal', api: {} };
 }, bootstrapExistingSession: vi.fn() }));
 vi.mock('@/runner/controlClient', () => ({ notifyRunnerSessionStarted: vi.fn(async () => ({})) }));
@@ -96,6 +100,25 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 expect(session.dead).toBe(true); expect(session.metadata.lifecycleState).not.toBe('archived');
             }
         } finally { release(); abort.abort(); await running.catch(() => {}); await rm(home, { recursive: true, force: true }); }
+    }, 30_000);
+    it('reports the bootstrap start marker to the runner although the hub view of the metadata lacks it', async () => {
+        const home = await mkdtemp('/tmp/hapi-shared-marker-'); state.home = home;
+        const ch = join(home, 'codex'); const cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
+        await writeFile(join(ch, 'config.toml'), `model = "mock-model"\nmodel_provider = "mock"\n[model_providers.mock]\nname = "No model calls"\nbase_url = "http://127.0.0.1:1/v1"\nwire_api = "responses"\nrequires_openai_auth = false\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[projects."${cwd}"]\ntrust_level = "trusted"\n`);
+        vi.stubEnv('CODEX_HOME', ch); vi.stubEnv('HOME', home);
+        const { runSharedRuntime } = await import('./runtime');
+        let ready!: (value: import('./runtime').RuntimeReady) => void;
+        const readiness = new Promise<import('./runtime').RuntimeReady>(resolve => { ready = resolve; });
+        const abort = new AbortController();
+        const running = runSharedRuntime({ workingDirectory: cwd }, ready, abort.signal);
+        try {
+            const { runtime, sessionId } = await Promise.race([readiness, running.then(() => { throw new Error('Runtime stopped before ready'); })]);
+            // The runner adopts an untracked runner-started webhook only when the
+            // marker proves the process generation (decideUntrackedRunnerWebhook),
+            // so the webhook must not depend on the hub echoing the field back.
+            expect(vi.mocked(notifyRunnerSessionStarted)).toHaveBeenCalledWith(sessionId,
+                expect.objectContaining({ codexSessionId: runtime.sessions[sessionId].threadId, hostStartMarker: BOOTSTRAP_START_MARKER }));
+        } finally { abort.abort(); await running.catch(() => {}); await rm(home, { recursive: true, force: true, maxRetries: 3 }); }
     }, 30_000);
     it('binds empty roots, exchanges messages, isolates /new, and archives only the selected root', async () => {
         const home = await mkdtemp('/tmp/hapi-shared-test-'); state.home = home;

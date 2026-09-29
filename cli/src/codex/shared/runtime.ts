@@ -216,7 +216,11 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         await root.activate(initialOptions);
         await root.session.flush();
         await persist();
-        await notifyRunnerSessionStarted(root.session.sessionId, root.session.getMetadata() ?? root.bootstrap.metadata);
+        // The hub's view of the metadata is what the hub kept of it: a hub
+        // without the field strips hostStartMarker, and the runner ignores an
+        // untracked runner-started webhook that cannot prove its process
+        // generation. The marker therefore comes from the local bootstrap.
+        await notifyRunnerSessionStarted(root.session.sessionId, { ...(root.session.getMetadata() ?? root.bootstrap.metadata), hostStartMarker: root.bootstrap.metadata.hostStartMarker });
     };
     const create = (method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot, initialOptions?: SharedLaunchOptions): Promise<SharedCodexRoot> => operation(async () => {
         const root = await prepare(string(params.cwd) ?? launch.cwd, undefined, parent);
