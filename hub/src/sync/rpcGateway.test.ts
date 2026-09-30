@@ -309,3 +309,56 @@ describe('RpcGateway ack-deadline wrapping', () => {
         expect(error).toBe(boom)
     })
 })
+
+// The spawn path must narrow rpcCall's typed delivery failures into typed
+// error results instead of throwing, so machine-level HTTP routes can map
+// them onto honest statuses rather than a generic 500.
+describe('RpcGateway spawnSession delivery-error narrowing', () => {
+    function createSpawnGateway(opts: { socketId?: string; rejection?: unknown }) {
+        const socket = {
+            timeout() {
+                return {
+                    emitWithAck() {
+                        return Promise.reject(opts.rejection ?? new Error('unused'))
+                    }
+                }
+            }
+        }
+        const io = {
+            of() {
+                return { sockets: { get() { return opts.socketId ? socket : undefined } } }
+            }
+        } as unknown as Server
+        const rpcRegistry = {
+            getSocketIdForMethod() { return opts.socketId }
+        } as unknown as RpcRegistry
+        return new RpcGateway(io, rpcRegistry)
+    }
+
+    it('returns an rpc_target_missing error result when no socket serves the spawn method', async () => {
+        const gateway = createSpawnGateway({})
+
+        const result = await gateway.spawnSession('machine-1', '/workspace')
+
+        expect(result).toEqual({
+            type: 'error',
+            message: 'RPC handler not registered: machine-1:spawn-happy-session',
+            code: 'rpc_target_missing'
+        })
+    })
+
+    it('returns an engine_unresponsive error result when the spawn ack deadline blows', async () => {
+        const gateway = createSpawnGateway({
+            socketId: 'socket-1',
+            rejection: new Error('operation has timed out')
+        })
+
+        const result = await gateway.spawnSession('machine-1', '/workspace')
+
+        expect(result).toEqual({
+            type: 'error',
+            message: 'RPC timed out after 30s without an ack: machine-1:spawn-happy-session',
+            code: 'engine_unresponsive'
+        })
+    })
+})

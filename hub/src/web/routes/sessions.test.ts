@@ -4,7 +4,7 @@ import type { Session, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { createSessionsRoutes } from './sessions'
 import { ArchiveCleanupError } from '../../sync/archiveCleanupError'
-import { RpcTargetMissingError } from '../../sync/rpcGateway'
+import { RpcTargetMissingError, RpcTimeoutError } from '../../sync/rpcGateway'
 
 function createSession(overrides?: Partial<Session>): Session {
     const baseMetadata = {
@@ -74,6 +74,7 @@ function createApp(session: Session, opts?: {
     suggestSessionTitle?: SyncEngine['suggestSessionTitle']
     renameSession?: SyncEngine['renameSession']
     updateSessionSummary?: SyncEngine['updateSessionSummary']
+    callPiRpc?: SyncEngine['callPiRpc']
     setSessionPinned?: (sessionId: string, pinned: boolean) => void
     setSessionPinMode?: (sessionId: string, mode: 'none' | 'project' | 'global') => void
 }) {
@@ -184,7 +185,8 @@ function createApp(session: Session, opts?: {
         rewindConversation: opts?.rewindConversation ?? (async () => ({ type: 'success' })),
         suggestSessionTitle: opts?.suggestSessionTitle ?? (async () => 'Generated title'),
         renameSession: opts?.renameSession ?? (async () => {}),
-        updateSessionSummary: opts?.updateSessionSummary ?? (async () => {})
+        updateSessionSummary: opts?.updateSessionSummary ?? (async () => {}),
+        callPiRpc: opts?.callPiRpc ?? (async () => ({ success: true }))
     } as Partial<SyncEngine>
 
     const app = new Hono<WebAppEnv>()
@@ -2179,4 +2181,85 @@ describe('sessions routes', () => {
         expect(body.sessions.map((s) => s.id)).toEqual(['new-inactive'])
     })
 
+})
+
+// Extends the #1921 error-typing family beyond abort: RPC delivery failures
+// raised through rpcGateway (RpcTargetMissingError / RpcTimeoutError) and the
+// typed error codes surfaced by syncEngine (rpc_target_missing /
+// engine_unresponsive) must map onto honest statuses instead of collapsing
+// into 500s across resume/reopen/clear/archive and the model-list RPCs.
+describe('session RPC delivery error typing', () => {
+    it.each([
+        ['rpc_target_missing', 503, 'RPC handler not registered: machine-1:spawn-happy-session'],
+        ['engine_unresponsive', 504, 'RPC timed out after 30s without an ack: machine-1:spawn-happy-session']
+    ] as const)('maps %s resume results to %s', async (code, status, message) => {
+        const { app } = createApp(createSession(), {
+            resumeSession: async () => ({ type: 'error', message, code })
+        })
+        const response = await app.request('/api/sessions/session-1/resume', { method: 'POST' })
+        expect(response.status).toBe(status)
+        expect(await response.json()).toEqual({ error: message, code })
+    })
+
+    it.each([
+        ['rpc_target_missing', 503, 'RPC handler not registered: machine-1:spawn-happy-session'],
+        ['engine_unresponsive', 504, 'RPC timed out after 30s without an ack: machine-1:spawn-happy-session']
+    ] as const)('maps %s reopen results to %s', async (code, status, message) => {
+        const { app } = createApp(createSession(), {
+            reopenSession: async () => ({ type: 'error', message, code })
+        })
+        const response = await app.request('/api/sessions/session-1/reopen', { method: 'POST' })
+        expect(response.status).toBe(status)
+        expect(await response.json()).toEqual({ error: message, code })
+    })
+
+    it('maps engine_unresponsive resume failures during clear to 504', async () => {
+        const message = 'RPC timed out after 30s without an ack: machine-1:spawn-happy-session'
+        const { app } = createApp(createSession({ active: false, metadata: {
+            path: '/tmp/project', host: 'localhost', flavor: 'codex', capabilities: { concurrentClients: true }
+        } }), {
+            resumeSession: async () => ({ type: 'error', message, code: 'engine_unresponsive' })
+        })
+        const response = await app.request('/api/sessions/session-1/clear', { method: 'POST' })
+        expect(response.status).toBe(504)
+        expect(await response.json()).toEqual({ error: message, code: 'engine_unresponsive' })
+    })
+
+    it('returns 504 engine_unresponsive when the archive ack deadline blows', async () => {
+        const { app } = createApp(createSession(), {
+            archiveSession: async () => { throw new RpcTimeoutError('session-1:kill', 30_000) }
+        })
+        const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
+        expect(response.status).toBe(504)
+        expect(await response.json()).toEqual({
+            error: 'Session did not acknowledge the archive within 30s; it may be unresponsive.',
+            code: 'engine_unresponsive'
+        })
+    })
+
+    it.each([
+        [503, 'rpc_target_missing', new RpcTargetMissingError('session-1:listCodexModels', 'handler-not-registered')],
+        [504, 'engine_unresponsive', new RpcTimeoutError('session-1:listCodexModels', 120_000)]
+    ] as const)('maps typed delivery failures from the session codex-models RPC to %s (%s)', async (status, code, error) => {
+        const { app } = createApp(createSession(), {
+            listCodexModelsForSession: async () => { throw error }
+        })
+        const response = await app.request('/api/sessions/session-1/codex-models')
+        expect(response.status).toBe(status)
+        expect(await response.json()).toEqual({ success: false, error: error.message, code })
+    })
+
+    it.each([
+        [503, 'rpc_target_missing', new RpcTargetMissingError('session-1:listPiModels', 'handler-not-registered')],
+        [504, 'engine_unresponsive', new RpcTimeoutError('session-1:listPiModels', 120_000)]
+    ] as const)('maps typed delivery failures from the session pi-models RPC to %s (%s)', async (status, code, error) => {
+        const { app } = createApp(createSession({ metadata: {
+            path: '/tmp/project', host: 'localhost', flavor: 'pi'
+        } }), {
+            callPiRpc: async () => { throw error }
+        })
+        const response = await app.request('/api/sessions/session-1/pi-models')
+        expect(response.status).toBe(status)
+        expect(await response.json()).toEqual({ success: false, error: error.message, code })
+    })
 })
