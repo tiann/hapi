@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 import type { Machine, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { createMachinesRoutes } from './machines'
-import { RpcTargetMissingError } from '../../sync/rpcGateway'
+import { RpcTargetMissingError, RpcTimeoutError } from '../../sync/rpcGateway'
 import { MACHINE_CAPABILITIES } from '@hapi/protocol'
 
 function createMachine(overrides?: Partial<Machine>): Machine {
@@ -245,6 +245,93 @@ describe('machines routes', () => {
             success: false,
             error: 'RPC handler not registered: machine-1:listCodexModels',
             code: 'rpc_target_missing'
+        })
+    })
+
+    it('returns 504 engine_unresponsive when the Codex models machine RPC blows the ack deadline', async () => {
+        const machine = createMachine()
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            listCodexModelsForMachine: async () => {
+                throw new RpcTimeoutError('machine-1:listCodexModels', 120_000)
+            }
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/codex-models')
+
+        expect(response.status).toBe(504)
+        expect(await response.json()).toEqual({
+            success: false,
+            error: 'RPC timed out after 120s without an ack: machine-1:listCodexModels',
+            code: 'engine_unresponsive'
+        })
+    })
+
+    it('returns a stable code when the paths/exists machine RPC target is absent', async () => {
+        const machine = createMachine()
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            checkPathsExist: async () => {
+                throw new RpcTargetMissingError('machine-1:path-exists', 'handler-not-registered')
+            }
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/paths/exists', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ paths: ['/workspace'] })
+        })
+
+        expect(response.status).toBe(503)
+        expect(await response.json()).toEqual({
+            error: 'RPC handler not registered: machine-1:path-exists',
+            code: 'rpc_target_missing'
+        })
+    })
+
+    it('returns 504 engine_unresponsive when the paths/exists machine RPC blows the ack deadline', async () => {
+        const machine = createMachine()
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            checkPathsExist: async () => {
+                throw new RpcTimeoutError('machine-1:path-exists', 30_000)
+            }
+        } as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/machines/machine-1/paths/exists', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ paths: ['/workspace'] })
+        })
+
+        expect(response.status).toBe(504)
+        expect(await response.json()).toEqual({
+            error: 'RPC timed out after 30s without an ack: machine-1:path-exists',
+            code: 'engine_unresponsive'
         })
     })
 
