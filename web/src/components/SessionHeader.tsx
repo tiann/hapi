@@ -14,6 +14,7 @@ import { formatReasoningLabel, getReasoningEffortForFlavor } from '@/lib/codexSt
 import { retargetSharePendingTransfer } from '@/lib/sharePendingState'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { useTranslation } from '@/lib/use-translation'
+import { isKeepaliveIdle } from '@/lib/sessionLiveness'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
 import { isFastServiceTier } from '@/components/AssistantChat/codexFastMode'
 import { getSessionTitle } from '@/lib/sessionTitle'
@@ -394,8 +395,23 @@ export function SessionHeader(props: {
 
                     {/* Session info - two lines: title and path */}
                     <div className="min-w-0 flex-1">
-                        <div className="truncate font-semibold">
-                            {title}
+                        <div className="flex min-w-0 items-center gap-2">
+                            <span className="truncate font-semibold">
+                                {title}
+                            </span>
+                            {isKeepaliveIdle(session) ? (
+                                // tiann/hapi#1820: the socket is up but the agent
+                                // has been silent for the idle window. `active`
+                                // still gates the actions below (archive, sync).
+                                <span
+                                    data-testid="session-header-idle"
+                                    className="inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--app-border)] px-1.5 py-0.5 text-[11px] font-medium leading-none text-[var(--app-hint)]"
+                                    title={t('session.item.idle')}
+                                >
+                                    <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-current" />
+                                    {t('session.item.idle')}
+                                </span>
+                            ) : null}
                         </div>
                         {showMobileMetadata ? (
                             <div className="flex min-w-0 flex-nowrap items-center gap-2 overflow-hidden text-xs text-[var(--app-hint)] sm:hidden">

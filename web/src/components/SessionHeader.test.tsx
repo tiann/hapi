@@ -437,3 +437,16 @@ describe('SessionHeader', () => {
         expect(await screen.findByText('Could not update pin: Network unavailable')).toBeInTheDocument()
     })
 })
+
+describe('SessionHeader keepalive-idle badge (tiann/hapi#1820)', () => {
+    it('shows the idle badge only when the hub marked the lifecycle idle', () => {
+        renderHeader(baseSession({ metadata: { flavor: 'claude', path: '/repo', host: 'machine', lifecycleState: 'idle' } }))
+        const badge = screen.getByTestId('session-header-idle')
+        expect(badge.textContent).toContain('Idle (keepalive only)')
+        cleanup()
+
+        // `active` alone says nothing about the agent: a running row has no badge.
+        renderHeader(baseSession({ metadata: { flavor: 'claude', path: '/repo', host: 'machine', lifecycleState: 'running' } }))
+        expect(screen.queryByTestId('session-header-idle')).toBeNull()
+    })
+})

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { SessionListScrollAnchor } from './SessionListScrollAnchor'
 import type { SessionSummary } from '@/types/api'
-import { SESSION_LIFECYCLE_IDLE } from '@hapi/protocol'
+import { isKeepaliveIdle, isLiveSession, sessionLivenessRank } from '@/lib/sessionLiveness'
 import type { ApiClient } from '@/api/client'
 import {
     buildSessionSearchScoreIndex,
@@ -116,7 +116,7 @@ export function bucketRunningSessions(
             buckets.working.push(session)
         } else if ((session.pendingRequestsCount ?? 0) > 0) {
             buckets.pending.push(session)
-        } else if (session.metadata?.lifecycleState === SESSION_LIFECYCLE_IDLE) {
+        } else if (isKeepaliveIdle(session)) {
             // Keepalive-only: socket up, no agent progress for hours.
             buckets.idle.push(session)
         } else {
@@ -264,8 +264,11 @@ export function deduplicateSessionsByAgentId(sessions: SessionSummary[], selecte
 
     for (const group of byAgentId.values()) {
         group.sort((a, b) => {
-            // Active session always wins — it's the live connection
-            if (a.active !== b.active) return a.active ? -1 : 1
+            // Live session always wins — it's the live connection; a
+            // keepalive-idle one still beats a disconnected duplicate.
+            const rankA = sessionLivenessRank(a)
+            const rankB = sessionLivenessRank(b)
+            if (rankA !== rankB) return rankA - rankB
             // Among inactive duplicates, keep the selected one visible
             if (a.id === selectedSessionId) return -1
             if (b.id === selectedSessionId) return 1
@@ -350,10 +353,15 @@ function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
 
     return Array.from(groups.entries())
         .map(([key, group]) => {
+            // Keepalive-idle rows (tiann/hapi#1820) rank between live and
+            // disconnected: still connected, but not something to act on.
+            const rank = (s: SessionSummary): number => isLiveSession(s)
+                ? (s.pendingRequestsCount > 0 ? 0 : 1)
+                : s.active ? 2 : 3
             const sortedSessions = [...group.sessions].sort((a, b) => {
                 if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1
-                const rankA = a.active ? (a.pendingRequestsCount > 0 ? 0 : 1) : 2
-                const rankB = b.active ? (b.pendingRequestsCount > 0 ? 0 : 1) : 2
+                const rankA = rank(a)
+                const rankB = rank(b)
                 if (rankA !== rankB) return rankA - rankB
                 return b.updatedAt - a.updatedAt
             })
@@ -361,7 +369,10 @@ function groupSessionsByDirectory(sessions: SessionSummary[]): SessionGroup[] {
                 (max, s) => (s.updatedAt > max ? s.updatedAt : max),
                 -Infinity
             )
-            const hasActiveSession = group.sessions.some(s => s.active)
+            // Drives group order and auto-expand: a directory whose only
+            // connected session is a keepalive zombie should not float up
+            // or stay open on that account.
+            const hasActiveSession = group.sessions.some(isLiveSession)
             const hasPinnedSession = group.sessions.some(s => s.pinned)
             const displayName = getPathDisplayName(group.directory)
 
@@ -939,6 +950,7 @@ function SessionItem(props: {
     selected?: boolean
     showDetailedStatus?: boolean
     inRunningSection?: boolean
+    inIdleBucket?: boolean
     projectLabel?: string
     machineLabel?: string
     lastSeenVersion: number
@@ -954,6 +966,7 @@ function SessionItem(props: {
         selected = false,
         showDetailedStatus = false,
         inRunningSection = false,
+        inIdleBucket = false,
         projectLabel,
         machineLabel,
         lastSeenVersion
@@ -1080,6 +1093,7 @@ function SessionItem(props: {
                     lastSeenVersion={lastSeenVersion}
                     scheduleTooltipId={scheduleId}
                     inRunningSection={inRunningSection}
+                    inIdleBucket={inIdleBucket}
                     projectLabel={projectLabel}
                     machineLabel={machineLabel}
                 />
@@ -1580,6 +1594,7 @@ export function SessionList(props: {
                                             selected={s.id === selectedSessionId}
                                             showDetailedStatus={showDetailedStatus}
                                             inRunningSection
+                                            inIdleBucket={bucketKey === 'idle'}
                                             projectLabel={getPathDisplayName(s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')}
                                             machineLabel={resolveMachineLabel(s.metadata?.machineId ?? null)}
                                             lastSeenVersion={lastSeenVersion}
