@@ -34,6 +34,7 @@ import { Hono, type Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
 import { RpcTargetMissingError, RpcTimeoutError } from '../../sync/rpcGateway'
+import { EngineStillRunningError } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { loadScratchlistAttachmentLimitsFromEnv } from '../../config/scratchlistAttachmentLimits'
 import { validateScratchlistAttachmentsForWrite, scratchlistSessionBytesBeforeForPut } from '../../scratchlistAttachments/validate'
@@ -654,6 +655,15 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         } catch (error) {
             if (error instanceof ArchiveCleanupError) {
                 return c.json({ error: error.message, code: error.code }, error.status)
+            }
+            // The runner confirmed the session process is still alive (or its
+            // fate stays unknown): a state conflict the client can act on
+            // (retry once the process exits), not a hub failure.
+            if (error instanceof EngineStillRunningError) {
+                return c.json({
+                    error: error.message,
+                    code: 'engine_still_running'
+                }, 409)
             }
             // archiveSession already handles a vanished engine socket benignly
             // (markSessionArchivedFromHub); the only delivery failure that

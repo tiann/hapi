@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import { Hono } from 'hono'
 import type { Session, SyncEngine } from '../../sync/syncEngine'
+import { EngineStillRunningError } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { createSessionsRoutes } from './sessions'
 import { ArchiveCleanupError } from '../../sync/archiveCleanupError'
@@ -2261,5 +2262,31 @@ describe('session RPC delivery error typing', () => {
         const response = await app.request('/api/sessions/session-1/pi-models')
         expect(response.status).toBe(status)
         expect(await response.json()).toEqual({ success: false, error: error.message, code })
+    })
+})
+
+// Not a delivery failure: the engine side refused the archive because the
+// session process is still running (or its fate stays unknown). That is a
+// client-actionable state conflict -> 409 engine_still_running, distinct from
+// the 504 above (deadline blown) and from a 500 (hub bug).
+describe('archive still-running refusal typing', () => {
+    it('returns 409 engine_still_running when the engine cannot stop the session process', async () => {
+        const { app } = createApp(createSession(), {
+            archiveSession: async () => { throw new EngineStillRunningError() }
+        })
+        const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'Session process is still running and could not be stopped',
+            code: 'engine_still_running'
+        })
+    })
+
+    it('still returns 500 for an unexpected archive failure', async () => {
+        const { app } = createApp(createSession(), {
+            archiveSession: async () => { throw new Error('disk on fire') }
+        })
+        const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
+        expect(response.status).toBe(500)
     })
 })
