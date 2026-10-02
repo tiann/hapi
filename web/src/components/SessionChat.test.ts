@@ -10,6 +10,7 @@ import {
     mergeStagedAttachmentsInOrder,
     opencodeEffortOptionsInvalidationKey,
     resolvePiContextWindow,
+    resolveEffortForModelChange,
     resolveLatestCompletedBoundaryIdForView,
     shouldAutoClearPendingSchedule,
     shouldClearReasoningEffortForModelChange,
@@ -580,5 +581,32 @@ describe('buildAgyComposerModelOptions', () => {
 
     it('signals "no catalog yet" rather than an empty picker while the machine is still answering', () => {
         expect(buildAgyComposerModelOptions([])).toBeUndefined()
+    })
+})
+
+describe('resolveEffortForModelChange', () => {
+    const claudeModels = [
+        { value: 'opus', effortLevels: ['low', 'high', 'xhigh'] },
+        { value: 'haiku', effortLevels: [] },
+    ]
+
+    it('clears an effort the next Claude model does not offer', () => {
+        expect(resolveEffortForModelChange({ currentEffort: 'xhigh', model: 'haiku', claudeModels })).toEqual({ effort: null })
+    })
+
+    it('leaves the effort alone when the next model keeps it', () => {
+        expect(resolveEffortForModelChange({ currentEffort: 'high', model: 'claude-opus-5-5', claudeModels })).toBeUndefined()
+    })
+
+    it('leaves the effort alone without a catalog (non-Claude sessions, or discovery unavailable)', () => {
+        expect(resolveEffortForModelChange({ currentEffort: 'xhigh', model: 'haiku', claudeModels: [] })).toBeUndefined()
+    })
+
+    it('ignores provider-qualified selections', () => {
+        expect(resolveEffortForModelChange({
+            currentEffort: 'xhigh',
+            model: { provider: 'p', modelId: 'haiku' },
+            claudeModels
+        })).toBeUndefined()
     })
 })

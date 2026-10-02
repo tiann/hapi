@@ -2,6 +2,7 @@ import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, ty
 import type { ApiClient } from '@/api/client'
 import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, PiLocalSessionSummary } from '@/types/api'
 import type { CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
+import { getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
 import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
@@ -9,6 +10,9 @@ import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
 import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useCursorModelsForMachine } from '@/hooks/queries/useCursorModelsForMachine'
 import { useAgyModels } from '@/hooks/queries/useAgyModels'
+import { useClaudeModels } from '@/hooks/queries/useClaudeModels'
+import { getClaudeLaunchModelOptions } from '@/components/AssistantChat/modelOptions'
+import { getClaudeComposerEffortOptions } from '@/components/AssistantChat/claudeEffortOptions'
 import { useOpencodeModelsForCwd } from '@/hooks/queries/useOpencodeModelsForCwd'
 import { useOpencodeModelVariants } from '@/hooks/queries/useOpencodeModelVariants'
 import { useGrokModelsForCwd } from '@/hooks/queries/useGrokModelsForCwd'
@@ -699,6 +703,36 @@ export function NewSession(props: {
         machineId,
         enabled: agent === 'pi' && Boolean(machineId)
     })
+    const claudeModelsState = useClaudeModels({
+        api: props.api,
+        machineId,
+        enabled: agent === 'claude' && Boolean(machineId)
+    })
+    const claudeModelOptions = useMemo(() => (
+        agent === 'claude'
+            ? getClaudeLaunchModelOptions(claudeModelsState.availableModels, model, t('newSession.claudeModel.notListed'))
+            : undefined
+    ), [agent, claudeModelsState.availableModels, model, t])
+    const claudeEffortOptions = useMemo(() => {
+        const levels = getClaudeEffortLevelsForModel(model === 'auto' ? null : model, claudeModelsState.availableModels)
+        return levels
+            ? getClaudeComposerEffortOptions(effort, levels).map((option) => ({ value: option.value ?? 'auto', label: option.label }))
+            : undefined
+    }, [claudeModelsState.availableModels, model, effort])
+    // However the model got here (picked, restored from a preference or a
+    // draft, or the catalog arriving after it), an effort that model does not
+    // offer is dropped. Only the Claude catalog carries effort levels, so other
+    // agents keep their effort.
+    useEffect(() => {
+        const nextEffort = resolveClaudeEffortForModel(
+            effort === 'auto' ? null : effort,
+            model === 'auto' ? null : model,
+            claudeModelsState.availableModels
+        )
+        if ((nextEffort ?? 'auto') !== effort) {
+            setEffort('auto')
+        }
+    }, [claudeModelsState.availableModels, model, effort])
     // Pi models are grouped by provider (optionSource: 'machine' in the agent
     // config descriptor). Option values are provider-qualified
     // (`provider/modelId`) so two providers sharing a modelId stay distinct;
@@ -1935,7 +1969,7 @@ export function NewSession(props: {
                                             ? kimiModelOptions
                                             : agent === 'pi'
                                                 ? (showPiLaunchConfig ? piModelOptions : undefined)
-                                        : undefined
+                                        : claudeModelOptions
                         }
                         isDisabled={
                             isFormDisabled
@@ -1974,6 +2008,7 @@ export function NewSession(props: {
                     onReasoningEffortChange={setModelReasoningEffort}
                     isDisabled={isFormDisabled || (agent === 'codex' && codexModelsState.isLoading)}
                     grokOptions={agent === 'grok' ? grokEffortOptions : undefined}
+                    claudeOptions={claudeEffortOptions}
                     codexReasoningOptions={agent === 'codex' ? codexReasoningEffortOptions : undefined}
                     opencodeVariantOptions={agent === 'opencode' ? opencodeVariantOptions : undefined}
                     piSelectedModel={agent === 'pi' ? piSelectedModel : null}

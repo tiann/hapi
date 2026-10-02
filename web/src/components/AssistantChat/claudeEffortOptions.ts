@@ -19,15 +19,25 @@ function formatEffortLabel(effort: string): string {
         ?? `${effort.charAt(0).toUpperCase()}${effort.slice(1)}`
 }
 
-export function getClaudeComposerEffortOptions(currentEffort?: string | null): ClaudeComposerEffortOption[] {
+/**
+ * `supportedLevels` narrows the list to what the current model accepts
+ * (`[]` = no effort control); undefined offers every level.
+ */
+export function getClaudeComposerEffortOptions(
+    currentEffort?: string | null,
+    supportedLevels?: readonly string[]
+): ClaudeComposerEffortOption[] {
     const normalizedCurrentEffort = normalizeClaudeComposerEffort(currentEffort)
+    const levels: readonly ClaudeEffortLevel[] = supportedLevels
+        ? CLAUDE_EFFORT_LEVELS.filter((effort) => supportedLevels.includes(effort))
+        : CLAUDE_EFFORT_LEVELS
     const options: ClaudeComposerEffortOption[] = [
         { value: null, label: 'Auto' }
     ]
 
     if (
         normalizedCurrentEffort
-        && !CLAUDE_EFFORT_LEVELS.includes(normalizedCurrentEffort as ClaudeEffortLevel)
+        && !levels.includes(normalizedCurrentEffort as ClaudeEffortLevel)
     ) {
         options.push({
             value: normalizedCurrentEffort,
@@ -35,7 +45,7 @@ export function getClaudeComposerEffortOptions(currentEffort?: string | null): C
         })
     }
 
-    options.push(...CLAUDE_EFFORT_LEVELS.map((effort) => ({
+    options.push(...levels.map((effort) => ({
         value: effort,
         label: CLAUDE_EFFORT_LABELS[effort]
     })))

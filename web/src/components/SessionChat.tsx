@@ -9,6 +9,7 @@ import { ApiError, type ApiClient } from '@/api/client'
 import type {
     AgyModelSummary,
     AttachmentMetadata,
+    ClaudeModelSummary,
     CodexCollaborationMode,
     CodexModelSummary,
     CopilotAgentMode,
@@ -61,6 +62,7 @@ import {
 } from '@/lib/messageDelivery'
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import { isSteeringSupportedForSession } from '@hapi/protocol'
+import { getClaudeEffortLevelsForModel, getClaudeModelChoices, resolveClaudeEffortForModel } from '@hapi/protocol'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
 import { rewindMessageWindow, type OlderLoadOutcome } from '@/lib/message-window-store'
 import { ShareSeedConsumer } from '@/components/ShareSeedConsumer'
@@ -96,6 +98,7 @@ import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useCursorModels } from '@/hooks/queries/useCursorModels'
 import { useCursorModelsForMachine } from '@/hooks/queries/useCursorModelsForMachine'
 import { useAgyModels } from '@/hooks/queries/useAgyModels'
+import { useClaudeModels } from '@/hooks/queries/useClaudeModels'
 import {
     mergeCursorCliModelSkus,
     resolveCursorBaseFromWire
@@ -178,6 +181,23 @@ export function buildAgyComposerModelOptions(
         value: model.modelId,
         label: model.name ?? model.modelId
     }))
+}
+
+/**
+ * The effort to send along with a model change, or undefined to leave it.
+ * Only a Claude catalog carries per-model effort levels, so other flavors
+ * (whose catalog here is empty) never get one.
+ */
+export function resolveEffortForModelChange(args: {
+    currentEffort: string | null
+    model: SessionModelSelection
+    claudeModels: readonly ClaudeModelSummary[]
+}): { effort: string | null } | undefined {
+    if (typeof args.model === 'object' && args.model !== null) {
+        return undefined
+    }
+    const effort = resolveClaudeEffortForModel(args.currentEffort, args.model, args.claudeModels)
+    return effort === args.currentEffort ? undefined : { effort }
 }
 
 export async function applyModelChangeWithReasoningRollback(args: {
@@ -1157,6 +1177,24 @@ function SessionChatInner(props: SessionChatProps) {
             ? buildAgyComposerModelOptions(agyModelsState.availableModels)
             : undefined
     ), [agentFlavor, agyModelsState.availableModels])
+    const claudeModelsState = useClaudeModels({
+        api: props.api,
+        machineId: sessionMachineId,
+        enabled: agentFlavor === 'claude' && props.session.active && Boolean(sessionMachineId)
+    })
+    // Until the catalog arrives (or on a runner without discovery) this stays
+    // undefined and the composer keeps its built-in Claude presets.
+    const claudeModelOptions = useMemo(() => (
+        agentFlavor === 'claude' && claudeModelsState.availableModels.length > 0
+            ? getClaudeModelChoices(claudeModelsState.availableModels)
+            : undefined
+    ), [agentFlavor, claudeModelsState.availableModels])
+    // Levels the current Claude model accepts; undefined when unknown (no
+    // catalog, or a model it does not list), which keeps every level.
+    const claudeEffortOptions = useMemo(() => (
+        getClaudeEffortLevelsForModel(props.session.model ?? null, claudeModelsState.availableModels)
+            ?.map((level) => ({ value: level }))
+    ), [props.session.model, claudeModelsState.availableModels])
     const piModelsState = usePiModels({
         api: props.api,
         sessionId: props.session.id,
@@ -1582,13 +1620,20 @@ function SessionChatInner(props: SessionChatProps) {
             codexModels: codexModelsState.models,
             model
         })
+        // Sent in the same request so the session never runs the new model
+        // with an effort it does not offer.
+        const effortChange = resolveEffortForModelChange({
+            currentEffort: props.session.effort ?? null,
+            model,
+            claudeModels: claudeModelsState.availableModels
+        })
 
         try {
             await applyModelChangeWithReasoningRollback({
                 model,
                 previousModelReasoningEffort,
                 shouldClearReasoningEffort,
-                setModel,
+                setModel: (nextModel) => setModel(nextModel, effortChange),
                 setModelReasoningEffort
             })
             haptic.notification('success')
@@ -1600,6 +1645,8 @@ function SessionChatInner(props: SessionChatProps) {
     }, [
         agentFlavor,
         codexModelsState.models,
+        claudeModelsState.availableModels,
+        props.session.effort,
         props.session.modelReasoningEffort,
         setModelReasoningEffort,
         setModel,
@@ -2096,8 +2143,9 @@ function SessionChatInner(props: SessionChatProps) {
                                         // cycler (getNextModelForFlavor) post a bare modelId string,
                                         // which loses the provider and can pick the wrong cached
                                         // match or throw in runPi. undefined makes the shortcut a no-op
-                                        // so Pi model changes go through the settings sheet only.
-                                        : undefined
+                                        // so Pi model changes go through the settings sheet only;
+                                        // claudeModelOptions is undefined for every non-Claude flavor.
+                                        : claudeModelOptions
                         }
                         piModels={piModels}
                         piSelectedModel={agentFlavor === 'pi' ? piSelectedModel : undefined}
@@ -2111,7 +2159,7 @@ function SessionChatInner(props: SessionChatProps) {
                         availableEffortOptions={
                             agentFlavor === 'grok' && grokEffortState.options.length > 0
                                 ? grokEffortState.options
-                                : undefined
+                                : claudeEffortOptions
                         }
                         active={props.session.active}
                         allowSendWhenInactive

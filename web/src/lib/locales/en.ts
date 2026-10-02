@@ -373,6 +373,7 @@ export default {
   'newSession.agyModel.retry': 'Retry',
   'newSession.agyModel.notListed': 'no longer listed',
   'newSession.agyModel.noModels': 'No Antigravity models available',
+  'newSession.claudeModel.notListed': 'no longer listed',
   'newSession.opencodeModel.loading': 'Discovering OpenCode models…',
   'newSession.opencodeModel.loadFailed': 'Failed to load OpenCode models',
   'newSession.opencodeModel.retry': 'Retry',
