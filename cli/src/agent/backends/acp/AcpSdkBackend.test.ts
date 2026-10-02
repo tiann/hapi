@@ -149,6 +149,16 @@ describe('AcpSdkBackend', () => {
         });
     });
 
+    it('forwards cwd into spawn options when set', () => {
+        expect(buildAcpStdioSpawnOptions({ TEST_ENV: '1' }, '/work/coding/quest-audio-relay')).toMatchObject({
+            env: { TEST_ENV: '1' },
+            cwd: '/work/coding/quest-audio-relay',
+            stdio: ['pipe', 'pipe', 'pipe'],
+        });
+        expect(buildAcpStdioSpawnOptions(undefined, '  ')).not.toHaveProperty('cwd');
+        expect(buildAcpStdioSpawnOptions({ A: '1' })).not.toHaveProperty('cwd');
+    });
+
     it('allows the permission handler to resolve requests immediately', async () => {
         const backend = new AcpSdkBackend({ command: 'opencode' });
         let capturedRequestId: string | null = null;
