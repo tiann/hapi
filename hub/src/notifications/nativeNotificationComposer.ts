@@ -5,6 +5,7 @@ import { formatToolArgumentsCompact, formatToolArgumentsDetailed } from './toolA
 import { extractAssistantPlainText, extractNotifySummary, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Store } from '../store'
 import { composeInputRequestNotification, getFirstPendingRequest } from './inputRequest'
+import { hubT, type HubLocale, resolveHubLocale } from '../i18n/hubI18n'
 
 export const NATIVE_CONTRACT_VERSION = '1'
 
@@ -41,9 +42,10 @@ export type ComposedNativeNotification = {
 export class NativeNotificationComposer {
     constructor(private readonly store?: Store) {}
 
-    composePermissionRequest(session: Session): ComposedNativeNotification {
+    composePermissionRequest(session: Session, language?: string | null): ComposedNativeNotification {
+        const locale = resolveHubLocale(language)
         const pending = getFirstPendingRequest(session)
-        const inputNotification = composeInputRequestNotification(session, pending)
+        const inputNotification = composeInputRequestNotification(session, pending, locale)
         if (inputNotification) return inputNotification
 
         const name = getSessionName(session)
@@ -64,18 +66,18 @@ export class NativeNotificationComposer {
         // Wear OS (BigTextStyle on the watch side). Lines after the first
         // are hidden in the collapsed glance, so we can be generous here.
         const detailed = request
-            ? formatToolArgumentsDetailed(request.tool, request.arguments, { maxArgLength: 120 })
+            ? formatToolArgumentsDetailed(request.tool, request.arguments, { maxArgLength: 120, locale })
             : ''
         const bodyLines = [glance]
         if (name && name !== glance) {
-            bodyLines.push(`Session: ${name}`)
+            bodyLines.push(hubT(locale, 'native.session', { name }))
         }
         if (detailed) {
             bodyLines.push(detailed)
         }
 
         return {
-            title: 'Permission Request',
+            title: hubT(locale, 'push.permission.title'),
             body: bodyLines.join('\n'),
             tag: `permission-${session.id}`,
             type: 'permission-request',
@@ -87,11 +89,12 @@ export class NativeNotificationComposer {
         }
     }
 
-    composeReady(session: Session): ComposedNativeNotification {
+    composeReady(session: Session, language?: string | null): ComposedNativeNotification {
+        const locale = resolveHubLocale(language)
         const agentName = getAgentName(session)
         const name = getSessionName(session)
 
-        const composed = this.composeReadyBody(session, agentName, name)
+        const composed = this.composeReadyBody(session, agentName, name, locale)
 
         return {
             title: composed.title,
@@ -106,7 +109,8 @@ export class NativeNotificationComposer {
         }
     }
 
-    composeTask(session: Session, notification: TaskNotification): ComposedNativeNotification {
+    composeTask(session: Session, notification: TaskNotification, language?: string | null): ComposedNativeNotification {
+        const locale = resolveHubLocale(language)
         const agentName = getAgentName(session)
         const name = getSessionName(session)
         const normalizedStatus = notification.status?.trim().toLowerCase()
@@ -117,7 +121,7 @@ export class NativeNotificationComposer {
         const taskSummary = this.truncateReadyText(notification.summary, READY_BODY_GLANCE_LIMIT)
 
         return {
-            title: isFailure ? 'Task failed' : 'Task completed',
+            title: hubT(locale, isFailure ? 'push.task.failed' : 'push.task.completed'),
             body: `${agentName} · ${name} · ${taskSummary}`,
             type: 'task-notification',
             sessionId: session.id,
@@ -146,11 +150,12 @@ export class NativeNotificationComposer {
     private composeReadyBody(
         session: Session,
         agentName: string,
-        sessionName: string
+        sessionName: string,
+        locale: HubLocale
     ): { title: string; body: string; notifySummary?: Record<string, unknown> } {
         const fallback = {
-            title: 'Ready for input',
-            body: `${agentName} is waiting in ${sessionName}`
+            title: hubT(locale, 'push.ready.title'),
+            body: hubT(locale, 'push.ready.body', { agent: agentName, session: sessionName })
         }
 
         if (!this.store) return fallback

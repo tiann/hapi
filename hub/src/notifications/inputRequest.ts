@@ -1,6 +1,7 @@
 import { isObject, type AgentStateRequest } from '@hapi/protocol'
 import type { Session } from '../sync/syncEngine'
 import { getAgentName, getSessionName } from './sessionInfo'
+import { hubPluralCategory, hubT, type HubLocale, type HubMessageKey } from '../i18n/hubI18n'
 
 const INPUT_REQUEST_TOOLS = new Set([
     'request_user_input',
@@ -11,7 +12,6 @@ const INPUT_REQUEST_TOOLS = new Set([
 
 const BODY_LIMIT = 280
 const SESSION_NAME_LIMIT = 80
-const FALLBACK_QUESTION = 'Open the session to view and answer the question.'
 const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 
 export type PendingNotificationRequest = { requestId: string; request: AgentStateRequest }
@@ -48,7 +48,11 @@ function truncate(text: string, limit: number): string {
 }
 
 /** Extract display text only. IDs, options, descriptions, prefill and answers are never previews. */
-export function formatInputRequestPreview(args: unknown, limit: number = BODY_LIMIT): string {
+export function formatInputRequestPreview(
+    args: unknown,
+    limit: number = BODY_LIMIT,
+    locale: HubLocale = 'en'
+): string {
     const questions = isObject(args) && Array.isArray(args.questions)
         ? args.questions.flatMap((question) => {
             if (!isObject(question)) return []
@@ -57,23 +61,31 @@ export function formatInputRequestPreview(args: unknown, limit: number = BODY_LI
         })
         : []
     const remaining = questions.length - 1
-    const suffix = remaining > 0 ? `\n+${remaining} more question${remaining === 1 ? '' : 's'}` : ''
-    const first = truncate(questions[0] ?? FALLBACK_QUESTION, Math.max(0, limit - suffix.length))
+    const suffix = remaining > 0
+        ? `\n${hubT(locale, ('inputRequest.more.' + hubPluralCategory(locale, remaining)) as HubMessageKey, { count: remaining })}`
+        : ''
+    const fallback = hubT(locale, 'inputRequest.fallback')
+    const first = truncate(questions[0] ?? fallback, Math.max(0, limit - suffix.length))
     return truncate(`${first}${suffix}`, limit)
 }
 
 export function composeInputRequestNotification(
     session: Session,
-    pending: PendingNotificationRequest | null = getFirstPendingRequest(session)
+    pending: PendingNotificationRequest | null = getFirstPendingRequest(session),
+    locale: HubLocale = 'en'
 ) {
     if (!pending || !isInputRequestTool(pending.request.tool)) return null
 
     const sessionName = truncate(oneLine(getSessionName(session)), SESSION_NAME_LIMIT)
     const context = sessionName ? `\n${sessionName}` : ''
-    const preview = formatInputRequestPreview(pending.request.arguments, BODY_LIMIT - Array.from(context).length)
+    const preview = formatInputRequestPreview(
+        pending.request.arguments,
+        BODY_LIMIT - Array.from(context).length,
+        locale
+    )
     return {
         type: 'input-request' as const,
-        title: `${getAgentName(session)} needs your input`,
+        title: hubT(locale, 'inputRequest.title', { agent: getAgentName(session) }),
         body: `${preview}${context}`,
         tag: `input-request-${session.id}`,
         sessionId: session.id,

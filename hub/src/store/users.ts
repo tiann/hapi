@@ -7,6 +7,7 @@ type DbUserRow = {
     platform: string
     platform_user_id: string
     namespace: string
+    language: string | null
     created_at: number
 }
 
@@ -16,6 +17,7 @@ function toStoredUser(row: DbUserRow): StoredUser {
         platform: row.platform,
         platformUserId: row.platform_user_id,
         namespace: row.namespace,
+        language: row.language ?? null,
         createdAt: row.created_at
     }
 }
@@ -49,19 +51,21 @@ export function addUser(
     db: Database,
     platform: string,
     platformUserId: string,
-    namespace: string
+    namespace: string,
+    language: string | null = null
 ): StoredUser {
     const now = Date.now()
     db.prepare(`
         INSERT OR IGNORE INTO users (
-            platform, platform_user_id, namespace, created_at
+            platform, platform_user_id, namespace, language, created_at
         ) VALUES (
-            @platform, @platform_user_id, @namespace, @created_at
+            @platform, @platform_user_id, @namespace, @language, @created_at
         )
     `).run({
         platform,
         platform_user_id: platformUserId,
         namespace,
+        language,
         created_at: now
     })
 
@@ -70,6 +74,18 @@ export function addUser(
         throw new Error('Failed to create user')
     }
     return row
+}
+
+/** Remember the language tag the platform reported for this user. */
+export function setUserLanguage(
+    db: Database,
+    platform: string,
+    platformUserId: string,
+    language: string | null
+): void {
+    db.prepare(
+        'UPDATE users SET language = ? WHERE platform = ? AND platform_user_id = ?'
+    ).run(language, platform, platformUserId)
 }
 
 export function removeUser(db: Database, platform: string, platformUserId: string): boolean {

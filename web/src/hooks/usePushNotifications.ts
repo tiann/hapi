@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 
 function isPushSupported(): boolean {
@@ -19,6 +19,23 @@ function base64UrlToUint8Array(base64Url: string): Uint8Array {
         output[i] = raw.charCodeAt(i)
     }
     return output
+}
+
+/**
+ * Language reported to the hub with the subscription so web-push payloads can
+ * be rendered in the user's language: the language the user picked in the web
+ * UI, else the browser's own tag (which may be one the web UI does not ship,
+ * e.g. `ru-RU`), else the caller's fallback.
+ */
+function notificationLanguage(fallback?: string): string | undefined {
+    try {
+        const stored = localStorage.getItem('hapi-lang')
+        if (stored) return stored
+    } catch {
+        // Storage can be unavailable (private mode / blocked cookies).
+    }
+    if (typeof navigator !== 'undefined' && navigator.language) return navigator.language
+    return fallback
 }
 
 /**
@@ -45,7 +62,7 @@ function writeStoredVapidKey(publicKey: string): void {
     }
 }
 
-export function usePushNotifications(api: ApiClient | null) {
+export function usePushNotifications(api: ApiClient | null, language?: string) {
     const [isSupported, setIsSupported] = useState(false)
     const [permission, setPermission] = useState<NotificationPermission>('default')
     const [isSubscribed, setIsSubscribed] = useState(false)
@@ -97,6 +114,36 @@ export function usePushNotifications(api: ApiClient | null) {
         return result === 'granted'
     }, [])
 
+    const languageWrites = useRef<Promise<void>>(Promise.resolve())
+    const latestLanguage = useRef<string | undefined>(undefined)
+
+    /**
+     * Hub writes for this subscription run on a serialized queue, so an older
+     * language can never land after a newer one.
+     */
+    const enqueueWrite = useCallback(<T,>(write: () => Promise<T>): Promise<T> => {
+        const run = languageWrites.current.then(write)
+        languageWrites.current = run.then(() => undefined, () => undefined)
+        return run
+    }, [])
+
+    /**
+     * After a write, the hub must only keep an endpoint the browser still
+     * holds: a replacement or unsubscription during the request would
+     * otherwise leave the previous endpoint registered.
+     */
+    const pruneReplacedEndpoint = useCallback(async (
+        registration: ServiceWorkerRegistration,
+        endpoint: string
+    ): Promise<boolean> => {
+        const current = await registration.pushManager.getSubscription()
+        if (!current || current.endpoint !== endpoint) {
+            await api?.unsubscribePushNotifications({ endpoint })
+            return false
+        }
+        return true
+    }, [api])
+
     const subscribe = useCallback(async (): Promise<boolean> => {
         if (!api || !isPushSupported()) {
             return false
@@ -146,13 +193,21 @@ export function usePushNotifications(api: ApiClient | null) {
                 return false
             }
 
-            await api.subscribePushNotifications({
-                endpoint: json.endpoint,
-                keys: {
-                    p256dh: keys.p256dh,
-                    auth: keys.auth
-                }
+            const endpoint = json.endpoint
+            const pushKeys = { p256dh: keys.p256dh, auth: keys.auth }
+            const registered = await enqueueWrite(async () => {
+                await api.subscribePushNotifications({
+                    endpoint,
+                    keys: pushKeys,
+                    // Resolved inside the queue so a newer language wins even
+                    // when this call started earlier.
+                    language: latestLanguage.current ?? notificationLanguage(language)
+                })
+                return await pruneReplacedEndpoint(registration, endpoint)
             })
+            if (!registered) {
+                return false
+            }
             // Only record the key after the hub registration succeeded. A
             // failed registration must leave the previous key in place so the
             // next load retries the replacement instead of reusing a
@@ -164,7 +219,59 @@ export function usePushNotifications(api: ApiClient | null) {
             console.error('[PushNotifications] Failed to subscribe:', error)
             return false
         }
-    }, [api])
+    }, [api, language, enqueueWrite, pruneReplacedEndpoint])
+
+    const lastSentLanguage = useRef<string | undefined>(undefined)
+
+    /**
+     * Writes the subscription's language to the hub on a serialized queue, so
+     * overlapping switches cannot land out of order. After the write it checks
+     * that the browser still holds the subscription: an `unsubscribe()` during
+     * the request would otherwise leave the hub with a dead endpoint.
+     */
+    const writeSubscriptionLanguage = useCallback((nextLanguage: string): Promise<boolean> => {
+        latestLanguage.current = nextLanguage
+        return enqueueWrite(async () => {
+            // A newer switch queued behind this one already owns the write.
+            if (latestLanguage.current !== nextLanguage) return false
+            if (!api || !isPushSupported()) return false
+            if (Notification.permission !== 'granted') return false
+
+            try {
+                const registration = await navigator.serviceWorker.ready
+                const subscription = await registration.pushManager.getSubscription()
+                if (!subscription) return false
+
+                const json = subscription.toJSON()
+                const keys = json.keys
+                if (!json.endpoint || !keys?.p256dh || !keys.auth) return false
+
+                const endpoint = json.endpoint
+                await api.subscribePushNotifications({
+                    endpoint,
+                    keys: { p256dh: keys.p256dh, auth: keys.auth },
+                    language: nextLanguage
+                })
+
+                return await pruneReplacedEndpoint(registration, endpoint)
+            } catch (error) {
+                console.error('[PushNotifications] Failed to refresh subscription language:', error)
+                return false
+            }
+        })
+    }, [api, enqueueWrite, pruneReplacedEndpoint])
+
+    useEffect(() => {
+        if (!isSubscribed) return
+
+        const next = notificationLanguage(language)
+        if (!next || next === lastSentLanguage.current) return
+        void writeSubscriptionLanguage(next).then((sent) => {
+            // Recorded only after the hub accepted the write, so a failure
+            // retries on the next change instead of being suppressed.
+            if (sent) lastSentLanguage.current = next
+        })
+    }, [isSubscribed, language, writeSubscriptionLanguage])
 
     const unsubscribe = useCallback(async (): Promise<boolean> => {
         if (!api || !isPushSupported()) {

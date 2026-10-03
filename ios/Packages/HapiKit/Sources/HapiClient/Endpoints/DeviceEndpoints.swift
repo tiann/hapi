@@ -18,13 +18,17 @@ extension APIClient {
         token: String,
         deviceId: String,
         pushKey: String,
-        platform: String = "ios"
+        platform: String = "ios",
+        /// BCP-47 tag the hub localizes this device's notification text with.
+        /// Defaults to the app's current localization.
+        language: String? = Locale.current.identifier
     ) async throws {
         struct DeviceRegisterRequest: Encodable {
             let token: String
             let platform: String
             let deviceId: String
             let pushKey: String
+            let language: String?
         }
         try await requestVoid(
             .post,
@@ -33,7 +37,8 @@ extension APIClient {
                 token: token,
                 platform: platform,
                 deviceId: deviceId,
-                pushKey: pushKey
+                pushKey: pushKey,
+                language: language
             )
         )
     }

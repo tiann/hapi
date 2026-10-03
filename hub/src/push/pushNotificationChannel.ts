@@ -6,6 +6,7 @@ import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
 import type { PushPayload, PushService } from './pushService'
 import { composeInputRequestNotification, getFirstPendingRequest } from '../notifications/inputRequest'
+import { hubT, resolveHubLocale } from '../i18n/hubI18n'
 
 export class PushNotificationChannel implements NotificationChannel {
     constructor(
@@ -35,22 +36,25 @@ export class PushNotificationChannel implements NotificationChannel {
         const name = getSessionName(session)
         const pending = getFirstPendingRequest(session)
         const { requestId, request } = pending ?? {}
-        const inputNotification = composeInputRequestNotification(session, pending)
         const toolName = request?.tool ? ` (${request.tool})` : ''
 
-        const payload: PushPayload = {
-            title: inputNotification?.title ?? 'Permission Request',
-            body: inputNotification?.body ?? `${name}${toolName}`,
-            tag: inputNotification?.tag ?? `permission-${session.id}`,
-            data: {
-                type: inputNotification?.type ?? 'permission-request',
-                sessionId: session.id,
-                url: this.buildSessionPath(session.id),
-                requestId
+        const buildPayload = (language: string | null): PushPayload => {
+            const locale = resolveHubLocale(language)
+            const inputNotification = composeInputRequestNotification(session, pending, locale)
+            return {
+                title: inputNotification?.title ?? hubT(locale, 'push.permission.title'),
+                body: inputNotification?.body ?? `${name}${toolName}`,
+                tag: inputNotification?.tag ?? `permission-${session.id}`,
+                data: {
+                    type: inputNotification?.type ?? 'permission-request',
+                    sessionId: session.id,
+                    url: this.buildSessionPath(session.id),
+                    requestId
+                }
             }
         }
 
-        await this.deliverWebOrToast(session, payload, ctx, 'permission')
+        await this.deliverWebOrToast(session, buildPayload, ctx, 'permission')
     }
 
     async sendReady(session: Session, ctx?: NotificationSendContext): Promise<void> {
@@ -61,18 +65,21 @@ export class PushNotificationChannel implements NotificationChannel {
         const agentName = getAgentName(session)
         const name = getSessionName(session)
 
-        const payload: PushPayload = {
-            title: 'Ready for input',
-            body: `${agentName} is waiting in ${name}`,
-            tag: `ready-${session.id}`,
-            data: {
-                type: 'ready',
-                sessionId: session.id,
-                url: this.buildSessionPath(session.id)
+        const buildPayload = (language: string | null): PushPayload => {
+            const locale = resolveHubLocale(language)
+            return {
+                title: hubT(locale, 'push.ready.title'),
+                body: hubT(locale, 'push.ready.body', { agent: agentName, session: name }),
+                tag: `ready-${session.id}`,
+                data: {
+                    type: 'ready',
+                    sessionId: session.id,
+                    url: this.buildSessionPath(session.id)
+                }
             }
         }
 
-        await this.deliverWebOrToast(session, payload, ctx, 'ready')
+        await this.deliverWebOrToast(session, buildPayload, ctx, 'ready')
     }
 
     async sendTaskNotification(session: Session, notification: TaskNotification, ctx?: NotificationSendContext): Promise<void> {
@@ -88,22 +95,25 @@ export class PushNotificationChannel implements NotificationChannel {
             || normalizedStatus === 'killed'
             || normalizedStatus === 'aborted'
 
-        const payload: PushPayload = {
-            title: isFailure ? 'Task failed' : 'Task completed',
-            body: `${agentName} · ${name} · ${notification.summary}`,
-            data: {
-                type: 'task-notification',
-                sessionId: session.id,
-                url: this.buildSessionPath(session.id)
+        const buildPayload = (language: string | null): PushPayload => {
+            const locale = resolveHubLocale(language)
+            return {
+                title: hubT(locale, isFailure ? 'push.task.failed' : 'push.task.completed'),
+                body: `${agentName} · ${name} · ${notification.summary}`,
+                data: {
+                    type: 'task-notification',
+                    sessionId: session.id,
+                    url: this.buildSessionPath(session.id)
+                }
             }
         }
 
-        await this.deliverWebOrToast(session, payload, ctx, 'task')
+        await this.deliverWebOrToast(session, buildPayload, ctx, 'task')
     }
 
     private async deliverWebOrToast(
         session: Session,
-        payload: PushPayload,
+        buildPayload: (language: string | null) => PushPayload,
         ctx: NotificationSendContext | undefined,
         method: 'permission' | 'ready' | 'task'
     ): Promise<void> {
@@ -112,13 +122,16 @@ export class PushNotificationChannel implements NotificationChannel {
             return
         }
 
-        const url = payload.data?.url ?? this.buildSessionPath(session.id)
+        // In-page toasts render from the viewer's own web UI, so they use the
+        // default locale; the web-push payload below is per subscription.
+        const toastPayload = buildPayload(null)
+        const url = toastPayload.data?.url ?? this.buildSessionPath(session.id)
         if (this.visibilityTracker.hasVisibleConnection(session.namespace)) {
             const delivered = await this.sseManager.sendToast(session.namespace, {
                 type: 'toast',
                 data: {
-                    title: payload.title,
-                    body: payload.body,
+                    title: toastPayload.title,
+                    body: toastPayload.body,
                     sessionId: session.id,
                     url
                 }
@@ -133,7 +146,7 @@ export class PushNotificationChannel implements NotificationChannel {
         }
 
         this.logBranch(method, session.namespace, 'web-push-fired')
-        await this.pushService.sendToNamespace(session.namespace, payload)
+        await this.pushService.sendToNamespace(session.namespace, buildPayload)
     }
 
     private buildSessionPath(sessionId: string): string {

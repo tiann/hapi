@@ -38,15 +38,23 @@ export class PushService {
         webPush.setVapidDetails(this.subject, this.vapidKeys.publicKey, this.vapidKeys.privateKey)
     }
 
-    async sendToNamespace(namespace: string, payload: PushPayload): Promise<void> {
+    /**
+     * `payload` may be a per-subscription builder: web-push payloads carry
+     * notification text, so each subscription is rendered in the language it
+     * registered with (falling back to the caller's default).
+     */
+    async sendToNamespace(
+        namespace: string,
+        payload: PushPayload | ((language: string | null) => PushPayload)
+    ): Promise<void> {
         const subscriptions = this.store.push.getPushSubscriptionsByNamespace(namespace)
         if (subscriptions.length === 0) {
             return
         }
 
-        const body = JSON.stringify(payload)
         await Promise.all(subscriptions.map((subscription) => {
-            return this.sendToSubscription(namespace, subscription, body)
+            const resolved = typeof payload === 'function' ? payload(subscription.language) : payload
+            return this.sendToSubscription(namespace, subscription, JSON.stringify(resolved))
         }))
     }
 

@@ -19,7 +19,8 @@ struct DeviceEndpointTests {
         try await harness.client.registerDevice(
             token: "a1b2c3",
             deviceId: "device-uuid-1",
-            pushKey: "KZFhIWo=" // shape only; real keys are 32 bytes
+            pushKey: "KZFhIWo=", // shape only; real keys are 32 bytes
+            language: "ru"
         )
 
         let request = await harness.performer.requests.first
@@ -29,7 +30,7 @@ struct DeviceEndpointTests {
         #expect(request?.value(forHTTPHeaderField: "Authorization") == "Bearer \(token)")
         #expect(
             bodyString(request)
-                == "{\"deviceId\":\"device-uuid-1\",\"platform\":\"ios\",\"pushKey\":\"KZFhIWo=\",\"token\":\"a1b2c3\"}"
+                == "{\"deviceId\":\"device-uuid-1\",\"language\":\"ru\",\"platform\":\"ios\",\"pushKey\":\"KZFhIWo=\",\"token\":\"a1b2c3\"}"
         )
     }
 

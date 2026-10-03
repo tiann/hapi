@@ -12,6 +12,7 @@ import { formatReadyNotification, formatSessionNotification, createNotificationK
 import { getAgentName } from '../notifications/sessionInfo'
 import type { NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
 import type { Store } from '../store'
+import { hubT, resolveHubLocale, type HubLocale } from '../i18n/hubI18n'
 
 export interface BotContext extends Context {
     // Extended context for future use
@@ -103,6 +104,25 @@ export class HappyBot implements NotificationChannel {
         this.bot.catch((err) => {
             console.error('[HAPIBot] Error:', err.message)
         })
+
+        // Remember the language Telegram reports so notifications sent later
+        // (outside any update context) can be localized per chat.
+        this.bot.use(async (ctx, next) => {
+            const chatId = ctx.from?.id
+            const languageCode = ctx.from?.language_code
+            if (chatId && languageCode) {
+                const stored = this.store.users.getUser('telegram', String(chatId))
+                if (stored && stored.language !== languageCode) {
+                    this.store.users.setUserLanguage('telegram', String(chatId), languageCode)
+                }
+            }
+            await next()
+        })
+    }
+
+    /** Locale stored for a chat, falling back to English. */
+    private getChatLocale(chatId: number): HubLocale {
+        return resolveHubLocale(this.store.users.getUser('telegram', String(chatId))?.language)
     }
 
     /**
@@ -111,16 +131,17 @@ export class HappyBot implements NotificationChannel {
     private setupCommands(): void {
         // /app - Open Telegram Mini App (primary entry point)
         this.bot.command('app', async (ctx) => {
-            const keyboard = new InlineKeyboard().webApp('Open App', this.publicUrl)
-            await ctx.reply('Open HAPI Mini App:', { reply_markup: keyboard })
+            const locale = resolveHubLocale(ctx.from?.language_code)
+            const keyboard = new InlineKeyboard().webApp(hubT(locale, 'telegram.openApp'), this.publicUrl)
+            await ctx.reply(hubT(locale, 'telegram.openMiniApp'), { reply_markup: keyboard })
         })
 
         // /start - Simple welcome with Mini App link
         this.bot.command('start', async (ctx) => {
-            const keyboard = new InlineKeyboard().webApp('Open App', this.publicUrl)
+            const locale = resolveHubLocale(ctx.from?.language_code)
+            const keyboard = new InlineKeyboard().webApp(hubT(locale, 'telegram.openApp'), this.publicUrl)
             await ctx.reply(
-                'Welcome to HAPI Bot!\n\n' +
-                'Use the Mini App for full session management.',
+                hubT(locale, 'telegram.welcome'),
                 { reply_markup: keyboard }
             )
         })
@@ -131,14 +152,15 @@ export class HappyBot implements NotificationChannel {
      */
     private setupCallbacks(): void {
         this.bot.on('callback_query:data', async (ctx) => {
+            const locale = resolveHubLocale(ctx.from?.language_code)
             if (!this.syncEngine) {
-                await ctx.answerCallbackQuery('Not connected')
+                await ctx.answerCallbackQuery(hubT(locale, 'callback.notConnected'))
                 return
             }
 
             const namespace = this.getNamespaceForChatId(ctx.from?.id ?? null)
             if (!namespace) {
-                await ctx.answerCallbackQuery('Telegram account is not bound')
+                await ctx.answerCallbackQuery(hubT(locale, 'callback.notBound'))
                 return
             }
 
@@ -147,6 +169,7 @@ export class HappyBot implements NotificationChannel {
             const callbackContext: CallbackContext = {
                 syncEngine: this.syncEngine,
                 namespace,
+                locale,
                 answerCallback: async (text?: string) => {
                     await ctx.answerCallbackQuery(text)
                 },
@@ -214,10 +237,7 @@ export class HappyBot implements NotificationChannel {
             return
         }
 
-        const text = formatReadyNotification(session, this.getSessionMachine(session))
         const url = buildMiniAppDeepLink(this.publicUrl, `session_${session.id}`)
-        const keyboard = new InlineKeyboard()
-            .webApp('Open Session', url)
 
         const chatIds = this.getBoundChatIds(session.namespace)
         if (chatIds.length === 0) {
@@ -225,6 +245,9 @@ export class HappyBot implements NotificationChannel {
         }
 
         for (const chatId of chatIds) {
+            const locale = this.getChatLocale(chatId)
+            const text = formatReadyNotification(session, this.getSessionMachine(session), locale)
+            const keyboard = new InlineKeyboard().webApp(hubT(locale, 'telegram.openSession'), url)
             try {
                 await this.bot.api.sendMessage(
                     chatId,
@@ -245,15 +268,15 @@ export class HappyBot implements NotificationChannel {
             return
         }
 
-        const text = formatSessionNotification(session, this.getSessionMachine(session))
-        const keyboard = createNotificationKeyboard(session, this.publicUrl)
-
         const chatIds = this.getBoundChatIds(session.namespace)
         if (chatIds.length === 0) {
             return
         }
 
         for (const chatId of chatIds) {
+            const locale = this.getChatLocale(chatId)
+            const text = formatSessionNotification(session, this.getSessionMachine(session), locale)
+            const keyboard = createNotificationKeyboard(session, this.publicUrl, locale)
             try {
                 await this.bot.api.sendMessage(chatId, text, {
                     reply_markup: keyboard
@@ -271,12 +294,8 @@ export class HappyBot implements NotificationChannel {
 
         const agentName = getAgentName(session)
         const status = notification.status?.trim().toLowerCase()
-        const prefix = status === 'failed' || status === 'error' || status === 'killed' || status === 'aborted'
-            ? 'Task failed'
-            : 'Task completed'
+        const failed = status === 'failed' || status === 'error' || status === 'killed' || status === 'aborted'
         const url = buildMiniAppDeepLink(this.publicUrl, `session_${session.id}`)
-        const keyboard = new InlineKeyboard()
-            .webApp('Open Session', url)
 
         const chatIds = this.getBoundChatIds(session.namespace)
         if (chatIds.length === 0) {
@@ -284,6 +303,9 @@ export class HappyBot implements NotificationChannel {
         }
 
         for (const chatId of chatIds) {
+            const locale = this.getChatLocale(chatId)
+            const prefix = hubT(locale, failed ? 'telegram.task.failed' : 'telegram.task.completed')
+            const keyboard = new InlineKeyboard().webApp(hubT(locale, 'telegram.openSession'), url)
             try {
                 await this.bot.api.sendMessage(chatId, `${prefix}\n\n${agentName}: ${notification.summary}`, {
                     reply_markup: keyboard

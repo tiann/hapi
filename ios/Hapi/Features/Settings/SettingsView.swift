@@ -166,6 +166,9 @@ struct SettingsView: View {
                 case .simplifiedChinese:
                     UserDefaults.standard.set(["zh-Hans"], forKey: "AppleLanguages")
                 }
+                // The hub stores this device's notification language, so the
+                // registrations are refreshed with the new tag right away.
+                PushCoordinator.shared.reregisterAll()
             }
         )
     }

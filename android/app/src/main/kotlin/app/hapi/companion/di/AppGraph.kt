@@ -41,6 +41,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -227,6 +228,12 @@ class AppGraph(context: Context) {
             // Roster is loaded: the registrar's first emission re-registers
             // every persisted hub (cheap upsert), then fresh pairings as added.
             deviceRegistrar.start()
+            // A language change alters this device's notification language
+            // hub-side, so refresh the registrations once it is applied.
+            // `drop(1)` skips the initial state emission.
+            launch {
+                appLanguage.drop(1).collect { deviceRegistrar.refreshRegistration() }
+            }
             hubRegistry.state
                 .map { it.activeHubUrl }
                 .distinctUntilChanged()

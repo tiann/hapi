@@ -66,9 +66,12 @@ describe('input-request notification channels', () => {
     ])('keeps Web fallback and toast routing for $delivery (visible=$visible, count=$toastCount)', async ({ visible, toastCount, nativeSent, delivery }) => {
         const pushed: PushPayload[] = []
         const toasts: Array<{ data: { title: string; body: string; sessionId: string; url: string } }> = []
-        const channel = new PushNotificationChannel({ sendToNamespace: async (namespace: string, payload: PushPayload) => {
+        const channel = new PushNotificationChannel({ sendToNamespace: async (
+            namespace: string,
+            payload: PushPayload | ((language: string | null) => PushPayload)
+        ) => {
             expect(namespace).toBe(session.namespace)
-            pushed.push(payload)
+            pushed.push(typeof payload === 'function' ? payload(null) : payload)
         } } as never, { sendToast: async (_namespace: string, event: typeof toasts[number]) => {
             toasts.push(event)
             return toastCount
