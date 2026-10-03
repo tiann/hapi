@@ -652,6 +652,7 @@ export default {
   'composer.settings': 'Settings',
   'composer.terminal': 'Terminal',
   'composer.abort': 'Abort',
+  'composer.abortFailed': 'Could not stop the turn. Try again.',
   'composer.switchRemote': 'Switch to remote mode',
   'composer.attach': 'Attach file',
   'composer.expand': 'Expand message editor',
