@@ -1,4 +1,5 @@
 import type { ComponentType } from 'react'
+import { useTranslation } from '@/lib/use-translation'
 import type { ToolCallBlock } from '@/chat/types'
 import type { SessionMetadataSummary } from '@/types/api'
 import { CodexDiffCompactView, CodexDiffFullView } from '@/components/ToolCard/views/CodexDiffView'
@@ -37,6 +38,7 @@ const SkillFullView: ToolViewComponent = ({ block }: ToolViewProps) => {
 }
 
 const CodexAgentView: ToolViewComponent = ({ block, surface }: ToolViewProps) => {
+    const { t } = useTranslation()
     const input = block.tool.input
     const rows = getCodexAgentFieldRows(block.tool.name, input)
     const prompt = getCodexAgentPrompt(input)
@@ -49,7 +51,7 @@ const CodexAgentView: ToolViewComponent = ({ block, surface }: ToolViewProps) =>
             {surface === 'dialog' && prompt ? (
                 <div className="rounded-xl bg-[var(--app-subtle-bg)] px-3 py-2 text-[var(--app-fg)]">
                     <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-[var(--app-hint)]">
-                        Prompt
+                        {t('tool.prompt')}
                     </div>
                     <div className="whitespace-pre-wrap break-words">{prompt}</div>
                 </div>

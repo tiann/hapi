@@ -41,6 +41,10 @@ vi.mock('@/components/AssistantChat/context', () => ({
     useOptionalHappyChatContext: () => ({ onNestedScrollFollowChange }),
 }))
 
+vi.mock('@/lib/use-translation', () => ({
+    useTranslation: () => ({ t: (key: string) => key, locale: 'en', setLocale: () => {} }),
+}))
+
 import { Reasoning, ReasoningGroup } from './reasoning'
 
 const STORAGE_KEY = 'hapi-reasoning-collapsed'

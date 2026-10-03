@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent, type ReactNode, type WheelEvent } from 'react'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { CloseIcon } from '@/components/icons'
+import { useTranslation } from '@/lib/use-translation'
 
 const MIN_SCALE = 0.25
 /** Floor for fit-to-screen only; dense diagrams can need under 25% to fit. */
@@ -117,6 +118,7 @@ export type ZoomableLightboxProps = {
 }
 
 export function ZoomableLightbox(props: ZoomableLightboxProps) {
+    const { t } = useTranslation()
     const {
         open,
         onClose,
@@ -447,7 +449,7 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
                                 onClick={() => zoomBy(-SCALE_STEP)}
                                 className="rounded bg-white/10 px-3 py-1 text-sm hover:bg-white/20 disabled:opacity-40"
                                 disabled={scale <= minInteractiveScale}
-                                title="Zoom out"
+                                title={t('image.zoomOut')}
                             >
                                 −
                             </button>
@@ -455,7 +457,7 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
                                 type="button"
                                 onClick={resetView}
                                 className="rounded bg-white/10 px-3 py-1 text-sm hover:bg-white/20"
-                                title="Fit to screen"
+                                title={t('image.fitToScreen')}
                             >
                                 {zoomLabel}
                             </button>
@@ -464,7 +466,7 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
                                 onClick={() => zoomBy(SCALE_STEP)}
                                 className="rounded bg-white/10 px-3 py-1 text-sm hover:bg-white/20 disabled:opacity-40"
                                 disabled={scale >= MAX_SCALE}
-                                title="Zoom in"
+                                title={t('image.zoomIn')}
                             >
                                 +
                             </button>
@@ -472,7 +474,7 @@ export function ZoomableLightbox(props: ZoomableLightboxProps) {
                                 type="button"
                                 onClick={closeViewer}
                                 className="flex h-8 w-8 items-center justify-center rounded bg-white/10 hover:bg-white/20"
-                                title="Close"
+                                title={t('button.close')}
                             >
                                 <CloseIcon className="h-4 w-4" />
                             </button>

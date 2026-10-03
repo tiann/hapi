@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { TeamState } from '@hapi/protocol/types'
+import { useTranslation } from '@/lib/use-translation'
 
 function memberStatusDot(status?: string): string {
     if (status === 'active') return 'bg-emerald-500'
@@ -22,6 +23,7 @@ function taskStatusIcon(status?: string): string {
 }
 
 export function TeamPanel(props: { teamState: TeamState }) {
+    const { t } = useTranslation()
     const [expanded, setExpanded] = useState(false)
     const { teamState } = props
     const members = teamState.members ?? []
@@ -74,7 +76,7 @@ export function TeamPanel(props: { teamState: TeamState }) {
                     {/* Members */}
                     {members.length > 0 && (
                         <div className="mb-2">
-                            <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">Members</div>
+                            <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">{t('team.members')}</div>
                             <div className="flex flex-wrap gap-2">
                                 {members.map((member) => (
                                     <div
@@ -95,7 +97,7 @@ export function TeamPanel(props: { teamState: TeamState }) {
                     {/* Tasks */}
                     {tasks.length > 0 && (
                         <div className="mb-2">
-                            <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">Tasks</div>
+                            <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">{t('team.tasks')}</div>
                             <div className="flex flex-col gap-0.5">
                                 {tasks.map((task, idx) => (
                                     <div key={task.id ?? String(idx)} className={`text-xs ${taskStatusColor(task.status)}`}>
@@ -114,7 +116,7 @@ export function TeamPanel(props: { teamState: TeamState }) {
                     {/* Recent Messages */}
                     {messages.length > 0 && (
                         <div>
-                            <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">Recent Messages</div>
+                            <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">{t('team.recentMessages')}</div>
                             <div className="flex flex-col gap-0.5">
                                 {messages.slice(-5).map((msg, idx) => (
                                     <div key={idx} className="text-xs text-[var(--app-hint)]">

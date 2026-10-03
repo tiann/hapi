@@ -61,9 +61,16 @@ vi.mock('@/lib/composer-drafts', () => ({
     saveDraft: mocks.saveDraft,
 }))
 
-vi.mock('@/lib/use-translation', () => ({
-    useTranslation: () => ({ t: (key: string) => key }),
-}))
+vi.mock('@/lib/use-translation', () => {
+    const values: Record<string, string> = {
+        'queuedMessages.editLabel': 'Edit queued message',
+        'queuedMessages.cancelLabel': 'Cancel queued message',
+        'queuedMessages.steer': 'Steer queued message',
+        'queuedMessages.title': 'Queued messages',
+        'queuedMessages.status': 'Queued',
+    }
+    return { useTranslation: () => ({ t: (key: string) => values[key] ?? key }) }
+})
 
 vi.mock('@/lib/toast-context', () => ({
     useToast: () => ({ addToast: mocks.addToast }),

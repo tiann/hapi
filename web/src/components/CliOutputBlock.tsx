@@ -138,7 +138,7 @@ export function CliOutputBlock(props: { text: string }) {
                             <CodeBlock
                                 code={content}
                                 language="shellscript"
-                                title="Terminal output"
+                                title={t('chat.terminalOutput')}
                                 showCopyButton={false}
                                 showWrapToggle={false}
                                 collapseLongContent={isCollapsedPreview}
@@ -152,7 +152,7 @@ export function CliOutputBlock(props: { text: string }) {
                         <DialogTitle>{title}</DialogTitle>
                     </DialogHeader>
                     <div className="mt-3 max-h-[75vh] overflow-auto">
-                        <CodeBlock code={content} language="shellscript" title="Terminal output" />
+                        <CodeBlock code={content} language="shellscript" title={t('chat.terminalOutput')} />
                     </div>
                 </DialogContent>
             </Dialog>

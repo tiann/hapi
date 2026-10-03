@@ -568,6 +568,8 @@ export default {
   'tool.plan.continue': 'Continue planning',
   'tool.patch': 'Patch',
   'tool.input': 'Input',
+  'tool.label': 'Tool',
+  'tool.more': '+{count} more',
   'tool.trace': 'Trace',
   'tool.trace.callsSuffix': 'calls',
   'tool.result': 'Result',
@@ -1209,4 +1211,74 @@ export default {
   'session.summary.status.needsDecision': 'Needs decision',
   'session.summary.status.failed': 'Failed',
   'session.summary.status.stalled': 'Stalled',
+
+  // Install prompt (iOS add-to-home-screen guide)
+  'install.close': 'Close',
+  'install.ios.step1.before': 'Tap the',
+  'install.ios.step1.after': 'Share button in the toolbar',
+  'install.ios.step2.before': 'Scroll down and tap',
+  'install.ios.step2.after': 'Add to Home Screen',
+  'install.ios.step3.before': 'Tap',
+  'install.ios.step3.emphasis': 'Add',
+  'install.ios.step3.after': 'in the top right corner',
+
+  // Queued messages bar
+  'queuedMessages.title': 'Queued messages',
+  'queuedMessages.status': 'Queued',
+  'queuedMessages.editLabel': 'Edit queued message',
+  'queuedMessages.cancelLabel': 'Cancel queued message',
+  'queuedMessages.pendingInvocation.one': '{n} queued message pending invocation',
+  'queuedMessages.pendingInvocation.other': '{n} queued messages pending invocation',
+
+  // Image viewer / zoomable lightbox
+  'image.clickToZoom': 'Click to zoom',
+  'image.previous': 'Previous image',
+  'image.next': 'Next image',
+  'image.zoomIn': 'Zoom in',
+  'image.zoomOut': 'Zoom out',
+  'image.resetZoom': 'Reset zoom',
+  'image.fitToScreen': 'Fit to screen',
+
+  // Chat chrome and status
+  'chat.contextCompacted': 'Context compacted',
+  'chat.reasoning': 'Reasoning',
+  'chat.queuedStatus': 'Queued',
+  'chat.sendingStatus': 'Sending',
+  'chat.terminalOutput': 'Terminal output',
+  'chat.removeAttachment': 'Remove attachment',
+  'chat.uploadFailed': 'Upload failed',
+
+  // Tool cards
+  'tool.output': 'Output',
+  'tool.prompt': 'Prompt',
+  'tool.draft': 'Draft',
+  'tool.rawJson': 'Raw JSON',
+  'tool.fileContent': 'File content',
+
+  // Team panel
+  'team.members': 'Members',
+  'team.tasks': 'Tasks',
+  'team.recentMessages': 'Recent Messages',
+
+  // Terminal / app shell
+  'terminal.inactiveSession': 'Session is inactive. Terminal is unavailable.',
+  'app.sessionUnavailable': 'Session unavailable',
+
+  // Tool result states
+  'tool.state.waitingForPermission': 'Waiting for permission…',
+  'tool.state.running': 'Running…',
+  'tool.state.noOutput': '(no output)',
+  'tool.result.done': 'Done',
+  'tool.result.agentLaunched': 'Agent launched',
+  'tool.result.timedOut': 'Timed out',
+  'tool.result.noStatus': 'No status',
+  'tool.result.skillLoaded': 'Skill loaded',
+  'tool.result.skillLoadedNamed': 'Skill "{name}" loaded',
+  'tool.result.fieldName': 'Name',
+  'tool.result.fieldTask': 'Task',
+  'tool.result.fieldId': 'ID',
+  'tool.result.agentCount': 'Agents: {count}',
+
+  // Session shell
+  'session.notFound.returning': 'Session not found. Returning to sessions…',
 } as const

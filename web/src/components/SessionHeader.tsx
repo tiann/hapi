@@ -487,8 +487,8 @@ export function SessionHeader(props: {
                             type="button"
                             onClick={props.onToggleTerminal}
                             className={headerToggleClass(props.terminalActive ?? false)}
-                            title="Terminal"
-                            aria-label="Terminal"
+                            title={t('chat.terminal')}
+                            aria-label={t('chat.terminal')}
                             aria-pressed={props.terminalActive ?? false}
                         >
                             <TerminalIcon />

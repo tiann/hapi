@@ -755,7 +755,7 @@ function SessionPage() {
         if (sessionError) {
             return (
                 <div className="flex h-full flex-col items-center justify-center gap-3 p-4 text-center">
-                    <div className="text-sm font-medium text-[var(--app-fg)]">Session unavailable</div>
+                    <div className="text-sm font-medium text-[var(--app-fg)]">{t('app.sessionUnavailable')}</div>
                     <div className="max-w-md text-xs text-[var(--app-hint)]">{sessionError}</div>
                     <div className="flex gap-2">
                         <button
@@ -778,7 +778,7 @@ function SessionPage() {
         }
         return (
             <div className="flex-1 flex items-center justify-center p-4">
-                <LoadingState label="Loading session…" className="text-sm" />
+                <LoadingState label={t('loading.session')} className="text-sm" />
             </div>
         )
     }
@@ -840,6 +840,7 @@ function SessionPage() {
 
 function SessionDetailRoute() {
     const { api } = useAppContext()
+    const { t } = useTranslation()
     const pathname = useLocation({ select: location => location.pathname })
     const { sessionId } = useParams({ from: '/sessions/$sessionId' })
     const navigate = useNavigate()
@@ -887,7 +888,7 @@ function SessionDetailRoute() {
     if (sessionNotFound) {
         return (
             <div className="flex-1 flex items-center justify-center p-4">
-                <LoadingState label="Session not found. Returning to sessions…" className="text-sm" />
+                <LoadingState label={t('session.notFound.returning')} className="text-sm" />
             </div>
         )
     }

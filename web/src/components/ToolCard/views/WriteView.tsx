@@ -3,8 +3,10 @@ import { isObject } from '@hapi/protocol'
 import { CodeBlock } from '@/components/CodeBlock'
 import { DiffView } from '@/components/DiffView'
 import { getInputStringAny } from '@/lib/toolInputUtils'
+import { useTranslation } from '@/lib/use-translation'
 
 export function WriteView(props: ToolViewProps) {
+    const { t } = useTranslation()
     const input = props.block.tool.input
     if (!isObject(input)) return null
 
@@ -20,7 +22,7 @@ export function WriteView(props: ToolViewProps) {
                         {filePath}
                     </div>
                 ) : null}
-                <CodeBlock code={content} language="text" title="Draft" size="comfortable" scrollY />
+                <CodeBlock code={content} language="text" title={t('tool.draft')} size="comfortable" scrollY />
             </div>
         )
     }

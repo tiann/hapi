@@ -43,7 +43,7 @@ export function InstallPrompt() {
                             <button
                                 onClick={() => setShowIOSGuide(false)}
                                 className="p-1 -mr-1 text-[var(--app-hint)] active:opacity-60"
-                                aria-label="Close"
+                                aria-label={t('install.close')}
                             >
                                 <CloseIcon className="w-5 h-5" />
                             </button>
@@ -56,7 +56,7 @@ export function InstallPrompt() {
                                 </div>
                                 <div className="flex-1 pt-1">
                                     <p className="text-sm text-[var(--app-fg)]">
-                                        Tap the <ShareIcon className="inline w-5 h-5 align-text-bottom" /> Share button in the toolbar
+                                        {t('install.ios.step1.before')} <ShareIcon className="inline w-5 h-5 align-text-bottom" /> {t('install.ios.step1.after')}
                                     </p>
                                 </div>
                             </div>
@@ -67,7 +67,7 @@ export function InstallPrompt() {
                                 </div>
                                 <div className="flex-1 pt-1">
                                     <p className="text-sm text-[var(--app-fg)]">
-                                        Scroll down and tap <PlusCircleIcon className="inline w-5 h-5 align-text-bottom" /> <strong>Add to Home Screen</strong>
+                                        {t('install.ios.step2.before')} <PlusCircleIcon className="inline w-5 h-5 align-text-bottom" /> <strong>{t('install.ios.step2.after')}</strong>
                                     </p>
                                 </div>
                             </div>
@@ -78,7 +78,7 @@ export function InstallPrompt() {
                                 </div>
                                 <div className="flex-1 pt-1">
                                     <p className="text-sm text-[var(--app-fg)]">
-                                        Tap <strong>Add</strong> in the top right corner
+                                        {t('install.ios.step3.before')} <strong>{t('install.ios.step3.emphasis')}</strong> {t('install.ios.step3.after')}
                                     </p>
                                 </div>
                             </div>
@@ -124,7 +124,7 @@ export function InstallPrompt() {
                             dismissInstall()
                         }}
                         className="shrink-0 p-2 text-[var(--app-hint)] active:opacity-60"
-                        aria-label="Dismiss"
+                        aria-label={t('button.dismiss')}
                     >
                         <CloseIcon className="w-4 h-4" />
                     </button>
@@ -169,7 +169,7 @@ export function InstallPrompt() {
                         dismissInstall()
                     }}
                     className="shrink-0 p-2 text-[var(--app-hint)] active:opacity-60"
-                    aria-label="Dismiss"
+                    aria-label={t('button.dismiss')}
                 >
                     <CloseIcon className="w-4 h-4" />
                 </button>

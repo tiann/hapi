@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { cva, type VariantProps } from 'class-variance-authority'
 import { cn } from '@/lib/utils'
+import { useTranslation } from '@/lib/use-translation'
 
 const toastVariants = cva(
     'pointer-events-auto w-full max-w-sm rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-fg)] shadow-lg',
@@ -24,6 +25,7 @@ export type ToastProps = React.HTMLAttributes<HTMLDivElement> &
 }
 
 export function Toast({ title, body, onClose, className, variant, ...props }: ToastProps) {
+    const { t } = useTranslation()
     const handleClose = (event: React.MouseEvent<HTMLButtonElement>) => {
         event.stopPropagation()
         onClose?.()
@@ -41,7 +43,7 @@ export function Toast({ title, body, onClose, className, variant, ...props }: To
                         type="button"
                         className="text-xs text-[var(--app-hint)] hover:text-[var(--app-fg)]"
                         onClick={handleClose}
-                        aria-label="Dismiss"
+                        aria-label={t('button.dismiss')}
                     >
                         x
                     </button>

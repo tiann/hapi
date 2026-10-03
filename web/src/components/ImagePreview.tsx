@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent, type ReactNode, type SyntheticEvent, type WheelEvent } from 'react'
 import { CloseIcon } from '@/components/icons'
+import { useTranslation } from '@/lib/use-translation'
 
 const MIN_IMAGE_SCALE = 0.25
 const MAX_IMAGE_SCALE = 8
@@ -42,6 +43,7 @@ export function ImagePreview(props: {
     onTriggerContextMenu?: (event: MouseEvent<HTMLButtonElement>) => void
     onTriggerClick?: (event: MouseEvent<HTMLButtonElement>) => void
 }) {
+    const { t } = useTranslation()
     const [viewerOpen, setViewerOpen] = useState(false)
     const [previewImages, setPreviewImages] = useState<PreviewImage[]>([])
     const [previewIndex, setPreviewIndex] = useState(0)
@@ -283,7 +285,7 @@ export function ImagePreview(props: {
                 data-image-preview-label={props.label}
                 data-image-preview-gallery={props.galleryId ?? ''}
                 className={props.buttonClassName ?? 'group flex min-h-[18rem] w-full items-center justify-center overflow-auto rounded-md border border-[var(--app-border)] bg-[var(--app-code-bg)] p-3 text-left'}
-                title="Click to zoom"
+                title={t('image.clickToZoom')}
             >
                 <img
                     src={props.src}
@@ -312,8 +314,8 @@ export function ImagePreview(props: {
                                     onClick={() => showPreview(previewIndex - 1)}
                                     className="flex h-8 w-8 items-center justify-center rounded bg-white/10 text-lg hover:bg-white/20 disabled:opacity-40"
                                     disabled={previewIndex === 0}
-                                    title="Previous image"
-                                    aria-label="Previous image"
+                                    title={t('image.previous')}
+                                    aria-label={t('image.previous')}
                                 >
                                     ←
                                 </button>
@@ -325,8 +327,8 @@ export function ImagePreview(props: {
                                     onClick={() => showPreview(previewIndex + 1)}
                                     className="flex h-8 w-8 items-center justify-center rounded bg-white/10 text-lg hover:bg-white/20 disabled:opacity-40"
                                     disabled={previewIndex === previewImages.length - 1}
-                                    title="Next image"
-                                    aria-label="Next image"
+                                    title={t('image.next')}
+                                    aria-label={t('image.next')}
                                 >
                                     →
                                 </button>
@@ -337,7 +339,7 @@ export function ImagePreview(props: {
                             onClick={() => zoomBy(-IMAGE_SCALE_STEP)}
                             className="rounded bg-white/10 px-3 py-1 text-sm hover:bg-white/20 disabled:opacity-40"
                             disabled={scale <= MIN_IMAGE_SCALE}
-                            title="Zoom out"
+                            title={t('image.zoomOut')}
                         >
                             −
                         </button>
@@ -345,7 +347,7 @@ export function ImagePreview(props: {
                             type="button"
                             onClick={resetView}
                             className="rounded bg-white/10 px-3 py-1 text-sm hover:bg-white/20"
-                            title="Reset zoom"
+                            title={t('image.resetZoom')}
                         >
                             {Math.round(scale * 100)}%
                         </button>
@@ -354,7 +356,7 @@ export function ImagePreview(props: {
                             onClick={() => zoomBy(IMAGE_SCALE_STEP)}
                             className="rounded bg-white/10 px-3 py-1 text-sm hover:bg-white/20 disabled:opacity-40"
                             disabled={scale >= MAX_IMAGE_SCALE}
-                            title="Zoom in"
+                            title={t('image.zoomIn')}
                         >
                             +
                         </button>
@@ -362,7 +364,7 @@ export function ImagePreview(props: {
                             type="button"
                             onClick={closeViewer}
                             className="flex h-8 w-8 items-center justify-center rounded bg-white/10 hover:bg-white/20"
-                            title="Close"
+                            title={t('button.close')}
                         >
                             <CloseIcon className="h-4 w-4" />
                         </button>

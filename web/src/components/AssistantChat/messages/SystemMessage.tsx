@@ -5,6 +5,7 @@ import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
 import { getConversationMessageAnchorId } from '@/chat/outline'
 import { MessageTimestamp } from '@/components/AssistantChat/messages/MessageTimestamp'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
+import { useTranslation } from '@/lib/use-translation'
 
 function formatTokenDelta(event: AgentEvent | undefined): string | null {
     if (!event || event.type !== 'compact-summary') return null
@@ -16,6 +17,7 @@ function formatTokenDelta(event: AgentEvent | undefined): string | null {
 }
 
 export function HappySystemMessage() {
+    const { t } = useTranslation()
     const role = useAuiState((s) => s.message.role)
     const messageId = useAuiState((s) => s.message.id)
     const text = useAuiState((s) => {
@@ -46,7 +48,7 @@ export function HappySystemMessage() {
                 <div className="mx-auto max-w-[92%] rounded-lg border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-3 py-2">
                     <div className="flex items-center gap-1.5 text-xs text-[var(--app-hint)]">
                         <span aria-hidden="true">📦</span>
-                        <span className="font-medium">Context compacted</span>
+                        <span className="font-medium">{t('chat.contextCompacted')}</span>
                         {delta ? <span className="font-normal">{delta}</span> : null}
                         <MessageTimestamp className="text-[10px]" />
                     </div>

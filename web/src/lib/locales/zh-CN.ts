@@ -566,6 +566,8 @@ export default {
   'tool.plan.continue': '继续规划',
   'tool.patch': '补丁',
   'tool.input': '输入',
+  'tool.label': '工具',
+  'tool.more': '还有 {count} 个',
   'tool.trace': '追踪',
   'tool.trace.callsSuffix': '次调用',
   'tool.result': '结果',
@@ -1207,4 +1209,74 @@ export default {
   'session.summary.status.needsDecision': '需要决策',
   'session.summary.status.failed': '失败',
   'session.summary.status.stalled': '已停滞',
+
+  // Install prompt (iOS add-to-home-screen guide)
+  'install.close': '关闭',
+  'install.ios.step1.before': '点击',
+  'install.ios.step1.after': '工具栏中的分享按钮',
+  'install.ios.step2.before': '向下滚动并点击',
+  'install.ios.step2.after': '添加到主屏幕',
+  'install.ios.step3.before': '点击',
+  'install.ios.step3.emphasis': '添加',
+  'install.ios.step3.after': '（位于右上角）',
+
+  // Queued messages bar
+  'queuedMessages.title': '队列中的消息',
+  'queuedMessages.status': '已排队',
+  'queuedMessages.editLabel': '编辑排队消息',
+  'queuedMessages.cancelLabel': '取消排队消息',
+  'queuedMessages.pendingInvocation.one': '{n} 条排队消息等待调用',
+  'queuedMessages.pendingInvocation.other': '{n} 条排队消息等待调用',
+
+  // Image viewer / zoomable lightbox
+  'image.clickToZoom': '点击放大',
+  'image.previous': '上一张图片',
+  'image.next': '下一张图片',
+  'image.zoomIn': '放大',
+  'image.zoomOut': '缩小',
+  'image.resetZoom': '重置缩放',
+  'image.fitToScreen': '适应屏幕',
+
+  // Chat chrome and status
+  'chat.contextCompacted': '上下文已压缩',
+  'chat.reasoning': '推理',
+  'chat.queuedStatus': '已排队',
+  'chat.sendingStatus': '发送中',
+  'chat.terminalOutput': '终端输出',
+  'chat.removeAttachment': '移除附件',
+  'chat.uploadFailed': '上传失败',
+
+  // Tool cards
+  'tool.output': '输出',
+  'tool.prompt': '提示词',
+  'tool.draft': '草稿',
+  'tool.rawJson': '原始 JSON',
+  'tool.fileContent': '文件内容',
+
+  // Team panel
+  'team.members': '成员',
+  'team.tasks': '任务',
+  'team.recentMessages': '最近消息',
+
+  // Terminal / app shell
+  'terminal.inactiveSession': '会话未激活。终端不可用。',
+  'app.sessionUnavailable': '会话不可用',
+
+  // Tool result states
+  'tool.state.waitingForPermission': '等待授权…',
+  'tool.state.running': '运行中…',
+  'tool.state.noOutput': '（无输出）',
+  'tool.result.done': '完成',
+  'tool.result.agentLaunched': '代理已启动',
+  'tool.result.timedOut': '已超时',
+  'tool.result.noStatus': '无状态',
+  'tool.result.skillLoaded': '技能已加载',
+  'tool.result.skillLoadedNamed': '技能“{name}”已加载',
+  'tool.result.fieldName': '名称',
+  'tool.result.fieldTask': '任务',
+  'tool.result.fieldId': 'ID',
+  'tool.result.agentCount': '代理：{count}',
+
+  // Session shell
+  'session.notFound.returning': '未找到会话，正在返回会话列表…',
 } as const

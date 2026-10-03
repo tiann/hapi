@@ -255,7 +255,7 @@ function renderTaskSummary(
                 ))}
                 {remaining > 0 ? (
                     <div className="text-xs text-[var(--app-hint)] italic">
-                        (+{remaining} more)
+                        {t('tool.more', { count: remaining })}
                     </div>
                 ) : null}
             </div>
@@ -263,7 +263,11 @@ function renderTaskSummary(
     )
 }
 
-function renderToolInput(block: ToolCallBlock, surface: 'inline' | 'dialog' = 'inline'): ReactNode {
+function renderToolInput(
+    block: ToolCallBlock,
+    t: (key: string) => string,
+    surface: 'inline' | 'dialog' = 'inline'
+): ReactNode {
     const collapseLongContent = surface === 'inline'
     // The inline surface renders inside a role="button" preview, so the
     // wrap toggle's <button> would nest inside an interactive ancestor
@@ -291,11 +295,11 @@ function renderToolInput(block: ToolCallBlock, surface: 'inline' | 'dialog' = 'i
             ? commandArray.filter((part) => typeof part === 'string').join(' ')
             : getInputStringAny(input, ['command', 'cmd'])
         if (cmd) {
-            return <CodeBlock code={cmd} language="bash" title="Command" collapseLongContent={collapseLongContent} {...codeBlockSurfaceProps} />
+            return <CodeBlock code={cmd} language="bash" title={t('terminal.commandName')} collapseLongContent={collapseLongContent} {...codeBlockSurfaceProps} />
         }
     }
 
-    return <CodeBlock code={safeStringify(input)} language="json" title="Input" collapseLongContent={collapseLongContent} {...codeBlockSurfaceProps} />
+    return <CodeBlock code={safeStringify(input)} language="json" title={t('tool.input')} collapseLongContent={collapseLongContent} {...codeBlockSurfaceProps} />
 }
 
 export function ToolStatusIcon(props: { state: ToolCallBlock['tool']['state'] }) {
@@ -391,7 +395,7 @@ export function ToolDetailDialogContent(props: {
                 {FullToolView ? (
                     <FullToolView block={props.block} metadata={props.metadata} surface="dialog" />
                 ) : (
-                    renderToolInput(props.block, 'dialog')
+                    renderToolInput(props.block, t, 'dialog')
                 )}
             </div>
             <TraceSection block={props.block} metadata={props.metadata} />
@@ -593,7 +597,7 @@ function ToolCardInner(props: ToolCardProps) {
                                     onKeyDown={openDetailsFromInlinePreviewKeyDown}
                                 >
                                     <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">{t('tool.input')}</div>
-                                    {renderToolInput(props.block, 'inline')}
+                                    {renderToolInput(props.block, t, 'inline')}
                                 </div>
                                 <div
                                     className="cursor-pointer rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"

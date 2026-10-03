@@ -276,7 +276,7 @@ describe('Codex agent result formatting', () => {
             { targets: ['agent-123'] }
         )
 
-        expect(container).toHaveTextContent('1 agent')
+        expect(container).toHaveTextContent('Agents: 1')
         expect(container).toHaveTextContent('completed')
         expect(container).toHaveTextContent('agent-123')
         expect(container).toHaveTextContent('42。')
@@ -290,7 +290,7 @@ describe('Codex agent result formatting', () => {
             'inline'
         )
 
-        expect(container).toHaveTextContent('1 agent')
+        expect(container).toHaveTextContent('Agents: 1')
         expect(container).toHaveTextContent('1 completed')
         expect(container).not.toHaveTextContent('agent-123')
         expect(container).not.toHaveTextContent('secret child output')

@@ -270,7 +270,7 @@ function TraceChildRow({ child, metadata, expanded, onToggle, mode }: TraceChild
                     disabled={!onToggle}
                 >
                     {chevron}
-                    <span className="font-medium">Output</span>
+                    <span className="font-medium">{t('tool.output')}</span>
                     <span className="min-w-0 truncate">{child.text.trim().split('\n')[0]}</span>
                 </button>
                 {expanded && (

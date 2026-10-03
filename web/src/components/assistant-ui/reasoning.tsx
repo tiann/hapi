@@ -6,6 +6,7 @@ import {
 } from '@assistant-ui/react'
 import { MarkdownTextPrimitive } from '@assistant-ui/react-markdown'
 import { cn } from '@/lib/utils'
+import { useTranslation } from '@/lib/use-translation'
 import { useReasoningCollapse } from '@/hooks/useReasoningCollapse'
 import { useOptionalHappyChatContext } from '@/components/AssistantChat/context'
 import {
@@ -93,6 +94,7 @@ export const ReasoningGroup: FC<HappyReasoningGroupProps> = ({
     startIndex = 0,
     endIndex,
 }) => {
+    const { t } = useTranslation()
     const [isOpen, setIsOpen] = useState(false)
     const scrollRef = useRef<HTMLDivElement | null>(null)
     const followLatestRef = useRef(true)
@@ -214,7 +216,7 @@ export const ReasoningGroup: FC<HappyReasoningGroupProps> = ({
                 )}
             >
                 <ChevronIcon open={isOpen} />
-                <span>Reasoning</span>
+                <span>{t('chat.reasoning')}</span>
                 {isStreaming && (
                     <span className="ml-1 flex items-center gap-1 text-[var(--app-hint)]">
                         <ShimmerDot />

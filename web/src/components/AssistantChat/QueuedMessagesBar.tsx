@@ -333,17 +333,19 @@ export function QueuedMessagesBar({
     return (
         <div
             role="status"
-            aria-label={`${queued.length} queued message${queued.length === 1 ? '' : 's'} pending invocation`}
+            aria-label={queued.length === 1
+                ? t('queuedMessages.pendingInvocation.one', { n: queued.length })
+                : t('queuedMessages.pendingInvocation.other', { n: queued.length })}
             className="mx-auto w-full max-w-content"
         >
             <div className="px-3 pb-0 pt-2 text-sm text-[var(--app-fg-muted)]">
                 <div className="flex items-center gap-1.5 mb-1.5 text-xs font-medium text-[var(--app-hint)]">
                     <ClockIcon />
-                    <span>Queued</span>
+                    <span>{t('queuedMessages.status')}</span>
                 </div>
                 <ul
                     className="flex flex-col gap-1.5 max-h-32 sm:max-h-48 overflow-y-auto"
-                    aria-label="Queued messages"
+                    aria-label={t('queuedMessages.title')}
                 >
                     {queued.map((msg) => {
                         const preview = getQueuedMessagePreview(msg)
@@ -563,7 +565,7 @@ export function QueuedMessagesBar({
                                     {canSteerRow ? (
                                         <button
                                             type="button"
-                                            aria-label="Steer queued message"
+                                            aria-label={t('queuedMessages.steer')}
                                             title={t('queuedMessages.steer')}
                                             disabled={steerPending}
                                             onClick={handleSteer}
@@ -575,7 +577,7 @@ export function QueuedMessagesBar({
                                     ) : null}
                                     <button
                                         type="button"
-                                        aria-label="Edit queued message"
+                                        aria-label={t('queuedMessages.editLabel')}
                                         disabled={!canEdit}
                                         onClick={handleEdit}
                                         onMouseDown={(e) => e.preventDefault()}
@@ -598,7 +600,7 @@ export function QueuedMessagesBar({
                                     </button>
                                     <button
                                         type="button"
-                                        aria-label="Cancel queued message"
+                                        aria-label={t('queuedMessages.cancelLabel')}
                                         disabled={!canCancel}
                                         onClick={handleCancel}
                                         onMouseDown={(e) => e.preventDefault()}

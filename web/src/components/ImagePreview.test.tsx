@@ -1,13 +1,14 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
+import { I18nProvider } from '@/lib/i18n-context'
 import { ImagePreview } from './ImagePreview'
 
 function renderGallery() {
     render(
-        <>
+        <I18nProvider>
             <ImagePreview src="/first.png" fileName="first.png" label="First image" />
             <ImagePreview src="/second.png" fileName="second.png" label="Second image" />
-        </>
+        </I18nProvider>
     )
 }
 
@@ -43,11 +44,11 @@ describe('ImagePreview gallery navigation', () => {
 
     it('keeps named galleries separate from ungrouped previews', () => {
         render(
-            <>
+            <I18nProvider>
                 <ImagePreview src="/sent.png" fileName="sent.png" label="Sent image" />
                 <ImagePreview src="/draft-one.png" fileName="draft-one.png" label="First draft" galleryId="composer-attachments" />
                 <ImagePreview src="/draft-two.png" fileName="draft-two.png" label="Second draft" galleryId="composer-attachments" />
-            </>
+            </I18nProvider>
         )
 
         fireEvent.click(screen.getByRole('button', { name: /first draft/i }))
@@ -65,14 +66,16 @@ describe('ImagePreview gallery navigation', () => {
         const onTriggerClick = vi.fn()
 
         render(
-            <ImagePreview
-                src="/drag.png"
-                fileName="drag.png"
-                label="Drag image"
-                onTriggerPointerDown={onTriggerPointerDown}
-                onTriggerContextMenu={onTriggerContextMenu}
-                onTriggerClick={onTriggerClick}
-            />
+            <I18nProvider>
+                <ImagePreview
+                    src="/drag.png"
+                    fileName="drag.png"
+                    label="Drag image"
+                    onTriggerPointerDown={onTriggerPointerDown}
+                    onTriggerContextMenu={onTriggerContextMenu}
+                    onTriggerClick={onTriggerClick}
+                />
+            </I18nProvider>
         )
 
         const trigger = screen.getByRole('button', { name: /drag image/i })
