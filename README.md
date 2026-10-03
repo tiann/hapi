@@ -48,6 +48,8 @@ For self-hosted options (Cloudflare Tunnel, Tailscale), see [Installation](docs/
 - [Why HAPI](docs/guide/why-hapi.md)
 - [FAQ](docs/guide/faq.md)
 
+> Russian translations are kept next to the English originals as `*.ru.md` — start with [Быстрый старт](docs/guide/quick-start.ru.md).
+
 ## Native apps (iOS / Android)
 
 The repository includes SwiftUI/UIKit and Kotlin Compose clients with chat, approvals, session creation, files, dictation, and push notifications. See the [native app guide](docs/guide/native-apps.md) for capabilities, platform differences and pairing. Build instructions: [iOS](ios/README.md) and [Android](android/README.md). Developer protocol: [client contract](docs/api/client-contract/index.md).

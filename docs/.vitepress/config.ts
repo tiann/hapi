@@ -52,6 +52,24 @@ export default defineConfig({
         ]
       },
       {
+        text: 'Русский',
+        items: [
+          { text: 'Быстрый старт', link: '/guide/quick-start.ru' },
+          { text: 'Установка', link: '/guide/installation.ru' },
+          { text: 'Нативные приложения', link: '/guide/native-apps.ru' },
+          { text: 'Web / PWA', link: '/guide/pwa.ru' },
+          { text: 'Как это работает', link: '/guide/how-it-works.ru' },
+          { text: 'Голосовой ассистент', link: '/guide/voice-assistant.ru' },
+          { text: 'Почему HAPI', link: '/guide/why-hapi.ru' },
+          { text: 'FAQ', link: '/guide/faq.ru' },
+          { text: 'Агенты', link: '/guide/agents.ru' },
+          { text: 'Codex: использование и ограничения', link: '/guide/codex-shared-sessions.ru' },
+          { text: 'Пространства имён', link: '/guide/namespace.ru' },
+          { text: 'Развёртывание', link: '/guide/deployment.ru' },
+          { text: 'Уведомления', link: '/guide/notifications.ru' }
+        ]
+      },
+      {
         text: 'API',
         items: [
           { text: 'Native Companion Contract', link: '/api/native-companion-contract' },
