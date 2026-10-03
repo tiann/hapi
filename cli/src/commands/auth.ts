@@ -3,6 +3,7 @@ import os from 'node:os'
 import * as readline from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
 import { configuration } from '@/configuration'
+import { cliT } from '@/i18n/cliI18n'
 import { readSettings, clearMachineId, updateSettings } from '@/persistence'
 import { initializeApiUrl } from '@/ui/apiUrlInit'
 import type { CommandDefinition } from './types'
@@ -21,40 +22,42 @@ export async function handleAuthCommand(args: string[]): Promise<void> {
         const envToken = process.env.CLI_API_TOKEN
         const settingsToken = settings.cliApiToken
         const hasToken = Boolean(envToken || settingsToken)
-        const tokenSource = envToken ? 'environment' : (settingsToken ? 'settings file' : 'none')
-        console.log(chalk.bold('\nDirect Connect Status\n'))
+        const tokenSource = envToken
+            ? cliT('auth.status.tokenSource.environment')
+            : (settingsToken ? cliT('auth.status.tokenSource.settingsFile') : cliT('auth.status.tokenSource.none'))
+        console.log(chalk.bold(`\n${cliT('auth.status.title')}\n`))
         console.log(chalk.gray(`  HAPI_API_URL: ${configuration.apiUrl}`))
-        console.log(chalk.gray(`  CLI_API_TOKEN: ${hasToken ? 'set' : 'missing'}`))
-        console.log(chalk.gray(`  Token Source: ${tokenSource}`))
-        console.log(chalk.gray(`  Machine ID: ${settings.machineId ?? 'not set'}`))
-        console.log(chalk.gray(`  Host: ${os.hostname()}`))
+        console.log(chalk.gray(`  CLI_API_TOKEN: ${hasToken ? cliT('auth.status.tokenSet') : cliT('auth.status.tokenMissing')}`))
+        console.log(chalk.gray(`  ${cliT('auth.status.tokenSourceLabel')}: ${tokenSource}`))
+        console.log(chalk.gray(`  ${cliT('auth.status.machineId')}: ${settings.machineId ?? cliT('auth.status.notSet')}`))
+        console.log(chalk.gray(`  ${cliT('auth.status.host')}: ${os.hostname()}`))
 
         if (!hasToken) {
             console.log('')
-            console.log(chalk.yellow('  Token not configured. To get your token:'))
-            console.log(chalk.gray('    1. Check the server startup logs (first run shows generated token)'))
-            console.log(chalk.gray('    2. Read ~/.hapi/settings.json on the server'))
-            console.log(chalk.gray('    3. Ask your server administrator (if token is set via env var)'))
+            console.log(chalk.yellow(`  ${cliT('auth.status.missing.title')}`))
+            console.log(chalk.gray(`    ${cliT('auth.status.missing.step1')}`))
+            console.log(chalk.gray(`    ${cliT('auth.status.missing.step2')}`))
+            console.log(chalk.gray(`    ${cliT('auth.status.missing.step3')}`))
             console.log('')
-            console.log(chalk.gray('  Then run: hapi auth login'))
+            console.log(chalk.gray(`  ${cliT('auth.status.missing.then')}`))
         }
         return
     }
 
     if (subcommand === 'login') {
         if (!process.stdin.isTTY) {
-            console.error(chalk.red('Cannot prompt for token in non-TTY environment.'))
-            console.error(chalk.gray('Set CLI_API_TOKEN environment variable instead.'))
+            console.error(chalk.red(cliT('auth.error.noTty')))
+            console.error(chalk.gray(cliT('auth.error.noTtyHint')))
             process.exit(1)
         }
 
         const rl = readline.createInterface({ input, output })
 
         try {
-            const token = await rl.question(chalk.cyan('Enter CLI_API_TOKEN: '))
+            const token = await rl.question(chalk.cyan(cliT('auth.prompt.token')))
 
             if (!token.trim()) {
-                console.error(chalk.red('Token cannot be empty'))
+                console.error(chalk.red(cliT('auth.error.emptyToken')))
                 process.exit(1)
             }
 
@@ -63,7 +66,7 @@ export async function handleAuthCommand(args: string[]): Promise<void> {
                 cliApiToken: token.trim()
             }))
             configuration._setCliApiToken(token.trim())
-            console.log(chalk.green(`\nToken saved to ${configuration.settingsFile}`))
+            console.log(chalk.green(`\n${cliT('auth.saved', { path: configuration.settingsFile })}`))
         } finally {
             rl.close()
         }
@@ -76,29 +79,29 @@ export async function handleAuthCommand(args: string[]): Promise<void> {
             cliApiToken: undefined
         }))
         await clearMachineId()
-        console.log(chalk.green('Cleared local credentials (token and machineId).'))
-        console.log(chalk.gray('Note: If CLI_API_TOKEN is set via environment variable, it will still be used.'))
+        console.log(chalk.green(cliT('auth.logout.done')))
+        console.log(chalk.gray(cliT('auth.logout.note')))
         return
     }
 
-    console.error(chalk.red(`Unknown auth subcommand: ${subcommand}`))
+    console.error(chalk.red(cliT('auth.error.unknownSubcommand', { subcommand })))
     showHelp()
     process.exit(1)
 }
 
 function showHelp(): void {
     console.log(`
-${chalk.bold('hapi auth')} - Authentication management
+${chalk.bold('hapi auth')} - ${cliT('auth.help.tagline')}
 
-${chalk.bold('Usage:')}
-  hapi auth status            Show current configuration
-  hapi auth login             Enter and save CLI_API_TOKEN
-  hapi auth logout            Clear saved credentials
+${chalk.bold(cliT('auth.help.usage'))}
+  hapi auth status            ${cliT('auth.help.status')}
+  hapi auth login             ${cliT('auth.help.login')}
+  hapi auth logout            ${cliT('auth.help.logout')}
 
-${chalk.bold('Token priority (highest to lowest):')}
-  1. CLI_API_TOKEN environment variable
-  2. ~/.hapi/settings.json
-  3. Interactive prompt (on first run)
+${chalk.bold(cliT('auth.help.priority'))}
+  ${cliT('auth.help.priority1')}
+  ${cliT('auth.help.priority2')}
+  ${cliT('auth.help.priority3')}
 `)
 }
 
@@ -109,7 +112,7 @@ export const authCommand: CommandDefinition = {
         try {
             await handleAuthCommand(commandArgs)
         } catch (error) {
-            console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+            console.error(chalk.red(cliT('common.error')), error instanceof Error ? error.message : cliT('common.unknownError'))
             if (process.env.DEBUG) {
                 console.error(error)
             }

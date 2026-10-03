@@ -1,3 +1,4 @@
+import { cliT } from '@/i18n/cliI18n'
 import chalk from 'chalk'
 import type { CommandDefinition, CommandContext } from './types'
 
@@ -43,7 +44,7 @@ export const hubCommand: CommandDefinition = {
                 shuttingDown = true
                 process.off('SIGINT', shutdown)
                 process.off('SIGTERM', shutdown)
-                console.log('\nShutting down...')
+                console.log(`\n${cliT('hub.shuttingDown')}`)
                 await hub.stop()
                 process.exit(0)
             }
@@ -51,7 +52,7 @@ export const hubCommand: CommandDefinition = {
             process.on('SIGTERM', shutdown)
             await new Promise(() => {})
         } catch (error) {
-            console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+            console.error(chalk.red(cliT('common.error')), error instanceof Error ? error.message : cliT('common.unknownError'))
             if (process.env.DEBUG) {
                 console.error(error)
             }

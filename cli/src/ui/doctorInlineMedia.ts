@@ -3,6 +3,7 @@
  */
 
 import chalk from 'chalk'
+import { cliT } from '@/i18n/cliI18n'
 import { existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { configuration } from '@/configuration'
@@ -12,6 +13,7 @@ import { projectPath } from '@/projectPath'
 import { cursorHapiMcpServerId } from '@/cursor/utils/cursorMcpOverlay'
 
 export type InlineMediaDoctorCheck = {
+    id: 'helper' | 'sdk' | 'sessionId' | 'hubAuth'
     ok: boolean
     label: string
     detail: string
@@ -130,27 +132,30 @@ export async function collectInlineMediaSessionBridges(jwt: string): Promise<Inl
 }
 
 export async function runDoctorInlineMedia(): Promise<number> {
-    console.log(chalk.bold.cyan('\n🖼️  hapi inline media doctor\n'))
+    console.log(chalk.bold.cyan(`\n${cliT('doctor.inline.title')}\n`))
 
     const checks: InlineMediaDoctorCheck[] = []
     const scriptPath = inlineMediaHelperScriptPath()
     const scriptExists = existsSync(scriptPath)
     checks.push({
+        id: 'helper',
         ok: scriptExists,
-        label: 'Helper script (repo shell fallback)',
-        detail: scriptExists ? scriptPath : `missing: ${scriptPath} (optional outside source checkout)`,
+        label: cliT('doctor.inline.check.helper'),
+        detail: scriptExists ? scriptPath : cliT('doctor.inline.check.helperMissing', { path: scriptPath }),
     })
 
     const sdkOk = mcpSdkResolvable()
     checks.push({
+        id: 'sdk',
         ok: sdkOk,
-        label: '@modelcontextprotocol/sdk (repo shell fallback)',
-        detail: sdkOk ? 'resolvable from cli or repo root' : 'not found — optional outside source checkout',
+        label: cliT('doctor.inline.check.sdk'),
+        detail: sdkOk ? cliT('doctor.inline.check.sdkOk') : cliT('doctor.inline.check.sdkMissing'),
     })
 
     const envSessionId = process.env.HAPI_SESSION_ID
     if (envSessionId) {
         checks.push({
+            id: 'sessionId',
             ok: true,
             label: 'HAPI_SESSION_ID',
             detail: envSessionId,
@@ -164,20 +169,21 @@ export async function runDoctorInlineMedia(): Promise<number> {
         jwt = null
     }
     checks.push({
+        id: 'hubAuth',
         ok: jwt !== null,
-        label: 'Hub auth',
-        detail: jwt ? configuration.apiUrl : 'CLI_API_TOKEN missing or auth failed',
+        label: cliT('doctor.inline.check.hubAuth'),
+        detail: jwt ? configuration.apiUrl : cliT('doctor.inline.check.hubAuthMissing'),
     })
 
     for (const check of checks) {
         const mark = check.ok
             ? chalk.green('✓')
-            : (check.label === 'Hub auth' ? chalk.red('✗') : chalk.yellow('○'))
+            : (check.id === 'hubAuth' ? chalk.red('✗') : chalk.yellow('○'))
         console.log(`${mark} ${check.label}: ${chalk.gray(check.detail)}`)
     }
 
     if (!jwt) {
-        console.log(chalk.red('\nCannot probe sessions without hub auth.\n'))
+        console.log(chalk.red(`\n${cliT('doctor.inline.noAuth')}\n`))
         return 1
     }
 
@@ -186,7 +192,7 @@ export async function runDoctorInlineMedia(): Promise<number> {
         bridges = await collectInlineMediaSessionBridges(jwt)
     } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
-        console.log(chalk.red(`\n✗ Session probe failed: ${msg}\n`))
+        console.log(chalk.red(`\n${cliT('doctor.inline.probeFailed', { error: msg })}\n`))
         return 1
     }
 
@@ -194,12 +200,12 @@ export async function runDoctorInlineMedia(): Promise<number> {
     const listOmitsMcp = bridges.some((b) => b.hapiMcpUrl && !b.listShowsMcpUrl)
     const shellFallbackAvailable = scriptExists && sdkOk
 
-    console.log(chalk.bold('\nActive sessions'))
+    console.log(chalk.bold(`\n${cliT('doctor.inline.sessions')}`))
     if (bridges.length === 0) {
-        console.log(chalk.yellow('  No active sessions on hub.'))
+        console.log(chalk.yellow(cliT('doctor.inline.noSessions')))
     } else {
         for (const b of bridges) {
-            const bridgeMark = b.hapiMcpUrl ? chalk.green('bridge') : chalk.yellow('no bridge')
+            const bridgeMark = b.hapiMcpUrl ? chalk.green(cliT('doctor.inline.bridge')) : chalk.yellow(cliT('doctor.inline.noBridge'))
             const title = b.name ?? b.path ?? b.id
             console.log(
                 `  ${chalk.blue(b.prefix)} ${bridgeMark} ${chalk.gray(title)}`
@@ -215,26 +221,24 @@ export async function runDoctorInlineMedia(): Promise<number> {
     }
 
     if (listOmitsMcp) {
-        console.log(chalk.yellow(
-            '\n⚠ Some active sessions have hapiMcpUrl on detail GET but not on list — upgrade hub or use per-session GET.'
-        ))
+        console.log(chalk.yellow(`\n${cliT('doctor.inline.listOmitsMcp')}`))
     }
 
     const cursorSessions = withBridge.filter((b) => b.flavor === 'cursor')
     if (cursorSessions.length > 0) {
         console.log(chalk.bold('\nCursor ACP'))
-        console.log(chalk.gray('  Cursor ignores session/new mcpServers. Remote sessions use ~/.cursor/mcp.json + `agent mcp enable hapi-<sessionId>`.'))
-        console.log(chalk.gray('  Tool names are bare: display_image, display_video, display_media, change_title (not hapi_display_image).'))
+        console.log(chalk.gray(cliT('doctor.inline.cursorNote1')))
+        console.log(chalk.gray(cliT('doctor.inline.cursorNote2')))
         for (const session of cursorSessions) {
             const serverId = cursorHapiMcpServerId(session.id)
-            console.log(chalk.gray(`  Verify (${session.prefix}): agent mcp list-tools ${serverId}`))
+            console.log(chalk.gray(cliT('doctor.inline.cursorVerify', { prefix: session.prefix, serverId })))
         }
     }
 
-    console.log(chalk.bold('\nAgent inline path'))
-    console.log(chalk.gray('  1. MCP tool display_image / display_video / display_media in the running session (ACP flavors via hapi bridge)'))
+    console.log(chalk.bold(`\n${cliT('doctor.inline.agentTitle')}`))
+    console.log(chalk.gray(cliT('doctor.inline.agentStep1')))
     if (shellFallbackAvailable) {
-        console.log(chalk.gray('  2. Shell fallback (HAPI session id prefix, not cursorSessionId):'))
+        console.log(chalk.gray(cliT('doctor.inline.agentStep2')))
         if (withBridge.length > 0) {
             console.log(chalk.green(`    ${formatInlineMediaCommand(scriptPath, withBridge[0].prefix)}`))
         } else if (envSessionId) {
@@ -243,21 +247,21 @@ export async function runDoctorInlineMedia(): Promise<number> {
             console.log(chalk.gray(`    ${formatInlineMediaCommand(scriptPath, '<hapi-session-prefix>')}`))
         }
     } else {
-        console.log(chalk.gray('  2. Shell fallback unavailable (packaged install / no repo checkout) — use MCP tools only'))
+        console.log(chalk.gray(cliT('doctor.inline.agentStep2Unavailable')))
     }
 
     // Core health: hub auth + live bridge or session id. Repo shell helper is optional.
     const ok = jwt !== null && (withBridge.length > 0 || Boolean(envSessionId))
 
     if (ok) {
-        console.log(chalk.green('\n✓ Inline media path available\n'))
+        console.log(chalk.green(`\n${cliT('doctor.inline.ok')}\n`))
         return 0
     }
 
     if (withBridge.length === 0 && !envSessionId) {
-        console.log(chalk.yellow('\n⚠ No active session with hapiMcpUrl — start or resume a remote session first.\n'))
+        console.log(chalk.yellow(`\n${cliT('doctor.inline.noSession')}\n`))
     } else {
-        console.log(chalk.red('\n✗ Inline media checks failed — fix items marked ✗ above.\n'))
+        console.log(chalk.red(`\n${cliT('doctor.inline.failed')}\n`))
     }
     return 1
 }

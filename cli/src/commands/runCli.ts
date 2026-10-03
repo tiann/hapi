@@ -1,3 +1,4 @@
+import { cliT } from '@/i18n/cliI18n'
 import packageJson from '../../package.json'
 import { getCliArgs } from '@/utils/cliArgs'
 import { ensureLoopbackProxyBypass } from '@/utils/proxyEnv'
@@ -12,13 +13,13 @@ export async function runCli(): Promise<void> {
     }
 
     if (args[0] === '-v' || args[0] === '--version') {
-        console.log(`hapi version: ${packageJson.version}`)
+        console.log(cliT('runCli.version', { version: packageJson.version }))
         return
     }
 
     if (args.length === 0) {
         if (!process.stdin.isTTY || !process.stdout.isTTY) {
-            console.error('Agent selection requires an interactive terminal. Run: hapi <agent> [options]')
+            console.error(cliT('runCli.needsInteractive'))
             printCliHelp()
             process.exitCode = 1
             return
@@ -36,8 +37,8 @@ export async function runCli(): Promise<void> {
     const { resolveCommand } = await import('./registry')
     const resolved = resolveCommand(args)
     if (!resolved) {
-        console.error(`Unknown ${args[0].startsWith('-') ? 'option' : 'command'}: ${args[0]}`)
-        console.error('Run hapi to choose an agent, or use hapi <agent> [options]. See hapi --help.')
+        console.error(cliT(args[0].startsWith('-') ? 'runCli.unknownOption' : 'runCli.unknownCommand', { name: args[0] }))
+        console.error(cliT('runCli.hint'))
         process.exitCode = 1
         return
     }

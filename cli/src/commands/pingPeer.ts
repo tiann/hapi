@@ -1,3 +1,4 @@
+import { cliT } from '@/i18n/cliI18n'
 import { readFile } from 'node:fs/promises'
 import chalk from 'chalk'
 import { initializeToken } from '@/ui/tokenInit'
@@ -22,26 +23,26 @@ type ParsedPingPeerArgs = {
 
 function showHelp(): void {
     console.log(`
-${chalk.bold('hapi ping-peer')} - Resume a HAPI session (if needed) and send it a message
+${chalk.bold('hapi ping-peer')} - ${cliT('pingPeer.help.tagline')}
 
-${chalk.bold('Usage:')}
+${chalk.bold(cliT('pingPeer.help.usage'))}
   hapi ping-peer <session-id-prefix> <message-text>
   hapi ping-peer <session-id-prefix> --message-file <path>
-  hapi ping-peer <session-id-prefix> --message-file -   # read message from stdin
+  hapi ping-peer <session-id-prefix> --message-file -   # ${cliT('pingPeer.help.stdinComment')}
   hapi ping-peer --list
 
-${chalk.bold('Notes:')}
-  Do not reinvent JWT + curl for peer handoffs. Prefer this command or MCP ping_peer / list_peers.
-  Resolves by id prefix (8 chars OK). Same hub token/namespace as this CLI.
-  Inactive sessions are resumed via POST /api/sessions/:id/resume, then messaged.
-  When a user cites [title](/sessions/<id>) or Copy-reference
-  See session "…" (/sessions/<id>) for context, pass that <id> here.
-  On a remote runner, --list needs HAPI_API_URL set to the runner hub, plus
-  CLI_API_TOKEN or \`hapi auth login\` for the token. Inside a session prefer MCP list_peers.
+${chalk.bold(cliT('pingPeer.help.notes'))}
+  ${cliT('pingPeer.help.note1')}
+  ${cliT('pingPeer.help.note2')}
+  ${cliT('pingPeer.help.note3')}
+  ${cliT('pingPeer.help.note4')}
+  ${cliT('pingPeer.help.note5')}
+  ${cliT('pingPeer.help.note6')}
+  ${cliT('pingPeer.help.note7')}
 
-${chalk.bold('Env:')}
+${chalk.bold(cliT('pingPeer.help.env'))}
   HAPI_API_URL / CLI_API_TOKEN (or ~/.hapi/settings.json via \`hapi auth login\`)
-  HAPI_WAIT_ACTIVE_SECS (default 60; overridable with --wait)
+  ${cliT('pingPeer.help.env2')}
 `)
 }
 
@@ -184,7 +185,7 @@ export async function handlePingPeerCommand(args: string[]): Promise<void> {
         onProgress: (line) => console.log(`hapi ping-peer: ${line}`)
     })
 
-    console.log(chalk.green(`hapi ping-peer: OK - delivered to ${result.sessionId}`))
+    console.log(chalk.green(cliT('pingPeer.ok', { id: result.sessionId })))
 }
 
 export const pingPeerCommand: CommandDefinition = {
@@ -200,7 +201,7 @@ export const pingPeerCommand: CommandDefinition = {
             }
             console.error(
                 chalk.red('hapi ping-peer:'),
-                error instanceof Error ? error.message : 'Unknown error'
+                error instanceof Error ? error.message : cliT('common.unknownError')
             )
             if (process.env.DEBUG) {
                 console.error(error)

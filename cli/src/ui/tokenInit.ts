@@ -12,6 +12,7 @@ import { stdin as input, stdout as output } from 'node:process'
 import chalk from 'chalk'
 import { exportHapiHubAuthEnv } from '@/agent/hapiSessionEnv'
 import { configuration } from '@/configuration'
+import { cliT } from '@/i18n/cliI18n'
 import { readSettings, updateSettings } from '@/persistence'
 import { initializeApiUrl } from '@/ui/apiUrlInit'
 import { initializeExtraHeaders } from '@/ui/extraHeadersInit'
@@ -42,7 +43,7 @@ export async function initializeToken(): Promise<void> {
 
     // 3. Non-TTY environment cannot prompt, fail with clear error
     if (!process.stdin.isTTY) {
-        throw new Error('CLI_API_TOKEN is required. Set it via environment variable or run `hapi auth login`.')
+        throw new Error(cliT('token.required'))
     }
 
     // 4. Interactive prompt
@@ -60,18 +61,18 @@ export async function initializeToken(): Promise<void> {
 async function promptForToken(): Promise<string> {
     const rl = readline.createInterface({ input, output })
 
-    console.log(chalk.yellow('\nNo CLI_API_TOKEN found.'))
-    console.log(chalk.gray('Where to find the token:'))
-    console.log(chalk.gray('  1. Check the server startup logs (first run shows generated token)'))
-    console.log(chalk.gray('  2. Read ~/.hapi/settings.json on the server'))
-    console.log(chalk.gray('  3. Ask your server administrator (if token is set via env var)\n'))
+    console.log(chalk.yellow(`\n${cliT('token.missing.title')}`))
+    console.log(chalk.gray(cliT('token.missing.where')))
+    console.log(chalk.gray(cliT('token.missing.step1')))
+    console.log(chalk.gray(cliT('token.missing.step2')))
+    console.log(chalk.gray(`${cliT('token.missing.step3')}\n`))
 
     try {
-        const token = await rl.question(chalk.cyan('Enter CLI_API_TOKEN: '))
+        const token = await rl.question(chalk.cyan(cliT('auth.prompt.token')))
         if (!token.trim()) {
-            throw new Error('Token cannot be empty')
+            throw new Error(cliT('auth.error.emptyToken'))
         }
-        console.log(chalk.green(`\nToken saved to ${configuration.settingsFile}`))
+        console.log(chalk.green(`\n${cliT('auth.saved', { path: configuration.settingsFile })}`))
         return token.trim()
     } finally {
         rl.close()

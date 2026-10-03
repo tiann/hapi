@@ -1,5 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import chalk from 'chalk'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { configuration } from '@/configuration'
+import { setCliLocale } from '@/i18n/cliI18n'
 
 const {
     readSettingsMock,
@@ -40,6 +42,10 @@ describe('handleAuthCommand', () => {
         initializeApiUrlMock.mockClear()
     })
 
+    afterEach(() => {
+        setCliLocale(null)
+    })
+
     it('loads the configured api url before printing status', async () => {
         readSettingsMock.mockResolvedValue({
             apiUrl: 'https://hapi.example.com',
@@ -62,6 +68,26 @@ describe('handleAuthCommand', () => {
             expect(output).toContain('Machine ID: machine-123')
         } finally {
             logSpy.mockRestore()
+        }
+    })
+
+    it('keeps the bold headings in the localized help output', async () => {
+        setCliLocale('ru')
+        const previousLevel = chalk.level
+        chalk.level = 1
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+        try {
+            await handleAuthCommand(['help'])
+
+            const output = logSpy.mock.calls.map((call) => String(call[0])).join('\n')
+            expect(output).toContain('\u001b[1mhapi auth\u001b[22m')
+            expect(output).toContain('\u001b[1mИспользование:\u001b[22m')
+            expect(output).toContain('Показать текущую конфигурацию')
+            expect(output).toContain('1. Переменная окружения CLI_API_TOKEN')
+        } finally {
+            logSpy.mockRestore()
+            chalk.level = previousLevel
         }
     })
 })

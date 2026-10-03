@@ -5,6 +5,7 @@
  * Helps diagnose and fix issues with hung or orphaned processes
  */
 
+import { cliT } from '@/i18n/cliI18n'
 import psList from 'ps-list';
 import { killProcess } from '@/utils/process';
 
@@ -90,7 +91,7 @@ export async function killRunawayHappyProcesses(): Promise<{ killed: number, err
   
   for (const { pid, command } of runawayProcesses) {
     try {
-      console.log(`Killing runaway process PID ${pid}: ${command}`);
+      console.log(cliT('doctor.clean.killing', { pid, command }));
       
       await killProcess(pid, false);
 
@@ -101,16 +102,16 @@ export async function killRunawayHappyProcesses(): Promise<{ killed: number, err
       const processes = await psList();
       const stillAlive = processes.find(p => p.pid === pid);
       if (stillAlive) {
-        console.log(`Process PID ${pid} ignored termination request, using force kill`);
+        console.log(cliT('doctor.clean.force', { pid }));
         await killProcess(pid, true);
       }
       
-      console.log(`Successfully killed runaway process PID ${pid}`);
+      console.log(cliT('doctor.clean.killed', { pid }));
       killed++;
     } catch (error) {
       const errorMessage = (error as Error).message;
       errors.push({ pid, error: errorMessage });
-      console.log(`Failed to kill process PID ${pid}: ${errorMessage}`);
+      console.log(cliT('doctor.clean.failed', { pid, error: errorMessage }));
     }
   }
 

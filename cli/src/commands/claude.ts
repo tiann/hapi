@@ -1,3 +1,4 @@
+import { cliT } from '@/i18n/cliI18n'
 import chalk from 'chalk'
 import { z } from 'zod'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
@@ -126,34 +127,34 @@ export const claudeCommand: CommandDefinition = {
                 messageLower.includes('enotfound') ||
                 messageLower.includes('network error')
             ) {
-                console.error(chalk.yellow('Unable to connect to HAPI hub'))
-                console.error(chalk.gray(`  Hub URL: ${configuration.apiUrl}`))
-                console.error(chalk.gray('  Please check your network connection or hub status'))
+                console.error(chalk.yellow(cliT('agent.hubUnreachable')))
+                console.error(chalk.gray(`  ${cliT('agent.hubUrlLabel')}: ${configuration.apiUrl}`))
+                console.error(chalk.gray(cliT('agent.checkNetwork')))
             } else if (httpStatus === 403 && responseErrorText === 'Machine access denied') {
-                console.error(chalk.red('Machine access denied.'))
-                console.error(chalk.gray('  This machineId is already registered under a different namespace.'))
-                console.error(chalk.gray('  Fix: run `hapi auth logout`, or set a separate HAPI_HOME per namespace.'))
+                console.error(chalk.red(cliT('agent.machineAccessDenied')))
+                console.error(chalk.gray(cliT('agent.machineAccessDenied.hint1')))
+                console.error(chalk.gray(cliT('agent.machineAccessDenied.hint2')))
             } else if (httpStatus === 403 && responseErrorText === 'Session access denied') {
-                console.error(chalk.red('Session access denied.'))
-                console.error(chalk.gray('  This session belongs to a different namespace.'))
-                console.error(chalk.gray('  Use the matching CLI_API_TOKEN or switch namespaces.'))
+                console.error(chalk.red(cliT('agent.sessionAccessDenied')))
+                console.error(chalk.gray(cliT('agent.sessionAccessDenied.hint1')))
+                console.error(chalk.gray(cliT('agent.sessionAccessDenied.hint2')))
             } else if (
                 httpStatus === 401 ||
                 httpStatus === 403 ||
                 messageLower.includes('unauthorized') ||
                 messageLower.includes('forbidden')
             ) {
-                console.error(chalk.red('Authentication error:'), message)
-                console.error(chalk.gray('  Run: hapi auth login'))
+                console.error(chalk.red(cliT('agent.authError')), message)
+                console.error(chalk.gray(cliT('agent.authHint')))
             } else {
-                console.error(chalk.red('Error:'), message)
+                console.error(chalk.red(cliT('common.error')), message)
             }
 
             if (serverProtocolVersion !== undefined && serverProtocolVersion !== PROTOCOL_VERSION) {
                 if (serverProtocolVersion < PROTOCOL_VERSION) {
-                    console.error(chalk.yellow(`  Hint: hub protocol version (${serverProtocolVersion}) is behind CLI (${PROTOCOL_VERSION}). Please update the hub.`))
+                    console.error(chalk.yellow(cliT('agent.protocolHint.hubBehind', { hub: serverProtocolVersion, cli: PROTOCOL_VERSION })))
                 } else {
-                    console.error(chalk.yellow(`  Hint: CLI protocol version (${PROTOCOL_VERSION}) is behind hub (${serverProtocolVersion}). Please update the CLI.`))
+                    console.error(chalk.yellow(cliT('agent.protocolHint.cliBehind', { cli: PROTOCOL_VERSION, hub: serverProtocolVersion })))
                 }
             }
 

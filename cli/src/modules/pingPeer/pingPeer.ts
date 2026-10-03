@@ -8,6 +8,7 @@
  * Callers must not invent parallel auth or arbitrary hosts.
  */
 
+import { cliT } from '@/i18n/cliI18n'
 import axios, { type AxiosInstance } from 'axios'
 import { extractAssistantPlainText, isObject } from '@hapi/protocol'
 import { normalizeSessionIdPrefix } from '@hapi/protocol/sessionCitation'
@@ -297,7 +298,7 @@ async function waitUntilActive(
     onProgress?: (message: string) => void
 ): Promise<void> {
     const deadline = now() + waitActiveSecs * 1000
-    onProgress?.(`waiting up to ${waitActiveSecs}s for active state...`)
+    onProgress?.(cliT('pingPeer.progress.waiting', { secs: waitActiveSecs }))
     while (now() < deadline) {
         const session = await getSession(apiUrl, jwt, sessionId, http)
         if (session.active) {
@@ -323,7 +324,7 @@ async function waitForPiReady(
 ): Promise<void> {
     // active can precede piSessionId (tiann/hapi#1143). Instant /messages before
     // get_state settles wedges (Prompt accepted / agent_start / silence).
-    onProgress?.(`flavor=pi - waiting up to ${waitActiveSecs}s for metadata.piSessionId...`)
+    onProgress?.(cliT('pingPeer.progress.waitingPi', { secs: waitActiveSecs }))
     const deadline = now() + waitActiveSecs * 1000
     while (now() < deadline) {
         const session = await getSession(apiUrl, jwt, sessionId, http)
@@ -481,7 +482,7 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
     const sessions = await listSessions(apiUrl, jwt, http)
     const matched = resolveSessionByPrefix(sessions, prefix)
     const name = resolvePeerSessionLabel(matched)
-    onProgress?.(`resolved ${matched.id}  active=${matched.active}  name="${name}"`)
+    onProgress?.(cliT('pingPeer.progress.resolved', { id: matched.id, active: String(matched.active), name }))
 
     let resumed = false
     const ensureActive = async (progressMessage: string): Promise<PingPeerSessionSummary> => {
@@ -515,7 +516,7 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
         }
     }
 
-    onProgress?.(`sending message (${message.length} chars)...`)
+    onProgress?.(cliT('pingPeer.progress.sending', { count: message.length }))
     await sendMessage(apiUrl, jwt, matched.id, message, http)
 
     return {

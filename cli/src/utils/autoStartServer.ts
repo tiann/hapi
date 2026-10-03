@@ -8,6 +8,7 @@
  * 3. Port 3006 is not currently listening
  */
 
+import { cliT } from '@/i18n/cliI18n'
 import chalk from 'chalk'
 import { createConnection } from 'node:net'
 import { configuration } from '@/configuration'
@@ -154,7 +155,7 @@ export async function maybeAutoStartServer(options?: {
 
         logger.debug('[AUTO-START] Starting hub automatically...')
         if (!options?.quiet) {
-            console.log(chalk.gray('Starting HAPI hub in background...'))
+            console.log(chalk.gray(cliT('autoStart.starting')))
         }
 
         startServerAsChild()
@@ -167,21 +168,21 @@ export async function maybeAutoStartServer(options?: {
 
         if (!isReady) {
             if (!options?.quiet) {
-                console.log(chalk.yellow('Warning: Hub did not start within expected time'))
-                console.log(chalk.gray('  Try running `hapi hub` manually to see errors'))
+                console.log(chalk.yellow(cliT('autoStart.timeout')))
+                console.log(chalk.gray(cliT('autoStart.tryManual')))
             }
             return
         }
 
         if (!options?.quiet) {
-            console.log(chalk.green('HAPI hub started'))
+            console.log(chalk.green(cliT('autoStart.started')))
         }
     } catch (error) {
         logger.debug('[AUTO-START] Error during hub auto-start', error)
         if (!options?.quiet) {
-            console.log(chalk.yellow('Warning: Failed to auto-start hub'))
+            console.log(chalk.yellow(cliT('autoStart.failed')))
             if (error instanceof Error) {
-                console.log(chalk.gray(`  Error: ${error.message}`))
+                console.log(chalk.gray(cliT('autoStart.error', { error: error.message })))
             }
         }
     }

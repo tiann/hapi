@@ -1,3 +1,4 @@
+import { cliT } from '@/i18n/cliI18n'
 import chalk from 'chalk'
 import React from 'react'
 import { render } from 'ink'
@@ -277,7 +278,7 @@ export const resumeCommand: CommandDefinition = {
 
             await dispatchLocalResume(target)
         } catch (error) {
-            console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+            console.error(chalk.red(cliT('common.error')), error instanceof Error ? error.message : cliT('common.unknownError'))
             if (process.env.DEBUG) {
                 console.error(error)
             }

@@ -199,6 +199,20 @@ controls for DSH.
 - `HAPI_DSH_ACP_CONFIG` - Optional `dsh-acp-demo --config` path.
 - `HAPI_DSH_ACP_ARGS_JSON` - Optional JSON array of ACP server arguments.
 - `HAPI_HTTP_MCP_URL` - Default MCP target for `hapi mcp`.
+- `HAPI_LANG` - CLI message language (`en`, `ru`); wins over the `language` setting and the POSIX locale.
+
+### Language
+
+`hapi auth` and `hapi runner`, plus the credential/connection prompts, are
+available in English and Russian. The locale is resolved as: `HAPI_LANG` →
+`language` in `~/.hapi/settings.json` → `LC_ALL` / `LC_MESSAGES` / `LANG` →
+English (`LC_ALL` wins even when it is set to `C`).
+
+```bash
+export HAPI_LANG=ru        # or: {"language": "ru"} in ~/.hapi/settings.json
+hapi auth status
+hapi runner
+```
 
 ### Runner
 

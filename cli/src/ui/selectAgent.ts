@@ -1,3 +1,4 @@
+import { cliT } from '@/i18n/cliI18n'
 import React from 'react'
 import { render } from 'ink'
 import { CREATABLE_AGENT_FLAVORS, type AgentFlavor } from '@hapi/protocol'
@@ -14,11 +15,11 @@ export async function selectAgent(): Promise<AgentSelection> {
         getAgentAvailability(agent, process.env, 'terminal')
     ))
     if (!agents.some((entry) => entry.available)) {
-        console.error('No supported agents are available:')
+        console.error(cliT('selectAgent.none'))
         for (const entry of agents) {
             console.error(`  ${formatAgentChoice(entry)}`)
         }
-        console.error('Install an agent or fix its configuration, then run hapi again or use hapi <agent> [options].')
+        console.error(cliT('selectAgent.hint'))
         return { type: 'exit', exitCode: 1 }
     }
 

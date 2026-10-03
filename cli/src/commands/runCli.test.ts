@@ -3,7 +3,9 @@ import type { AgentSelection } from '@/ui/selectAgent'
 import type { CommandContext } from './types'
 
 const { getCliArgsMock, resolveCommandMock, selectAgentMock, ensureRuntimeAssetsMock, runMock } = vi.hoisted(() => ({
-    getCliArgsMock: vi.fn<() => string[]>(),
+    // The CLI configuration module reads argv on import; give the mock a sane
+    // default so importing runCli (which pulls in the i18n catalog) works.
+    getCliArgsMock: vi.fn<() => string[]>(() => []),
     resolveCommandMock: vi.fn(),
     selectAgentMock: vi.fn<() => Promise<AgentSelection>>(),
     ensureRuntimeAssetsMock: vi.fn(async () => {}),

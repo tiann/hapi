@@ -6,6 +6,7 @@
  */
 
 import chalk from 'chalk'
+import { cliT } from '@/i18n/cliI18n'
 import { configuration } from '@/configuration'
 import { readSettings } from '@/persistence'
 import { checkIfRunnerRunningAndCleanupStaleState } from '@/runner/controlClient'
@@ -87,107 +88,109 @@ export async function runDoctorCommand(filter?: 'all' | 'runner'): Promise<void>
         filter = 'all';
     }
     
-    console.log(chalk.bold.cyan('\n🩺 hapi CLI Doctor\n'));
+    console.log(chalk.bold.cyan(`\n${cliT('doctor.title')}\n`));
 
     // For 'all' filter, show everything. For 'runner', only show runner-related info
     if (filter === 'all') {
         // Version and basic info
-        console.log(chalk.bold('📋 Basic Information'));
-        console.log(`hapi CLI Version: ${chalk.green(packageJson.version)}`);
-        console.log(`Platform: ${chalk.green(process.platform)} ${process.arch}`);
-        console.log(`Node.js Version: ${chalk.green(process.version)}`);
+        console.log(chalk.bold(cliT('doctor.section.basic')));
+        console.log(`${cliT('doctor.label.cliVersion')}: ${chalk.green(packageJson.version)}`);
+        console.log(`${cliT('doctor.label.platform')}: ${chalk.green(process.platform)} ${process.arch}`);
+        console.log(`${cliT('doctor.label.nodeVersion')}: ${chalk.green(process.version)}`);
         console.log('');
 
         // Runner spawn diagnostics
-        console.log(chalk.bold('🔧 Runner Spawn Diagnostics'));
+        console.log(chalk.bold(cliT('doctor.section.spawn')));
         const projectRoot = projectPath();
         const cliEntrypoint = join(projectRoot, 'src', 'index.ts');
 
         if (isBunCompiled()) {
-            console.log(`Executable: ${chalk.blue(process.execPath)}`);
-            console.log(`Runtime Assets: ${chalk.blue(runtimePath())}`);
+            console.log(`${cliT('doctor.label.executable')}: ${chalk.blue(process.execPath)}`);
+            console.log(`${cliT('doctor.label.runtimeAssets')}: ${chalk.blue(runtimePath())}`);
         } else {
-            console.log(`Project Root: ${chalk.blue(projectRoot)}`);
-            console.log(`CLI Entrypoint: ${chalk.blue(cliEntrypoint)}`);
-            console.log(`CLI Exists: ${existsSync(cliEntrypoint) ? chalk.green('✓ Yes') : chalk.red('❌ No')}`);
+            console.log(`${cliT('doctor.label.projectRoot')}: ${chalk.blue(projectRoot)}`);
+            console.log(`${cliT('doctor.label.cliEntrypoint')}: ${chalk.blue(cliEntrypoint)}`);
+            console.log(`${cliT('doctor.label.cliExists')}: ${existsSync(cliEntrypoint) ? chalk.green(cliT('doctor.value.yes')) : chalk.red(cliT('doctor.value.no'))}`);
         }
         console.log('');
 
         // Configuration
-        console.log(chalk.bold('⚙️  Configuration'));
-        console.log(`hapi Home: ${chalk.blue(configuration.happyHomeDir)}`);
-        console.log(`Bot URL: ${chalk.blue(configuration.apiUrl)}`);
-        console.log(`Logs Dir: ${chalk.blue(configuration.logsDir)}`);
+        console.log(chalk.bold(cliT('doctor.section.config')));
+        console.log(`${cliT('doctor.label.hapiHome')}: ${chalk.blue(configuration.happyHomeDir)}`);
+        console.log(`${cliT('doctor.label.botUrl')}: ${chalk.blue(configuration.apiUrl)}`);
+        console.log(`${cliT('doctor.label.logsDir')}: ${chalk.blue(configuration.logsDir)}`);
 
         // Environment
-        console.log(chalk.bold('\n🌍 Environment Variables'));
+        console.log(chalk.bold(`\n${cliT('doctor.section.env')}`));
         const env = getEnvironmentInfo();
-        console.log(`HAPI_HOME: ${env.HAPI_HOME ? chalk.green(env.HAPI_HOME) : chalk.gray('not set')}`);
-        console.log(`HAPI_API_URL: ${env.HAPI_API_URL ? chalk.green(env.HAPI_API_URL) : chalk.gray('not set')}`);
-        console.log(`CLI_API_TOKEN: ${env.CLI_API_TOKEN_SET ? chalk.green('set') : chalk.gray('not set')}`);
-        console.log(`DANGEROUSLY_LOG_TO_SERVER: ${env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING ? chalk.yellow('ENABLED') : chalk.gray('not set')}`);
-        console.log(`DEBUG: ${env.DEBUG ? chalk.green(env.DEBUG) : chalk.gray('not set')}`);
-        console.log(`NODE_ENV: ${env.NODE_ENV ? chalk.green(env.NODE_ENV) : chalk.gray('not set')}`);
+        console.log(`HAPI_HOME: ${env.HAPI_HOME ? chalk.green(env.HAPI_HOME) : chalk.gray(cliT('doctor.value.notSet'))}`);
+        console.log(`HAPI_API_URL: ${env.HAPI_API_URL ? chalk.green(env.HAPI_API_URL) : chalk.gray(cliT('doctor.value.notSet'))}`);
+        console.log(`CLI_API_TOKEN: ${env.CLI_API_TOKEN_SET ? chalk.green(cliT('doctor.value.set')) : chalk.gray(cliT('doctor.value.notSet'))}`);
+        console.log(`DANGEROUSLY_LOG_TO_SERVER: ${env.DANGEROUSLY_LOG_TO_SERVER_FOR_AI_AUTO_DEBUGGING ? chalk.yellow(cliT('doctor.value.enabled')) : chalk.gray(cliT('doctor.value.notSet'))}`);
+        console.log(`DEBUG: ${env.DEBUG ? chalk.green(env.DEBUG) : chalk.gray(cliT('doctor.value.notSet'))}`);
+        console.log(`NODE_ENV: ${env.NODE_ENV ? chalk.green(env.NODE_ENV) : chalk.gray(cliT('doctor.value.notSet'))}`);
 
         // Settings
         let settings;
         try {
             settings = await readSettings();
-            console.log(chalk.bold('\n📄 Settings (settings.json):'));
+            console.log(chalk.bold(`\n${cliT('doctor.section.settingsFile')}`));
             const displaySettings = redactSettingsForDisplay({ ...settings });
             console.log(chalk.gray(JSON.stringify(displaySettings, null, 2)));
         } catch (error) {
-            console.log(chalk.bold('\n📄 Settings:'));
-            console.log(chalk.red('❌ Failed to read settings'));
+            console.log(chalk.bold(`\n${cliT('doctor.section.settings')}:`));
+            console.log(chalk.red(cliT('doctor.settings.failed')));
             settings = {};
         }
 
         // Authentication status (direct-connect)
-        console.log(chalk.bold('\n🔐 Direct Connect Auth'));
+        console.log(chalk.bold(`\n${cliT('doctor.section.auth')}`));
         const envToken = process.env.CLI_API_TOKEN;
         const settingsToken = settings.cliApiToken;
         const hasToken = Boolean(envToken || settingsToken);
-        const tokenSource = envToken ? 'environment variable' : (settingsToken ? 'settings file' : 'none');
+        const tokenSource = envToken
+            ? cliT('doctor.auth.source.environment')
+            : (settingsToken ? cliT('doctor.auth.source.settingsFile') : cliT('doctor.auth.source.none'));
         if (hasToken) {
-            console.log(chalk.green(`✓ CLI_API_TOKEN is set (from ${tokenSource})`));
+            console.log(chalk.green(cliT('doctor.auth.set', { source: tokenSource })));
         } else {
-            console.log(chalk.red('❌ CLI_API_TOKEN is not set'));
-            console.log(chalk.gray('  Run `hapi auth login` to configure or set CLI_API_TOKEN env var'));
+            console.log(chalk.red(cliT('doctor.auth.missing')));
+            console.log(chalk.gray(cliT('doctor.auth.hint')));
         }
 
     }
 
     // Runner status - shown for both 'all' and 'runner' filters
-    console.log(chalk.bold('\n🤖 Runner Status'));
+    console.log(chalk.bold(`\n${cliT('doctor.section.runner')}`));
     try {
         const isRunning = await checkIfRunnerRunningAndCleanupStaleState();
         const state = await readRunnerState();
 
         if (isRunning && state) {
-            console.log(chalk.green('✓ Runner is running'));
-            console.log(`  PID: ${state.pid}`);
-            console.log(`  Started: ${new Date(state.startTime).toLocaleString()}`);
-            console.log(`  CLI Version: ${state.startedWithCliVersion}`);
+            console.log(chalk.green(cliT('doctor.runner.running')));
+            console.log(`  ${cliT('doctor.label.pid')}: ${state.pid}`);
+            console.log(`  ${cliT('doctor.label.started')}: ${new Date(state.startTime).toLocaleString()}`);
+            console.log(`  ${cliT('doctor.label.cliVersion')}: ${state.startedWithCliVersion}`);
             if (state.httpPort) {
-                console.log(`  HTTP Port: ${state.httpPort}`);
+                console.log(`  ${cliT('doctor.label.httpPort')}: ${state.httpPort}`);
             }
         } else if (state && !isRunning) {
-            console.log(chalk.yellow('⚠️  Runner state exists but process not running (stale)'));
+            console.log(chalk.yellow(cliT('doctor.runner.stale')));
         } else {
-            console.log(chalk.red('❌ Runner is not running'));
+            console.log(chalk.red(cliT('doctor.runner.notRunning')));
         }
 
         // Show runner state file
         if (state) {
-            console.log(chalk.bold('\n📄 Runner State:'));
-            console.log(chalk.blue(`Location: ${configuration.runnerStateFile}`));
+            console.log(chalk.bold(`\n${cliT('doctor.section.runnerState')}`));
+            console.log(chalk.blue(`${cliT('doctor.label.location')}: ${configuration.runnerStateFile}`));
             console.log(chalk.gray(JSON.stringify(state, null, 2)));
         }
 
         // All hapi processes
         const allProcesses = await findAllHappyProcesses();
         if (allProcesses.length > 0) {
-            console.log(chalk.bold('\n🔍 All hapi CLI Processes'));
+            console.log(chalk.bold(`\n${cliT('doctor.section.processes')}`));
 
             // Group by type
             const grouped = allProcesses.reduce((groups, process) => {
@@ -199,18 +202,18 @@ export async function runDoctorCommand(filter?: 'all' | 'runner'): Promise<void>
             // Display each group
             Object.entries(grouped).forEach(([type, processes]) => {
                 const typeLabels: Record<string, string> = {
-                    'current': '📍 Current Process',
-                    'runner': '🤖 Runner',
-                    'runner-version-check': '🔍 Runner Version Check (stuck)',
-                    'runner-spawned-session': '🔗 Runner-Spawned Sessions',
-                    'user-session': '👤 User Sessions',
-                    'dev-runner': '🛠️  Dev Runner',
-                    'dev-runner-version-check': '🛠️  Dev Runner Version Check (stuck)',
-                    'dev-session': '🛠️  Dev Sessions',
-                    'dev-doctor': '🛠️  Dev Doctor',
-                    'dev-related': '🛠️  Dev Related',
-                    'doctor': '🩺 Doctor',
-                    'unknown': '❓ Unknown'
+                    'current': cliT('doctor.processType.current'),
+                    'runner': cliT('doctor.processType.runner'),
+                    'runner-version-check': cliT('doctor.processType.runnerVersionCheck'),
+                    'runner-spawned-session': cliT('doctor.processType.runnerSpawnedSession'),
+                    'user-session': cliT('doctor.processType.userSession'),
+                    'dev-runner': cliT('doctor.processType.devRunner'),
+                    'dev-runner-version-check': cliT('doctor.processType.devRunnerVersionCheck'),
+                    'dev-session': cliT('doctor.processType.devSession'),
+                    'dev-doctor': cliT('doctor.processType.devDoctor'),
+                    'dev-related': cliT('doctor.processType.devRelated'),
+                    'doctor': cliT('doctor.processType.doctor'),
+                    'unknown': cliT('doctor.processType.unknown')
                 };
 
                 console.log(chalk.blue(`\n${typeLabels[type] || type}:`));
@@ -222,20 +225,20 @@ export async function runDoctorCommand(filter?: 'all' | 'runner'): Promise<void>
                 });
             });
         } else {
-            console.log(chalk.red('❌ No hapi processes found'));
+            console.log(chalk.red(cliT('doctor.processes.none')));
         }
 
         if (filter === 'all' && allProcesses.length > 1) { // More than just current process
-            console.log(chalk.bold('\n💡 Process Management'));
-            console.log(chalk.gray('To clean up runaway processes: hapi doctor clean'));
+            console.log(chalk.bold(`\n${cliT('doctor.section.processManagement')}`));
+            console.log(chalk.gray(cliT('doctor.processes.cleanupHint')));
         }
     } catch (error) {
-        console.log(chalk.red('❌ Error checking runner status'));
+        console.log(chalk.red(cliT('doctor.processes.error')));
     }
 
     // Log files - only show for 'all' filter
     if (filter === 'all') {
-        console.log(chalk.bold('\n📝 Log Files'));
+        console.log(chalk.bold(`\n${cliT('doctor.section.logs')}`));
 
         // Get ALL log files
         const allLogs = getLogFiles(configuration.logsDir);
@@ -247,44 +250,44 @@ export async function runDoctorCommand(filter?: 'all' | 'runner'): Promise<void>
 
             // Show regular logs (max 10)
             if (regularLogs.length > 0) {
-                console.log(chalk.blue('\nRecent Logs:'));
+                console.log(chalk.blue(`\n${cliT('doctor.logs.recent')}`));
                 const logsToShow = regularLogs.slice(0, 10);
                 logsToShow.forEach(({ file, path, modified }) => {
                     console.log(`  ${chalk.green(file)} - ${modified.toLocaleString()}`);
                     console.log(chalk.gray(`    ${path}`));
                 });
                 if (regularLogs.length > 10) {
-                    console.log(chalk.gray(`  ... and ${regularLogs.length - 10} more log files`));
+                    console.log(chalk.gray(cliT('doctor.logs.more', { count: regularLogs.length - 10 })));
                 }
             }
 
             // Show runner logs (max 5)
             if (runnerLogs.length > 0) {
-                console.log(chalk.blue('\nRunner Logs:'));
+                console.log(chalk.blue(`\n${cliT('doctor.logs.runner')}`));
                 const runnerLogsToShow = runnerLogs.slice(0, 5);
                 runnerLogsToShow.forEach(({ file, path, modified }) => {
                     console.log(`  ${chalk.green(file)} - ${modified.toLocaleString()}`);
                     console.log(chalk.gray(`    ${path}`));
                 });
                 if (runnerLogs.length > 5) {
-                    console.log(chalk.gray(`  ... and ${runnerLogs.length - 5} more runner log files`));
+                    console.log(chalk.gray(cliT('doctor.logs.moreRunner', { count: runnerLogs.length - 5 })));
                 }
             } else {
-                console.log(chalk.yellow('\nNo runner log files found'));
+                console.log(chalk.yellow(`\n${cliT('doctor.logs.noRunner')}`));
             }
         } else {
-            console.log(chalk.yellow('No log files found'));
+            console.log(chalk.yellow(cliT('doctor.logs.none')));
         }
 
         // Support and bug reports
-        console.log(chalk.bold('\n🐛 Support & Bug Reports'));
+        console.log(chalk.bold(`\n${cliT('doctor.section.support')}`));
         const pkg = packageJson as unknown as { bugs?: string | { url?: string }; homepage?: string }
         const bugsUrl = typeof pkg.bugs === 'string' ? pkg.bugs : pkg.bugs?.url
         if (bugsUrl) {
-            console.log(`Report issues: ${chalk.blue(bugsUrl)}`);
+            console.log(`${cliT('doctor.support.report')} ${chalk.blue(bugsUrl)}`);
         }
-        console.log(`Documentation: ${chalk.blue(pkg.homepage ?? 'See project README')}`);
+        console.log(`${cliT('doctor.support.docs')} ${chalk.blue(pkg.homepage ?? cliT('doctor.support.readme'))}`);
     }
 
-    console.log(chalk.green('\n✅ Doctor diagnosis complete!\n'));
+    console.log(chalk.green(`\n${cliT('doctor.done')}\n`));
 }

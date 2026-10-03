@@ -1,3 +1,4 @@
+import { cliT } from '@/i18n/cliI18n'
 import chalk from 'chalk'
 import { initializeToken } from '@/ui/tokenInit'
 import {
@@ -16,21 +17,21 @@ type ParsedInspectPeerArgs = {
 
 function showHelp(): void {
     console.log(`
-${chalk.bold('hapi inspect-peer')} - Read another HAPI session's metadata + recent messages
+${chalk.bold('hapi inspect-peer')} - ${cliT('inspectPeer.help.tagline')}
 
-${chalk.bold('Usage:')}
+${chalk.bold(cliT('inspectPeer.help.usage'))}
   hapi inspect-peer <session-id-or-prefix>
   hapi inspect-peer <session-id-or-prefix> --limit 50
 
-${chalk.bold('Notes:')}
-  Read-only twin of ping-peer. Prefer this (or MCP inspect_peer) over JWT+curl.
-  Resolves by id prefix (8 chars OK; full UUID best). Same hub token/namespace.
-  Does NOT resume inactive sessions.
-  When a user cites [title](/sessions/<id>) or Copy-reference
-  See session "…" (/sessions/<id>) for context, pass that <id> here.
-  /sessions/<id> is a hub path - not a local filesystem path.
+${chalk.bold(cliT('inspectPeer.help.notes'))}
+  ${cliT('inspectPeer.help.note1')}
+  ${cliT('inspectPeer.help.note2')}
+  ${cliT('inspectPeer.help.note3')}
+  ${cliT('inspectPeer.help.note4')}
+  ${cliT('inspectPeer.help.note5')}
+  ${cliT('inspectPeer.help.note6')}
 
-${chalk.bold('Env:')}
+${chalk.bold(cliT('inspectPeer.help.env'))}
   HAPI_API_URL / CLI_API_TOKEN (or ~/.hapi/settings.json via \`hapi auth login\`)
 `)
 }
@@ -107,7 +108,7 @@ export const inspectPeerCommand: CommandDefinition = {
             }
             console.error(
                 chalk.red('hapi inspect-peer:'),
-                error instanceof Error ? error.message : 'Unknown error'
+                error instanceof Error ? error.message : cliT('common.unknownError')
             )
             if (process.env.DEBUG) {
                 console.error(error)

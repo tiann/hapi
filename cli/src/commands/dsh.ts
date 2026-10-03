@@ -1,3 +1,4 @@
+import { cliT } from '@/i18n/cliI18n'
 import chalk from 'chalk'
 import { initializeToken } from '@/ui/tokenInit'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
@@ -32,7 +33,7 @@ export const dshCommand: CommandDefinition = {
             const { runDsh } = await import('@/dsh/runDsh')
             await runDsh(options)
         } catch (error) {
-            console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+            console.error(chalk.red(cliT('common.error')), error instanceof Error ? error.message : cliT('common.unknownError'))
             if (process.env.DEBUG) console.error(error)
             process.exit(1)
         }

@@ -13,6 +13,7 @@ import { getLatestRunnerLog } from '@/ui/logger'
 import { spawnHappyCLI } from '@/utils/spawnHappyCLI'
 import { runDoctorCommand } from '@/ui/doctor'
 import { initializeToken } from '@/ui/tokenInit'
+import { cliT } from '@/i18n/cliI18n'
 import type { CommandDefinition } from './types'
 
 /**
@@ -31,7 +32,7 @@ function extractWorkspaceRootArgs(args: string[]): string[] | undefined {
         if (arg === '--workspace-root') {
             const next = args[i + 1]
             if (next === undefined || next.startsWith('--')) {
-                console.error('--workspace-root requires a path argument')
+                console.error(cliT('runner.workspaceRoot.needsPath'))
                 process.exit(1)
             }
             value = next
@@ -47,7 +48,7 @@ function extractWorkspaceRootArgs(args: string[]): string[] | undefined {
 
         const trimmed = value.trim()
         if (!trimmed) {
-            console.error('--workspace-root requires a non-empty path')
+            console.error(cliT('runner.workspaceRoot.empty'))
             process.exit(1)
         }
         // Handle `~` / `~/foo` since the shell only expands unquoted tildes.
@@ -59,7 +60,7 @@ function extractWorkspaceRootArgs(args: string[]): string[] | undefined {
         }
         const absolute = isAbsolute(expanded) ? expanded : resolve(expanded)
         if (!existsSync(absolute) || !statSync(absolute).isDirectory()) {
-            console.error(`--workspace-root path does not exist or is not a directory: ${absolute}`)
+            console.error(cliT('runner.workspaceRoot.notDirectory', { path: absolute }))
             process.exit(1)
         }
         workspaceRoots.push(absolute)
@@ -94,13 +95,13 @@ export const runnerCommand: CommandDefinition = {
                 const sessions = await listRunnerSessions()
 
                 if (sessions.length === 0) {
-                    console.log('No active sessions this runner is aware of (they might have been started by a previous version of the runner)')
+                    console.log(cliT('runner.list.empty'))
                 } else {
-                    console.log('Active sessions:')
+                    console.log(cliT('runner.list.header'))
                     console.log(JSON.stringify(sessions, null, 2))
                 }
             } catch {
-                console.log('No runner running')
+                console.log(cliT('runner.notRunning'))
             }
             return
         }
@@ -108,32 +109,32 @@ export const runnerCommand: CommandDefinition = {
         if (runnerSubcommand === 'stop-session') {
             const sessionId = mutableArgs[1]
             if (!sessionId) {
-                console.error('Session ID required')
+                console.error(cliT('runner.stopSession.needsId'))
                 process.exit(1)
             }
 
             try {
                 const status = await stopRunnerSession(sessionId)
                 if (status === 'stopped') {
-                    console.log('Session stopped')
+                    console.log(cliT('runner.stopSession.stopped'))
                 } else if (status === 'already_gone') {
-                    console.log('Session was already stopped')
+                    console.log(cliT('runner.stopSession.alreadyGone'))
                 } else {
-                    console.log('Failed to stop session')
+                    console.log(cliT('runner.stopSession.failed'))
                 }
             } catch {
-                console.log('No runner running')
+                console.log(cliT('runner.notRunning'))
             }
             return
         }
 
         if (runnerSubcommand === 'start') {
             if (await checkIfRunnerRunningAndCleanupStaleState()) {
-                console.log('Existing runner detected, stopping it before starting a new one...')
+                console.log(cliT('runner.start.replacing'))
                 await stopRunner()
 
                 if (!(await waitForRunnerToStop())) {
-                    console.error('Failed to stop existing runner')
+                    console.error(cliT('runner.start.stopFailed'))
                     process.exit(1)
                 }
             }
@@ -161,9 +162,9 @@ export const runnerCommand: CommandDefinition = {
             }
 
             if (started) {
-                console.log('Runner started successfully')
+                console.log(cliT('runner.start.started'))
             } else {
-                console.error('Failed to start runner')
+                console.error(cliT('runner.start.failed'))
                 process.exit(1)
             }
             process.exit(0)
@@ -188,36 +189,37 @@ export const runnerCommand: CommandDefinition = {
         if (runnerSubcommand === 'logs') {
             const latest = await getLatestRunnerLog()
             if (!latest) {
-                console.log('No runner logs found')
+                console.log(cliT('runner.logs.none'))
             } else {
                 console.log(latest.path)
             }
             process.exit(0)
         }
 
+        const doctorClean = chalk.cyan('hapi doctor clean')
         console.log(`
-${chalk.bold('hapi runner')} - Runner management
+${chalk.bold('hapi runner')} - ${cliT('runner.help.tagline')}
 
-${chalk.bold('Usage:')}
-  hapi runner start              Start the runner (replaces existing runner)
-  hapi runner stop               Stop the runner (sessions stay alive)
-  hapi runner status             Show runner status
-  hapi runner list               List active sessions
+${chalk.bold(cliT('runner.help.usage'))}
+  hapi runner start              ${cliT('runner.help.start')}
+  hapi runner stop               ${cliT('runner.help.stop')}
+  hapi runner status             ${cliT('runner.help.status')}
+  hapi runner list               ${cliT('runner.help.list')}
 
-${chalk.bold('Options:')}
-  --workspace-root <path>        Restrict the runner to this directory.
-                                 Repeat to allow multiple directories/drives.
-                                 Browse & spawn reject paths outside them.
-                                 Supports \`~\` / \`~/foo\` expansion.
-                                 Omit to leave browsing off (legacy mode).
+${chalk.bold(cliT('runner.help.options'))}
+  --workspace-root <path>        ${cliT('runner.help.workspaceRoot.part1')}
+                                 ${cliT('runner.help.workspaceRoot.part2')}
+                                 ${cliT('runner.help.workspaceRoot.part3')}
+                                 ${cliT('runner.help.workspaceRoot.part4')}
+                                 ${cliT('runner.help.workspaceRoot.part5')}
 
-  If you want to kill all hapi related processes run 
-  ${chalk.cyan('hapi doctor clean')}
+  ${cliT('runner.help.killHint')}
+  ${doctorClean}
 
-${chalk.bold('Note:')} The runner runs in the background and manages Claude sessions.
-Running ${chalk.cyan('hapi runner start')} stops any existing runner first so new flags and environment variables take effect.
+${chalk.bold(cliT('runner.help.note'))} ${cliT('runner.help.noteBody')}
+${cliT('runner.help.noteStart', { runnerStart: chalk.cyan('hapi runner start') })}
 
-${chalk.bold('To clean up runaway processes:')} Use ${chalk.cyan('hapi doctor clean')}
+${chalk.bold(cliT('runner.help.cleanup'))} ${cliT('runner.help.cleanupBody', { doctorClean })}
 `)
     }
 }

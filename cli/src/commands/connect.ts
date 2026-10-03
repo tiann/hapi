@@ -1,9 +1,10 @@
 import chalk from 'chalk'
+import { cliT } from '@/i18n/cliI18n'
 import type { CommandDefinition } from './types'
 
 export async function handleConnectCommand(_args: string[]): Promise<void> {
-    console.error(chalk.red('The `hapi connect` command is not available in direct-connect mode.'))
-    console.error(chalk.gray('Vendor token storage was part of the hosted server flow.'))
+    console.error(chalk.red(cliT('connect.unavailable')))
+    console.error(chalk.gray(cliT('connect.unavailableHint')))
     process.exit(1)
 }
 
@@ -14,7 +15,7 @@ export const connectCommand: CommandDefinition = {
         try {
             await handleConnectCommand(commandArgs)
         } catch (error) {
-            console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+            console.error(chalk.red(cliT('common.error')), error instanceof Error ? error.message : cliT('common.unknownError'))
             if (process.env.DEBUG) {
                 console.error(error)
             }

@@ -1,3 +1,4 @@
+import { cliT } from '@/i18n/cliI18n'
 import fs from 'fs/promises';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import os from 'os';
@@ -249,7 +250,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       await stopRunner();
     } else {
       logger.debug('[RUNNER RUN] Runner version matches, keeping existing runner');
-      console.log('Runner already running with matching version');
+      console.log(cliT('runner.run.alreadyRunning'));
       process.exit(0);
     }
   }
@@ -1659,12 +1660,12 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // Visible startup banner. Use console.log so it always appears on stdout,
     // regardless of the verbose/quiet logger setting.
     console.log('');
-    console.log('Hapi runner started.');
-    console.log(`  Workspace roots: ${workspaceRoots?.join(', ') ?? '(not set — browsing and spawning are unrestricted)'}`);
-    console.log(`  Hub URL:        ${configuration.apiUrl}`);
-    console.log(`  Machine ID:     ${machine.id}`);
-    console.log(`  Control port:   ${controlPort}`);
-    console.log('Waiting for sessions. Press Ctrl+C to stop.');
+    console.log(cliT('runner.run.banner.started'));
+    console.log(cliT('runner.run.banner.workspaceRoots', { roots: workspaceRoots?.join(', ') ?? cliT('runner.run.banner.workspaceRootsNone') }));
+    console.log(cliT('runner.run.banner.hubUrl', { url: configuration.apiUrl }));
+    console.log(cliT('runner.run.banner.machineId', { id: machine.id }));
+    console.log(cliT('runner.run.banner.controlPort', { port: controlPort }));
+    console.log(cliT('runner.run.banner.waiting'));
     console.log('');
 
     reportSpawnOutcomeToHub = (outcome) => {
