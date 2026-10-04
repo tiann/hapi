@@ -872,6 +872,38 @@ export function getSessionsByNamespace(db: Database, namespace: string): StoredS
     return rows.map(toStoredSession)
 }
 
+/**
+ * Remove the manual-rename lock (`metadata.nameLocked`) from every session.
+ * Invoked when the owner re-enables per-turn title updates: locks captured
+ * under "manual rename wins" semantics must not pin titles once the agent is
+ * asked to rewrite them each turn. Each row goes through the normal
+ * metadata-version CAS (merge is a no-op passthrough for full snapshots) and
+ * is written without touching updated_at so session list ordering is stable.
+ */
+export function clearSessionNameLocks(db: Database): number {
+    const locked = getSessions(db).filter(
+        (session) => isPlainObject(session.metadata) && session.metadata.nameLocked === true
+    )
+    let cleared = 0
+    for (const session of locked) {
+        if (!isPlainObject(session.metadata)) continue
+        const metadata: Record<string, unknown> = { ...session.metadata }
+        delete metadata.nameLocked
+        const result = updateSessionMetadata(
+            db,
+            session.id,
+            metadata,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false }
+        )
+        if (result.result === 'success') {
+            cleared += 1
+        }
+    }
+    return cleared
+}
+
 export function deleteSession(db: Database, id: string, namespace: string): boolean {
     const result = prepareCached(db,
         'DELETE FROM sessions WHERE id = ? AND namespace = ?'

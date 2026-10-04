@@ -488,4 +488,49 @@ describe('cli session handlers', () => {
             supersededBySessionId: 'owned-target', opencodeClearOperation: operation, lifecycleState: 'archived'
         })
     })
+
+    it('keeps a manually locked name over agent rewrites while merging other keys', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('locked-name', {
+            path: '/tmp/project', host: 'example', name: 'Manual name', nameLocked: true
+        }, null, 'default')
+        const socket = new FakeSocket()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => { throw new Error('unexpected access error') }
+        })
+        socket.trigger('update-metadata', {
+            sid: session.id,
+            expectedVersion: session.metadataVersion,
+            // Agent snapshot rewrites the name and drops the lock — both must lose.
+            metadata: { path: '/tmp/project', host: 'example', name: 'Agent rewrite', summary: { text: 'wip' } }
+        }, () => {})
+        expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).toMatchObject({
+            name: 'Manual name',
+            nameLocked: true,
+            summary: { text: 'wip' }
+        })
+    })
+
+    it('applies agent name rewrites when the session is not locked', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('unlocked-name', {
+            path: '/tmp/project', host: 'example', name: 'Agent original'
+        }, null, 'default')
+        const socket = new FakeSocket()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => { throw new Error('unexpected access error') }
+        })
+        socket.trigger('update-metadata', {
+            sid: session.id,
+            expectedVersion: session.metadataVersion,
+            metadata: { path: '/tmp/project', host: 'example', name: 'Agent rewrite' }
+        }, () => {})
+        const metadata = store.sessions.getSessionByNamespace(session.id, 'default')?.metadata as Record<string, unknown>
+        expect(metadata).toMatchObject({ name: 'Agent rewrite' })
+        expect(metadata).not.toHaveProperty('nameLocked')
+    })
 })

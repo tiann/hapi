@@ -1,6 +1,7 @@
 import axios from 'axios'
 import type { AgentState, ClearOpencodeSessionCallbackRequest, ClearOpencodeSessionResponse, CreateMachineResponse, CreateSessionResponse, RunnerState, Machine, MachineMetadata, Metadata, Session } from '@/api/types'
 import { applyHubSessionSummaryContract } from '@/modules/common/sessionSummaryInstruction'
+import { applyHubAutoTitlePerTurn } from '@/modules/common/titleInstruction'
 import type { LocalResumeTarget, ResumableSession } from '@hapi/protocol'
 import {
     AgentStateSchema,
@@ -91,6 +92,9 @@ export class ApiClient {
         if (typeof parsed.data.sessionSummaryContract === 'boolean') {
             applyHubSessionSummaryContract(parsed.data.sessionSummaryContract)
         }
+        if (typeof parsed.data.autoTitlePerTurn === 'boolean') {
+            applyHubAutoTitlePerTurn(parsed.data.autoTitlePerTurn)
+        }
 
         const raw = parsed.data.session
 
@@ -146,6 +150,9 @@ export class ApiClient {
 
         if (typeof parsed.data.sessionSummaryContract === 'boolean') {
             applyHubSessionSummaryContract(parsed.data.sessionSummaryContract)
+        }
+        if (typeof parsed.data.autoTitlePerTurn === 'boolean') {
+            applyHubAutoTitlePerTurn(parsed.data.autoTitlePerTurn)
         }
 
         const raw = parsed.data.session

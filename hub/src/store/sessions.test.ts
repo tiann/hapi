@@ -1293,3 +1293,55 @@ describe('replaceSessionTodos: watermark ratchet (PR #897 rewind race)', () => {
         store.close()
     })
 })
+
+describe('clearSessionNameLocks', () => {
+    it('removes nameLocked while keeping the pinned name and ordering columns', () => {
+        const store = makeStore()
+        const locked = store.sessions.getOrCreateSession(
+            'locked-one',
+            { path: '/tmp/a', host: 'h', name: 'Manual A', nameLocked: true },
+            null,
+            'default'
+        )
+        const alsoLocked = store.sessions.getOrCreateSession(
+            'locked-two',
+            { path: '/tmp/b', host: 'h', name: 'Manual B', nameLocked: true },
+            null,
+            'tenant'
+        )
+        const untouched = store.sessions.getOrCreateSession(
+            'unlocked-three',
+            { path: '/tmp/c', host: 'h', name: 'Agent C' },
+            null,
+            'default'
+        )
+        const before = store.sessions.getSession(locked.id)!
+
+        const cleared = store.sessions.clearSessionNameLocks()
+
+        expect(cleared).toBe(2)
+        expect(getMetadata(store, locked.id)).toMatchObject({ name: 'Manual A' })
+        expect(getMetadata(store, locked.id)).not.toHaveProperty('nameLocked')
+        expect(getMetadata(store, alsoLocked.id)).not.toHaveProperty('nameLocked')
+        expect(getMetadata(store, untouched.id)).toMatchObject({ name: 'Agent C' })
+        // Lock clearing must not reshuffle the session list.
+        const after = store.sessions.getSession(locked.id)!
+        expect(after.updatedAt).toBe(before.updatedAt)
+
+        store.close()
+    })
+
+    it('is a no-op when nothing is locked', () => {
+        const store = makeStore()
+        store.sessions.getOrCreateSession(
+            'no-locks',
+            { path: '/tmp/a', host: 'h' },
+            null,
+            'default'
+        )
+
+        expect(store.sessions.clearSessionNameLocks()).toBe(0)
+
+        store.close()
+    })
+})
