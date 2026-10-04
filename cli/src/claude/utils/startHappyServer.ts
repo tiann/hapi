@@ -24,6 +24,7 @@ import { DISPLAY_IMAGE_PROMPT_CURSOR, DISPLAY_MEDIA_PROMPT_CURSOR, DISPLAY_VIDEO
 import { resolveSkill } from "@/modules/common/skills";
 import { SESSION_NAME_MAX_LENGTH, toSessionSummaryMetadata } from '@hapi/protocol'
 import { isPeerToolsDisabled } from "@/modules/common/peerTools";
+import { isAutoTitlePerTurnEnabled } from "@/modules/common/titleInstruction";
 import {
     INSPECT_PEER_TOOL_DESCRIPTION,
     PEER_DELIVERY_MODE_DESCRIPTION,
@@ -255,7 +256,9 @@ function createHapiMcpServer(
     }
     if (enableChangeTitle) {
         mcp.registerTool<any, any>('change_title', {
-            description: 'Change the title of the current HAPI chat session. Call once when the user\'s primary objective is clear; use a concise task title.',
+            description: isAutoTitlePerTurnEnabled()
+                ? 'Change the title of the current HAPI chat session. Per-turn mode is enabled: call this at the end of every user turn with a concise task title (eight words or fewer, in the conversation\'s language) reflecting the current focus, rewriting the title even when the focus has shifted only slightly.'
+                : 'Change the title of the current HAPI chat session. Call once when the user\'s primary objective is clear; use a concise task title.',
             title: 'Change Chat Title',
             inputSchema: changeTitleInputSchema,
         }, async (args: { title: string }) => {

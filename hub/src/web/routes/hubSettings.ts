@@ -8,6 +8,7 @@ import {
     type Settings
 } from '../../config/settings'
 import { applyPeerSpawnDefaultsPatch } from '../../config/peerSpawnDefaults'
+import type { Store } from '../../store'
 import type { WebAppEnv } from '../middleware/auth'
 
 const OWNER_ONLY_ERROR = 'Hub settings are only available to the hub owner'
@@ -16,11 +17,12 @@ function toHubSettings(settings: Settings): HubSettingsResponse {
     return {
         sessionSummaryContract: settings.sessionSummaryContract === true,
         sessionSummaryInChat: settings.sessionSummaryInChat === true,
-        peerSpawnDefaults: mergePeerSpawnDefaults(settings.peerSpawnDefaults)
+        peerSpawnDefaults: mergePeerSpawnDefaults(settings.peerSpawnDefaults),
+        autoTitlePerTurn: settings.autoTitlePerTurn === true
     }
 }
 
-export function createHubSettingsRoutes(dataDir: string): Hono<WebAppEnv> {
+export function createHubSettingsRoutes(dataDir: string, store: Store): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
     // Authenticated readers (any namespace) can observe hub-wide display/emit
@@ -54,11 +56,19 @@ export function createHubSettingsRoutes(dataDir: string): Hono<WebAppEnv> {
                     parsed.data.peerSpawnDefaults
                 )
             }
+            if (parsed.data.autoTitlePerTurn !== undefined) {
+                settings.autoTitlePerTurn = parsed.data.autoTitlePerTurn
+            }
             return {
                 settings,
                 result: toHubSettings(settings)
             }
         })
+        // Re-enabling per-turn rewrites resets the "manual rename wins" era:
+        // every nameLocked pin is cleared so the agent can retake the title.
+        if (parsed.data.autoTitlePerTurn === true) {
+            store.sessions.clearSessionNameLocks()
+        }
         c.header('Cache-Control', 'no-store')
         return c.json(response)
     })

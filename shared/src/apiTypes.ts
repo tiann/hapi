@@ -69,7 +69,9 @@ export type CliMessagesResponse = z.infer<typeof CliMessagesResponseSchema>
 export const CreateSessionResponseSchema = z.object({
     session: SessionSchema,
     /** Hub opt-in for AGENT_NOTIFY_SUMMARY prompt injection (default off when omitted). */
-    sessionSummaryContract: z.boolean().optional()
+    sessionSummaryContract: z.boolean().optional(),
+    /** Hub opt-in for per-turn title rewrites in agent prompts (default off when omitted). */
+    autoTitlePerTurn: z.boolean().optional()
 })
 
 export type CreateSessionResponse = z.infer<typeof CreateSessionResponseSchema>
@@ -78,7 +80,9 @@ export const HubSettingsResponseSchema = z.object({
     sessionSummaryContract: z.boolean(),
     /** Show compact AGENT_NOTIFY_SUMMARY in chat (default off / hide). */
     sessionSummaryInChat: z.boolean(),
-    peerSpawnDefaults: ResolvedPeerSpawnDefaultsSchema
+    peerSpawnDefaults: ResolvedPeerSpawnDefaultsSchema,
+    /** Rewrite the session title at the end of every user turn (default off). */
+    autoTitlePerTurn: z.boolean()
 })
 
 export type HubSettingsResponse = z.infer<typeof HubSettingsResponseSchema>
@@ -87,13 +91,15 @@ export const UpdateHubSettingsRequestSchema = z
     .object({
         sessionSummaryContract: z.boolean().optional(),
         sessionSummaryInChat: z.boolean().optional(),
-        peerSpawnDefaults: PeerSpawnDefaultsSchema.optional()
+        peerSpawnDefaults: PeerSpawnDefaultsSchema.optional(),
+        autoTitlePerTurn: z.boolean().optional()
     })
     .refine(
         (data) =>
             data.sessionSummaryContract !== undefined
             || data.sessionSummaryInChat !== undefined
-            || data.peerSpawnDefaults !== undefined,
+            || data.peerSpawnDefaults !== undefined
+            || data.autoTitlePerTurn !== undefined,
         { message: 'At least one hub setting field is required' }
     )
 
