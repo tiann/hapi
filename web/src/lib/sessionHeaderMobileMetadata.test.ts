@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { selectMobileSessionHeaderSecondary } from './sessionHeaderMobileMetadata'
+import { getMobileSessionHeaderMetadata, selectMobileSessionHeaderSecondary } from './sessionHeaderMobileMetadata'
 
 describe('selectMobileSessionHeaderSecondary', () => {
     it('follows the upstream-first display order', () => {
@@ -17,5 +17,27 @@ describe('selectMobileSessionHeaderSecondary', () => {
 
     it('returns no secondary detail when none are available', () => {
         expect(selectMobileSessionHeaderSecondary({})).toBeNull()
+    })
+
+    it('returns every available detail in the mobile display order', () => {
+        expect(getMobileSessionHeaderMetadata({
+            machine: true,
+            lastActive: true,
+            model: true,
+            reasoning: true,
+            fastMode: true,
+            createdAt: true,
+            updatedAt: true,
+            worktree: true,
+        })).toEqual([
+            'machine',
+            'lastActive',
+            'model',
+            'reasoning',
+            'fastMode',
+            'createdAt',
+            'updatedAt',
+            'worktree',
+        ])
     })
 })
