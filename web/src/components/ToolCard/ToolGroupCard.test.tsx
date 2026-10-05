@@ -113,8 +113,12 @@ describe('ToolGroupCard', () => {
 
         expect(screen.getByRole('button', { name: /inspect a\.ts/i })).toHaveAttribute('aria-expanded', 'false')
         expect(screen.getByText('Run 1 · Read 1')).toBeInTheDocument()
+        expect(screen.getByText('Actions 2')).toBeInTheDocument()
+        expect(screen.getByText('Actions 2')).toHaveClass('inline-flex', 'sm:hidden')
+        expect(screen.getByText('Run 1 · Read 1')).toHaveClass('hidden', 'sm:inline-flex')
         expect(screen.queryByText('2 actions')).not.toBeInTheDocument()
         expect(screen.getByText('Run 1 · Read 1')).toHaveClass('text-xs', 'font-normal', 'text-[var(--app-hint)]')
+        expect(within(view.container).getByTestId('tool-group-card-header')).toHaveClass('px-3', 'pt-2', 'pb-2')
         expect(screen.queryByText('src/a.ts')).not.toBeInTheDocument()
         expect(screen.queryByText('bun test')).not.toBeInTheDocument()
 

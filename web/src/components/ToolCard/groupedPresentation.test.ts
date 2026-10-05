@@ -17,7 +17,7 @@ function makeTranslator(dict: Dict) {
     }
 }
 
-function makeTool(id: string, name: string, input: unknown = {}): ToolCallBlock {
+function makeTool(id: string, name: string, input: unknown = {}, nativeKind?: string): ToolCallBlock {
     return {
         kind: 'tool-call',
         id,
@@ -35,6 +35,7 @@ function makeTool(id: string, name: string, input: unknown = {}): ToolCallBlock 
             execStartedAt: null,
             execCompletedAt: null,
             description: null,
+            nativeKind,
             result: null,
             permission: undefined,
         },
@@ -98,6 +99,20 @@ describe('inferGroupedSummaryIntent', () => {
     it('treats content search shell commands as search-content intent', () => {
         const tool = makeTool('shell-2', 'Bash', { command: 'rg "TodoWrite" web/src' })
         expect(inferGroupedSummaryIntent(tool)).toBe('search-content')
+    })
+
+    it('normalizes lowercase and snake-case tool aliases', () => {
+        expect(inferGroupedSummaryIntent(makeTool('read-1', 'read_file'))).toBe('inspect-files')
+        expect(inferGroupedSummaryIntent(makeTool('search-1', 'grep_search'))).toBe('search-content')
+        expect(inferGroupedSummaryIntent(makeTool('edit-1', 'replace_file_content'))).toBe('modify-files')
+        expect(inferGroupedSummaryIntent(makeTool('web-1', 'web_search'))).toBe('open-web')
+    })
+
+    it('uses native kinds for ACP title-as-name tools', () => {
+        expect(inferGroupedSummaryIntent(makeTool('read-1', 'src/grok.ts', {}, 'read'))).toBe('inspect-files')
+        expect(inferGroupedSummaryIntent(makeTool('search-1', 'tool grouping', {}, 'search'))).toBe('search-content')
+        expect(inferGroupedSummaryIntent(makeTool('edit-1', 'Writing to src/grok.ts', {}, 'edit'))).toBe('modify-files')
+        expect(inferGroupedSummaryIntent(makeTool('command-1', 'bun test grok', { command: 'bun test grok' }, 'execute'))).toBe('run-project-command')
     })
 })
 
