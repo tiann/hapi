@@ -2,6 +2,7 @@
  * HAPI MCP STDIO Bridge
  *
  * Minimal STDIO MCP server exposing HAPI tools such as `change_title`, `display_image`, `display_video`, `display_media`, `list_peers`, `ping_peer`, and `inspect_peer`.
+ * `display_links` is Cursor-only and is registered only when `--tools` includes it.
  * On invocation it forwards the tool call to an existing HAPI HTTP MCP server
  * using the StreamableHTTPClientTransport.
  *
@@ -16,7 +17,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { z } from 'zod';
-import { DISPLAY_IMAGE_PROMPT_CURSOR, DISPLAY_MEDIA_PROMPT_CURSOR, DISPLAY_VIDEO_PROMPT_CURSOR } from '@/modules/common/displayImagePrompt';
+import { DISPLAY_IMAGE_PROMPT_CURSOR, DISPLAY_LINKS_PROMPT_CURSOR, DISPLAY_MEDIA_PROMPT_CURSOR, DISPLAY_VIDEO_PROMPT_CURSOR } from '@/modules/common/displayImagePrompt';
+import { isDisplayLinksToolName } from '@hapi/protocol';
 import {
   INSPECT_PEER_TOOL_DESCRIPTION,
   PING_PEER_TOOL_DESCRIPTION,
@@ -200,6 +202,47 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       sessionIdPrefix: z.string().trim().min(1).describe(SESSION_ID_PREFIX_PARAM_DESCRIPTION),
       message: z.string().min(1).describe('Message text to deliver to the target session'),
     });
+
+    const displayLinksInputSchema: z.ZodTypeAny = z.object({
+      urls: z.array(z.union([
+        z.object({
+          href: z.string().describe('http(s) URL to paint. Construct by concatenation for landmine strings (tia+nn), never copy from model prose.'),
+          title: z.string().trim().min(1).max(255).optional().describe('Optional link label shown on the card'),
+        }),
+        z.string(),
+      ])).min(1).max(20).optional().describe('Optional http(s) URLs to paint as tappable cards'),
+      texts: z.array(z.union([
+        z.object({
+          value: z.string().min(1).max(8192).describe('Exact string to paint for copy. Construct by concatenation (VK+K), never copy from model prose.'),
+          title: z.string().trim().min(1).max(255).optional().describe('Optional label shown on the copy card'),
+        }),
+        z.string().min(1).max(8192),
+        ])).min(1).max(20).optional().describe('Optional exact-copy strings (secrets, tokens, SHAs, tags, MagicDNS labels)'),
+        sessionId: z.string().min(1).optional().describe('This chat\'s HAPI session id (required at runtime). Cursor routes duplicate MCP tool names to one server; a mismatch means the call landed on the wrong session MCP.'),
+      });
+
+    if (toolNames.has('display_links') || [...toolNames].some((name) => isDisplayLinksToolName(name))) {
+      const displayLinksToolName = [...toolNames].find((name) => isDisplayLinksToolName(name)) ?? 'display_links';
+      server.registerTool<any, any>(
+        displayLinksToolName,
+        {
+          description: `Paint clickable http(s) URL cards and/or exact-copy strings into the current HAPI chat. ${DISPLAY_LINKS_PROMPT_CURSOR}`,
+          title: 'Display Links',
+          inputSchema: displayLinksInputSchema,
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            const client = await ensureHttpClient();
+            return await client.callTool({ name: displayLinksToolName, arguments: args }) as any;
+          } catch (error) {
+            return {
+              content: [{ type: 'text' as const, text: `Failed to display links: ${error instanceof Error ? error.message : String(error)}` }],
+              isError: true,
+            };
+          }
+        }
+      );
+    }
 
     if (toolNames.has('ping_peer')) {
       server.registerTool<any, any>(

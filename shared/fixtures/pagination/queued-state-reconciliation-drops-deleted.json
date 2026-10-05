@@ -34,7 +34,7 @@
         },
         "viewMode": "tail"
     },
-    "fixtureVersion": 1,
+    "fixtureVersion": 2,
     "name": "queued-state-reconciliation-drops-deleted",
     "ops": [
         {

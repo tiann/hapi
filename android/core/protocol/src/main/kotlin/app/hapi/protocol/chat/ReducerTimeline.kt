@@ -832,6 +832,20 @@ fun reduceTimeline(
                         )
                     }
 
+                    is NormalizedAgentContent.DisplayLinks -> {
+                        blocks.add(
+                            DisplayLinksBlock(
+                                id = "${msg.id}:$idx",
+                                localId = msg.localId,
+                                createdAt = msg.createdAt,
+                                invokedAt = msg.invokedAt,
+                                urls = c.urls,
+                                texts = c.texts,
+                                meta = msg.meta,
+                            )
+                        )
+                    }
+
                     is NormalizedAgentContent.Reasoning -> {
                         val streamId = nonBlankStreamId(c.streamId)
                         if (streamId != null) {

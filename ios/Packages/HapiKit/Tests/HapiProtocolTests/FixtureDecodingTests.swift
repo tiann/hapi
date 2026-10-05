@@ -10,7 +10,7 @@ import Testing
 struct FixtureDecodingTests {
     /// Highest fixture document schema this suite understands. Mirrors the
     /// README rule: fail loudly when the on-disk version is newer.
-    private static let supportedFixtureVersion = 1
+    private static let supportedFixtureVersion = 2
 
     private struct ChatFixture: Decodable {
         struct Input: Decodable {

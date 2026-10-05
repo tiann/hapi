@@ -240,6 +240,32 @@ describe('convertAgentMessage', () => {
         expect(convertAgentMessage({ type: 'not_a_real_type' } as never)).toBeNull();
     });
 
+    it('redacts display_links exact-copy values in persisted tool-call input', () => {
+        const secret = 'SENTINEL_SECRET_VK' + 'K';
+        const converted = convertAgentMessage({
+            type: 'tool_call',
+            id: 'call-links',
+            name: 'display_links',
+            input: {
+                urls: [{ href: 'https://example.com/public', title: 'Public' }],
+                texts: [{ value: secret, title: 'gate' }],
+                sessionId: 'abc',
+            },
+            status: 'completed',
+        });
+
+        expect(converted).toMatchObject({
+            type: 'tool-call',
+            name: 'display_links',
+        });
+        expect(JSON.stringify(converted)).not.toContain(secret);
+        expect(converted).toMatchObject({
+            input: {
+                texts: [{ value: '[omitted]', title: 'gate' }],
+            },
+        });
+    });
+
     it('converts generated_image messages into generated-image wire payloads', () => {
         const converted = convertAgentMessage({
             type: 'generated_image',

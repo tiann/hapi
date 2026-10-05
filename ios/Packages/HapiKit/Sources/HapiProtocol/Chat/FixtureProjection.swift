@@ -97,6 +97,21 @@ public func projectChatBlock(_ block: ChatBlock) -> JSONValue {
         projected["fileName"] = .string(image.fileName)
         projected["mimeType"] = image.mimeType.map { JSONValue.string($0) } ?? .null
         return .object(projected)
+    case .displayLinks(let links):
+        projected["localId"] = localIdValue(links.localId)
+        projected["urls"] = .array(links.urls.map { url in
+            var object: [String: JSONValue] = ["href": .string(url.href)]
+            if let title = url.title { object["title"] = .string(title) }
+            return .object(object)
+        })
+        if !links.texts.isEmpty {
+            projected["texts"] = .array(links.texts.map { text in
+                var object: [String: JSONValue] = ["value": .string(text.value)]
+                if let title = text.title { object["title"] = .string(title) }
+                return .object(object)
+            })
+        }
+        return .object(projected)
     case .agentEvent(let eventBlock):
         // The normalized AgentEvent record is wire-semantic by construction:
         // carried verbatim.

@@ -44,5 +44,31 @@ export const cursorCases: FixtureCase[] = [
                 }
             })
         ]
+    },
+    {
+        name: 'cursor-display-links',
+        description: 'Cursor display_links payload becomes a display-links block keeping {urls, texts}; exact-copy values are normative for native card rendering (web Share Turn / markdown export redact separately). Includes a path with an unescaped space (accepted by web URL; native validators must keep original href bytes).',
+        messages: [
+            wireMessage({
+                id: 'msg-cursor-links',
+                seq: 1,
+                createdAt: T0,
+                content: {
+                    role: 'agent',
+                    content: {
+                        type: 'codex',
+                        data: {
+                            type: 'display-links',
+                            id: 'display-links-1',
+                            urls: [
+                                { href: 'https://example.com', title: 'Example' },
+                                { href: 'https://example.com/report Q3.pdf', title: 'Q3 report' },
+                            ],
+                            texts: [{ value: 'exact-value', title: 'token' }]
+                        }
+                    }
+                }
+            })
+        ]
     }
 ]

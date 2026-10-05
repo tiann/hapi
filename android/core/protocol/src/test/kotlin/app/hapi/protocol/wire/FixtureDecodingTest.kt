@@ -1,5 +1,6 @@
 package app.hapi.protocol.wire
 
+import app.hapi.protocol.chat.ChatFixtureTest
 import java.io.File
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonNull
@@ -46,8 +47,8 @@ class FixtureDecodingTest {
         // supports (shared/fixtures/README.md policy) — never silently skip.
         val version = File(fixturesDir, "VERSION").readText().trim().toInt()
         assertTrue(
-            version <= SUPPORTED_PROTOCOL_VERSION,
-            "fixtures are version $version but this client supports <= $SUPPORTED_PROTOCOL_VERSION — update the port"
+            version <= ChatFixtureTest.SUPPORTED_FIXTURE_VERSION,
+            "fixtures are version $version but this client supports <= ${ChatFixtureTest.SUPPORTED_FIXTURE_VERSION} — update the port"
         )
     }
 
@@ -55,7 +56,11 @@ class FixtureDecodingTest {
     fun `every chat fixture's input messages decode as DecryptedMessage`() {
         for (file in chatFixtures()) {
             val root = HapiJson.parseToJsonElement(file.readText()).jsonObject
-            assertEquals(1, root.getValue("fixtureVersion").intOrNull, "fixtureVersion in ${file.name}")
+            assertEquals(
+                ChatFixtureTest.SUPPORTED_FIXTURE_VERSION,
+                root.getValue("fixtureVersion").intOrNull,
+                "fixtureVersion in ${file.name}"
+            )
             val rawMessages = root.getValue("input").jsonObject.getValue("messages").jsonArray
             assertTrue(rawMessages.isNotEmpty(), "empty input.messages in ${file.name}")
 

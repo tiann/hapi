@@ -2,7 +2,7 @@ import type { AgentBackend, PermissionRequest, PermissionResponse } from './type
 import type { AgentState, SessionPermissionMode } from '@/api/types';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { logger } from '@/ui/logger';
-import { deriveToolInput, deriveToolName } from '@/agent/utils';
+import { deriveToolInput, deriveToolName, sanitizePermissionToolInput } from '@/agent/utils';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import {
     resolveToolAutoApprovalDecision,
@@ -60,7 +60,7 @@ export class PermissionAdapter {
             kind: request.kind,
             rawInput: request.rawInput
         });
-        const input = deriveToolInput(request);
+        const input = sanitizePermissionToolInput(toolName, deriveToolInput(request));
         const mode = this.getPermissionMode?.();
         const autoDecision = resolveToolAutoApprovalDecision(mode, toolName, request.toolCallId);
 
@@ -145,7 +145,7 @@ export class PermissionAdapter {
             kind: pending.kind,
             rawInput: pending.rawInput
         });
-        const toolInput = deriveToolInput(pending);
+        const toolInput = sanitizePermissionToolInput(toolName, deriveToolInput(pending));
 
         const outcome = this.mapDecisionToOutcome(pending, decision);
         if (decision === 'abort') {

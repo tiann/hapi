@@ -458,4 +458,70 @@ describe('PermissionAdapter', () => {
         expect(intercept).toHaveBeenCalledOnce();
         expect(harness.respondCalls).toHaveLength(1);
     });
+
+    it('redacts display_links exact-copy values in pending permission state', async () => {
+        const secret = 'SENTINEL_PERM_PENDING_VK' + 'K';
+        const harness = createHarness();
+        const toolName = 'hapi_2acd2599_525c_4774_825f_09ce7802549d_display_links';
+
+        harness.emitPermissionRequest(buildRequest({
+            id: 'perm-links',
+            toolCallId: 'perm-links',
+            title: toolName,
+            rawInput: {
+                urls: [{ href: 'https://example.com/public' }],
+                texts: [{ value: secret, title: 'gate' }]
+            }
+        }));
+
+        const pending = harness.getAgentState().requests['perm-links'] as {
+            tool: string;
+            arguments: { texts: Array<{ value: string }> };
+        };
+        expect(pending.tool).toBe(toolName);
+        expect(JSON.stringify(pending)).not.toContain(secret);
+        expect(pending.arguments.texts[0]?.value).toBe('[omitted]');
+
+        const permissionRpc = harness.rpcHandlers.get('permission');
+        await permissionRpc?.({
+            id: 'perm-links',
+            approved: true,
+            decision: 'approved'
+        });
+
+        const completed = harness.getAgentState().completedRequests['perm-links'] as {
+            arguments: { texts: Array<{ value: string }> };
+        };
+        expect(JSON.stringify(completed)).not.toContain(secret);
+        expect(completed.arguments.texts[0]?.value).toBe('[omitted]');
+    });
+
+    it('redacts display_links exact-copy values when auto-approved', async () => {
+        const secret = 'SENTINEL_PERM_AUTO_VK' + 'K';
+        const harness = createHarnessWithMode(() => 'safe-yolo');
+
+        harness.emitPermissionRequest(buildRequest({
+            id: 'perm-links-auto',
+            toolCallId: 'perm-links-auto',
+            title: 'display_links',
+            rawInput: {
+                texts: [{ value: secret, title: 'gate' }]
+            }
+        }));
+
+        await flushAsyncWork();
+
+        expect(harness.getAgentState().requests).toEqual({});
+        const completed = harness.getAgentState().completedRequests['perm-links-auto'] as {
+            tool: string;
+            status: string;
+            arguments: { texts: Array<{ value: string }> };
+        };
+        expect(completed).toMatchObject({
+            tool: 'display_links',
+            status: 'approved'
+        });
+        expect(JSON.stringify(completed)).not.toContain(secret);
+        expect(completed.arguments.texts[0]?.value).toBe('[omitted]');
+    });
 });
