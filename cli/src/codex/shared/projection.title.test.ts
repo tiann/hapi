@@ -3,8 +3,8 @@ import type { ApiSessionClient } from '@/api/apiSession';
 import type { Metadata } from '@/api/types';
 import { SharedCodexProjection } from './projection';
 
-function fixture(parentThreadId?: string, deferWrites = false) {
-    let metadata: Metadata = { path: '/repo', host: 'test', flavor: 'codex', name: 'Manual name' };
+function fixture(parentThreadId?: string, deferWrites = false, metadataOverrides: Partial<Metadata> = {}) {
+    let metadata: Metadata = { path: '/repo', host: 'test', flavor: 'codex', name: 'Manual name', ...metadataOverrides };
     const queued: Array<(value: Metadata) => Metadata> = [];
     const update = vi.fn((fn: (value: Metadata) => Metadata) => {
         if (deferWrites) queued.push(fn);
@@ -47,6 +47,17 @@ describe('shared Codex titles', () => {
         await f.projection.history(history(item));
         await f.projection.notification('item/completed', params(item));
         expect(f.update).toHaveBeenCalledTimes(1);
+    });
+
+    it('replaces a provisional Fork summary during a live root title notification', async () => {
+        const f = fixture(undefined, false, {
+            name: undefined,
+            forkedFrom: 'parent-session',
+            summary: { text: 'Fork: Parent title', updatedAt: 1 }
+        });
+        await f.projection.notification('item/completed', params(titleItem('title', 'Codex child title')));
+        expect(f.metadata().name).toBe('Codex child title');
+        expect(f.metadata().summary?.text).toBe('Fork: Parent title');
     });
 
     it('handles a complete item without a start and orders successive titles across deferred writes', async () => {
@@ -111,18 +122,33 @@ describe('shared Codex titles', () => {
         expect(f.update).toHaveBeenCalledTimes(1);
     });
 
-    it('never overwrites an existing display title during a cold history replay', async () => {
+    it('never overwrites an existing summary during a cold history replay', async () => {
         const f = fixture();
         f.update(metadata => ({ ...metadata, summary: { text: 'Existing', updatedAt: 123 } }));
         f.update.mockClear();
         await f.projection.history(history(titleItem('old', 'Old')));
         expect(f.update).not.toHaveBeenCalled();
-        expect(f.metadata().name).toBe('Manual name');
         expect(f.metadata().summary).toEqual({ text: 'Existing', updatedAt: 123 });
+    });
+
+    it('replaces a provisional Fork summary during a cold history replay', async () => {
+        const f = fixture(undefined, false, {
+            name: undefined,
+            forkedFrom: 'parent-session',
+            summary: { text: 'Fork: Parent title', updatedAt: 1 }
+        });
+        await f.projection.history(history(titleItem('title', 'Codex child title')));
+        expect(f.metadata().name).toBe('Codex child title');
+        expect(f.metadata().summary?.text).toBe('Fork: Parent title');
     });
 
     it('keeps pending inputs from an active snapshot for a later argument-less completion', async () => {
         const f = fixture();
+        f.update(metadata => {
+            const { name: _ignored, ...rest } = metadata;
+            return rest as Metadata;
+        });
+        f.update.mockClear();
         const item = { ...titleItem('title', 'Resumed'), status: 'inProgress', result: null };
         await f.projection.history({ turns: [{ id: 'turn', status: 'inProgress', items: [item] }] });
         expect(f.update).not.toHaveBeenCalled();

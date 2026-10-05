@@ -16,13 +16,13 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
             // Preserve the AI-generated title emitted by Claude Code's native
             // interactive CLI. It is metadata, not a visible chat message.
             if (message.type === 'ai-title') {
-                applySessionTitleFallback(session.client, message.aiTitle)
+                applySessionTitleFallback(session.client, message.aiTitle, { allowForkSeedReplacement: true })
                 return
             }
             // Claude Code writes its native session title as a summary. Use it as
             // a fallback for older transcript formats.
             if (message.type === 'summary') {
-                applySessionTitleFallback(session.client, message.summary)
+                applySessionTitleFallback(session.client, message.summary, { allowForkSeedReplacement: true })
                 return
             }
             // Filter out internal meta messages (e.g. skill injections) and

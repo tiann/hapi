@@ -35,4 +35,43 @@ describe('Claude session title fallback', () => {
         expect(updateMetadata).toHaveBeenCalledTimes(1)
         expect(updateMetadata).toHaveReturnedWith(manualMetadata)
     })
+
+    it('replaces a provisional Fork summary with the native title', () => {
+        const forkMetadata = {
+            forkedFrom: 'parent-session',
+            summary: { text: 'Fork: Parent title', updatedAt: 1 }
+        }
+        const updateMetadata = vi.fn((handler) => handler(forkMetadata))
+
+        expect(applySessionTitleFallback({ updateMetadata }, 'Native title', {
+            allowForkSeedReplacement: true
+        })).toBe(true)
+
+        expect(updateMetadata).toHaveReturnedWith(expect.objectContaining({
+            summary: expect.objectContaining({ text: 'Native title' })
+        }))
+    })
+
+    it('keeps a manual name authoritative on a forked session', () => {
+        const forkMetadata = {
+            name: 'Manual child title',
+            forkedFrom: 'parent-session',
+            summary: { text: 'Fork: Parent title', updatedAt: 1 }
+        }
+        const updateMetadata = vi.fn((handler) => handler(forkMetadata))
+
+        expect(applySessionTitleFallback({ updateMetadata }, 'Native title')).toBe(true)
+        expect(updateMetadata).toHaveReturnedWith(forkMetadata)
+    })
+
+    it('keeps the Fork seed for a first-message fallback', () => {
+        const forkMetadata = {
+            forkedFrom: 'parent-session',
+            summary: { text: 'Fork: Parent title', updatedAt: 1 }
+        }
+        const updateMetadata = vi.fn((handler) => handler(forkMetadata))
+
+        expect(applySessionTitleFallback({ updateMetadata }, 'continue')).toBe(true)
+        expect(updateMetadata).toHaveReturnedWith(forkMetadata)
+    })
 })
