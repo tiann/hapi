@@ -1,17 +1,18 @@
 /**
  * Dedicated, serial project for the runner integration suite.
  *
- * `runner.integration.test.ts` starts real detached runner/session process
- * trees against the isolated temporary hub. It must never run inside the
- * default parallel unit-test suite (see the exclude in `vitest.config.ts`);
- * run it explicitly with:
+ * `runner.integration.test.ts` and `lateRunnerWebhook.integration.test.ts`
+ * start real detached runner/session process trees against the isolated
+ * temporary hub. They must never run inside the default parallel unit-test
+ * suite (see the exclude in `vitest.config.ts`); run them explicitly with:
  *
  *   bun run test:integration            # serial runner lifecycle coverage
  *   bun run test:integration:stress     # + the 20-session stress test
  *
- * The whole file runs in a single worker (`fileParallelism: false`) so
- * resource ownership stays unambiguous and the suite-level registry cleanup
- * (see `src/test/processRegistry.ts`) is authoritative.
+ * The files run one after another in a single worker
+ * (`fileParallelism: false`) so resource ownership stays unambiguous and the
+ * suite-level registry cleanup (see `src/test/processRegistry.ts`) is
+ * authoritative.
  */
 import { defineConfig } from 'vitest/config'
 import { resolve } from 'node:path'
@@ -20,7 +21,10 @@ export default defineConfig({
     test: {
         globals: false,
         environment: 'node',
-        include: ['src/runner/runner.integration.test.ts'],
+        include: [
+            'src/runner/runner.integration.test.ts',
+            'src/runner/lateRunnerWebhook.integration.test.ts',
+        ],
         globalSetup: './src/test/globalSetup.ts',
         setupFiles: './src/test/setup.ts',
         // Real detached process trees: never parallelize this suite.
