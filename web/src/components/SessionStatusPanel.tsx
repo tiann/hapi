@@ -28,7 +28,9 @@ function elapsedSince(startedAt: number | null, now: number): string | null {
 
 export function SessionStatusPanel({ data }: { data: SessionStatusData }) {
     const { t } = useTranslation()
-    const completedTasks = data.tasks.filter((task) => task.status === 'completed').length
+    const statusTitle = data.taskProgress
+        ? `${t('session.status.tasks')} · ${data.taskProgress.completed}/${data.taskProgress.total}`
+        : t('session.status.title')
     const hasLiveElapsed = data.terminals.length > 0
         || data.subagents.some((subagent) => subagent.endedAt === null && subagent.startedAt !== null)
     const [now, setNow] = useState(() => Date.now())
@@ -40,9 +42,9 @@ export function SessionStatusPanel({ data }: { data: SessionStatusData }) {
     }, [hasLiveElapsed])
 
     return (
-        <details className="group mx-3 mt-3 rounded-md border border-[var(--app-border)] bg-[var(--app-subtle-bg)]">
+        <details className="group absolute inset-x-3 top-0 z-30 rounded-md border border-[var(--app-border)] bg-[var(--app-bg)]">
             <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-xs font-semibold text-[var(--app-fg)] [&::-webkit-details-marker]:hidden">
-                {t('session.status.title')}
+                {statusTitle}
                 <span className="ml-auto text-[10px] text-[var(--app-hint)] transition-transform group-open:rotate-180" aria-hidden="true">▼</span>
             </summary>
             <div className="grid max-h-[min(50dvh,24rem)] gap-3 overflow-y-auto border-t border-[var(--app-border)] px-3 py-2.5 sm:grid-cols-2">
@@ -57,13 +59,13 @@ export function SessionStatusPanel({ data }: { data: SessionStatusData }) {
                 ) : null}
 
                 {data.tasks.length > 0 ? (
-                    <Section title={`${t('session.status.tasks')} · ${completedTasks}/${data.tasks.length}`}>
+                    <div className="min-w-0">
                         <ChecklistList items={data.tasks.map((task) => ({
                             id: task.id || undefined,
                             text: task.content,
                             status: task.status
                         }))} />
-                    </Section>
+                    </div>
                 ) : null}
 
                 {data.subagents.length > 0 ? (
