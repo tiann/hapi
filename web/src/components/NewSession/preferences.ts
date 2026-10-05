@@ -19,6 +19,7 @@ const YOLO_STORAGE_KEY = 'hapi:newSession:yolo'
 const LAUNCH_SETTINGS_STORAGE_PREFIX = 'hapi:newSession:launchSettings:v1'
 
 export type PreferredLaunchSettings = {
+    codexPromptMode?: 'queue' | 'steer'
     model: string
     cursorSelectedBase: string
     effort: LaunchEffort
@@ -89,6 +90,8 @@ export function loadPreferredLaunchSettings(
                 : 'default'
             : undefined
         return {
+            ...(agent === 'codex' && (parsed.codexPromptMode === 'queue' || parsed.codexPromptMode === 'steer')
+                ? { codexPromptMode: parsed.codexPromptMode } : {}),
             model: parsed.model,
             cursorSelectedBase: typeof parsed.cursorSelectedBase === 'string'
                 ? parsed.cursorSelectedBase
@@ -172,6 +175,7 @@ export function resolvePreferredLaunchSettings(
         : undefined
 
     return {
+        ...(agent === 'codex' && preferred?.codexPromptMode ? { codexPromptMode: preferred.codexPromptMode } : {}),
         model,
         cursorSelectedBase: preferred?.cursorSelectedBase ?? 'auto',
         effort,

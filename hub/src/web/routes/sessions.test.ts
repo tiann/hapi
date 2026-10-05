@@ -61,6 +61,7 @@ function createApp(session: Session, opts?: {
     reopenSession?: (sessionId: string, namespace: string) => Promise<ReopenResultMock>
     listSlashCommands?: SyncEngine['listSlashCommands']
     getSessionExport?: (sessionId: string, session: Session, options?: { force?: boolean }) => unknown
+    setCodexPromptMode?: SyncEngine['setCodexPromptMode']
     sessionExists?: boolean
     archiveSession?: (sessionId: string) => Promise<void>
     getCursorChatStoreStatus?: SyncEngine['getCursorChatStoreStatus']
@@ -141,6 +142,7 @@ function createApp(session: Session, opts?: {
         resolveSessionAccess: () => sessionExists
             ? { ok: true, sessionId: session.id, session }
             : { ok: false, reason: 'not-found' },
+        setCodexPromptMode: opts?.setCodexPromptMode,
         applySessionConfig,
         listCursorModelsForSession,
         listCodexModelsForSession: opts?.listCodexModelsForSession ?? (async () => ({
@@ -1749,4 +1751,46 @@ describe('sessions routes', () => {
         expect(body.sessions.map((s) => s.id)).toEqual(['new-inactive'])
     })
 
+})
+
+
+describe('Codex prompt mode route', () => {
+    it.each(['queue', 'steer'] as const)('sets %s for an inactive Codex chat without resuming it', async mode => {
+        const calls: unknown[] = []
+        const { app } = createApp(createSession({ active: false }), {
+            setCodexPromptMode: async (...args) => { calls.push(args) }
+        })
+        const response = await app.request('/api/sessions/session-1/codex-prompt-mode', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([['session-1', mode]])
+    })
+
+    it.each([
+        [{ mode: 'invalid' }, 'codex', true, 400],
+        [{}, 'codex', true, 400],
+        [{ mode: 'steer' }, 'claude', true, 400],
+        [{ mode: 'steer' }, 'codex', false, 404],
+    ] as const)('rejects invalid or unavailable requests: %j %s %s', async (body, flavor, sessionExists, status) => {
+        let called = false
+        const { app } = createApp(createSession({ metadata: { path: '/tmp', host: 'test', flavor } }), {
+            sessionExists, setCodexPromptMode: async () => { called = true }
+        })
+        const response = await app.request('/api/sessions/session-1/codex-prompt-mode', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+        })
+        expect(response.status).toBe(status)
+        expect(called).toBe(false)
+    })
+
+    it('reports a failed save instead of claiming success', async () => {
+        const { app } = createApp(createSession(), {
+            setCodexPromptMode: async () => { throw new Error('Session was modified concurrently') }
+        })
+        const response = await app.request('/api/sessions/session-1/codex-prompt-mode', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'steer' })
+        })
+        expect(response.status).toBe(409)
+    })
 })

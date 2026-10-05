@@ -15,6 +15,7 @@ import { LEGACY_YOLO_BRIDGE_AGENTS } from '@/lib/codexFamilyPermissionAgents'
 const DRAFT_STORAGE_KEY = 'hapi:new-session-form-draft'
 
 export type NewSessionFormDraft = {
+    codexPromptMode?: 'queue' | 'steer'
     agent: AgentType
     model: string
     cursorSelectedBase: string
@@ -73,6 +74,8 @@ export function loadNewSessionFormDraft(): NewSessionFormDraft | null {
             copilotAgentMode: agentPreserved
                 ? normalizeCopilotAgentMode(parsed.copilotAgentMode)
                 : 'interactive',
+            ...(restoredAgent === 'codex' && (parsed.codexPromptMode === 'queue' || parsed.codexPromptMode === 'steer')
+                ? { codexPromptMode: parsed.codexPromptMode } : {}),
             yoloMode: Boolean(parsed.yoloMode),
             nativePermissionMode: (() => {
                 const modes = getLaunchPermissionModesForFlavor(restoredAgent)

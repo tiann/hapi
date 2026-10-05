@@ -14,6 +14,19 @@ describe('NewSession preferences', () => {
         localStorage.clear()
     })
 
+    it('remembers Codex follow-up delivery per machine and ignores it for other agents', () => {
+        const settings = {
+            model: 'auto', cursorSelectedBase: 'auto', effort: 'auto',
+            modelReasoningEffort: 'default', codexPromptMode: 'steer'
+        } as const
+        savePreferredLaunchSettings('one', 'codex', settings)
+        savePreferredLaunchSettings('one', 'claude', settings)
+        expect(loadPreferredLaunchSettings('one', 'codex')?.codexPromptMode).toBe('steer')
+        expect(resolvePreferredLaunchSettings('codex', loadPreferredLaunchSettings('one', 'codex'), false).codexPromptMode).toBe('steer')
+        expect(loadPreferredLaunchSettings('two', 'codex')).toBeNull()
+        expect(loadPreferredLaunchSettings('one', 'claude')?.codexPromptMode).toBeUndefined()
+    })
+
     it('loads defaults when storage is empty', () => {
         expect(loadPreferredAgent()).toBe('claude')
         expect(loadPreferredYoloMode()).toBe(false)

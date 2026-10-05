@@ -197,3 +197,16 @@ describe('useSessionActions - setModel', () => {
         expect(invalidate).toHaveBeenCalledWith({ queryKey: ['session', 'session-A'] })
     })
 })
+
+
+describe('Codex follow-up preference', () => {
+    it('saves the session preference and propagates failures', async () => {
+        const setCodexPromptMode = vi.fn().mockResolvedValue(undefined)
+        const api = { setCodexPromptMode } as unknown as ApiClient
+        const { result } = renderHook(() => useSessionActions(api, 'session-A', 'codex'), { wrapper: createWrapper() })
+        await act(async () => { await result.current.setCodexPromptMode('steer') })
+        expect(setCodexPromptMode).toHaveBeenCalledWith('session-A', 'steer')
+        setCodexPromptMode.mockRejectedValue(new Error('save failed'))
+        await act(async () => { await expect(result.current.setCodexPromptMode('queue')).rejects.toThrow('save failed') })
+    })
+})

@@ -75,6 +75,25 @@ Source: `hub/src/web/routes/messages.ts`; schemas `MessagesQuerySchema`, `SendMe
 | `POST /api/sessions/:id/messages/:messageId/retry` | — | `{status: 'retried', localId}` \| `{status: 'already-queued', localId}` \| `{status: 'retry-unavailable', localId}` \| `{status: 'invoked', message}` \| `{status: 'not-found'}` — explicit retry only; never automatic replay |
 | `POST /api/sessions/:id/messages/queued-state` | `{localIds: string[]}` (≤ 1000, deduped) | `{queuedLocalIds: string[], indeterminateLocalIds: string[], invokedLocalMessages: [{localId, invokedAt}]}` — resync after reconnect; preserve indeterminate rows without auto-replaying them |
 
+For Codex, `metadata.codexPromptMode` records the session's follow-up preference;
+missing means `queue`. Clients honoring this preference send `deliveryMode: 'steer'`
+for ordinary immediate follow-ups while Codex is working. Explicit queue requests,
+scheduled sends, scratchlist sends and retries use `queue`. The hub accepts Codex
+steering only for sessions opted into `steer`. When delivery mode is omitted, the
+hub uses the Codex session preference, including for `ping_peer` messages. Other
+agents still default to queue. The hub assigns a tracking ID to steer messages
+that omit `localId` so acknowledgements and uncertain outcomes remain durable.
+Change an existing Codex session's preference with
+`POST /api/sessions/:id/codex-prompt-mode` and `{mode: 'queue' | 'steer'}`. This
+works for active and inactive sessions and returns `{ok: true}` after saving.
+The web chat label toggles this setting without changing the new-session default
+or redelivering queued messages.
+
+Native delivery targets the turn active at receipt. If that turn has ended or
+rejects the steer, the message queues. An uncertain outcome requires explicit
+resolution and must not be retried automatically. Reconnect and backfill queue
+messages instead of steering a later turn.
+
 The hub stamps `sentFrom: 'webapp'` on REST-sent messages server-side; the request body has no such field.
 
 ### Permissions
@@ -152,10 +171,14 @@ Source: `hub/src/web/routes/machines.ts`; schemas `SpawnSessionRequestSchema`, `
 | `GET /api/machines` | — | `{machines: Machine[]}` (online machines in the caller's namespace) |
 | `PATCH /api/machines/:id` | `{displayName}` (trimmed; ≤ 64 chars; empty clears back to hostname) | `{ok: true}` |
 | `GET /api/machines/:id/agent-availability` | — | `{agents: {agent, available, reason?: 'not_found'\|'invalid_configuration'}[]}`; 409 `runner_upgrade_required` on old runners |
-| `POST /api/machines/:id/spawn` | `{directory, agent?, model?, effort?, modelReasoningEffort?, yolo?, permissionMode?, sessionType?: 'simple'\|'worktree', worktreeName?, serviceTier?, collaborationMode?, copilotAgentMode?, startingMode?: 'remote'\|'pty'}` | `{type: 'success', sessionId}` \| `{type: 'error', message, code?, agent?}` (agy accepts only `remote`) |
+| `POST /api/machines/:id/spawn` | `{directory, agent?, model?, effort?, modelReasoningEffort?, yolo?, permissionMode?, sessionType?: 'simple'\|'worktree', worktreeName?, serviceTier?, collaborationMode?, copilotAgentMode?, startingMode?: 'remote'\|'pty', codexPromptMode?: 'queue'\|'steer'}` | `{type: 'success', sessionId}` \| `{type: 'error', message, code?, agent?}` (agy accepts only `remote`) |
 | `POST /api/machines/:id/list-directory` | `{path, includeHidden?}` | `{success, entries?: (DirectoryEntry & {isGitRepo?})[], error?}` |
 | `POST /api/machines/:id/paths/exists` | `{paths: string[]}` (≤ 1000) | `{exists: Record<string, boolean>, outsideWorkspaceRoots?: string[]}` |
 | `POST /api/machines/:id/restart-runner` | `{}` | `{message}`; errors carry `code: 'machine_not_found' \| 'machine_offline'` |
+
+`codexPromptMode` applies to fresh Codex sessions and defaults to `queue`. The hub
+stores it in session metadata and preserves it on resume. The web new-session
+form remembers the last successful choice per machine on the current device.
 
 Note the spawn response is discriminated on `type`, not HTTP status — a failed
 spawn is still HTTP 200. Stable spawn failure codes are

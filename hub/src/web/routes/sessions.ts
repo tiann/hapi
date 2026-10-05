@@ -14,6 +14,7 @@ import {
     ScratchlistEntryCreateRequestSchema,
     ScratchlistEntryUpdateRequestSchema,
     SessionCollaborationModeRequestSchema,
+    SessionCodexPromptModeRequestSchema,
     SessionCopilotAgentModeRequestSchema,
     SessionEffortRequestSchema,
     SessionModelReasoningEffortRequestSchema,
@@ -610,6 +611,24 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to apply permission mode'
             return c.json({ error: message }, 409)
+        }
+    })
+
+    app.post('/sessions/:id/codex-prompt-mode', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) return sessionResult
+        if (sessionResult.session.metadata?.flavor !== 'codex') {
+            return c.json({ error: 'Follow-up mode is only supported for Codex sessions' }, 400)
+        }
+        const parsed = SessionCodexPromptModeRequestSchema.safeParse(await c.req.json().catch(() => null))
+        if (!parsed.success) return c.json({ error: 'Invalid body' }, 400)
+        try {
+            await engine.setCodexPromptMode(sessionResult.sessionId, parsed.data.mode)
+            return c.json({ ok: true })
+        } catch (error) {
+            return c.json({ error: error instanceof Error ? error.message : 'Failed to update follow-up mode' }, 409)
         }
     })
 

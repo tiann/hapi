@@ -5,6 +5,7 @@ import type { SpawnResponse } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
 
 type SpawnInput = {
+    codexPromptMode?: 'queue' | 'steer'
     machineId: string
     directory: string
     agent?: AgentFlavor
@@ -47,7 +48,8 @@ export function useSpawnSession(api: ApiClient | null): {
                 input.serviceTier,
                 input.collaborationMode,
                 input.copilotAgentMode,
-                input.startingMode
+                input.startingMode,
+                input.codexPromptMode
             )
         },
         onSuccess: () => {

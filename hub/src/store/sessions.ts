@@ -130,6 +130,7 @@ export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     merged = carryForwardIfMissing(prior, next, merged, PARSE_IDENTITY_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, ROUTING_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, SIMPLE_RESUME_TOKENS)
+    merged = carryForwardIfMissing(prior, next, merged, ['codexPromptMode'])
     merged = preserveCursorProtocolPair(prior, next, merged)
     return merged ?? next
 }
@@ -364,7 +365,11 @@ export function adoptPreallocatedSession(
         }
 
         const now = Date.now()
-        const metadataJson = JSON.stringify(metadata)
+        const adoptedMetadata = isPlainObject(metadata) && metadata.flavor === 'codex'
+            && isPlainObject(existing.metadata) && existing.metadata.codexPromptMode !== undefined
+            ? { ...metadata, codexPromptMode: existing.metadata.codexPromptMode }
+            : metadata
+        const metadataJson = JSON.stringify(adoptedMetadata)
         const agentStateJson = agentState === null || agentState === undefined ? null : JSON.stringify(agentState)
         const stubTag = machineSpawnPreallocTag(id)
 

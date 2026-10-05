@@ -52,6 +52,27 @@ describe('resolveMessageDeliveryMode', () => {
         expect(resolveMessageDeliveryMode(input)).toBe('queue')
     })
 
+    it('steers ordinary active Codex sends when the session opts in', () => {
+        expect(resolveMessageDeliveryMode({
+            agentFlavor: 'codex', isSessionThinking: true, intent: 'default',
+            codexPromptMode: 'steer',
+        })).toBe('steer')
+    })
+
+    it.each([
+        { intent: 'queue' as const },
+        { isSessionThinking: false },
+        { scheduledAt: 1 },
+        { routesToScratchlist: true },
+        { agentFlavor: 'claude' },
+        { codexPromptMode: 'queue' as const },
+    ])('keeps queue overrides and non-Codex sends queued: %j', (override) => {
+        expect(resolveMessageDeliveryMode({
+            agentFlavor: 'codex', isSessionThinking: true, intent: 'default',
+            codexPromptMode: 'steer', ...override,
+        })).toBe('queue')
+    })
+
     it('keeps the retry-restore contract: a failed steer retry restores as queue', () => {
         const ref = { current: getRestoredComposerSendIntent('steer') }
         const retryIntent = consumeComposerSendIntent(ref)

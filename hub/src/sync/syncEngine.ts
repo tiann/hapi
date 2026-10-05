@@ -2091,6 +2091,29 @@ export class SyncEngine {
         await this.rpcGateway.switchSession(sessionId, to)
     }
 
+    async setCodexPromptMode(sessionId: string, mode: MessageDeliveryMode): Promise<void> {
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+            const session = this.sessionCache.getSession(sessionId) ?? this.sessionCache.refreshSession(sessionId)
+            if (!session) throw new Error('Session not found')
+            if (session.metadata?.flavor !== 'codex') throw new Error('Follow-up mode is only supported for Codex sessions')
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                { ...session.metadata, codexPromptMode: mode },
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(sessionId)
+                this.emitCliSessionMetadataUpdate(sessionId)
+                return
+            }
+            if (result.result === 'error') throw new Error('Failed to update follow-up mode')
+            this.sessionCache.refreshSession(sessionId)
+        }
+        throw new Error('Session was modified concurrently. Please try again.')
+    }
+
     async renameSession(sessionId: string, name: string): Promise<void> {
         await this.sessionCache.renameSession(sessionId, name)
     }
@@ -2181,7 +2204,8 @@ export class SyncEngine {
         startingMode?: 'remote' | 'pty',
         // Required for fresh machine spawns so the runner stamps the HAPI id on
         // argv before the first webhook (#1911 Major: unreapable window).
-        namespace?: string
+        namespace?: string,
+        codexPromptMode?: 'queue' | 'steer'
     ): ReturnType<RpcGateway['spawnSession']> {
         // Fresh machine spawns historically omitted existingSessionId, so
         // buildCliArgs could not stamp --hapi-session-id / --existing-session-id.
@@ -2200,6 +2224,7 @@ export class SyncEngine {
                     path: directory,
                     host: machine?.metadata?.host ?? 'unknown',
                     flavor: agent,
+                    ...(agent === 'codex' ? { codexPromptMode: codexPromptMode ?? 'queue' } : {}),
                     machineId,
                     startedBy: 'runner',
                     startedFromRunner: true,

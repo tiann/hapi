@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import type { CodexCollaborationMode, CopilotAgentMode, PermissionMode, SessionResponse, SessionsResponse } from '@/types/api'
-import type { ReopenSessionResponse } from '@hapi/protocol/apiTypes'
+import type { ReopenSessionResponse, MessageDeliveryMode } from '@hapi/protocol/apiTypes'
 import { queryKeys } from '@/lib/query-keys'
 import { clearMessageWindow } from '@/lib/message-window-store'
 import { isKnownFlavor } from '@hapi/protocol'
@@ -25,6 +25,7 @@ export function useSessionActions(
     setModel: (model: { provider: string; modelId: string } | string | null) => Promise<void>
     setModelReasoningEffort: (modelReasoningEffort: string | null) => Promise<void>
     setEffort: (effort: string | null) => Promise<void>
+    setCodexPromptMode: (mode: MessageDeliveryMode) => Promise<void>
     setServiceTier: (serviceTier: string | null) => Promise<void>
     renameSession: (name: string) => Promise<void>
     suggestSessionTitle: () => Promise<string>
@@ -211,6 +212,15 @@ export function useSessionActions(
         onSuccess: () => void invalidateSession(),
     })
 
+    const codexPromptModeMutation = useMutation({
+        mutationFn: async (mode: MessageDeliveryMode) => {
+            if (!api || !sessionId) throw new Error('Session unavailable')
+            if (agentFlavor !== 'codex') throw new Error('Follow-up mode is only supported for Codex sessions')
+            await api.setCodexPromptMode(sessionId, mode)
+        },
+        onSuccess: invalidateSession,
+    })
+
     const serviceTierMutation = useMutation({
         mutationFn: async (serviceTier: string | null) => {
             if (!api || !sessionId) {
@@ -292,6 +302,7 @@ export function useSessionActions(
         setModelReasoningEffort: modelReasoningEffortMutation.mutateAsync,
         setEffort: effortMutation.mutateAsync,
         setServiceTier: serviceTierMutation.mutateAsync,
+        setCodexPromptMode: codexPromptModeMutation.mutateAsync,
         renameSession: renameMutation.mutateAsync,
         suggestSessionTitle: titleSuggestionMutation.mutateAsync,
         updateSessionSummary: summaryMutation.mutateAsync,
@@ -308,6 +319,7 @@ export function useSessionActions(
             || modelReasoningEffortMutation.isPending
             || effortMutation.isPending
             || serviceTierMutation.isPending
+            || codexPromptModeMutation.isPending
             || renameMutation.isPending
             || titleSuggestionMutation.isPending
             || summaryMutation.isPending

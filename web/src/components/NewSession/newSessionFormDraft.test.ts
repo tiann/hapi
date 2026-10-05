@@ -8,6 +8,14 @@ import {
 } from './newSessionFormDraft'
 
 describe('newSessionFormDraft', () => {
+    it.each(['queue', 'steer'] as const)('preserves %s while browsing for a folder', codexPromptMode => {
+        sessionStorage.setItem('hapi:new-session-form-draft', JSON.stringify({ agent: 'codex', model: 'auto', codexPromptMode }))
+        expect(loadNewSessionFormDraft()?.codexPromptMode).toBe(codexPromptMode)
+    })
+    it('ignores invalid saved delivery modes', () => {
+        sessionStorage.setItem('hapi:new-session-form-draft', JSON.stringify({ agent: 'codex', model: 'auto', codexPromptMode: 'invalid' }))
+        expect(loadNewSessionFormDraft()?.codexPromptMode).toBeUndefined()
+    })
     it('drops Safe Yolo from a saved Codex draft without dropping other settings', () => {
         sessionStorage.setItem('hapi:new-session-form-draft', JSON.stringify({
             agent: 'codex', model: 'custom-model', nativePermissionMode: 'safe-yolo', yoloMode: true
