@@ -114,6 +114,43 @@ describe('file search route', () => {
         expect(fileSearchQuery).toBe('src/nested/file.ts')
     })
 
+    it('forwards the request signal to search and metadata RPCs', async () => {
+        const session = {
+            id: 'session-1',
+            namespace: 'default',
+            active: true,
+            metadata: { path: '/project' }
+        } as unknown as Session
+        const signals: Array<AbortSignal | undefined> = []
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session }),
+            runRipgrep: async (
+                _sessionId: string,
+                _args: string[],
+                _cwd: string,
+                _fileSearch: { query: string; limit: number },
+                signal?: AbortSignal,
+            ) => {
+                signals.push(signal)
+                return { success: true, stdout: 'README.md\n' }
+            },
+            statFiles: async (_sessionId: string, paths: string[], signal?: AbortSignal) => {
+                signals.push(signal)
+                return {
+                    success: true,
+                    entries: paths.map((path) => ({ path, size: 1, modified: 1 }))
+                }
+            }
+        } as unknown as Partial<SyncEngine>
+
+        const response = await buildApp(engine).request('/api/sessions/session-1/files?query=README')
+
+        expect(response.status).toBe(200)
+        expect(signals).toHaveLength(2)
+        expect(signals[0]).toBeInstanceOf(AbortSignal)
+        expect(signals[1]).toBe(signals[0])
+    })
+
     it('preserves backslashes in POSIX search queries', async () => {
         const session = {
             id: 'session-1',
