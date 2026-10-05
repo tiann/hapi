@@ -85,7 +85,8 @@ vi.mock('@/ui/logger', () => ({
 }));
 
 vi.mock('@/utils/attachmentFormatter', () => ({
-    formatMessageWithAttachments: vi.fn((text: string) => text)
+    formatMessageWithAttachments: vi.fn((text: string) => text),
+    formatUserMessageForAgent: vi.fn((text: string) => text)
 }));
 
 vi.mock('./cursorUserMessageQueue', () => ({

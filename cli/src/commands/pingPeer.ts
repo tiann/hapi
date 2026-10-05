@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import chalk from 'chalk'
 import { initializeToken } from '@/ui/tokenInit'
+import { HAPI_SESSION_ID_ENV } from '@/agent/hapiSessionEnv'
 import {
     PingPeerError,
     exitCodeForPingPeerError,
@@ -181,6 +182,8 @@ export async function handlePingPeerCommand(args: string[]): Promise<void> {
         sessionIdPrefix: parsed.sessionIdPrefix,
         message,
         waitActiveSecs: parsed.waitActiveSecs ?? envWaitActiveSecs(),
+        // Inside a wrapped session, soft nametag via /cli/.../peer-messages (#1203).
+        authenticatedSourceSessionId: process.env[HAPI_SESSION_ID_ENV]?.trim() || undefined,
         onProgress: (line) => console.log(`hapi ping-peer: ${line}`)
     })
 

@@ -11,6 +11,8 @@ export default {
   'message.copy': 'Copy',
   'message.copied': 'Copied',
   'message.info': 'Message details',
+  'message.peerFromUnknown': 'From peer (unknown session)',
+  'message.peerUnknownChip': '@peer',
   'message.fork': 'Fork',
   'message.rewind': 'Rewind',
   'message.fork.confirmTitle': 'Fork conversation',

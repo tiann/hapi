@@ -4,6 +4,7 @@ import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
 import { MessageStatusIndicator } from '@/components/AssistantChat/messages/MessageStatusIndicator'
 import { MessageAttachments } from '@/components/AssistantChat/messages/MessageAttachments'
 import { UserBubbleContent, getUserBubbleClassName, shouldShowMessageStatus } from '@/components/AssistantChat/messages/user-bubble'
+import { PeerSenderChip } from '@/components/AssistantChat/messages/PeerSenderChip'
 import { CliOutputBlock } from '@/components/CliOutputBlock'
 import { getConversationMessageAnchorId } from '@/chat/outline'
 import { MessageActions } from '@/components/AssistantChat/messages/MessageActions'
@@ -34,6 +35,25 @@ export function HappyUserMessage() {
         const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
         return custom?.attachments
     })
+    const peerDelivery = useAuiState((s) => {
+        if (s.message.role !== 'user') {
+            return { isPeer: false, sourceId: null as string | null, sourceName: null as string | null }
+        }
+        const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+        if (custom?.sentFrom !== 'peer') {
+            return { isPeer: false, sourceId: null, sourceName: null }
+        }
+        const id = custom.peer?.sourceSessionId
+        const name = custom.peer?.sourceName
+        return {
+            isPeer: true,
+            sourceId: typeof id === 'string' && id.trim() ? id.trim() : null,
+            sourceName: typeof name === 'string' && name.trim() ? name.trim() : null
+        }
+    })
+    const isPeerDelivery = peerDelivery.isPeer
+    const peerSourceId = peerDelivery.sourceId
+    const peerSourceName = peerDelivery.sourceName
     const isCliOutput = useAuiState((s) => {
         const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
         return custom?.kind === 'cli-output'
@@ -104,6 +124,14 @@ export function HappyUserMessage() {
             <div className={getUserBubbleClassName(status)}>
                 <div className="flex items-start gap-2">
                     <div className="min-w-0 flex-1">
+                        {isPeerDelivery ? (
+                            <div className="mb-1.5">
+                                <PeerSenderChip
+                                    sourceSessionId={peerSourceId}
+                                    sourceName={peerSourceName}
+                                />
+                            </div>
+                        ) : null}
                         {hasText ? <UserBubbleContent text={text} /> : null}
                         {hasAttachments ? <MessageAttachments attachments={attachments} /> : null}
                     </div>
