@@ -84,12 +84,95 @@ describe('generated images route', () => {
 })
 
 describe('file search route', () => {
-    it('normalizes Windows path separators in search queries before invoking ripgrep', async () => {
+    it('uses an exact stat lookup for Windows relative paths', async () => {
         const session = {
             id: 'session-1',
             namespace: 'default',
             active: true,
             metadata: { path: 'C:\\project' }
+        } as unknown as Session
+        let ripgrepCalls = 0
+        let statPaths: string[] = []
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session }),
+            runRipgrep: async () => {
+                ripgrepCalls += 1
+                return { success: true, stdout: 'src/nested/file.ts\n' }
+            },
+            statFiles: async (_sessionId: string, paths: string[]) => {
+                statPaths = paths
+                return {
+                    success: true,
+                    entries: paths.map((path) => ({ path, type: 'file' as const, size: 10, modified: 100 }))
+                }
+            }
+        } as unknown as Partial<SyncEngine>
+
+        const query = new URLSearchParams({ query: 'src\\nested\\file.ts' }).toString()
+        const response = await buildApp(engine).request(`/api/sessions/session-1/files?${query}`)
+
+        expect(response.status).toBe(200)
+        expect(ripgrepCalls).toBe(0)
+        expect(statPaths).toEqual(['src/nested/file.ts'])
+        expect(await response.json()).toEqual({
+            success: true,
+            pathSearch: true,
+            files: [{
+                fileName: 'file.ts',
+                filePath: 'src/nested',
+                fullPath: 'src/nested/file.ts',
+                fileType: 'file',
+                size: 10,
+                modified: 100
+            }]
+        })
+    })
+
+    it('resolves in-workspace absolute paths and rejects paths outside the workspace', async () => {
+        const session = {
+            id: 'session-1',
+            namespace: 'default',
+            active: true,
+            metadata: { path: '/project' }
+        } as unknown as Session
+        let ripgrepCalls = 0
+        const statPaths: string[][] = []
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session }),
+            runRipgrep: async () => {
+                ripgrepCalls += 1
+                return { success: true, stdout: 'other/file.ts\n' }
+            },
+            statFiles: async (_sessionId: string, paths: string[]) => {
+                statPaths.push(paths)
+                return {
+                    success: true,
+                    entries: paths.map((path) => ({ path, type: 'file' as const, size: 10, modified: 100 }))
+                }
+            }
+        } as unknown as Partial<SyncEngine>
+
+        const app = buildApp(engine)
+        const inside = await app.request('/api/sessions/session-1/files?query=%2Fproject%2Fsrc%2Ffile.ts')
+        const outside = await app.request('/api/sessions/session-1/files?query=%2Fother%2Fsrc%2Ffile.ts')
+
+        expect(inside.status).toBe(200)
+        expect(await inside.json()).toMatchObject({
+            success: true,
+            files: [{ fullPath: 'src/file.ts' }]
+        })
+        expect(outside.status).toBe(200)
+        expect(await outside.json()).toEqual({ success: true, files: [], pathSearch: true })
+        expect(statPaths).toEqual([['src/file.ts']])
+        expect(ripgrepCalls).toBe(0)
+    })
+
+    it('recursively searches files under a POSIX directory with a trailing separator', async () => {
+        const session = {
+            id: 'session-1',
+            namespace: 'default',
+            active: true,
+            metadata: { path: '/project' }
         } as unknown as Session
         let ripgrepArgs: string[] = []
         let fileSearchQuery: string | undefined
@@ -98,20 +181,98 @@ describe('file search route', () => {
             runRipgrep: async (_sessionId: string, args: string[], _cwd: string, fileSearch?: { query: string }) => {
                 ripgrepArgs = args
                 fileSearchQuery = fileSearch?.query
-                return { success: true, stdout: 'src/nested/file.ts\n' }
+                return {
+                    success: true,
+                    stdout: 'src/web/routes/git.ts\nsrc/web/routes/git.test.ts\n'
+                }
             },
             statFiles: async (_sessionId: string, paths: string[]) => ({
                 success: true,
-                entries: paths.map((path) => ({ path, size: 10, modified: 100 }))
+                entries: paths.map((path) => path === 'src/web/routes'
+                    ? { path, type: 'directory' as const, size: 100, modified: 100 }
+                    : { path, type: 'file' as const, size: 10, modified: 100 })
             })
         } as unknown as Partial<SyncEngine>
 
-        const query = new URLSearchParams({ query: 'src\\nested\\file.ts' }).toString()
-        const response = await buildApp(engine).request(`/api/sessions/session-1/files?${query}`)
+        const response = await buildApp(engine).request(
+            '/api/sessions/session-1/files?query=src%2Fweb%2Froutes%2F'
+        )
 
         expect(response.status).toBe(200)
-        expect(ripgrepArgs).toEqual(['--files', '--iglob', '*src/nested/file.ts*'])
-        expect(fileSearchQuery).toBe('src/nested/file.ts')
+        expect(ripgrepArgs).toEqual(['--files', '--', 'src/web/routes'])
+        expect(fileSearchQuery).toBe('')
+        expect(await response.json()).toEqual({
+            success: true,
+            pathSearch: true,
+            files: [
+                { fileName: 'git.ts', filePath: 'src/web/routes', fullPath: 'src/web/routes/git.ts', fileType: 'file', size: 10, modified: 100 },
+                { fileName: 'git.test.ts', filePath: 'src/web/routes', fullPath: 'src/web/routes/git.test.ts', fileType: 'file', size: 10, modified: 100 },
+            ]
+        })
+    })
+
+    it('accepts Windows directory separators and returns an empty path result for missing directories', async () => {
+        const session = {
+            id: 'session-1',
+            namespace: 'default',
+            active: true,
+            metadata: { path: 'C:\\project' }
+        } as unknown as Session
+        let ripgrepCalls = 0
+        let statPaths: string[] = []
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session }),
+            runRipgrep: async () => {
+                ripgrepCalls += 1
+                return { success: true, stdout: 'src\\web\\routes\\git.ts\n' }
+            },
+            statFiles: async (_sessionId: string, paths: string[]) => {
+                statPaths = paths
+                return { success: true, entries: paths.map((path) => ({ path })) }
+            }
+        } as unknown as Partial<SyncEngine>
+
+        const response = await buildApp(engine).request(
+            '/api/sessions/session-1/files?query=src%5Cweb%5Croutes%5C'
+        )
+
+        expect(response.status).toBe(200)
+        expect(statPaths).toEqual(['src/web/routes'])
+        expect(ripgrepCalls).toBe(0)
+        expect(await response.json()).toEqual({ success: true, files: [], pathSearch: true })
+    })
+
+    it('does not fall back to global search for missing files or directories', async () => {
+        const session = {
+            id: 'session-1',
+            namespace: 'default',
+            active: true,
+            metadata: { path: '/project' }
+        } as unknown as Session
+        let ripgrepCalls = 0
+        const engine = {
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: 'session-1', session }),
+            runRipgrep: async () => {
+                ripgrepCalls += 1
+                return { success: true, stdout: 'other/src/file.ts\n' }
+            },
+            statFiles: async (_sessionId: string, paths: string[]) => ({
+                success: true,
+                entries: paths.map((path) => path.endsWith('/src')
+                    ? { path, type: 'directory' as const, size: 20, modified: 100 }
+                    : { path })
+            })
+        } as unknown as Partial<SyncEngine>
+
+        const app = buildApp(engine)
+        const missing = await app.request('/api/sessions/session-1/files?query=src%2Fmissing.ts')
+        const directory = await app.request('/api/sessions/session-1/files?query=src%2Fsrc')
+
+        expect(missing.status).toBe(200)
+        expect(await missing.json()).toEqual({ success: true, files: [], pathSearch: true })
+        expect(directory.status).toBe(200)
+        expect(await directory.json()).toEqual({ success: true, files: [], pathSearch: true })
+        expect(ripgrepCalls).toBe(0)
     })
 
     it('preserves backslashes in POSIX search queries', async () => {
