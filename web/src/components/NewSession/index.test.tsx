@@ -77,8 +77,9 @@ vi.mock('@/hooks/useMachinePathsExists', () => ({
     })
 }))
 vi.mock('@/hooks/queries/useAgentAvailability', () => ({
-    useAgentAvailability: () => ({
-        agents: mocks.availableAgents,
+    // Mirror the real hook: no machineId → query disabled → empty agents, not loading.
+    useAgentAvailability: (args: { machineId: string | null }) => ({
+        agents: args.machineId ? mocks.availableAgents : [],
         isLoading: false,
         error: null,
         upgradeRequired: false,
@@ -352,6 +353,36 @@ describe('NewSession launch preferences', () => {
 
         await waitFor(() => expect(screen.getByDisplayValue('codex')).toBeChecked())
         expect(screen.queryByDisplayValue('claude')).not.toBeInTheDocument()
+    })
+
+    it('does not claim Agents are missing when no machine is connected', () => {
+        render(
+            <NewSession
+                api={api}
+                machines={[]}
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        expect(screen.queryByText('newSession.noAvailableAgents')).not.toBeInTheDocument()
+    })
+
+    it('claims Agents are missing only after inspecting a connected machine', () => {
+        mocks.availableAgents.splice(0, mocks.availableAgents.length)
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        expect(screen.getByText('newSession.noAvailableAgents')).toBeInTheDocument()
     })
 
     it('refuses a directory rejected by workspace-root validation', async () => {
