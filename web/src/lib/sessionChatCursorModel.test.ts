@@ -16,16 +16,27 @@ const sessionModels = [
 ] as const
 
 describe('resolveSessionCursorModelChange', () => {
-    it.each([false, true])('labels the live Auto limitation only without native Auto (native=%s)', (nativeAuto) => {
+    it.each([false, true])('keeps Auto label without a restart warning (native=%s)', (nativeAuto) => {
         const picker = buildSessionCursorPickerState({
             sessionModels: [{ modelId: nativeAuto ? 'auto' : 'default' }, ...sessionModels],
+            machineModels: [{ modelId: 'auto' }],
+            sessionModel: 'composer-2.5[fast=true]',
+            sessionCurrentModelId: 'composer-2.5[fast=true]'
+        })
+        expect(picker.modelOptions.find(option => option.value === 'auto')?.label)
+            .toBe('Auto')
+    })
+
+    it('still supports an optional Auto restart label for callers that need it', () => {
+        const picker = buildSessionCursorPickerState({
+            sessionModels: [{ modelId: 'default' }, ...sessionModels],
             machineModels: [{ modelId: 'auto' }],
             sessionModel: 'composer-2.5[fast=true]',
             sessionCurrentModelId: 'composer-2.5[fast=true]',
             autoRestartLabel: 'Auto (switching back requires restart)'
         })
         expect(picker.modelOptions.find(option => option.value === 'auto')?.label)
-            .toBe(nativeAuto ? 'Auto' : 'Auto (switching back requires restart)')
+            .toBe('Auto (switching back requires restart)')
     })
 
     const picker = buildSessionCursorPickerState({

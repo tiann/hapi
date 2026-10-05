@@ -181,7 +181,6 @@ export default {
   'session.item.model': '模型',
   'session.item.machine': '机器',
   'session.modelChange.pending': '更改中…',
-  'session.modelChange.cursorAutoRestart': 'Auto（切回需要重启）',
   'session.modelChange.pendingTooltip': '当前任务完成后将更改模型。',
   'session.item.worktree': '工作树',
   'session.item.pending': '待处理',

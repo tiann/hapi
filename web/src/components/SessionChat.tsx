@@ -1132,8 +1132,7 @@ function SessionChatInner(props: SessionChatProps) {
             machineModels: machineCursorModelsState.availableModels,
             cliModelSkus: sessionCliModelSkus,
             sessionModel: props.session.model,
-            sessionCurrentModelId: cursorModelsState.currentModelId,
-            autoRestartLabel: t('session.modelChange.cursorAutoRestart')
+            sessionCurrentModelId: cursorModelsState.currentModelId
         })
     }, [
         agentFlavor,
@@ -1141,8 +1140,7 @@ function SessionChatInner(props: SessionChatProps) {
         cursorModelsState.currentModelId,
         machineCursorModelsState.availableModels,
         sessionCliModelSkus,
-        props.session.model,
-        t
+        props.session.model
     ])
     const agyModelsState = useAgyModels({
         api: props.api,

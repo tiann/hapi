@@ -181,7 +181,6 @@ export default {
   'session.item.model': 'model',
   'session.item.machine': 'machine',
   'session.modelChange.pending': 'Changing…',
-  'session.modelChange.cursorAutoRestart': 'Auto (switching back requires restart)',
   'session.modelChange.pendingTooltip': 'The model will change when the current task finishes.',
   'session.item.worktree': 'worktree',
   'session.item.pending': 'pending',
