@@ -171,7 +171,7 @@ export default function SettingsDisplayPage() {
             </SettingsSection>
 
             <SettingsSection title={t('settings.display.typography')}>
-                <SettingsChoiceGroup label={t('settings.display.fontSize')} value={fontScale} columns={5} options={getFontScaleOptions()} onChange={setFontScale} />
+                <SettingsChoiceGroup label={t('settings.display.fontSize')} value={fontScale} columns={6} options={getFontScaleOptions()} onChange={setFontScale} />
                 <SettingsChoiceGroup label={t('settings.display.terminalFontSize')} value={terminalFontSize} columns={5} options={getTerminalFontSizeOptions()} onChange={setTerminalFontSize} />
             </SettingsSection>
 
