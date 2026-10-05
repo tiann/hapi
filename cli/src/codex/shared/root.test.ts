@@ -38,6 +38,7 @@ vi.mock('../codexAppServerClient', () => ({
                 this.queue.push(entry);
                 return { queuedSubmission: entry };
             }
+            if (method === 'turn/steer') return {};
             throw new Error(`Unexpected request: ${method}`);
         }
     },
@@ -58,23 +59,27 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
     let state: AgentState = { steeringActive: true };
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
     let reconnect: (() => void) | null = null;
+    let userMessage: ((message: { content: { text: string }; meta?: { deliveryMode?: 'queue' | 'steer' } }, localId?: string) => void) | undefined;
     const updateState = vi.fn((fn: (value: AgentState) => AgentState) => { state = fn(state); });
     const rpc = new Map<string, (raw: unknown) => Promise<unknown>>();
     const send = vi.fn();
     const hubArchivedListeners: Array<() => void> = [];
+    const emitMessagesConsumed = vi.fn();
     const session = {
         sessionId: 'sid', getMetadata: () => metadata,
         hubArchived: opts?.hubArchived ?? false,
         updateMetadata: (fn: (value: Metadata) => Metadata) => { metadata = fn(metadata); },
         updateAgentState: updateState, keepAlive() {},
-        onUserMessage() {}, onCancelQueuedMessage() {}, onRetryQueuedMessage() {},
+        onUserMessage(fn: typeof userMessage) { userMessage = fn; },
+        onCancelQueuedMessage() {}, onRetryQueuedMessage() {},
         onReconnect: (fn: (() => void) | null) => { reconnect = fn; },
         on(event: string, listener: () => void) {
             if (event === 'hub-archived') hubArchivedListeners.push(listener);
         },
         rpcHandlerManager: { registerHandler: (name: string, handler: (raw: unknown) => Promise<unknown>) => rpc.set(name, handler) },
         sendSessionEvent() {}, sendAgentMessage: send, emitSessionReady() {},
-        sendUserMessage() {}, emitMessagesConsumed() {}, emitSteerIndeterminate() {}, syncNativeQueuedMessage() {},
+        sendUserMessage() {}, emitMessagesConsumed, emitSteerIndeterminate() {},
+        setSteerDeliveryState: async () => true, syncNativeQueuedMessage() {},
         sendSessionDeath() {}, async flush() {}, close() {}
     } as unknown as ApiSessionClient;
     const end = opts?.end ?? (async () => { throw new Error('Unexpected root archive'); });
@@ -92,10 +97,12 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
         queue: Array<{ id: string; clientUserMessageId: string; input: unknown }>;
         notify(method: string, params: unknown): void;
         abandoned(): void;
+        request: (method: string, params?: unknown) => Promise<unknown>;
     };
     return {
         root, native, rpc, send, metadata: () => metadata, state: () => state, updateState,
         reconnect: () => reconnect?.(),
+        userMessage: () => userMessage!, emitMessagesConsumed,
         emitHubArchived: () => { for (const listener of hubArchivedListeners) listener(); },
         hubArchivedListenerCount: () => hubArchivedListeners.length,
         end,
@@ -320,5 +327,17 @@ describe('shared steering availability', () => {
         const f = await fixture({ hubArchived: true, end });
         await f.root.activate();
         await vi.waitFor(() => expect(end).toHaveBeenCalledTimes(1));
+    });
+
+    it('auto-steers a deliveryMode steer peer nudge into the active turn', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'turn-live' } });
+        const requests = vi.spyOn(f.root.client, 'request');
+
+        f.userMessage()({ content: { text: 'peer nudge' }, meta: { deliveryMode: 'steer' } }, 'peer-1');
+        await vi.waitFor(() => expect(f.emitMessagesConsumed).toHaveBeenCalledWith(['peer-1'], { steered: true }));
+        expect(requests.mock.calls.some(([method]) => method === 'turn/steer')).toBe(true);
+        expect(requests.mock.calls.some(([method]) => method === 'thread/queue/add')).toBe(false);
     });
 });
