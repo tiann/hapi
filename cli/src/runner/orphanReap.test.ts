@@ -401,7 +401,8 @@ describe('Windows orphan startMarker format agreement', () => {
                     startMarker: iso, // as listWindowsProcessesWithCommandLine would set
                 },
             ],
-            sessionId
+            sessionId,
+            1 // Keep the synthetic target independent of the test worker's PID.
         )
         expect(targets).toEqual([{ pid: 4242, startMarker: iso }])
     })
