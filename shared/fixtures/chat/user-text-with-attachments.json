@@ -1,5 +1,5 @@
 {
-    "description": "User message with attachments: AttachmentMetadata keeps {id, filename, mimeType, size, path}; previewUrl on the wire is web-serving detail and is dropped by the projection.",
+    "description": "User message with a legacy path attachment and a preview; previewUrl on the wire is web-serving detail and is dropped by the projection.",
     "expected": {
         "blocks": [
             {
@@ -56,7 +56,7 @@
             }
         ]
     },
-    "fixtureVersion": 1,
+    "fixtureVersion": 2,
     "input": {
         "agentState": null,
         "messages": [

@@ -52,7 +52,7 @@
             }
         ]
     },
-    "fixtureVersion": 1,
+    "fixtureVersion": 2,
     "input": {
         "agentState": {
             "codexPlanProposalId": "codex-proposed-plan:root:turn:plan-item"

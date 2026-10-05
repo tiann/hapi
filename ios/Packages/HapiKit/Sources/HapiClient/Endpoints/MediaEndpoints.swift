@@ -25,8 +25,8 @@ extension APIClient {
 
     /// `POST /api/sessions/:id/upload` — JSON + base64, **not** multipart.
     /// Decoded size limit 50 MB (413 above). Requires an active session.
-    /// Pass the returned `path` in the `attachments` metadata of a
-    /// subsequent send-message.
+    /// Pass the returned legacy `path` or durable `attachmentId` in the
+    /// `attachments` metadata of a subsequent send-message.
     public func uploadFile(
         sessionId: String,
         filename: String,
@@ -46,13 +46,34 @@ extension APIClient {
 
     /// `POST /api/sessions/:id/upload/delete` — removes a pending upload.
     public func deleteUpload(sessionId: String, path: String) async throws -> DeleteUploadResponse {
+        try await deleteUpload(sessionId: sessionId, path: path, attachmentId: nil)
+    }
+
+    /// Delete a legacy path upload or a durable Hub attachment by id.
+    public func deleteUpload(
+        sessionId: String,
+        path: String?,
+        attachmentId: String?
+    ) async throws -> DeleteUploadResponse {
         struct DeleteUploadRequest: Encodable {
-            let path: String
+            let path: String?
+            let attachmentId: String?
         }
         return try await request(
             .post,
             "/api/sessions/\(encodePathComponent(sessionId))/upload/delete",
-            body: DeleteUploadRequest(path: path)
+            body: DeleteUploadRequest(path: path, attachmentId: attachmentId)
         )
+    }
+
+    /// `GET /api/sessions/:id/attachments/:attachmentId/original` — raw bytes.
+    public func attachment(
+        sessionId: String,
+        attachmentId: String
+    ) async throws -> (data: Data, mimeType: String?) {
+        let (data, response) = try await requestBytes(
+            "/api/sessions/\(encodePathComponent(sessionId))/attachments/\(encodePathComponent(attachmentId))/original"
+        )
+        return (data, response.value(forHTTPHeaderField: "Content-Type"))
     }
 }
