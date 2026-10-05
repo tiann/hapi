@@ -45,7 +45,10 @@ export type FcmSendResult = {
 }
 
 export interface AndroidPushSender {
-    sendToNamespace(namespace: string, payload: FcmSendPayload): Promise<FcmSendResult>
+    sendToNamespace(
+        namespace: string,
+        payload: FcmSendPayload | ((language: string | null) => FcmSendPayload)
+    ): Promise<FcmSendResult>
 }
 
 /**
@@ -112,7 +115,14 @@ export class FcmService {
         }
     }
 
-    async sendToNamespace(namespace: string, payload: FcmSendPayload): Promise<FcmSendResult> {
+    /**
+     * `payload` may be a per-device builder: notification text is rendered in
+     * the language each device registered with.
+     */
+    async sendToNamespace(
+        namespace: string,
+        payload: FcmSendPayload | ((language: string | null) => FcmSendPayload)
+    ): Promise<FcmSendResult> {
         // The registry also holds iOS rows (APNs tokens + E2E push keys);
         // those go through IosPushService, never through FCM.
         const devices = this.store.fcm.getDevicesByNamespace(namespace, ['phone', 'wear'])
@@ -137,7 +147,8 @@ export class FcmService {
         let failed = 0
 
         await Promise.all(devices.map(async (device) => {
-            const result = await this.sendToToken(accessToken, device.token, payload, device.platform)
+            const resolved = typeof payload === 'function' ? payload(device.language) : payload
+            const result = await this.sendToToken(accessToken, device.token, resolved, device.platform)
             // `invalid` is a per-device fact, not a pipeline signal -
             // exclude it from the health buffer (see field doc above).
             if (result === 'sent') {

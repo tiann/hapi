@@ -242,13 +242,29 @@ final class PushCoordinator: NSObject {
             )
             let api = APIClient(baseURL: url, authManager: auth, performer: environment.performer)
             do {
-                try await api.registerDevice(token: token, deviceId: deviceId, pushKey: pushKey.base64)
+                try await api.registerDevice(
+                    token: token,
+                    deviceId: deviceId,
+                    pushKey: pushKey.base64,
+                    language: deviceLanguage()
+                )
                 registeredHubs.insert(hub)
             } catch {
                 registeredHubs.remove(hub)
                 log.warning("Device registration failed for a hub: \(error.localizedDescription, privacy: .public)")
             }
         }
+    }
+
+    /// BCP-47 tag the hub localizes this device's notification text with: the
+    /// user's explicit in-app language when set, else the app's localization.
+    /// Read at registration time so a language change is picked up by the next
+    /// registration (see `SettingsView`'s `AppleLanguages` override).
+    private func deviceLanguage() -> String {
+        let stored = AppLanguage(
+            storageKey: UserDefaults.standard.string(forKey: LanguagePrefs.languageKey)
+        )
+        return stored == .system ? Locale.current.identifier : stored.rawValue
     }
 
     // MARK: - Categories & actions

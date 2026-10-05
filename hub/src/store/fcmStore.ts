@@ -15,7 +15,7 @@ export class FcmStore {
 
     upsertDevice(
         namespace: string,
-        device: { token: string; platform: NativeDevicePlatform; deviceId: string; pushKey?: string }
+        device: { token: string; platform: NativeDevicePlatform; deviceId: string; pushKey?: string; language?: string | null }
     ): void {
         upsertFcmDevice(this.db, namespace, device)
     }

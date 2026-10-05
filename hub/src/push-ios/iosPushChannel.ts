@@ -28,7 +28,7 @@ export class IosPushNotificationChannel implements NotificationChannel {
             return
         }
 
-        await this.deliver(session, this.composer.composePermissionRequest(session), ctx)
+        await this.deliver(session, (language) => this.composer.composePermissionRequest(session, language), ctx)
     }
 
     async sendReady(session: Session, ctx?: NotificationSendContext): Promise<void> {
@@ -36,7 +36,7 @@ export class IosPushNotificationChannel implements NotificationChannel {
             return
         }
 
-        await this.deliver(session, this.composer.composeReady(session), ctx)
+        await this.deliver(session, (language) => this.composer.composeReady(session, language), ctx)
     }
 
     async sendTaskNotification(session: Session, notification: TaskNotification, ctx?: NotificationSendContext): Promise<void> {
@@ -44,7 +44,7 @@ export class IosPushNotificationChannel implements NotificationChannel {
             return
         }
 
-        await this.deliver(session, this.composer.composeTask(session, notification), ctx)
+        await this.deliver(session, (language) => this.composer.composeTask(session, notification, language), ctx)
     }
 
     private toPlaintextPayload(composed: ComposedNativeNotification): IosPushNotificationPayload {
@@ -62,8 +62,15 @@ export class IosPushNotificationChannel implements NotificationChannel {
         }
     }
 
-    private async deliver(session: Session, composed: ComposedNativeNotification, ctx?: NotificationSendContext): Promise<void> {
-        const result = await this.iosPushService.sendToNamespace(session.namespace, this.toPlaintextPayload(composed))
+    private async deliver(
+        session: Session,
+        compose: (language: string | null) => ComposedNativeNotification,
+        ctx?: NotificationSendContext
+    ): Promise<void> {
+        const result = await this.iosPushService.sendToNamespace(
+            session.namespace,
+            (language) => this.toPlaintextPayload(compose(language))
+        )
         if ((result?.sent ?? 0) > 0 && ctx?.nativeGate) {
             ctx.nativeGate.sent = true
         }

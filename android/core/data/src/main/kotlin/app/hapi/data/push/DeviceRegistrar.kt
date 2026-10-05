@@ -6,6 +6,7 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import java.util.Locale
 import kotlinx.coroutines.launch
 
 /**
@@ -37,11 +38,26 @@ interface PushDeviceGateway {
 }
 
 /** [PushDeviceGateway] over on-demand authed sessions ([PushHubAccess]). */
-class ApiPushDeviceGateway(private val hubAccess: PushHubAccess) : PushDeviceGateway {
+class ApiPushDeviceGateway(
+    private val hubAccess: PushHubAccess,
+    /**
+     * BCP-47 tag sent with the registration so the hub can localize this
+     * device's notification text. Defaults to the app's current locale, which
+     * `AppCompatDelegate.setApplicationLocales` also updates for an in-app
+     * language choice.
+     */
+    private val language: () -> String? = { defaultDeviceLanguage() },
+) : PushDeviceGateway {
 
     override suspend fun register(hubUrl: String, token: String, identity: PushIdentity) {
         hubAccess.withApi(hubUrl) { api ->
-            api.registerDevice(token = token, deviceId = identity.deviceId, pushKey = identity.pushKey, platform = PLATFORM)
+            api.registerDevice(
+                token = token,
+                deviceId = identity.deviceId,
+                pushKey = identity.pushKey,
+                platform = PLATFORM,
+                language = language(),
+            )
         }
     }
 
@@ -52,6 +68,11 @@ class ApiPushDeviceGateway(private val hubAccess: PushHubAccess) : PushDeviceGat
     private companion object {
         /** This app is the phone companion (`'phone' | 'wear'` per contract). */
         const val PLATFORM = "phone"
+
+        fun defaultDeviceLanguage(): String? =
+            runCatching { Locale.getDefault().toLanguageTag() }
+                .getOrNull()
+                ?.takeIf { it.isNotBlank() }
     }
 }
 
@@ -103,6 +124,15 @@ class DeviceRegistrar(
     /** FCM token rotation (`onNewToken`): push [token] to every paired hub. */
     fun onNewToken(token: String) {
         scope.launch { registerHubs(registry.state.value.hubs, token) }
+    }
+
+    /**
+     * Re-registers with every paired hub, refreshing hub-side metadata that the
+     * client only knows at registration time (currently the device language, so
+     * the hub localizes this device's notification text).
+     */
+    fun refreshRegistration() {
+        scope.launch { registerHubs(registry.state.value.hubs) }
     }
 
     /**

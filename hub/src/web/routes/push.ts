@@ -8,7 +8,9 @@ const subscriptionSchema = z.object({
     keys: z.object({
         p256dh: z.string().min(1),
         auth: z.string().min(1)
-    })
+    }),
+    /** Browser UI language (BCP-47 tag); used for localized notification text. */
+    language: z.string().trim().min(1).max(35).optional().nullable()
 })
 
 const unsubscribeSchema = z.object({
@@ -30,11 +32,12 @@ export function createPushRoutes(store: Store, vapidPublicKey: string): Hono<Web
         }
 
         const namespace = c.get('namespace')
-        const { endpoint, keys } = parsed.data
+        const { endpoint, keys, language } = parsed.data
         store.push.addPushSubscription(namespace, {
             endpoint,
             p256dh: keys.p256dh,
-            auth: keys.auth
+            auth: keys.auth,
+            language: language ?? null
         })
 
         return c.json({ ok: true })

@@ -24,7 +24,7 @@ export class FcmNotificationChannel implements NotificationChannel {
             return
         }
 
-        await this.deliver(session, this.toFcmPayload(this.composer.composePermissionRequest(session)), ctx)
+        await this.deliver(session, (language) => this.toFcmPayload(this.composer.composePermissionRequest(session, language)), ctx)
     }
 
     async sendReady(session: Session, ctx?: NotificationSendContext): Promise<void> {
@@ -32,7 +32,7 @@ export class FcmNotificationChannel implements NotificationChannel {
             return
         }
 
-        await this.deliver(session, this.toFcmPayload(this.composer.composeReady(session)), ctx)
+        await this.deliver(session, (language) => this.toFcmPayload(this.composer.composeReady(session, language)), ctx)
     }
 
     async sendTaskNotification(session: Session, notification: TaskNotification, ctx?: NotificationSendContext): Promise<void> {
@@ -40,7 +40,7 @@ export class FcmNotificationChannel implements NotificationChannel {
             return
         }
 
-        await this.deliver(session, this.toFcmPayload(this.composer.composeTask(session, notification)), ctx)
+        await this.deliver(session, (language) => this.toFcmPayload(this.composer.composeTask(session, notification, language)), ctx)
     }
 
     private toFcmPayload(composed: ComposedNativeNotification): FcmSendPayload {
@@ -63,7 +63,7 @@ export class FcmNotificationChannel implements NotificationChannel {
         }
     }
 
-    private async deliver(session: Session, payload: FcmSendPayload, ctx?: NotificationSendContext): Promise<void> {
+    private async deliver(session: Session, payload: (language: string | null) => FcmSendPayload, ctx?: NotificationSendContext): Promise<void> {
         // Native companion is the canonical surface: always fire FCM when the
         // hub asks us to. The previous SSE-toast shortcut here meant that
         // when the operator had the PWA open in foreground, the watch got

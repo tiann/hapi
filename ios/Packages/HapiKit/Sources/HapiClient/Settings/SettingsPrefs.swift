@@ -99,7 +99,7 @@ public final class LanguagePrefs {
 
     private let defaults: UserDefaults
 
-    public static let languageKey = "settings.appLanguage"
+    public nonisolated static let languageKey = "settings.appLanguage"
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
