@@ -193,13 +193,25 @@ describe('sessionResume', () => {
         }), 3)).toBe(true)
     })
 
-    it('does not infer a DSH resume id from stale cross-flavor metadata', () => {
+    it('uses dshSessionId and ignores stale cross-flavor metadata', () => {
         expect(resolveAgentSessionIdFromMetadata({
             path: '/p',
             host: 'h',
             flavor: 'dsh',
-            claudeSessionId: 'stale-claude-id'
-        })).toBeUndefined()
+            claudeSessionId: 'stale-claude-id',
+            dshSessionId: 'dsh-session-1'
+        })).toBe('dsh-session-1')
+    })
+
+    it('allows inactive DSH sessions with a native resume id', () => {
+        expect(inactiveSessionCanResume(makeSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'dsh',
+                dshSessionId: 'dsh-session-1'
+            }
+        }), 4)).toBe(true)
     })
 
     it('inactiveSessionCanResume rejects non-recovering flavors with messages but no flavor-specific id', () => {
