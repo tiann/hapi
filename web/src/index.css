@@ -334,6 +334,11 @@ html:has(.chat-scroll-y) #root {
     touch-action: pan-y;
 }
 
+/* Keep the agent details content centered when the modal scrollbar is visible. */
+.agent-details-scroll-y {
+    scrollbar-gutter: stable both-edges;
+}
+
 /* Keep only the two primary session surfaces visually quiet while idle.
  * Preserve scrollbar width/gutters so hiding the thumb cannot shift content. */
 .scrollbar-auto-hide {

@@ -42,6 +42,8 @@ export interface HapiMcpBridge {
     };
     /** MCP server config to pass to Codex (works for both CLI and SDK) */
     mcpServers: McpServersConfig;
+    /** Actual tools registered by the HTTP MCP server, independent of approvals. */
+    toolNames: string[];
 }
 
 export interface HapiMcpBridgeOptions {
@@ -125,6 +127,7 @@ export async function buildHapiMcpBridge(
             url: happyServer.url,
             stop: happyServer.stop
         },
+        toolNames: [...happyServer.toolNames],
         mcpServers: {
             hapi: {
                 command: bridgeCommand.command,

@@ -168,6 +168,29 @@ describe('sessionScanner', () => {
     expect(second.nextCursor).toBe(Buffer.byteLength(line1 + '\n' + line2 + '\n'))
   })
 
+  it('preserves assistant context_usage for local context details', async () => {
+    const filePath = join(testDir, 'context-details.jsonl')
+    const contextUsage = {
+      total_tokens: 26_697,
+      raw_max_tokens: 262_144,
+      mcp_tools: [{ name: 'mcp__hapi__list_peers', server_name: 'hapi' }]
+    }
+    await writeFile(filePath, JSON.stringify({
+      type: 'assistant',
+      uuid: 'assistant-context-details',
+      context_usage: contextUsage,
+      message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] }
+    }) + '\n')
+
+    const result = await readSessionLog(filePath, 0)
+
+    expect(result.events).toHaveLength(1)
+    expect(result.events[0]?.event.type).toBe('assistant')
+    if (result.events[0]?.event.type === 'assistant') {
+      expect(result.events[0].event.context_usage).toEqual(contextUsage)
+    }
+  })
+
   it('holds back an unterminated trailing line until its newline arrives', async () => {
     const filePath = join(testDir, 'partial.jsonl')
     const complete = JSON.stringify({ type: 'user', uuid: 'u1', message: { content: 'complete' } })

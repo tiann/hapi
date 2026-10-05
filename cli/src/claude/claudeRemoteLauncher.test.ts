@@ -12,6 +12,7 @@ const harness = vi.hoisted(() => ({
     callCount: 0,
     claudeArgsPerCall: [] as (string[] | undefined)[],
     initialMessages: [] as string[],
+    messages: [] as Array<Record<string, unknown>>,
     triggerSwitch: null as (() => void) | null,
     switchAfterCall: 2
 }))
@@ -44,6 +45,9 @@ vi.mock('./claudeRemote', () => ({
         // Mirrors a launch that actually spawns Claude and observes the
         // session id via the SDK's system/init message.
         opts.onSessionFound('captured-session-id')
+        for (const message of harness.messages) {
+            opts.onMessage(message)
+        }
 
         if (harness.callCount === harness.switchAfterCall && harness.triggerSwitch) {
             // Stop the runMainLoop() while-loop so the test doesn't hang
@@ -91,6 +95,7 @@ import { Session } from './session'
 
 function createClientStub() {
     const rpcHandlers = new Map<string, () => void | Promise<void>>()
+    let metadata: Record<string, unknown> = {}
     return {
         rpcHandlerManager: {
             registerHandler: (method: string, handler: () => void | Promise<void>) => {
@@ -99,7 +104,8 @@ function createClientStub() {
         },
         rpcHandlers,
         keepAlive: () => {},
-        updateMetadata: (mutator: (metadata: any) => any) => { mutator({}) },
+        updateMetadata: (mutator: (metadata: any) => any) => { metadata = mutator(metadata) },
+        getMetadata: () => metadata,
         emitMessagesConsumed: () => {},
         sendClaudeSessionMessage: () => {},
         sendSessionEvent: () => {},
@@ -145,6 +151,7 @@ describe('claudeRemoteLauncher resume anchor', () => {
         harness.callCount = 0
         harness.claudeArgsPerCall = []
         harness.initialMessages = []
+        harness.messages = []
         harness.triggerSwitch = null
         harness.switchAfterCall = 2
         vi.clearAllMocks()
@@ -299,6 +306,63 @@ describe('claudeRemoteLauncher resume anchor', () => {
             expect(harness.initialMessages).toEqual([
                 '/hapi inspect\n\n@C:\\Users\\Jane Doe\\input.txt'
             ])
+        } finally {
+            session.stopKeepAlive()
+        }
+    })
+
+    it('does not let Claude sidechain context details replace parent metadata', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+
+        try {
+            harness.messages = [
+                {
+                    type: 'assistant',
+                    parent_tool_use_id: null,
+                    model: 'claude-opus',
+                    context_usage: {
+                        total_tokens: 100,
+                        raw_max_tokens: 1_000,
+                        mcp_tools: [{ name: 'mcp__parent__tool', server_name: 'parent' }]
+                    },
+                    message: {
+                        role: 'assistant',
+                        content: [{ type: 'text', text: 'parent' }]
+                    }
+                },
+                {
+                    type: 'assistant',
+                    parent_tool_use_id: 'toolu-parent',
+                    model: 'claude-haiku',
+                    context_usage: {
+                        total_tokens: 900,
+                        raw_max_tokens: 9_000,
+                        mcp_tools: [{ name: 'mcp__child__tool', server_name: 'child' }]
+                    },
+                    message: {
+                        role: 'assistant',
+                        content: [{ type: 'text', text: 'child' }]
+                    }
+                }
+            ]
+            queue.push('hello', { permissionMode: 'default' }, 'local-1')
+            harness.switchAfterCall = 1
+            harness.triggerSwitch = () => {
+                client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            }
+
+            await claudeRemoteLauncher(session as any)
+
+            expect(client.getMetadata().contextDetails).toMatchObject({
+                model: 'claude-opus',
+                contextWindow: 1_000,
+                usage: { contextTokens: 100 },
+                claude: {
+                    mcpTools: [{ name: 'mcp__parent__tool', serverName: 'parent' }]
+                }
+            })
+            expect(JSON.stringify(client.getMetadata().contextDetails)).not.toContain('child')
         } finally {
             session.stopKeepAlive()
         }
