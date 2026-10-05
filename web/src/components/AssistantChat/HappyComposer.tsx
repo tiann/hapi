@@ -36,6 +36,7 @@ import type { ConversationStatus } from '@/realtime/types'
 import { useActiveWord } from '@/hooks/useActiveWord'
 import { useActiveSuggestions } from '@/hooks/useActiveSuggestions'
 import { applySuggestion } from '@/utils/applySuggestion'
+import { DEFAULT_AUTOCOMPLETE_PREFIXES } from '@/lib/autocomplete'
 import { usePlatform } from '@/hooks/usePlatform'
 import { usePWAInstall } from '@/hooks/usePWAInstall'
 import { supportsEffort, supportsModelChange, PI_THINKING_LEVEL_LABELS } from '@hapi/protocol'
@@ -436,7 +437,7 @@ export function HappyComposer(props: {
         onSwitchToRemote,
         onTerminal,
         terminalUnsupported = false,
-        autocompletePrefixes = ['@', '/', '$'],
+        autocompletePrefixes = [...DEFAULT_AUTOCOMPLETE_PREFIXES],
         autocompleteSuggestions = defaultSuggestionHandler,
         voiceStatus = 'disconnected',
         voiceMicMuted = false,
