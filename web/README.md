@@ -64,6 +64,7 @@ See `src/router.tsx` for route definitions.
 
 - Message thread with infinite scroll.
 - Composer for sending messages.
+- Composer send shortcut: Alt+S (independent of the Enter behavior setting).
 - Permission mode and model selection for supported agents.
   Cursor Auto uses CLI Auto for new/resumed sessions configured with Auto. When ACP does not advertise a literal Auto option, the session picker warns that switching back from a concrete model requires a restart; HAPI does not automatically restart an active session.
 - Session abort and handoff controls.

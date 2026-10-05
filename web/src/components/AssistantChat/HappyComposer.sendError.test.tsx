@@ -33,6 +33,7 @@ const runtime = vi.hoisted(() => ({
     pendingSendIntentRef: null as null | { current: ComposerSendIntent },
     sentIntents: [] as ComposerSendIntent[],
     modelChanges: [] as Array<{ provider: string; modelId: string } | string | null>,
+    composerEnterBehavior: 'send' as 'send' | 'newline',
 }))
 
 vi.mock('@assistant-ui/react', async () => {
@@ -100,7 +101,9 @@ vi.mock('@/lib/composerSegments', () => ({
 vi.mock('@/hooks/useComposerDraft', () => ({
     useComposerDraft: (sessionId: string | undefined) => ({ sessionId, complete: true, restoredAny: false, hasStoredAttachments: false }),
 }))
-vi.mock('@/hooks/useComposerEnterBehavior', () => ({ useComposerEnterBehavior: () => ({ composerEnterBehavior: 'send' }) }))
+vi.mock('@/hooks/useComposerEnterBehavior', () => ({
+    useComposerEnterBehavior: () => ({ composerEnterBehavior: runtime.composerEnterBehavior }),
+}))
 vi.mock('@/hooks/usePlatform', () => ({ usePlatform: () => ({ haptic: { impact: () => {}, notification: () => {} }, isTouch: false }) }))
 vi.mock('@/hooks/usePWAInstall', () => ({ usePWAInstall: () => ({ isStandalone: false, isIOS: false }) }))
 vi.mock('@/hooks/useActiveWord', () => ({ useActiveWord: () => null }))
@@ -255,10 +258,12 @@ function renderComposer(
     initialText = 'failed text',
     initialSchedule: PendingSchedule | null = { type: 'absolute', ms: 1234 },
     piRunning = false,
+    composerEnterBehavior: 'send' | 'newline' = 'send',
 ) {
     const controls: { current: HarnessControls | null } = { current: null }
     runtime.sentIntents = []
     runtime.modelChanges = []
+    runtime.composerEnterBehavior = composerEnterBehavior
     render(<ComposerHarness initialText={initialText} initialSchedule={initialSchedule} piRunning={piRunning} controls={controls} />)
     return controls
 }
@@ -576,6 +581,51 @@ describe('HappyComposer send intent gestures', () => {
         fireEvent.keyDown(input(), { key: 'Enter' })
 
         expect(runtime.sentIntents).toEqual(['default'])
+        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+    })
+
+    it('sends with Alt+S regardless of the configured Enter behavior', () => {
+        renderComposer('shortcut send', null, true, 'newline')
+
+        fireEvent.keyDown(input(), { key: 's', code: 'KeyS', altKey: true })
+
+        expect(runtime.sentIntents).toEqual(['default'])
+        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+    })
+
+    it('matches the logical S key across keyboard layouts', () => {
+        renderComposer('shortcut send', null, true)
+
+        fireEvent.keyDown(input(), { key: 's', code: 'KeyO', altKey: true })
+
+        expect(runtime.sentIntents).toEqual(['default'])
+        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+    })
+
+    it('does not send Alt+S while an IME composition is active', () => {
+        renderComposer('shortcut send', null, true)
+
+        fireEvent.keyDown(input(), { key: 's', code: 'KeyS', altKey: true, isComposing: true })
+
+        expect(runtime.sentIntents).toEqual([])
+        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+    })
+
+    it('does not treat modified Alt+S combinations as the send shortcut', () => {
+        renderComposer('shortcut send', null, true)
+
+        fireEvent.keyDown(input(), { key: 's', code: 'KeyS', altKey: true, shiftKey: true })
+
+        expect(runtime.sentIntents).toEqual([])
+        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+    })
+
+    it('preserves printable Option characters that share the physical S key', () => {
+        renderComposer('shortcut send', null, true)
+
+        fireEvent.keyDown(input(), { key: 'ß', code: 'KeyS', altKey: true })
+
+        expect(runtime.sentIntents).toEqual([])
         expect(runtime.pendingSendIntentRef?.current).toBe('default')
     })
 
