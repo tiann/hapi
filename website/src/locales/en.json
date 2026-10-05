@@ -123,6 +123,15 @@
     "subtitle": "Join the revolution. Stop watching progress bars and start enjoying your life.",
     "btn": "Get Started Now"
   },
+  "meta": {
+    "title": "HAPI - Vibe Coding Anytime, Anywhere",
+    "description": "The local-first AI agent platform for developers who love freedom. Go for a hike, grab a coffee, or just relax. Your AI agents work in the background."
+  },
+  "notFound": {
+    "title": "Page Not Found",
+    "desc": "Sorry, the page you are looking for doesn't exist. It may have been moved or deleted.",
+    "home": "Go Home"
+  },
   "footer": {
     "desc": "Vibe Coding Anytime, Anywhere. <br/> The local-first AI agent platform for developers who love freedom.",
     "product": "Product",

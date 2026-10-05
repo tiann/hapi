@@ -9,11 +9,12 @@ interface SEOProps {
 }
 
 export function SEO({ title, description, image, url }: SEOProps) {
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation();
   const currentLang = i18n.language;
-  
-  const siteTitle = "HAPI - Vibe Coding Anytime, Anywhere";
-  const defaultDescription = "The local-first AI agent platform for developers who love freedom. Go for a hike, grab a coffee, or just relax. Your AI agents work in the background.";
+  const baseLang = currentLang.toLowerCase().split(/[-_]/)[0];
+
+  const siteTitle = t("meta.title");
+  const defaultDescription = t("meta.description");
   const siteUrl = "https://hapi.manus.space";
   const defaultImage = "/images/og-image.png"; // We need to create this or use an existing one
 
@@ -26,16 +27,16 @@ export function SEO({ title, description, image, url }: SEOProps) {
   const structuredData = {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
-    "name": "HAPI",
-    "operatingSystem": "Windows, macOS, Linux",
-    "applicationCategory": "DeveloperApplication",
-    "offers": {
+    name: "HAPI",
+    operatingSystem: "Windows, macOS, Linux",
+    applicationCategory: "DeveloperApplication",
+    offers: {
       "@type": "Offer",
-      "price": "0",
-      "priceCurrency": "USD"
+      price: "0",
+      priceCurrency: "USD",
     },
-    "description": metaDescription,
-    "softwareVersion": "0.3.1"
+    description: metaDescription,
+    softwareVersion: "0.3.1",
   };
 
   return (
@@ -45,10 +46,11 @@ export function SEO({ title, description, image, url }: SEOProps) {
       <title>{metaTitle}</title>
       <meta name="description" content={metaDescription} />
       <link rel="canonical" href={metaUrl} />
-      
+
       {/* Hreflang Tags for SEO */}
       <link rel="alternate" hrefLang="en" href={`${siteUrl}?lng=en`} />
       <link rel="alternate" hrefLang="zh" href={`${siteUrl}?lng=zh`} />
+      <link rel="alternate" hrefLang="ru" href={`${siteUrl}?lng=ru`} />
       <link rel="alternate" hrefLang="x-default" href={siteUrl} />
 
       {/* Open Graph / Facebook */}
@@ -57,7 +59,12 @@ export function SEO({ title, description, image, url }: SEOProps) {
       <meta property="og:title" content={metaTitle} />
       <meta property="og:description" content={metaDescription} />
       <meta property="og:image" content={metaImage} />
-      <meta property="og:locale" content={currentLang === 'zh' ? 'zh_CN' : 'en_US'} />
+      <meta
+        property="og:locale"
+        content={
+          baseLang === "zh" ? "zh_CN" : baseLang === "ru" ? "ru_RU" : "en_US"
+        }
+      />
       <meta property="og:site_name" content="HAPI" />
 
       {/* Twitter */}
