@@ -1460,12 +1460,14 @@ function SessionChatInner(props: SessionChatProps) {
             tasks: props.session.todos,
             blocks: reconciled.blocks,
             messages: normalizedMessages,
-            backgroundTaskCount: props.session.backgroundTaskCount
+            backgroundTaskCount: props.session.backgroundTaskCount,
+            thinking: props.session.thinking
         }),
         [
             reduced.latestGoal,
             props.session.todos,
             props.session.backgroundTaskCount,
+            props.session.thinking,
             reconciled.blocks,
             normalizedMessages
         ]

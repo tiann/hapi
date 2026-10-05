@@ -155,3 +155,81 @@ describe('SessionRowSummary background status', () => {
         expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('New activity')
     })
 })
+
+describe('SessionRowSummary keepalive-idle (tiann/hapi#1820)', () => {
+    const idle = (overrides: Partial<SessionSummary> = {}) => makeSummary({
+        id: 'idle-row',
+        backgroundTaskCount: 0,
+        metadata: { path: '/demo/idle', name: 'Idle demo', flavor: 'claude', lifecycleState: 'idle' },
+        ...overrides
+    })
+
+    it('draws the idle marker in hint colour while nothing is in flight', () => {
+        render(
+            <I18nProvider>
+                <SessionRowSummary session={idle()} showDetailedStatus={false} />
+            </I18nProvider>
+        )
+
+        expect(screen.getByTestId('session-row-idle')).toHaveTextContent('Idle (keepalive only)')
+        expect(screen.getByTitle('Idle demo').className).toContain('text-[var(--app-hint)]')
+    })
+
+    it('keeps the idle marker next to the unread dot', () => {
+        // A session that went idle after its last activity is both unread and
+        // idle; the unread dot must not hide what the agent is (not) doing.
+        const session = idle({ id: 'unread-idle', updatedAt: 2_000 })
+        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ [session.id]: 2_000 }))
+        const view = render(
+            <I18nProvider>
+                <SessionRowSummary session={session} showDetailedStatus={true} lastSeenVersion={0} />
+            </I18nProvider>
+        )
+        expect(screen.queryByRole('tooltip', { hidden: true })).not.toBeInTheDocument()
+
+        // The watermark moves behind the session's latest activity: unread.
+        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ [session.id]: 1_999 }))
+        view.rerender(
+            <I18nProvider>
+                <SessionRowSummary session={session} showDetailedStatus={true} lastSeenVersion={1} />
+            </I18nProvider>
+        )
+
+        expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('New activity')
+        expect(screen.getByTestId('session-row-idle')).toHaveTextContent('Idle (keepalive only)')
+    })
+
+    it('drops the label only inside the labelled idle bucket, not under a generic pinned heading', () => {
+        const view = render(
+            <I18nProvider>
+                <SessionRowSummary session={idle()} showDetailedStatus={false} inRunningSection />
+            </I18nProvider>
+        )
+        expect(screen.getByTestId('session-row-idle')).toHaveTextContent('Idle (keepalive only)')
+
+        view.rerender(
+            <I18nProvider>
+                <SessionRowSummary session={idle()} showDetailedStatus={false} inRunningSection inIdleBucket />
+            </I18nProvider>
+        )
+        expect(screen.getByTestId('session-row-idle')).toHaveTextContent('')
+        expect(screen.getByTestId('session-row-idle')).toHaveAttribute('title', 'Idle (keepalive only)')
+    })
+
+    it('reads as working again once the session is thinking, spinner and contrast alike', () => {
+        // The hub keeps the idle mark through ambient thinking churn
+        // (tiann/hapi#1553) and bucketRunningSessions files such a row under
+        // Working; the row must not spin inside a dimmed, idle-labelled line.
+        const { container } = render(
+            <I18nProvider>
+                <SessionRowSummary session={idle({ thinking: true })} showDetailedStatus={false} />
+            </I18nProvider>
+        )
+
+        expect(container.querySelector('.animate-spin-slow')).not.toBeNull()
+        expect(screen.queryByTestId('session-row-idle')).toBeNull()
+        const title = screen.getByTitle('Idle demo')
+        expect(title.className).toContain('text-[var(--app-fg)]')
+        expect(title.parentElement!.parentElement!.className).not.toContain('opacity-75')
+    })
+})
