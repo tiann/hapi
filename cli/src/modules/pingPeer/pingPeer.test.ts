@@ -63,12 +63,14 @@ describe('resolveSessionByPrefix', () => {
 })
 
 describe('pingPeer', () => {
+    const sourceSessionId = 'aaaaaaaa-1111-1111-1111-111111111111'
     let nowMs: number
     let sleepCalls: number[]
 
     beforeEach(() => {
         nowMs = 1_000_000
         sleepCalls = []
+        delete process.env.HAPI_SESSION_ID
     })
 
     it('sends to an already-active session without resume', async () => {
@@ -77,6 +79,65 @@ describe('pingPeer', () => {
             post: (url, body) => {
                 if (url.endsWith('/api/auth')) {
                     expect(body).toEqual({ accessToken: 'tok' })
+                    return { status: 200, data: { token: 'jwt' } }
+                }
+                if (url.endsWith(`/cli/sessions/${sourceSessionId}/peer-messages`)) {
+                    expect(body).toEqual({ text: 'hello peer', targetSessionId: sessionId })
+                    return { status: 200, data: { ok: true } }
+                }
+                throw new Error(`unexpected POST ${url}`)
+            },
+            get: (url) => {
+                if (url.endsWith('/api/sessions')) {
+                    return {
+                        status: 200,
+                        data: {
+                            sessions: [{
+                                id: sessionId,
+                                active: true,
+                                metadata: { name: 'Orchestrator', flavor: 'cursor' }
+                            }]
+                        }
+                    }
+                }
+                if (url.endsWith(`/api/sessions/${sessionId}`)) {
+                    return {
+                        status: 200,
+                        data: {
+                            session: {
+                                id: sessionId,
+                                active: true,
+                                metadata: { name: 'Orchestrator', flavor: 'cursor' }
+                            }
+                        }
+                    }
+                }
+                throw new Error(`unexpected GET ${url}`)
+            }
+        })
+
+        const result = await pingPeer({
+            sourceSessionId,
+            sessionIdPrefix: '05d9f0f2',
+            message: 'hello peer',
+            accessToken: 'tok',
+            apiUrl: 'http://127.0.0.1:3006',
+            http: http as never
+        })
+
+        expect(result).toEqual({
+            sessionId,
+            name: 'Orchestrator',
+            resumed: false
+        })
+        expect(http.post).toHaveBeenCalledTimes(2)
+    })
+
+    it('sends unattributed via /messages when no source session is set', async () => {
+        const sessionId = '05d9f0f2-9273-4137-933c-07459a1146a2'
+        const http = createHttpMock({
+            post: (url, body) => {
+                if (url.endsWith('/api/auth')) {
                     return { status: 200, data: { token: 'jwt' } }
                 }
                 if (url.endsWith(`/api/sessions/${sessionId}/messages`)) {
@@ -119,19 +180,17 @@ describe('pingPeer', () => {
             message: 'hello peer',
             accessToken: 'tok',
             apiUrl: 'http://127.0.0.1:3006',
-            http: http as never
+            http: http as never,
+            now: () => nowMs,
+            sleep: async (ms) => { sleepCalls.push(ms) }
         })
 
-        expect(result).toEqual({
-            sessionId,
-            name: 'Orchestrator',
-            resumed: false
-        })
+        expect(result.sessionId).toBe(sessionId)
         expect(http.post).toHaveBeenCalledTimes(2)
     })
 
     it('resumes an inactive session, waits for active, then sends', async () => {
-        const sessionId = 'aaaaaaaa-1111-1111-1111-111111111111'
+        const sessionId = 'bbbbbbbb-2222-2222-2222-222222222222'
         let active = false
         let polls = 0
 
@@ -143,7 +202,7 @@ describe('pingPeer', () => {
                 if (url.endsWith(`/api/sessions/${sessionId}/resume`)) {
                     return { status: 200, data: { type: 'success', sessionId, resumed: true } }
                 }
-                if (url.endsWith(`/api/sessions/${sessionId}/messages`)) {
+                if (url.endsWith(`/cli/sessions/${sourceSessionId}/peer-messages`)) {
                     expect(active).toBe(true)
                     return { status: 200, data: { ok: true } }
                 }
@@ -183,7 +242,8 @@ describe('pingPeer', () => {
         })
 
         const result = await pingPeer({
-            sessionIdPrefix: 'aaaaaaaa',
+            sourceSessionId,
+            sessionIdPrefix: 'bbbbbbbb',
             message: 'wake up',
             accessToken: 'tok',
             apiUrl: 'http://hub.test',
@@ -215,7 +275,7 @@ describe('pingPeer', () => {
                     resumeCalls += 1
                     return { status: 200, data: { type: 'success', sessionId, resumed: true } }
                 }
-                if (url.endsWith(`/api/sessions/${sessionId}/messages`)) {
+                if (url.endsWith(`/cli/sessions/${sourceSessionId}/peer-messages`)) {
                     expect(active).toBe(true)
                     expect(resumeCalls).toBe(1)
                     return { status: 200, data: { ok: true } }
@@ -253,6 +313,7 @@ describe('pingPeer', () => {
         })
 
         const result = await pingPeer({
+            sourceSessionId,
             sessionIdPrefix: 'bbbbbbbb',
             message: 'still here?',
             accessToken: 'tok',
@@ -284,7 +345,7 @@ describe('pingPeer', () => {
                 if (url.endsWith('/api/auth')) {
                     return { status: 200, data: { token: 'jwt' } }
                 }
-                if (url.endsWith(`/api/sessions/${sessionId}/messages`)) {
+                if (url.endsWith(`/cli/sessions/${sourceSessionId}/peer-messages`)) {
                     expect(piSessionId).toBe('pi-ready-1')
                     return { status: 200, data: { ok: true } }
                 }
@@ -324,6 +385,7 @@ describe('pingPeer', () => {
         })
 
         await pingPeer({
+            sourceSessionId,
             sessionIdPrefix: 'piiiiiii',
             message: 'hi pi',
             accessToken: 'tok',
@@ -382,6 +444,7 @@ describe('pingPeer', () => {
         })
 
         await expect(pingPeer({
+            sourceSessionId,
             sessionIdPrefix: 'deadbeef',
             message: 'nudge',
             accessToken: 'tok',
@@ -599,6 +662,7 @@ describe('listSessions query params', () => {
         const listParams: Array<Record<string, unknown> | undefined> = []
         const pingParams: Array<Record<string, unknown> | undefined> = []
         const sessionId = 'zzzzzzzz-9999-9999-9999-999999999999'
+        const sourceSessionId = 'aaaaaaaa-1111-1111-1111-111111111111'
 
         const listHttp = createHttpMock({
             post: (url) => {
@@ -631,8 +695,8 @@ describe('listSessions query params', () => {
                 if (url.endsWith('/api/auth')) {
                     return { status: 200, data: { token: 'jwt' } }
                 }
-                if (url.endsWith(`/api/sessions/${sessionId}/messages`)) {
-                    expect(body).toMatchObject({ text: 'hi' })
+                if (url.endsWith(`/cli/sessions/${sourceSessionId}/peer-messages`)) {
+                    expect(body).toMatchObject({ text: 'hi', targetSessionId: sessionId })
                     return { status: 200, data: { ok: true } }
                 }
                 throw new Error(`unexpected POST ${url}`)
@@ -662,6 +726,7 @@ describe('listSessions query params', () => {
             }
         })
         const result = await pingPeer({
+            sourceSessionId,
             sessionIdPrefix: sessionId,
             message: 'hi',
             apiUrl: 'http://hub.test',
