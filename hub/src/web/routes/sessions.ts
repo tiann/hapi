@@ -30,10 +30,12 @@ import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { SlashCommand } from '@hapi/protocol/apiTypes'
 import { Hono, type Context } from 'hono'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
+import { EngineStillRunningError } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { loadScratchlistAttachmentLimitsFromEnv } from '../../config/scratchlistAttachmentLimits'
 import { validateScratchlistAttachmentsForWrite, scratchlistSessionBytesBeforeForPut } from '../../scratchlistAttachments/validate'
 import { TitleSuggestionError } from '../../sync/titleSuggestion'
+import { RpcTargetMissingError, RpcTimeoutError } from '../../sync/rpcGateway'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
@@ -241,7 +243,9 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 : result.code === 'access_denied' ? 403
                     : result.code === 'session_not_found' ? 404
                         : result.code === 'resume_unavailable' ? 409
-                            : 500
+                            : result.code === 'engine_unreachable' ? 409
+                                : result.code === 'engine_unresponsive' ? 504
+                                    : 500
             return c.json({ error: result.message, code: result.code }, status)
         }
 
@@ -272,7 +276,9 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                     : result.code === 'session_not_found' ? 404
                         : result.code === 'resume_unavailable' ? 409
                             : result.code === 'metadata_conflict' ? 409
-                                : 500
+                                : result.code === 'engine_unreachable' ? 409
+                                    : result.code === 'engine_unresponsive' ? 504
+                                        : 500
             return c.json({ error: result.message, code: result.code }, status)
         }
 
@@ -462,7 +468,29 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Session is inactive' }, 409)
         }
 
-        await engine.archiveSession(sessionResult.sessionId)
+        try {
+            await engine.archiveSession(sessionResult.sessionId)
+        } catch (error) {
+            // The runner confirmed the session process is still alive (or its
+            // fate stays unknown): a state conflict the client can act on
+            // (retry once the process exits), not a hub failure.
+            if (error instanceof EngineStillRunningError) {
+                return c.json({
+                    error: error.message,
+                    code: 'engine_still_running'
+                }, 409)
+            }
+            // archiveSession already handles a vanished engine socket benignly
+            // (markSessionArchivedFromHub); the only delivery failure that
+            // escapes it is an ack-deadline blowout, which is a 504, not a 500.
+            if (error instanceof RpcTimeoutError) {
+                return c.json({
+                    error: `Session did not acknowledge the archive within ${Math.round(error.timeoutMs / 1000)}s; it may be unresponsive.`,
+                    code: 'engine_unresponsive'
+                }, 504)
+            }
+            throw error
+        }
         return c.json({ ok: true })
     })
 
@@ -548,7 +576,10 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 const status = result.code === 'no_machine_online' ? 503
                     : result.code === 'access_denied' ? 403
                         : result.code === 'session_not_found' ? 404
-                            : result.code === 'resume_unavailable' ? 409 : 500
+                            : result.code === 'resume_unavailable' ? 409
+                                : result.code === 'engine_unreachable' ? 409
+                                    : result.code === 'engine_unresponsive' ? 504
+                                        : 500
                 return c.json({ error: result.message, code: result.code }, status)
             }
             sessionId = result.sessionId
@@ -1389,6 +1420,20 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             const result = await engine.listCodexModelsForSession(sessionResult.sessionId)
             return c.json(result)
         } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({
+                    success: false,
+                    error: error.message,
+                    code: 'engine_unreachable'
+                }, 409)
+            }
+            if (error instanceof RpcTimeoutError) {
+                return c.json({
+                    success: false,
+                    error: error.message,
+                    code: 'engine_unresponsive'
+                }, 504)
+            }
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list Codex models'
@@ -1577,6 +1622,20 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         try {
             return await handler({ sessionId: sessionResult.sessionId, engine })
         } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({
+                    success: false,
+                    error: error.message,
+                    code: 'engine_unreachable'
+                }, 409)
+            }
+            if (error instanceof RpcTimeoutError) {
+                return c.json({
+                    success: false,
+                    error: error.message,
+                    code: 'engine_unresponsive'
+                }, 504)
+            }
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Internal error'
