@@ -15,27 +15,50 @@
  */
 
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
-import type { Session } from '@hapi/protocol/types'
+import type { Metadata, Session } from '@hapi/protocol/types'
 
 /** Keepalive-only for this long ⇒ reconcile `running` → `idle`. */
 export const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 12 * 60 * 60 * 1000
 
 /**
- * `HAPI_SESSION_IDLE_TIMEOUT_MS` window, in ms. `0` disables reconciliation
- * entirely; an unset or unparseable value falls back to the default.
+ * `HAPI_SESSION_IDLE_TIMEOUT_MS` window, in ms. `0` never marks a session
+ * idle (and lifts marks an earlier configuration left behind); an unset or
+ * unparseable value falls back to the default.
+ *
+ * Whole milliseconds only. `parseInt` would read "1h" as 1 ms and quietly
+ * mark every session idle on the next tick, so a value with a suffix (or
+ * anything else that is not a plain digit string) is refused, and loudly.
  */
 export function resolveSessionIdleTimeoutMs(
-    env: Record<string, string | undefined> = process.env
+    env: Record<string, string | undefined> = process.env,
+    warn: (message: string) => void = (message) => console.warn(message)
 ): number {
     const raw = env.HAPI_SESSION_IDLE_TIMEOUT_MS
     if (raw === undefined || raw.trim() === '') {
         return DEFAULT_SESSION_IDLE_TIMEOUT_MS
     }
-    const parsed = Number.parseInt(raw.trim(), 10)
-    if (!Number.isFinite(parsed) || parsed < 0) {
+    const trimmed = raw.trim()
+    const parsed = /^\d+$/.test(trimmed) ? Number(trimmed) : Number.NaN
+    if (!Number.isSafeInteger(parsed)) {
+        warn(`[session-idle] Ignoring HAPI_SESSION_IDLE_TIMEOUT_MS=${JSON.stringify(raw)}: expected whole milliseconds (e.g. 3600000 for 1h); using the default ${DEFAULT_SESSION_IDLE_TIMEOUT_MS}`)
         return DEFAULT_SESSION_IDLE_TIMEOUT_MS
     }
     return parsed
+}
+
+/**
+ * When the CLI last stamped this session `running`, or `null`.
+ *
+ * The CLI writes `lifecycleState: 'running'` with a fresh `lifecycleStateSince`
+ * exactly once, at bootstrap (cli/src/agent/sessionFactory.ts). For a session
+ * reopened after days of silence that stamp is the only sign of life until the
+ * first turn, so it counts as agent progress at its own time; otherwise the
+ * reopened session reads as idle on the very next tick.
+ */
+export function lifecycleRunningSince(metadata: Metadata | null | undefined): number | null {
+    if (metadata?.lifecycleState !== SESSION_LIFECYCLE_RUNNING) return null
+    const since = metadata.lifecycleStateSince
+    return typeof since === 'number' ? since : null
 }
 
 /** Work the hub can see that must never be reconciled away as a zombie. */
@@ -88,7 +111,10 @@ export function shouldClearKeepaliveIdle(
     timeoutMs: number
 ): boolean {
     if (session.metadata?.lifecycleState !== SESSION_LIFECYCLE_IDLE) return false
-    // Opting out after the fact still lifts an existing mark.
-    if (session.metadata.idleReconcileExempt === true) return true
-    return timeoutMs > 0 && now - agentProgressAt <= timeoutMs
+    // Opting out after the fact still lifts an existing mark, and so does
+    // disabling the window: the CLI only stamps `running` at bootstrap, so a
+    // mark left behind by an earlier configuration would otherwise outlive
+    // the configuration that made it.
+    if (session.metadata.idleReconcileExempt === true || timeoutMs <= 0) return true
+    return now - agentProgressAt <= timeoutMs
 }
