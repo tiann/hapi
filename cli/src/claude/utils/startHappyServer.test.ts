@@ -195,6 +195,118 @@ describe('startHappyServer skill_lookup', () => {
 
 })
 
+describe('startHappyServer change_title', () => {
+    let stopServer: (() => void) | null
+    let client: Client | null
+
+    afterEach(async () => {
+        await client?.close()
+        stopServer?.()
+        client = null
+        stopServer = null
+    })
+
+    async function connectChangeTitleServer(sessionClient: ApiSessionClient, options?: Parameters<typeof startHappyServer>[1]) {
+        const server = await startHappyServer(sessionClient, options)
+        stopServer = server.stop
+        client = new Client(
+            { name: 'hapi-change-title-test', version: '1.0.0' },
+            { capabilities: {} }
+        )
+        await client.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+        return client
+    }
+
+    it('renames via metadata.name so spawn --name sessions update visibly', async () => {
+        const updateMetadata = vi.fn()
+        const sendClaudeSessionMessage = vi.fn()
+        const sessionClient = {
+            updateMetadata,
+            sendAgentMessage: vi.fn(),
+            sendClaudeSessionMessage
+        } as unknown as ApiSessionClient
+
+        const mcp = await connectChangeTitleServer(sessionClient)
+        updateMetadata.mockClear()
+        sendClaudeSessionMessage.mockClear()
+
+        const result = await mcp.callTool({
+            name: 'change_title',
+            arguments: { title: '  Renamed triage peer  ' }
+        }) as ToolResult
+
+        expect(result.isError).toBe(false)
+        expect(result.content?.[0]?.text).toContain('Successfully changed chat title to: "Renamed triage peer"')
+        expect(updateMetadata).toHaveBeenCalledTimes(1)
+        const handler = updateMetadata.mock.calls[0]?.[0] as (metadata: {
+            path: string
+            host: string
+            name?: string
+            summary?: { text: string }
+        }) => {
+            path: string
+            host: string
+            name?: string
+            summary?: { text: string }
+        }
+        expect(handler({
+            path: '/tmp',
+            host: 'localhost',
+            name: 'issue-triage-#54',
+            summary: { text: 'stale' }
+        })).toEqual({
+            path: '/tmp',
+            host: 'localhost',
+            name: 'Renamed triage peer',
+            summary: { text: 'stale' }
+        })
+        expect(sendClaudeSessionMessage).not.toHaveBeenCalled()
+    })
+
+    it('returns an error for blank titles instead of claiming success', async () => {
+        const updateMetadata = vi.fn()
+        const sessionClient = {
+            updateMetadata,
+            sendAgentMessage: vi.fn(),
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+
+        const mcp = await connectChangeTitleServer(sessionClient)
+        updateMetadata.mockClear()
+
+        const result = await mcp.callTool({
+            name: 'change_title',
+            arguments: { title: '   ' }
+        }) as ToolResult
+
+        expect(result.isError).toBe(true)
+        expect(result.content?.[0]?.text).toContain('Failed to change chat title')
+        expect(updateMetadata).not.toHaveBeenCalled()
+    })
+
+    it('does not write titles when emitTitleSummary is disabled (Codex child isolation)', async () => {
+        const updateMetadata = vi.fn()
+        const sendClaudeSessionMessage = vi.fn()
+        const sessionClient = {
+            updateMetadata,
+            sendAgentMessage: vi.fn(),
+            sendClaudeSessionMessage
+        } as unknown as ApiSessionClient
+
+        const mcp = await connectChangeTitleServer(sessionClient, { emitTitleSummary: false })
+        updateMetadata.mockClear()
+        sendClaudeSessionMessage.mockClear()
+
+        const result = await mcp.callTool({
+            name: 'change_title',
+            arguments: { title: 'Child Title' }
+        }) as ToolResult
+
+        expect(result.isError).toBe(false)
+        expect(updateMetadata).not.toHaveBeenCalled()
+        expect(sendClaudeSessionMessage).not.toHaveBeenCalled()
+    })
+})
 describe('toClaudeAllowedHapiMcpTools', () => {
     it('keeps local-path and peer tools registered but out of Claude --allowedTools', () => {
         expect(toClaudeAllowedHapiMcpTools([

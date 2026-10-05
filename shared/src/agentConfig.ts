@@ -75,7 +75,7 @@ const BUILTIN_DESCRIPTORS: Record<AgentFlavor, AgentConfigFieldDescriptor[]> = {
         { id: 'effort', section: 'effort', kind: 'select', optionSource: 'model', availability: 'both' },
         PERMISSION
     ),
-    kimi: fields(MODEL, PERMISSION),
+    kimi: fields({ ...MODEL, optionSource: 'directory' }, PERMISSION),
     opencode: fields(
         { ...MODEL, optionSource: 'directory' },
         { id: 'effort', section: 'effort', kind: 'select', optionSource: 'model', availability: 'both' },

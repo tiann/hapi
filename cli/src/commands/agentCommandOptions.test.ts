@@ -13,12 +13,13 @@ describe('parseRemoteAgentCommandOptions', () => {
             .toBe('yolo')
     })
 
-    it('parses --hapi-session-id into existingSessionId (pty reopen id reuse)', () => {
-        // The runner emits --hapi-session-id when reopening a pty session so the
-        // child reuses the existing hub row. agy (this shared parser) must consume
-        // it — else the flag is silently dropped and reopen mints a new id + 404.
-        expect(parseRemoteAgentCommandOptions(['--hapi-session-id', 'hub-id-1'], AGY_PERMISSION_MODES).existingSessionId)
+    it('parses --hapi-session-id into reservedSessionId (fresh prealloc / adopt)', () => {
+        // #1911 M3: must NOT alias to existingSessionId — that collapses adopt→reopen.
+        // Intentional reopen uses --existing-session-id (buildCliArgs already splits).
+        expect(parseRemoteAgentCommandOptions(['--hapi-session-id', 'hub-id-1'], AGY_PERMISSION_MODES).reservedSessionId)
             .toBe('hub-id-1')
+        expect(parseRemoteAgentCommandOptions(['--hapi-session-id', 'hub-id-1'], AGY_PERMISSION_MODES).existingSessionId)
+            .toBeUndefined()
     })
 
     it('parses common remote agent flags', () => {

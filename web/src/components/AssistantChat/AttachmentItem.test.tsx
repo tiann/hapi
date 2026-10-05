@@ -12,7 +12,8 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@assistant-ui/react', () => ({
-    useThreadComposerAttachment: () => mocks.attachment,
+    useAuiState: (selector: (state: { attachment: typeof mocks.attachment }) => unknown) =>
+        selector({ attachment: mocks.attachment }),
     AttachmentPrimitive: {
         Root: ({ children, ...props }: ComponentProps<'div'>) => <div {...props}>{children}</div>,
         Remove: ({ children, ...props }: ComponentProps<'button'> & { children?: ReactNode }) => (

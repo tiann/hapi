@@ -12,7 +12,7 @@ import { logger } from '@/ui/logger';
 import { CodexAppServerClient, isIndeterminateError } from '../codexAppServerClient';
 import { codexHome, saveRuntime, runtimeDirectory, runtimeAuthHash, findColdBinding, withThreadOwnership, type CodexRuntimeRecord } from './registry';
 import { startCodexGateway, record, string, type Envelope } from './gateway';
-import { resolveSharedCodex, sharedLaunchConfig, initializeSharedClient, checkSharedCapabilities, type SharedLaunchOptions } from './launch';
+import { resolveSharedCodex, sharedLaunchConfig, initializeSharedClient, checkSharedCapabilities, takeReservedSessionId, type SharedLaunchOptions } from './launch';
 import { SharedCodexRoot } from './root';
 
 export type RuntimeReady = { sessionId: string; runtime: CodexRuntimeRecord };
@@ -172,9 +172,16 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const shared = { flavor: 'codex', startedBy: options.startedBy ?? 'terminal', workingDirectory: cwd,
             exportSessionEnv: false, reportStarted: false, metadataOverrides: { capabilities: { terminal: true, concurrentClients: true },
                 ...(parent ? { forkedFrom: parent.session.sessionId } : {}) } } as const;
+        // reservedSessionId names one preallocated hub row — single-use. A second
+        // create()/fork must mint a fresh row, not re-adopt (#1911 Opus Major).
+        const reservedSessionId = takeReservedSessionId(options);
         const bootstrap = existingSessionId
             ? await bootstrapExistingSession({ ...shared, sessionId: existingSessionId })
-            : await bootstrapSession({ ...shared, agentState: { controlledByUser: false } });
+            : await bootstrapSession({
+                ...shared,
+                reservedSessionId,
+                agentState: { controlledByUser: false },
+            });
         const root = new SharedCodexRoot(bootstrap, { directory: join(runtimeDirectory(), 'queues'), generation: id, endpoint: upstream, token: upstreamToken,
             settingsFor: threadId => nativeSettings.get(threadId), create, end });
         prepared.add(root);

@@ -21,6 +21,7 @@ import {
     useState
 } from 'react'
 import { useNarrowViewport } from '@/hooks/useNarrowViewport'
+import { shouldInvokeComposerDictateShortcut } from '@/lib/composerDictateShortcut'
 import { isRichComposerMentionsEnabled, resolveComposerPlaceholderKey } from '@/lib/composerSegments'
 import type { SessionMentionResolveResult } from '@/components/AssistantChat/RichComposerInput'
 import {
@@ -364,6 +365,8 @@ export function HappyComposer(props: {
     ) => Promise<ScratchlistParkResult>
     /** Parent disables DragDropZone / scratchlist promote while park is in flight. */
     onScratchlistParkingChange?: (parking: boolean) => void
+    /** SessionChat binds Ctrl/Cmd+Shift+D; HappyComposer registers the effective voice toggle. */
+    dictateHotkeyRef?: MutableRefObject<(() => void) | null>
     // Set when the most recent send failed (4xx/5xx/network).  The composer
     // restores the original text once per `sendError.id` and renders an
     // inline error affordance until the user dismisses or starts editing.
@@ -1623,6 +1626,38 @@ export function HappyComposer(props: {
     )
     const showAbortButton = true
     const voiceEnabled = Boolean(effectiveVoiceToggle)
+    const routesToScratchlist = (props.scratchlistMode ?? false) && pendingSchedule == null
+
+    const invokeDictateHotkey = useCallback(() => {
+        if (!shouldInvokeComposerDictateShortcut({
+            controlsDisabled,
+            voiceEnabled,
+            dictationActive,
+            voiceStatus: effectiveVoiceStatus,
+            canSend,
+            routesToScratchlist,
+        })) {
+            return
+        }
+        effectiveVoiceToggle?.()
+    }, [
+        controlsDisabled,
+        voiceEnabled,
+        dictationActive,
+        effectiveVoiceStatus,
+        canSend,
+        routesToScratchlist,
+        effectiveVoiceToggle,
+    ])
+
+    useEffect(() => {
+        const ref = props.dictateHotkeyRef
+        if (!ref) return
+        ref.current = invokeDictateHotkey
+        return () => {
+            ref.current = null
+        }
+    }, [props.dictateHotkeyRef, invokeDictateHotkey])
 
     // Generic model/effort value buttons. The current value label doubles as
     // the button caption; clicking opens the settings sheet. Hidden on narrow

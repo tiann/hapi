@@ -1,4 +1,4 @@
-import type { GrokModelSummary } from '@/types/api'
+import type { GrokModelSummary, KimiModelSummary } from '@/types/api'
 import type { AgentType } from './types'
 
 export function shouldEnableGrokModelDiscovery(args: {
@@ -45,6 +45,52 @@ export function buildGrokEffortOptions(
         ...efforts.map((effort) => ({
             value: effort.value,
             label: effort.name ?? effort.value
+        }))
+    ]
+}
+
+export function shouldEnableKimiModelDiscovery(args: {
+    agent: AgentType
+    machineId: string | null
+    cwd: string
+    cwdExists: boolean | undefined
+}): boolean {
+    return args.agent === 'kimi'
+        && Boolean(args.machineId)
+        && args.cwd.length > 0
+        && args.cwdExists === true
+}
+
+/**
+ * Kimi options for the create-session selector: Default plus one entry per
+ * discovered provider model. `value` is always the real Kimi alias; the label
+ * makes the provider recognizable ("TheHive — GLM-5.3-flash").
+ */
+export function buildKimiModelOptions(
+    availableModels: KimiModelSummary[]
+): Array<{ value: string; label: string }> {
+    return [
+        { value: 'auto', label: 'Default' },
+        ...availableModels.map((model) => ({
+            value: model.modelId,
+            label: model.provider ? `${model.provider} — ${model.name ?? model.modelId}` : (model.name ?? model.modelId)
+        }))
+    ]
+}
+
+/**
+ * Options for a running Kimi session's model picker: Default (null value,
+ * cleared via session/set_model) plus the dynamically discovered models.
+ * Labels match buildKimiModelOptions so both pickers read the same.
+ */
+export function buildKimiSessionModelOptions(
+    availableModels: KimiModelSummary[]
+): Array<{ value: string | null; label: string }> {
+    return [
+        { value: null, label: 'Default' },
+        ...availableModels.map((model) => ({
+            value: model.modelId,
+            label: model.provider ? `${model.provider} — ${model.name ?? model.modelId}` : (model.name ?? model.modelId)
         }))
     ]
 }

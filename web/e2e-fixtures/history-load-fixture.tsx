@@ -31,7 +31,14 @@ type Probe = {
     loadMore: () => Promise<unknown>
     refetch: () => Promise<void>
     releaseLatest: () => void
-    windowState: () => { messageCount: number; oldestSeq: number | null; newestSeq: number | null }
+    holdBefore: () => void
+    releaseBefore: () => void
+    windowState: () => {
+        messageCount: number
+        oldestSeq: number | null
+        newestSeq: number | null
+        isLoadingMore: boolean
+    }
 }
 
 declare global {
@@ -42,18 +49,30 @@ declare global {
 
 let releaseLatestResponse = () => {}
 let latestResponseGate: Promise<void> | null = null
+let beforeResponseGate: Promise<void> | null = null
+let releaseBeforeResponse = () => {}
 
 window.__probe = {
     requests: [],
     loadMore: async () => {},
     refetch: async () => {},
     releaseLatest: () => releaseLatestResponse(),
+    holdBefore: () => {
+        beforeResponseGate = new Promise<void>((resolve) => {
+            releaseBeforeResponse = resolve
+        })
+    },
+    releaseBefore: () => {
+        beforeResponseGate = null
+        releaseBeforeResponse()
+    },
     windowState: () => {
         const state = getMessageWindowState(SESSION_ID)
         return {
             messageCount: state.messages.length,
             oldestSeq: state.oldestSeq,
-            newestSeq: state.newestSeq
+            newestSeq: state.newestSeq,
+            isLoadingMore: state.isLoadingMore
         }
     }
 }
@@ -72,8 +91,8 @@ window.__probe = {
 //   (reset + tail resync, typed terminal stop).
 // - ?coldInitial=1 — honor the production cold-open latest-page size instead
 //   of returning the legacy full 200-row page used by this fixture by default.
-// - ?slowBefore=1 — delay older-page responses long enough for a normal tail
-//   synchronization to invalidate an in-flight request.
+// - ?slowBefore=1 — add latency to older-page responses. Use holdBefore /
+//   releaseBefore for tests that require a request to remain in flight.
 // - ?cachedReentry=1 — hydrate one cached message before activation, so the
 //   latest-tail refresh path can be tested independently from a cold window.
 // - ?holdLatest=1 — hold the latest response until `window.__probe.releaseLatest`
@@ -165,6 +184,7 @@ const fakeApi = {
         if (query.beforeSeq != null || query.beforeAt != null) direction = 'before'
         else if (query.afterSeq != null || query.afterAt != null) direction = 'after'
         const limit = direction === 'latest' && !coldInitial && !cachedReentry ? 200 : requestedLimit
+        const responseGate = direction === 'before' ? beforeResponseGate : null
         window.__probe.requests.push({
             direction,
             beforeSeq: query.beforeSeq ?? null,
@@ -177,6 +197,7 @@ const fakeApi = {
             resolve,
             direction === 'before' && slowBefore ? 500 : 50
         ))
+        if (responseGate) await responseGate
 
         if (direction === 'latest' && latestResponseGate) {
             await latestResponseGate

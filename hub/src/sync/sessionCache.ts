@@ -101,6 +101,29 @@ export class SessionCache {
         return this.refreshSession(stored.id) ?? (() => { throw new Error('Failed to load session') })()
     }
 
+    adoptPreallocatedSession(
+        id: string,
+        tag: string,
+        metadata: unknown,
+        agentState: unknown,
+        namespace: string,
+        model?: string,
+        effort?: string,
+        modelReasoningEffort?: string
+    ): Session {
+        const stored = this.store.sessions.adoptPreallocatedSession(
+            id,
+            tag,
+            metadata,
+            agentState,
+            namespace,
+            model,
+            effort,
+            modelReasoningEffort
+        )
+        return this.refreshSession(stored.id) ?? (() => { throw new Error('Failed to load adopted session') })()
+    }
+
     /**
      * After fork hydrate / rewind truncate, re-scan the transcript for the
      * latest TodoWrite (or clear todos). Bypasses the one-shot backfill flag
@@ -1084,7 +1107,8 @@ export class SessionCache {
                 next,
                 session.metadataVersion,
                 session.namespace,
-                { touchUpdatedAt: false }
+                // #1911 M1: store rejects un-archive unless hub reopen opts in.
+                { touchUpdatedAt: false, allowUnarchive: true }
             )
 
             if (result.result === 'error') {

@@ -186,10 +186,31 @@ describe('runOpencode set-session-config handler', () => {
         return configHandler![1] as (payload: unknown) => Promise<unknown>;
     }
 
-    it('carries the runner preallocated id from CLI args through parse into bootstrapExistingSession', async () => {
+    it('routes reservedSessionId from buildCliArgs into bootstrapSession (adopt, not reopen)', async () => {
         const runnerArgs = buildCliArgs('opencode', {
             directory: '/tmp/project',
-            existingSessionId: 'preallocated-hapi-id'
+            reservedSessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+        });
+        const parsed = parseRemoteAgentCommandOptions(runnerArgs.slice(1), OPENCODE_PERMISSION_MODES);
+
+        expect(parsed.reservedSessionId).toBe('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee');
+        expect(parsed.existingSessionId).toBeUndefined();
+
+        await runOpencode({ ...parsed, workingDirectory: '/tmp/project' });
+
+        expect(harness.bootstrapExistingArgs).toEqual([]);
+        expect(harness.bootstrapArgs).toEqual([expect.objectContaining({
+            flavor: 'opencode',
+            startedBy: 'runner',
+            workingDirectory: '/tmp/project',
+            reservedSessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+        })]);
+    });
+
+    it('routes --existing-session-id reopen into bootstrapExistingSession', async () => {
+        const runnerArgs = buildCliArgs('opencode', {
+            directory: '/tmp/project',
+            existingSessionId: 'live-hub-row'
         });
         const parsed = parseRemoteAgentCommandOptions(runnerArgs.slice(1), OPENCODE_PERMISSION_MODES);
 
@@ -197,7 +218,7 @@ describe('runOpencode set-session-config handler', () => {
 
         expect(harness.bootstrapArgs).toEqual([]);
         expect(harness.bootstrapExistingArgs).toEqual([{
-            sessionId: 'preallocated-hapi-id',
+            sessionId: 'live-hub-row',
             flavor: 'opencode',
             startedBy: 'runner',
             workingDirectory: '/tmp/project'

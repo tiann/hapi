@@ -101,6 +101,14 @@ export const MetadataSchema = z.object({
         state: z.enum(['resuming', 'quarantined']),
         machineId: z.string(),
         startedAt: z.number(),
+        // Same durability as piResumeAttempt: clear-before-spawn +
+        // rollbackSafe:false quarantine must not lose archive fields (#1911).
+        archiveSnapshot: z.object({
+            lifecycleState: z.string().optional(),
+            lifecycleStateSince: z.number().optional(),
+            archivedBy: z.string().optional(),
+            archiveReason: z.string().optional(),
+        }).optional(),
     }).optional(),
     tools: z.array(z.string()).optional(),
     slashCommands: z.array(z.string()).optional(),

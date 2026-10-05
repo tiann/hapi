@@ -17,6 +17,8 @@ export const kimiCommand: CommandDefinition = {
                 permissionMode?: KimiPermissionMode
                 model?: string
                 resumeSessionId?: string
+                existingSessionId?: string
+                reservedSessionId?: string
             } = {}
 
             let hasExplicitPermissionMode = false
@@ -32,6 +34,19 @@ export const kimiCommand: CommandDefinition = {
                     } else {
                         throw new Error('Invalid --hapi-starting-mode (expected local or remote)')
                     }
+                } else if (arg === '--hapi-session-id') {
+                    // Adopt-stub: create bootstrap with reserved id (not reopen).
+                    const sessionId = commandArgs[++i]
+                    if (!sessionId) {
+                        throw new Error('Missing --hapi-session-id value')
+                    }
+                    options.reservedSessionId = sessionId
+                } else if (arg === '--existing-session-id') {
+                    const sessionId = commandArgs[++i]
+                    if (!sessionId) {
+                        throw new Error('Missing --existing-session-id value')
+                    }
+                    options.existingSessionId = sessionId
                 } else if (arg === '--permission-mode') {
                     const mode = commandArgs[++i]
                     if (!mode || !(KIMI_PERMISSION_MODES as readonly string[]).includes(mode)) {

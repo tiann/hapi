@@ -151,6 +151,44 @@ describe('useComposerDraft', () => {
         expect(mockSaveDraftAttachments).toHaveBeenCalledWith('session-1', [])
     })
 
+    it('saves draft when the page becomes hidden, without unmounting (hapi#1882)', async () => {
+        mockGetDraft.mockReturnValue('')
+        const setText = vi.fn()
+
+        const { rerender } = renderHook(
+            ({ text }) => useComposerDraft('session-1', text, [], true, setText, vi.fn()),
+            { initialProps: { text: '' } },
+        )
+
+        await act(async () => flushRAF())
+        rerender({ text: 'my draft' })
+
+        // A real top-level page navigation (e.g. an installed PWA's own
+        // out-of-scope-link overlay) doesn't reliably run React's unmount
+        // cleanup before the state is gone — this is the fallback save.
+        Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+        document.dispatchEvent(new Event('visibilitychange'))
+
+        expect(mockSaveDraft).toHaveBeenCalledWith('session-1', 'my draft')
+        expect(mockSaveDraftAttachments).toHaveBeenCalledWith('session-1', [])
+
+        Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+    })
+
+    it('does not save on visibilitychange while the page is becoming visible again', async () => {
+        mockGetDraft.mockReturnValue('')
+        const setText = vi.fn()
+
+        renderHook(() => useComposerDraft('session-1', 'my draft', [], true, setText, vi.fn()))
+        await act(async () => flushRAF())
+        mockSaveDraft.mockClear()
+
+        Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+        document.dispatchEvent(new Event('visibilitychange'))
+
+        expect(mockSaveDraft).not.toHaveBeenCalled()
+    })
+
     it('does not save draft on unmount before rAF has fired', () => {
         mockGetDraft.mockReturnValue('')
         const setText = vi.fn()

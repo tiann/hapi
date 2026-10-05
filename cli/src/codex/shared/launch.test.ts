@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sharedLaunchConfig } from './launch';
+import { sharedLaunchConfig, takeReservedSessionId } from './launch';
 import { parseCodexCliOverrides } from '../utils/codexCliOverrides';
 import { resolveCodexPermissionModeConfig } from '../utils/permissionModeConfig';
 
@@ -50,5 +50,14 @@ describe('shared launch configuration', () => {
     it('preserves launch-time provider and automatic-review policy', () => {
         const result = sharedLaunchConfig({ codexArgs: ['--oss', '--local-provider', 'ollama', '--approve-for-me'] }, '/tmp');
         expect(result.threadParams).toMatchObject({ modelProvider: 'ollama', approvalsReviewer: 'auto_review', sandbox: 'workspace-write' });
+    });
+});
+
+describe('takeReservedSessionId', () => {
+    it('returns the reservation once and clears it for subsequent prepare calls', () => {
+        const options = { reservedSessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' };
+        expect(takeReservedSessionId(options)).toBe('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee');
+        expect(options.reservedSessionId).toBeUndefined();
+        expect(takeReservedSessionId(options)).toBeUndefined();
     });
 });

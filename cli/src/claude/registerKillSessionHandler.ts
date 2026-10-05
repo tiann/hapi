@@ -1,6 +1,7 @@
 import { RpcHandlerManager } from "@/api/rpc/RpcHandlerManager";
 import { logger } from "@/lib";
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { getProcessStartMarker } from '@/utils/process';
 
 interface KillSessionRequest {
     // No parameters needed
@@ -9,6 +10,10 @@ interface KillSessionRequest {
 interface KillSessionResponse {
     success: boolean;
     message: string;
+    /** OS pid of this CLI — hub uses it to confirm exit via StopSession when maps miss. */
+    pid: number;
+    /** Generation marker for `pid`; required before the runner will tree-kill it. */
+    processStartMarker?: string;
 }
 
 /**
@@ -26,11 +31,21 @@ export interface KillSessionLifecycle {
 
 export function registerKillSessionHandler(
     rpcHandlerManager: RpcHandlerManager,
-    lifecycleOrCleanup: KillSessionLifecycle | (() => Promise<void>)
+    lifecycleOrCleanup: KillSessionLifecycle | (() => Promise<void>),
+    session?: {
+        hubArchived?: boolean
+        on(event: 'hub-archived', listener: () => void): unknown
+    }
 ) {
     const lifecycle: KillSessionLifecycle = typeof lifecycleOrCleanup === 'function'
         ? { cleanupAndExit: lifecycleOrCleanup }
         : lifecycleOrCleanup;
+
+    const exitFromHubArchive = () => {
+        logger.debug('Hub-archived metadata received; exiting CLI');
+        lifecycle.setArchiveReason?.('User terminated');
+        void lifecycle.cleanupAndExit();
+    };
 
     rpcHandlerManager.registerHandler<KillSessionRequest, KillSessionResponse>(RPC_METHODS.KillSession, async () => {
         logger.debug('Kill session request received');
@@ -45,11 +60,26 @@ export function registerKillSessionHandler(
         // This will start the cleanup process
         void lifecycle.cleanupAndExit();
 
-        // We should still be able to respond to the client, though they
-        // should optimistically assume the session is dead.
+        // Include pid + start marker so archive can ask the runner to verify
+        // this exact process generation exited (#1910) — not a reused PID.
+        const processStartMarker = getProcessStartMarker(process.pid) ?? undefined;
         return {
             success: true,
-            message: 'Killing hapi CLI process'
+            message: 'Killing hapi CLI process',
+            pid: process.pid,
+            ...(processStartMarker ? { processStartMarker } : {}),
         };
     });
+
+    // #1910: when archive lands as hub metadata (KillSession unreachable),
+    // still exit instead of reconnecting forever.
+    // #1911 criterion 6: EventEmitter does not replay past emits — if
+    // noteHubArchived already latched before this registration, exit now.
+    // Still subscribe so a later emit (or a race with the latch write) is covered.
+    if (session?.hubArchived) {
+        exitFromHubArchive();
+    }
+    if (session && typeof session.on === 'function') {
+        session.on('hub-archived', exitFromHubArchive);
+    }
 }

@@ -276,27 +276,174 @@ export class SessionIdentityConflictError extends Error {
     }
 }
 
+export class SessionNotAdoptableError extends Error {
+    constructor(message: string) {
+        super(message)
+        this.name = 'SessionNotAdoptableError'
+    }
+}
+
+/** Hub-internal stub tag for fresh machine spawn preallocation (#1911). */
+export function machineSpawnPreallocTag(sessionId: string): string {
+    return `machine-spawn:${sessionId}`
+}
+
+export function isMachineSpawnPreallocatedStub(session: Pick<StoredSession, 'id' | 'tag'>): boolean {
+    return session.tag === machineSpawnPreallocTag(session.id)
+}
+
+function isArchivedSessionMetadata(metadata: unknown): boolean {
+    if (!isPlainObject(metadata)) return false
+    return metadata.lifecycleState === 'archived'
+}
+
+/** Hub-authored archive only — CLI may archive itself on clean exit. */
+function isHubArchivedSessionMetadata(metadata: unknown): boolean {
+    if (!isPlainObject(metadata)) return false
+    return metadata.lifecycleState === 'archived' && metadata.archivedBy === 'hub'
+}
+
+/**
+ * When a CLI write would clear a hub archive, keep the forensic archive fields
+ * on the merged payload so the CAS ack returns success + still-archived
+ * (version-mismatch / error would spin forever in client backoff).
+ */
+function preserveHubArchiveOnMerged(prior: unknown, merged: unknown): unknown {
+    if (!isPlainObject(prior) || !isPlainObject(merged)) return prior
+    const next: Record<string, unknown> = { ...merged }
+    next.lifecycleState = prior.lifecycleState
+    next.archivedBy = prior.archivedBy
+    if (prior.archiveReason !== undefined) next.archiveReason = prior.archiveReason
+    else delete next.archiveReason
+    if (prior.lifecycleStateSince !== undefined) next.lifecycleStateSince = prior.lifecycleStateSince
+    return next
+}
+
+/**
+ * Bind a CLI create bootstrap to a hub-preallocated stub row.
+ * Overwrites tag + metadata (create-time fields) without minting a new id.
+ * Rejects rows that are not machine-spawn stubs — live sessions stay protected.
+ * Rejects archived stubs so adopt cannot resurrect and wipe archive metadata.
+ */
+export function adoptPreallocatedSession(
+    db: Database,
+    id: string,
+    tag: string,
+    metadata: unknown,
+    agentState: unknown,
+    namespace: string,
+    model?: string,
+    effort?: string,
+    modelReasoningEffort?: string
+): StoredSession {
+    return db.transaction(() => {
+        const existing = getSessionByNamespace(db, id, namespace)
+        if (!existing) {
+            throw new SessionNotAdoptableError('Session not found')
+        }
+
+        // Already adopted with this tag — idempotent reload (same as getOrCreate match).
+        if (existing.tag === tag) {
+            return existing
+        }
+
+        if (!isMachineSpawnPreallocatedStub(existing)) {
+            throw new SessionNotAdoptableError('Session is not a preallocated stub')
+        }
+
+        if (isArchivedSessionMetadata(existing.metadata)) {
+            throw new SessionNotAdoptableError('Session is archived')
+        }
+
+        // New tag must not already belong to another session in this namespace.
+        const tagOwner = prepareCached(db,
+            'SELECT id FROM sessions WHERE tag = ? AND namespace = ? LIMIT 1'
+        ).get(tag, namespace) as { id: string } | undefined
+        if (tagOwner && tagOwner.id !== id) {
+            throw new SessionIdentityConflictError('Session tag is already bound to a different id')
+        }
+
+        const now = Date.now()
+        const metadataJson = JSON.stringify(metadata)
+        const agentStateJson = agentState === null || agentState === undefined ? null : JSON.stringify(agentState)
+        const stubTag = machineSpawnPreallocTag(id)
+
+        // CAS on the stub tag — concurrent adopt / metadata release cannot win a race.
+        const changed = prepareCached(db, `
+            UPDATE sessions SET
+                tag = @tag,
+                metadata = @metadata,
+                metadata_version = metadata_version + 1,
+                agent_state = @agent_state,
+                agent_state_version = agent_state_version + 1,
+                model = @model,
+                model_reasoning_effort = @model_reasoning_effort,
+                effort = @effort,
+                updated_at = @updated_at,
+                seq = seq + 1
+            WHERE id = @id AND namespace = @namespace AND tag = @stub_tag
+        `).run({
+            id,
+            namespace,
+            tag,
+            stub_tag: stubTag,
+            metadata: metadataJson,
+            agent_state: agentStateJson,
+            model: model ?? null,
+            model_reasoning_effort: modelReasoningEffort ?? null,
+            effort: effort ?? null,
+            updated_at: now,
+        })
+
+        if (changed.changes !== 1) {
+            throw new SessionNotAdoptableError('Session is not a preallocated stub')
+        }
+
+        const updated = getSessionByNamespace(db, id, namespace)
+        if (!updated) {
+            throw new Error('Failed to adopt preallocated session')
+        }
+        return updated
+    })()
+}
+
 export function updateSessionMetadata(
     db: Database,
     id: string,
     metadata: unknown,
     expectedVersion: number,
     namespace: string,
-    options?: { touchUpdatedAt?: boolean }
+    options?: { touchUpdatedAt?: boolean; allowUnarchive?: boolean }
 ): VersionedUpdateResult<unknown | null> {
     const now = Date.now()
     const touchUpdatedAt = options?.touchUpdatedAt !== false
+    const allowUnarchive = options?.allowUnarchive === true
 
     try {
         return db.transaction((): VersionedUpdateResult<unknown | null> => {
-            const priorRow = prepareCached(db, 
-                'SELECT metadata FROM sessions WHERE id = ? AND namespace = ?'
-            ).get(id, namespace) as { metadata: string | null } | undefined
+            const existing = getSessionByNamespace(db, id, namespace)
+            if (!existing) {
+                return { result: 'error' }
+            }
 
-            const prior = priorRow ? safeJsonParse(priorRow.metadata) : null
-            const merged = mergeSessionMetadata(prior, metadata)
+            const prior = existing.metadata
+            let merged = mergeSessionMetadata(prior, metadata)
 
-            return updateVersionedField({
+            // #1911 M1: unauthorized un-archive of hub-archived rows.
+            // Return success + merge-preserved archive fields — NOT version-mismatch
+            // or error (both spin forever in CLI updateMetadata backoff).
+            // Authorized revive uses allowUnarchive (clearSessionArchiveMetadata
+            // before spawn). Narrow to archivedBy=hub so CLI self-archive still
+            // transitions to running on clean reopen paths.
+            if (
+                isHubArchivedSessionMetadata(prior)
+                && !isArchivedSessionMetadata(merged)
+                && !allowUnarchive
+            ) {
+                merged = preserveHubArchiveOnMerged(prior, merged)
+            }
+
+            const result = updateVersionedField({
                 db,
                 table: 'sessions',
                 id,
@@ -319,6 +466,37 @@ export function updateSessionMetadata(
                     touch_updated_at: touchUpdatedAt ? 1 : 0
                 }
             })
+
+            // Reopen flavors (--existing-session-id) never call adopt; they only
+            // updateMetadata. Release the machine-spawn stub tag here so live
+            // sessions are not permanently adoptable (#1911 Overseer Major).
+            // Skip when the write was a hub-archive preserve (still archived) —
+            // that is refuse-in-place, not live adopt (#1911 M1).
+            if (
+                result.result === 'success'
+                && isMachineSpawnPreallocatedStub(existing)
+                && !isHubArchivedSessionMetadata(merged)
+            ) {
+                const liveTag = randomUUID()
+                prepareCached(db, `
+                    UPDATE sessions
+                    SET tag = @tag,
+                        updated_at = CASE WHEN @touch_updated_at = 1 THEN @updated_at ELSE updated_at END,
+                        seq = seq + 1
+                    WHERE id = @id
+                      AND namespace = @namespace
+                      AND tag = @stub_tag
+                `).run({
+                    id,
+                    namespace,
+                    tag: liveTag,
+                    stub_tag: existing.tag,
+                    updated_at: now,
+                    touch_updated_at: touchUpdatedAt ? 1 : 0,
+                })
+            }
+
+            return result
         })()
     } catch {
         return { result: 'error' }

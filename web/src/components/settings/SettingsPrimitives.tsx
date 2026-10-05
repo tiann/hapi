@@ -83,13 +83,13 @@ export function SettingsChoiceGroup<T extends string | number>(props: {
     options: ReadonlyArray<{ value: T; label: string; description?: string }>
     onChange: (value: T) => void
     disabled?: boolean
-    columns?: 2 | 4 | 5
+    columns?: 2 | 4 | 5 | 6
 }) {
-    const columns = props.columns === 5 ? 'grid-cols-5' : props.columns === 4 ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-2'
+    const columns = props.columns === 6 ? 'grid-cols-6' : props.columns === 5 ? 'grid-cols-5' : props.columns === 4 ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-2'
     return (
-        <div className="px-3 py-3">
+        <div className={`${props.columns === 6 ? 'px-1 sm:px-3' : 'px-3'} py-3`}>
             <SettingsFieldLabel hidden={props.hideLabel} description={props.description}>{props.label}</SettingsFieldLabel>
-            <div role="radiogroup" aria-label={props.label} className={`grid ${columns} gap-2`}>
+            <div role="radiogroup" aria-label={props.label} className={`grid ${columns} ${props.columns === 6 ? 'gap-px sm:gap-1' : 'gap-2'}`}>
                 {props.options.map((option) => {
                     const selected = props.value === option.value
                     return (
@@ -100,7 +100,7 @@ export function SettingsChoiceGroup<T extends string | number>(props: {
                             aria-checked={selected}
                             disabled={props.disabled}
                             onClick={() => props.onChange(option.value)}
-                            className={`min-w-0 rounded-lg border px-2 py-2 text-center text-sm transition-colors ${props.disabled
+                            className={`min-w-0 rounded-lg border ${props.columns === 6 ? 'px-0 text-xs tracking-tight sm:text-sm sm:tracking-normal' : 'px-2 text-sm'} py-2 text-center transition-colors ${props.disabled
                                 ? 'cursor-not-allowed border-[var(--app-border)] bg-[var(--app-secondary-bg)] text-[var(--app-hint)] opacity-60'
                                 : selected
                                     ? 'border-[var(--app-link)] bg-[var(--app-subtle-bg)] text-[var(--app-link)]'

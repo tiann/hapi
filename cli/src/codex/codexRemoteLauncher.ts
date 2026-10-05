@@ -8,6 +8,7 @@ import { DiffProcessor } from './utils/diffProcessor';
 import { logger } from '@/ui/logger';
 import { CodexDisplay } from '@/ui/ink/CodexDisplay';
 import { buildHapiMcpBridge } from './utils/buildHapiMcpBridge';
+import { applySessionDisplayRename } from '@/agent/sessionDisplayRename';
 import { emitReadyIfIdle } from './utils/emitReadyIfIdle';
 import type { CodexSession } from './session';
 import type { EnhancedMode } from './loop';
@@ -473,11 +474,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         };
 
         const sendTitleSummary = (title: string): void => {
-            session.client.sendClaudeSessionMessage({
-                type: 'summary',
-                summary: title,
-                leafUuid: randomUUID()
-            });
+            // Matches MCP change_title / web rename: set metadata.name so a
+            // prior spawn --name does not hide the agent rename.
+            applySessionDisplayRename(session.client, title);
         };
 
         const formatOutputPreview = (value: unknown): string => {

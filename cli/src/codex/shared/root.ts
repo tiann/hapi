@@ -464,6 +464,18 @@ export class SharedCodexRoot {
             if (turnId) await this.client.request('turn/interrupt', { threadId: this.threadId, turnId });
         });
         rpc.registerHandler(RPC_METHODS.KillSession, async () => { await this.host.end(this); return { success: true }; });
+        // #1911 C2 / AC6: Codex owns KillSession here and never calls
+        // registerKillSessionHandler — still must EXIT on hub-archived metadata
+        // (KillSession unreachable / map-miss). Latch covers bootstrap write
+        // before bind/activate registers controls; B2 refuses tree-kill of the
+        // shared wrapper so this subscribe is load-bearing.
+        const exitFromHubArchive = () => {
+            void this.host.end(this).catch(error => logger.debug('[CODEX] hub-archived end failed:', error));
+        };
+        if (this.session.hubArchived) {
+            exitFromHubArchive();
+        }
+        this.session.on('hub-archived', exitFromHubArchive);
         rpc.registerHandler(RPC_METHODS.SetSessionConfig, raw => this.applySettings(raw));
         rpc.registerHandler(RPC_METHODS.ImplementCodexPlan, raw => {
             const { planId } = ImplementCodexPlanRequestSchema.parse(raw);
