@@ -42,7 +42,9 @@ export function findTestOwnedProcesses(marker: string): TestOwnedProcess[] {
         // personality" on some Linux builds. `e` shows the environment after
         // the command; `ww` removes width truncation so the env dump is not
         // cut off.
-        output = execFileSync('ps', ['eww', '-eo', 'pid=,ppid=,rss=,command='], {
+        // macOS BSD ps interprets -e as environment (and produces no rows
+        // with this combination); its all-process selection is -ax.
+        output = execFileSync('ps', ['eww', process.platform === 'darwin' ? '-axo' : '-eo', 'pid=,ppid=,rss=,command='], {
             encoding: 'utf8',
             maxBuffer: 64 * 1024 * 1024,
             stdio: ['ignore', 'pipe', 'pipe'],
