@@ -12,6 +12,7 @@ describe('runnerCapabilities', () => {
     it('requires machine RPCs that session creation hard-depends on', () => {
         expect(REQUIRED_MACHINE_CAPABILITIES).toContain(MACHINE_CAPABILITIES.AgentAvailability)
         expect(REQUIRED_MACHINE_CAPABILITIES).toContain(MACHINE_CAPABILITIES.CursorChatStoreStatus)
+        expect(CURRENT_MACHINE_CAPABILITIES).toContain(MACHINE_CAPABILITIES.UsageQuery)
         expect(CURRENT_MACHINE_CAPABILITIES).toEqual(expect.arrayContaining([
             ...REQUIRED_MACHINE_CAPABILITIES,
         ]))
