@@ -97,6 +97,10 @@ export class AcpStdioTransport {
     private guardReleased = false;
     private closed = false;
     private closeError: Error | null = null;
+    private closeHandler: ((error: Error) => void) | null = null;
+    private closeHandlerNotified = false;
+    /** Set before an owner intentionally tears down the transport. */
+    private closing = false;
     /** True after process 'exit'; blocks new writes until 'close' drains stderr. */
     private exited = false;
     private exitError: Error | null = null;
@@ -249,6 +253,15 @@ export class AcpStdioTransport {
 
     onStderrError(handler: ((error: AcpStderrError) => void) | null): void {
         this.stderrErrorHandler = handler;
+    }
+
+    /**
+     * Notify the owner when the ACP transport becomes unusable unexpectedly.
+     * Intentional close() calls do not invoke this handler.
+     */
+    onClose(handler: ((error: Error) => void) | null): void {
+        this.closeHandler = handler;
+        this.notifyCloseHandler();
     }
 
     registerRequestHandler(method: string, handler: RequestHandler): void {
@@ -405,6 +418,7 @@ export class AcpStdioTransport {
     }
 
     async close(): Promise<void> {
+        this.closing = true;
         this.process.stdin.end();
         await killProcessByChildProcess(this.process);
         this.releaseAgentCliGuard();
@@ -571,6 +585,20 @@ export class AcpStdioTransport {
         this.closed = true;
         this.closeError = error;
         this.rejectAllPending(error);
+        this.notifyCloseHandler();
+    }
+
+    private notifyCloseHandler(): void {
+        if (this.closing || this.closeHandlerNotified || !this.closeHandler || !this.closeError) {
+            return;
+        }
+
+        this.closeHandlerNotified = true;
+        try {
+            this.closeHandler(this.closeError);
+        } catch (handlerError) {
+            logger.debug('[ACP] Error notifying transport close handler', handlerError);
+        }
     }
 
     private rejectAllPending(error: Error): void {
