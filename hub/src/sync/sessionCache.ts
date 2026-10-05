@@ -997,7 +997,7 @@ export class SessionCache {
                 newMetadata,
                 session.metadataVersion,
                 session.namespace,
-                { touchUpdatedAt: false }
+                { touchUpdatedAt: false, userInitiatedRename: true }
             )
 
             if (result.result === 'error') {
@@ -1272,6 +1272,38 @@ export class SessionCache {
             throw new Error('Session not found for merge')
         }
 
+        const mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, newStored.metadata)
+        const sourceMetadata = oldStored.metadata as Record<string, unknown> | null
+        const destinationMetadata = newStored.metadata as Record<string, unknown> | null
+        const inheritsUserTitle = typeof sourceMetadata?.userChosenName === 'string'
+            && typeof destinationMetadata?.userChosenName !== 'string'
+        if (mergedMetadata !== null && (mergedMetadata !== newStored.metadata || inheritsUserTitle)) {
+            let metadataTransferred = false
+            for (let attempt = 0; attempt < 2; attempt += 1) {
+                const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
+                const source = this.store.sessions.getSessionByNamespace(oldSessionId, namespace)
+                if (!latest || !source) break
+                const currentMergedMetadata = this.mergeSessionMetadata(source.metadata, latest.metadata)
+                const result = this.store.sessions.updateSessionMetadata(
+                    newSessionId,
+                    currentMergedMetadata,
+                    latest.metadataVersion,
+                    namespace,
+                    { touchUpdatedAt: false, inheritUserChosenNameFrom: oldSessionId }
+                )
+                if (result.result === 'success') {
+                    metadataTransferred = true
+                    break
+                }
+                if (result.result === 'error') {
+                    break
+                }
+            }
+            if (inheritsUserTitle && !metadataTransferred) {
+                throw new Error('Failed to preserve user-chosen title during merge')
+            }
+        }
+
         const movedMessages = this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
         // mergeSessions deletes the source. mergeSessionHistory keeps it alive
         // with the original socket, so its notify chain must stay on that id.
@@ -1335,27 +1367,6 @@ export class SessionCache {
             // clients viewing the old id drop stale cache entries that
             // would 404 on edit/delete.
             this.emitScratchlistChanged(oldSessionId)
-        }
-
-        const mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, newStored.metadata)
-        if (mergedMetadata !== null && mergedMetadata !== newStored.metadata) {
-            for (let attempt = 0; attempt < 2; attempt += 1) {
-                const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
-                if (!latest) break
-                const result = this.store.sessions.updateSessionMetadata(
-                    newSessionId,
-                    mergedMetadata,
-                    latest.metadataVersion,
-                    namespace,
-                    { touchUpdatedAt: false }
-                )
-                if (result.result === 'success') {
-                    break
-                }
-                if (result.result === 'error') {
-                    break
-                }
-            }
         }
 
         if (newStored.model === null && oldStored.model !== null) {
