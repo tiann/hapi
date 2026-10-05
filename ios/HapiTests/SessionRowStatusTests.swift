@@ -42,13 +42,15 @@ final class SessionRowStatusTests: XCTestCase {
         XCTAssertNil(SessionRowStatus(summary: summary))
     }
 
-    func testReadingDoesNotResolveAttentionAndResolutionKeepsTheProject() {
+    func testReadingDoesNotResolveAttentionAndResolutionKeepsTheProject() async {
         var summary = HomeFilterTestData.summary("a", machine: "mac")
         summary.metadata?.summary = .init(text: "Keep the session context visible")
         summary.pendingRequestsCount = 2
         summary.pendingRequestKinds = [.permission]
         let sessions = HomeFilterTestSessions([summary])
         let model = HomeFilterTestData.model(sessions: sessions)
+        await model.refresh()
+        sessions.sessions[0].updatedAt += 1
         XCTAssertTrue(model.rows[0].unread)
         XCTAssertEqual(model.rows[0].status, .needsApproval(2))
 

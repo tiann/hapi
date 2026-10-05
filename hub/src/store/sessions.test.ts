@@ -32,6 +32,22 @@ describe('getOrCreateSession: active_at', () => {
     })
 })
 
+describe('last assistant message timestamp', () => {
+    it('persists the latest visible reply without changing updatedAt', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('reply-clock', {}, null, 'default')
+        const activityAt = session.updatedAt
+
+        expect(store.sessions.touchSessionLastAssistantMessageAt(session.id, 2_000, 'default')).toBe(true)
+        expect(store.sessions.touchSessionLastAssistantMessageAt(session.id, 1_000, 'default')).toBe(false)
+
+        const reloaded = store.sessions.getSession(session.id)
+        expect(reloaded?.lastAssistantMessageAt).toBe(2_000)
+        expect(reloaded?.updatedAt).toBe(activityAt)
+        store.close()
+    })
+})
+
 describe('session pinning', () => {
     it('persists project and global pin modes without changing session recency', () => {
         const store = makeStore()

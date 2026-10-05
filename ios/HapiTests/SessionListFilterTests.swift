@@ -36,6 +36,17 @@ final class SessionListFilterTests: XCTestCase {
         XCTAssertTrue(model.hasRefreshedOnce)
     }
 
+    func testCachedRowsStayReadWhenInitialRefreshFails() async {
+        let sessions = HomeFilterTestSessions([HomeFilterTestData.summary("cached", machine: "mac")])
+        sessions.failRefresh = true
+        let model = HomeFilterTestData.model(sessions: sessions)
+
+        await model.refresh()
+
+        XCTAssertTrue(model.isOffline)
+        XCTAssertFalse(model.rows[0].unread)
+    }
+
     func testEmptyAndSingleMachineHaveNoFilterAffordance() {
         let sessions = HomeFilterTestSessions()
         let model = HomeFilterTestData.model(sessions: sessions)

@@ -24,5 +24,6 @@ describe('truncateMessagesFromLocalId', () => {
         const remaining = store.messages.getAllMessages(session.id)
         expect(remaining.some((message) => message.localId === 'local-2')).toBe(false)
         expect(remaining.some((message) => message.localId === 'local-1')).toBe(true)
+        expect(store.sessions.getSession(session.id)?.assistantReplyClockBackfilled).toBe(false)
     })
 })

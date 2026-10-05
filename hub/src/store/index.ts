@@ -42,7 +42,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 26
+const SCHEMA_VERSION: number = 27
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -348,6 +348,7 @@ export class Store {
             23: () => this.migrateFromV23ToV24(),
             24: () => this.migrateFromV24ToV25(),
             25: () => this.migrateFromV25ToV26(),
+            26: () => this.migrateFromV26ToV27(),
         })
 
         if (currentVersion === 0) {
@@ -402,6 +403,8 @@ export class Store {
                 machine_id TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
+                last_assistant_message_at INTEGER,
+                assistant_reply_clock_backfilled INTEGER NOT NULL DEFAULT 1,
                 metadata TEXT,
                 metadata_version INTEGER DEFAULT 1,
                 agent_state TEXT,
@@ -984,18 +987,6 @@ export class Store {
         }
     }
 
-    /** v25→v26: make empty immediate-queue heartbeat replay an indexed lookup. */
-    private migrateFromV25ToV26(): void {
-        this.db.exec(`
-            CREATE INDEX IF NOT EXISTS idx_messages_immediate_queued
-                ON messages(session_id, seq)
-                WHERE invoked_at IS NULL
-                  AND local_id IS NOT NULL
-                  AND scheduled_at IS NULL
-                  AND delivery_state = 'queued';
-        `)
-    }
-
     /**
      * A2A Layer 1 / P1 (#1374) + P3 substrate: hub work-graph ledger tables.
      * Namespace + principal_json required on every events row.
@@ -1054,6 +1045,37 @@ export class Store {
         `)
     }
 
+    /** v25→v26: add the immediate-queue index. */
+    private migrateFromV25ToV26(): void {
+        this.db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_messages_immediate_queued
+                ON messages(session_id, seq)
+                WHERE invoked_at IS NULL
+                  AND local_id IS NOT NULL
+                  AND scheduled_at IS NULL
+                  AND delivery_state = 'queued';
+        `)
+    }
+
+    /**
+     * Add the durable assistant reply clock after the upstream v26 schema.
+     * Existing rows start unchecked so startup can backfill them incrementally;
+     * new rows opt into the write-through path immediately.
+     */
+    private migrateFromV26ToV27(): void {
+        // Existing rows start unchecked so startup can backfill them
+        // incrementally; new rows opt into the write-through path immediately.
+        const columns = this.getSessionColumnNames()
+        if (columns.size === 0) return
+        if (!columns.has('last_assistant_message_at')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN last_assistant_message_at INTEGER')
+        }
+        if (!columns.has('assistant_reply_clock_backfilled')) {
+            this.db.exec(
+                'ALTER TABLE sessions ADD COLUMN assistant_reply_clock_backfilled INTEGER NOT NULL DEFAULT 0'
+            )
+        }
+    }
     private getSessionColumnNames(): Set<string> {
         const rows = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>
         return new Set(rows.map((row) => row.name))

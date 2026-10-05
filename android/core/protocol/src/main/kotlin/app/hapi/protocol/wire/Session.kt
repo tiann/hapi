@@ -33,6 +33,10 @@ data class Session(
     val seq: Long,
     val createdAt: Long,
     val updatedAt: Long,
+    /** Latest visible assistant prose; null when the session has no reply. */
+    val lastAssistantMessageAt: Long? = null,
+    /** False while the Hub is still backfilling a legacy transcript. */
+    val assistantReplyClockBackfilled: Boolean? = null,
     val pinned: Boolean? = null,
     val globalPinned: Boolean? = null,
     val active: Boolean,

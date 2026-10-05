@@ -68,6 +68,18 @@ describe('SessionPatchSchema structured patches (closes #884 follow-up)', () => 
         expect(parsed.success).toBe(true);
     });
 
+    it('parses a versioned reply-clock backfill completion patch', () => {
+        const parsed = SessionPatchSchema.safeParse({
+            lastAssistantMessageAt: 1234,
+            lastAssistantMessageVersion: 8,
+            assistantReplyClockBackfilled: true
+        });
+        expect(parsed.success).toBe(true);
+        if (parsed.success) {
+            expect(parsed.data.assistantReplyClockBackfilled).toBe(true);
+        }
+    });
+
     it('rejects metadata without a version (must stay versioned for cache safety)', () => {
         const parsed = SessionPatchSchema.safeParse({
             metadata: { value: { path: '/tmp', host: 'h' } }

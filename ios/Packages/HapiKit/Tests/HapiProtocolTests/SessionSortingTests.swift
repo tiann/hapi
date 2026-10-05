@@ -11,6 +11,7 @@ struct SessionSortingTests {
         _ id: String,
         active: Bool = false,
         updatedAt: Int = 0,
+        lastAssistantMessageAt: Int? = nil,
         pinned: Bool? = nil,
         globalPinned: Bool? = nil,
         pendingRequestsCount: Int = 0
@@ -21,6 +22,7 @@ struct SessionSortingTests {
             thinking: false,
             activeAt: 0,
             updatedAt: updatedAt,
+            lastAssistantMessageAt: lastAssistantMessageAt,
             pinned: pinned,
             globalPinned: globalPinned,
             metadata: nil,
@@ -93,5 +95,14 @@ struct SessionSortingTests {
             summary("new", updatedAt: 1_000 + Int(Int32.max) * 3),
         ])
         #expect(sorted.map(\.id) == ["new", "old"])
+    }
+
+    @Test func replyTimeSortsBeforeUpdatedAtAndFallsBackWhenAbsent() {
+        let sorted = sortSessionSummaries([
+            summary("activity-newer", updatedAt: 9_000, lastAssistantMessageAt: 1_000),
+            summary("reply-newer", updatedAt: 1_000, lastAssistantMessageAt: 9_000),
+            summary("legacy-fallback", updatedAt: 8_000)
+        ])
+        #expect(sorted.map(\.id) == ["reply-newer", "legacy-fallback", "activity-newer"])
     }
 }
