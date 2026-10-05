@@ -98,7 +98,7 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 
 ### Sessions (`src/web/routes/sessions.ts`)
 
-- `GET /api/sessions` - List all sessions. Each summary includes `hasConversationContent`, derived from stored conversation messages (not titles or lifecycle events); full session SSE updates carry changes to this flag.
+- `GET /api/sessions` - List all sessions. The default order is global-pinned, project-pinned, active, pending-request priority among active sessions, then `updatedAt` descending; `?order=updatedAt` requests pure recency. Each summary includes `hasConversationContent`, derived from stored conversation messages (not titles or lifecycle events); full session SSE updates carry changes to this flag. See the [client contract](../docs/api/client-contract/rest.md) for the wire-level ordering rules.
 - `GET /api/sessions/:id` - Get session details.
 - `POST /api/sessions/:id/abort` - Abort session.
 - `POST /api/sessions/:id/switch` - Hand off session control to the web.
