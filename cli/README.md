@@ -208,6 +208,13 @@ controls for DSH.
 - `HAPI_DISABLE_VERSION_HANDOFF` - Set to `1` to disable automatic runner replacement on CLI binary changes.
 - `HAPI_RUNNER_SUPERVISED` - Set to `1` only when a supervisor restarts the runner after exit; enables the web Restart control's supervised path.
 
+### HAPI Recycle Bin
+
+The Runner stores deleted session files in a machine-local HAPI Recycle Bin.
+Set `recycleBinRetentionDays` in `$HAPI_HOME/settings.json` to configure the
+retention period; the default is 30 days. The Runner performs expiry cleanup
+when the Recycle Bin is accessed.
+
 ### Worktree (set by runner)
 
 - `HAPI_WORKTREE_BASE_PATH` - Base repository path.

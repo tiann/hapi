@@ -19,6 +19,10 @@ const axiosHarness = vi.hoisted(() => ({
     get: vi.fn()
 }))
 
+const commonHandlersHarness = vi.hoisted(() => ({
+    register: vi.fn()
+}))
+
 vi.mock('socket.io-client', () => ({
     io: () => {
         const state: (typeof socketHarness.sockets)[number] = {
@@ -99,6 +103,10 @@ vi.mock('axios', () => ({
             && error.isAxiosError === true
         )
     }
+}))
+
+vi.mock('../modules/common/registerCommonHandlers', () => ({
+    registerCommonHandlers: commonHandlersHarness.register
 }))
 
 import { ApiSessionClient, isExternalUserMessage, IncomingMessageFilter } from './apiSession'
@@ -215,6 +223,33 @@ describe('ApiSessionClient lazy materialization', () => {
             'message',
             'session-alive'
         ])
+        client.close()
+    })
+
+    it('registers recycle-bin handlers with the materialized namespace', async () => {
+        socketHarness.sockets.length = 0
+        commonHandlersHarness.register.mockClear()
+        const initialMetadata = { path: '/tmp/project', host: 'localhost', codexSessionId: 'codex-thread' }
+        const pendingMaterialization = deferred<Session>()
+        const client = new ApiSessionClient('token', createSession({
+            namespace: 'pending',
+            metadata: initialMetadata,
+        }), {
+            materialize: async () => await pendingMaterialization.promise,
+        })
+
+        expect(commonHandlersHarness.register).not.toHaveBeenCalled()
+        pendingMaterialization.resolve(createSession({
+            namespace: 'alice',
+            metadata: initialMetadata,
+        }))
+        expect(await client.materialize()).toBe(true)
+
+        expect(commonHandlersHarness.register).toHaveBeenCalledWith(
+            expect.anything(),
+            initialMetadata.path,
+            { enableRecycleBin: true, recycleBinNamespace: 'alice' },
+        )
         client.close()
     })
 

@@ -11,7 +11,7 @@ import { withSettingsFileLock } from '@hapi/protocol/settingsFileLock'
 import { configuration } from '@/configuration'
 import { isProcessAlive } from '@/utils/process';
 
-interface Settings {
+export interface Settings {
   // This ID is used as the actual database ID on the server
   // All machine operations use this ID
   machineId?: string
@@ -24,6 +24,8 @@ interface Settings {
   extraHeaders?: unknown
   // Legacy field name (for migration, read-only)
   serverUrl?: string
+  /** Runner-local retention period for HAPI Recycle Bin entries. */
+  recycleBinRetentionDays?: number
 }
 
 const defaultSettings: Settings = {}
