@@ -1104,7 +1104,7 @@ export function HappyComposer(props: {
                         label: option.name ?? option.value
                     }))
                 ]
-            : getClaudeComposerEffortOptions(effort),
+            : getClaudeComposerEffortOptions(effort, availableEffortOptions?.map((option) => option.value)),
         [agentFlavor, effort, selectedPiModel, availableEffortOptions]
     )
     const permissionModes = useMemo(

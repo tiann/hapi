@@ -153,6 +153,14 @@ describe('HappyComposer generic model/effort value buttons', () => {
         expect(screen.getByRole('button', { name: 'Settings' })).toBeTruthy()
     })
 
+    it('offers only the effort levels the current Claude model accepts', () => {
+        renderComposer('claude', { availableEffortOptions: [{ value: 'low' }, { value: 'high' }] })
+        fireEvent.click(screen.getByRole('button', { name: 'High' }))
+        expect(screen.getByRole('button', { name: 'Low' })).toBeTruthy()
+        expect(screen.queryByRole('button', { name: 'Max' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'XHigh' })).toBeNull()
+    })
+
     it('shows only the model button for flavors without effort support', () => {
         renderComposer('codex')
         expect(screen.getByRole('button', { name: 'Sonnet 4' })).toBeTruthy()

@@ -17,6 +17,8 @@ export type EffortFieldProps = {
     isDisabled: boolean
     /** Model-dependent launch-effort options (Grok). */
     grokOptions?: Array<{ value: string; label: string }>
+    /** Launch-effort options the selected Claude model accepts; undefined = every level. */
+    claudeOptions?: Array<{ value: string; label: string }>
     /** Model-dependent reasoning-effort options (Codex). */
     codexReasoningOptions?: Array<{ value: string; name?: string }>
     /** Model-dependent variant values from the OpenCode catalog (OpenCode). Array = dynamic list, [] = hide field, null/undefined = static fallback. */
@@ -30,7 +32,7 @@ export type EffortFieldProps = {
  * configuration descriptor (see shared/src/agentConfig.ts).
  *
  * One component serves every flavor with an `effort` field:
- * - Claude: static launch-effort levels.
+ * - Claude: the selected model's launch-effort levels, or every level when unknown.
  * - Grok: model-dependent launch-effort levels.
  * - Pi: model-dependent thinking levels (filtered by the selected model's
  *   thinkingLevelMap; hidden when the model cannot reason).
@@ -84,7 +86,7 @@ export function EffortField(props: EffortFieldProps) {
             )
         }
     } else {
-        options = CLAUDE_EFFORT_OPTIONS
+        options = props.claudeOptions ?? CLAUDE_EFFORT_OPTIONS
     }
 
     const value = isReasoningEffort ? props.reasoningEffort : props.effort

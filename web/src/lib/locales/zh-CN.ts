@@ -369,6 +369,7 @@ export default {
   'newSession.model.optional': '可选',
   'newSession.model.default': '默认',
   'newSession.model.loadFailed': '加载模型失败',
+  'newSession.claudeModel.notListed': '已不在列表中',
   'newSession.model.selectVariant': '选择变体',
   'newSession.model.cursorUnavailable': '暂无 Cursor 模型列表。请先运行一次 Cursor 会话，或使用 Auto。',
   'newSession.opencodeModel.loading': '正在发现 OpenCode 模型…',

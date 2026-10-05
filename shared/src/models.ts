@@ -1,3 +1,5 @@
+import type { ClaudeModelSummary } from './apiTypes'
+
 export const CLAUDE_MODEL_LABELS = {
     sonnet: 'Sonnet',
     'sonnet[1m]': 'Sonnet 1M',
@@ -65,4 +67,62 @@ export function getClaudeModelLabel(model: string): string | null {
     }
 
     return CLAUDE_MODEL_LABELS[trimmedModel as ClaudeModelPreset] ?? null
+}
+
+/**
+ * A Claude model the user can pick.
+ *
+ * `value` is stored on the session and passed to `claude --model` unchanged.
+ * An alias (`opus`) is resolved by the CLI each time the session's claude
+ * process starts, so the session moves to a newer model on its next start;
+ * a full id (`claude-opus-4-7`) stays on that model.
+ */
+export type ClaudeModelChoice = {
+    value: string
+    label: string
+}
+
+/**
+ * Picker choices for a catalog reported by the `claude` CLI: its own `/model`
+ * rows, in its order and with its display names. The `default` row is omitted;
+ * callers represent it as "no model".
+ */
+export function getClaudeModelChoices(catalog: readonly ClaudeModelSummary[]): ClaudeModelChoice[] {
+    return catalog
+        .filter((model) => model.value !== 'default')
+        .map((model) => ({ value: model.value, label: model.displayName ?? model.value }))
+}
+
+/**
+ * Effort levels the CLI offers for `model` (`null` = the session default).
+ * Undefined when the catalog is missing or does not list the model.
+ */
+export function getClaudeEffortLevelsForModel(
+    model: string | null,
+    catalog: readonly ClaudeModelSummary[] | null | undefined
+): readonly string[] | undefined {
+    if (!catalog) {
+        return undefined
+    }
+    if (model === null) {
+        return catalog.find((row) => row.value === 'default')?.effortLevels
+    }
+    return catalog.find((row) => row.value === model)?.effortLevels
+}
+
+/**
+ * The effort to keep when switching to `model`: an effort the model does not
+ * offer is cleared rather than left for the CLI to reject or ignore. Unknown
+ * support keeps the current effort.
+ */
+export function resolveClaudeEffortForModel(
+    effort: string | null,
+    model: string | null,
+    catalog: readonly ClaudeModelSummary[] | null | undefined
+): string | null {
+    const levels = getClaudeEffortLevelsForModel(model, catalog)
+    if (effort === null || levels === undefined || levels.includes(effort)) {
+        return effort
+    }
+    return null
 }

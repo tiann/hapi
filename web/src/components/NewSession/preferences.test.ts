@@ -133,14 +133,16 @@ describe('NewSession preferences', () => {
         expect(loadPreferredLaunchSettings('machine-1', 'codex')).toBeNull()
     })
 
-    it('falls back when remembered static Claude options are no longer available', () => {
+    it('keeps a remembered Claude model the built-in list lacks, but drops an unknown effort', () => {
+        // Claude models come from the machine's catalog; a pinned model it no
+        // longer lists is shown as such rather than silently replaced.
         expect(resolvePreferredLaunchSettings('claude', {
-            model: 'retired-model',
+            model: 'claude-opus-4-1',
             cursorSelectedBase: 'auto',
             effort: 'ultra',
             modelReasoningEffort: 'default'
         })).toEqual({
-            model: 'auto',
+            model: 'claude-opus-4-1',
             cursorSelectedBase: 'auto',
             effort: 'auto',
             modelReasoningEffort: 'default',
