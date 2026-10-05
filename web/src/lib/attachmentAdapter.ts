@@ -16,6 +16,15 @@ type PendingUploadAttachment = PendingAttachment & {
     uploadSessionId?: string
 }
 
+export type ChatAttachmentAdapter = AttachmentAdapter & {
+    /**
+     * Successful message delivery owns the upload path. Mark sent chips so
+     * assistant-ui can remove them from the composer without deleting files
+     * that the agent may still need to read.
+     */
+    releaseWithoutDelete(ids: Iterable<string>): void
+}
+
 export function createAttachmentAdapter(
     api: ApiClient,
     sessionId: string,
@@ -24,8 +33,9 @@ export function createAttachmentAdapter(
     // the pick is cancelled — so the caller can navigate off a deleted source.
     // Cancellation is re-checked at transfer save time via isCancelled().
     onSessionResolved?: (sessionId: string, pending: AttachmentDraftHandoff) => Promise<void>,
-): AttachmentAdapter {
+): ChatAttachmentAdapter {
     const cancelledAttachmentIds = new Set<string>()
+    const releasedWithoutDeleteIds = new Set<string>()
 
     const deleteUpload = async (path?: string, uploadSessionId = sessionId) => {
         if (!path) return
@@ -41,6 +51,12 @@ export function createAttachmentAdapter(
         // "*/*" is forwarded to MIME matching and rejects every file before
         // this adapter's add() method can run.
         accept: '*',
+
+        releaseWithoutDelete(ids: Iterable<string>): void {
+            for (const id of ids) {
+                releasedWithoutDeleteIds.add(id)
+            }
+        },
 
         async *add({ file }): AsyncGenerator<PendingAttachment> {
             // Upload paths are scoped to the session that created them. An
@@ -185,6 +201,7 @@ export function createAttachmentAdapter(
 
         async remove(attachment: Attachment): Promise<void> {
             cancelledAttachmentIds.add(attachment.id)
+            if (releasedWithoutDeleteIds.delete(attachment.id)) return
             const path = (attachment as PendingUploadAttachment).path
             const uploadSessionId = (attachment as PendingUploadAttachment).uploadSessionId
             await deleteUpload(path, uploadSessionId)

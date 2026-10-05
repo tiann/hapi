@@ -28,6 +28,7 @@ type SortableComposerAttachmentProps = {
     index: number
     isDragging: boolean
     disabled: boolean
+    onRemove: () => void
     onPointerDown: (event: ReactPointerEvent<Element>, id: string, surface: boolean) => void
     onKeyDown: (event: ReactKeyboardEvent<HTMLButtonElement>, id: string) => void
     onContextMenu: (event: ReactMouseEvent<Element>, id: string) => void
@@ -60,6 +61,7 @@ function SortableComposerAttachment(props: SortableComposerAttachmentProps) {
         index,
         isDragging,
         disabled,
+        onRemove,
         onPointerDown,
         onKeyDown,
         onContextMenu,
@@ -100,8 +102,8 @@ function SortableComposerAttachment(props: SortableComposerAttachmentProps) {
         [attachment.name, disabled, handleKeyDown, handlePointerDown],
     )
     const AttachmentWithHandle = useCallback(
-        () => <AttachmentItem dragHandleProps={dragHandleProps} />,
-        [dragHandleProps],
+        () => <AttachmentItem dragHandleProps={dragHandleProps} onRemove={onRemove} />,
+        [dragHandleProps, onRemove],
     )
 
     return (
@@ -122,9 +124,10 @@ export function SortableComposerAttachments(props: {
     attachments: readonly Attachment[]
     orderedAttachmentIds: readonly string[]
     disabled?: boolean
+    onRemove?: () => void
     onReorder: (activeId: string, targetId: string, position: AttachmentDropPosition) => void
 }) {
-    const { attachments, orderedAttachmentIds, onReorder, disabled = false } = props
+    const { attachments, orderedAttachmentIds, onReorder, onRemove = () => {}, disabled = false } = props
     const [draggingId, setDraggingId] = useState<string | null>(null)
     const dragRef = useRef<DragState | null>(null)
     const suppressClickIdRef = useRef<string | null>(null)
@@ -263,6 +266,7 @@ export function SortableComposerAttachments(props: {
                         index={index}
                         isDragging={draggingId === id}
                         disabled={disabled}
+                        onRemove={onRemove}
                         onPointerDown={handlePointerDown}
                         onKeyDown={handleKeyDown}
                         onContextMenu={handleContextMenu}
