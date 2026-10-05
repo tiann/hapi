@@ -553,8 +553,8 @@ export function SessionHeader(props: {
                 onClose={() => setRenameOpen(false)}
                 currentName={title}
                 onRename={renameSession}
-                onSuggestTitle={api && props.titleSuggestionAvailable ? suggestSessionTitle : undefined}
-                onUpdateSummary={api && props.titleSuggestionAvailable ? updateSessionSummary : undefined}
+                onSuggestTitle={api ? suggestSessionTitle : undefined}
+                onUpdateSummary={api ? updateSessionSummary : undefined}
                 isPending={isPending}
             />
 
