@@ -129,7 +129,7 @@ describe('SessionList directory action', () => {
 
         fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
         const searchInput = screen.getByPlaceholderText(SEARCH_PLACEHOLDER)
-        const headerRow = searchInput.parentElement?.parentElement
+        const headerRow = searchInput.parentElement?.parentElement?.parentElement
         expect(headerRow).toHaveClass('px-2')
         expect(headerRow).toHaveClass('py-1')
     })
