@@ -186,6 +186,10 @@ describe('buildCollapseId', () => {
         expect(buildCollapseId('ready', 's1')).toBe('ready-s1')
     })
 
+    it('prefers an explicit tag so model-error events do not collapse', () => {
+        expect(buildCollapseId('model-error', 's1', 'model-error-s1-evt-2')).toBe('model-error-s1-evt-2')
+    })
+
     it('truncates to 64 bytes', () => {
         const longSession = 'x'.repeat(100)
         const collapseId = buildCollapseId('permission-request', longSession)

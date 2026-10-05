@@ -116,4 +116,26 @@ describe('IosPushNotificationChannel', () => {
         expect(payload.title).toBe('Task failed')
         expect(payload.body).toContain('exploded')
     })
+
+    it('sends model-error with event-specific tag and error severity', async () => {
+        const { channel, service } = makeChannel({ sent: 1, failed: 0, invalidTokens: [] })
+        const ctx: NotificationSendContext = { nativeGate: { sent: false } }
+
+        const outcome = await channel.sendModelError(createSession(), {
+            eventId: 'evt-1',
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'status 429',
+            priorAssistantClaimsDone: false,
+            atTs: 1710000000000
+        }, ctx)
+
+        expect(outcome).toBe('delivered')
+        expect(ctx.nativeGate?.sent).toBe(true)
+        const payload = service.calls[0].payload
+        expect(payload.type).toBe('model-error')
+        expect(payload.severity).toBe('error')
+        expect(payload.tag).toBe('model-error-session-1-evt-1')
+        expect(payload.contractVersion).toBe('1')
+    })
 })

@@ -22,6 +22,7 @@ describe('PushNotificationChannel', () => {
             {
                 sendToNamespace: async (namespace: string, payload: PushPayload) => {
                     pushed.push({ namespace, payload })
+                    return { sent: 1, failed: 0, subscriptions: 1 }
                 }
             } as never,
             {
@@ -51,6 +52,7 @@ describe('PushNotificationChannel', () => {
             {
                 sendToNamespace: async (namespace: string, payload: PushPayload) => {
                     pushed.push({ namespace, payload })
+                    return { sent: 1, failed: 0, subscriptions: 1 }
                 }
             } as never,
             {
@@ -82,6 +84,7 @@ describe('PushNotificationChannel', () => {
             {
                 sendToNamespace: async (namespace: string, payload: PushPayload) => {
                     pushed.push({ namespace, payload })
+                    return { sent: 1, failed: 0, subscriptions: 1 }
                 }
             } as never,
             {
@@ -115,6 +118,7 @@ describe('PushNotificationChannel', () => {
             {
                 sendToNamespace: async (namespace: string, payload: PushPayload) => {
                     pushed.push({ namespace, payload })
+                    return { sent: 1, failed: 0, subscriptions: 1 }
                 }
             } as never,
             {
@@ -137,6 +141,7 @@ describe('PushNotificationChannel', () => {
             {
                 sendToNamespace: async (namespace: string, payload: PushPayload) => {
                     pushed.push({ namespace, payload })
+                    return { sent: 1, failed: 0, subscriptions: 1 }
                 }
             } as never,
             {
@@ -160,6 +165,7 @@ describe('PushNotificationChannel', () => {
             {
                 sendToNamespace: async (namespace: string, payload: PushPayload) => {
                     pushed.push({ namespace, payload })
+                    return { sent: 1, failed: 0, subscriptions: 1 }
                 }
             } as never,
             {
@@ -190,5 +196,58 @@ describe('PushNotificationChannel', () => {
         // when an FCM companion is on the wrist.
         expect(toasts).toHaveLength(0)
         expect(pushed).toHaveLength(0)
+    })
+
+    it('sendModelError defers when nativeGate.sent is true', async () => {
+        const pushed: Array<{ namespace: string; payload: PushPayload }> = []
+        const channel = new PushNotificationChannel(
+            {
+                sendToNamespace: async (namespace: string, payload: PushPayload) => {
+                    pushed.push({ namespace, payload })
+                    return { sent: 1, failed: 0, subscriptions: 1 }
+                }
+            } as never,
+            { sendToast: async () => 0 } as never,
+            { hasVisibleConnection: () => false } as never,
+            ''
+        )
+
+        await channel.sendModelError(createSession(), {
+            eventId: 'evt-1',
+            kind: 'quota_exhausted',
+            transient: false,
+            rawSnippet: 'x',
+            priorAssistantClaimsDone: false,
+            atTs: 1
+        }, { nativeGate: { sent: true } })
+
+        expect(pushed).toHaveLength(0)
+    })
+
+    it('sendModelError fires web-push when nativeGate.sent is false', async () => {
+        const pushed: Array<{ namespace: string; payload: PushPayload }> = []
+        const channel = new PushNotificationChannel(
+            {
+                sendToNamespace: async (namespace: string, payload: PushPayload) => {
+                    pushed.push({ namespace, payload })
+                    return { sent: 1, failed: 0, subscriptions: 1 }
+                }
+            } as never,
+            { sendToast: async () => 0 } as never,
+            { hasVisibleConnection: () => false } as never,
+            ''
+        )
+
+        await channel.sendModelError(createSession(), {
+            eventId: 'evt-2',
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'y',
+            priorAssistantClaimsDone: false,
+            atTs: 2
+        }, { nativeGate: { sent: false } })
+
+        expect(pushed).toHaveLength(1)
+        expect(pushed[0]?.payload.data?.type).toBe('model-error')
     })
 })

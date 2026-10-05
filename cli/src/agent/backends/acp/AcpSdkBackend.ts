@@ -582,8 +582,9 @@ export class AcpSdkBackend implements AgentBackend {
     async prompt(
         sessionId: string,
         content: PromptContent[],
-        onUpdate: (msg: AgentMessage) => void
-    ): Promise<void> {
+        onUpdate: (msg: AgentMessage) => void,
+        options?: { shouldSend?: () => boolean }
+    ): Promise<boolean> {
         if (!this.transport) {
             throw new Error('ACP transport not initialized');
         }
@@ -601,6 +602,9 @@ export class AcpSdkBackend implements AgentBackend {
         );
         await this.sessionUpdateQueue;
         this.messageHandler?.drainBuffers();
+        if (options?.shouldSend && !options.shouldSend()) {
+            return false;
+        }
         this.messageHandler = new AcpMessageHandler(onUpdate, {
             textChunkMode: this.options.textChunkMode,
             flavor: this.options.flavor,
@@ -695,6 +699,7 @@ export class AcpSdkBackend implements AgentBackend {
                 }
             }
         }
+        return true;
     }
 
     async cancelPrompt(sessionId: string): Promise<void> {
