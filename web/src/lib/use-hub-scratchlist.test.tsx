@@ -1,9 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { renderHook, act, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, renderHook, act, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { useState } from 'react'
 import type { ReactNode } from 'react'
+import type { ScratchlistAttachmentMetadata } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import { ApiError } from '@/api/client'
+import { I18nProvider } from '@/lib/i18n-context'
+import { ScratchlistDrawer } from '@/components/AssistantChat/ScratchlistPanel'
+import {
+    clearScratchlistAttachmentPreviewCache,
+} from './scratchlistAttachmentPreview'
 import { useHubScratchlist } from './use-hub-scratchlist'
 import { queryKeys } from './query-keys'
 
@@ -18,7 +25,7 @@ import { queryKeys } from './query-keys'
  *   - banner dismissal persistence
  *   - per-session migration flag prevents re-migration
  *   - cap enforcement returns false from add()
- *   - local-only reorder via move()
+ *   - hub-backed reorder via move()
  *
  * Per-test session id: each test calls `makeSid()` to get a fresh
  * session-scoped localStorage namespace. The hook's offline-cache
@@ -28,7 +35,14 @@ import { queryKeys } from './query-keys'
  * path. Unique session ids sidestep the race.
  */
 
-type HubEntry = { entryId: string; text: string; createdAt: number; updatedAt: number }
+type HubEntry = {
+    entryId: string
+    text: string
+    createdAt: number
+    updatedAt: number
+    position?: number
+    attachments?: ScratchlistAttachmentMetadata[]
+}
 
 function createWrapper() {
     const queryClient = new QueryClient({
@@ -46,6 +60,7 @@ function createMockApi(overrides: Partial<{
     getScratchlist: (sessionId: string) => Promise<{ entries: HubEntry[] }>
     createScratchlistEntry: (sessionId: string, body: { text: string; entryId?: string; createdAt?: number }) => Promise<{ entry: HubEntry }>
     updateScratchlistEntry: (sessionId: string, entryId: string, text: string) => Promise<{ entry: HubEntry }>
+    reorderScratchlistEntries: (sessionId: string, entryIds: string[]) => Promise<{ entries: HubEntry[] }>
     deleteScratchlistEntry: (sessionId: string, entryId: string) => Promise<void>
 }> = {}): ApiClient {
     return {
@@ -63,6 +78,15 @@ function createMockApi(overrides: Partial<{
             ?? (async (_sessionId, entryId, text) => ({
                 entry: { entryId, text, createdAt: 1000, updatedAt: 5000 }
             })),
+        reorderScratchlistEntries: overrides.reorderScratchlistEntries ?? (async (_sessionId, entryIds) => ({
+            entries: entryIds.map((entryId, position) => ({
+                entryId,
+                text: entryId,
+                createdAt: position,
+                updatedAt: position,
+                position
+            }))
+        })),
         deleteScratchlistEntry: overrides.deleteScratchlistEntry ?? (async () => undefined)
     } as unknown as ApiClient
 }
@@ -78,6 +102,8 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+    cleanup()
+    clearScratchlistAttachmentPreviewCache()
     localStorage.clear()
     vi.restoreAllMocks()
 })
@@ -99,14 +125,108 @@ describe('useHubScratchlist - initial fetch', () => {
     })
 })
 
+describe('useHubScratchlist - preview cache', () => {
+    it('keeps mounted blob URLs valid when the hook parent rerenders after downloads', async () => {
+        const sid = makeSid()
+        const entries: HubEntry[] = Array.from({ length: 3 }, (_, index) => ({
+            entryId: `preview-entry-${index}`,
+            text: `preview ${index}`,
+            createdAt: index,
+            updatedAt: index,
+            attachments: [{
+                id: `preview-attachment-${index}`,
+                filename: `preview-${index}.png`,
+                mimeType: 'image/png',
+                size: 8 * 1024 * 1024,
+                path: `hapi-hub:scratchlist/default/${sid}/preview-${index}.png`,
+            }],
+        }))
+        const fetchScratchlistAttachmentBlob = vi.fn(async () => new Blob(['preview'], { type: 'image/png' }))
+        let nextObjectUrl = 0
+        const originalCreateObjectURL = URL.createObjectURL
+        const originalRevokeObjectURL = URL.revokeObjectURL
+        const revokeObjectURL = vi.fn()
+        Object.defineProperty(URL, 'createObjectURL', {
+            configurable: true,
+            value: vi.fn(() => `blob:hook-preview-${nextObjectUrl++}`),
+        })
+        Object.defineProperty(URL, 'revokeObjectURL', {
+            configurable: true,
+            value: revokeObjectURL,
+        })
+
+        const api = {
+            ...createMockApi({ getScratchlist: async () => ({ entries }) }),
+            fetchScratchlistAttachmentBlob,
+        } as unknown as ApiClient
+        const queryClient = new QueryClient({
+            defaultOptions: {
+                queries: { retry: false, gcTime: Infinity },
+                mutations: { retry: false },
+            },
+        })
+        function Harness() {
+            const scratchlist = useHubScratchlist(sid, api)
+            const [, setRenderVersion] = useState(0)
+            return (
+                <I18nProvider>
+                    <button type="button" onClick={() => setRenderVersion((version) => version + 1)}>
+                        Force scratchlist rerender
+                    </button>
+                    <ScratchlistDrawer
+                        entries={scratchlist.entries}
+                        sessionId={sid}
+                        api={api}
+                        onUpdate={vi.fn()}
+                        onReorder={vi.fn()}
+                        onDelete={vi.fn()}
+                    />
+                </I18nProvider>
+            )
+        }
+
+        const rendered = render(
+            <QueryClientProvider client={queryClient}>
+                <Harness />
+            </QueryClientProvider>,
+        )
+        try {
+            await waitFor(() => expect(screen.getAllByTestId('scratchlist-attachment-thumb')).toHaveLength(3))
+            expect(fetchScratchlistAttachmentBlob).toHaveBeenCalledTimes(3)
+            const urls = screen.getAllByRole('img').map((image) => image.getAttribute('src'))
+            expect(urls).toEqual(['blob:hook-preview-0', 'blob:hook-preview-1', 'blob:hook-preview-2'])
+
+            fireEvent.click(screen.getByRole('button', { name: 'Force scratchlist rerender' }))
+            await waitFor(() => {
+                expect(screen.getAllByRole('img').map((image) => image.getAttribute('src'))).toEqual(urls)
+            })
+            expect(revokeObjectURL).not.toHaveBeenCalledWith(urls[0])
+            expect(revokeObjectURL).not.toHaveBeenCalledWith(urls[1])
+            expect(revokeObjectURL).not.toHaveBeenCalledWith(urls[2])
+        } finally {
+            rendered.unmount()
+            Object.defineProperty(URL, 'createObjectURL', {
+                configurable: true,
+                value: originalCreateObjectURL,
+            })
+            Object.defineProperty(URL, 'revokeObjectURL', {
+                configurable: true,
+                value: originalRevokeObjectURL,
+            })
+        }
+    })
+})
+
 describe('useHubScratchlist - add', () => {
     it('optimistically inserts the new entry then reconciles with the hub-returned row', async () => {
         const sid = makeSid()
+        let hubEntries: HubEntry[] = []
         const api = createMockApi({
-            getScratchlist: async () => ({ entries: [] }),
-            createScratchlistEntry: async (_s, body) => ({
-                entry: { entryId: 'hub-id', text: body.text, createdAt: 5000, updatedAt: 5000 }
-            })
+            getScratchlist: async () => ({ entries: hubEntries }),
+            createScratchlistEntry: async (_s, body) => {
+                hubEntries = [{ entryId: 'hub-id', text: body.text, createdAt: 5000, updatedAt: 5000 }]
+                return { entry: hubEntries[0]! }
+            }
         })
         const { result } = renderHook(() => useHubScratchlist(sid, api), { wrapper: createWrapper() })
         await waitFor(() => expect(result.current.isLoading).toBe(false))
@@ -130,12 +250,13 @@ describe('useHubScratchlist - add', () => {
         })
         const sid = makeSid()
         const canonical: HubEntry = { entryId: 'hub-id', text: 'new note', createdAt: 5000, updatedAt: 5000 }
+        let hubEntries: HubEntry[] = []
         let releaseCreate: (value: { entry: HubEntry }) => void = () => undefined
         const createDeferred = new Promise<{ entry: HubEntry }>((resolve) => {
             releaseCreate = resolve
         })
         const api = createMockApi({
-            getScratchlist: async () => ({ entries: [] }),
+            getScratchlist: async () => ({ entries: hubEntries }),
             createScratchlistEntry: async () => createDeferred
         })
         const wrapper = ({ children }: { children: ReactNode }) => (
@@ -168,6 +289,7 @@ describe('useHubScratchlist - add', () => {
         })
 
         await act(async () => {
+            hubEntries = [canonical]
             releaseCreate({ entry: canonical })
             await addPromise
         })
@@ -176,6 +298,63 @@ describe('useHubScratchlist - add', () => {
             expect(result.current.entries.filter((e) => e.id === 'hub-id')).toHaveLength(1)
         })
         expect(result.current.entries).toHaveLength(1)
+    })
+
+    it('refetches after add success instead of applying an older response over newer SSE data', async () => {
+        const queryClient = new QueryClient({
+            defaultOptions: {
+                queries: { retry: false, gcTime: Infinity },
+                mutations: { retry: false },
+            },
+        })
+        const sid = makeSid()
+        let fetchCount = 0
+        let createStarted = false
+        let hubEntries: HubEntry[] = []
+        let resolveCreate!: (value: { entry: HubEntry }) => void
+        const createResponse = new Promise<{ entry: HubEntry }>((resolve) => {
+            resolveCreate = resolve
+        })
+        const olderResponse: HubEntry = {
+            entryId: 'hub-id', text: 'local note', createdAt: 5000, updatedAt: 5
+        }
+        const newer = [
+            { entryId: 'remote-id', text: 'remote first', createdAt: 4000, updatedAt: 7 },
+            { entryId: 'hub-id', text: 'edited elsewhere', createdAt: 5000, updatedAt: 8 },
+        ]
+        const api = createMockApi({
+            getScratchlist: async () => {
+                fetchCount += 1
+                return { entries: hubEntries }
+            },
+            createScratchlistEntry: async () => {
+                createStarted = true
+                return createResponse
+            },
+        })
+        const wrapper = ({ children }: { children: ReactNode }) => (
+            <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        )
+        const { result } = renderHook(() => useHubScratchlist(sid, api), { wrapper })
+        await waitFor(() => expect(result.current.isLoading).toBe(false))
+
+        let addPromise: Promise<boolean> | undefined
+        await act(async () => {
+            addPromise = result.current.add('local note')
+        })
+        await waitFor(() => expect(createStarted).toBe(true))
+        await waitFor(() => expect(result.current.entries[0]?.text).toBe('local note'))
+
+        hubEntries = newer
+        queryClient.setQueryData(queryKeys.scratchlist(sid), { entries: newer })
+        resolveCreate({ entry: olderResponse })
+        await act(async () => {
+            await addPromise
+        })
+
+        await waitFor(() => expect(result.current.entries.map((entry) => entry.id)).toEqual(['remote-id', 'hub-id']))
+        expect(result.current.entries[1]?.text).toBe('edited elsewhere')
+        expect(fetchCount).toBe(2)
     })
 
     it('rolls back when the hub rejects the create', async () => {
@@ -291,7 +470,7 @@ describe('useHubScratchlist - delete', () => {
         await waitFor(() => expect(result.current.entries.length).toBe(2))
 
         await act(async () => {
-            await result.current.remove('a')
+            await expect(result.current.remove('a')).rejects.toThrow('HTTP 500')
         })
         // After rollback the entry is restored.
         await waitFor(() => expect(result.current.entries.length).toBe(2))
@@ -344,13 +523,15 @@ describe('useHubScratchlist - delete', () => {
 describe('useHubScratchlist - update', () => {
     it('optimistically updates text and reconciles with the hub-returned row', async () => {
         const sid = makeSid()
+        let hubText = 'before'
         const api = createMockApi({
             getScratchlist: async () => ({
-                entries: [{ entryId: 'a', text: 'before', createdAt: 1, updatedAt: 1 }]
+                entries: [{ entryId: 'a', text: hubText, createdAt: 1, updatedAt: hubText === 'before' ? 1 : 5 }]
             }),
-            updateScratchlistEntry: async (_s, entryId, text) => ({
-                entry: { entryId, text, createdAt: 1, updatedAt: 5 }
-            })
+            updateScratchlistEntry: async (_s, entryId, text) => {
+                hubText = text
+                return { entry: { entryId, text, createdAt: 1, updatedAt: 5 } }
+            }
         })
         const { result } = renderHook(() => useHubScratchlist(sid, api), { wrapper: createWrapper() })
         await waitFor(() => expect(result.current.entries.length).toBe(1))
@@ -359,6 +540,69 @@ describe('useHubScratchlist - update', () => {
             await result.current.update('a', 'after')
         })
         await waitFor(() => expect(result.current.entries[0]?.text).toBe('after'))
+        expect(result.current.entries[0]?.updatedAt).toBe(5)
+    })
+
+    it('refetches after update success instead of applying an older response over newer SSE data', async () => {
+        const sid = makeSid()
+        let fetchCount = 0
+        let resolveUpdate!: (value: { entry: HubEntry }) => void
+        const updateResponse = new Promise<{ entry: HubEntry }>((resolve) => {
+            resolveUpdate = resolve
+        })
+        const newer = { entryId: 'a', text: 'newer from another device', createdAt: 1, updatedAt: 6 }
+        const queryClient = new QueryClient({
+            defaultOptions: {
+                queries: { retry: false, gcTime: Infinity },
+                mutations: { retry: false },
+            },
+        })
+        const api = createMockApi({
+            getScratchlist: async () => {
+                fetchCount += 1
+                return { entries: [fetchCount === 1
+                    ? { entryId: 'a', text: 'before', createdAt: 1, updatedAt: 1 }
+                    : newer] }
+            },
+            updateScratchlistEntry: async () => updateResponse,
+        })
+        const wrapper = ({ children }: { children: ReactNode }) => (
+            <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        )
+        const { result } = renderHook(() => useHubScratchlist(sid, api), { wrapper })
+        await waitFor(() => expect(result.current.entries[0]?.text).toBe('before'))
+
+        const updatePromise = result.current.update('a', 'local response')
+        await waitFor(() => expect(result.current.entries[0]?.text).toBe('local response'))
+        queryClient.setQueryData(queryKeys.scratchlist(sid), { entries: [newer] })
+        resolveUpdate({
+            entry: { entryId: 'a', text: 'local response', createdAt: 1, updatedAt: 2 },
+        })
+
+        await act(async () => {
+            await updatePromise
+        })
+        await waitFor(() => expect(result.current.entries[0]?.text).toBe('newer from another device'))
+        expect(fetchCount).toBe(2)
+    })
+
+    it('rethrows non-404 update errors after rolling back the optimistic edit', async () => {
+        const sid = makeSid()
+        const api = createMockApi({
+            getScratchlist: async () => ({
+                entries: [{ entryId: 'a', text: 'before', createdAt: 1, updatedAt: 1 }]
+            }),
+            updateScratchlistEntry: async () => {
+                throw new Error('HTTP 500')
+            }
+        })
+        const { result } = renderHook(() => useHubScratchlist(sid, api), { wrapper: createWrapper() })
+        await waitFor(() => expect(result.current.entries.length).toBe(1))
+
+        await act(async () => {
+            await expect(result.current.update('a', 'after')).rejects.toThrow('HTTP 500')
+        })
+        await waitFor(() => expect(result.current.entries[0]?.text).toBe('before'))
     })
 
     it('drops entry when update returns 404 (deleted elsewhere) (HAPI Bot, PR #896)', async () => {
@@ -432,7 +676,63 @@ describe('useHubScratchlist - localStorage migration', () => {
         expect(create).toHaveBeenCalledTimes(2)
         const entryIds = create.mock.calls.map((c) => (c[1] as { entryId?: string }).entryId)
         expect(entryIds.sort()).toEqual(['old-1', 'old-2'])
+        const positions = create.mock.calls.map((c) => (c[1] as { position?: number }).position)
+        expect(positions).toEqual([0, 1])
         expect(localStorage.getItem(`hapi.scratchlist.v2.migrated.${sid}`)).toBe('1')
+    })
+
+    it('migrates attachment-only localStorage entries', async () => {
+        const sid = makeSid()
+        localStorage.setItem(
+            `hapi.scratchlist.v1.${sid}`,
+            JSON.stringify([{
+                id: 'photo-only',
+                text: '',
+                createdAt: 100,
+                attachments: [{
+                    id: 'photo-1',
+                    filename: 'photo.png',
+                    mimeType: 'image/png',
+                    size: 12,
+                    path: 'hapi-hub:scratchlist/default/session/photo-1-photo.png',
+                    previewUrl: 'blob:stale-preview',
+                }]
+            }])
+        )
+        const create = vi.fn(async (_s: string, body: {
+            text: string
+            entryId?: string
+            createdAt?: number
+            attachments?: ScratchlistAttachmentMetadata[]
+        }) => ({
+            entry: {
+                entryId: body.entryId ?? 'photo-only',
+                text: body.text,
+                createdAt: body.createdAt ?? 100,
+                updatedAt: 100,
+                attachments: body.attachments ?? [],
+            }
+        }))
+        const api = createMockApi({
+            getScratchlist: async () => ({ entries: [] }),
+            createScratchlistEntry: create,
+        })
+        const { result } = renderHook(() => useHubScratchlist(sid, api), { wrapper: createWrapper() })
+
+        await waitFor(() => expect(result.current.migrationStatus).toBe('completed'))
+        expect(create).toHaveBeenCalledTimes(1)
+        const body = create.mock.calls[0]?.[1] as {
+            text: string
+            attachments: Array<Record<string, unknown>>
+        }
+        expect(body.text).toBe('')
+        expect(body.attachments).toEqual([{
+            id: 'photo-1',
+            filename: 'photo.png',
+            mimeType: 'image/png',
+            size: 12,
+            path: 'hapi-hub:scratchlist/default/session/photo-1-photo.png',
+        }])
     })
 
     it('does not re-migrate on a mount where the migrated flag is already set', async () => {
@@ -648,18 +948,31 @@ describe('useHubScratchlist - localStorage migration', () => {
     })
 })
 
-describe('useHubScratchlist - reorder (local-only)', () => {
-    it('move() reorders entries in-place without calling the hub', async () => {
+describe('useHubScratchlist - reorder', () => {
+    it('move() optimistically reorders entries and persists the ordered ids', async () => {
         const sid = makeSid()
-        const updateMock = vi.fn()
+        let hubOrder = ['top', 'bot']
+        const reorderMock = vi.fn(async (_sessionId: string, entryIds: string[]) => {
+            hubOrder = [...entryIds]
+            return { entries: entryIds.map((entryId, position) => ({
+                entryId,
+                text: entryId,
+                createdAt: position,
+                updatedAt: position,
+                position
+            })) }
+        })
         const api = createMockApi({
             getScratchlist: async () => ({
-                entries: [
-                    { entryId: 'top', text: 'top', createdAt: 100, updatedAt: 100 },
-                    { entryId: 'bot', text: 'bot', createdAt: 50, updatedAt: 50 }
-                ]
+                entries: hubOrder.map((entryId, position) => ({
+                    entryId,
+                    text: entryId,
+                    createdAt: entryId === 'top' ? 100 : 50,
+                    updatedAt: entryId === 'top' ? 100 : 50,
+                    position
+                }))
             }),
-            updateScratchlistEntry: updateMock as never
+            reorderScratchlistEntries: reorderMock
         })
         const { result } = renderHook(() => useHubScratchlist(sid, api), { wrapper: createWrapper() })
         await waitFor(() => expect(result.current.entries.length).toBe(2))
@@ -671,6 +984,56 @@ describe('useHubScratchlist - reorder (local-only)', () => {
         await waitFor(() => {
             expect(result.current.entries.map((e) => e.id)).toEqual(['bot', 'top'])
         })
-        expect(updateMock).not.toHaveBeenCalled()
+        expect(reorderMock).toHaveBeenCalledWith(sid, ['bot', 'top'])
+    })
+
+    it('refetches after reorder success instead of applying an older response over newer SSE data', async () => {
+        const sid = makeSid()
+        let fetchCount = 0
+        let reorderStarted = false
+        let resolveReorder!: (value: { entries: HubEntry[] }) => void
+        const reorderResponse = new Promise<{ entries: HubEntry[] }>((resolve) => {
+            resolveReorder = resolve
+        })
+        const before = [
+            { entryId: 'a', text: 'a', createdAt: 1, updatedAt: 1, position: 0 },
+            { entryId: 'b', text: 'b', createdAt: 2, updatedAt: 2, position: 1 },
+        ]
+        const newer = [
+            { entryId: 'c', text: 'c from another device', createdAt: 3, updatedAt: 6, position: 0 },
+            { entryId: 'a', text: 'a', createdAt: 1, updatedAt: 1, position: 1 },
+            { entryId: 'b', text: 'b', createdAt: 2, updatedAt: 2, position: 2 },
+        ]
+        const queryClient = new QueryClient({
+            defaultOptions: {
+                queries: { retry: false, gcTime: Infinity },
+                mutations: { retry: false },
+            },
+        })
+        const api = createMockApi({
+            getScratchlist: async () => {
+                fetchCount += 1
+                return { entries: fetchCount === 1 ? before : newer }
+            },
+            reorderScratchlistEntries: async () => {
+                reorderStarted = true
+                return reorderResponse
+            },
+        })
+        const wrapper = ({ children }: { children: ReactNode }) => (
+            <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        )
+        const { result } = renderHook(() => useHubScratchlist(sid, api), { wrapper })
+        await waitFor(() => expect(result.current.entries.map((entry) => entry.id)).toEqual(['a', 'b']))
+
+        result.current.reorder('b', 0)
+        await waitFor(() => expect(reorderStarted).toBe(true))
+        await waitFor(() => expect(result.current.entries.map((entry) => entry.id)).toEqual(['b', 'a']))
+
+        queryClient.setQueryData(queryKeys.scratchlist(sid), { entries: newer })
+        resolveReorder({ entries: [before[1]!, before[0]!] })
+
+        await waitFor(() => expect(result.current.entries.map((entry) => entry.id)).toEqual(['c', 'a', 'b']))
+        expect(fetchCount).toBe(2)
     })
 })

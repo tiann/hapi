@@ -183,20 +183,39 @@ private func bashRequest(_ command: String = "rm -rf build") -> AgentStateReques
 
 /// Server-echoed queued row (`id != localId`, explicit `invokedAt: null` via
 /// the wire collapse in `WindowMessage(wire:)`).
-private func queuedServerRow(id: String, localId: String, text: String) -> DecryptedMessage {
-    DecryptedMessage(
+private func queuedServerRow(
+    id: String,
+    localId: String,
+    text: String,
+    scheduledAt: Int? = nil,
+    withAttachment: Bool = false
+) -> DecryptedMessage {
+    var messageContent: [String: JSONValue] = [
+        "type": .string("text"),
+        "text": .string(text),
+    ]
+    if withAttachment {
+        messageContent["attachments"] = .array([
+            .object([
+                "id": .string("att-queued"),
+                "filename": .string("queued.jpg"),
+                "mimeType": .string("image/jpeg"),
+                "size": .number(3),
+                "path": .string("/uploads/queued.jpg"),
+            ])
+        ])
+    }
+    return DecryptedMessage(
         id: id,
         seq: 7,
         localId: localId,
         content: .object([
             "role": .string("user"),
-            "content": .object([
-                "type": .string("text"),
-                "text": .string(text),
-            ]),
+            "content": .object(messageContent),
         ]),
         createdAt: 500,
-        invokedAt: nil
+        invokedAt: nil,
+        scheduledAt: scheduledAt
     )
 }
 
@@ -676,6 +695,28 @@ struct ChatInteractorTests {
         #expect(await eventually { harness.interactor.composerText == "edit me" })
         let cancels = await harness.performer.count("DELETE", pathSuffix: "/messages/srv-3")
         #expect(cancels == 1)
+    }
+
+    @Test func scheduledAttachmentQueuedRowCannotBeEdited() async throws {
+        let harness = try await ChatInteractionHarness()
+        await harness.window().ingestSSEMessages([
+            WindowMessage(wire: queuedServerRow(
+                id: "srv-attachment", localId: "l-attachment", text: "keep image",
+                scheduledAt: 1_800_000_000_000, withAttachment: true
+            ))
+        ])
+        #expect(await eventually {
+            harness.interactor.queuedRows.contains {
+                $0.id == "srv-attachment" && $0.canAct && !$0.canEdit
+            }
+        })
+
+        harness.interactor.editQueuedMessage("srv-attachment")
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(harness.interactor.composerText.isEmpty)
+        #expect(await harness.performer.count("DELETE", pathSuffix: "/messages/srv-attachment") == 0)
+        #expect(harness.interactor.queuedRows.contains { $0.id == "srv-attachment" })
     }
 
     // MARK: Permissions
