@@ -22,6 +22,7 @@ import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import { getGrokTitleInstruction } from './utils/systemPrompt'
 import { GrokConversationHistory } from './conversationHistory'
 import { isObject } from '@hapi/protocol'
+import { listGrokModelsForCwd } from '@/modules/common/grokModels'
 
 const PLAN_MODE_INSTRUCTION =
     'Work in plan-only mode. Analyze and propose a plan, but do not execute commands or modify files.'
@@ -203,7 +204,37 @@ class GrokRemoteLauncher extends RemoteLauncherBase {
         })
 
         session.client.rpcHandlerManager.registerHandler(RPC_METHODS.ListGrokModels, async () => {
+            // The ACP metadata snapshot freezes at session/new, but grok's
+            // catalog (like opencode's) can change when the user edits its
+            // config mid-session. Probe live (shared with the create-session
+            // form, 60s cache); fall back to the snapshot if the probe fails
+            // or stalls. The probe is bounded to 5s (Promise.race) because the
+            // hub enforces a 30s deadline on this session RPC — a stalled probe
+            // must never consume it before the snapshot fallback below runs.
+            // currentModelId stays session-scoped so an inline switch (or its
+            // rollback) is reflected accurately.
             const metadata = backend.getSessionModelsMetadata(acpSessionId)
+            let probeTimer: ReturnType<typeof setTimeout> | undefined
+            try {
+                const probe = await Promise.race([
+                    listGrokModelsForCwd(session.path),
+                    new Promise<null>((resolve) => {
+                        probeTimer = setTimeout(() => resolve(null), 5_000)
+                    }),
+                ])
+                if (probe?.success) {
+                    return {
+                        success: true,
+                        availableModels: probe.availableModels ?? [],
+                        currentModelId: metadata?.currentModelId ?? probe.currentModelId ?? null,
+                        autoPermissionModeSupported: backend.hasAvailableCommand(acpSessionId, 'auto')
+                    }
+                }
+            } catch (error) {
+                logger.debug('[grok] Live model probe failed, falling back to session snapshot:', error)
+            } finally {
+                clearTimeout(probeTimer)
+            }
             if (!metadata) return { success: false, error: 'Grok model metadata is not available' }
             return {
                 success: true,

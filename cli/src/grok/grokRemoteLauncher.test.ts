@@ -2,6 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import type { GrokMode } from './types'
 
+const listGrokModelsMock = vi.hoisted(() => vi.fn().mockResolvedValue({ success: false, error: 'probe unavailable' }))
+vi.mock('@/modules/common/grokModels', () => ({
+    listGrokModelsForCwd: listGrokModelsMock,
+}))
+
 const harness = vi.hoisted(() => ({
     setModels: [] as Array<{ sessionId: string; modelId: string; flavor?: string }>,
     setModes: [] as Array<{ sessionId: string; modeId: string }>,
@@ -181,7 +186,59 @@ describe('grokRemoteLauncher runtime config', () => {
         expect(JSON.stringify(harness.prompts[2])).not.toContain('hapi_change_title')
         expect(JSON.stringify(harness.prompts[2])).not.toContain('skill_lookup')
         expect(await rpcHandlers.get('listGrokModels')?.()).toMatchObject({ success: true, currentModelId: 'grok-a' })
+        // Probe succeeds with a live catalog
+        listGrokModelsMock.mockResolvedValueOnce({
+            success: true,
+            availableModels: [{ modelId: 'grok-live', name: 'Live Grok' }],
+            currentModelId: 'grok-live'
+        })
+        expect(await rpcHandlers.get('listGrokModels')?.()).toMatchObject({
+            success: true,
+            availableModels: [{ modelId: 'grok-live', name: 'Live Grok' }],
+            currentModelId: 'grok-a'
+        })
+        // Empty live probe is authoritative too
+        listGrokModelsMock.mockResolvedValueOnce({
+            success: true,
+            availableModels: [],
+            currentModelId: null
+        })
+        expect(await rpcHandlers.get('listGrokModels')?.()).toMatchObject({
+            success: true,
+            availableModels: [],
+            currentModelId: 'grok-a'
+        })
         expect(await rpcHandlers.get('listGrokReasoningEffortOptions')?.()).toMatchObject({ success: true, currentValue: 'low' })
+    })
+
+    it('listGrokModels handler bounds a stalled live probe to 5s and falls back to the snapshot', async () => {
+        // Stall the probe forever: the handler may only answer through the
+        // 5s Promise.race timeout and the snapshot fallback below it.
+        listGrokModelsMock.mockImplementationOnce(() => new Promise(() => {}))
+        const { session, rpcHandlers } = createSession()
+        await grokRemoteLauncher(session as never, {})
+
+        const handler = rpcHandlers.get('listGrokModels')
+        expect(handler).toBeDefined()
+        // Fake timers only around the handler call: the launcher above ran on
+        // real timers, and the probe timer is created inside the handler.
+        vi.useFakeTimers()
+        try {
+            const pending = handler!() as Promise<Record<string, unknown>>
+            let settled = false
+            void pending.then(() => { settled = true })
+            await vi.advanceTimersByTimeAsync(4_900)
+            expect(settled).toBe(false)
+            await vi.advanceTimersByTimeAsync(200)
+            // The file-level backend stub always reports the grok-a snapshot.
+            expect(await pending).toMatchObject({
+                success: true,
+                availableModels: [{ modelId: 'grok-a' }, { modelId: 'grok-b' }],
+                currentModelId: 'grok-a'
+            })
+        } finally {
+            vi.useRealTimers()
+        }
     })
 
     it('does not fall back to newSession when a fork child cannot load its native id', async () => {

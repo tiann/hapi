@@ -33,7 +33,11 @@ export type RootHost = {
 };
 const SettingsSchema = z.object({
     permissionMode: z.enum(['default', 'read-only', 'safe-yolo', 'yolo']).optional(),
-    model: z.string().min(1).optional(), modelReasoningEffort: z.string().nullable().optional(),
+    // The hub may forward the provider-qualified object form ({ provider,
+    // modelId }); Codex model ids are unqualified, so keep just the modelId.
+    model: z.union([z.string().min(1), z.object({ provider: z.string(), modelId: z.string().min(1) })])
+        .transform(model => typeof model === 'string' ? model : model.modelId).optional(),
+    modelReasoningEffort: z.string().nullable().optional(),
     collaborationMode: z.enum(['default', 'plan']).optional(),
     serviceTier: z.enum(['fast', 'standard']).nullable().optional(),
     personality: z.enum(['friendly', 'pragmatic', 'none']).optional()

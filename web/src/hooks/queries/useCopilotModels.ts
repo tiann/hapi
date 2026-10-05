@@ -23,7 +23,10 @@ export function useCopilotModels(args: {
             return await args.api.getSessionCopilotModels(args.sessionId)
         },
         enabled,
+        // The session-side handler probes the live Copilot catalog: poll so an
+        // already-open picker tracks subscription changes (same as useGrokModels).
         staleTime: 30_000,
+        refetchInterval: enabled ? 15_000 : false,
         retry: 1,
     })
 

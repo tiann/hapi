@@ -15,6 +15,13 @@ type RegisterSessionConfigRpcOptions<TPermissionMode extends PermissionMode = Pe
     rpcHandlerManager: RpcHandlerManager
     flavor: AgentFlavor
     modelMode?: 'nullable' | 'ignore' | 'reject'
+    // When true, a `{ provider, modelId }` object payload is rebuilt into the
+    // provider-qualified "provider/modelId" wire string instead of collapsing
+    // to the bare modelId. OpenCode requires the qualified form: its ACP
+    // session/set_model parses "provider/model" prefixes and a bare modelId
+    // fails with "model not found", which used to leave the backend on the
+    // old model while the hub had already recorded the new one.
+    modelProviderQualified?: boolean
     modelReasoningEffortMode?: 'nullable' | 'ignore' | 'reject'
     effortMode?: 'nullable' | 'ignore' | 'reject'
     appliedFallback?: () => Record<string, unknown>
@@ -33,19 +40,29 @@ export function resolveSessionConfigPermissionMode<TPermissionMode extends Permi
     return parsed.data as TPermissionMode
 }
 
-/** Extract `modelId` from either a plain string or a `{ provider, modelId }`
- *  object (the form Pi sessions receive from the hub). Other agents only pass
- *  plain strings; the object branch is here for schema consistency so this
- *  function doesn't throw if the hub later sends the union form to any agent. */
-export function resolveNullableSessionModel(value: unknown): string | null {
+/** Extract a model string from either a plain string or a `{ provider,
+ *  modelId }` object (the form the hub sends for provider-qualified model
+ *  picks). With `opts.providerQualified` the object is rebuilt as the
+ *  "provider/modelId" wire string (OpenCode's native set_model format);
+ *  without it only the bare modelId is returned (legacy behavior for agents
+ *  whose set_model takes an unqualified id, e.g. Cursor). */
+export function resolveNullableSessionModel(
+    value: unknown,
+    opts?: { providerQualified?: boolean }
+): string | null {
     if (value === null) {
         return null
     }
-    // Pi sessions receive model as { provider, modelId }; extract modelId
     if (typeof value === 'object' && value !== null) {
-        const modelObj = value as { modelId?: unknown }
+        const modelObj = value as { provider?: unknown; modelId?: unknown }
         if (typeof modelObj.modelId === 'string' && modelObj.modelId.trim().length > 0) {
-            return modelObj.modelId.trim()
+            const modelId = modelObj.modelId.trim()
+            if (opts?.providerQualified
+                && typeof modelObj.provider === 'string'
+                && modelObj.provider.trim().length > 0) {
+                return `${modelObj.provider.trim()}/${modelId}`
+            }
+            return modelId
         }
         throw new Error('Invalid model')
     }
@@ -59,6 +76,7 @@ export function registerSessionConfigRpc<TPermissionMode extends PermissionMode>
     rpcHandlerManager,
     flavor,
     modelMode = 'reject',
+    modelProviderQualified = false,
     modelReasoningEffortMode = 'reject',
     effortMode = 'reject',
     appliedFallback,
@@ -84,7 +102,7 @@ export function registerSessionConfigRpc<TPermissionMode extends PermissionMode>
                 throw new Error('Invalid model')
             }
             if (modelMode === 'nullable') {
-                next.model = resolveNullableSessionModel(config.model)
+                next.model = resolveNullableSessionModel(config.model, { providerQualified: modelProviderQualified })
                 applied.model = next.model
             }
         }
