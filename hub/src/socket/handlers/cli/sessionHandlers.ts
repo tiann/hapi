@@ -68,7 +68,7 @@ const updateStateSchema = z.object({
     agentState: z.unknown().nullable()
 })
 
-const HUB_OWNED_METADATA_KEYS = ['supersededBySessionId', 'opencodeClearOperation'] as const
+const HUB_OWNED_METADATA_KEYS = ['supersededBySessionId', 'opencodeClearOperation', 'nameLocked'] as const
 
 function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown {
     if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) return incoming
@@ -79,6 +79,13 @@ function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown 
     for (const key of HUB_OWNED_METADATA_KEYS) {
         if (Object.prototype.hasOwnProperty.call(existing, key)) next[key] = existing[key]
         else delete next[key]
+    }
+    // Manual-rename lock: while a web-side rename pins metadata.name, agent
+    // snapshots must not overwrite it. Other keys merge as usual; the agent's
+    // own name value is silently dropped. nameLocked itself is hub-owned
+    // above, so only the owner toggle (re-enable) can lift the pin.
+    if (existing.nameLocked === true && typeof existing.name === 'string') {
+        next.name = existing.name
     }
     return next
 }

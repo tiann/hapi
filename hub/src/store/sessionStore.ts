@@ -2,6 +2,7 @@ import type { Database } from 'bun:sqlite'
 
 import type { StoredSession, VersionedUpdateResult } from './types'
 import {
+    clearSessionNameLocks,
     deleteSession,
     getOrCreateSession,
     adoptPreallocatedSession,
@@ -146,6 +147,11 @@ export class SessionStore {
 
     getSessionsByNamespace(namespace: string): StoredSession[] {
         return getSessionsByNamespace(this.db, namespace)
+    }
+
+    /** Drop every manual-rename lock; returns how many rows were unlocked. */
+    clearSessionNameLocks(): number {
+        return clearSessionNameLocks(this.db)
     }
 
     deleteSession(id: string, namespace: string): boolean {

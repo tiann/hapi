@@ -42,7 +42,7 @@ export default function SettingsGeneralPage() {
     })
 
     const hubSettingsMutation = useMutation({
-        mutationFn: async (patch: { sessionSummaryContract?: boolean; sessionSummaryInChat?: boolean }) => {
+        mutationFn: async (patch: { sessionSummaryContract?: boolean; sessionSummaryInChat?: boolean; autoTitlePerTurn?: boolean }) => {
             if (!api) throw new Error('API unavailable')
             return await api.updateHubSettings(patch)
         },
@@ -83,6 +83,22 @@ export default function SettingsGeneralPage() {
                             />
                         </>
                     ) : null}
+                </SettingsSection>
+            ) : null}
+            {isOwner && hubSettingsQuery.data ? (
+                <SettingsSection
+                    title={t('settings.general.sessionTitles.title')}
+                    description={t('settings.general.sessionTitles.description')}
+                >
+                    <SettingsSwitch
+                        label={t('settings.general.autoTitlePerTurn')}
+                        description={t('settings.general.autoTitlePerTurn.desc')}
+                        checked={hubSettingsQuery.data.autoTitlePerTurn}
+                        onChange={(checked) => {
+                            if (hubSettingsMutation.isPending) return
+                            hubSettingsMutation.mutate({ autoTitlePerTurn: checked })
+                        }}
+                    />
                 </SettingsSection>
             ) : null}
             <SettingsSection title={t('settings.companion.title')}>

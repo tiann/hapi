@@ -4717,6 +4717,39 @@ describe('session model', () => {
             expect(meta?.name).toBe('final-name')
         })
 
+        it('renameSession pins the name with nameLocked for per-turn protection', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const session = cache.getOrCreateSession(
+                'session-rename-lock',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex', name: 'Agent old' },
+                null,
+                'default'
+            )
+
+            await expect(cache.renameSession(session.id, 'Manual name')).resolves.toBeUndefined()
+
+            // nameLocked is a hub-owned key: it persists in the raw DB row
+            // (the CLI socket merge base) even though the cache view parses
+            // metadata through MetadataSchema, which strips it. The lock's
+            // enforcement path reads the raw row, so assert against it.
+            const rawMeta = () =>
+                store.sessions.getSessionByNamespace(session.id, 'default')!.metadata as Record<string, unknown>
+            const meta = cache.getSession(session.id)?.metadata as Record<string, unknown> | null | undefined
+            expect(meta?.name).toBe('Manual name')
+            expect(rawMeta().name).toBe('Manual name')
+            expect(rawMeta().nameLocked).toBe(true)
+
+            // A later manual rename keeps exactly one lock, refreshing the pin.
+            await expect(cache.renameSession(session.id, 'Manual name 2')).resolves.toBeUndefined()
+            const meta2 = cache.getSession(session.id)?.metadata as Record<string, unknown> | null | undefined
+            expect(meta2?.name).toBe('Manual name 2')
+            expect(rawMeta().name).toBe('Manual name 2')
+            expect(rawMeta().nameLocked).toBe(true)
+        })
+
         it('clearSessionArchiveMetadata recovers after a stale cache snapshot', async () => {
             const store = new Store(':memory:')
             const events: SyncEvent[] = []
