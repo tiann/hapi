@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const harness = vi.hoisted(() => ({
-    spawn: vi.fn(async (_opts: unknown) => {})
+    spawn: vi.fn(async (_opts: unknown) => {}),
+    claudeCheckSession: vi.fn(() => true)
 }))
 
 vi.mock('node:fs', () => ({
@@ -13,7 +14,7 @@ vi.mock('@/ui/logger', () => ({
 }))
 
 vi.mock('./utils/claudeCheckSession', () => ({
-    claudeCheckSession: () => true
+    claudeCheckSession: harness.claudeCheckSession
 }))
 
 vi.mock('./utils/path', () => ({
@@ -48,6 +49,7 @@ vi.mock('./sdk/utils', () => ({
     getDefaultClaudeCodePath: () => '/usr/bin/claude'
 }))
 
+import { ClaudeResumeUnavailableError } from './utils/claudeResumeUnavailableError'
 import { claudeLocal } from './claudeLocal'
 
 function getSpawnArgs(): string[] {
@@ -59,6 +61,8 @@ function getSpawnArgs(): string[] {
 describe('claudeLocal model arguments', () => {
     beforeEach(() => {
         harness.spawn.mockClear()
+        harness.claudeCheckSession.mockReset()
+        harness.claudeCheckSession.mockReturnValue(true)
     })
 
     it('launches Claude with the current session model', async () => {
@@ -111,5 +115,35 @@ describe('claudeLocal model arguments', () => {
         expect(args).not.toContain('--model=claude-haiku-4-5')
         expect(args).not.toContain('--model')
         expect(args).toContain('--verbose')
+    })
+})
+
+describe('claudeLocal resume probe (#1933)', () => {
+    beforeEach(() => {
+        harness.spawn.mockClear()
+        harness.claudeCheckSession.mockReset()
+        harness.claudeCheckSession.mockReturnValue(true)
+    })
+
+    it('throws resume_unavailable for an explicit --resume target missing on disk', async () => {
+        harness.claudeCheckSession.mockReturnValue(false)
+
+        await expect(claudeLocal({
+            abort: new AbortController().signal,
+            sessionId: null,
+            path: '/workspace',
+            hookSettingsPath: '/tmp/hooks.json',
+            claudeArgs: ['--resume', 'c66b46bc-7647-491a-9cd4-06ba640b9910']
+        })).rejects.toMatchObject({
+            name: 'ClaudeResumeUnavailableError',
+            code: 'resume_unavailable',
+            resumeSessionId: 'c66b46bc-7647-491a-9cd4-06ba640b9910'
+        } satisfies Partial<ClaudeResumeUnavailableError>)
+
+        expect(harness.spawn).not.toHaveBeenCalled()
+        expect(harness.claudeCheckSession).toHaveBeenCalledWith(
+            'c66b46bc-7647-491a-9cd4-06ba640b9910',
+            '/workspace'
+        )
     })
 })

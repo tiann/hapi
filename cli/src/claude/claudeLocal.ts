@@ -10,6 +10,8 @@ import { getHapiBlobsDir } from "@/constants/uploadPaths";
 import { stripNewlinesForWindowsShellArg } from "@/utils/shellEscape";
 import { getDefaultClaudeCodePath } from "./sdk/utils";
 import type { SessionModel } from "@/api/types";
+import { ClaudeResumeUnavailableError } from "./utils/claudeResumeUnavailableError";
+import { extractResumeIdFromClaudeArgs, resolveClaudeLocalResumeGuardId } from "./utils/claudeResumeGuard";
 
 function withoutTrackedModelArgs(args: string[]): string[] {
     const filtered: string[] = [];
@@ -52,11 +54,33 @@ export async function claudeLocal(opts: {
     const hasResumeFlag = opts.claudeArgs?.includes('--resume');
     const hasUserSessionControl = Boolean(hasContinueFlag || hasResumeFlag);
 
+    // Probe under the child's config root so a custom CLAUDE_CONFIG_DIR is not
+    // reported missing against ~/.claude (same ordering as claudeRemote).
+    if (opts.claudeEnvVars?.CLAUDE_CONFIG_DIR) {
+        process.env.CLAUDE_CONFIG_DIR = opts.claudeEnvVars.CLAUDE_CONFIG_DIR;
+    }
+
     // Determine session strategy:
     // - If resuming an existing session: use --resume (unless user already supplied session control)
     // - If starting fresh: let Claude create a new session ID (reported via SessionStart hook)
+    // - If we would pass --resume A but the transcript is gone: fail closed (do not mint B).
+    // - Explicit `claude --resume A` in claudeArgs still fails closed even when we
+    //   skip injecting our stored id (hasUserSessionControl).
     let startFrom = opts.sessionId;
-    if (opts.sessionId && !claudeCheckSession(opts.sessionId, opts.path)) {
+    const explicitResumeId = extractResumeIdFromClaudeArgs(opts.claudeArgs);
+    if (startFrom && !hasUserSessionControl && !claudeCheckSession(startFrom, opts.path)) {
+        throw new ClaudeResumeUnavailableError(startFrom);
+    }
+    if (
+        explicitResumeId
+        && hasResumeFlag
+        && !hasContinueFlag
+        && !claudeCheckSession(explicitResumeId, opts.path)
+    ) {
+        throw new ClaudeResumeUnavailableError(explicitResumeId);
+    }
+    if (startFrom && hasUserSessionControl) {
+        // User supplied --continue/--resume; do not probe or inject our id.
         startFrom = null;
     }
 

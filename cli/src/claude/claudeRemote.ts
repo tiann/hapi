@@ -12,6 +12,10 @@ import { PermissionResult } from "./sdk/types";
 import { getHapiBlobsDir } from "@/constants/uploadPaths";
 import { getDefaultClaudeCodePath } from "./sdk/utils";
 import { filterCatalogAffectingClaudeArgs } from "./sdk/metadataExtractor";
+import { ClaudeResumeUnavailableError } from "./utils/claudeResumeUnavailableError";
+import { resolveClaudeRemoteResumeTarget } from "./utils/claudeResumeGuard";
+
+export { ClaudeResumeUnavailableError } from "./utils/claudeResumeUnavailableError";
 
 export async function claudeRemote(opts: {
 
@@ -43,45 +47,28 @@ export async function claudeRemote(opts: {
 }) {
     const debugPrefix = '[claudeRemote][async-debug]';
 
-    // Check if session is valid
-    let startFrom = opts.sessionId;
-    if (opts.sessionId && !claudeCheckSession(opts.sessionId, opts.path)) {
-        startFrom = null;
-    }
-    
-    // Extract --resume from claudeArgs if present (for first spawn)
-    if (!startFrom && opts.claudeArgs) {
-        for (let i = 0; i < opts.claudeArgs.length; i++) {
-            if (opts.claudeArgs[i] === '--resume') {
-                // Check if next arg exists and looks like a session ID
-                if (i + 1 < opts.claudeArgs.length) {
-                    const nextArg = opts.claudeArgs[i + 1];
-                    // If next arg doesn't start with dash and contains dashes, it's likely a UUID
-                    if (!nextArg.startsWith('-') && nextArg.includes('-')) {
-                        startFrom = nextArg;
-                        logger.debug(`[claudeRemote] Found --resume with session ID: ${startFrom}`);
-                        break;
-                    } else {
-                        // Just --resume without UUID - SDK doesn't support this
-                        logger.debug('[claudeRemote] Found --resume without session ID - not supported in remote mode');
-                        break;
-                    }
-                } else {
-                    // --resume at end of args - SDK doesn't support this
-                    logger.debug('[claudeRemote] Found --resume without session ID - not supported in remote mode');
-                    break;
-                }
-            }
-        }
-    }
-
-    // Set environment variables for Claude Code SDK
+    // Apply env first so claudeCheckSession sees the child's CLAUDE_CONFIG_DIR
+    // (transcripts live under that config root, not always ~/.claude).
     if (opts.claudeEnvVars) {
         Object.entries(opts.claudeEnvVars).forEach(([key, value]) => {
             process.env[key] = value;
         });
     }
     process.env.DISABLE_AUTOUPDATER = '1';
+
+    // Resolve the resume target once (same helper the Session mismatch guard uses).
+    const requestedResumeId = resolveClaudeRemoteResumeTarget(opts.sessionId, opts.claudeArgs)
+
+    let startFrom = requestedResumeId
+    if (requestedResumeId) {
+        if (!claudeCheckSession(requestedResumeId, opts.path)) {
+            // Mirror Cursor #841: missing on-disk store must not silently mint B.
+            throw new ClaudeResumeUnavailableError(requestedResumeId)
+        }
+        if (requestedResumeId !== opts.sessionId) {
+            logger.debug(`[claudeRemote] Found --resume with session ID: ${startFrom}`);
+        }
+    }
 
     // Message-level Fork current passes `--fork-session` via claudeArgs from the runner.
     const forkSession = Boolean(opts.claudeArgs?.includes('--fork-session'));
