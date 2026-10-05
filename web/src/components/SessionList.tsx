@@ -16,6 +16,7 @@ import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
+import { LinkPrDialog } from '@/components/LinkPrDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { CopyIcon, CheckIcon, MarkAllReadIcon } from '@/components/icons'
 
@@ -57,7 +58,15 @@ import { MachineFilterBar, MachineFilterMenu } from '@/components/MachineFilterB
 import { useSessionListMachineFilter } from '@/hooks/useSessionListMachineFilter'
 import { useTransientScrollbar } from '@/hooks/useTransientScrollbar'
 import { useCursorChatStoreStatus } from '@/hooks/queries/useCursorChatStoreStatus'
+import { useFeatures, type FeaturesResponse } from '@/hooks/queries/useFeatures'
+import { useMinuteTick } from '@/hooks/useMinuteTick'
 import { SessionRowSummary } from '@/components/SessionRowSummary'
+import {
+    DEFAULT_PR_CHIP_DISPLAY,
+    getPrimaryGithubPrRef,
+    resolveGithubPrChipDisplay
+} from '@hapi/protocol'
+import { formatGithubPrChipDetailParts, SessionPrChip } from '@/components/SessionPrChip'
 import { Spinner } from '@/components/Spinner'
 import { transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { useToast } from '@/lib/toast-context'
@@ -935,6 +944,8 @@ function SessionItem(props: {
     onSelect: (sessionId: string) => void
     showPath?: boolean
     api: ApiClient | null
+    features: FeaturesResponse | null
+    prNowMs: number
     titleSuggestionAvailable?: boolean
     selected?: boolean
     showDetailedStatus?: boolean
@@ -950,6 +961,8 @@ function SessionItem(props: {
         onSelect,
         showPath = true,
         api,
+        features,
+        prNowMs,
         titleSuggestionAvailable = false,
         selected = false,
         showDetailedStatus = false,
@@ -962,9 +975,12 @@ function SessionItem(props: {
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
     const [renameOpen, setRenameOpen] = useState(false)
+    const [linkPrOpen, setLinkPrOpen] = useState(false)
     const [exportOpen, setExportOpen] = useState(false)
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
+    const githubPrAwarenessEnabled = Boolean(features?.githubPrAwareness.enabled)
+    const prChipDisplay = features?.prChipDisplay
     const {
         status: cursorChatStoreStatus,
         isApplicable: cursorChatStoreApplicable,
@@ -990,7 +1006,7 @@ function SessionItem(props: {
         ? t('session.action.reopenCursorUnverified')
         : undefined
 
-    const { archiveSession, reopenSession, renameSession, suggestSessionTitle, updateSessionSummary, deleteSession, setPinMode, isPending } = useSessionActions(
+    const { archiveSession, reopenSession, renameSession, upsertExternalRef, removePrimaryExternalRef, suggestSessionTitle, updateSessionSummary, deleteSession, setPinMode, isPending } = useSessionActions(
         api,
         s.id,
         s.metadata?.flavor ?? null
@@ -1044,6 +1060,18 @@ function SessionItem(props: {
     })
 
     const sessionName = getSessionTitle(s)
+    const primaryPrRef = getPrimaryGithubPrRef(s.metadata?.externalRefs)
+    const linkedPr = useMemo(() => {
+        if (!githubPrAwarenessEnabled || !primaryPrRef) return null
+        const profile = prChipDisplay ?? DEFAULT_PR_CHIP_DISPLAY
+        const display = resolveGithubPrChipDisplay(primaryPrRef, profile, prNowMs)
+        const parts = formatGithubPrChipDetailParts(primaryPrRef, display, t)
+        return {
+            glyph: parts.glyph,
+            detail: parts.detail,
+            href: primaryPrRef.url
+        }
+    }, [githubPrAwarenessEnabled, primaryPrRef, prChipDisplay, prNowMs, t])
     const attention = useMemo(
         () => showDetailedStatus
             ? classifySessionAttention(s, {
@@ -1061,29 +1089,47 @@ function SessionItem(props: {
     )
     return (
         <>
-            <button
-                type="button"
-                {...longPressHandlers}
-                data-session-scroll-anchor
-                className={`session-list-item group/session-row flex w-full flex-col gap-1 py-2 pl-2.5 pr-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
-                style={{ WebkitTouchCallout: 'none' }}
-                aria-current={selected ? 'page' : undefined}
-                aria-describedby={describedBy}
+            <div
+                className={`group/session-row flex w-full items-start rounded-lg ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
             >
-                <SessionRowSummary
-                    session={s}
-                    showPath={showPath}
-                    showDetailedStatus={showDetailedStatus}
-                    selected={selected}
-                    nestedTooltips
-                    attentionTooltipId={attentionId}
-                    lastSeenVersion={lastSeenVersion}
-                    scheduleTooltipId={scheduleId}
-                    inRunningSection={inRunningSection}
-                    projectLabel={projectLabel}
-                    machineLabel={machineLabel}
-                />
-            </button>
+                <button
+                    type="button"
+                    {...longPressHandlers}
+                    data-session-scroll-anchor
+                    className="session-list-item flex min-w-0 flex-1 flex-col gap-1 py-2 pl-2.5 pr-1 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg"
+                    style={{ WebkitTouchCallout: 'none' }}
+                    aria-current={selected ? 'page' : undefined}
+                    aria-describedby={describedBy}
+                >
+                    <SessionRowSummary
+                        session={s}
+                        showPath={showPath}
+                        showDetailedStatus={showDetailedStatus}
+                        selected={selected}
+                        nestedTooltips
+                        attentionTooltipId={attentionId}
+                        lastSeenVersion={lastSeenVersion}
+                        scheduleTooltipId={scheduleId}
+                        githubPrAwarenessEnabled={githubPrAwarenessEnabled}
+                        showPrChip={!(githubPrAwarenessEnabled && primaryPrRef)}
+                        prChipDisplay={prChipDisplay}
+                        prNowMs={prNowMs}
+                        inRunningSection={inRunningSection}
+                        projectLabel={projectLabel}
+                        machineLabel={machineLabel}
+                    />
+                </button>
+                {githubPrAwarenessEnabled && primaryPrRef ? (
+                    <div className="flex shrink-0 items-center self-start py-2 pr-2">
+                        <SessionPrChip
+                            refs={s.metadata?.externalRefs}
+                            displayProfile={prChipDisplay}
+                            nowMs={prNowMs}
+                            interactive
+                        />
+                    </div>
+                ) : null}
+            </div>
 
             <SessionActionMenu
                 isOpen={menuOpen}
@@ -1095,6 +1141,8 @@ function SessionItem(props: {
                 sessionGlobalPinned={Boolean(s.globalPinned)}
                 onSetPinMode={(mode) => void handleSetPinMode(mode)}
                 onRename={() => setRenameOpen(true)}
+                onLinkPr={githubPrAwarenessEnabled ? () => setLinkPrOpen(true) : undefined}
+                linkedPr={linkedPr}
                 onExport={() => setExportOpen(true)}
                 onMarkUnread={() => markSessionUnread(s.id, s.updatedAt)}
                 onArchive={() => setArchiveOpen(true)}
@@ -1130,6 +1178,15 @@ function SessionItem(props: {
                     isPending={isPending}
                 />
             ) : null}
+
+            <LinkPrDialog
+                isOpen={linkPrOpen}
+                onClose={() => setLinkPrOpen(false)}
+                currentPrimaryLabel={primaryPrRef ? `${primaryPrRef.repo}#${primaryPrRef.number}` : null}
+                onUpsert={upsertExternalRef}
+                onRemovePrimary={primaryPrRef ? removePrimaryExternalRef : undefined}
+                isPending={isPending}
+            />
 
             {exportOpen ? (
                 <SessionExportDialog
@@ -1232,6 +1289,11 @@ export function SessionList(props: {
         machinesById = {},
         onNewSessionInDirectory
     } = props
+    const { features } = useFeatures(api)
+    const githubPrAwarenessEnabled = Boolean(features?.githubPrAwareness.enabled)
+    const prClockTick = useMinuteTick(githubPrAwarenessEnabled)
+    void prClockTick
+    const prNowMs = Date.now()
     const { sessionPreviewLimit } = useSessionPreviewLimit()
     const { sessionListStatusMode } = useSessionListStatusMode()
     const { showActiveSessionsOnly } = useShowActiveSessionsOnly()
@@ -1576,6 +1638,8 @@ export function SessionList(props: {
                                             onSelect={props.onSelect}
                                             showPath={false}
                                             api={api}
+                                            features={features}
+                                            prNowMs={prNowMs}
                                             titleSuggestionAvailable={titleSuggestionAvailable}
                                             selected={s.id === selectedSessionId}
                                             showDetailedStatus={showDetailedStatus}
@@ -1707,6 +1771,8 @@ export function SessionList(props: {
                                     onSelect={props.onSelect}
                                     showPath={false}
                                     api={api}
+                                    features={features}
+                                    prNowMs={prNowMs}
                                     titleSuggestionAvailable={titleSuggestionAvailable}
                                     selected={s.id === selectedSessionId}
                                     showDetailedStatus={showDetailedStatus}
@@ -2082,6 +2148,8 @@ export function SessionList(props: {
                                             onSelect={props.onSelect}
                                             showPath={false}
                                             api={api}
+                                            features={features}
+                                            prNowMs={prNowMs}
                                             titleSuggestionAvailable={titleSuggestionAvailable}
                                             selected={s.id === selectedSessionId}
                                             showDetailedStatus={showDetailedStatus}
