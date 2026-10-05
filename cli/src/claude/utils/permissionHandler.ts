@@ -17,6 +17,7 @@ import { EnhancedMode, PermissionMode } from "../loop";
 import { getToolDescriptor } from "./getToolDescriptor";
 import { delay } from "@/utils/time";
 import { isObject } from "@hapi/protocol";
+import { PERMISSION_REQUEST_NOT_FOUND_MESSAGE } from "@hapi/protocol/rpcMethods";
 import {
     BasePermissionHandler,
     type PendingPermissionRequest,
@@ -319,6 +320,16 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
             // Set up abort signal handling
             const abortHandler = () => {
                 this.pendingRequests.delete(id);
+                // Mirrors cancelPendingRequests' session-level cancel path: without
+                // this, a per-request abort (e.g. Claude sending a
+                // control_cancel_request) leaves the request live in agentState, so
+                // a later answer still passes the hub's requests[id] check and
+                // reaches handleMissingPendingResponse below instead of being
+                // rejected up front (hapi#1735).
+                this.finalizeRequest(id, {
+                    status: 'canceled',
+                    reason: 'Permission request aborted'
+                });
                 reject(new Error('Permission request aborted'));
             };
             signal.addEventListener('abort', abortHandler, { once: true });
@@ -467,7 +478,15 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
     }
 
     protected handleMissingPendingResponse(_response: PermissionResponse): void {
-        logger.debug('Permission request not found or already resolved');
+        // Thrown (not just logged) so the RPC caller sees a real error instead
+        // of a silent no-op: RpcHandlerManager.handleRequest catches this and
+        // returns it as `{ error: message }`, which the hub's RpcGateway now
+        // turns into a 409 for the operator instead of accepting a doomed
+        // answer with no feedback (hapi#1735). The message is the shared
+        // PERMISSION_REQUEST_NOT_FOUND_MESSAGE constant so the hub can match
+        // on it specifically rather than treating any error here as "not found".
+        logger.debug(PERMISSION_REQUEST_NOT_FOUND_MESSAGE);
+        throw new Error(PERMISSION_REQUEST_NOT_FOUND_MESSAGE);
     }
 
     protected onResponseReceived(response: PermissionResponse): void {

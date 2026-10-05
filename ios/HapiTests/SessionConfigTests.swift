@@ -52,7 +52,7 @@ final class SessionConfigTests: XCTestCase {
         }
         XCTAssertEqual(model.currentModel, "custom-model")
         XCTAssertEqual(model.modelLabel, "custom-model")
-        XCTAssertNil(model.unlistedModel, "Claude's catalog includes its synthetic current row")
+        XCTAssertNil(model.unlistedModelOption, "Claude's catalog includes its synthetic current row")
         XCTAssertEqual(model.currentEffort, "turbo")
         XCTAssertTrue(model.canSelectEffort("turbo"))
         XCTAssertEqual(model.effortOptions[1].label, "Turbo")
@@ -69,19 +69,48 @@ final class SessionConfigTests: XCTestCase {
         XCTAssertTrue(initialPosts.isEmpty, "Selecting the effective default must not send a redundant POST")
         harness.store.updateDetailLocal("config") { $0.model = "custom-codex" }
         XCTAssertEqual(harness.model.modelLabel, "custom-codex")
-        XCTAssertEqual(harness.model.unlistedModel, "custom-codex")
+        XCTAssertEqual(harness.model.unlistedModelOption, CatalogOption(value: "custom-codex", label: "custom-codex"))
         harness.model.selectModel("custom-codex")
         let posts = await harness.http.posts
         XCTAssertTrue(posts.isEmpty, "An unlisted model is displayed, not offered as a new edit")
     }
 
+    func testCodexCatalogWithoutDefaultKeepsAnUnselectedReadOnlyMenuTag() async throws {
+        let harness = try await SessionConfigTestHarness(flavor: "codex")
+        await harness.http.setModels([
+            CodexModelSummary(id: "fast", displayName: "Fast", isDefault: false),
+        ])
+        harness.model.loadModels()
+        try await configEventually { !harness.model.config.modelOptionsLoading }
+        XCTAssertNil(harness.model.currentModel)
+        XCTAssertEqual(harness.model.unlistedModelOption, CatalogOption(value: nil, label: "Default"))
+        harness.model.selectModel(nil)
+        let posts = await harness.http.posts
+        XCTAssertTrue(posts.isEmpty, "A synthetic nil tag is display-only, not an unsupported edit")
+    }
+
+    func testPendingCodexChangeAlsoGuardsCollaborationAndCatalogReloads() async throws {
+        let harness = try await SessionConfigTestHarness(flavor: "codex")
+        harness.model.loadModels()
+        try await configEventually { !harness.model.config.modelOptionsLoading }
+        await harness.http.holdPosts()
+        defer { Task { await harness.http.releasePosts() } }
+        harness.model.selectModel("fast")
+        harness.model.selectCollaborationMode(.plan)
+        harness.model.selectPermission(.yolo)
+        harness.model.selectEffort("high")
+        harness.model.loadModels()
+        try await configEventually { await harness.http.posts.count == 1 }
+        XCTAssertEqual(harness.model.collaborationMode, .default)
+        XCTAssertEqual(harness.model.permission, .default)
+        let requests = await harness.http.modelRequests
+        XCTAssertEqual(requests, 1)
+    }
+
     func testSelectionSkipsUnchangedValuesAndGuardsAllEditsWhileApplying() async throws {
         let harness = try await SessionConfigTestHarness(model: "sonnet")
         let model = harness.model
-        model.path = [.permission]
         model.selectPermission(.default)
-        XCTAssertTrue(model.path.isEmpty)
-        model.path = [.model]
         model.selectModel("sonnet")
         model.selectEffort(nil)
         let initialPosts = await harness.http.posts
@@ -89,10 +118,7 @@ final class SessionConfigTests: XCTestCase {
 
         await harness.http.holdPosts()
         defer { Task { await harness.http.releasePosts() } }
-        model.path = [.model]
         model.selectModel("opus")
-        XCTAssertTrue(model.path.isEmpty)
-        XCTAssertEqual(model.detent, .medium)
         XCTAssertEqual(model.modelLabel, "Opus")
         XCTAssertTrue(model.isApplying)
         model.selectModel("sonnet")
@@ -110,23 +136,6 @@ final class SessionConfigTests: XCTestCase {
         let finalPosts = await harness.http.posts
         XCTAssertEqual(finalPosts.count, 2)
         XCTAssertEqual(finalPosts.last?.path, "/api/sessions/config/effort")
-    }
-
-    func testNavigationRestoresRootHeightAndBackDoesNotApply() async throws {
-        let harness = try await SessionConfigTestHarness()
-        let model = harness.model
-        XCTAssertEqual(model.detent, .medium)
-        model.path = [.permission]
-        XCTAssertEqual(model.detent, .large)
-        model.detent = .large // A sheet callback while a detail is displayed.
-        model.path.removeAll()
-        XCTAssertEqual(model.detent, .medium)
-        model.detent = .large
-        model.path = [.model]
-        model.path.removeAll()
-        XCTAssertEqual(model.detent, .large)
-        let posts = await harness.http.posts
-        XCTAssertTrue(posts.isEmpty)
     }
 
     func testModelSwitchUpdatesEffortMenuWithoutSilentlyChangingStaleEffort() async throws {
@@ -159,10 +168,8 @@ final class SessionConfigTests: XCTestCase {
         harness.interactor.onEvent = {
             if case .notice(let message) = $0 { notices.append(message) }
         }
-        harness.model.path = [.permission]
         harness.model.selectPermission(.plan)
         XCTAssertEqual(harness.model.permission, .plan)
-        XCTAssertTrue(harness.model.path.isEmpty)
         try await configEventually { !harness.model.isApplying }
         XCTAssertEqual(harness.model.permission, .default)
         XCTAssertEqual(notices, ["HTTP 409 (Config rejected)"])

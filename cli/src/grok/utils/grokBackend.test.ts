@@ -1,6 +1,20 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const constructorCalls: Array<Record<string, unknown>> = []
+
+vi.mock('@/agent/backends/acp', () => ({
+    AcpSdkBackend: vi.fn().mockImplementation(function (
+        this: unknown,
+        opts: Record<string, unknown>
+    ) {
+        constructorCalls.push(opts)
+        return { __opts: opts }
+    })
+}))
+
 import {
     buildGrokAgentArgs,
+    createGrokBackend,
     formatGrokError,
     isGrokBuildAuxiliaryQuotaError
 } from './grokBackend'
@@ -50,6 +64,25 @@ describe('buildGrokAgentArgs', () => {
             cwd: 'C:\\repo',
             effort: 'low%PATH%'
         })).toThrow('Invalid effort')
+    })
+})
+
+describe('createGrokBackend', () => {
+    beforeEach(() => {
+        constructorCalls.length = 0
+    })
+
+    it('concatenates ACP text chunks as deltas instead of overlap-deduping them', () => {
+        createGrokBackend({ cwd: '/tmp/project', model: 'grok-4.6' })
+        expect(constructorCalls).toHaveLength(1)
+        expect(constructorCalls[0]?.textChunkMode).toBe('delta')
+        expect(constructorCalls[0]?.flavor).toBe('grok')
+        expect(constructorCalls[0]?.args).toEqual([
+            '--cwd', '/tmp/project',
+            'agent',
+            '--model', 'grok-4.6',
+            'stdio'
+        ])
     })
 })
 

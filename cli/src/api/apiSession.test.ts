@@ -11,6 +11,7 @@ const socketHarness = vi.hoisted(() => ({
         trigger: (event: string, ...args: any[]) => void
         triggerConnect: () => void
         triggerConnectError: () => void
+        emitWithAckImpl: (event: string, ...args: unknown[]) => Promise<unknown>
     }>
 }))
 
@@ -28,7 +29,8 @@ vi.mock('socket.io-client', () => ({
             listeners: new Map<string, Array<(...args: any[]) => void>>(),
             trigger: () => {},
             triggerConnect: () => {},
-            triggerConnectError: () => {}
+            triggerConnectError: () => {},
+            emitWithAckImpl: async () => ({})
         }
         state.trigger = (event: string, ...args: any[]) => {
             for (const listener of state.listeners.get(event) ?? []) {
@@ -62,8 +64,10 @@ vi.mock('socket.io-client', () => ({
                 state.emitted.push({ event, args })
                 return socket
             },
-            emitWithAck: async () => ({}),
-            timeout: () => ({ emitWithAck: async () => ({}) }),
+            emitWithAck: async (event: string, ...args: unknown[]) => state.emitWithAckImpl(event, ...args),
+            timeout: () => ({
+                emitWithAck: async (event: string, ...args: unknown[]) => state.emitWithAckImpl(event, ...args)
+            }),
             connect: () => {
                 state.connectCalls += 1
                 if (state.connectImmediately) {
@@ -76,7 +80,10 @@ vi.mock('socket.io-client', () => ({
                 return socket
             }
         }
-        Object.assign(socket, { volatile: socket })
+        Object.assign(socket, {
+            volatile: socket,
+            io: { opts: { reconnection: true } }
+        })
         socketHarness.sockets.push(state)
         return socket
     }
@@ -408,6 +415,189 @@ describe('ApiSessionClient lazy materialization', () => {
         await expect(client.flush({ timeoutMs: 20 })).resolves.toBe(false)
 
         expect(socket.connectCalls).toBeGreaterThan(0)
+        client.close()
+    })
+
+    it('emits hub-archived from update-session metadata (#1910)', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockResolvedValue({ data: { messages: [] } })
+        const session = createSession({
+            namespace: 'default',
+            metadata: { path: '/tmp', host: 'h', flavor: 'claude' },
+            metadataVersion: 1
+        })
+        const client = new ApiSessionClient('token', session)
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+
+        let archived = false
+        client.on('hub-archived', () => { archived = true })
+
+        socket.trigger('update', {
+            body: {
+                t: 'update-session',
+                sid: session.id,
+                metadata: {
+                    version: 2,
+                    value: {
+                        path: '/tmp',
+                        host: 'h',
+                        flavor: 'claude',
+                        lifecycleState: 'archived',
+                        archivedBy: 'hub',
+                        archiveReason: 'Archived from hub (CLI unreachable)'
+                    }
+                },
+                agentState: null
+            }
+        })
+
+        expect(archived).toBe(true)
+        expect(client.getMetadata()?.lifecycleState).toBe('archived')
+        client.close()
+    })
+
+    it('stops metadata CAS when hub returns archived on version-mismatch (#1911 M1)', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockResolvedValue({ data: { messages: [] } })
+        const session = createSession({
+            namespace: 'default',
+            metadata: { path: '/tmp', host: 'h', flavor: 'claude', lifecycleState: 'running' },
+            metadataVersion: 1
+        })
+        const client = new ApiSessionClient('token', session)
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+
+        let ackCalls = 0
+        let archived = false
+        client.on('hub-archived', () => { archived = true })
+        socket.emitWithAckImpl = async (event) => {
+            if (event !== 'update-metadata') return {}
+            ackCalls += 1
+            return {
+                result: 'version-mismatch',
+                version: 2,
+                metadata: {
+                    path: '/tmp',
+                    host: 'h',
+                    flavor: 'claude',
+                    lifecycleState: 'archived',
+                    archivedBy: 'hub',
+                    archiveReason: 'Archived from hub'
+                }
+            }
+        }
+
+        client.updateMetadata((meta) => ({ ...meta, lifecycleState: 'running', hostPid: 42 }))
+
+        await vi.waitFor(() => {
+            expect(client.getMetadata()?.lifecycleState).toBe('archived')
+            expect(archived).toBe(true)
+        })
+        await new Promise((r) => setTimeout(r, 50))
+        expect(ackCalls).toBe(1)
+        client.close()
+    })
+
+    it('exits via hub-archived on success+merge-preserve ack (#1911 criterion 6)', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockResolvedValue({ data: { messages: [] } })
+        const session = createSession({
+            namespace: 'default',
+            metadata: { path: '/tmp', host: 'h', flavor: 'claude', lifecycleState: 'running' },
+            metadataVersion: 1
+        })
+        const client = new ApiSessionClient('token', session)
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+
+        let ackCalls = 0
+        let archived = false
+        client.on('hub-archived', () => { archived = true })
+        socket.emitWithAckImpl = async (event) => {
+            if (event !== 'update-metadata') return {}
+            ackCalls += 1
+            // Hub merge-preserved archive fields and returned success.
+            return {
+                result: 'success',
+                version: 2,
+                metadata: {
+                    path: '/tmp',
+                    host: 'h',
+                    flavor: 'claude',
+                    lifecycleState: 'archived',
+                    archivedBy: 'hub',
+                    archiveReason: 'Archived from hub',
+                    hostPid: 42
+                }
+            }
+        }
+
+        client.updateMetadata((meta) => ({ ...meta, lifecycleState: 'running', hostPid: 42 }))
+
+        await vi.waitFor(() => {
+            expect(archived).toBe(true)
+            expect(client.getMetadata()?.lifecycleState).toBe('archived')
+        })
+        await new Promise((r) => setTimeout(r, 50))
+        expect(ackCalls).toBe(1)
+        client.close()
+    })
+
+    it('reconciles hub-archived metadata on reconnect (#1910)', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockResolvedValue({
+            data: {
+                session: {
+                    metadataVersion: 1,
+                    metadata: { path: '/tmp', host: 'h', flavor: 'claude' }
+                },
+                messages: []
+            }
+        })
+
+        const client = new ApiSessionClient('token', createSession({
+            namespace: 'default',
+            metadata: { path: '/tmp', host: 'h', flavor: 'claude' },
+            metadataVersion: 1
+        }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+
+        let archived = false
+        client.on('hub-archived', () => { archived = true })
+
+        // Establish first connection so hasConnectedOnce is true.
+        socket.triggerConnect()
+        await vi.waitFor(() => expect(axiosHarness.get).toHaveBeenCalled())
+
+        axiosHarness.get.mockImplementation(async (url: string) => {
+            if (String(url).includes('/messages')) {
+                return { data: { messages: [] } }
+            }
+            return {
+                data: {
+                    session: {
+                        metadataVersion: 5,
+                        metadata: {
+                            path: '/tmp',
+                            host: 'h',
+                            flavor: 'claude',
+                            lifecycleState: 'archived',
+                            archivedBy: 'hub',
+                            archiveReason: 'Archived from hub (CLI unreachable)'
+                        }
+                    }
+                }
+            }
+        })
+        socket.connected = false
+        socket.trigger('disconnect', 'transport close')
+        socket.triggerConnect()
+
+        await vi.waitFor(() => expect(archived).toBe(true))
+        expect(client.getMetadata()?.archivedBy).toBe('hub')
         client.close()
     })
 })

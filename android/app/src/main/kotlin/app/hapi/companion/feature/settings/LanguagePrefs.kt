@@ -12,9 +12,10 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 
 /**
- * App language choice. [ENGLISH]/[SIMPLIFIED_CHINESE] mirror the web's
- * `Locale` (`'en' | 'zh-Hans'`); [SYSTEM] is the Android-only default —
- * follow the device language (empty per-app locale list).
+ * App language choice. [ENGLISH]/[SIMPLIFIED_CHINESE]/[RUSSIAN] mirror the
+ * web's `Locale` (`'en' | 'zh-Hans'` plus the fork's `'ru'`); [SYSTEM] is the
+ * Android-only default — follow the device language (empty per-app locale
+ * list).
  *
  * B-M5a wires the selection through `AppCompatDelegate.setApplicationLocales`
  * ([localeTags] is the BCP-47 tag list to apply); the Settings screen applies
@@ -24,7 +25,8 @@ import kotlinx.coroutines.flow.map
 enum class AppLanguage(val storageKey: String, val localeTags: String) {
     SYSTEM("system", ""),
     ENGLISH("en", "en"),
-    SIMPLIFIED_CHINESE("zh-Hans", "zh-Hans");
+    SIMPLIFIED_CHINESE("zh-Hans", "zh-Hans"),
+    RUSSIAN("ru", "ru");
 
     companion object {
         fun fromStorageKey(raw: String?): AppLanguage =

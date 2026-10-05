@@ -1,7 +1,7 @@
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { shareTargetPathnameFromBase } from './src/lib/sharePath'
 
@@ -63,6 +63,24 @@ function getVendorChunkName(id: string): string | undefined {
     return undefined
 }
 
+function copyKaTeXFonts(): Plugin {
+    return {
+        name: 'copy-katex-fonts',
+        apply: 'build',
+        generateBundle() {
+            const fontsDir = resolve(__dirname, 'node_modules/katex/dist/fonts')
+            for (const fileName of readdirSync(fontsDir)) {
+                if (!/\.(?:ttf|woff|woff2)$/i.test(fileName)) continue
+                this.emitFile({
+                    type: 'asset',
+                    fileName: `assets/fonts/${fileName}`,
+                    source: readFileSync(resolve(fontsDir, fileName))
+                })
+            }
+        }
+    }
+}
+
 export default defineConfig({
     appType: 'spa',
     define: {
@@ -85,6 +103,7 @@ export default defineConfig({
     plugins: [
         react(),
         spaFallback(),
+        copyKaTeXFonts(),
         VitePWA({
             // User-controlled reload avoids mid-session surprise reloads (autoUpdate reloads all tabs).
             registerType: 'prompt',

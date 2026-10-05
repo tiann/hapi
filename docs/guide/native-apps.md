@@ -34,7 +34,10 @@ you install; see [Notifications](#notifications).
    - **Open a pairing link:** `hapicompanion://bind` opens the app's pairing
      flow. Confirm the hub before pairing.
    - **Enter manually:** supply the hub URL and access token printed by the
-     hub. Use the hub address, not the web frontend address `app.hapi.run`.
+     hub. On iOS, enter just the domain/IP and optional port; the separate
+     protocol menu defaults to HTTPS. You can also paste a full address, or
+     paste a pairing link into either field to fill both values before tapping
+     **Pair**. Use the hub address, not the web frontend address `app.hapi.run`.
 3. The app checks reachability and protocol compatibility, then authenticates
    and stores credentials for that hub. A namespaced token such as
    `your-token:team` opens that namespace's sessions.
@@ -46,11 +49,12 @@ The network relay, an HTTPS reverse proxy, or Tailscale Serve can provide an
 endpoint; see [Deployment](./deployment.md).
 
 Android rejects HTTP URLs in manual entry, QR codes, deep links and saved hub
-state, including debug builds. iOS accepts HTTP input and prefixes a manually
-entered address without a scheme with `http://`; connection success still
-depends on system network policy. The iOS project declares no ATS exceptions,
-so HTTP input acceptance does not guarantee a working connection. Prefer an
-explicit HTTPS URL on both platforms.
+state, including debug builds. iOS manual entry defaults to HTTPS and accepts
+HTTP only when explicitly selected or supplied in a full URL/pairing link. It
+warns about unencrypted HTTP and never automatically downgrades HTTPS. HTTP
+connection success still depends on system network policy. The iOS project
+declares no ATS exceptions, so HTTP input acceptance does not guarantee a
+working connection. Prefer HTTPS on both platforms.
 
 Camera pairing is optional. Use manual entry on an iOS Simulator or any device
 without a usable scanner.
@@ -78,7 +82,7 @@ directory browsing and session creation.
 | Composer | Text, photos/camera/files, drafts, queued-message actions and steering when supported by the session. |
 | Session controls | Both support pin/archive, stopping a turn and sending to resume an inactive session. Android also exposes Rename, Delete and explicit Reopen actions; iOS currently has no corresponding UI for those three actions. |
 | Files and Git | Open **Session files** from the chat menu to browse/search files, inspect Git status and read diffs. |
-| Scratchlist | Open **Scratchlist** from the chat menu to park text and attachments for later use in a session. |
+| Scratchlist | On iOS, tap the tray beside the composer attachment button to enter **Save draft** mode; Android uses the chat menu. Text and attachments sync within the session. |
 | Dictation | Record audio, transcribe through a configured hub provider, then edit the inserted text before sending. |
 | Usage and storage | Available only to the hub owner (`default` namespace). |
 | Display | English/Simplified Chinese, theme preferences, system text scaling and machine filtering on the session list. |
@@ -87,6 +91,18 @@ Selecting an attachment starts its upload after preparation, before you send
 the message or save the Scratchlist entry. Removing it requests cleanup of
 unused uploads on a best-effort basis. See the [Privacy Policy](../privacy.md)
 for storage and provider data flows.
+
+On iOS, Scratchlist opens as a compact drawer above the same input field.
+**Save draft** keeps the content without sending it; closing the drawer with
+× leaves unsaved input intact. The drawer shows one recent draft, or just its
+header while typing. **Take draft** keeps the saved entry and restores its
+text and attachments. If the input is nonempty, choose **Append to input** or
+**Save input, then take draft**. **Add to send queue** in the draft's menu is an
+explicit send and removes the draft only after acceptance. A failed removal
+can be retried without sending again. Tap the drawer header for the full list
+and pull down to search text or filenames. The same menu offers edit, copy and
+delete; editing an original draft commits text and attachments together on **Save**.
+Cancelling an edit leaves the original unchanged.
 
 Dictation uses the first configured provider that supports standard
 transcription. The microphone stays hidden until provider discovery succeeds;

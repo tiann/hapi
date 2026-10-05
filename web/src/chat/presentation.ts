@@ -45,7 +45,7 @@ export function formatMessageTimestamp(date: Date, now: Date = new Date()): stri
 
 export function formatOutlineTimestamp(
     date: Date,
-    locale: 'en' | 'zh-CN',
+    locale: 'en' | 'zh-CN' | 'ru',
     now: Date = new Date()
 ): string {
     const sameDay = date.getFullYear() === now.getFullYear()
@@ -64,6 +64,11 @@ export function formatOutlineTimestamp(
 
     if (locale === 'zh-CN') {
         const dateLabel = sameYear ? `${month}月${day}日` : `${year}年${month}月${day}日`
+        return `${dateLabel} ${time}`
+    }
+
+    if (locale === 'ru') {
+        const dateLabel = sameYear ? `${day}.${month}` : `${day}.${month}.${year}`
         return `${dateLabel} ${time}`
     }
 

@@ -6,6 +6,36 @@ import XCTest
 
 @MainActor
 final class SessionListFilterTests: XCTestCase {
+    func testSidebarAppearanceFetchesOnceButExplicitRetryStillRefreshes() async {
+        let sessions = HomeFilterTestSessions()
+        sessions.failRefresh = true
+        let model = HomeFilterTestData.model(sessions: sessions)
+        await model.refreshOnFirstAppearance()
+        await model.refreshOnFirstAppearance()
+        XCTAssertEqual(sessions.refreshCount, 1)
+        XCTAssertTrue(model.isOffline)
+        sessions.failRefresh = false
+        await model.refresh()
+        XCTAssertEqual(sessions.refreshCount, 2)
+        XCTAssertFalse(model.isOffline)
+        await model.refreshOnFirstAppearance()
+        XCTAssertEqual(sessions.refreshCount, 2)
+    }
+
+    func testSidebarInitialRefreshOutlivesPresentationCancellation() async {
+        let sessions = HomeFilterTestSessions()
+        let model = HomeFilterTestData.model(sessions: sessions)
+        let presentation = Task {
+            await Task.yield()
+            await model.refreshOnFirstAppearance()
+        }
+        presentation.cancel()
+        await presentation.value
+        XCTAssertEqual(sessions.refreshCount, 1)
+        XCTAssertFalse(sessions.refreshWasCancelled)
+        XCTAssertTrue(model.hasRefreshedOnce)
+    }
+
     func testEmptyAndSingleMachineHaveNoFilterAffordance() {
         let sessions = HomeFilterTestSessions()
         let model = HomeFilterTestData.model(sessions: sessions)
@@ -153,10 +183,12 @@ final class SessionListFilterTests: XCTestCase {
 final class HomeFilterTestSessions: SessionListStoring {
     var sessions: [SessionSummary]
     var refreshCount = 0
+    var refreshWasCancelled = false
     var failRefresh = false
     init(_ sessions: [SessionSummary] = []) { self.sessions = sessions }
     func refresh() async throws {
         refreshCount += 1
+        refreshWasCancelled = Task.isCancelled
         if failRefresh { throw URLError(.notConnectedToInternet) }
     }
     func scheduleRefresh() {}

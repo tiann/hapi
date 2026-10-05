@@ -334,6 +334,91 @@ html:has(.chat-scroll-y) #root {
     touch-action: pan-y;
 }
 
+/* Keep only the two primary session surfaces visually quiet while idle.
+ * Preserve scrollbar width/gutters so hiding the thumb cannot shift content. */
+.scrollbar-auto-hide {
+    transition: scrollbar-color 300ms ease-out;
+}
+
+.scrollbar-auto-hide::-webkit-scrollbar-thumb {
+    transition: background-color 300ms ease-out;
+}
+
+.scrollbar-auto-hide:not([data-scrollbar-visible="true"]):not(:focus-within) {
+    scrollbar-color: transparent transparent;
+}
+
+.scrollbar-auto-hide:not([data-scrollbar-visible="true"]):not(:focus-within)::-webkit-scrollbar-thumb {
+    background-color: transparent;
+}
+
+.scrollbar-auto-hide:not([data-scrollbar-visible="true"]):not(:focus-within)::-webkit-scrollbar-thumb:hover {
+    background-color: var(--app-scrollbar-thumb-hover);
+}
+
+.scrollbar-auto-hide-container {
+    position: relative;
+}
+
+.transient-scrollbar-fallback {
+    display: none;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 10;
+    width: 10px;
+    pointer-events: none;
+}
+
+.transient-scrollbar-fallback-left {
+    left: 0;
+}
+
+.transient-scrollbar-fallback-right {
+    right: 0;
+}
+
+.transient-scrollbar-fallback-thumb {
+    position: absolute;
+    top: 0;
+    left: 3px;
+    width: 4px;
+    min-height: 24px;
+    border-radius: 999px;
+    background-color: var(--app-scrollbar-thumb);
+    opacity: 0;
+    transition: opacity 300ms ease-out;
+}
+
+.transient-scrollbar-fallback[data-visible="true"] .transient-scrollbar-fallback-thumb {
+    opacity: 1;
+}
+
+@media (hover: none) and (pointer: coarse) {
+    /* Mobile browsers may paint native overlay scrollbars outside the CSS
+     * transition pipeline. Keep the native hit area, but use the fallback
+     * thumb for the animated visual. */
+    .scrollbar-auto-hide {
+        scrollbar-color: transparent transparent;
+    }
+
+    .scrollbar-auto-hide::-webkit-scrollbar-thumb {
+        background-color: transparent;
+    }
+
+    .transient-scrollbar-fallback {
+        display: block;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .scrollbar-auto-hide,
+    .scrollbar-auto-hide::-webkit-scrollbar-thumb,
+    .transient-scrollbar-fallback-thumb {
+        transition-duration: 0s;
+    }
+}
+
 /* On touch-first devices, keep the chat scrollbar from shifting centered content. */
 @media (hover: none) and (pointer: coarse) {
     .chat-scroll-y {

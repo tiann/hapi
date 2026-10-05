@@ -20,6 +20,7 @@ import SwiftUI
 struct SessionListView: View {
     @Environment(\.hapiTheme) private var theme
     let model: SessionListModel
+    var selection: Binding<String?>? = nil
     let onOpenSession: (String) -> Void
 
     var body: some View {
@@ -39,7 +40,11 @@ struct SessionListView: View {
         .task {
             // Explicit fetch on entry: the snapshot may be stale and a
             // `resume: ok` handshake deliberately skips the REST resync.
-            await model.refresh()
+            if selection != nil {
+                await model.refreshOnFirstAppearance()
+            } else {
+                await model.refresh()
+            }
         }
         .refreshable {
             await model.refresh()
@@ -68,7 +73,7 @@ struct SessionListView: View {
     private func sessionList(now: Date) -> some View {
         let rows = model.rows
         let pinnedCount = SessionListModel.pinnedCount(of: rows)
-        return List {
+        return List(selection: selection) {
             if pinnedCount > 0 {
                 Section("Pinned") {
                     ForEach(rows.prefix(pinnedCount)) { row in
@@ -114,16 +119,22 @@ struct SessionListView: View {
     }
 
     private func rowCell(_ row: SessionRowUI, now: Date) -> some View {
-        Button {
-            model.onSessionOpened(row.id)
-            onOpenSession(row.id)
-        } label: {
-            SessionRowView(row: row, now: now)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                // Plain buttons otherwise ignore the label's empty space.
-                .contentShape(Rectangle())
+        Group {
+            if selection != nil {
+                NavigationLink(value: row.id) {
+                    rowLabel(row, now: now)
+                }
+                .tag(row.id)
+            } else {
+                Button {
+                    model.onSessionOpened(row.id)
+                    onOpenSession(row.id)
+                } label: {
+                    rowLabel(row, now: now)
+                }
+                .buttonStyle(.plain)
+            }
         }
-        .buttonStyle(.plain)
         .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
         // Default separator color reads heavy against these rows; the theme
         // divider is the WeChat-style faint hairline.
@@ -131,6 +142,12 @@ struct SessionListView: View {
         .contextMenu {
             contextMenuActions(row)
         }
+    }
+
+    private func rowLabel(_ row: SessionRowUI, now: Date) -> some View {
+        SessionRowView(row: row, now: now)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
     }
 
     @ViewBuilder

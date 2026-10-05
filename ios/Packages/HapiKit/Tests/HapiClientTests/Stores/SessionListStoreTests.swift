@@ -336,6 +336,34 @@ struct SessionListStoreTests {
 
     // MARK: - Snapshot
 
+    @Test func removalNotificationsIgnoreFailedArchivesAndListReplacement() async throws {
+        let (performer, store) = try makeStore()
+        var removals: [String] = []
+        store.onSessionRemoved = { removals.append($0) }
+        await performer.enqueue(json: try sessionsResponseJSON(storeSummary("s1"), storeSummary("s2")))
+        try await store.refresh()
+        await performer.enqueue(status: 409, json: #"{"error":"cannot archive"}"#)
+        do {
+            try await store.archiveSession(sessionId: "s1")
+            Issue.record("The archive should fail")
+        } catch {}
+        #expect(removals.isEmpty)
+        #expect(store.sessions.contains { $0.id == "s1" })
+
+        await performer.enqueue(json: #"{"ok":true}"#)
+        try await store.archiveSession(sessionId: "s1")
+        #expect(removals == ["s1"])
+        await performer.enqueue(json: try sessionsResponseJSON())
+        try await store.refresh()
+        #expect(removals == ["s1"], "A refreshed list is not an explicit removal event")
+
+        // Removal still arrives when the ID is absent (new session/notification
+        // raced the list), including the same ID replayed on both SSE pipes.
+        store.applySessionEvent(try sessionRemovedEvent("s2"))
+        store.applySessionEvent(try sessionRemovedEvent("s2"))
+        #expect(removals == ["s1", "s2", "s2"])
+    }
+
     @Test func summariesRoundTripThroughTheSnapshotIntoAColdStore() async throws {
         let directory = makeTempDirectory()
         let (performer, store) = try makeStore(snapshotDirectory: directory)

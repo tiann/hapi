@@ -4,6 +4,7 @@ import {
     ForkConversationRequestSchema,
     ImplementCodexPlanRequestSchema,
     getPermissionModesForFlavor,
+    isLiveLifecycleState,
     isPermissionModeAllowedForFlavor,
     RenameSessionRequestSchema,
     SetSessionPinnedRequestSchema,
@@ -454,7 +455,10 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ ok: true, alreadyArchived: true })
         }
 
-        if (!sessionResult.session.active && lifecycleState !== 'running') {
+        // tiann/hapi#1820: `idle` is a live lifecycle too — a session the hub
+        // reconciled as keepalive-only must stay archivable once its socket
+        // finally drops, exactly like a stale `running` row.
+        if (!sessionResult.session.active && !isLiveLifecycleState(lifecycleState)) {
             return c.json({ error: 'Session is inactive' }, 409)
         }
 
@@ -1502,6 +1506,24 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list Copilot models'
+            }, 500)
+        }
+    })
+
+    app.get('/sessions/:id/kimi-models', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) return sessionResult
+        if (sessionResult.session.metadata?.flavor !== 'kimi') {
+            return c.json({ success: false, error: 'Kimi models are only available for Kimi sessions' }, 400)
+        }
+        try {
+            return c.json(await engine.listKimiModelsForSession(sessionResult.sessionId))
+        } catch (error) {
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to list Kimi models'
             }, 500)
         }
     })

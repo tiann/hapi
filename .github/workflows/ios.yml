@@ -46,5 +46,14 @@ jobs:
               run: xcodebuild build -project ios/Hapi.xcodeproj -scheme Hapi -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
             - name: Transcript layout regression tests
               run: ios/scripts/test-transcript.sh
+            - name: iPad navigation and layout regression tests
+              env:
+                  HAPI_TEST_DEVICE_TYPE: com.apple.CoreSimulator.SimDeviceType.iPad-Air-11-inch-M2
+              run: >-
+                  ios/scripts/test-transcript.sh
+                  -only-testing:HapiTests/SessionNavigationTests
+                  -only-testing:HapiTests/SessionSplitPresentationTests
+                  -only-testing:HapiTests/TranscriptTypographyTests
+                  -only-testing:HapiTests/TranscriptGeometryTests
             - name: Verify localization catalog was not rewritten
               run: git diff --exit-code -- ios/Hapi/Resources/Localizable.xcstrings

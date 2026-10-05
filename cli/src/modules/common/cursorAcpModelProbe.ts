@@ -30,7 +30,8 @@ export async function runCursorAcpModelProbe(cwd?: string): Promise<ListCursorMo
         const response: ListCursorModelsResponse = {
             success: true,
             availableModels: snapshot.availableModels,
-            currentModelId: snapshot.currentModelId
+            currentModelId: snapshot.currentModelId,
+            ...(snapshot.parameterized ? { parameterized: true } : {})
         };
         if (!hasAcpWireCatalog(response)) {
             return { success: false, error: 'Cursor ACP catalog has no wire model ids' };

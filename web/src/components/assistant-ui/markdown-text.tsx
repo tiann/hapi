@@ -14,6 +14,7 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import remarkDisableIndentedCode from '@/lib/remark-disable-indented-code'
 import remarkRepairTables from '@/lib/remark-repair-tables'
+import remarkLatexBracketMath from '@/lib/remark-latex-bracket-math'
 import { useNavigate } from '@tanstack/react-router'
 import { PRESERVE_SESSION_SIDEBAR_SCROLL } from '@/lib/sessionNavigation'
 import remarkStripCjkAutolink from '@/lib/remark-strip-cjk-autolink'
@@ -31,11 +32,12 @@ import { classifyNoSchemeHref } from '@/lib/markdown-href-policy'
 import { remarkSessionPathLinks } from '@/lib/remark-session-path-links'
 import { buildSessionReferencePath, parseSessionPathHref } from '@/lib/sessionReference'
 import { UriConfirmDialog } from '@/components/UriConfirmDialog'
+import { DEFAULT_OPEN_EXTERNAL_LINKS_IN_NEW_TAB, useOpenExternalLinksInNewTab } from '@/hooks/useOpenExternalLinksInNewTab'
 
 import type { MarkdownTextPrimitiveProps } from '@assistant-ui/react-markdown'
 
 // ── Plugin array ────────────────────────────────────────────────────────────
-// Order: remarkGfm → remarkRepairTables → remarkNonHttpsAutolink → remarkStripCjkAutolink → remarkMath → remarkDisableIndentedCode → remarkSessionPathLinks → remarkFilePathLinks
+// Order: remarkGfm → remarkRepairTables → remarkLatexBracketMath → remarkNonHttpsAutolink → remarkStripCjkAutolink → remarkMath → remarkDisableIndentedCode → remarkSessionPathLinks → remarkFilePathLinks
 // remarkRepairTables must run immediately after remarkGfm — it reads file.value
 // (raw source) to pad short separator rows before remark-gfm parses the table.
 // remarkNonHttpsAutolink must run BEFORE remarkStripCjkAutolink so that the
@@ -84,12 +86,14 @@ const REMARK_GFM_PLUGIN = [
 export const MARKDOWN_PLUGINS = [
     REMARK_GFM_PLUGIN,
     remarkRepairTables,
+    remarkLatexBracketMath,
     ...MARKDOWN_PLUGIN_TAIL,
 ] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
 
 export const MARKDOWN_PLUGINS_STANDALONE = [
     REMARK_GFM_PLUGIN,
     remarkRepairTables,
+    remarkLatexBracketMath,
     ...MARKDOWN_PLUGIN_TAIL_STANDALONE,
 ] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
 
@@ -98,6 +102,7 @@ export const MARKDOWN_PLUGINS_STANDALONE = [
 export const MARKDOWN_PLUGINS_WITH_BREAKS = [
     REMARK_GFM_PLUGIN,
     remarkRepairTables,
+    remarkLatexBracketMath,
     remarkBreaks,
     ...MARKDOWN_PLUGIN_TAIL,
 ] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
@@ -105,6 +110,7 @@ export const MARKDOWN_PLUGINS_WITH_BREAKS = [
 export const MARKDOWN_PLUGINS_STANDALONE_WITH_BREAKS = [
     REMARK_GFM_PLUGIN,
     remarkRepairTables,
+    remarkLatexBracketMath,
     remarkBreaks,
     ...MARKDOWN_PLUGIN_TAIL_STANDALONE,
 ] satisfies NonNullable<MarkdownTextPrimitiveProps['remarkPlugins']>
@@ -210,6 +216,23 @@ function hasScheme(href: string): boolean {
     if (colonIdx <= 0) return false
     const boundaryIdx = href.search(/[/?#]/)
     return boundaryIdx < 0 || colonIdx < boundaryIdx
+}
+
+/**
+ * True when href is a genuine external http(s) link — as opposed to a
+ * relative/SPA href (no scheme, e.g. `/settings`) or another scheme
+ * (`mailto:`, `vscode:`, a Windows drive path like `C:\Users\...`, etc).
+ *
+ * Used by <A> to decide whether the "open external links in a new tab"
+ * setting (Settings > Display > Links) applies — forcing target="_blank" on
+ * a relative href would open the whole app in a second tab instead of
+ * navigating in-app, so this must stay scoped to real http(s) URLs.
+ */
+export function isExternalHttpHref(href: string | null | undefined): boolean {
+    if (!href || !hasScheme(href)) return false
+    const colonIdx = href.indexOf(':')
+    const scheme = href.slice(0, colonIdx).toLowerCase()
+    return scheme === 'http' || scheme === 'https'
 }
 
 // ── URL sanitize transform (deny-only) ──────────────────────────────────────
@@ -344,6 +367,8 @@ type UriConfirmContextValue = {
     openUri: (url: string, scheme: string) => void
     /** Shared isAllowed so all <a> tags in this tree re-render on the same state update. */
     isAllowed: (scheme: string) => boolean
+    /** User preference (Settings > Display > Links): force target="_blank" on external http(s) links. */
+    openExternalLinksInNewTab: boolean
 }
 
 const UriConfirmContext = createContext<UriConfirmContextValue | null>(null)
@@ -361,6 +386,7 @@ const UriConfirmContext = createContext<UriConfirmContextValue | null>(null)
 export function UriConfirmProvider({ children }: { children: ReactNode }) {
     const [dialog, setDialog] = useState<DialogState>(null)
     const { allow, isAllowed } = useAllowedSchemes()
+    const { openExternalLinksInNewTab } = useOpenExternalLinksInNewTab()
 
     const openUri = useCallback((url: string, scheme: string) => {
         setDialog({ url, scheme })
@@ -382,7 +408,10 @@ export function UriConfirmProvider({ children }: { children: ReactNode }) {
         }
     }
 
-    const contextValue = useMemo(() => ({ openUri, isAllowed }), [openUri, isAllowed])
+    const contextValue = useMemo(
+        () => ({ openUri, isAllowed, openExternalLinksInNewTab }),
+        [openUri, isAllowed, openExternalLinksInNewTab]
+    )
 
     return (
         <UriConfirmContext.Provider value={contextValue}>
@@ -688,6 +717,13 @@ function A(props: ComponentPropsWithoutRef<'a'>) {
     const scheme = colonIdx > 0 && !isRelative ? href!.slice(0, colonIdx).toLowerCase() : ''
     const isCustomAllowed = classification === 'custom' && isAllowed(scheme)
 
+    // Settings > Display > Links toggle: force genuine external http(s) links
+    // to open in a new browser tab instead of navigating same-tab.
+    const openExternalLinksInNewTab = ctx?.openExternalLinksInNewTab ?? DEFAULT_OPEN_EXTERNAL_LINKS_IN_NEW_TAB
+    const forceNewTab = openExternalLinksInNewTab && isExternalHttpHref(href)
+    const target = forceNewTab ? '_blank' : props.target
+    const effectiveRel = forceNewTab ? (rel ?? 'noopener noreferrer') : rel
+
     const domHref =
         classification === 'iana' || isCustomAllowed
             ? href
@@ -727,7 +763,8 @@ function A(props: ComponentPropsWithoutRef<'a'>) {
         <a
             {...rest}
             href={domHref}
-            rel={rel}
+            target={target}
+            rel={effectiveRel}
             onClick={handleClick}
             className={cn('aui-md-a font-medium text-[var(--app-link)] underline decoration-[color:var(--app-link-muted)] underline-offset-3', props.className)}
         />

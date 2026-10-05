@@ -19,7 +19,7 @@ export function startRunnerControlServer({
   onHappySessionWebhook
 }: {
   getChildren: () => TrackedSession[];
-  stopSession: (sessionId: string) => Promise<'stopped' | 'already_gone' | 'still_alive'>;
+  stopSession: (sessionId: string) => Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'>;
   spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
   requestShutdown: () => void;
   onHappySessionWebhook: (sessionId: string, metadata: Metadata) => void;
@@ -91,7 +91,7 @@ export function startRunnerControlServer({
         }),
         response: {
           200: z.object({
-            status: z.enum(['stopped', 'already_gone', 'still_alive'])
+            status: z.enum(['stopped', 'already_gone', 'still_alive', 'unknown'])
           })
         }
       }

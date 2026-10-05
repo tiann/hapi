@@ -6,7 +6,8 @@ import UIKit
 import XCTest
 @testable import Hapi
 
-/// Real native sheets and lists over the non-networked config harness.
+/// The production toolbar presenter over the non-networked config harness.
+/// Run on both iPhone and iPad; synthetic widths alone cannot test adaptation.
 @MainActor
 final class SessionConfigPresentationTests: XCTestCase {
     @Observable
@@ -28,10 +29,19 @@ final class SessionConfigPresentationTests: XCTestCase {
             NavigationStack {
                 Text("Session settings specimen")
                     .navigationTitle("HAPI")
-                    .sheet(isPresented: $presentation.isPresented) {
-                        SessionConfigView(model: presentation.model, notice: presentation.notice)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            SessionConfigButton(isPresented: $presentation.isPresented) {
+                                SessionConfigView(model: presentation.model, notice: presentation.notice)
+                                    .environment(\.dynamicTypeSize, size)
+                                    .environment(\.locale, locale)
+                            }
                             .environment(\.dynamicTypeSize, size)
-                            .environment(\.locale, locale)
+                        }
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Image(systemName: "ellipsis.circle")
+                        }
                     }
             }
             .environment(\.dynamicTypeSize, size)
@@ -40,42 +50,41 @@ final class SessionConfigPresentationTests: XCTestCase {
         }
     }
 
-    func testRootIsThreeSummaryRowsAndNativeNavigationRestoresSheetHeight() async throws {
+    func testMenusKeepTheSamePageAndSheetHeightWhenSelecting() async throws {
         let harness = try await SessionConfigTestHarness(model: "sonnet")
         let presentation = Presentation(model: harness.model)
         let (window, host) = try await show(Host(presentation: presentation))
         defer { window.isHidden = true }
         let sheet = try XCTUnwrap(host.presentedViewController)
-        XCTAssertTrue(sheet.presentationController is UISheetPresentationController)
         let rootList = try XCTUnwrap(findList(sheet.view))
         XCTAssertEqual(itemCount(rootList), 3)
-        XCTAssertEqual(rootList.indexPathsForVisibleItems.count, 3, "All summaries fit without scrolling")
         XCTAssertTrue(rootList.visibleCells.allSatisfy { $0.bounds.height >= 44 })
         let rootHeight = sheet.view.bounds.height
         try capture(window, name: "root")
 
-        harness.model.path = [.model]
-        try await settle()
-        XCTAssertTrue(host.presentedViewController === sheet, "Push within the same sheet, not another modal")
-        XCTAssertEqual(harness.model.detent, .large)
-        XCTAssertGreaterThan(sheet.view.bounds.height, rootHeight)
-        XCTAssertEqual(itemCount(try XCTUnwrap(findList(sheet.view))), 7)
-        try capture(window, name: "models")
         harness.model.selectModel("sonnet")
+        harness.model.selectPermission(.default)
+        let initialPosts = await harness.http.posts
+        XCTAssertTrue(initialPosts.isEmpty, "Reselecting the current value is read-only")
+        harness.model.selectModel("opus")
+        try await configEventually { !harness.model.isApplying }
+        harness.model.selectEffort("high")
+        try await configEventually { !harness.model.isApplying }
+        harness.model.selectPermission(.bypassPermissions)
+        try await configEventually { !harness.model.isApplying }
         try await settle()
-        XCTAssertEqual(itemCount(try XCTUnwrap(findList(sheet.view))), 3)
+        XCTAssertTrue(host.presentedViewController === sheet)
+        XCTAssertNil(sheet.presentedViewController, "Selections must not open another modal")
+        XCTAssertTrue(findList(sheet.view) === rootList, "No detail page replaces the settings list")
+        XCTAssertEqual(itemCount(rootList), 3)
         XCTAssertEqual(sheet.view.bounds.height, rootHeight, accuracy: 2)
-
-        harness.model.path = [.permission]
-        try await settle()
-        XCTAssertEqual(itemCount(try XCTUnwrap(findList(sheet.view))), 5)
-        try capture(window, name: "permissions")
-        harness.model.path.removeAll()
-        try await settle()
-        let posts = await harness.http.posts
-        XCTAssertTrue(posts.isEmpty, "Navigation and reselecting the current value are read-only")
+        XCTAssertEqual(harness.model.modelLabel, "Opus")
+        XCTAssertEqual(harness.model.permission, .bypassPermissions)
+        try capture(window, name: "selected")
         presentation.isPresented = false
         try await configEventually { host.presentedViewController == nil }
+        let posts = await harness.http.posts
+        XCTAssertEqual(posts.count, 3, "Dismissal does not apply or revert settings")
     }
 
     func testCodexRootShowsCollaborationAlongsidePermissionsModelAndEffort() async throws {
@@ -125,25 +134,24 @@ final class SessionConfigPresentationTests: XCTestCase {
         XCTAssertEqual(itemCount(try XCTUnwrap(findList(sheet.view))), 3)
     }
 
-    func testFailedCatalogCanRetryWithoutLeavingTheModelPage() async throws {
+    func testFailedCatalogCanRetryInlineWithoutLeavingSettings() async throws {
         let harness = try await SessionConfigTestHarness(flavor: "codex")
         await harness.http.setModelsFailure(true)
         let presentation = Presentation(model: harness.model)
         let (window, host) = try await show(Host(presentation: presentation))
         defer { window.isHidden = true }
         try await configEventually { harness.model.modelLoadFailed }
-        harness.model.path = [.model]
         try await settle()
         let sheet = try XCTUnwrap(host.presentedViewController)
-        XCTAssertEqual(itemCount(try XCTUnwrap(findList(sheet.view))), 2, "Failure label plus Retry")
+        XCTAssertEqual(itemCount(try XCTUnwrap(findList(sheet.view))), 3, "Model status stays in its row beside the other settings")
         try capture(window, name: "catalog-failure")
         await harness.http.setModelsFailure(false)
         harness.model.loadModels()
         try await configEventually { !harness.model.config.modelOptionsLoading }
         try await settle()
-        XCTAssertEqual(harness.model.path, [.model])
+        XCTAssertTrue(host.presentedViewController === sheet)
         XCTAssertEqual(harness.model.currentModel, "deep")
-        XCTAssertEqual(itemCount(try XCTUnwrap(findList(sheet.view))), 2)
+        XCTAssertEqual(itemCount(try XCTUnwrap(findList(sheet.view))), 4)
     }
 
     func testLayoutSpecimensSupportNarrowWideDarkChineseAndLargeType() async throws {
@@ -153,6 +161,8 @@ final class SessionConfigPresentationTests: XCTestCase {
             ("chinese", CGSize(width: 390, height: 844), .large, false, "zh-Hans"),
             ("large-type", CGSize(width: 390, height: 844), .accessibility3, false, "zh-Hans"),
             ("wide", CGSize(width: 820, height: 1180), .large, false, "en"),
+            ("landscape", CGSize(width: 1180, height: 820), .large, false, "en"),
+            ("wide-large-type", CGSize(width: 820, height: 1180), .accessibility3, false, "zh-Hans"),
         ]
         for (name, dimensions, typeSize, dark, locale) in cases {
             let shortModel = name == "compact" || name == "chinese"
@@ -170,53 +180,98 @@ final class SessionConfigPresentationTests: XCTestCase {
             XCTAssertEqual(itemCount(list), 3)
             XCTAssertTrue(list.visibleCells.allSatisfy { $0.bounds.height >= 44 })
             if !typeSize.isAccessibilitySize {
-                XCTAssertEqual(list.indexPathsForVisibleItems.count, 3, "Even the compact sheet shows all summaries")
                 XCTAssertLessThan(
-                    try XCTUnwrap(list.cellForItem(at: IndexPath(item: 0, section: 0))).bounds.height, 120,
+                    try XCTUnwrap(list.cellForItem(at: IndexPath(item: 0, section: 1))).bounds.height, 120,
                     "The warning subtitle must not stretch into a separate Form row"
                 )
             }
-            if typeSize.isAccessibilitySize {
-                let controller = try XCTUnwrap(sheet.sheetPresentationController)
+            if typeSize.isAccessibilitySize && host.traitCollection.horizontalSizeClass == .compact {
+                let controller = try XCTUnwrap(adaptiveSheet(of: sheet))
                 XCTAssertEqual(controller.detents.count, 1, "Accessibility text uses a large sheet")
             }
             try capture(window, name: name)
-            if name == "chinese" {
-                harness.model.path = [.permission]
-                try await settle()
-                try capture(window, name: "chinese-permissions")
-            }
             presentation.isPresented = false
             try await configEventually { host.presentedViewController == nil }
             window.isHidden = true
         }
     }
 
-    func testSheetAdaptsToDeviceSize() async throws {
-        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+    func testNativeDevicePresentationIsAnchoredOnIPadAndAdaptsOnIPhone() async throws {
         let harness = try await SessionConfigTestHarness(model: "sonnet")
         let presentation = Presentation(model: harness.model)
-        let (window, host) = try await show(
-            Host(presentation: presentation), dimensions: scene.coordinateSpace.bounds.size
-        )
+        // No fake dimensions or trait overrides: this test needs a real iPad run.
+        let (window, host) = try await show(Host(presentation: presentation), dimensions: nil)
         defer { window.isHidden = true }
-        let sheet = try XCTUnwrap(host.presentedViewController)
-        XCTAssertEqual(itemCount(try XCTUnwrap(findList(sheet.view))), 3)
+        // Optional pause for AXe-driven menu/Done interaction over this fake session.
+        if let value = ProcessInfo.processInfo.environment["HAPI_SESSION_CONFIG_INTERACTIVE_SECONDS"],
+           let seconds = Double(value), seconds > 0 {
+            try await Task.sleep(for: .seconds(min(seconds, 180)))
+        }
+        let panel = try XCTUnwrap(host.presentedViewController)
+        XCTAssertEqual(itemCount(try XCTUnwrap(findList(panel.view))), 3)
+        if host.traitCollection.horizontalSizeClass == .regular {
+            let popover = try XCTUnwrap(panel.presentationController as? UIPopoverPresentationController)
+            if popover.sourceItem != nil {
+                XCTAssertNotNil(popover.sourceItem as? UIBarButtonItem, "Toolbar anchors use a native bar item")
+            } else {
+                let source = try XCTUnwrap(popover.sourceView)
+                let rect = popover.sourceRect.isEmpty || popover.sourceRect.isNull ? source.bounds : popover.sourceRect
+                let anchor = source.convert(rect, to: window)
+                XCTAssertLessThan(anchor.width, 100, "Anchor must be the gear, not the page")
+                XCTAssertGreaterThan(anchor.midX, window.bounds.midX)
+                XCTAssertLessThan(anchor.maxY, window.bounds.height / 3)
+            }
+            let panelFrame = panel.view.convert(panel.view.bounds, to: window)
+            XCTAssertGreaterThan(panelFrame.midX, window.bounds.midX, "Popover belongs beside the toolbar, not in the center")
+            XCTAssertLessThan(panelFrame.minY, window.bounds.height / 3)
+            XCTAssertLessThanOrEqual(panel.view.bounds.width, 420)
+        } else {
+            let sheet = try XCTUnwrap(adaptiveSheet(of: panel))
+            XCTAssertEqual(sheet.detents.count, 2)
+        }
         try capture(window, name: "device-root")
-        harness.model.path = [.model]
+        harness.model.selectModel("opus")
+        try await configEventually { !harness.model.isApplying }
         try await settle()
-        XCTAssertTrue(host.presentedViewController === sheet)
-        XCTAssertEqual(itemCount(try XCTUnwrap(findList(sheet.view))), 7)
-        try capture(window, name: "device-models")
+        XCTAssertTrue(host.presentedViewController === panel)
+        XCTAssertEqual(itemCount(try XCTUnwrap(findList(panel.view))), 3)
+    }
+
+    func testSizeClassAdaptationPreservesOpenConfigurationAndDoesNotResubmit() async throws {
+        let harness = try await SessionConfigTestHarness(flavor: "codex")
+        let presentation = Presentation(model: harness.model)
+        let (window, host) = try await show(Host(presentation: presentation), dimensions: CGSize(width: 820, height: 1180))
+        defer { window.isHidden = true }
+        try await configEventually { harness.model.showsEffort }
+        harness.model.selectModel("fast")
+        try await configEventually { !harness.model.isApplying }
+        presentation.notice = "Config rejected"
+        for sizeClass in [UIUserInterfaceSizeClass.compact, .regular] {
+            host.traitOverrides.horizontalSizeClass = sizeClass
+            try await Task.sleep(for: .seconds(2))
+            XCTAssertTrue(presentation.isPresented)
+            let panel = try XCTUnwrap(host.presentedViewController)
+            XCTAssertEqual(itemCount(try XCTUnwrap(findList(panel.view))), 4)
+            XCTAssertEqual(harness.model.currentModel, "fast")
+            XCTAssertEqual(presentation.notice, "Config rejected")
+        }
+        let posts = await harness.http.posts
+        XCTAssertEqual(posts.count, 1)
+        let requests = await harness.http.modelRequests
+        XCTAssertEqual(requests, 1, "Adaptation must not reload the catalog")
+        try capture(window, name: "adapted")
     }
 
     private func show(
-        _ content: Host, dimensions: CGSize = CGSize(width: 390, height: 844)
+        _ content: Host, dimensions: CGSize? = CGSize(width: 390, height: 844)
     ) async throws -> (UIWindow, UIHostingController<Host>) {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let window = UIWindow(windowScene: scene)
-        window.frame = CGRect(origin: .zero, size: dimensions)
+        window.frame = CGRect(origin: .zero, size: dimensions ?? scene.coordinateSpace.bounds.size)
         let host = UIHostingController(rootView: content)
+        if let dimensions {
+            host.traitOverrides.horizontalSizeClass = dimensions.width < 600 ? .compact : .regular
+        }
         window.rootViewController = host
         window.makeKeyAndVisible()
         try await Task.sleep(for: .milliseconds(100))
@@ -224,6 +279,13 @@ final class SessionConfigPresentationTests: XCTestCase {
         try await configEventually { host.presentedViewController != nil }
         try await settle()
         return (window, host)
+    }
+
+    private func adaptiveSheet(of controller: UIViewController) -> UISheetPresentationController? {
+        // An adapted popover keeps its UIPopoverPresentationController; the
+        // actual sheet configuration is exposed through the adaptive accessor.
+        controller.popoverPresentationController?.adaptiveSheetPresentationController
+            ?? controller.sheetPresentationController
     }
 
     private func settle() async throws {

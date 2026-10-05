@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { ApiSessionClient } from '@/api/apiSession';
+import { normalizeSessionDisplayTitle } from '@/agent/sessionDisplayRename';
 import { registerGeneratedImageFromPath } from '@/modules/common/generatedImages';
 import { AppServerEventConverter } from '../utils/appServerEventConverter';
 import { record, string } from './gateway';
@@ -16,7 +17,7 @@ export function inputText(input: unknown): string {
 
 function requestedTitle(item: Record<string, unknown>): string | undefined {
     if (item.type !== 'mcpToolCall' || item.server !== 'hapi' || item.tool !== 'change_title') return;
-    return string(record(item.arguments).title)?.trim() || undefined;
+    return normalizeSessionDisplayTitle(string(record(item.arguments).title)) ?? undefined;
 }
 
 function successfulTitle(item: Record<string, unknown>, pending?: string): string | undefined {
@@ -25,6 +26,10 @@ function successfulTitle(item: Record<string, unknown>, pending?: string): strin
     const result = record(item.result);
     if ('Err' in result || result.isError === true || record(result.Ok).isError === true) return;
     return requestedTitle(item) ?? pending;
+}
+
+function metadataHasDisplayTitle(metadata: { name?: string; summary?: { text: string } } | null | undefined): boolean {
+    return Boolean(metadata?.name?.trim() || metadata?.summary?.text?.trim());
 }
 
 /** Canonical V2 stream only. Stable message IDs also deduplicate snapshot replay at the hub. */
@@ -54,6 +59,15 @@ export class SharedCodexProjection {
         } : { ...body, id }, id);
     }
 
+    private applyDisplayRename(title: string, revision: number): void {
+        this.session.updateMetadata(metadata => {
+            if (revision !== this.titleRevision) return metadata;
+            const normalized = normalizeSessionDisplayTitle(title);
+            if (!normalized || metadata.name?.trim() === normalized) return metadata;
+            return { ...metadata, name: normalized };
+        });
+    }
+
     async notification(method: string, params: unknown, modelAtReceipt?: string): Promise<void> {
         const p = record(params);
         const item = record(p.item);
@@ -68,9 +82,7 @@ export class SharedCodexProjection {
                     if (completedTitle) {
                         this.completedTitles.add(key);
                         const revision = ++this.titleRevision;
-                        this.session.updateMetadata(metadata => revision !== this.titleRevision ? metadata : {
-                            ...metadata, summary: { text: completedTitle, updatedAt: Date.now() }
-                        });
+                        this.applyDisplayRename(completedTitle, revision);
                     }
                 }
             }
@@ -197,11 +209,17 @@ export class SharedCodexProjection {
         }
         // Repair sessions created while remote title projection was missing.
         // Recheck inside the metadata lock: live updates may still be queued,
-        // and a replay must never replace an existing or newer title.
-        if (latestTitle && titleRevision === this.titleRevision && !this.session.getMetadata()?.summary?.text?.trim()) {
+        // and a replay must never replace an existing or newer display title.
+        if (latestTitle && titleRevision === this.titleRevision && !metadataHasDisplayTitle(this.session.getMetadata())) {
             const title = latestTitle;
-            this.session.updateMetadata(metadata => titleRevision !== this.titleRevision || metadata.summary?.text?.trim()
-                ? metadata : { ...metadata, summary: { text: title, updatedAt: Date.now() } });
+            this.session.updateMetadata(metadata => {
+                if (titleRevision !== this.titleRevision || metadataHasDisplayTitle(metadata)) {
+                    return metadata;
+                }
+                const normalized = normalizeSessionDisplayTitle(title);
+                if (!normalized) return metadata;
+                return { ...metadata, name: normalized };
+            });
         }
     }
 }

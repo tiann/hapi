@@ -1,4 +1,4 @@
-import { isCursorAcpCatalogModelId } from '@hapi/protocol'
+import { CURSOR_AUTO_MODEL_ID, isCursorAcpCatalogModelId, isCursorAutoModelId } from '@hapi/protocol'
 import type { CursorModelSummary } from '@/types/api'
 import {
     appendCliSkusToCatalog,
@@ -118,11 +118,11 @@ export function buildCursorCatalogFromSources(args: {
 
 export function normalizeCursorPickerWireId(
     wireId: string | null | undefined,
-    defaultToken: 'auto' | null = null
+    defaultToken: 'auto' | null = CURSOR_AUTO_MODEL_ID
 ): string | null {
     const trimmed = wireId?.trim()
-    if (!trimmed || trimmed === 'auto' || trimmed === 'default' || trimmed === 'default[]') {
-        return defaultToken
+    if (!trimmed || isCursorAutoModelId(trimmed)) {
+        return defaultToken ?? CURSOR_AUTO_MODEL_ID
     }
     return trimmed
 }
@@ -132,7 +132,7 @@ export function buildCursorPickerState(args: {
     currentWireId?: string | null
     defaultValue?: null | 'auto'
 }): CursorPickerState {
-    const defaultToken = args.defaultValue === 'auto' ? 'auto' : null
+    const defaultToken = CURSOR_AUTO_MODEL_ID
     const wireId = normalizeCursorPickerWireId(args.currentWireId, defaultToken)
     const baseKey = wireId && wireId !== 'auto'
         ? resolveCursorBaseKey(wireId, args.catalog)
@@ -149,7 +149,7 @@ export function buildCursorPickerState(args: {
             label: option.label
         }))
         : buildFlatCursorModelPickerOptions(args.catalog, {
-            defaultValue: args.defaultValue === 'auto' ? 'auto' : undefined
+            defaultValue: CURSOR_AUTO_MODEL_ID
         }).map((option) => ({
             value: option.value ?? 'auto',
             label: option.label

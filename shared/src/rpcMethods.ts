@@ -43,6 +43,8 @@ export const RPC_METHODS = {
     ListGrokReasoningEffortOptions: 'listGrokReasoningEffortOptions',
     ListCopilotModelsForCwd: 'listCopilotModelsForCwd',
     ListCopilotModels: 'listCopilotModels',
+    ListKimiModelsForCwd: 'listKimiModelsForCwd',
+    ListKimiModels: 'listKimiModels',
     ListOpencodeReasoningEffortOptions: 'listOpencodeReasoningEffortOptions',
     ListAgyModels: 'listAgyModels',
     /** Deliver one queued message into the active Pi turn (native steer). */
@@ -54,5 +56,15 @@ export const RPC_METHODS = {
 } as const
 
 export const RPC_TARGET_MISSING_ERROR_CODE = 'rpc_target_missing' as const
+
+/**
+ * Thrown by a permission handler's handleMissingPendingResponse when a
+ * Permission RPC response arrives for a request the CLI no longer has
+ * pending (already answered, or canceled on the agent side). Shared so the
+ * hub can match on the specific message rather than treating any error on
+ * this RPC method as "not found" — see RpcGateway.approvePermission/
+ * denyPermission.
+ */
+export const PERMISSION_REQUEST_NOT_FOUND_MESSAGE = 'Permission request not found or already resolved' as const
 
 export type RpcMethod = typeof RPC_METHODS[keyof typeof RPC_METHODS]

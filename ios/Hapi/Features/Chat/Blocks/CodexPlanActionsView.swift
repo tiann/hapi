@@ -17,7 +17,7 @@ struct CodexPlanActionsView: View {
                 if let error = state.error {
                     Text(verbatim: LocalizedNoticeMapper.map(error))
                         .font(typography.captionFont)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(theme.danger)
                         .accessibilityIdentifier("plan-error-\(planId)")
                 }
                 if state.available || state.pending {
@@ -53,36 +53,14 @@ struct CodexPlanActionsView: View {
             }
             .fixedSize(horizontal: horizontal, vertical: true)
         }
-        .buttonStyle(PlanActionButtonStyle(isPrimary: true))
+        .buttonStyle(ChatActionButtonStyle(emphasis: .primary))
         .accessibilityIdentifier("plan-implement-\(planId)")
 
         Button { interactions.continueCodexPlan(planId: planId) } label: {
             Text("Continue planning")
                 .fixedSize(horizontal: horizontal, vertical: true)
         }
-        .buttonStyle(PlanActionButtonStyle(isPrimary: false))
+        .buttonStyle(ChatActionButtonStyle(emphasis: .secondary))
         .accessibilityIdentifier("plan-continue-\(planId)")
-    }
-}
-
-/// Keep inline actions independent of the OS's bordered-button padding and
-/// capsule shape. The entire visible control remains a minimum 44 pt target.
-private struct PlanActionButtonStyle: ButtonStyle {
-    let isPrimary: Bool
-    @Environment(\.hapiTheme) private var theme
-    @Environment(\.isEnabled) private var isEnabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
-        configuration.label
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .foregroundStyle(isPrimary ? theme.background : theme.textPrimary)
-            .background(isPrimary ? theme.link : Color.clear, in: shape)
-            .overlay(shape.strokeBorder(isPrimary ? Color.clear : theme.divider, lineWidth: 1))
-            .contentShape(shape)
-            .opacity(isEnabled ? (configuration.isPressed ? 0.8 : 1) : 0.5)
     }
 }

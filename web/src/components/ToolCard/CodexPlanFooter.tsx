@@ -13,7 +13,7 @@ export function CodexPlanFooter(props: { planId: string }) {
     const [error, setError] = useState<string | null>(null)
     const available = ctx?.metadata?.flavor === 'codex' && ctx.codexPlanProposalId === props.planId
 
-    if (!ctx || (!available && !pending && !error)) return null
+    if (!ctx || ctx.continuedPlanIds?.has(props.planId) || (!available && !pending && !error)) return null
 
     const implement = async () => {
         if (!available || ctx.disabled || inFlight.current) return
@@ -41,7 +41,7 @@ export function CodexPlanFooter(props: { planId: string }) {
                         {t('tool.plan.implement')}
                     </Button>
                     {ctx.onContinuePlan ? (
-                        <Button size="sm" variant="outline" disabled={!available || ctx.disabled || pending} onClick={ctx.onContinuePlan}>
+                        <Button size="sm" variant="outline" disabled={!available || ctx.disabled || pending} onClick={() => ctx.onContinuePlan?.(props.planId)}>
                             {t('tool.plan.continue')}
                         </Button>
                     ) : null}

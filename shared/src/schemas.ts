@@ -101,6 +101,14 @@ export const MetadataSchema = z.object({
         state: z.enum(['resuming', 'quarantined']),
         machineId: z.string(),
         startedAt: z.number(),
+        // Same durability as piResumeAttempt: clear-before-spawn +
+        // rollbackSafe:false quarantine must not lose archive fields (#1911).
+        archiveSnapshot: z.object({
+            lifecycleState: z.string().optional(),
+            lifecycleStateSince: z.number().optional(),
+            archivedBy: z.string().optional(),
+            archiveReason: z.string().optional(),
+        }).optional(),
     }).optional(),
     tools: z.array(z.string()).optional(),
     slashCommands: z.array(z.string()).optional(),
@@ -112,8 +120,15 @@ export const MetadataSchema = z.object({
     hostPid: z.number().optional(),
     hapiMcpUrl: z.string().url().optional(),
     startedBy: z.enum(['runner', 'terminal']).optional(),
+    // 'running' | 'idle' | 'archived' (see shared/src/sessionLifecycle.ts).
+    // 'idle' is written by the hub's keepalive-idle reconciler (tiann/hapi#1820)
+    // and reverts to 'running' on the next agent progress.
     lifecycleState: z.string().optional(),
     lifecycleStateSince: z.number().optional(),
+    // Opt out of keepalive-idle reconciliation for sessions that are meant to
+    // sit quiet indefinitely (operator holding pens, sessions owning work the
+    // hub cannot see). Never reconciled to 'idle' while true.
+    idleReconcileExempt: z.boolean().optional(),
     archivedBy: z.string().optional(),
     archiveReason: z.string().optional(),
     // Set only after a completed fresh-session clear. The source row remains

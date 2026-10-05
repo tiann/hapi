@@ -38,6 +38,8 @@ export class ApiClient {
 
     async getOrCreateSession(opts: {
         id?: string
+        /** Bind a hub-preallocated stub (requires id). */
+        adopt?: boolean
         tag: string
         metadata: Metadata
         state: AgentState | null
@@ -56,6 +58,7 @@ export class ApiClient {
             `${configuration.apiUrl}/cli/sessions`,
             {
                 id: opts.id,
+                ...(opts.adopt === true ? { adopt: true } : {}),
                 tag: opts.tag,
                 metadata: opts.metadata,
                 agentState: opts.state,

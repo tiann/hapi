@@ -2,10 +2,49 @@ import HapiClient
 import HapiProtocol
 import SwiftUI
 
-/// Compact, catalog-driven settings: navigation lists for permissions/models,
-/// menu pickers for collaboration/effort. Selecting applies immediately; Done only dismisses.
+/// Attach to the gear, not the chat root: UIKit needs the actual toolbar
+/// anchor to position an iPad popover. One presenter survives size adaptation.
+struct SessionConfigButton<Content: View>: View {
+    @Binding var isPresented: Bool
+    @ViewBuilder let content: () -> Content
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    private var prefersPopover: Bool {
+        horizontalSizeClass == .regular && verticalSizeClass != .compact
+    }
+
+    var body: some View {
+        Button {
+            isPresented = true
+        } label: {
+            Image(systemName: "gearshape")
+        }
+        .accessibilityLabel("Session settings")
+        .accessibilityIdentifier("session-config-open")
+        .popover(isPresented: $isPresented, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
+            content()
+                // Preferred, not fixed: the system can constrain a small window.
+                // Read the host's traits; popover content has its own traits.
+                .frame(
+                    idealWidth: prefersPopover ? 400 : nil,
+                    maxWidth: prefersPopover ? 400 : nil,
+                    idealHeight: prefersPopover ? popoverHeight : nil,
+                    maxHeight: prefersPopover ? popoverHeight : nil
+                )
+                .presentationCompactAdaptation(.sheet)
+        }
+    }
+
+    private var popoverHeight: CGFloat { dynamicTypeSize.isAccessibilitySize ? 600 : 480 }
+}
+
+/// Single-page, catalog-driven menus. Selecting applies immediately; Done
+/// only dismisses. Presentation height is UI state, not configuration state.
 struct SessionConfigView: View {
     @State private var model: SessionConfigModel
+    @State private var detent: PresentationDetent = .medium
     let notice: String?
 
     @Environment(\.dismiss) private var dismiss
@@ -21,29 +60,18 @@ struct SessionConfigView: View {
     }
 
     var body: some View {
-        @Bindable var model = model
-        NavigationStack(path: $model.path) {
+        NavigationStack {
             settingsForm
                 .navigationTitle("Session Settings")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { doneButton }
-                .navigationDestination(for: SessionConfigModel.Page.self) { page in
-                    Group {
-                        switch page {
-                        case .permission: permissionList
-                        case .model: modelList
-                        }
-                    }
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar { doneButton }
-                }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { feedback }
         .presentationDetents(
-            dynamicTypeSize.isAccessibilitySize || !model.path.isEmpty ? [.large] : [.medium, .large],
+            dynamicTypeSize.isAccessibilitySize ? [.large] : [.medium, .large],
             selection: Binding(
-                get: { dynamicTypeSize.isAccessibilitySize ? .large : model.detent },
-                set: { model.detent = $0 }
+                get: { dynamicTypeSize.isAccessibilitySize ? .large : detent },
+                set: { detent = $0 }
             )
         )
         .onAppear { model.loadModels() }
@@ -57,110 +85,137 @@ struct SessionConfigView: View {
                 statusNotice("Session is controlled from the terminal — config changes will be rejected.")
             }
 
-            if model.hasSettings {
+            if model.showsModel || model.showsEffort {
                 Section {
+                    if model.showsModel { modelRow }
+                    if model.showsEffort { effortMenu }
+                }
+                .disabled(model.isApplying)
+            }
+            if !model.config.permissionModes.isEmpty || model.showsCollaborationMode {
+                Section {
+                    if !model.config.permissionModes.isEmpty { permissionMenu }
+                    if model.showsCollaborationMode { collaborationMenu }
+                } footer: {
                     if !model.config.permissionModes.isEmpty {
-                        NavigationLink(value: SessionConfigModel.Page.permission) {
-                            SessionConfigSummaryRow(
-                                title: "Permission mode", value: model.permission.label, tone: model.permission.tone
-                            )
-                        }
-                        .accessibilityIdentifier("session-config-permission")
-                    }
-                    if model.showsCollaborationMode {
-                        Picker("Collaboration Mode", selection: Binding(
-                            get: { model.collaborationMode },
-                            set: { model.selectCollaborationMode($0) }
-                        )) {
-                            ForEach(CodexCollaborationMode.allCases, id: \.self) { mode in
-                                Text(LocalizedStringKey(mode.label)).tag(mode)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .frame(minHeight: 44)
-                        .disabled(!model.config.canChangeCollaborationMode)
-                        .accessibilityIdentifier("session-config-collaboration")
-                    }
-                    if model.showsModel {
-                        NavigationLink(value: SessionConfigModel.Page.model) {
-                            SessionConfigSummaryRow(title: "Model", value: model.modelLabel)
-                        }
-                        .accessibilityIdentifier("session-config-model")
-                    }
-                    if model.showsEffort {
-                        Picker("Effort", selection: Binding(
-                            get: { model.currentEffort },
-                            set: { model.selectEffort($0) }
-                        )) {
-                            ForEach(model.effortOptions, id: \.value) { option in
-                                Text(verbatim: option.label)
-                                    .tag(option.value)
-                                    .disabled(!model.canSelectEffort(option.value))
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .frame(minHeight: 44)
-                        .accessibilityIdentifier("session-config-effort")
+                        Text("Permission modes control how the agent requests approval. Behavior varies by agent.")
                     }
                 }
                 .disabled(model.isApplying)
-            } else {
+            }
+            if !model.hasSettings {
                 statusNotice("No settings available for this session.")
             }
         }
     }
 
-    private var permissionList: some View {
-        List {
-            Section {
-                ForEach(model.config.permissionModes, id: \.mode) { option in
-                    SessionConfigOptionRow(
-                        label: option.label, selected: option.mode == model.permission, tone: option.tone
-                    ) {
-                        model.selectPermission(option.mode)
-                    }
-                    .accessibilityIdentifier("session-config-permission-\(option.mode.rawValue)")
+    private var permissionMenu: some View {
+        SessionConfigMenu(
+            title: "Permission mode", value: Text(verbatim: model.permission.label), tone: model.permission.tone
+        ) {
+            Picker("Permission mode", selection: Binding(
+                get: { model.permission }, set: { model.selectPermission($0) }
+            )) {
+                if !model.config.permissionModes.contains(where: { $0.mode == model.permission }) {
+                    permissionOption(PermissionModeOption(mode: model.permission)).disabled(true)
                 }
-            } footer: {
-                Text("Permission modes control how the agent requests approval. Behavior varies by agent.")
+                ForEach(model.config.permissionModes, id: \.mode) { option in
+                    permissionOption(option)
+                }
             }
-            .disabled(model.isApplying)
+            .pickerStyle(.inline)
         }
-        .navigationTitle("Permission mode")
+        .accessibilityIdentifier("session-config-permission")
     }
 
-    private var modelList: some View {
-        List {
-            if model.config.modelOptionsLoading {
-                Section {
-                    ProgressView("Loading models…")
+    private func permissionOption(_ option: PermissionModeOption) -> some View {
+        Group {
+            if option.tone == .danger {
+                Label {
+                    Text(verbatim: option.label) + Text(verbatim: " · ") + Text("High risk")
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle")
                 }
-            } else if model.modelLoadFailed {
-                Section {
-                    Text("Failed to load models")
-                        .foregroundStyle(.secondary)
-                    Button("Retry") { model.loadModels() }
-                        .accessibilityIdentifier("session-config-model-retry")
-                }
-            } else if model.config.modelOptions?.isEmpty != false {
-                statusNotice("Model list unavailable for this session.")
             } else {
-                Section {
-                    if let current = model.unlistedModel {
-                        SessionConfigOptionRow(label: current, selected: true) {}
-                            .disabled(true)
-                    }
-                    ForEach(model.config.modelOptions ?? [], id: \.value) { option in
-                        SessionConfigOptionRow(label: option.label, selected: option.value == model.currentModel) {
-                            model.selectModel(option.value)
-                        }
-                        .accessibilityIdentifier("session-config-model-\(option.value ?? "default")")
-                    }
-                }
-                .disabled(model.isApplying)
+                Text(verbatim: option.label)
             }
         }
-        .navigationTitle("Model")
+        .tag(option.mode)
+        .accessibilityIdentifier("session-config-permission-\(option.mode.rawValue)")
+    }
+
+    private var collaborationMenu: some View {
+        SessionConfigMenu(
+            title: "Collaboration Mode", value: Text(LocalizedStringKey(model.collaborationMode.label))
+        ) {
+            Picker("Collaboration Mode", selection: Binding(
+                get: { model.collaborationMode }, set: { model.selectCollaborationMode($0) }
+            )) {
+                ForEach(CodexCollaborationMode.allCases, id: \.self) { mode in
+                    Text(LocalizedStringKey(mode.label)).tag(mode)
+                }
+            }
+            .pickerStyle(.inline)
+        }
+        .disabled(!model.config.canChangeCollaborationMode)
+        .accessibilityIdentifier("session-config-collaboration")
+    }
+
+    private var effortMenu: some View {
+        SessionConfigMenu(
+            title: "Effort",
+            value: Text(verbatim: model.effortOptions.first { $0.value == model.currentEffort }?.label ?? "Default")
+        ) {
+            Picker("Effort", selection: Binding(
+                get: { model.currentEffort }, set: { model.selectEffort($0) }
+            )) {
+                ForEach(model.effortOptions, id: \.value) { option in
+                    Text(verbatim: option.label)
+                        .tag(option.value)
+                        .disabled(!model.canSelectEffort(option.value))
+                }
+            }
+            .pickerStyle(.inline)
+        }
+        .accessibilityIdentifier("session-config-effort")
+    }
+
+    private var modelRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SessionConfigMenu(title: "Model", value: Text(verbatim: model.modelLabel)) {
+                Picker("Model", selection: Binding(
+                    get: { model.currentModel }, set: { model.selectModel($0) }
+                )) {
+                    if let current = model.unlistedModelOption {
+                        Text(verbatim: current.label).tag(current.value).disabled(true)
+                    }
+                    ForEach(model.config.modelOptions ?? [], id: \.value) { option in
+                        Text(verbatim: option.label)
+                            .tag(option.value)
+                            .accessibilityIdentifier("session-config-model-\(option.value ?? "default")")
+                    }
+                }
+                .pickerStyle(.inline)
+            }
+            .disabled(model.config.modelOptionsLoading || model.modelLoadFailed || model.config.modelOptions?.isEmpty != false)
+            .accessibilityIdentifier("session-config-model")
+
+            if model.config.modelOptionsLoading {
+                ProgressView("Loading models…")
+                    .accessibilityIdentifier("session-config-model-loading")
+            } else if model.modelLoadFailed {
+                Text("Failed to load models")
+                    .foregroundStyle(.secondary)
+                Button("Retry") { model.loadModels() }
+                    .buttonStyle(.borderless)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("session-config-model-retry")
+            } else if model.config.modelOptions?.isEmpty != false {
+                Text("Model list unavailable for this session.")
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("session-config-model-unavailable")
+            }
+        }
     }
 
     @ToolbarContentBuilder
@@ -208,9 +263,35 @@ struct SessionConfigView: View {
     }
 }
 
+/// Menu labels share adaptive summaries, including VoiceOver's current value.
+/// A Picker inside Menu supplies native selection checkmarks without a push.
+private struct SessionConfigMenu<Content: View>: View {
+    let title: LocalizedStringKey
+    let value: Text
+    var tone: PermissionModeTone = .neutral
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        Menu(content: content) {
+            HStack(spacing: 8) {
+                SessionConfigSummaryRow(title: title, value: value, tone: tone)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
+            .contentShape(Rectangle())
+        }
+        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityValue(tone == .danger ? value + Text(verbatim: ", ") + Text("High risk") : value)
+    }
+}
+
 private struct SessionConfigSummaryRow: View {
     let title: LocalizedStringKey
-    let value: String
+    let value: Text
     var tone: PermissionModeTone = .neutral
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
@@ -229,13 +310,13 @@ private struct SessionConfigSummaryRow: View {
                 }
             }
         }
-        .frame(minHeight: 44)
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
         .accessibilityValue(
             tone == .danger
-                ? Text(verbatim: value) + Text(verbatim: ", ") + Text("High risk")
-                : Text(verbatim: value)
+                ? value + Text(verbatim: ", ") + Text("High risk")
+                : value
         )
     }
 
@@ -249,46 +330,12 @@ private struct SessionConfigSummaryRow: View {
 
     private var currentValue: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(verbatim: value)
+            value
                 .foregroundStyle(tone == .neutral || tone == .info ? .secondary : tone.color)
             if tone == .danger {
                 SessionConfigRiskLabel()
             }
         }
-    }
-}
-
-struct SessionConfigOptionRow: View {
-    let label: String
-    let selected: Bool
-    var tone: PermissionModeTone = .neutral
-    let onTap: () -> Void
-
-    var body: some View {
-        Button(action: onTap) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(verbatim: label)
-                        .foregroundStyle(tone.color)
-                    if tone == .danger {
-                        SessionConfigRiskLabel()
-                    }
-                }
-                .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-                if selected {
-                    Image(systemName: "checkmark")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.tint)
-                        .accessibilityHidden(true)
-                }
-            }
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 

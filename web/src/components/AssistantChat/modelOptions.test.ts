@@ -137,7 +137,7 @@ describe('getModelOptionsForFlavor', () => {
     it('returns only default/current for cursor before models are discovered (no claude fallback)', () => {
         const options = getModelOptionsForFlavor('cursor', 'composer-2.5')
         expect(options).toEqual([
-            { value: null, label: 'Auto' },
+            { value: 'auto', label: 'Auto' },
             { value: 'composer-2.5', label: 'composer-2.5' }
         ])
     })
@@ -156,12 +156,12 @@ describe('getModelOptionsForFlavor', () => {
     it('does not inject raw wire id when dual picker base is already listed', () => {
         const wire = 'claude-opus-4-8[thinking=true,context=300k,effort=high,fast=false]'
         const options = getModelOptionsForFlavor('cursor', wire, [
-            { value: null, label: 'Auto' },
+            { value: 'auto', label: 'Auto' },
             { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
             { value: 'composer-2.5', label: 'Composer 2.5' },
         ])
         expect(options).toEqual([
-            { value: null, label: 'Auto' },
+            { value: 'auto', label: 'Auto' },
             { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
             { value: 'composer-2.5', label: 'Composer 2.5' },
         ])
@@ -170,11 +170,11 @@ describe('getModelOptionsForFlavor', () => {
     it('injects unknown wire id only when catalog lacks base and wire', () => {
         const wire = 'claude-opus-4-9[effort=high,fast=false]'
         const options = getModelOptionsForFlavor('cursor', wire, [
-            { value: null, label: 'Auto' },
+            { value: 'auto', label: 'Auto' },
             { value: 'composer-2.5', label: 'Composer 2.5' },
         ])
         expect(options).toEqual([
-            { value: null, label: 'Auto' },
+            { value: 'auto', label: 'Auto' },
             { value: wire, label: wire },
             { value: 'composer-2.5', label: 'Composer 2.5' },
         ])
@@ -351,6 +351,24 @@ describe('getNextModelForFlavor', () => {
     it('keeps a kimi current model on cycle (no Claude fallback)', () => {
         expect(getNextModelForFlavor('kimi', 'kimi-k2-0711')).toBe('kimi-k2-0711')
         expect(getNextModelForFlavor('kimi', null)).toBeNull()
+    })
+
+    it('serves dynamic Kimi options to a running session with Default and aliases', () => {
+        const options = getModelOptionsForFlavor('kimi', 'GLM-5.3-flash', [
+            { value: null, label: 'Default' },
+            { value: 'GLM-5.3-flash', label: 'thehive — thehive / GLM-5.3-flash' },
+            { value: 'deepseek-v4.1-flash', label: 'thehive — thehive / hive-deepseek' }
+        ])
+
+        expect(options[0]).toEqual({ value: null, label: 'Default' })
+        expect(options.map((option) => option.value)).toEqual([null, 'GLM-5.3-flash', 'deepseek-v4.1-flash'])
+
+        // Cycling with a dynamic catalog moves through the discovered aliases.
+        expect(getNextModelForFlavor('kimi', 'GLM-5.3-flash', [
+            { value: null, label: 'Default' },
+            { value: 'GLM-5.3-flash', label: 'thehive — GLM-5.3-flash' },
+            { value: 'deepseek-v4.1-flash', label: 'thehive — deepseek-v4.1-flash' }
+        ])).toBe('deepseek-v4.1-flash')
     })
 
     it('keeps a cursor current model on cycle (no Claude fallback)', () => {

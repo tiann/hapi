@@ -287,6 +287,15 @@ bun run build:single-exe
 - `src/ui/` - User interface and diagnostics.
 - `src/modules/` - Tool implementations (ripgrep, difftastic, git).
 
+## Releasing
+
+From the repository root, `bun run release-all <version>` updates the CLI package,
+shared app version, iOS `MARKETING_VERSION` (app and notification extension, all
+configurations), and Android's default `versionName` before building and publishing.
+Use `--dry-run` to preview without changing files or publishing. Native build
+numbers (`CURRENT_PROJECT_VERSION` / `versionCode`) remain managed separately;
+Android's `-PhapiVersionName` override is preserved.
+
 ## Related docs
 
 - `../hub/README.md`

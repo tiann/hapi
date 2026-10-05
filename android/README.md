@@ -310,7 +310,9 @@ input/result remains under Source.
 Shared Codex proposals also show **Implement plan** and **Continue planning**
 when the active session's `agentState.codexPlanProposalId` matches the tool-call
 id. Implementation uses the dedicated plan endpoint, not permission approval;
-continue only focuses the composer, preserving its draft. The menu stays visible
+continue hides that proposal’s action menu locally and focuses the composer,
+preserving its draft and plan mode without sending a message. The plan document
+remains readable, and a new proposal gets a fresh menu. The menu stays visible
 when the document is folded; pending/error state survives row recycling.
 Withdrawn, historical and child proposals remain read-only (an outstanding
 operation/error can still be shown).

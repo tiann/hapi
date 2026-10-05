@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 const state = vi.hoisted(() => ({ home: '', auth: 'token', processes: new Map<number, string | undefined>() }));
 vi.mock('@/configuration', () => ({ configuration: { get happyHomeDir() { return state.home; }, apiUrl: 'hub', get cliApiToken() { return state.auth; } } }));
 vi.mock('@/utils/process', () => ({ isProcessAlive: (pid: number) => state.processes.has(pid), getProcessStartMarker: (pid: number) => state.processes.get(pid) }));
-import { findRuntime, runtimeAlive, runtimeAuthHash, runtimeMayBeAlive, saveRuntime, withThreadOwnership, type CodexRuntimeRecord } from './registry';
+import { findRuntime, readRuntimes, runtimeAlive, runtimeAuthHash, runtimeMayBeAlive, saveRuntime, withThreadOwnership, type CodexRuntimeRecord } from './registry';
 
 const directories: string[] = [];
 afterEach(async () => { state.processes.clear(); state.auth = 'token'; await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
@@ -39,5 +39,14 @@ describe('shared runtime ownership', () => {
         const directory = join(owner.codexHome, 'hapi-runtime-owners'); await mkdir(directory, { recursive: true });
         await writeFile(join(directory, 'broken.json'), '{');
         await expect(withThreadOwnership(owner.codexHome, 'thread', 'new', async () => {})).rejects.toThrow('Cannot verify');
+    });
+    it('readRuntimes({ strict: true }) fails closed on corrupt hub registry files', async () => {
+        // Soft [] would let stopSession argv-sweep tree-kill shared wrappers (#1911).
+        const owner = await fixture();
+        const directory = join(state.home, 'codex-runtimes');
+        await mkdir(directory, { recursive: true });
+        await writeFile(join(directory, 'broken.json'), '{');
+        expect(await readRuntimes()).toEqual([]);
+        await expect(readRuntimes({ strict: true })).rejects.toThrow('Cannot verify');
     });
 });

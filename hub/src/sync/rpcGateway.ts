@@ -1,5 +1,5 @@
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
-import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
+import { PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import {
     ArchiveCodexSessionRpcResponseSchema,
     AgentAvailabilityResponseSchema,
@@ -23,6 +23,7 @@ import type {
     ImplementCodexPlanResult,
     CopilotModelsResponse,
     GrokModelsResponse,
+    KimiModelsResponse,
     GrokReasoningEffortResponse,
     ListDirectoryResponse,
     ListCodexSessionsRpcResponse,
@@ -65,6 +66,28 @@ export class RpcTargetMissingError extends Error {
     }
 }
 
+/**
+ * The CLI no longer has this permission request pending — most often because
+ * it was already answered, or canceled on the agent side (e.g. Claude Code
+ * sent a control_cancel_request for it) before this answer arrived.
+ */
+export class PermissionRequestNotFoundError extends Error {
+    constructor(requestId: string) {
+        super(`Permission request is no longer active: ${requestId}`)
+        this.name = 'PermissionRequestNotFoundError'
+    }
+}
+
+// Matches on the specific shared message rather than treating any error on
+// the Permission RPC method as "not found" — a future, unrelated throw in
+// handlePermissionResponse's success path should surface as a genuine error,
+// not get relabeled as a stale request.
+function isPermissionRequestNotFoundResponse(response: unknown): boolean {
+    if (!response || typeof response !== 'object') return false
+    const error = (response as Record<string, unknown>).error
+    return error === PERMISSION_REQUEST_NOT_FOUND_MESSAGE
+}
+
 export type RpcCommandResponse = CommandResponse
 export type FileSearchOptions = {
     query: string
@@ -91,6 +114,7 @@ export type RpcListOpencodeModelsResponse = OpencodeModelsResponse
 export type RpcListOpencodeModelVariantsResponse = OpencodeModelVariantsResponse
 export type RpcListGrokModelsResponse = GrokModelsResponse
 export type RpcListCopilotModelsResponse = CopilotModelsResponse
+export type RpcListKimiModelsResponse = KimiModelsResponse
 export type RpcListGrokReasoningEffortOptionsResponse = GrokReasoningEffortResponse
 export type RpcListOpencodeReasoningEffortOptionsResponse = OpencodeReasoningEffortResponse
 export type RpcListAgyModelsResponse = AgyModelsResponse
@@ -111,7 +135,7 @@ export class RpcGateway {
         decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort',
         answers?: Record<string, string[]> | Record<string, { answers: string[] }>
     ): Promise<void> {
-        await this.sessionRpc(sessionId, RPC_METHODS.Permission, {
+        const response = await this.sessionRpc(sessionId, RPC_METHODS.Permission, {
             id: requestId,
             approved: true,
             mode,
@@ -119,6 +143,9 @@ export class RpcGateway {
             decision,
             answers
         })
+        if (isPermissionRequestNotFoundResponse(response)) {
+            throw new PermissionRequestNotFoundError(requestId)
+        }
     }
 
     async denyPermission(
@@ -126,11 +153,14 @@ export class RpcGateway {
         requestId: string,
         decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
     ): Promise<void> {
-        await this.sessionRpc(sessionId, RPC_METHODS.Permission, {
+        const response = await this.sessionRpc(sessionId, RPC_METHODS.Permission, {
             id: requestId,
             approved: false,
             decision
         })
+        if (isPermissionRequestNotFoundResponse(response)) {
+            throw new PermissionRequestNotFoundError(requestId)
+        }
     }
 
     async abortSession(sessionId: string): Promise<void> {
@@ -155,14 +185,28 @@ export class RpcGateway {
         return await this.sessionRpc(sessionId, RPC_METHODS.SetSessionConfig, config)
     }
 
-    async killSession(sessionId: string): Promise<void> {
-        await this.sessionRpc(sessionId, RPC_METHODS.KillSession, {})
+    async killSession(sessionId: string): Promise<{ pid?: number; processStartMarker?: string }> {
+        const result = await this.sessionRpc(sessionId, RPC_METHODS.KillSession, {})
+        if (!result || typeof result !== 'object') return {}
+        const pid = (result as { pid?: unknown }).pid
+        const processStartMarker = (result as { processStartMarker?: unknown }).processStartMarker
+        return {
+            ...(typeof pid === 'number' ? { pid } : {}),
+            ...(typeof processStartMarker === 'string' ? { processStartMarker } : {}),
+        }
     }
 
-    async stopRunnerSession(machineId: string, sessionId: string): Promise<'stopped' | 'already_gone' | 'still_alive'> {
-        const result = await this.machineRpc(machineId, RPC_METHODS.StopSession, { sessionId })
+    async stopRunnerSession(
+        machineId: string,
+        sessionId: string,
+        opts?: { processStartMarker?: string }
+    ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> {
+        const result = await this.machineRpc(machineId, RPC_METHODS.StopSession, {
+            sessionId,
+            ...(opts?.processStartMarker ? { processStartMarker: opts.processStartMarker } : {}),
+        })
         const status = result && typeof result === 'object' ? (result as { status?: unknown }).status : undefined
-        if (status === 'stopped' || status === 'already_gone' || status === 'still_alive') return status
+        if (status === 'stopped' || status === 'already_gone' || status === 'still_alive' || status === 'unknown') return status
         throw new Error('Unexpected stop-session response')
     }
 
@@ -187,10 +231,12 @@ export class RpcGateway {
         collaborationMode?: CodexCollaborationMode,
         copilotAgentMode?: CopilotAgentMode,
         startingMode?: 'remote' | 'pty',
-        // Hub session id to reuse for this spawn. When set, the runner boots the
-        // CLI with `--hapi-session-id`, so the child reuses the existing hub
-        // session row (same id) instead of minting a new one.
-        forkSession?: boolean
+        // Hub session id for this spawn (preallocated stub or reopen). Runner
+        // stamps `--existing-session-id` or `--hapi-session-id` by flavor; the
+        // latter is adopt-stub (create/getOrCreate with id), not reopen.
+        forkSession?: boolean,
+        /** Fresh machine-spawn stub — distinct from reopen existingSessionId. */
+        reservedSessionId?: string
     ): Promise<
         | { type: 'success'; sessionId: string }
         | {
@@ -198,6 +244,8 @@ export class RpcGateway {
             message: string
             code?: 'agent_unavailable' | 'outside_workspace_roots'
             agent?: AgentFlavor
+            /** Explicit false = no OS child; stub safe to delete (#1911 B3). */
+            childStarted?: boolean
         }
     > {
         try {
@@ -218,7 +266,10 @@ export class RpcGateway {
                     permissionMode,
                     serviceTier,
                     existingSessionId,
-                    sessionId: existingSessionId,
+                    reservedSessionId,
+                    // Local HTTP / tracking may still read sessionId; prefer
+                    // reserved stub id, then reopen id.
+                    sessionId: reservedSessionId ?? existingSessionId,
                     collaborationMode,
                     copilotAgentMode,
                     startingMode,
@@ -235,15 +286,21 @@ export class RpcGateway {
                         ? obj.code
                         : undefined
                     const unavailableAgent = typeof obj.agent === 'string' ? obj.agent as AgentFlavor : undefined
+                    const childStarted = obj.childStarted === false ? false : undefined
                     return {
                         type: 'error',
                         message: obj.errorMessage,
                         ...(code ? { code } : {}),
                         ...(unavailableAgent ? { agent: unavailableAgent } : {}),
+                        ...(childStarted === false ? { childStarted: false } : {}),
                     }
                 }
                 if (obj.type === 'requestToApproveDirectoryCreation' && typeof obj.directory === 'string') {
-                    return { type: 'error', message: `Directory creation requires approval: ${obj.directory}` }
+                    return {
+                        type: 'error',
+                        message: `Directory creation requires approval: ${obj.directory}`,
+                        childStarted: false,
+                    }
                 }
                 if (typeof obj.error === 'string') {
                     return { type: 'error', message: obj.error }
@@ -263,6 +320,8 @@ export class RpcGateway {
                 })()
             return { type: 'error', message: `Unexpected spawn result: ${details}` }
         } catch (error) {
+            // Ambiguous: the machine RPC may have started a child before failing.
+            // Do not claim childStarted: false — hub keeps the stub.
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
     }
@@ -454,6 +513,28 @@ export class RpcGateway {
             {},
             MODEL_LIST_RPC_TIMEOUT_MS
         ) as RpcListCopilotModelsResponse
+    }
+
+    async listKimiModelsForCwd(machineId: string, cwd: string): Promise<RpcListKimiModelsResponse> {
+        return await this.machineRpc(
+            machineId,
+            RPC_METHODS.ListKimiModelsForCwd,
+            { cwd },
+            MODEL_LIST_RPC_TIMEOUT_MS
+        ) as RpcListKimiModelsResponse
+    }
+
+    /**
+     * Active-session Kimi discovery. The probe runs in the CLI that owns the
+     * session, so it works without a background runner on the machine.
+     */
+    async listKimiModelsForSession(sessionId: string): Promise<RpcListKimiModelsResponse> {
+        return await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.ListKimiModels,
+            {},
+            MODEL_LIST_RPC_TIMEOUT_MS
+        ) as RpcListKimiModelsResponse
     }
 
     /** Generic Pi RPC call — routes all Pi-specific session RPCs through

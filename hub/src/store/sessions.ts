@@ -1,4 +1,6 @@
 import type { Database } from 'bun:sqlite'
+import { prepareCached } from './statementCache'
+import { bumpSessionDeletionEpoch } from './sessionInvalidation'
 import { randomUUID } from 'node:crypto'
 
 import type { StoredSession, VersionedUpdateResult } from './types'
@@ -197,7 +199,7 @@ export function getOrCreateSession(
     modelReasoningEffort?: string,
     requestedId?: string
 ): StoredSession {
-    const existing = db.prepare(
+    const existing = prepareCached(db, 
         'SELECT * FROM sessions WHERE tag = ? AND namespace = ? ORDER BY created_at DESC LIMIT 1'
     ).get(tag, namespace) as DbSessionRow | undefined
 
@@ -224,7 +226,7 @@ export function getOrCreateSession(
     const metadataJson = JSON.stringify(metadata)
     const agentStateJson = agentState === null || agentState === undefined ? null : JSON.stringify(agentState)
 
-    db.prepare(`
+    prepareCached(db, `
         INSERT INTO sessions (
             id, tag, namespace, machine_id, created_at, updated_at,
             metadata, metadata_version,
@@ -274,27 +276,174 @@ export class SessionIdentityConflictError extends Error {
     }
 }
 
+export class SessionNotAdoptableError extends Error {
+    constructor(message: string) {
+        super(message)
+        this.name = 'SessionNotAdoptableError'
+    }
+}
+
+/** Hub-internal stub tag for fresh machine spawn preallocation (#1911). */
+export function machineSpawnPreallocTag(sessionId: string): string {
+    return `machine-spawn:${sessionId}`
+}
+
+export function isMachineSpawnPreallocatedStub(session: Pick<StoredSession, 'id' | 'tag'>): boolean {
+    return session.tag === machineSpawnPreallocTag(session.id)
+}
+
+function isArchivedSessionMetadata(metadata: unknown): boolean {
+    if (!isPlainObject(metadata)) return false
+    return metadata.lifecycleState === 'archived'
+}
+
+/** Hub-authored archive only — CLI may archive itself on clean exit. */
+function isHubArchivedSessionMetadata(metadata: unknown): boolean {
+    if (!isPlainObject(metadata)) return false
+    return metadata.lifecycleState === 'archived' && metadata.archivedBy === 'hub'
+}
+
+/**
+ * When a CLI write would clear a hub archive, keep the forensic archive fields
+ * on the merged payload so the CAS ack returns success + still-archived
+ * (version-mismatch / error would spin forever in client backoff).
+ */
+function preserveHubArchiveOnMerged(prior: unknown, merged: unknown): unknown {
+    if (!isPlainObject(prior) || !isPlainObject(merged)) return prior
+    const next: Record<string, unknown> = { ...merged }
+    next.lifecycleState = prior.lifecycleState
+    next.archivedBy = prior.archivedBy
+    if (prior.archiveReason !== undefined) next.archiveReason = prior.archiveReason
+    else delete next.archiveReason
+    if (prior.lifecycleStateSince !== undefined) next.lifecycleStateSince = prior.lifecycleStateSince
+    return next
+}
+
+/**
+ * Bind a CLI create bootstrap to a hub-preallocated stub row.
+ * Overwrites tag + metadata (create-time fields) without minting a new id.
+ * Rejects rows that are not machine-spawn stubs — live sessions stay protected.
+ * Rejects archived stubs so adopt cannot resurrect and wipe archive metadata.
+ */
+export function adoptPreallocatedSession(
+    db: Database,
+    id: string,
+    tag: string,
+    metadata: unknown,
+    agentState: unknown,
+    namespace: string,
+    model?: string,
+    effort?: string,
+    modelReasoningEffort?: string
+): StoredSession {
+    return db.transaction(() => {
+        const existing = getSessionByNamespace(db, id, namespace)
+        if (!existing) {
+            throw new SessionNotAdoptableError('Session not found')
+        }
+
+        // Already adopted with this tag — idempotent reload (same as getOrCreate match).
+        if (existing.tag === tag) {
+            return existing
+        }
+
+        if (!isMachineSpawnPreallocatedStub(existing)) {
+            throw new SessionNotAdoptableError('Session is not a preallocated stub')
+        }
+
+        if (isArchivedSessionMetadata(existing.metadata)) {
+            throw new SessionNotAdoptableError('Session is archived')
+        }
+
+        // New tag must not already belong to another session in this namespace.
+        const tagOwner = prepareCached(db,
+            'SELECT id FROM sessions WHERE tag = ? AND namespace = ? LIMIT 1'
+        ).get(tag, namespace) as { id: string } | undefined
+        if (tagOwner && tagOwner.id !== id) {
+            throw new SessionIdentityConflictError('Session tag is already bound to a different id')
+        }
+
+        const now = Date.now()
+        const metadataJson = JSON.stringify(metadata)
+        const agentStateJson = agentState === null || agentState === undefined ? null : JSON.stringify(agentState)
+        const stubTag = machineSpawnPreallocTag(id)
+
+        // CAS on the stub tag — concurrent adopt / metadata release cannot win a race.
+        const changed = prepareCached(db, `
+            UPDATE sessions SET
+                tag = @tag,
+                metadata = @metadata,
+                metadata_version = metadata_version + 1,
+                agent_state = @agent_state,
+                agent_state_version = agent_state_version + 1,
+                model = @model,
+                model_reasoning_effort = @model_reasoning_effort,
+                effort = @effort,
+                updated_at = @updated_at,
+                seq = seq + 1
+            WHERE id = @id AND namespace = @namespace AND tag = @stub_tag
+        `).run({
+            id,
+            namespace,
+            tag,
+            stub_tag: stubTag,
+            metadata: metadataJson,
+            agent_state: agentStateJson,
+            model: model ?? null,
+            model_reasoning_effort: modelReasoningEffort ?? null,
+            effort: effort ?? null,
+            updated_at: now,
+        })
+
+        if (changed.changes !== 1) {
+            throw new SessionNotAdoptableError('Session is not a preallocated stub')
+        }
+
+        const updated = getSessionByNamespace(db, id, namespace)
+        if (!updated) {
+            throw new Error('Failed to adopt preallocated session')
+        }
+        return updated
+    })()
+}
+
 export function updateSessionMetadata(
     db: Database,
     id: string,
     metadata: unknown,
     expectedVersion: number,
     namespace: string,
-    options?: { touchUpdatedAt?: boolean }
+    options?: { touchUpdatedAt?: boolean; allowUnarchive?: boolean }
 ): VersionedUpdateResult<unknown | null> {
     const now = Date.now()
     const touchUpdatedAt = options?.touchUpdatedAt !== false
+    const allowUnarchive = options?.allowUnarchive === true
 
     try {
         return db.transaction((): VersionedUpdateResult<unknown | null> => {
-            const priorRow = db.prepare(
-                'SELECT metadata FROM sessions WHERE id = ? AND namespace = ?'
-            ).get(id, namespace) as { metadata: string | null } | undefined
+            const existing = getSessionByNamespace(db, id, namespace)
+            if (!existing) {
+                return { result: 'error' }
+            }
 
-            const prior = priorRow ? safeJsonParse(priorRow.metadata) : null
-            const merged = mergeSessionMetadata(prior, metadata)
+            const prior = existing.metadata
+            let merged = mergeSessionMetadata(prior, metadata)
 
-            return updateVersionedField({
+            // #1911 M1: unauthorized un-archive of hub-archived rows.
+            // Return success + merge-preserved archive fields — NOT version-mismatch
+            // or error (both spin forever in CLI updateMetadata backoff).
+            // Authorized revive uses allowUnarchive (clearSessionArchiveMetadata
+            // before spawn). Narrow to archivedBy=hub so CLI self-archive still
+            // transitions to running on clean reopen paths.
+            if (
+                isHubArchivedSessionMetadata(prior)
+                && !isArchivedSessionMetadata(merged)
+                && !allowUnarchive
+            ) {
+                merged = preserveHubArchiveOnMerged(prior, merged)
+            }
+
+            const result = updateVersionedField({
                 db,
                 table: 'sessions',
                 id,
@@ -317,6 +466,37 @@ export function updateSessionMetadata(
                     touch_updated_at: touchUpdatedAt ? 1 : 0
                 }
             })
+
+            // Reopen flavors (--existing-session-id) never call adopt; they only
+            // updateMetadata. Release the machine-spawn stub tag here so live
+            // sessions are not permanently adoptable (#1911 Overseer Major).
+            // Skip when the write was a hub-archive preserve (still archived) —
+            // that is refuse-in-place, not live adopt (#1911 M1).
+            if (
+                result.result === 'success'
+                && isMachineSpawnPreallocatedStub(existing)
+                && !isHubArchivedSessionMetadata(merged)
+            ) {
+                const liveTag = randomUUID()
+                prepareCached(db, `
+                    UPDATE sessions
+                    SET tag = @tag,
+                        updated_at = CASE WHEN @touch_updated_at = 1 THEN @updated_at ELSE updated_at END,
+                        seq = seq + 1
+                    WHERE id = @id
+                      AND namespace = @namespace
+                      AND tag = @stub_tag
+                `).run({
+                    id,
+                    namespace,
+                    tag: liveTag,
+                    stub_tag: existing.tag,
+                    updated_at: now,
+                    touch_updated_at: touchUpdatedAt ? 1 : 0,
+                })
+            }
+
+            return result
         })()
     } catch {
         return { result: 'error' }
@@ -358,7 +538,7 @@ export function setSessionTodos(
 ): boolean {
     try {
         const json = todos === null || todos === undefined ? null : JSON.stringify(todos)
-        const result = db.prepare(`
+        const result = prepareCached(db, `
             UPDATE sessions
             SET todos = @todos,
                 todos_updated_at = @todos_updated_at,
@@ -402,7 +582,7 @@ export function replaceSessionTodos(
     try {
         const json = todos === null || todos === undefined ? null : JSON.stringify(todos)
         const now = Date.now()
-        const result = db.prepare(`
+        const result = prepareCached(db, `
             UPDATE sessions
             SET todos = @todos,
                 todos_updated_at = CASE
@@ -434,7 +614,7 @@ export function setSessionTeamState(
 ): boolean {
     try {
         const json = teamState === null || teamState === undefined ? null : JSON.stringify(teamState)
-        const result = db.prepare(`
+        const result = prepareCached(db, `
             UPDATE sessions
             SET team_state = @team_state,
                 team_state_updated_at = @team_state_updated_at,
@@ -468,7 +648,7 @@ export function setSessionModel(
     const touchUpdatedAt = options?.touchUpdatedAt === true
 
     try {
-        const result = db.prepare(`
+        const result = prepareCached(db, `
             UPDATE sessions
             SET model = @model,
                 updated_at = CASE WHEN @touch_updated_at = 1 THEN @updated_at ELSE updated_at END,
@@ -501,7 +681,7 @@ export function setSessionModelReasoningEffort(
     const touchUpdatedAt = options?.touchUpdatedAt === true
 
     try {
-        const result = db.prepare(`
+        const result = prepareCached(db, `
             UPDATE sessions
             SET model_reasoning_effort = @model_reasoning_effort,
                 updated_at = CASE WHEN @touch_updated_at = 1 THEN @updated_at ELSE updated_at END,
@@ -534,7 +714,7 @@ export function setSessionServiceTier(
     const touchUpdatedAt = options?.touchUpdatedAt === true
 
     try {
-        const result = db.prepare(`
+        const result = prepareCached(db, `
             UPDATE sessions
             SET service_tier = @service_tier,
                 updated_at = CASE WHEN @touch_updated_at = 1 THEN @updated_at ELSE updated_at END,
@@ -567,7 +747,7 @@ export function setSessionEffort(
     const touchUpdatedAt = options?.touchUpdatedAt === true
 
     try {
-        const result = db.prepare(`
+        const result = prepareCached(db, `
             UPDATE sessions
             SET effort = @effort,
                 updated_at = CASE WHEN @touch_updated_at = 1 THEN @updated_at ELSE updated_at END,
@@ -597,7 +777,7 @@ export function setSessionActive(
     namespace: string
 ): boolean {
     try {
-        const result = db.prepare(`
+        const result = prepareCached(db, `
             UPDATE sessions
             SET active = @active,
                 active_at = CASE
@@ -626,7 +806,7 @@ export type SessionPinMode = 'none' | 'project' | 'global'
 export function setSessionPinMode(db: Database, id: string, mode: SessionPinMode, namespace: string): boolean {
     const pinned = mode === 'project' ? 1 : 0
     const globalPinned = mode === 'global' ? 1 : 0
-    const result = db.prepare(`
+    const result = prepareCached(db, `
         UPDATE sessions
         SET pinned = @pinned,
             global_pinned = @global_pinned
@@ -649,7 +829,7 @@ export function touchSessionUpdatedAt(
     namespace: string
 ): boolean {
     try {
-        const result = db.prepare(`
+        const result = prepareCached(db, `
             UPDATE sessions
             SET updated_at = @updated_at,
                 seq = seq + 1
@@ -669,32 +849,38 @@ export function touchSessionUpdatedAt(
 }
 
 export function getSession(db: Database, id: string): StoredSession | null {
-    const row = db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as DbSessionRow | undefined
+    const row = prepareCached(db, 'SELECT * FROM sessions WHERE id = ?').get(id) as DbSessionRow | undefined
     return row ? toStoredSession(row) : null
 }
 
 export function getSessionByNamespace(db: Database, id: string, namespace: string): StoredSession | null {
-    const row = db.prepare(
+    const row = prepareCached(db, 
         'SELECT * FROM sessions WHERE id = ? AND namespace = ?'
     ).get(id, namespace) as DbSessionRow | undefined
     return row ? toStoredSession(row) : null
 }
 
 export function getSessions(db: Database): StoredSession[] {
-    const rows = db.prepare('SELECT * FROM sessions ORDER BY updated_at DESC').all() as DbSessionRow[]
+    const rows = prepareCached(db, 'SELECT * FROM sessions ORDER BY updated_at DESC').all() as DbSessionRow[]
     return rows.map(toStoredSession)
 }
 
 export function getSessionsByNamespace(db: Database, namespace: string): StoredSession[] {
-    const rows = db.prepare(
+    const rows = prepareCached(db, 
         'SELECT * FROM sessions WHERE namespace = ? ORDER BY updated_at DESC'
     ).all(namespace) as DbSessionRow[]
     return rows.map(toStoredSession)
 }
 
 export function deleteSession(db: Database, id: string, namespace: string): boolean {
-    const result = db.prepare(
+    const result = prepareCached(db,
         'DELETE FROM sessions WHERE id = ? AND namespace = ?'
     ).run(id, namespace)
+    if (result.changes > 0) {
+        // Per-socket access memos stamp the epoch they were filled under;
+        // bumping makes their next event re-resolve instead of serving a
+        // grant for a row that no longer exists.
+        bumpSessionDeletionEpoch()
+    }
     return result.changes > 0
 }

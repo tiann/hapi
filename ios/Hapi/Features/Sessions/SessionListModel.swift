@@ -109,6 +109,7 @@ final class SessionListModel {
     /// Last refresh failed — show the offline state over snapshot data.
     private(set) var isOffline = false
     private(set) var hasRefreshedOnce = false
+    @ObservationIgnored private var hasAttemptedRefresh = false
     /// Transient pin/archive failure for an alert.
     var actionError: String?
 
@@ -253,11 +254,23 @@ final class SessionListModel {
 
     // MARK: - Actions
 
+    /// A split sidebar can disappear/reappear just because the window
+    /// collapses. Fetch once per home, not once per layout transition;
+    /// global SSE recovery and explicit pull-to-refresh still fetch normally.
+    func refreshOnFirstAppearance() async {
+        guard !hasAttemptedRefresh else { return }
+        hasAttemptedRefresh = true
+        // The sidebar's SwiftUI task is cancelled when it collapses. The
+        // initial fetch belongs to the model, not that transient presentation.
+        await Task { await self.refresh() }.value
+    }
+
     /// Pull-to-refresh / initial load. Coalesces concurrent calls; the first
     /// successful list seeds the unread baseline so historical sessions do
     /// not all light up as unread.
     func refresh() async {
         guard !isRefreshing else { return }
+        hasAttemptedRefresh = true
         isRefreshing = true
         defer { isRefreshing = false }
         do {

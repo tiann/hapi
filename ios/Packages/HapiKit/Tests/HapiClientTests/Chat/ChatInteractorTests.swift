@@ -998,7 +998,7 @@ struct ChatInteractorTests {
         #expect(await harness.performer.count("POST", pathSuffix: "/codex/plan/implement") == 0)
     }
 
-    @Test func continuePlanningOnlyFocusesAndPreservesDraftAndMode() async throws {
+    @Test func continuePlanningDismissesActionsAndPreservesDraftAndMode() async throws {
         let harness = try await ChatInteractionHarness(detail: planSession(), activate: false)
         harness.interactor.setComposerText("Please refine step two")
         harness.interactor.continueCodexPlan(planId: "plan-1")
@@ -1006,6 +1006,16 @@ struct ChatInteractorTests {
         #expect(harness.interactor.composerText == "Please refine step two")
         #expect(harness.store.detail(for: chatSessionID)?.collaborationMode == .plan)
         #expect(await harness.performer.exchanges.filter { $0.method == "POST" }.isEmpty)
+        #expect(!harness.interactor.codexPlanActions(planId: "plan-1").isVisible)
+        harness.interactor.continueCodexPlan(planId: "plan-1")
+        harness.interactor.implementCodexPlan(planId: "plan-1")
+        #expect(harness.interactor.composerFocusRequest == 1)
+        harness.store.updateDetailLocal(chatSessionID) { $0 = planSession() }
+        #expect(!harness.interactor.codexPlanActions(planId: "plan-1").isVisible)
+        harness.store.updateDetailLocal(chatSessionID) {
+            $0.agentState?.codexPlanProposalId = "plan-2"
+        }
+        #expect(harness.interactor.codexPlanActions(planId: "plan-2").canAct)
     }
 
     @Test func implementingPlanIsSingleFlightAndSurvivesWithdrawalAndStaleRefresh() async throws {

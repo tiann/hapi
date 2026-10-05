@@ -39,7 +39,7 @@ type SessionReadyPayload = {
     time: number
 }
 
-type ResolveSessionAccess = (sessionId: string) => AccessResult<StoredSession>
+type ResolveSessionAccess = (sessionId: string, opts?: { fresh?: boolean }) => AccessResult<StoredSession>
 
 type EmitAccessError = (scope: 'session' | 'machine', id: string, reason: AccessErrorReason) => void
 
@@ -93,6 +93,8 @@ export type SessionHandlersDeps = {
     onWebappEvent?: (event: SyncEvent) => void
     onBackgroundTaskDelta?: (sessionId: string, delta: { started: number; completed: number }) => void
     onSessionActivity?: (sessionId: string, updatedAt: number) => void
+    /** tiann/hapi#1820: any message is agent progress, either direction. */
+    onAgentProgress?: (sessionId: string, at: number) => void
     /** Delegates session-end immediate-queue sweep to the MessageService layer. */
     onSweepImmediateQueued?: (sessionId: string, now: number) => void
     /** Drops the queued-thinking grace so synchronous CLI handlers (e.g. slash
@@ -101,13 +103,18 @@ export type SessionHandlersDeps = {
 }
 
 export function registerSessionHandlers(socket: CliSocketWithData, deps: SessionHandlersDeps): void {
-    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionReady, onSessionEnd, onWebappEvent, onBackgroundTaskDelta, onSessionActivity, onSweepImmediateQueued, onMessagesConsumed } = deps
+    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionReady, onSessionEnd, onWebappEvent, onBackgroundTaskDelta, onSessionActivity, onAgentProgress, onSweepImmediateQueued, onMessagesConsumed } = deps
 
     socket.on('native-queue-message', data => {
         const parsed = z.object({ sid: z.string(), localId: z.string().min(1), text: z.string().nullable() }).safeParse(data)
         if (!parsed.success) return
         const { sid, localId, text } = parsed.data
-        const access = resolveSessionAccess(sid)
+        // Fresh resolve: the capabilities gate below decides whether the
+        // queue ledger is written, and capabilities can change via metadata
+        // writes (e.g. a merge copying capabilities onto this session) — a
+        // memo snapshot could silently drop or wrongly accept the entry.
+        // Queued input is human-paced, not a stream hot path.
+        const access = resolveSessionAccess(sid, { fresh: true })
         if (!access.ok) { emitAccessError('session', sid, access.reason); return }
         const metadata = access.value.metadata as Metadata | null
         if (!metadata?.capabilities?.concurrentClients) return
@@ -165,6 +172,11 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         if (reasoningStreamId) {
             store.messages.deleteLiveReasoningSnapshots(sid, reasoningStreamId, msg.id)
         }
+
+        // tiann/hapi#1820: every stored message proves the agent is doing
+        // something, so it refreshes the keepalive-idle clock. Only human
+        // turns additionally bump `updatedAt` (list ordering).
+        onAgentProgress?.(sid, msg.createdAt)
 
         if (shouldRecordSessionActivity(content)) {
             onSessionActivity?.(sid, msg.createdAt)
@@ -259,7 +271,11 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         }
 
         const { sid, metadata, expectedVersion } = parsed.data
-        const sessionAccess = resolveSessionAccess(sid)
+        // Fresh resolve: preserveHubOwnedMetadata below merges against
+        // sessionAccess.value.metadata, so the base must be the live row.
+        // A memo-stale base would drop a concurrently-set hub-owned key or
+        // resurrect a concurrently-cleared one in this very write.
+        const sessionAccess = resolveSessionAccess(sid, { fresh: true })
         if (!sessionAccess.ok) {
             cb({ result: 'error', reason: sessionAccess.reason })
             return
@@ -506,7 +522,11 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         if (!data || typeof data.sid !== 'string' || typeof data.time !== 'number') {
             return
         }
-        const sessionAccess = resolveSessionAccess(data.sid)
+        // Fresh resolve: the shared-Codex capability gate below decides
+        // whether the queue ledger is swept, and capabilities can change via
+        // metadata writes. Session end fires once per session — not a hot
+        // path — so read the live row rather than a memo snapshot.
+        const sessionAccess = resolveSessionAccess(data.sid, { fresh: true })
         if (!sessionAccess.ok) {
             emitAccessError('session', data.sid, sessionAccess.reason)
             return

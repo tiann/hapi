@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { SessionSummary } from '@/types/api'
 import { sessionIsUnread } from '@/lib/sessionAttention'
+import { shouldShowSessionInSidebar } from '@/components/SessionList'
 import {
     getSessionLastSeenSnapshot,
     initializeSessionLastSeen,
@@ -127,10 +128,16 @@ export function useAppBadge(options: UseAppBadgeOptions): void {
             return
         }
 
+        // Only count sessions the sidebar can actually surface: the "Unread"
+        // filter and "mark all read" both exclude empty stub sessions via
+        // shouldShowSessionInSidebar, so the badge must use the same set or
+        // it can show a count nothing in the UI is able to clear (hapi#1845).
+        const eligibleSessions = options.sessions.filter(session => shouldShowSessionInSidebar(session))
+
         // Match the session list's first-load baseline so existing sessions do
         // not all appear unread when a user installs the PWA for the first time.
-        initializeSessionLastSeen(options.scope, options.sessions)
-        const count = countUnreadSessions(options.sessions, getSessionLastSeenSnapshot())
+        initializeSessionLastSeen(options.scope, eligibleSessions)
+        const count = countUnreadSessions(eligibleSessions, getSessionLastSeenSnapshot())
         syncBadge(appBadgeNavigator, count, lastAppliedCountRef)
     }, [
         lastSeenVersion,

@@ -457,7 +457,7 @@ function ToolCardInner(props: ToolCardProps) {
     const isTerminalTool = isTerminalToolBlock(props.block)
     const useCompactTerminalCard = shouldUseCompactTerminalToolCard(toolName, props.terminalToolDisplayMode, isTerminalTool)
     const showInline = shouldShowInlineToolCardBody(toolName, presentation.minimal, props.terminalToolDisplayMode, isTerminalTool)
-    const CompactToolView = showInline ? getToolViewComponent(toolName) : null
+    const CompactToolView = showInline ? getToolViewComponent(toolName, props.block.tool) : null
     const compactViewOwnsInteractions = toolName === 'CodexDiff'
     const ResultToolView = getToolResultViewComponent(toolName)
     const permission = props.block.tool.permission

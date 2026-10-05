@@ -11,12 +11,25 @@ export const SharedLaunchSchema = z.object({
     startedBy: z.enum(['runner', 'terminal']).optional(),
     codexArgs: z.array(z.string()).optional(),
     permissionMode: z.enum(['default', 'read-only', 'safe-yolo', 'yolo']).optional(),
-    resumeSessionId: z.string().optional(), resumeLast: z.boolean().optional(), resumeAll: z.boolean().optional(), existingSessionId: z.string().optional(),
+    resumeSessionId: z.string().optional(), resumeLast: z.boolean().optional(), resumeAll: z.boolean().optional(),
+    existingSessionId: z.string().optional(),
+    /** Hub-preallocated stub — create/adopt, not reopen. */
+    reservedSessionId: z.string().optional(),
     model: z.string().optional(), modelReasoningEffort: z.string().optional(),
     serviceTier: z.string().optional(), collaborationMode: z.enum(['default', 'plan']).optional(),
     workingDirectory: z.string().optional()
 });
 export type SharedLaunchOptions = z.infer<typeof SharedLaunchSchema>;
+
+/**
+ * Take the machine-spawn reservation for one create-path prepare().
+ * Clears it so a second root/fork cannot re-adopt (#1911 Opus Major).
+ */
+export function takeReservedSessionId(options: SharedLaunchOptions): string | undefined {
+    const id = options.reservedSessionId;
+    options.reservedSessionId = undefined;
+    return id;
+}
 
 /** Resolve once: a desktop server and a different PATH TUI are never mixed. */
 export function resolveSharedCodex(): CodexCommand {

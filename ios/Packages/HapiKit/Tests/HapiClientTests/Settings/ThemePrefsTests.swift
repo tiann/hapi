@@ -47,6 +47,7 @@ struct ThemePrefsTests {
         #expect(AppLanguage.system.storageKey == "system")
         #expect(AppLanguage.english.storageKey == "en")
         #expect(AppLanguage.simplifiedChinese.storageKey == "zh-Hans")
+        #expect(AppLanguage.russian.storageKey == "ru")
     }
 
     // MARK: - Resolution
@@ -76,6 +77,9 @@ struct ThemePrefsTests {
 
         LanguagePrefs(defaults: defaults).setLanguage(.english)
         #expect(LanguagePrefs(defaults: defaults).language == .english)
+
+        LanguagePrefs(defaults: defaults).setLanguage(.russian)
+        #expect(LanguagePrefs(defaults: defaults).language == .russian)
     }
 
     @Test func corruptStoredLanguageDegradesToFollowSystem() throws {
@@ -89,6 +93,7 @@ struct ThemePrefsTests {
     @Test func languageNamesAreShownInTheirOwnLanguage() {
         #expect(AppLanguage.english.displayName == "English")
         #expect(AppLanguage.simplifiedChinese.displayName == "简体中文")
+        #expect(AppLanguage.russian.displayName == "Русский")
         // The follow-system row's label is localized at the app layer; the
         // package carries the English source string.
         #expect(AppLanguage.system.displayName == "Follow system")

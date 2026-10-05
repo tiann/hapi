@@ -580,21 +580,57 @@ describe('session model', () => {
                 _machineId: string,
                 _directory: string,
                 agent: string,
-                model?: string
+                model?: string,
+                _modelReasoningEffort?: string,
+                _yolo?: boolean,
+                _sessionType?: string,
+                _worktreeName?: string,
+                _resumeSessionId?: string,
+                _effort?: string,
+                _permissionMode?: string,
+                _serviceTier?: string,
+                existingSessionId?: string,
+                _collaborationMode?: string,
+                _copilotAgentMode?: string,
+                _startingMode?: string,
+                _forkSession?: boolean,
+                reservedSessionId?: string
             ) => {
                 capturedModel = model
-                return { type: 'success', sessionId: 'spawned-cursor-session' }
+                return {
+                    type: 'success',
+                    sessionId: reservedSessionId ?? existingSessionId ?? 'spawned-cursor-session',
+                }
             }
 
             const result = await engine.spawnSession(
                 'machine-cursor',
                 '/tmp/project',
                 'cursor',
-                'composer-2.5[fast=false]'
+                'composer-2.5[fast=false]',
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                'default'
             )
 
-            expect(result).toEqual({ type: 'success', sessionId: 'spawned-cursor-session' })
+            expect(result.type).toBe('success')
             expect(capturedModel).toBe('composer-2.5[fast=false]')
+            if (result.type === 'success') {
+                expect(typeof result.sessionId).toBe('string')
+                expect(result.sessionId.length).toBeGreaterThan(0)
+                const meta = store.sessions.getSession(result.sessionId)?.metadata as { flavor?: string } | null
+                expect(meta?.flavor).toBe('cursor')
+            }
         } finally {
             engine.stop()
         }
@@ -2396,9 +2432,9 @@ describe('session model', () => {
             const result = await engine.reopenSession(session.id, 'default')
             expect(result).toMatchObject({ type: 'error', message: expect.stringContaining('still active') })
             expect(engine.getSessionByNamespace(session.id, 'default')?.active).toBe(true)
-            // Pi keeps the persisted archive snapshot until bootstrap succeeds,
-            // so a failed stop never needs to reconstruct it from memory.
-            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.lifecycleState).toBe('archived')
+            // #1911 M1: reopen clears archive before spawn; a live Pi child that
+            // failed stop stays active and must not be re-archived from memory.
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.lifecycleState).not.toBe('archived')
             expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.piResumeAttempt?.state).toBe('quarantined')
             expect(await engine.reopenSession(session.id, 'default')).toMatchObject({ type: 'error', message: 'Pi resume is already in progress' })
 
@@ -2450,7 +2486,11 @@ describe('session model', () => {
                 type: 'error', message: 'webhook timeout'
             })
             expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.piResumeAttempt?.state).toBe('quarantined')
-            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.lifecycleState).toBe('archived')
+            // #1911 M1: archive cleared before spawn; quarantine refuses reopen
+            // rollback (rollbackSafe:false). Snapshot lives on the attempt.
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.lifecycleState).not.toBe('archived')
+            expect(engine.getSessionByNamespace(session.id, 'default')?.metadata?.piResumeAttempt?.archiveSnapshot)
+                .toMatchObject({ lifecycleState: 'archived', archivedBy: 'cli' })
             expect(await engine.reopenSession(session.id, 'default')).toMatchObject({
                 type: 'error', message: 'Pi resume is already in progress'
             })
