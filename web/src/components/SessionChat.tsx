@@ -35,6 +35,7 @@ import {
 } from '@/lib/codexModelCapabilities'
 import { createSerialAsyncQueue } from '@/lib/serialAsyncQueue'
 import { HappyComposer, type ComposerSendError } from '@/components/AssistantChat/HappyComposer'
+import { composerCodexUsageForGauge } from '@/components/AssistantChat/codexBudgetAdapter'
 import {
     isDictateHotkeyBlockedTarget,
     isDictateToggleHotkey,
@@ -2123,6 +2124,10 @@ function SessionChatInner(props: SessionChatProps) {
                         contextCacheRead={reduced.latestUsage?.cacheRead}
                         contextWindow={reduced.latestUsage?.contextWindow ?? piContextWindow}
                         contextModel={reduced.latestUsage?.model ?? props.session.model}
+                        codexUsage={composerCodexUsageForGauge(
+                            agentFlavor,
+                            props.session.metadata?.codexUsage
+                        )}
                         controlledByUser={controlledByUser}
                         onCollaborationModeChange={
                             codexCollaborationModeSupported && props.session.active && !controlledByUser
