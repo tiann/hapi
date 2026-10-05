@@ -59,6 +59,21 @@ describe('useLongPress', () => {
         expect(onClick).toHaveBeenCalledTimes(1)
     })
 
+    it('does not fire onClick for a desktop right-click before opening the context menu', () => {
+        const onClick = vi.fn()
+        const onLongPress = vi.fn()
+        const { getByTestId } = render(<Probe onClick={onClick} onLongPress={onLongPress} />)
+        const row = getByTestId('row')
+
+        fireEvent.mouseDown(row, { button: 2, clientX: 10, clientY: 10 })
+        fireEvent.mouseUp(row, { button: 2, clientX: 10, clientY: 10 })
+        const contextMenuWasPrevented = !fireEvent.contextMenu(row, { clientX: 10, clientY: 10 })
+
+        expect(contextMenuWasPrevented).toBe(true)
+        expect(onClick).not.toHaveBeenCalled()
+        expect(onLongPress).toHaveBeenCalledOnce()
+    })
+
     it('fires onClick once for a touch tap (ignores the browser-synthesized mouse events that follow)', () => {
         // Real touch browsers (Android Chrome, etc.) emit a compatibility
         // mousedown/mouseup/click ~300ms after touchend for any touch the page
