@@ -121,6 +121,28 @@ export type AuthResponse = {
 }
 
 export type SessionsResponse = { sessions: SessionSummary[] }
+export type SessionContentMatch = {
+    messageId: string
+    role: 'user' | 'assistant'
+    seq: number
+    createdAt: number
+    snippet: string
+    truncated: boolean
+}
+export type SessionContentSearchResponse = {
+    results: Array<{
+        session: SessionSummary
+        match: SessionContentMatch
+    }>
+    /** True when this query may miss content omitted by an indexing optimization. */
+    hasPotentiallyIncompleteResults: boolean
+}
+export type SessionContentMatchesResponse = {
+    matches: SessionContentMatch[]
+    total: number
+    /** True when this query may miss content omitted by an indexing optimization. */
+    hasPotentiallyIncompleteResults: boolean
+}
 export type SessionResponse = { session: Session }
 export type MessagesResponse = {
     messages: DecryptedMessage[]
@@ -133,6 +155,20 @@ export type MessagesResponse = {
         nextBeforeAt: number | null
         nextAfterSeq: number | null
         nextAfterAt: number | null
+        snapshotHeadSeq: number | null
+        snapshotHeadAt: number | null
+        hasMore: boolean
+    }
+}
+
+/** A bounded history window centered on a message selected from search results. */
+export type MessageContextResponse = {
+    messages: DecryptedMessage[]
+    targetMessageId: string
+    page: {
+        epoch: number
+        nextBeforeSeq: number | null
+        nextBeforeAt: number | null
         snapshotHeadSeq: number | null
         snapshotHeadAt: number | null
         hasMore: boolean

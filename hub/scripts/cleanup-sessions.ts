@@ -34,6 +34,7 @@ import { join } from 'node:path'
 import { existsSync } from 'node:fs'
 
 import { decodeMessageContent } from '../src/store/contentCodec'
+import { removeMessageContentSearchForSessions } from '../src/store/messageContentSearch'
 
 // Format timestamp as human-readable date
 function formatDate(timestamp: number): string {
@@ -303,12 +304,19 @@ async function confirm(message: string): Promise<boolean> {
 }
 
 // Delete sessions by IDs
-function deleteSessions(db: Database, ids: string[]): number {
+export function deleteSessions(db: Database, ids: string[]): number {
     if (ids.length === 0) return 0
 
-    const placeholders = ids.map(() => '?').join(', ')
-    db.run(`DELETE FROM sessions WHERE id IN (${placeholders})`, ids)
-    return ids.length
+    return db.transaction(() => {
+        const placeholders = ids.map(() => '?').join(', ')
+        // This script intentionally deletes in bulk instead of going through
+        // the Store wrapper. Keep derived message-content rows and canonical
+        // session deletion in one transaction so a failed delete cannot leave
+        // searchable content out of sync.
+        removeMessageContentSearchForSessions(db, ids)
+        db.run(`DELETE FROM sessions WHERE id IN (${placeholders})`, ids)
+        return ids.length
+    })()
 }
 
 // Main function
@@ -410,7 +418,9 @@ Examples:
     }
 }
 
-main().catch(err => {
-    console.error('Error:', err.message)
-    process.exit(1)
-})
+if (import.meta.main) {
+    main().catch(err => {
+        console.error('Error:', err.message)
+        process.exit(1)
+    })
+}

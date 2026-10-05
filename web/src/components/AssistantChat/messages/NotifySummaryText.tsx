@@ -1,5 +1,6 @@
 import { useRef } from 'react'
-import type { TextMessagePartComponent } from '@assistant-ui/react'
+import type { TextMessagePartComponent, TextMessagePartProps } from '@assistant-ui/react'
+import type { ReactNode } from 'react'
 import { splitNotifySummary, stripNotifySummaryFooter, type NotifySummary } from '@hapi/protocol/messages'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { MarkdownText } from '@/components/assistant-ui/markdown-text'
@@ -101,8 +102,23 @@ export function NotifySummaryFooter({ summary }: { summary: NotifySummary }) {
     )
 }
 
+type SourceAwareTextMessagePartProps = TextMessagePartProps & {
+    sourceMessageId?: string
+}
+
+function withSearchSourceMarker(sourceMessageId: string | undefined, content: ReactNode): ReactNode {
+    if (!sourceMessageId || content === null || content === undefined) return content
+    return (
+        <div data-hapi-source-message-id={sourceMessageId}>
+            {content}
+        </div>
+    )
+}
+
 /** Render the machine footer as a compact row when display is on; otherwise strip it. */
-export const NotifySummaryText: TextMessagePartComponent = ({ text, status }) => {
+export const NotifySummaryText: TextMessagePartComponent = (props) => {
+    const { text, status } = props
+    const sourceMessageId = (props as SourceAwareTextMessagePartProps).sourceMessageId
     const showInChat = useSessionSummaryInChat()
     const previousTextRef = useRef(text)
     const runStartedWithRunningRef = useRef(status.type === 'running')
@@ -129,14 +145,14 @@ export const NotifySummaryText: TextMessagePartComponent = ({ text, status }) =>
     if (!showInChat) {
         const stripped = stripNotifySummaryFooter(text)
         if (!stripped) return null
-        if (stripped === text) return <MarkdownText smooth={smooth} />
-        return <MarkdownRenderer content={stripped} />
+        if (stripped === text) return withSearchSourceMarker(sourceMessageId, <MarkdownText smooth={smooth} />)
+        return withSearchSourceMarker(sourceMessageId, <MarkdownRenderer content={stripped} />)
     }
 
-    if (status.type !== 'complete') return <MarkdownText smooth={smooth} />
+    if (status.type !== 'complete') return withSearchSourceMarker(sourceMessageId, <MarkdownText smooth={smooth} />)
 
     const display = splitNotifySummary(text)
-    if (!display) return <MarkdownText smooth={smooth} />
+    if (!display) return withSearchSourceMarker(sourceMessageId, <MarkdownText smooth={smooth} />)
 
     const hasDisplayableSummary = Boolean(
         display.summary.summary?.trim()
@@ -145,13 +161,13 @@ export const NotifySummaryText: TextMessagePartComponent = ({ text, status }) =>
     )
     if (!hasDisplayableSummary) {
         if (!display.visibleText) return null
-        return <MarkdownRenderer content={display.visibleText} />
+        return withSearchSourceMarker(sourceMessageId, <MarkdownRenderer content={display.visibleText} />)
     }
 
-    return (
+    return withSearchSourceMarker(sourceMessageId, (
         <>
             {display.visibleText ? <MarkdownRenderer content={display.visibleText} /> : null}
             <NotifySummaryFooter summary={display.summary} />
         </>
-    )
+    ))
 }

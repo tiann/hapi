@@ -13,6 +13,7 @@ import type {
     CopilotAgentMode,
     FileSearchResponse,
     MachinesResponse,
+    MessageContextResponse,
     MessagesResponse,
     PermissionMode,
     PiImportSessionsResponse,
@@ -27,8 +28,10 @@ import type {
     HapiSessionExportResponse,
     HubHealthResponse,
     SessionResponse,
+    SessionContentMatchesResponse,
     SessionTitleSuggestionResponse,
-    SessionsResponse
+    SessionsResponse,
+    SessionContentSearchResponse
 } from '@/types/api'
 import type {
     AgyModelsResponse,
@@ -111,6 +114,58 @@ export interface TranscriptionCredentialsUpdate {
     }
     geminiLive?: string | null
     qwenRealtime?: string | null
+}
+
+// Keep scoped content-search bodies comfortably below the Hub's 256 KiB
+// request limit. The remaining space covers the query, limit, and JSON body
+// framing; callers still get one merged result set for large visible scopes.
+const CONTENT_SEARCH_SCOPE_CHUNK_BYTES = 192 * 1024
+
+function chunkContentSearchSessionIds(sessionIds: readonly string[]): string[][] {
+    if (sessionIds.length === 0) return []
+
+    const encoder = new TextEncoder()
+    const chunks: string[][] = []
+    let current: string[] = []
+    let currentBytes = 2 // []
+
+    for (const sessionId of sessionIds) {
+        const itemBytes = encoder.encode(JSON.stringify(sessionId)).byteLength
+        const separatorBytes = current.length > 0 ? 1 : 0
+        if (
+            current.length > 0
+            && currentBytes + separatorBytes + itemBytes > CONTENT_SEARCH_SCOPE_CHUNK_BYTES
+        ) {
+            chunks.push(current)
+            current = []
+            currentBytes = 2
+        }
+
+        current.push(sessionId)
+        currentBytes += (current.length > 1 ? 1 : 0) + itemBytes
+    }
+
+    if (current.length > 0) chunks.push(current)
+    return chunks
+}
+
+function mergeContentSearchResponses(
+    responses: SessionContentSearchResponse[],
+    limit: number
+): SessionContentSearchResponse {
+    const results = responses
+        .flatMap(response => response.results)
+        .sort((a, b) => (
+            b.session.updatedAt - a.session.updatedAt
+            || b.match.seq - a.match.seq
+            || b.match.createdAt - a.match.createdAt
+            || a.session.id.localeCompare(b.session.id)
+        ))
+
+    return {
+        results: results.slice(0, limit),
+        hasPotentiallyIncompleteResults: responses.some(response => response.hasPotentiallyIncompleteResults)
+    }
 }
 
 type ApiClientOptions = {
@@ -263,6 +318,65 @@ export class ApiClient {
         return await this.request<HubHealthResponse>('/health')
     }
 
+    async searchSessionContent(
+        query: string,
+        limit: number = 50,
+        signal?: AbortSignal,
+        sessionIds?: readonly string[]
+    ): Promise<SessionContentSearchResponse> {
+        const normalizedQuery = query.trim()
+        if (sessionIds !== undefined) {
+            const normalizedSessionIds = [...new Set(sessionIds.map((sessionId) => sessionId.trim()).filter(Boolean))]
+            const chunks = chunkContentSearchSessionIds(normalizedSessionIds)
+            if (chunks.length <= 1) {
+                return await this.request<SessionContentSearchResponse>(
+                    '/api/sessions/content-search',
+                    {
+                        method: 'POST',
+                        signal,
+                        body: JSON.stringify({
+                            query: normalizedQuery,
+                            limit,
+                            sessionIds: normalizedSessionIds
+                        })
+                    }
+                )
+            }
+
+            const responses = await Promise.all(chunks.map((chunk) => this.request<SessionContentSearchResponse>(
+                '/api/sessions/content-search',
+                {
+                    method: 'POST',
+                    signal,
+                    body: JSON.stringify({
+                        query: normalizedQuery,
+                        limit,
+                        sessionIds: chunk
+                    })
+                }
+            )))
+            return mergeContentSearchResponses(responses, limit)
+        }
+        const params = new URLSearchParams({ query: normalizedQuery, limit: String(limit) })
+        return await this.request<SessionContentSearchResponse>(
+            `/api/sessions/content-search?${params.toString()}`,
+            { signal }
+        )
+    }
+
+    async searchSessionContentMatches(
+        sessionId: string,
+        query: string,
+        limit: number = 500,
+        signal?: AbortSignal
+    ): Promise<SessionContentMatchesResponse> {
+        const params = new URLSearchParams({ query: query.trim(), limit: String(limit) })
+        return await this.request<SessionContentMatchesResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/content-search?${params.toString()}`,
+            { signal }
+        )
+    }
+
     async getPushVapidPublicKey(): Promise<PushVapidPublicKeyResponse> {
         return await this.request<PushVapidPublicKeyResponse>('/api/push/vapid-public-key')
     }
@@ -409,6 +523,12 @@ export class ApiClient {
         const qs = params.toString()
         const url = `/api/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ''}`
         return await this.request<MessagesResponse>(url)
+    }
+
+    async getMessageContext(sessionId: string, messageId: string): Promise<MessageContextResponse | null> {
+        return await this.request<MessageContextResponse | null>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/context`
+        )
     }
 
     async getGitStatus(sessionId: string): Promise<GitCommandResponse> {
