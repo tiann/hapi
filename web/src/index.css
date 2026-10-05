@@ -319,6 +319,16 @@ body {
     height: 100%;
 }
 
+/* iPhone Home Screen apps can blur content just below the status-bar inset.
+ * Keep session controls below that strip; larger and browser layouts are unchanged. */
+@media (display-mode: standalone) and (max-width: 600px) {
+    @supports (-webkit-touch-callout: none) {
+        .session-list-safe-area {
+            padding-top: calc(env(safe-area-inset-top) + 24px);
+        }
+    }
+}
+
 /* Chat viewports own vertical scrolling; keep transiently oversized messages
  * from creating a second document scrollbar without locking non-chat routes. */
 html:has(.chat-scroll-y),
