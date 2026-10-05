@@ -41,7 +41,7 @@ To start one directly, use `hapi claude`, `hapi codex`, or another
 
 - [Seamless Handoff](./how-it-works.md#seamless-handoff) - Switch between terminal and phone seamlessly
 - [Hub setup](./installation.md#hub-setup) - Access HAPI from anywhere
-- [Notifications](./notifications.md) - Native app, Web Push, Telegram and ServerChan notifications
+- [Notifications](./notifications.md) - Native app, Web Push, Telegram, ServerChan, and WxPusher notifications
 - [Deployment](./deployment.md) - Run HAPI as a persistent background service
 - [Native apps](./native-apps.md) - Build, pair and use the iOS / Android clients
 - [Install the PWA](./pwa.md) - Add the web app to your home screen

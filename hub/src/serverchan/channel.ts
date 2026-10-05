@@ -1,18 +1,10 @@
 import type { Session } from '../sync/syncEngine'
 import type { SessionEndReason } from '@hapi/protocol'
 import type { NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
-import { getAgentName, getSessionName } from '../notifications/sessionInfo'
+import { buildSessionUrl, getAgentName, getSessionName } from '../notifications/sessionInfo'
+import { shouldSuppressBackgroundNotification } from '../notifications/backgroundOnly'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
 import { composeInputRequestNotification, getFirstPendingRequest } from '../notifications/inputRequest'
-
-function buildSessionUrl(baseUrl: string, sessionId: string): string {
-    try {
-        return new URL(`/sessions/${sessionId}`, baseUrl).toString()
-    } catch {
-        const normalized = baseUrl.replace(/\/+$/, '')
-        return `${normalized}/sessions/${sessionId}`
-    }
-}
 
 export class ServerChanChannel implements NotificationChannel {
     constructor(
@@ -99,8 +91,6 @@ export class ServerChanChannel implements NotificationChannel {
     }
 
     private shouldSuppress(session: Session): boolean {
-        return this.backgroundOnly
-            && this.visibilityTracker !== null
-            && this.visibilityTracker.hasVisibleConnection(session.namespace)
+        return shouldSuppressBackgroundNotification(session, this.visibilityTracker, this.backgroundOnly)
     }
 }
