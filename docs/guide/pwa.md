@@ -76,6 +76,10 @@ On Android, HAPI appears in the system share sheet. When you share content to HA
 3. The app is then redirected (303) to the share picker, which reads the stored content
 
 This lets you share images, PDFs, text, and other files directly into a session from any app.
+The share-target session picker starts with recent active sessions; typing a
+query or choosing a date range searches the full snapshot. See the [session
+list behavior guide](./session-list.md#share-target-picker) for its ordering
+and matching rules.
 
 ### Native / deep-link ingest
 
