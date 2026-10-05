@@ -17,6 +17,7 @@ type ReadFileResponse = FileReadResponse
 
 interface ReadGeneratedImageRequest {
     id: string
+    metadataOnly?: boolean
 }
 
 type ReadGeneratedImageResponse = GeneratedImageResponse
@@ -70,7 +71,8 @@ export function registerFileHandlers(rpcHandlerManager: RpcHandlerManager, worki
         try {
             return {
                 success: true,
-                content: image.content.toString('base64'),
+                ...(data.metadataOnly ? {} : { content: image.content.toString('base64') }),
+                size: image.content.byteLength,
                 mimeType: image.mimeType,
                 fileName: image.fileName
             }
