@@ -155,3 +155,29 @@ describe('SessionRowSummary background status', () => {
         expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('New activity')
     })
 })
+
+describe('SessionRowSummary relative age tooltip', () => {
+    beforeEach(() => {
+        localStorage.clear()
+    })
+
+    it('exposes the absolute datetime on the relative age label', () => {
+        const updatedAt = Date.now() - 2 * 60 * 60 * 1000
+        render(
+            <I18nProvider>
+                <SessionRowSummary
+                    session={makeSummary({
+                        active: false,
+                        backgroundTaskCount: 0,
+                        updatedAt,
+                    })}
+                    showDetailedStatus={false}
+                />
+            </I18nProvider>
+        )
+
+        const age = screen.getByTestId('session-row-age')
+        expect(age).toHaveTextContent(/ago|just now/i)
+        expect(age).toHaveAttribute('title', new Date(updatedAt).toLocaleString())
+    })
+})
