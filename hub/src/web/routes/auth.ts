@@ -6,11 +6,24 @@ import { constantTimeEquals } from '../../utils/crypto'
 import { parseAccessToken } from '../../utils/accessToken'
 import { validateTelegramInitData } from '../telegramInitData'
 import { getOrCreateOwnerId } from '../../config/ownerId'
+import { getCloudflareAccessVerifier, type CloudflareAccessVerifier } from '../cloudflareAccess'
 import type { WebAppEnv } from '../middleware/auth'
 import type { Store } from '../../store'
 
-export function createAuthRoutes(jwtSecret: Uint8Array, store: Store): Hono<WebAppEnv> {
+const HAPI_JWT_TTL_SECONDS = 4 * 3600
+
+const NO_STORE: Record<string, string> = { 'Cache-Control': 'no-store' }
+
+export function createAuthRoutes(
+    jwtSecret: Uint8Array,
+    store: Store,
+    options: { cloudflareAccessVerifier?: CloudflareAccessVerifier | null } = {}
+): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
+
+    const cloudflareAccessVerifier = options.cloudflareAccessVerifier !== undefined
+        ? options.cloudflareAccessVerifier
+        : getCloudflareAccessVerifier()
 
     app.post('/auth', async (c) => {
         const json = await c.req.json().catch(() => null)
@@ -75,6 +88,57 @@ export function createAuthRoutes(jwtSecret: Uint8Array, store: Store): Hono<WebA
                 lastName
             }
         })
+    })
+
+    app.get('/auth/methods', (c) => {
+        return c.json({ cloudflareAccess: cloudflareAccessVerifier !== null }, 200, NO_STORE)
+    })
+
+    app.get('/auth/cloudflare', async (c) => {
+        if (!cloudflareAccessVerifier) {
+            return c.json({ error: 'Cloudflare Access is not configured' }, 404, NO_STORE)
+        }
+
+        const assertion = c.req.header('Cf-Access-Jwt-Assertion')
+        if (!assertion) {
+            return c.json({ error: 'Missing Cloudflare Access assertion' }, 401, NO_STORE)
+        }
+
+        const verified = await cloudflareAccessVerifier.verify(assertion)
+        if (verified.kind === 'forbidden') {
+            return c.json({ error: 'Access denied' }, 403, NO_STORE)
+        }
+        if (verified.kind === 'unavailable') {
+            return c.json({ error: 'Authentication service unavailable' }, 503, NO_STORE)
+        }
+        if (verified.kind !== 'ok') {
+            return c.json({ error: 'Invalid Cloudflare Access assertion' }, 401, NO_STORE)
+        }
+
+        const userId = await getOrCreateOwnerId()
+        const expiresAt = Math.min(
+            Math.floor(Date.now() / 1000) + HAPI_JWT_TTL_SECONDS,
+            verified.expiresAt
+        )
+        const token = await new SignJWT({
+            uid: userId,
+            ns: verified.namespace,
+            authMethod: 'cloudflareAccess',
+            cfAccessSub: verified.subject,
+            cfAccessEmail: verified.email
+        })
+            .setProtectedHeader({ alg: 'HS256' })
+            .setIssuedAt()
+            .setExpirationTime(expiresAt)
+            .sign(jwtSecret)
+
+        return c.json({
+            token,
+            user: {
+                id: userId,
+                firstName: 'Web User'
+            }
+        }, 200, NO_STORE)
     })
 
     return app

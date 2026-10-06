@@ -238,6 +238,40 @@ export class ApiClient {
         return await res.json() as AuthResponse
     }
 
+    async getAuthMethods(): Promise<{ cloudflareAccess: boolean }> {
+        const res = await fetch(this.buildUrl('/api/auth/methods'), {
+            headers: { 'cache-control': 'no-store' }
+        })
+
+        if (!res.ok) {
+            const body = await res.text().catch(() => '')
+            const code = parseErrorCode(body)
+            throw new ApiError(`Auth methods failed: HTTP ${res.status} ${res.statusText}`, res.status, code, body || undefined)
+        }
+
+        return await res.json() as { cloudflareAccess: boolean }
+    }
+
+    /**
+     * Sign in through Cloudflare Access. The Cf-Access-Jwt-Assertion header is
+     * injected by the Cloudflare edge on same-origin requests; the browser
+     * never sees or stores it.
+     */
+    async authenticateWithCloudflare(): Promise<AuthResponse> {
+        const res = await fetch(this.buildUrl('/api/auth/cloudflare'), {
+            headers: { 'cache-control': 'no-store' }
+        })
+
+        if (!res.ok) {
+            const body = await res.text().catch(() => '')
+            const code = parseErrorCode(body)
+            const detail = body ? `: ${body}` : ''
+            throw new ApiError(`Auth failed: HTTP ${res.status} ${res.statusText}${detail}`, res.status, code, body || undefined)
+        }
+
+        return await res.json() as AuthResponse
+    }
+
     async bind(auth: { initData: string; accessToken: string }): Promise<AuthResponse> {
         const res = await fetch(this.buildUrl('/api/bind'), {
             method: 'POST',

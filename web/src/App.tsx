@@ -482,8 +482,8 @@ function AppInner() {
 
     // Auth error
     if (authError || !token || !api) {
-        // If using access token and auth failed, show login again
-        if (authSource.type === 'accessToken') {
+        // If using access token or Cloudflare Access and auth failed, show login again
+        if (authSource.type !== 'telegram') {
             return withPwaBanner(
                 <LoginPrompt
                     onLogin={setAccessToken}
