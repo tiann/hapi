@@ -74,12 +74,16 @@ export default function SettingsChatPage() {
                 <SettingsSwitch
                     label={t('settings.chat.codexExplorationCollapsed')}
                     description={t('settings.chat.codexExplorationCollapsed.desc')}
+                    leftLabel={t('settings.chat.codexExplorationCollapsed.off')}
+                    rightLabel={t('settings.chat.codexExplorationCollapsed.on')}
                     checked={codexExplorationCollapsed}
                     onChange={setCodexExplorationCollapsed}
                 />
                 <SettingsSwitch
                     label={t('settings.chat.reasoningCollapsed')}
                     description={t('settings.chat.reasoningCollapsed.desc')}
+                    leftLabel={t('settings.chat.reasoningCollapsed.off')}
+                    rightLabel={t('settings.chat.reasoningCollapsed.on')}
                     checked={reasoningCollapsed}
                     onChange={setReasoningCollapsed}
                 />
