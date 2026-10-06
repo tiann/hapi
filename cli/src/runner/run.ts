@@ -2033,6 +2033,9 @@ export function buildCliArgs(
   if (options.copilotAgentMode && options.copilotAgentMode !== 'interactive' && agent === 'copilot') {
     args.push('--copilot-agent-mode', options.copilotAgentMode);
   }
+  if (options.opencodeAgent && agent === 'opencode') {
+    args.push('--opencode-agent', options.opencodeAgent);
+  }
   // Pi RPC mode has no permission switching; never pass these flags to it
   // (the Pi parser rejects --permission-mode and ignores --yolo).
   if (agent !== 'pi' && agent !== 'dsh') {

@@ -25,6 +25,7 @@ export async function runOpencode(opts: {
     permissionMode?: PermissionMode;
     model?: string;
     modelReasoningEffort?: string | null;
+    opencodeAgent?: string;
     resumeSessionId?: string;
     existingSessionId?: string;
     /** Fresh machine-spawn stub (`--hapi-session-id`); adopt via bootstrapSession. */
@@ -85,6 +86,7 @@ export async function runOpencode(opts: {
         // to mean "switch back to defaultBackendModel".
         model: mode.model === null ? '__reset__' : mode.model ?? null,
         modelReasoningEffort: mode.modelReasoningEffort ?? null,
+        opencodeAgent: mode.opencodeAgent ?? null,
         // Defense in depth: a compact item is always pushed via
         // `pushIsolated` (never batches with siblings regardless of mode
         // hash), but including `operation` here too means a prompt and a
@@ -132,6 +134,7 @@ export async function runOpencode(opts: {
     let currentPermissionMode: PermissionMode = opts.permissionMode ?? 'default';
     let sessionModel: string | null = initialModel;
     let sessionModelReasoningEffort: string | null = initialModelReasoningEffort;
+    let sessionAgent: string | null = opts.opencodeAgent ?? null;
     const hookServer = await startOpencodeHookServer({
         onEvent: (event) => {
             const currentSession = sessionWrapperRef.current;
@@ -164,12 +167,13 @@ export async function runOpencode(opts: {
         sessionInstance.setPermissionMode(currentPermissionMode);
         sessionInstance.setModel(sessionModel);
         sessionInstance.setModelReasoningEffort(sessionModelReasoningEffort);
+        sessionInstance.setOpencodeAgent(sessionAgent);
 
         // Notify hub immediately so the UI reflects the change without
         // waiting for the next 2s keepalive tick.
         sessionInstance.pushKeepAlive();
 
-        logger.debug(`[opencode] Synced session config for keepalive: permissionMode=${currentPermissionMode}, model=${sessionModel ?? '(default)'}, modelReasoningEffort=${sessionModelReasoningEffort ?? '(default)'}`);
+        logger.debug(`[opencode] Synced session config for keepalive: permissionMode=${currentPermissionMode}, model=${sessionModel ?? '(default)'}, modelReasoningEffort=${sessionModelReasoningEffort ?? '(default)'}, opencodeAgent=${sessionAgent ?? '(default)'}`);
     };
 
     // Slash-command resolution now runs inside an async chain on
@@ -241,7 +245,8 @@ export async function runOpencode(opts: {
                 // tell "reset to default" (from `/model default`) apart from
                 // "model unchanged".
                 model: sessionModel,
-                modelReasoningEffort: sessionModelReasoningEffort
+                modelReasoningEffort: sessionModelReasoningEffort,
+                opencodeAgent: sessionAgent
             });
             const pushPlain = () => {
                 const formattedText = formatMessageWithAttachments(message.content.text, message.content.attachments);
@@ -489,6 +494,7 @@ export async function runOpencode(opts: {
         flavor: 'opencode',
         modelMode: 'nullable',
         modelReasoningEffortMode: 'nullable',
+        opencodeAgentMode: 'nullable',
         onApply: (config) => {
             if (config.permissionMode !== undefined) {
                 currentPermissionMode = config.permissionMode;
@@ -498,6 +504,9 @@ export async function runOpencode(opts: {
             }
             if (config.modelReasoningEffort !== undefined) {
                 sessionModelReasoningEffort = config.modelReasoningEffort;
+            }
+            if (config.opencodeAgent !== undefined) {
+                sessionAgent = config.opencodeAgent;
             }
         },
         onAfterApply: syncSessionMode
@@ -517,6 +526,7 @@ export async function runOpencode(opts: {
             permissionMode: currentPermissionMode,
             model: sessionModel ?? undefined,
             modelReasoningEffort: sessionModelReasoningEffort,
+            opencodeAgent: sessionAgent,
             resumeSessionId: opts.resumeSessionId,
             hookServer,
             hookUrl,
