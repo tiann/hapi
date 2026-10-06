@@ -65,9 +65,14 @@ export type AcpStderrError = {
 };
 
 /** @internal Exported for regression tests. */
-export function buildAcpStdioSpawnOptions(env?: Record<string, string>): SpawnOptions {
+export function buildAcpStdioSpawnOptions(
+    env?: Record<string, string>,
+    cwd?: string,
+): SpawnOptions {
+    const trimmedCwd = cwd?.trim();
     return {
         env,
+        ...(trimmedCwd ? { cwd: trimmedCwd } : {}),
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: process.platform === 'win32',
         windowsHide: process.platform === 'win32'
@@ -112,6 +117,12 @@ export class AcpStdioTransport {
         command: string;
         args?: string[];
         env?: Record<string, string>;
+        /**
+         * Child process working directory. Cursor loads project MCP from PWD
+         * (not only ACP session/new cwd). Must be the HAPI session path so
+         * `<cwd>/.cursor/mcp.json` is the live overlay, not the CLI package dir.
+         */
+        cwd?: string;
     }): Promise<AcpStdioTransport> {
         const shouldGuardAgentCli = options.command === 'agent';
         if (shouldGuardAgentCli) {
@@ -122,7 +133,7 @@ export class AcpStdioTransport {
                     const process = spawn(
                         options.command,
                         options.args ?? [],
-                        buildAcpStdioSpawnOptions(options.env)
+                        buildAcpStdioSpawnOptions(options.env, options.cwd)
                     ) as ChildProcessWithoutNullStreams;
                     return new AcpStdioTransport(process, true, options.command);
                 } catch (error) {
@@ -137,7 +148,7 @@ export class AcpStdioTransport {
         const process = spawn(
             options.command,
             options.args ?? [],
-            buildAcpStdioSpawnOptions(options.env)
+            buildAcpStdioSpawnOptions(options.env, options.cwd)
         ) as ChildProcessWithoutNullStreams;
         return new AcpStdioTransport(process, false, options.command);
     }
