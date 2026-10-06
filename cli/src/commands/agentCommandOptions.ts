@@ -10,6 +10,7 @@ export type RemoteAgentCommandOptions<
     model?: string
     effort?: string
     modelReasoningEffort?: string
+    opencodeAgent?: string
     resumeSessionId?: string
     /** Intentional reopen/resume of an existing hub row (`--existing-session-id`). */
     existingSessionId?: string
@@ -114,6 +115,12 @@ export function parseRemoteAgentCommandOptions<
                 throw new Error('Missing --model-reasoning-effort value')
             }
             options.modelReasoningEffort = modelReasoningEffort
+        } else if (arg === '--opencode-agent') {
+            const agent = args[++i]
+            if (!agent) {
+                throw new Error('Missing --opencode-agent value')
+            }
+            options.opencodeAgent = agent
         }
     }
 

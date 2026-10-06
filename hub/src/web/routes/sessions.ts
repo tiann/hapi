@@ -15,6 +15,7 @@ import {
     ScratchlistEntryUpdateRequestSchema,
     SessionCollaborationModeRequestSchema,
     SessionCopilotAgentModeRequestSchema,
+    SessionOpencodeAgentRequestSchema,
     SessionEffortRequestSchema,
     SessionModelReasoningEffortRequestSchema,
     SessionServiceTierRequestSchema,
@@ -677,6 +678,40 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to apply Copilot agent mode'
+            return c.json({ error: message }, 409)
+        }
+    })
+
+    app.post('/sessions/:id/opencode-agent', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'opencode') {
+            return c.json({ error: 'OpenCode agent is only supported for OpenCode sessions' }, 400)
+        }
+        if (sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
+            return c.json({ error: 'OpenCode agent can only be changed for remote OpenCode sessions' }, 409)
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = SessionOpencodeAgentRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        try {
+            await engine.applySessionConfig(sessionResult.sessionId, { opencodeAgent: parsed.data.agent })
+            return c.json({ ok: true })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to apply OpenCode agent'
             return c.json({ error: message }, 409)
         }
     })

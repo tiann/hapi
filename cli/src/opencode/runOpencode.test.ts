@@ -7,6 +7,8 @@ const mockOpencodeSession = vi.hoisted(() => ({
     setModel: vi.fn(),
     setPermissionMode: vi.fn(),
     setModelReasoningEffort: vi.fn(),
+    setOpencodeAgent: vi.fn(),
+    getOpencodeAgent: vi.fn(() => null),
     pushKeepAlive: vi.fn(),
     thinking: false,
     stopKeepAlive: vi.fn(),

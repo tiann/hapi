@@ -222,7 +222,8 @@ export async function opencodeLocalLauncher(
                 path: session.path,
                 abort: abortSignal,
                 env,
-                sessionId: session.sessionId ?? undefined
+                sessionId: session.sessionId ?? undefined,
+                agent: session.getOpencodeAgent() ?? undefined
             });
         },
         sendFailureMessage: (message) => {

@@ -123,6 +123,50 @@ describe('listOpencodeModelsForCwd', () => {
         ])
     })
 
+    it('reads availableAgents from the mode configOption', async () => {
+        sendRequestMock
+            .mockResolvedValueOnce({ protocolVersion: 1 })
+            .mockResolvedValueOnce({
+                sessionId: 'sess-agents',
+                configOptions: [
+                    {
+                        id: 'mode',
+                        category: 'mode',
+                        currentValue: 'build',
+                        options: [
+                            { value: 'build', name: 'build' },
+                            { value: 'plan', name: 'plan' },
+                            { value: 'reviewer', name: 'reviewer' }
+                        ]
+                    }
+                ]
+            })
+
+        const result = await listOpencodeModelsForCwd('/agents/cwd')
+
+        expect(result.success).toBe(true)
+        expect(result.availableAgents).toEqual([
+            { agentId: 'build', name: 'build' },
+            { agentId: 'plan', name: 'plan' },
+            { agentId: 'reviewer', name: 'reviewer' }
+        ])
+        expect(result.currentAgentId).toBe('build')
+    })
+
+    it('omits agents when no mode configOption is present', async () => {
+        sendRequestMock
+            .mockResolvedValueOnce({ protocolVersion: 1 })
+            .mockResolvedValueOnce({
+                models: { availableModels: [{ modelId: 'a/b' }], currentModelId: 'a/b' }
+            })
+
+        const result = await listOpencodeModelsForCwd('/no-agents/cwd')
+
+        expect(result.success).toBe(true)
+        expect(result.availableAgents).toEqual([])
+        expect(result.currentAgentId).toBeNull()
+    })
+
     it('caches the result for the same cwd within the TTL', async () => {
         sendRequestMock
             .mockResolvedValueOnce({ protocolVersion: 1 })

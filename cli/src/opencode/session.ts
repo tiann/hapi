@@ -15,6 +15,7 @@ export class OpencodeSession extends AgentSessionBase<OpencodeMode> {
     localLaunchFailure: LocalLaunchFailure | null = null;
 
     private hookEventHandlers: Array<(event: OpencodeHookEvent) => void> = [];
+    private opencodeAgent: string | null = null;
 
     constructor(opts: {
         api: ApiClient;
@@ -29,6 +30,7 @@ export class OpencodeSession extends AgentSessionBase<OpencodeMode> {
         startingMode: 'local' | 'remote';
         permissionMode?: PermissionMode;
         modelReasoningEffort?: string | null;
+        opencodeAgent?: string | null;
     }) {
         super({
             api: opts.api,
@@ -53,6 +55,7 @@ export class OpencodeSession extends AgentSessionBase<OpencodeMode> {
         this.startingMode = opts.startingMode;
         this.permissionMode = opts.permissionMode;
         this.modelReasoningEffort = opts.modelReasoningEffort;
+        this.opencodeAgent = opts.opencodeAgent ?? null;
     }
 
     addHookEventHandler(cb: (event: OpencodeHookEvent) => void): void {
@@ -83,6 +86,19 @@ export class OpencodeSession extends AgentSessionBase<OpencodeMode> {
     setModelReasoningEffort = (modelReasoningEffort: string | null): void => {
         this.modelReasoningEffort = modelReasoningEffort;
     };
+
+    setOpencodeAgent = (agent: string | null): void => {
+        this.opencodeAgent = agent;
+    };
+
+    getOpencodeAgent = (): string | null => this.opencodeAgent;
+
+    protected override getKeepAliveRuntime() {
+        return {
+            ...(super.getKeepAliveRuntime() ?? {}),
+            opencodeAgent: this.opencodeAgent
+        };
+    }
 
     recordLocalLaunchFailure = (message: string, exitReason: LocalLaunchExitReason): void => {
         this.localLaunchFailure = { message, exitReason };

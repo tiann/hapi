@@ -21,6 +21,7 @@ type SessionAlivePayload = {
     modelReasoningEffort?: string | null
     effort?: string | null
     collaborationMode?: CodexCollaborationMode
+    opencodeAgent?: string | null
 }
 
 type SessionEndPayload = {

@@ -1,5 +1,5 @@
 import { asString, isObject } from '@hapi/protocol';
-import type { OpencodeModelsResponse, OpencodeModelSummary } from '@hapi/protocol/apiTypes';
+import type { OpencodeAgentSummary, OpencodeModelsResponse, OpencodeModelSummary } from '@hapi/protocol/apiTypes';
 import { AcpStdioTransport } from '@/agent/backends/acp/AcpStdioTransport';
 import packageJson from '../../../package.json';
 import { getErrorMessage } from './rpcResponses';
@@ -34,7 +34,23 @@ function normalizeAvailableModels(rawModels: unknown): OpencodeModelSummary[] {
     return out;
 }
 
-function extractModelConfigOption(response: Record<string, unknown>): {
+function normalizeAvailableAgents(rawAgents: unknown): OpencodeAgentSummary[] {
+    if (!Array.isArray(rawAgents)) return [];
+    const out: OpencodeAgentSummary[] = [];
+    for (const entry of rawAgents) {
+        if (!isObject(entry)) continue;
+        const agentId = asString(entry.agentId) ?? asString(entry.value) ?? asString(entry.id);
+        if (!agentId) continue;
+        const name = asString(entry.name) ?? undefined;
+        out.push(name ? { agentId, name } : { agentId });
+    }
+    return out;
+}
+
+function extractSelectConfigOption(
+    response: Record<string, unknown>,
+    category: string
+): {
     currentValue: string | null;
     options: unknown[];
 } | null {
@@ -42,7 +58,7 @@ function extractModelConfigOption(response: Record<string, unknown>): {
 
     for (const entry of response.configOptions) {
         if (!isObject(entry)) continue;
-        if (asString(entry.category) !== 'model') continue;
+        if (asString(entry.category) !== category) continue;
         return {
             currentValue: asString(entry.currentValue),
             options: Array.isArray(entry.options) ? entry.options : []
@@ -52,12 +68,21 @@ function extractModelConfigOption(response: Record<string, unknown>): {
     return null;
 }
 
+function extractModelConfigOption(response: Record<string, unknown>): {
+    currentValue: string | null;
+    options: unknown[];
+} | null {
+    return extractSelectConfigOption(response, 'model');
+}
+
 function extractModelsFromResponse(response: unknown): {
     availableModels: OpencodeModelSummary[];
     currentModelId: string | null;
+    availableAgents: OpencodeAgentSummary[];
+    currentAgentId: string | null;
 } {
     if (!isObject(response)) {
-        return { availableModels: [], currentModelId: null };
+        return { availableModels: [], currentModelId: null, availableAgents: [], currentAgentId: null };
     }
 
     const directList = response.availableModels;
@@ -78,9 +103,13 @@ function extractModelsFromResponse(response: unknown): {
             ? nestedCurrent
             : configModelOption?.currentValue ?? null;
 
+    const configAgentOption = extractSelectConfigOption(response, 'mode');
+
     return {
         availableModels: normalizeAvailableModels(rawModels),
-        currentModelId: rawCurrent
+        currentModelId: rawCurrent,
+        availableAgents: normalizeAvailableAgents(configAgentOption?.options ?? null),
+        currentAgentId: configAgentOption?.currentValue ?? null
     };
 }
 
@@ -112,12 +141,14 @@ async function runOpencodeProbe(cwd: string): Promise<ListOpencodeModelsForCwdRe
             mcpServers: []
         }, { timeoutMs: PROBE_TIMEOUT_MS });
 
-        const { availableModels, currentModelId } = extractModelsFromResponse(newResponse);
+        const { availableModels, currentModelId, availableAgents, currentAgentId } = extractModelsFromResponse(newResponse);
 
         return {
             success: true,
             availableModels,
-            currentModelId
+            currentModelId,
+            availableAgents,
+            currentAgentId
         };
     } finally {
         await transport.close().catch(() => undefined);
@@ -125,9 +156,10 @@ async function runOpencodeProbe(cwd: string): Promise<ListOpencodeModelsForCwdRe
 }
 
 /**
- * Discover available OpenCode models for a given working directory by spawning
- * a short-lived `opencode acp` subprocess, sending `initialize` + `session/new`,
- * and capturing the `availableModels` / `currentModelId` snapshot from the
+ * Discover available OpenCode models and primary agents for a given working
+ * directory by spawning a short-lived `opencode acp` subprocess, sending
+ * `initialize` + `session/new`, and capturing the `availableModels` /
+ * `currentModelId` and `availableAgents` / `currentAgentId` snapshots from the
  * response. The subprocess is torn down immediately afterwards.
  *
  * Results are cached per cwd for 60 seconds; concurrent requests for the same

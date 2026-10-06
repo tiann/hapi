@@ -21,6 +21,7 @@ export interface SpawnSessionOptions {
     serviceTier?: string
     collaborationMode?: 'default' | 'plan'
     copilotAgentMode?: CopilotAgentMode
+    opencodeAgent?: string
     token?: string
     sessionType?: 'simple' | 'worktree'
     worktreeName?: string

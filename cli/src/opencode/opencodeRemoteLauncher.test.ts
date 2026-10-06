@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
+import { PLAN_MODE_INSTRUCTION } from './utils/systemPrompt';
 import type { OpencodeMode, PermissionMode } from './types';
 
 const harness = vi.hoisted(() => ({
     setModelArgs: [] as Array<{ sessionId: string; modelId: string; flavor?: string }>,
     setConfigOptionArgs: [] as Array<{ sessionId: string; configId: string; value: string }>,
+    setModeCalls: [] as string[],
     promptCount: 0,
     promptContents: [] as unknown[],
     refreshSessionInfoCalls: [] as Array<{ sessionId: string; cwd: string }>,
@@ -14,6 +16,7 @@ const harness = vi.hoisted(() => ({
     setModelImpl: null as null | ((sessionId: string, modelId: string) => Promise<void>),
     setConfigOptionImpl: null as null | ((sessionId: string, configId: string, value: string) => Promise<void>),
     thoughtLevelOption: null as null | { id: string; currentValue?: string; options: Array<{ value: string; name?: string }> },
+    modeOption: null as null | { id: string; currentValue?: string; options: Array<{ value: string; name?: string }> },
     // Records the events-array length at each getThoughtLevelConfigOption call,
     // so tests can order lookups against setModel/prompt events without
     // polluting the events list other assertions compare exactly.
@@ -94,6 +97,9 @@ vi.mock('./utils/opencodeBackend', () => ({
                 harness.sessionModelsMetadata = { ...harness.sessionModelsMetadata, currentModelId: modelId };
             }
         }),
+        setMode: vi.fn(async (_sessionId: string, modeId: string) => {
+            harness.setModeCalls.push(modeId);
+        }),
         setConfigOption: vi.fn(async (sessionId: string, configId: string, value: string) => {
             harness.events.push(`setConfigOption:${value}`);
             harness.setConfigOptionArgs.push({ sessionId, configId, value });
@@ -148,6 +154,9 @@ vi.mock('./utils/opencodeBackend', () => ({
             harness.thoughtLevelLookups.push(harness.events.length);
             return harness.thoughtLevelOption ?? undefined;
         }),
+        getConfigOptionByCategory: vi.fn((_sessionId: string, category: string) =>
+            category === 'mode' ? (harness.modeOption ?? undefined) : undefined
+        ),
         // Real AcpSdkBackend.suppressUpdatesDuring swaps out the message
         // handler around `fn`; that detail is irrelevant to these
         // launcher-level tests (which never assert on ACP session/update
@@ -293,9 +302,17 @@ function createResetMode(): OpencodeMode {
     };
 }
 
+function createModeWithAgent(agent: string | null, model?: string): OpencodeMode {
+    return {
+        permissionMode: 'default' as PermissionMode,
+        model,
+        opencodeAgent: agent
+    };
+}
+
 function createSessionStub(
     items: Array<{ message: string; mode: OpencodeMode; localId?: string }>,
-    opts: { keepOpen?: boolean } = {}
+    opts: { keepOpen?: boolean; opencodeAgent?: string | null } = {}
 ) {
     const queue = new MessageQueue2<OpencodeMode>((mode) => JSON.stringify(mode));
     items.forEach(({ message, mode, localId }, index) => {
@@ -357,6 +374,9 @@ function createSessionStub(
         getModel() {
             return session.model;
         },
+        getOpencodeAgent() {
+            return opts.opencodeAgent ?? null;
+        },
         setModel,
         setModelReasoningEffort,
         pushKeepAlive,
@@ -398,6 +418,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
     afterEach(() => {
         harness.setModelArgs = [];
         harness.setConfigOptionArgs = [];
+        harness.setModeCalls = [];
         harness.promptCount = 0;
         harness.promptContents = [];
         harness.refreshSessionInfoCalls = [];
@@ -407,6 +428,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.setModelImpl = null;
         harness.setConfigOptionImpl = null;
         harness.thoughtLevelOption = null;
+        harness.modeOption = null;
         harness.thoughtLevelLookups = [];
         harness.stderrHandler = null;
         harness.hangPrompt = false;
@@ -432,6 +454,73 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.eventStreamOptions = [];
         harness.eventStreamCloseCount = 0;
         inkHarness.lastRenderProps = null;
+    });
+
+    it('applies the startup opencode agent via setConfigOption(mode) without touching the thought level', async () => {
+        harness.modeOption = {
+            id: 'mode',
+            currentValue: 'build',
+            options: [{ value: 'build' }, { value: 'plan' }]
+        };
+        const { session } = createSessionStub([{ message: 'hi', mode: createMode() }], { opencodeAgent: 'plan' });
+
+        await opencodeRemoteLauncher(session as never, {});
+
+        expect(harness.setConfigOptionArgs).toEqual([
+            { sessionId: 'acp-session-1', configId: 'mode', value: 'plan' }
+        ]);
+        // Agent switching must not route through setMode(), whose success path
+        // pollutes the reasoning-effort cache.
+        expect(harness.setModeCalls).toEqual([]);
+    });
+
+    it('switches the opencode agent inline when a batch requests a different agent', async () => {
+        harness.modeOption = {
+            id: 'mode',
+            currentValue: 'build',
+            options: [{ value: 'build' }, { value: 'plan' }]
+        };
+        const { session } = createSessionStub([
+            { message: 'hi', mode: createModeWithAgent('plan') }
+        ]);
+
+        await opencodeRemoteLauncher(session as never, {});
+
+        expect(harness.setConfigOptionArgs).toEqual([
+            { sessionId: 'acp-session-1', configId: 'mode', value: 'plan' }
+        ]);
+    });
+
+    it('does not inject the plan instruction when the effective agent is already plan', async () => {
+        harness.modeOption = {
+            id: 'mode',
+            currentValue: 'plan',
+            options: [{ value: 'build' }, { value: 'plan' }]
+        };
+        const { session } = createSessionStub([
+            { message: 'plan this', mode: createPlanMode() }
+        ]);
+
+        await opencodeRemoteLauncher(session as never, {});
+
+        const firstPrompt = harness.promptContents[0] as Array<{ type: string; text: string }>;
+        expect(firstPrompt[0].text).not.toContain(PLAN_MODE_INSTRUCTION);
+    });
+
+    it('injects the plan instruction when permission is plan but the effective agent is not plan', async () => {
+        harness.modeOption = {
+            id: 'mode',
+            currentValue: 'build',
+            options: [{ value: 'build' }, { value: 'plan' }]
+        };
+        const { session } = createSessionStub([
+            { message: 'plan this', mode: createPlanMode() }
+        ]);
+
+        await opencodeRemoteLauncher(session as never, {});
+
+        const firstPrompt = harness.promptContents[0] as Array<{ type: string; text: string }>;
+        expect(firstPrompt[0].text).toContain(PLAN_MODE_INSTRUCTION);
     });
 
     it('reaches /clear only after the earlier prompt settles, without starting another OpenCode turn', async () => {
@@ -2026,7 +2115,9 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         expect(result).toEqual({
             success: true,
             availableModels: fixtureModels,
-            currentModelId: 'ollama/exaone:4.5-33b-q8'
+            currentModelId: 'ollama/exaone:4.5-33b-q8',
+            availableAgents: [],
+            currentAgentId: null
         });
     });
 

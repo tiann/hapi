@@ -24,6 +24,7 @@ export type NewSessionFormDraft = {
     serviceTier: NewSessionServiceTier
     collaborationMode: CodexCollaborationMode
     copilotAgentMode: CopilotAgentMode
+    opencodeAgent?: string
     yoloMode: boolean
     nativePermissionMode: PermissionMode
     grokPermissionMode: GrokPermissionMode
@@ -73,6 +74,9 @@ export function loadNewSessionFormDraft(): NewSessionFormDraft | null {
             copilotAgentMode: agentPreserved
                 ? normalizeCopilotAgentMode(parsed.copilotAgentMode)
                 : 'interactive',
+            opencodeAgent: agentPreserved && typeof parsed.opencodeAgent === 'string'
+                ? parsed.opencodeAgent
+                : undefined,
             yoloMode: Boolean(parsed.yoloMode),
             nativePermissionMode: (() => {
                 const modes = getLaunchPermissionModesForFlavor(restoredAgent)
