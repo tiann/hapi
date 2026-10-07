@@ -24,6 +24,7 @@ class MockSession {
     updateAgentState(fn: (s: AgentState) => AgentState) { this.state = fn(this.state); }
     onUserMessage(fn: MockSession['user']) { this.user = fn; }
     onCancelQueuedMessage() {} onRetryQueuedMessage() {} onReconnect() {}
+    on() {} off() {}
     sendUserMessage(text: string) { this.messages.push({ user: text }); }
     sendAgentMessage(body: unknown) { this.messages.push(body); }
     sendSessionEvent(body: unknown) { this.messages.push(body); }

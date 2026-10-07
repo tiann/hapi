@@ -552,8 +552,13 @@ export class MessageQueue2<T> {
      * Returns { message: string, mode: T } or null if aborted/closed
      */
     async waitForMessagesAndGetAsString(abortSignal?: AbortSignal): Promise<{ message: string, mode: T, isolate: boolean, hash: string, items: Array<{ message: string, localId?: string }> } | null> {
-        // If we have messages, return them immediately
+        // If we have messages, return them immediately — but never collect for
+        // an aborted signal: collectBatch fires onBatchConsumed, so an aborted
+        // caller must neither ACK nor replay a pending batch.
         if (this.queue.length > 0) {
+            if (abortSignal?.aborted) {
+                return null;
+            }
             return this.collectBatch();
         }
 
@@ -566,6 +571,13 @@ export class MessageQueue2<T> {
         const hasMessages = await this.waitForMessages(abortSignal);
 
         if (!hasMessages) {
+            return null;
+        }
+
+        // Abort may have landed while we waited; do not collect (and ACK) a
+        // batch in that case — the caller re-loops and drains after the abort
+        // teardown settles.
+        if (abortSignal?.aborted) {
             return null;
         }
 

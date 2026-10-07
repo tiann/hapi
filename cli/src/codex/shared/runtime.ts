@@ -239,6 +239,12 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     const key = (connection: string, request: Envelope) => `${connection}:${typeof request.id}:${request.id}`;
     const before = (request: Envelope, connection: string): Promise<Envelope> => operation(async () => {
         const params = record(request.params);
+        const queueRoot = roots.get(string(params.threadId) ?? '');
+        if (queueRoot && ['thread/queue/add', 'thread/queue/update', 'thread/queue/delete',
+            'thread/queue/reorder', 'thread/queue/start'].includes(request.method ?? '')) {
+            if (request.id === undefined) throw new Error('Queue mutations require a JSON-RPC request ID');
+            return { id: request.id, result: await queueRoot.nativeQueueMutation(request.method!, params) };
+        }
         if (['thread/revert', 'thread/rollback'].includes(request.method ?? '')) {
             throw new Error('In-place rewind is unavailable with concurrent HAPI clients. Use /fork or Fork at message instead.');
         }

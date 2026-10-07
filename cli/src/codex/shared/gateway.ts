@@ -84,6 +84,10 @@ export async function startCodexGateway(options: {
                         return;
                     }
                     const transformed = await options.hooks.before(message, connectionId);
+                    if (!transformed.method && (Object.hasOwn(transformed, 'result') || Object.hasOwn(transformed, 'error'))) {
+                        send(downstream, transformed);
+                        return;
+                    }
                     if (transformed.id !== undefined && ['thread/start', 'thread/resume', 'thread/fork', 'thread/archive', 'thread/revert', 'thread/rollback', 'thread/queue/delete'].includes(transformed.method ?? '')) {
                         pending.set(transformed.id, transformed);
                     }

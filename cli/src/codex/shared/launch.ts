@@ -158,8 +158,8 @@ export async function initializeSharedClient(client: CodexAppServerClient): Prom
 }
 
 /** Invalid IDs only: no probes may create turns, mutate threads or call a model. */
-export async function checkSharedCapabilities(client: CodexAppServerClient): Promise<void> {
-    for (const method of ['thread/queue/list', 'thread/queue/add', 'thread/queue/delete', 'thread/queue/start', 'turn/steer', 'thread/settings/update', 'thread/metadata/update', 'thread/fork', 'thread/turns/list']) {
+export async function checkSharedCapabilities(client: Pick<CodexAppServerClient, 'supportsMethod'>): Promise<void> {
+    for (const method of ['thread/queue/list', 'thread/queue/add', 'thread/queue/update', 'thread/queue/delete', 'thread/queue/start', 'turn/steer', 'thread/settings/update', 'thread/metadata/update', 'thread/fork', 'thread/turns/list']) {
         if (!await client.supportsMethod(method)) throw new Error(`Codex lacks ${method}; upgrade to a compatible >= 0.154.0 build`);
     }
 }

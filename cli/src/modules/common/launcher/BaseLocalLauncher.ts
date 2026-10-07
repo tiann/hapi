@@ -79,7 +79,9 @@ export class BaseLocalLauncher {
             const doAbort = async () => {
                 logger.debug(`[${label}]: ${abortLogMessage}`)
                 this.setExitReason('switch')
-                queue.reset()
+                // Plain Stop here means "switch to remote": the session queue
+                // is shared with the remote launcher that takes over, so pending
+                // messages must survive this transition for the next drain.
                 await abortProcess()
             }
 

@@ -1,6 +1,9 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode, TextareaHTMLAttributes } from 'react'
 import { useRef, useState } from 'react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { ApiClient } from '@/api/client'
+import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
@@ -33,6 +36,7 @@ const runtime = vi.hoisted(() => ({
     pendingSendIntentRef: null as null | { current: ComposerSendIntent },
     sentIntents: [] as ComposerSendIntent[],
     modelChanges: [] as Array<{ provider: string; modelId: string } | string | null>,
+    cancelRun: () => {},
 }))
 
 vi.mock('@assistant-ui/react', async () => {
@@ -57,7 +61,7 @@ vi.mock('@assistant-ui/react', async () => {
                 },
                 addAttachment: async () => {},
             }),
-            thread: () => ({ cancelRun: () => {} }),
+            thread: () => ({ cancelRun: () => runtime.cancelRun() }),
         }),
         useAuiState: (selector: (state: typeof runtime.snapshot) => unknown) => selector(runtime.snapshot),
         ComposerPrimitive: {
@@ -114,6 +118,8 @@ vi.mock('@/components/AssistantChat/SortableComposerAttachments', () => ({
 vi.mock('@/components/AssistantChat/ComposerButtons', () => ({
     ComposerButtons: (props: {
         onSend: () => void
+        onAbort: () => void
+        abortDisabled: boolean
         onSchedule: (pending: PendingSchedule) => void
         onClearSchedule: () => void
         pendingSchedule: PendingSchedule | null
@@ -125,6 +131,7 @@ vi.mock('@/components/AssistantChat/ComposerButtons', () => ({
     }) => (
         <div>
             <button type="button" onClick={props.onSend}>send</button>
+            <button type="button" disabled={props.abortDisabled} onClick={props.onAbort}>Abort</button>
             <button type="button" onClick={props.onExpandedToggle}>
                 {props.expanded ? 'collapse' : 'expand'}
             </button>
@@ -157,6 +164,7 @@ function ComposerHarness(props: {
     initialText: string
     initialSchedule?: PendingSchedule | null
     piRunning?: boolean
+    abortPending?: boolean
     controls: { current: HarnessControls | null }
 }) {
     const [snapshot, setSnapshot] = useState<FakeRuntimeState>(() => ({
@@ -225,6 +233,7 @@ function ComposerHarness(props: {
                 key={composerKey}
                 sessionId={composerKey}
                 disabled={isSending}
+                isAborting={props.abortPending}
                 pendingSchedule={schedule}
                 sendAcceptance={sendAcceptance}
                 sendSettlement={sendSettlement}
@@ -600,5 +609,46 @@ describe('HappyComposer send intent gestures', () => {
         fireEvent.keyDown(input(), { key: 'Enter', altKey: true })
         expect(runtime.sentIntents).toEqual([])
         expect(runtime.pendingSendIntentRef?.current).toBe('default')
+    })
+})
+
+
+describe('HappyComposer Abort request settlement', () => {
+    it.each(['success', 'failure'] as const)('allows a second Stop after %s without an idle render', async (outcome) => {
+        let resolve!: () => void
+        let reject!: (error: Error) => void
+        const deferred = new Promise<void>((res, rej) => { resolve = res; reject = rej })
+        const abort = vi.fn().mockImplementationOnce(() => deferred).mockResolvedValue(undefined)
+        const api = { abortSession: abort } as unknown as ApiClient
+        const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+        let settled: Promise<Error | null> | undefined
+        function StopHarness() {
+            const actions = useSessionActions(api, 'session-stop', 'opencode')
+            runtime.cancelRun = () => {
+                // assistant-ui cancelRun is void and observes its onCancel promise.
+                settled = actions.abortSession().then(() => null, (error: Error) => error)
+            }
+            return <ComposerHarness initialText="" piRunning abortPending={actions.isAborting} controls={{ current: null }} />
+        }
+        render(<QueryClientProvider client={client}><StopHarness /></QueryClientProvider>)
+        const stop = screen.getByRole('button', { name: 'Abort' })
+        expect(stop).toBeEnabled()
+        fireEvent.click(stop)
+        await waitFor(() => expect(stop).toBeDisabled())
+        expect(abort).toHaveBeenCalledExactlyOnceWith('session-stop')
+        fireEvent.click(stop)
+        expect(abort).toHaveBeenCalledTimes(1)
+        const failure = new Error('Abort RPC failed')
+        await act(async () => {
+            if (outcome === 'success') resolve()
+            else reject(failure)
+            expect(await settled).toBe(outcome === 'success' ? null : failure)
+        })
+        await waitFor(() => expect(stop).toBeEnabled())
+        expect(runtime.snapshot.thread.isRunning).toBe(true)
+        fireEvent.click(stop)
+        await waitFor(() => expect(abort).toHaveBeenCalledTimes(2))
+        await act(async () => { expect(await settled).toBeNull() })
+        client.clear()
     })
 })

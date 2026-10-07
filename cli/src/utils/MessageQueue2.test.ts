@@ -136,14 +136,81 @@ describe('MessageQueue2', () => {
     it('should handle abort signal with existing messages', async () => {
         const queue = new MessageQueue2<string>(mode => mode);
         const abortController = new AbortController();
-        
+
         // Add messages
         queue.push('message1', 'local');
-        
+
         // Should return messages even with abort signal
         const result = await queue.waitForMessagesAndGetAsString(abortController.signal);
         expect(result).not.toBeNull();
         expect(result?.message).toBe('message1');
+    });
+
+    it('does not collect or ACK pending messages when the signal is already aborted', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const consumed: string[][] = [];
+        queue.onBatchConsumed = (ids) => { consumed.push([...ids]); };
+        queue.push('message1', 'local', 'id1');
+        queue.push('message2', 'local', 'id2');
+
+        const abortController = new AbortController();
+        abortController.abort();
+
+        const result = await queue.waitForMessagesAndGetAsString(abortController.signal);
+        expect(result).toBeNull();
+        expect(consumed).toEqual([]);
+        expect(queue.pendingLocalIds()).toEqual(['id1', 'id2']);
+    });
+
+    it('does not collect an idle-waited message that arrives while the signal is aborted; a fresh signal collects it exactly once', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const consumed: string[][] = [];
+        queue.onBatchConsumed = (ids) => { consumed.push([...ids]); };
+
+        const abortController = new AbortController();
+        const pending = queue.waitForMessagesAndGetAsString(abortController.signal);
+
+        // Abort, then a message arrives during teardown — must NOT be collected.
+        abortController.abort();
+        queue.push('message1', 'local', 'id1');
+
+        const result = await pending;
+        expect(result).toBeNull();
+        expect(consumed).toEqual([]);
+        expect(queue.pendingLocalIds()).toEqual(['id1']);
+
+        // After teardown, a fresh (non-aborted) signal collects the same
+        // message exactly once.
+        const fresh = new AbortController();
+        const second = await queue.waitForMessagesAndGetAsString(fresh.signal);
+        expect(second?.message).toBe('message1');
+        expect(consumed).toEqual([['id1']]);
+        expect(queue.size()).toBe(0);
+    });
+
+    it('does not collect when the idle waiter wakes true and the signal aborts before the continuation', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const consumed: string[][] = [];
+        queue.onBatchConsumed = (ids) => { consumed.push([...ids]); };
+
+        const abortController = new AbortController();
+        const pending = queue.waitForMessagesAndGetAsString(abortController.signal);
+
+        // Wake the waiter with a message, then synchronously abort so the
+        // post-await continuation must NOT collectBatch / ACK.
+        queue.push('message1', 'local', 'id1');
+        abortController.abort();
+
+        const result = await pending;
+        expect(result).toBeNull();
+        expect(consumed).toEqual([]);
+        expect(queue.pendingLocalIds()).toEqual(['id1']);
+
+        const fresh = new AbortController();
+        const second = await queue.waitForMessagesAndGetAsString(fresh.signal);
+        expect(second?.message).toBe('message1');
+        expect(consumed).toEqual([['id1']]);
+        expect(queue.size()).toBe(0);
     });
 
     it('should throw when pushing to closed queue', () => {

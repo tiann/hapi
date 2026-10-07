@@ -46,6 +46,8 @@ export abstract class RemoteLauncherBase {
     protected shouldExit: boolean = false;
     protected ptyAbortController: AbortController | null = null;
     private inkInstance: ReturnType<typeof render> | null = null;
+    private abortInFlight: Promise<void> | null = null;
+    private abortFailure: Error | null = null;
 
     protected constructor(logPath?: string) {
         this.logPath = logPath;
@@ -171,15 +173,70 @@ export abstract class RemoteLauncherBase {
 
     protected setupAbortHandlers(
         rpcHandlerManager: RpcHandlerManagerLike,
-        handlers: RemoteLauncherAbortHandlers
+        handlers: RemoteLauncherAbortHandlers,
+        onAbortEntry?: () => void
     ): void {
         rpcHandlerManager.registerHandler(RPC_METHODS.Abort, async () => {
-            await handlers.onAbort();
+            // Serialize Abort teardowns and hold the loop's next dequeue until
+            // the in-flight teardown completes. Without this, cancelPrompt can
+            // settle the active prompt while handleAbort is still awaiting
+            // permission cancelAll; the freed loop would then dequeue/ACK/send
+            // still-pending messages concurrently with teardown. Switch/exit
+            // (requestExit) bypass this barrier — they are terminal cleanup.
+            if (!onAbortEntry) {
+                await handlers.onAbort();
+                return;
+            }
+            const prior = this.abortInFlight ?? Promise.resolve();
+            let release!: () => void;
+            const barrier = new Promise<void>((resolve) => { release = resolve; });
+            this.abortInFlight = barrier;
+            // Synchronously abort the current signal so an idle loop already
+            // waiting in waitForMessages resolves as aborted (and re-loops into
+            // the barrier) instead of collecting a batch that arrives during
+            // teardown. handleAbort replaces the controller once teardown ends.
+            onAbortEntry();
+            await prior;
+            try {
+                await handlers.onAbort();
+            } catch (error) {
+                // A cancelPrompt/cancelAll rejection means the Abort did NOT
+                // replace the controller: the current signal is already aborted
+                // and the loop must fail closed (no spin, no dispatch/ACK of
+                // pending items). Box the failure so waitForAbortBarrier throws
+                // it to the run loop; it also reaches the Abort RPC caller.
+                this.abortFailure = error instanceof Error ? error : new Error(String(error));
+                throw this.abortFailure;
+            } finally {
+                release();
+                // Clear only when this barrier is still the latest — a newer
+                // Abort may have queued behind us.
+                if (this.abortInFlight === barrier) {
+                    this.abortInFlight = null;
+                }
+            }
         });
 
         rpcHandlerManager.registerHandler(RPC_METHODS.Switch, async () => {
             await handlers.onSwitch();
         });
+    }
+
+    /**
+     * Wait until no Abort teardown is in flight. Throws the boxed cancellation
+     * failure (if one occurred) so the run loop fails closed instead of
+     * dequeuing with a stale aborted signal and spinning.
+     */
+    protected async waitForAbortBarrier(): Promise<void> {
+        if (this.abortFailure) {
+            throw this.abortFailure;
+        }
+        while (this.abortInFlight) {
+            await this.abortInFlight;
+        }
+        if (this.abortFailure) {
+            throw this.abortFailure;
+        }
     }
 
     protected clearAbortHandlers(rpcHandlerManager: RpcHandlerManagerLike): void {
