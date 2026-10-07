@@ -233,6 +233,34 @@ describe('convertAgentMessage', () => {
             inputTokenSemantics: 'includes-cache'
         });
     });
+
+    it('carries ACP cumulative cost onto the token_count payload', () => {
+        const converted = convertAgentMessage({
+            type: 'usage',
+            inputTokens: 0,
+            outputTokens: 0,
+            contextTokens: 4_200,
+            contextWindow: 200_000,
+            cost: 1.25,
+            costCurrency: 'USD'
+        });
+
+        expect(converted).toMatchObject({
+            type: 'token_count',
+            cost: 1.25,
+            costCurrency: 'USD',
+            info: {
+                total: { inputTokens: 0, outputTokens: 0 },
+                contextTokens: 4_200,
+                modelContextWindow: 200_000
+            }
+        });
+        // Narrowed access proves the wire type declares the emitted fields.
+        if (converted?.type === 'token_count') {
+            expect(converted.cost).toBe(1.25);
+            expect(converted.costCurrency).toBe('USD');
+        }
+    });
     it('returns null instead of echoing an unrecognized message shape', () => {
         // Unreachable through the type system, but callers forward any non-null
         // result straight into the chat stream — so the runtime contract has to
