@@ -191,7 +191,7 @@ Response `{"ok": true}`. Sending to an inactive session returns `409 {"error":"S
 
 Other subscribers learn the same outcome via `message-cancelled` / `messages-consumed` SSE events.
 
-**Steer a queued message into the current turn**: `POST /api/sessions/:id/messages/:messageId/steer` → `SteerQueuedMessageResponseSchema`. Unlike the send-time `deliveryMode` option above, this endpoint supports Pi, Codex, and Cursor ACP sessions (`isSteeringSupportedForSession` in `shared/src/modes.ts`). It rejects all scheduled messages, and rejects terminal-controlled sessions unless they advertise `concurrentClients`.
+**Steer a queued message into the current turn**: `POST /api/sessions/:id/messages/:messageId/steer` → `SteerQueuedMessageResponseSchema`. Unlike the send-time `deliveryMode` option above, this endpoint supports Pi, Codex, OpenCode, and Cursor ACP sessions (`isSteeringSupportedForSession` in `shared/src/modes.ts`). It rejects all scheduled messages, and rejects terminal-controlled sessions unless they advertise `concurrentClients`.
 
 | Response | Client action |
 |---|---|

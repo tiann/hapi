@@ -3,7 +3,9 @@ import { randomUUID } from 'node:crypto';
 import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import { logger } from '@/ui/logger';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
+import type { AcpSdkBackend } from '@/agent/backends/acp';
 import type { AcpStderrError } from '@/agent/backends/acp/AcpStdioTransport';
+import { isAcpIndeterminateError } from '@/agent/backends/acp/AcpStdioTransport';
 import { isAcpStallStderrError } from '@/agent/backends/acp/acpStderrErrors';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import type { AgentMessage, McpServerStdio, PromptContent } from '@/agent/types';
@@ -24,6 +26,7 @@ import {
 import { OpencodePermissionHandler } from './utils/permissionHandler';
 import { getOpencodeNativeToolInstruction, PLAN_MODE_INSTRUCTION } from './utils/systemPrompt';
 import { resolveThoughtLevelEffort } from './thoughtLevelEffort';
+import { fetchOpencodeUserMessages } from './utils/opencodeInputReceipt';
 
 type OpencodeRemoteLauncherOptions = {
     onModelRollback?: (model: string | null) => void;
@@ -56,6 +59,30 @@ export type AbortStatusDecision = {
 };
 
 type CompactOperationPhase = 'idle' | 'snapshot' | 'summarize' | 'post-summarize' | 'verification';
+
+/**
+ * One steer operation the launcher still tracks. Deliberately distinct from
+ * the queue reservation (what a cancelled row does) and from backend
+ * ownership (whether the ACP backend is counting a request):
+ *
+ * - `settled` resolves only once completion *and* every restore/consumed
+ *   bookkeeping finished. It is what the foreground prompt's drain awaits.
+ * - `transportPending` is true only while the backend may still be counting
+ *   this steer's request: from `beginSoftSteerPrompt` returning (the backend
+ *   counts it before `dispatched` resolves) until the real `completed` promise
+ *   settles, or until a *definite* failure proved the request is done. Only a
+ *   pending request can be *stranded* by a cancellation (one the agent killed
+ *   that never answers), so only a pending one may be detached. It must be
+ *   cleared as soon as the request settles — while this operation keeps owning
+ *   the row's restore bookkeeping, which must continue to gate the drain.
+ * - `release()` ends the launcher's wait without touching the ACP callbacks,
+ *   so an accepted steer can still commit and acknowledge itself later.
+ */
+type OpencodeSteerOperation = {
+    settled: Promise<void>;
+    transportPending: boolean;
+    release: () => void;
+};
 
 /**
  * Pure decision logic for handleAbort()'s final step: which status message
@@ -135,6 +162,43 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     /** Subscription to the agent's own server event stream; null until the ACP session id is known, closed in cleanup(). */
     private eventStream: OpencodeEventSubscription | null = null;
     private stallErrorReportedForPrompt = false;
+    /** True while a normal (non-compact/clear) prompt turn is in flight — the only steerable state. */
+    private promptInFlight = false;
+    /** Mode hash of the prompt turn currently in flight; steers must match it. */
+    private activePromptModeHash: string | null = null;
+    /** Bumped synchronously by abort/cleanup/teardown; invalidates in-flight steer handlers. */
+    private steerEpoch = 0;
+    /**
+     * Identity of the normal prompt turn currently running, advanced once per
+     * prompt. `steerEpoch` churns several times per turn (onLeavingRemote,
+     * abort, cleanup), so it cannot identify which turn dispatched a soft
+     * request; this can, and cancellation paths use it to settle exactly their
+     * own turn's requests.
+     */
+    private steerTurnEpoch = 0;
+    /**
+     * Steer operations that still own queue/bookkeeping state. Registered the
+     * moment a reservation is taken — *before* the durable-state await — and
+     * retained until the ACP completion plus every restore/consumed ACK has
+     * settled. The foreground prompt's `finally` drains this before advancing,
+     * so a prompt that finishes mid-persistence cannot start the next turn
+     * while a steer is still restoring rows.
+     */
+    private pendingSteerOperations = new Set<OpencodeSteerOperation>();
+    private pendingSteerAcceptances = new Set<OpencodeSteerOperation>();
+    private nativeSteerReceiptGeneration = 0;
+    /**
+     * Soft requests the ACP backend is still counting, keyed by identity so a
+     * late completion callback can only release *its own* entry and never
+     * corrupt a newer turn's ownership.
+     *
+     * `AcpSdkBackend.abortSoftSteers()` deactivates the shared foreground
+     * message handler, which would swallow the cancelled turn's trailing
+     * tool_result/text — so it may only be called while this set holds a
+     * request for that backend. An ordinary Stop with no steer must behave
+     * exactly as before steering existed.
+     */
+    private backendSoftSteerOwnership = new Set<{ backend: AcpSdkBackend; turnEpoch: number }>();
 
     constructor(
         session: OpencodeSession,
@@ -158,6 +222,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     protected async runMainLoop(): Promise<void> {
         const session = this.session;
         const messageBuffer = this.messageBuffer;
+        // Published up front so a session that never reaches a normal prompt
+        // advertises "not steerable" rather than a stale value.
+        this.setSteeringActive(false);
 
         const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
             enableChangeTitle: false,
@@ -364,6 +431,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             onSwitch: () => this.handleSwitchRequest()
         });
 
+        this.installSteerHandler(session, acpSessionId);
+
         const sendReady = () => {
             session.sendSessionEvent({ type: 'ready' });
         };
@@ -401,6 +470,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             // controller afterward — the compact's unbounded REST call would
             // then run to completion with no way to interrupt it, despite
             // the user having already pressed Stop/switch/exit.
+
+            // No foreground turn is live here (the previous one settled and its
+            // drain completed), so this is the one safe place to force-settle a
+            // soft request a cancellation left counted: the inter-turn
+            // model/effort switch below awaits response-complete and would
+            // otherwise block on it forever.
+            this.settleBackendSoftSteers(backend, null, 'dequeue');
+
             const isCompactBatch = batch.mode.operation === 'compact';
             const compactAbortController = isCompactBatch ? new AbortController() : null;
             if (compactAbortController) {
@@ -661,6 +738,19 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
 
             this.stallErrorReportedForPrompt = false;
             session.onThinkingChange(true);
+            // Only a normal prompt is steerable: /compact and /clear leave this
+            // false, so a steer arriving during either is rejected rather than
+            // injected into a turn the agent is not running.
+            this.promptInFlight = true;
+            this.activePromptModeHash = batch.hash;
+            this.steerTurnEpoch += 1;
+            // Advertise steerability so the web's queued-message Steer button
+            // is reachable at all; only a normal active prompt may set it.
+            this.setSteeringActive(true);
+            // Captured before the prompt await: handleAbort replaces
+            // this.abortController, so the drain below must race the turn's
+            // own signal to stay abort-aware.
+            const promptTurnSignal = this.abortController.signal;
 
             try {
                 await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
@@ -671,12 +761,441 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 logger.warn('[opencode-remote] prompt failed', error);
                 this.reportPromptFailure(error);
             } finally {
+                // Close the steer gate synchronously, before the first await:
+                // any steer still parked on its durable-state await must see
+                // the turn as gone and restore its row instead of injecting
+                // into a turn that has already returned.
+                this.promptInFlight = false;
+                this.activePromptModeHash = null;
+                // Publish "not steerable" together with the gate, *before* the
+                // drain: a steer whose completion is still pending would keep
+                // the web's Steer button visible for the whole drain, and every
+                // click in that window is a guaranteed rejection.
+                this.setSteeringActive(false);
+                // Drain before ready / thinking=false / the next batch, so a
+                // steer that settled (or is still restoring) cannot cross the
+                // turn boundary into the next prompt or a /compact.
+                await this.drainSteerOperations(promptTurnSignal);
                 session.onThinkingChange(false);
                 await this.permissionHandler?.cancelAll('Prompt finished');
                 if (session.queue.size() === 0 && !this.shouldExit) {
                     sendReady();
                 }
             }
+        }
+    }
+
+    /**
+     * Registers the per-message Queue/Steer handler. A steer delivers one
+     * waiting-queue row into the *active* OpenCode turn as a concurrent ACP
+     * `session/prompt` (soft inject) — no cancel, no mode/model/effort
+     * mutation, and no plan-instruction re-application (that already rode the
+     * active prompt).
+     */
+    private installSteerHandler(
+        session: OpencodeSession,
+        acpSessionId: string
+    ): void {
+        session.client.rpcHandlerManager.registerHandler(
+            RPC_METHODS.SteerQueuedMessage,
+            async (payload: unknown) => {
+                const localId = typeof (payload as { localId?: unknown } | null)?.localId === 'string'
+                    ? (payload as { localId: string }).localId
+                    : '';
+                if (!localId) {
+                    return { steered: false, error: 'Missing localId' };
+                }
+                const backend = this.backend;
+                // isPromptRequestInFlight(), not processingMessage: after ACP
+                // answers the foreground session/prompt, prompt() keeps
+                // draining updates for seconds while the backend still reports
+                // a processing message. A steer accepted in that window would
+                // start a brand-new turn instead of injecting mid-turn.
+                if (!this.promptInFlight
+                    || !this.activeAcpSessionId
+                    || !backend
+                    || this.shouldExit
+                    || !backend.isPromptRequestInFlight()) {
+                    return { steered: false, error: 'No active steerable turn' };
+                }
+                const steerEpoch = this.steerEpoch;
+                const targetPromptGeneration = backend.getPromptGeneration();
+
+                // takeByLocalId is atomic: a duplicate Steer for the same row
+                // finds no queue entry (the live one is held as a reservation)
+                // and is rejected.
+                const taken = session.queue.takeByLocalId(localId);
+                if (!taken) {
+                    return { steered: false, error: 'Message not in queue' };
+                }
+
+                // Registered before the first await below, and released only
+                // after every restore/consumed ACK has settled. Without this
+                // a prompt finishing during the durable-state await would
+                // drain an empty set and advance to the next batch while this
+                // row is still being restored.
+                const { operation, release: releaseOperation } = this.beginSteerOperation();
+                const receiptGeneration = this.nativeSteerReceiptGeneration;
+
+                const isControlItem = Boolean(taken.item.isolate) || taken.item.mode.operation !== undefined;
+                if (isControlItem) {
+                    session.queue.restoreReservation(taken);
+                    releaseOperation();
+                    return { steered: false, error: 'Control commands cannot be steered' };
+                }
+                if (this.activePromptModeHash !== taken.item.modeHash) {
+                    session.queue.restoreReservation(taken);
+                    releaseOperation();
+                    return { steered: false, error: 'Queued message mode differs from the active turn' };
+                }
+                if (!session.queue.beginReservationDispatch(taken)) {
+                    releaseOperation();
+                    return { steered: false, error: 'Steer cancelled' };
+                }
+
+                const dispatchStatePersisted = await session.client.setSteerDeliveryState([localId], 'dispatching');
+                if (!dispatchStatePersisted) {
+                    // Never send without a durable dispatching state: a crash
+                    // after this point must not look like a delivered row.
+                    session.queue.markReservationIndeterminate(taken);
+                    session.client.emitSteerIndeterminate([localId]);
+                    releaseOperation();
+                    return { steered: false, error: 'Steer state is indeterminate' };
+                }
+
+                const restoreQueuedReservation = async (): Promise<boolean> => {
+                    if (!taken.originIndeterminate) {
+                        const persisted = await session.client.setSteerDeliveryState([localId], 'queued');
+                        if (!persisted) {
+                            session.queue.markReservationIndeterminate(taken);
+                            session.client.emitSteerIndeterminate([localId]);
+                            return false;
+                        }
+                    }
+                    if (taken.state !== 'dispatching' || !session.queue.restoreReservation(taken)) {
+                        session.client.emitSteerIndeterminate([localId]);
+                        return false;
+                    }
+                    return true;
+                };
+
+                if (taken.state !== 'dispatching') {
+                    session.client.emitSteerIndeterminate([localId]);
+                    releaseOperation();
+                    return { steered: false, error: 'Steer cancelled' };
+                }
+                // Snapshot before dispatch: an older identical prompt must not
+                // count as acceptance. Overlapping unproven steers cannot be
+                // correlated by text, so they retain completion-based ACKs.
+                const nativeBefore = this.pendingSteerAcceptances.size === 1
+                    ? await fetchOpencodeUserMessages({ baseUrl: this.baseUrl, sessionId: acpSessionId })
+                    : null;
+                // Recheck everything the durable/native-history awaits could
+                // have invalidated before sending to the backend.
+                if (!this.promptInFlight
+                    || this.shouldExit
+                    || this.steerEpoch !== steerEpoch
+                    || this.backend !== backend
+                    || this.activeAcpSessionId !== acpSessionId
+                    || !backend.isPromptRequestInFlight()
+                    || backend.getPromptGeneration() !== targetPromptGeneration) {
+                    await restoreQueuedReservation();
+                    releaseOperation();
+                    return { steered: false, error: 'Active turn changed' };
+                }
+
+                let steer: { dispatched: Promise<void>; completed: Promise<void> };
+                let softSteerOwnership: { backend: AcpSdkBackend; turnEpoch: number } | null = null;
+                try {
+                    steer = backend.beginSoftSteerPrompt(acpSessionId, [{
+                        type: 'text',
+                        text: taken.item.message
+                    }]);
+                    // The backend counts this request from here, before
+                    // `dispatched` resolves, so ownership starts now — and a
+                    // cancellation can strand it from here on.
+                    softSteerOwnership = { backend, turnEpoch: this.steerTurnEpoch };
+                    this.backendSoftSteerOwnership.add(softSteerOwnership);
+                    operation.transportPending = true;
+                    // Attach the transport-ownership cleanup immediately,
+                    // before awaiting dispatch. `AcpSdkBackend`'s `completed`
+                    // runs finishPromptRequest in its finally, so the backend
+                    // stops counting this request the moment that promise
+                    // settles — for *every* outcome, definite or ambiguous.
+                    // Leaving the record behind would let a cancellation detach
+                    // the operation mid-restore (the FIFO inversion) and
+                    // force-settle a counter already back down, deactivating the
+                    // foreground handler for nothing.
+                    //
+                    // This is purely backend logical-request bookkeeping: an
+                    // ambiguous outcome is still an unproven *delivery*, which
+                    // the reservation policy below handles independently (held
+                    // indeterminate, never auto-replayed). The handler swallows
+                    // the rejection, so this adds no unhandled rejection.
+                    void steer.completed.then(() => {
+                        this.settleSteerTransport(operation, softSteerOwnership);
+                    }, () => {
+                        this.settleSteerTransport(operation, softSteerOwnership);
+                    });
+                } catch (error) {
+                    if (isAcpIndeterminateError(error)) {
+                        if (session.queue.markReservationIndeterminate(taken)) {
+                            session.client.emitSteerIndeterminate([localId]);
+                        }
+                        logger.debug('[opencode-remote] soft-steer dispatch outcome unknown', error);
+                        releaseOperation();
+                        return { steered: false, error: 'Steer outcome is being reconciled' };
+                    }
+                    logger.debug('[opencode-remote] soft-steer failed to start', error);
+                    await restoreQueuedReservation();
+                    releaseOperation();
+                    return { steered: false, error: 'Failed to soft-steer into active turn' };
+                }
+
+                try {
+                    // Ack the hub once ACP accepted the inject on stdin, not
+                    // when the concurrent prompt finishes — that response can
+                    // exceed the hub's RPC timeout while the inject is already
+                    // under way. Completion still gates the next prompt.
+                    await steer.dispatched;
+                } catch (error) {
+                    if (isAcpIndeterminateError(error)) {
+                        if (session.queue.markReservationIndeterminate(taken)) {
+                            session.client.emitSteerIndeterminate([localId]);
+                        }
+                        logger.debug('[opencode-remote] soft-steer dispatch outcome unknown', error);
+                        releaseOperation();
+                        return { steered: false, error: 'Steer outcome is being reconciled' };
+                    }
+                    // A definite dispatch rejection means the request is
+                    // finished, not stranded: clear its ownership before the
+                    // restore so a cancellation during it cannot treat this
+                    // operation as an unanswered runtime request.
+                    this.settleSteerTransport(operation, softSteerOwnership);
+                    await restoreQueuedReservation();
+                    releaseOperation();
+                    logger.debug('[opencode-remote] soft-steer failed to start', error);
+                    return { steered: false, error: 'Failed to soft-steer into active turn' };
+                }
+
+                let accepted = false;
+                const acknowledgeAcceptance = () => {
+                    if (accepted) return;
+                    accepted = true;
+                    this.pendingSteerAcceptances.delete(operation);
+                    session.queue.commitReservation(taken);
+                    session.client.emitMessagesConsumed([localId], { steered: true });
+                    this.messageBuffer.addMessage(taken.item.message, 'user');
+                };
+                // OpenCode persists the user input before the concurrent
+                // session/prompt response (which waits for the model's entire
+                // turn). A new native id with the exact input proves acceptance
+                // now, allowing every UI to move the row into chat promptly.
+                // Never infer acceptance from stdin dispatch or elapsed time.
+                const nativeReceipt = (async () => {
+                    if (!nativeBefore) return;
+                    const previousIds = new Set(nativeBefore.map(message => message.id));
+                    const deadline = Date.now() + 3_000;
+                    while (!accepted && Date.now() < deadline
+                        && this.steerEpoch === steerEpoch
+                        && this.backend === backend
+                        && this.activeAcpSessionId === acpSessionId
+                        && this.nativeSteerReceiptGeneration === receiptGeneration
+                        && this.pendingSteerAcceptances.has(operation)) {
+                        const nativeMessages = await fetchOpencodeUserMessages({
+                            baseUrl: this.baseUrl,
+                            sessionId: acpSessionId,
+                            signal: AbortSignal.timeout(Math.max(1, deadline - Date.now()))
+                        });
+                        if (this.steerEpoch !== steerEpoch
+                            || this.backend !== backend
+                            || this.activeAcpSessionId !== acpSessionId
+                            || this.nativeSteerReceiptGeneration !== receiptGeneration) return;
+                        if (!nativeMessages) return;
+                        const matches = nativeMessages.filter(message =>
+                            !previousIds.has(message.id) && message.text === taken.item.message
+                        );
+                        if (matches.length === 1) {
+                            acknowledgeAcceptance();
+                            return;
+                        }
+                        if (matches.length > 1) return;
+                        await new Promise<void>(resolve => setTimeout(resolve, 100));
+                    }
+                })();
+                // Completion still gates the next normal prompt and settles
+                // backend ownership. A failure after proven native acceptance
+                // must never restore/replay that input. If no receipt is
+                // available, retain the rejection/indeterminate contract.
+                void steer.completed.then(acknowledgeAcceptance, async (error) => {
+                    await nativeReceipt;
+                    if (accepted) return;
+                    if (isAcpIndeterminateError(error)) {
+                        if (session.queue.markReservationIndeterminate(taken)) {
+                            session.client.emitSteerIndeterminate([localId]);
+                        }
+                        logger.debug('[opencode-remote] soft-steer outcome unknown after dispatch; row held for explicit resolution', error);
+                        return;
+                    }
+                    return restoreQueuedReservation().then((restored) => {
+                        if (restored) {
+                            logger.debug('[opencode-remote] soft-steer rejected by ACP; row restored', error);
+                        }
+                    });
+                }).finally(() => {
+                    releaseOperation();
+                });
+                await nativeReceipt;
+                return { steered: true };
+            }
+        );
+    }
+
+    /**
+     * Single source of the steer gate's lifecycle: bump the epoch so any steer
+     * parked on an await is invalid, close the normal-prompt gate, and stop
+     * advertising steerability. Every terminal or cancelling path (abort,
+     * switch/exit, teardown, and the stderr stall cancel) must run this
+     * *synchronously*, before its first await — otherwise a steer can still
+     * inject into a runtime that is being cancelled or already torn down.
+     *
+     * `detachStrandedSteers` additionally releases tracked operations whose
+     * ACP request may still be unanswered — a cancellation can strand those
+     * forever, and they must not block the next turn's drain. Everything else
+     * keeps gating the drain: an operation still on its durable write, or on
+     * the restore that follows a settled request, always finishes within the
+     * socket timeouts. Releasing those early would let the next prompt start
+     * (and `ready` fire) while the row is still held, and the row would then
+     * be restored *after* the next prompt, inverting FIFO. Their ACP callbacks
+     * stay attached either way, so a steer that was in fact accepted can still
+     * commit and acknowledge itself.
+     */
+    private closeSteerGate(options?: { detachStrandedSteers?: boolean }): void {
+        this.steerEpoch++;
+        this.promptInFlight = false;
+        this.activePromptModeHash = null;
+        this.setSteeringActive(false);
+        if (options?.detachStrandedSteers === true) {
+            for (const operation of Array.from(this.pendingSteerOperations)) {
+                if (operation.transportPending) {
+                    operation.release();
+                }
+            }
+        }
+    }
+
+    /**
+     * Publishes whether a queued message could be steered right now. The web
+     * only surfaces the queued Steer button for a session advertising this,
+     * so it must track the normal prompt turn exactly — true while one runs,
+     * false in its `finally`, on abort, on teardown, and the instant remote
+     * mode starts leaving.
+     */
+    private setSteeringActive(active: boolean): void {
+        this.session.client.updateAgentState?.((state) => ({ ...state, steeringActive: active }));
+    }
+
+    /**
+     * Registers a steer operation that the foreground prompt must wait for.
+     * Released once its bookkeeping finished, or detached by a cancellation
+     * that can strand its ACP request — either way the ACP callbacks attached
+     * to that request stay alive.
+     */
+    private beginSteerOperation(): {
+        operation: OpencodeSteerOperation;
+        release: () => void;
+    } {
+        let settle!: () => void;
+        const operation: OpencodeSteerOperation = {
+            settled: new Promise<void>((resolve) => { settle = resolve; }),
+            transportPending: false,
+            release: () => {}
+        };
+        this.pendingSteerOperations.add(operation);
+        this.pendingSteerAcceptances.add(operation);
+        this.nativeSteerReceiptGeneration++;
+        let released = false;
+        operation.release = () => {
+            if (released) return;
+            released = true;
+            this.pendingSteerOperations.delete(operation);
+            this.pendingSteerAcceptances.delete(operation);
+            settle();
+        };
+        return { operation, release: operation.release };
+    }
+
+    /**
+     * Marks a steer operation's ACP request as settled: the backend no longer
+     * counts it, so it is neither stranded-by-a-cancellation material nor a
+     * reason to force-settle counters.
+     *
+     * Identity-scoped on both sides — a late callback (an aborted turn's
+     * request settling long after) can only clear its own record and flag, and
+     * can never mark a newer turn's request as settled.
+     */
+    private settleSteerTransport(
+        operation: OpencodeSteerOperation,
+        ownership: { backend: AcpSdkBackend; turnEpoch: number } | null
+    ): void {
+        operation.transportPending = false;
+        if (ownership) {
+            this.backendSoftSteerOwnership.delete(ownership);
+        }
+    }
+
+    /**
+     * Force-settles this backend's soft-steer counters — and only when it
+     * actually owns an outstanding soft request.
+     *
+     * `AcpSdkBackend.abortSoftSteers()` deactivates the shared foreground
+     * message handler, so calling it on a plain Stop with no steer would
+     * swallow the cancelled turn's trailing tool_result/text. `turnEpoch`
+     * scopes the decision to the turn being cancelled; `null` means "any
+     * leftover", which is only safe where no foreground turn is live (the
+     * dequeue loop, after the previous turn settled).
+     */
+    private settleBackendSoftSteers(
+        backend: AcpSdkBackend,
+        turnEpoch: number | null,
+        reason: string
+    ): void {
+        let owned = false;
+        for (const entry of Array.from(this.backendSoftSteerOwnership)) {
+            if (entry.backend !== backend) continue;
+            if (turnEpoch !== null && entry.turnEpoch !== turnEpoch) continue;
+            this.backendSoftSteerOwnership.delete(entry);
+            owned = true;
+        }
+        if (!owned) {
+            return;
+        }
+        logger.debug(`[opencode-remote] settling stranded soft-steer request (${reason})`);
+        backend.abortSoftSteers();
+    }
+
+    /**
+     * Waits for every tracked steer operation to finish its bookkeeping.
+     * Abort-aware through the *original* turn signal: handleAbort replaces
+     * this.abortController, so reading the field here would miss the abort.
+     */
+    private async drainSteerOperations(turnSignal: AbortSignal): Promise<void> {
+        if (this.pendingSteerOperations.size === 0) return;
+        if (turnSignal.aborted) {
+            // The turn was aborted; its steer work must not gate the next one.
+            return;
+        }
+        const pending = Array.from(this.pendingSteerOperations, (operation) => operation.settled);
+        let releaseWait!: () => void;
+        const abortListener = () => releaseWait();
+        turnSignal.addEventListener('abort', abortListener, { once: true });
+        try {
+            await Promise.race([
+                Promise.allSettled(pending),
+                new Promise<void>((resolve) => { releaseWait = resolve; })
+            ]);
+        } finally {
+            turnSignal.removeEventListener('abort', abortListener);
         }
     }
 
@@ -695,10 +1214,22 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
      * comment on RemoteLauncherBase for exactly when this fires.
      */
     protected onLeavingRemote(): void {
+        // Synchronous, before anything here could await: a steer parked on a
+        // durable-state await must not be able to inject into a backend that is
+        // already on its way out.
+        this.closeSteerGate();
         this.options.onCompactAvailabilityChange?.(false);
     }
 
     protected async cleanup(): Promise<void> {
+        // Before anything that can fail: a steer still parked on a
+        // durable-state await must not be able to send into the backend that is
+        // about to be torn down (or a replacement one).
+        this.closeSteerGate({ detachStrandedSteers: true });
+        this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.SteerQueuedMessage, async () => ({
+            steered: false,
+            error: 'Session ending'
+        }));
         // Before anything that can fail: a stream left open would keep
         // reconnecting to a subprocess that is on its way out.
         this.eventStream?.close();
@@ -844,11 +1375,25 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             return;
         }
 
+        // Synchronous, before the cancel: this cancels the running runtime turn,
+        // so a cancelled runtime must never accept a new mid-turn steer, and a
+        // concurrent ACP request the cancel killed must not block the next
+        // turn's drain. Only already-transmitted requests are detached — a
+        // reservation still waiting on its durable write keeps gating the
+        // drain, so its row cannot be restored after the next prompt.
+        this.closeSteerGate({ detachStrandedSteers: true });
+
         this.session.onThinkingChange(false);
         try {
             await backend.cancelPrompt(sessionId);
         } catch (error) {
             logger.debug('[opencode-remote] cancelPrompt after stderr failed', error);
+        } finally {
+            // Same reasoning as handleAbort, and deliberately conditional: with
+            // no soft request of this turn in flight, abortSoftSteers() would
+            // deactivate the foreground handler and swallow the tail output
+            // OpenCode still emits while processing the cancel.
+            this.settleBackendSoftSteers(backend, this.steerTurnEpoch, 'stall-cancel');
         }
     }
 
@@ -1108,6 +1653,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
      * disconnects the ACP subprocess right after.
      */
     private async handleAbort(leavingRemote = false): Promise<void> {
+        // Synchronous, before any await: a steer parked on its durable-state
+        // await must observe the turn as invalid immediately, so it restores
+        // its row instead of injecting into a cancelled turn or a new one.
+        this.closeSteerGate({ detachStrandedSteers: true });
         // A hostile-review sweep found that a plain Stop during an in-flight
         // compact — which deliberately leaves the operation running for real
         // (see compactResultSuppressed's doc comment) — still unconditionally
@@ -1137,10 +1686,26 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         }
         const backend = this.backend;
         if (backend && this.session.sessionId) {
-            await backend.cancelPrompt(this.session.sessionId);
+            try {
+                await backend.cancelPrompt(this.session.sessionId);
+            } finally {
+                // A soft steer this turn dispatched can still be pending after
+                // an Abort and its ACP request may never answer, which would
+                // hold both the next turn's message handler and the inter-turn
+                // model/effort switches that wait for response-complete. Only
+                // settle counters this backend genuinely owns, so an ordinary
+                // Stop with no steer keeps the cancelled turn's trailing
+                // tool_result/text (abortSoftSteers deactivates the shared
+                // foreground handler).
+                this.settleBackendSoftSteers(backend, this.steerTurnEpoch, 'abort');
+            }
         }
         await this.permissionHandler?.cancelAll('User aborted');
-        this.session.queue.reset();
+        // A steer that was already dispatched may still complete after the
+        // abort; preserve its reservation so the completion callback can
+        // still commit it (or mark it indeterminate) instead of losing the
+        // input.
+        this.session.queue.reset({ preserveDispatchingReservations: true });
         this.abortController.abort();
         this.abortController = new AbortController();
         // Re-read here (not the snapshot taken above, before the awaits) in
