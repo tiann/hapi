@@ -12,6 +12,7 @@ import type { AgyTranscriptEntry, AgyToolCall } from '../utils/agyTranscriptType
  *   {"event":"step_update","step_update":{"conversation_id":"...","step_index":3,"state":"DONE","step_type":"tool","tool_name":"run_command","duration_seconds":0.2,"tool_info":{"name":"run_command","parameters":{...},"output":"hi\r\n"}}}
  *   {"event":"step_update","step_update":{"conversation_id":"...","step_index":4,"state":"DONE","step_type":"checkpoint","duration_seconds":0.7,"usage":{...}}}
  *   {"event":"result","result":{"conversation_id":"...","status":"SUCCESS","response":"OK\n","duration_seconds":3.4,"num_turns":1,"usage":{...}}}
+ *   {"event":"result","result":{"conversation_id":"...","status":"ERROR","response":"","error":"timeout waiting for response","duration_seconds":2.4,"num_turns":1,"usage":{...}}}
  *
  * Mapping to the existing transcript-entry channel (sendAgySessionMessage):
  *   - init        → conversation id becomes known immediately (no hook needed)
@@ -31,7 +32,7 @@ export type AgyStreamEvent =
     | { kind: 'planner-delta'; stepIndex: number; delta: string; isDone: boolean; conversationId?: string }
     | { kind: 'tool'; entry: AgyTranscriptEntry; toolCall: AgyToolCall; isDone: boolean; conversationId?: string }
     | { kind: 'checkpoint'; stepIndex: number; conversationId?: string }
-    | { kind: 'result'; conversationId: string; status: string; response: string | null }
+    | { kind: 'result'; conversationId: string; status: string; response: string | null; error: string | null }
     | { kind: 'ignored'; reason: string };
 
 type StepUpdate = {
@@ -52,6 +53,7 @@ type ResultEnvelope = {
     conversation_id?: string;
     status?: string;
     response?: string;
+    error?: string;
 };
 
 /** agy tool ids are snake_case (run_command, view_file, …); transcript entry types are SCREAMING_SNAKE (RUN_COMMAND, VIEW_FILE, …). */
@@ -102,6 +104,7 @@ export function parseAgyNdjsonLine(rawLine: string): AgyStreamEvent {
             conversationId: typeof result.conversation_id === 'string' ? result.conversation_id : '',
             status: result.status,
             response: typeof result.response === 'string' ? result.response : null,
+            error: typeof result.error === 'string' ? result.error : null,
         };
     }
 
