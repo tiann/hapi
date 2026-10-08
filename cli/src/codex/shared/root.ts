@@ -575,7 +575,7 @@ export class SharedCodexRoot {
             if (archived) this.session.updateMetadata(metadata => ({ ...metadata, lifecycleState: 'archived', lifecycleStateSince: Date.now() }));
             // Inactive is resumable; uploads referenced by pending input must survive.
             this.session.sendSessionDeath(undefined, { preserveUploads: !archived });
-            await this.session.flush(); this.session.close();
-        })();
+            await this.session.flush();
+        })().finally(() => this.session.close());
     }
 }
