@@ -322,3 +322,21 @@ describe('shared steering availability', () => {
         await vi.waitFor(() => expect(end).toHaveBeenCalledTimes(1));
     });
 });
+
+it('replays archived descendant identity without resuming its engine', async () => {
+    const f = await fixture();
+    const original = f.root.client.request.bind(f.root.client);
+    const child = { id: 'archived-child', parentThreadId: 'thread', agentNickname: 'Aristotle', source: { subAgent: { thread_spawn: { agent_path: '/root/archived_task' } } },
+        turns: [{ id: 'done', status: 'completed', items: [] }] };
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        const p = params as Record<string, unknown>;
+        if (method === 'thread/list') return { data: p.archived ? [child] : [] };
+        if (method === 'thread/loaded/list') return { data: ['archived-child'] };
+        if (method === 'thread/read' && p.threadId === 'archived-child') return { thread: child };
+        return original(method, params);
+    });
+    await (f.root as unknown as { refreshChildren(subscribe: boolean): Promise<void> }).refreshChildren(true);
+    expect(f.send).toHaveBeenCalledWith(expect.objectContaining({ metadataOnly: true, agentId: 'archived-child', input: { agentIdentity: {
+        taskName: 'archived_task', agentPath: '/root/archived_task', nickname: 'Aristotle' } } }), expect.any(String));
+    expect(request.mock.calls.some(([method, params]) => method === 'thread/resume' && (params as Record<string, unknown>)?.threadId === 'archived-child')).toBe(false);
+});

@@ -28,7 +28,7 @@ describe('shared history projection', () => {
         const original = send.mock.calls.slice(1, 3);
         projection.reset(); send.mockClear();
         await projection.history({ turns: [{ id: 'turn', status: 'completed', items: [item] }] });
-        expect(send.mock.calls).toEqual(original);
+        expect(send.mock.calls.filter(([body]) => body.type !== 'agent-run-update')).toEqual(original);
     });
 
     it('waits for final proposal content after an active snapshot', async () => {

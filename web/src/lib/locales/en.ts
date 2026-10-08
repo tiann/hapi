@@ -1,4 +1,23 @@
 export default {
+  'tool.agent.notFound': 'Not found',
+  'tool.agent.requestedModel': 'Requested model',
+  'tool.agent.requestedReasoning': 'Requested reasoning',
+  'tool.agent.unknown': 'Unknown',
+  'tool.agent.taskName': 'Task name',
+  'tool.agent.nickname': 'Codex name',
+  'tool.agent.model': 'Model',
+  'tool.agent.reasoning': 'Reasoning',
+  'tool.agent.status': 'Status',
+  'tool.agent.agentPath': 'Agent path',
+  'tool.agent.agentId': 'Agent ID',
+  'tool.agent.role': 'Role',
+  'tool.agent.running': 'Running',
+  'tool.agent.completed': 'Completed',
+  'tool.agent.failed': 'Failed',
+  'tool.agent.pending': 'Pending',
+  'tool.agent.interrupted': 'Interrupted',
+  'tool.agent.shutdown': 'Closed',
+
   // Loading states
   'loading': 'Loading…',
   'authorizing': 'Authorizing…',

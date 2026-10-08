@@ -135,7 +135,7 @@ function extractReasoningText(item: Record<string, unknown>): string | null {
         return direct;
     }
 
-    const summary = item.summary_text ?? item.summaryText;
+    const summary = item.summary ?? item.summary_text ?? item.summaryText;
     if (Array.isArray(summary)) {
         const chunks = summary.filter((part): part is string => typeof part === 'string' && part.length > 0);
         if (chunks.length > 0) {
@@ -143,6 +143,10 @@ function extractReasoningText(item: Record<string, unknown>): string | null {
         }
     }
 
+    if (Array.isArray(item.content)) {
+        const chunks = item.content.filter((part): part is string => typeof part === 'string' && part.length > 0);
+        if (chunks.length) return chunks.join('\n');
+    }
     return null;
 }
 

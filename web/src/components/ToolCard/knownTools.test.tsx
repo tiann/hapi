@@ -148,7 +148,7 @@ describe('getToolPresentation — unknown tool semantic title + subtitle dedup',
 })
 
 describe('getToolPresentation — Codex agent tools', () => {
-    it('titles CodexAgent cards from work summary instead of agent id', () => {
+    it('shows Unknown for legacy cards without trustworthy task identity', () => {
         const presentation = getToolPresentation({
             toolName: 'CodexAgent',
             input: {
@@ -163,13 +163,13 @@ describe('getToolPresentation — Codex agent tools', () => {
             metadata: null,
         })
 
-        expect(presentation.title).toBe('Agent: 检查 Hub Web README')
+        expect(presentation.title).toBe('Unknown')
         expect(presentation.title).not.toContain('agent-1234567890')
-        expect(presentation.subtitle).toBe('reasoning medium · Reading file: README.md')
+        expect(presentation.subtitle).toBe('Unknown · Unknown · Unknown')
         expect(presentation.minimal).toBe(true)
     })
 
-    it('shows Codex auto-selected effort on CodexAgent cards even before activity is available', () => {
+    it('does not treat a requested effort as executed effort', () => {
         const presentation = getToolPresentation({
             toolName: 'CodexAgent',
             input: {
@@ -182,8 +182,8 @@ describe('getToolPresentation — Codex agent tools', () => {
             metadata: null,
         })
 
-        expect(presentation.title).toBe('Agent: Inspect package metadata')
-        expect(presentation.subtitle).toBe('reasoning low')
+        expect(presentation.title).toBe('Unknown')
+        expect(presentation.subtitle).toBe('Unknown · Unknown · Unknown')
     })
 
     it('does not present sub-operation completion as final agent completion while still running', () => {
@@ -201,10 +201,10 @@ describe('getToolPresentation — Codex agent tools', () => {
             metadata: null,
         })
 
-        expect(presentation.subtitle).toBe('reasoning low · Command finished: bun test')
+        expect(presentation.subtitle).toBe('Unknown · Unknown · Running')
     })
 
-    it('falls back to prompt-derived CodexAgent titles without exposing agent id', () => {
+    it('does not invent task identity from prompt or expose UUID as title', () => {
         const presentation = getToolPresentation({
             toolName: 'CodexAgent',
             input: {
@@ -217,7 +217,7 @@ describe('getToolPresentation — Codex agent tools', () => {
             metadata: null,
         })
 
-        expect(presentation.title).toBe('Agent: Fix the reducer for live agent cards.')
+        expect(presentation.title).toBe('Unknown')
         expect(presentation.title).not.toContain('agent-1234567890')
     })
 
@@ -414,4 +414,19 @@ describe('getToolPresentation — request_user_input', () => {
         expect(presentation.title).toBe('Question')
         expect(presentation.subtitle).toBe('Continue?')
     })
+})
+
+
+it('localizes collapsed child metadata in Chinese through the tool presentation contract', () => {
+    const zh: Record<string, string> = { 'tool.agent.unknown': '未知', 'tool.agent.completed': '已完成' }
+    const presentation = getToolPresentation({ toolName: 'CodexAgent', input: { agentStatus: 'completed' }, result: null, childrenCount: 0, description: null, metadata: null }, key => zh[key] ?? key)
+    expect(presentation.title).toBe('未知')
+    expect(presentation.subtitle).toBe('未知 · 未知 · 已完成')
+})
+
+it('uses the existing Russian locale for applied child metadata labels', async () => {
+    const { default: ru } = await import('@/lib/locales/ru')
+    const presentation = getToolPresentation({ toolName: 'CodexAgent', input: { agentStatus: 'running' }, result: null, childrenCount: 0, description: null, metadata: null }, key => (ru as Record<string, string>)[key] ?? key)
+    expect(presentation.title).toBe('Неизвестно')
+    expect(presentation.subtitle).toBe('Неизвестно · Неизвестно · Выполняется')
 })

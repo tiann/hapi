@@ -71,10 +71,14 @@ function mapAgentRunStatusToToolState(status: string | null): ToolCallBlock['too
         || status === 'error'
         || status === 'canceled'
         || status === 'cancelled'
+        || status === 'interrupted'
+        || status === 'shutdown'
+        || status === 'killed'
         || status === 'notFound'
         || status === 'not_found'
     ) return 'error'
-    if (status === 'pending') return 'pending'
+    if (status === 'unknown') return 'pending'
+    if (status === 'pending' || status === 'pending_init' || status === 'pendingInit') return 'pending'
     return 'running'
 }
 
@@ -142,6 +146,10 @@ function shouldIgnoreAgentRunCloseCleanupAfterTerminal(
 
 function getAgentRunDisplayPatch(event: Record<string, unknown>): Record<string, unknown> {
     const patch: Record<string, unknown> = {}
+    const input = isObject(event.input) ? event.input : null
+    // Only normalized child metadata is merged. Raw collaboration inputs describe requests.
+    if (input && isObject(input.agentIdentity)) patch.agentIdentity = input.agentIdentity
+    if (input && isObject(input.agentExecution)) patch.agentExecution = input.agentExecution
     const summary = getEventString(event, 'summary')
     const activity = getEventString(event, 'activity')
     const activityKind = getEventString(event, 'activityKind') ?? getEventString(event, 'activity_kind')
@@ -634,13 +642,14 @@ export function reduceTimeline(
                     pendingAgentRunCardByFingerprint.set(fingerprint, cardId)
                 }
 
+                const hadAgentRunBlock = agentRunBlocksByCardId.has(cardId)
                 const block = ensureAgentRunBlock(cardId, {
                     createdAt: msg.createdAt,
                     invokedAt: msg.invokedAt,
                     model: msg.model,
                     localId: msg.localId,
                     meta: msg.meta,
-                    input: event.input
+                    input: agentRunBlocksByCardId.has(cardId) ? undefined : event.input
                 })
 
                 if (mergeFromCardId) {
@@ -668,11 +677,60 @@ export function reduceTimeline(
                 }
 
                 if (msg.content.type === 'agent-run-update') {
-                    const status = getEventString(event, 'status') ?? 'running'
+                    const displayPatch = getAgentRunDisplayPatch(event)
+                    if (isObject(displayPatch.agentIdentity)) {
+                        const current = isObject(block.tool.input) ? block.tool.input : {}
+                        displayPatch.agentIdentity = { ...(isObject(current.agentIdentity) ? current.agentIdentity : {}), ...displayPatch.agentIdentity }
+                    }
+                    const currentInput = isObject(block.tool.input) ? block.tool.input : {}
+                    const priorExecution = isObject(currentInput.agentExecution) ? currentInput.agentExecution : null
+                    const incomingExecution = isObject(displayPatch.agentExecution) ? displayPatch.agentExecution : null
+                    if (priorExecution && incomingExecution && priorExecution.turnId === incomingExecution.turnId) {
+                        if (event.activityKind === 'turn_started' || event.activityKind === 'turn_completed' || event.activityKind === 'turn_snapshot') displayPatch.agentExecution = priorExecution
+                        else if (priorExecution.source === 'codex-model-rerouted' && incomingExecution.source === 'codex-turn-context') {
+                            displayPatch.agentExecution = { ...incomingExecution, model: priorExecution.model, source: priorExecution.source }
+                        }
+                    }
+                    // Identity and execution evidence may arrive after completion. It cannot reopen a card.
+                    if (event.metadataOnly === true || !nonBlank(event.status)) {
+                        if (!hadAgentRunBlock && !mergeFromCardId) block.tool = { ...block.tool, state: 'pending', startedAt: null }
+                        const current = isObject(block.tool.input) ? block.tool.input : {}
+                        const execution = isObject(displayPatch.agentExecution) ? displayPatch.agentExecution : null
+                        const currentExecution = isObject(current.agentExecution) ? current.agentExecution : null
+                        if (execution && currentExecution?.turnId && currentExecution.turnId !== execution.turnId) delete displayPatch.agentExecution
+                        patchAgentRunInput(block, { agentId, ...displayPatch })
+                        continue
+                    }
+                    const turnId = getEventString(event, 'turnId')
+                    const turnOrder = Array.isArray(event.turnOrder) ? event.turnOrder.filter((id): id is string => typeof id === 'string') : []
+                    const knownOrder = Array.isArray(currentInput.agentTurnIds) ? currentInput.agentTurnIds.filter((id): id is string => typeof id === 'string') : []
+                    const knownTurn = asString(priorExecution?.turnId)
+                    if (turnId) {
+                        if (event.activityKind === 'turn_snapshot') {
+                            if (knownTurn && knownTurn !== turnId && (!turnOrder.includes(knownTurn) || turnOrder.indexOf(knownTurn) > turnOrder.indexOf(turnId))) continue
+                            displayPatch.agentTurnIds = turnOrder
+                        } else {
+                            if (knownOrder.includes(turnId) && knownOrder.indexOf(turnId) < knownOrder.length - 1) continue
+                            if (knownTurn && knownTurn !== turnId && event.activityKind === 'turn_completed') continue
+                            displayPatch.agentTurnIds = knownOrder.includes(turnId) ? knownOrder : [...knownOrder, turnId]
+                        }
+                        if (turnId === knownTurn && isTerminalAgentRunState(block.tool.state)
+                            && (event.activityKind === 'turn_started' || (event.activityKind === 'turn_snapshot' && isNonTerminalAgentRunState(mapAgentRunStatusToToolState(getEventString(event, 'status')))))) continue
+                        if (knownTurn && knownTurn !== turnId) displayPatch.agentExecution = { turnId, model: null, reasoningEffort: null }
+                    } else if (knownTurn) {
+                        // Unbound parent collaboration state cannot finish or restart a known child turn.
+                        patchAgentRunInput(block, displayPatch)
+                        continue
+                    }
+                    const previousCompletedAt = block.tool.completedAt
+                    const sameTerminalTurn = turnId !== null && turnId === knownTurn && isTerminalAgentRunState(block.tool.state)
+                    const status = nonBlank(event.status) ?? nonBlank(currentInput.agentStatus) ?? 'unknown'
                     const nextState = mapAgentRunStatusToToolState(status)
                     const startedAt = getAgentRunStartedAt(event)
+                    const nativeTurn = turnId !== null && (event.activityKind === 'turn_started' || event.activityKind === 'turn_completed' || event.activityKind === 'turn_snapshot')
                     if (
-                        shouldIgnoreAgentRunNonTerminalUpdateAfterTerminal(block, nextState, event)
+                        (rawIsFallback && isTerminalAgentRunState(block.tool.state) && isNonTerminalAgentRunState(nextState) && event.activityKind !== 'turn_started' && event.activityKind !== 'turn_snapshot')
+                        || shouldIgnoreAgentRunNonTerminalUpdateAfterTerminal(block, nextState, event)
                         || shouldIgnoreAgentRunCloseCleanupAfterTerminal(block, status, event)
                     ) {
                         continue
@@ -681,15 +739,20 @@ export function reduceTimeline(
                         agentId,
                         agentStatus: status,
                         statusText: getEventString(event, 'statusText') ?? getEventString(event, 'status_text') ?? status,
-                        ...getAgentRunDisplayPatch(event)
+                        ...displayPatch
                     })
-                    block.tool = { ...block.tool, state: nextState }
-                    if (nextState === 'running') {
+                    block.tool = { ...block.tool, state: nextState, ...((event.activityKind === 'turn_started' || ((event.activityKind === 'turn_completed' || event.activityKind === 'turn_snapshot') && priorExecution && event.turnId !== priorExecution.turnId)) ? { result: undefined, completedAt: null } : {}) }
+                    // The logical child card survives turns, but execution timing belongs to the current turn.
+                    // A native snapshot can repair a missing live start without retaining the first task's clock.
+                    if (nativeTurn && (startedAt !== null || turnId !== knownTurn || block.tool.startedAt === null)) {
+                        block.tool = { ...block.tool, startedAt: startedAt ?? msg.createdAt }
+                    }
+                    if (nextState === 'running' && !nativeTurn) {
                         setEarliestStartedAt(block, startedAt ?? msg.createdAt)
                     }
                     if (nextState === 'completed' || nextState === 'error') {
-                        setEarliestStartedAt(block, startedAt)
-                        block.tool = { ...block.tool, completedAt: getAgentRunCompletedAt(event) ?? msg.createdAt }
+                        if (!nativeTurn) setEarliestStartedAt(block, startedAt)
+                        block.tool = { ...block.tool, completedAt: getAgentRunCompletedAt(event) ?? (sameTerminalTurn ? previousCompletedAt : null) ?? msg.createdAt }
                     }
                     if ('result' in event) {
                         block.tool = { ...block.tool, result: event.result }
@@ -714,9 +777,11 @@ export function reduceTimeline(
                         meta: msg.meta,
                         input: agentRunBlocksByCardId.has(traceCardId) ? undefined : { agentId: traceAgentId }
                     })
+                    const traceInput = isObject(traceBlock.tool.input) ? traceBlock.tool.input : {}
+                    const knownStatus = nonBlank(traceInput.agentStatus)
                     const tracePatch: Record<string, unknown> = {
                         agentId: traceAgentId,
-                        agentStatus: traceBlock.tool.state,
+                        ...(knownStatus ? { agentStatus: knownStatus } : {}),
                         ...getAgentRunDisplayPatch(event)
                     }
                     if (!isTerminalAgentRunState(traceBlock.tool.state)) {
@@ -729,8 +794,11 @@ export function reduceTimeline(
                     traceMessages.push(...normalizeTraceMessage(traceAgentId, event.message, msg))
                     agentRunTraceMessagesByCardId.set(traceCardId, traceMessages)
                     refreshAgentRunChildren(traceCardId)
-                    if (traceBlock.tool.state !== 'completed' && traceBlock.tool.state !== 'error') {
-                        traceBlock.tool.state = 'running'
+                    if ((!knownStatus || knownStatus === 'unknown') && !isTerminalAgentRunState(traceBlock.tool.state)) {
+                        // Saved activity proves that work happened, not the child's current lifecycle.
+                        traceBlock.tool = { ...traceBlock.tool, state: 'pending', startedAt: null }
+                    } else if (traceBlock.tool.state === 'running' && !isObject(traceInput.agentExecution)) {
+                        // Native per-turn timing is authoritative; historical traces cannot backdate it.
                         setEarliestStartedAt(traceBlock, startedAt ?? msg.createdAt)
                     }
                     continue

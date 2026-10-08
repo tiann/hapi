@@ -8,9 +8,8 @@ import { basename, resolveDisplayPath } from '@/utils/path'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
 import { getGoalToolName } from '@/components/ToolCard/goalTools'
 import {
-    getCodexAgentActivity,
+    codexAgentCard,
     getCodexAgentPrompt,
-    getCodexAgentReasoningEffortLabel,
     getCodexAgentSummary,
     getCodexAgentTargets,
     getCodexAgentType,
@@ -273,20 +272,8 @@ export const knownTools: Record<string, {
     },
     CodexAgent: {
         icon: () => <RocketIcon className={DEFAULT_ICON_CLASS} />,
-        title: (opts) => {
-            const summary = getCodexAgentSummary(opts.input)
-            if (summary) return `Agent: ${summary}`
-            return 'Agent'
-        },
-        subtitle: (opts) => {
-            const activity = getCodexAgentActivity(opts.input)
-            const result = summarizeCodexAgentResult('wait_agent', opts.result)
-            const prompt = getCodexAgentPrompt(opts.input)
-            const status = activity ?? result ?? (prompt ? truncate(prompt, 120) : null)
-            const effort = getCodexAgentReasoningEffortLabel(opts.input)
-            if (effort && status) return `${effort} · ${status}`
-            return effort ?? status
-        },
+        title: (opts) => codexAgentCard(opts.input, undefined, opts.result).title,
+        subtitle: (opts) => codexAgentCard(opts.input, undefined, opts.result).subtitle,
         minimal: true
     },
     shell_command: {
@@ -683,8 +670,8 @@ export function getToolPresentation(
         const minimal = typeof known.minimal === 'function' ? known.minimal(opts) : (known.minimal ?? false)
         return {
             icon: known.icon(opts),
-            title: goalName && t ? t(`tool.goal.${goalName}`) : known.title(opts),
-            subtitle: known.subtitle ? known.subtitle(opts) : null,
+            title: opts.toolName === 'CodexAgent' ? codexAgentCard(opts.input, t, opts.result).title : goalName && t ? t(`tool.goal.${goalName}`) : known.title(opts),
+            subtitle: opts.toolName === 'CodexAgent' ? codexAgentCard(opts.input, t, opts.result).subtitle : known.subtitle ? known.subtitle(opts) : null,
             minimal
         }
     }

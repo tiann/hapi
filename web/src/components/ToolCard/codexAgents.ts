@@ -176,7 +176,7 @@ export function getCodexAgentTargets(input: unknown): string[] {
     return direct
 }
 
-export function getCodexAgentFieldRows(toolName: string, input: unknown): Array<{ label: string; value: string }> {
+export function getCodexAgentFieldRows(toolName: string, input: unknown, t?: AgentTranslator): Array<{ label: string; value: string }> {
     const rows: Array<{ label: string; value: string }> = []
     const agentId = isObject(input)
         ? asNonEmptyString(input.agentId) ?? asNonEmptyString(input.agent_id)
@@ -193,10 +193,10 @@ export function getCodexAgentFieldRows(toolName: string, input: unknown): Array<
     if (agentType) rows.push({ label: 'Type', value: agentType })
 
     const model = getInputStringAny(input, ['model'])
-    if (model) rows.push({ label: 'Model', value: model })
+    if (model) rows.push({ label: agentLabel('requestedModel', t), value: model })
 
     const effort = getCodexAgentReasoningEffort(input)
-    if (effort) rows.push({ label: 'Reasoning', value: effort })
+    if (effort) rows.push({ label: agentLabel('requestedReasoning', t), value: effort })
 
     if (isObject(input)) {
         const forkContext = asBooleanLabel(input.fork_context)
@@ -413,4 +413,46 @@ export function summarizeCodexAgentResult(toolName: string, result: unknown): st
     }
 
     return null
+}
+
+export type AgentTranslator = (key: string) => string
+const agentLabels: Record<string, string> = {
+    unknown: 'Unknown', taskName: 'Task name', nickname: 'Codex name', model: 'Model',
+    reasoning: 'Reasoning', status: 'Status', agentPath: 'Agent path', agentId: 'Agent ID', role: 'Role',
+    running: 'Running', completed: 'Completed', failed: 'Failed', pending: 'Pending', interrupted: 'Interrupted',
+    shutdown: 'Closed', notFound: 'Not found', requestedModel: 'Requested model', requestedReasoning: 'Requested reasoning'
+}
+export function agentLabel(key: string, t?: AgentTranslator): string {
+    return t ? t(`tool.agent.${key}`) : agentLabels[key] ?? key
+}
+
+export function codexAgentCard(input: unknown, t?: AgentTranslator, result?: unknown) {
+    const data = isObject(input) ? input : {}
+    const parsed = parseCodexSpawnAgentResult(result)
+    const matched = parsed?.agentId && parsed.agentId === data.agentId ? parsed : null
+    const identity = isObject(data.agentIdentity) ? data.agentIdentity : {}
+    const execution = isObject(data.agentExecution) ? data.agentExecution : {}
+    const unknown = agentLabel('unknown', t)
+    const taskName = asNonEmptyString(identity.taskName) ?? asNonEmptyString(data.task_name) ?? matched?.taskName?.split('/').filter(Boolean).at(-1) ?? unknown
+    const nickname = asNonEmptyString(identity.nickname) ?? asNonEmptyString(data.nickname) ?? matched?.nickname
+    const model = asNonEmptyString(execution.model) ?? unknown
+    const reasoning = asNonEmptyString(execution.reasoningEffort) ?? unknown
+    const rawStatus = asNonEmptyString(data.agentStatus)
+    const statusKey = rawStatus === 'error' || rawStatus === 'errored' ? 'failed'
+        : rawStatus === 'pendingInit' || rawStatus === 'pending_init' ? 'pending'
+        : rawStatus === 'notFound' || rawStatus === 'not_found' ? 'notFound'
+        : rawStatus === 'canceled' || rawStatus === 'cancelled' || rawStatus === 'killed' ? 'interrupted' : rawStatus
+    const status = statusKey ? agentLabel(statusKey, t) : unknown
+    return { taskName, nickname, model, reasoning, status,
+        title: [taskName, nickname].filter(Boolean).join(' · '), subtitle: `${model} · ${reasoning} · ${status}`,
+        rows: [
+            { label: agentLabel('taskName', t), value: taskName },
+            ...(nickname ? [{ label: agentLabel('nickname', t), value: nickname }] : []),
+            { label: agentLabel('model', t), value: model },
+            { label: agentLabel('reasoning', t), value: reasoning },
+            { label: agentLabel('status', t), value: status },
+            ...(asNonEmptyString(identity.role) ? [{ label: agentLabel('role', t), value: String(identity.role) }] : []),
+            { label: agentLabel('agentPath', t), value: asNonEmptyString(identity.agentPath) ?? (matched?.taskName?.startsWith('/') ? matched.taskName : null) ?? unknown },
+            { label: agentLabel('agentId', t), value: asNonEmptyString(data.agentId) ?? unknown, copy: asNonEmptyString(data.agentId) }
+        ] }
 }

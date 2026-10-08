@@ -1,4 +1,23 @@
 export default {
+  'tool.agent.notFound': 'Не найдено',
+  'tool.agent.requestedModel': 'Запрошенная модель',
+  'tool.agent.requestedReasoning': 'Запрошенный уровень рассуждений',
+  'tool.agent.unknown': 'Неизвестно',
+  'tool.agent.taskName': 'Название задачи',
+  'tool.agent.nickname': 'Имя Codex',
+  'tool.agent.model': 'Модель',
+  'tool.agent.reasoning': 'Уровень рассуждений',
+  'tool.agent.status': 'Статус',
+  'tool.agent.agentPath': 'Путь агента',
+  'tool.agent.agentId': 'ID агента',
+  'tool.agent.role': 'Роль',
+  'tool.agent.running': 'Выполняется',
+  'tool.agent.completed': 'Завершено',
+  'tool.agent.failed': 'Ошибка',
+  'tool.agent.pending': 'Ожидание',
+  'tool.agent.interrupted': 'Прервано',
+  'tool.agent.shutdown': 'Закрыто',
+
   // Состояния загрузки
   'loading': 'Загрузка…',
   'authorizing': 'Авторизация…',

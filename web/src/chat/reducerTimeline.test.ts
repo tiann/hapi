@@ -1615,3 +1615,177 @@ describe('reduceTimeline', () => {
         })
     })
 })
+
+describe('child metadata persistence', () => {
+    const event = (id: string, agentId: string, payload: Record<string, unknown>): TracedMessage => ({
+        id, localId: null, createdAt: Number(id.replace(/\D/g, '')) || 1, role: 'event', isSidechain: false,
+        content: { type: 'agent-run-update', cardId: `codex-agent:${agentId}`, agentId, ...payload }
+    } as TracedMessage)
+    it('merges late identity without reopening or erasing results, isolates children and rejects old turn evidence', () => {
+        const messages = [
+            event('1', 'child', { turnId: 't1', status: 'running', activityKind: 'turn_started', input: { agentExecution: { turnId: 't1', model: null } } }),
+            event('2', 'child', { turnId: 't1', activityKind: 'turn_completed', status: 'completed', result: 'answer' }),
+            event('3', 'child', { metadataOnly: true, input: { agentIdentity: { taskName: 'analyst_298', nickname: 'Aristotle' }, agentExecution: { turnId: 't1', model: 'actual', reasoningEffort: 'high' } } }),
+            event('4', 'sibling', { metadataOnly: true, input: { agentIdentity: { taskName: 'sibling' } } }),
+            event('5', 'child', { metadataOnly: true, input: { agentIdentity: { agentPath: '/root/analyst_298' } } })
+        ]
+        const result = reduceTimeline(messages, makeContext())
+        const child = result.toolBlocksById.get('codex-agent:child')!
+        expect(child.tool.state).toBe('completed')
+        expect(child.tool.result).toBe('answer')
+        expect(child.tool.input).toMatchObject({ agentIdentity: { taskName: 'analyst_298', nickname: 'Aristotle', agentPath: '/root/analyst_298' }, agentExecution: { model: 'actual' } })
+        expect(result.toolBlocksById.get('codex-agent:sibling')!.tool.input).not.toHaveProperty('agentExecution')
+        const restarted = reduceTimeline([...messages,
+            event('6', 'child', { turnId: 't2', status: 'running', activityKind: 'turn_started', input: { agentExecution: { turnId: 't2', model: null, reasoningEffort: null } } }),
+            event('7', 'child', { metadataOnly: true, input: { agentExecution: { turnId: 't1', model: 'stale' } } })
+        ], makeContext()).toolBlocksById.get('codex-agent:child')!
+        expect(restarted.tool.input).toMatchObject({ agentExecution: { turnId: 't2', model: null } })
+        expect(restarted.tool.result).toBeUndefined()
+        expect(reduceTimeline(messages, makeContext()).blocks).toEqual(result.blocks)
+    })
+})
+
+describe('native lifecycle ordering', () => {
+    it('retains completed result after duplicate start and accepts a newer completed snapshot, preserving reroute model', () => {
+        const event = (n: number, data: Record<string, unknown>): TracedMessage => ({ id: `ordered-${n}`, localId: null, createdAt: n,
+            role: 'event', isSidechain: false, content: { type: 'agent-run-update', agentId: 'child', cardId: 'codex-agent:child', ...data } } as TracedMessage)
+        const base = [
+            event(1, { turnId: 't1', startedAt: 1000, status: 'running', activityKind: 'turn_started', input: { agentExecution: { turnId: 't1', model: null } } }),
+            event(2, { turnId: 't1', startedAt: 1000, status: 'completed', activityKind: 'turn_completed', result: 'retained' }),
+            event(3, { turnId: 't1', startedAt: 1000, status: 'running', activityKind: 'turn_started', input: { agentExecution: { turnId: 't1', model: null } } }),
+            event(4, { metadataOnly: true, input: { agentExecution: { turnId: 't1', model: 'routed', reasoningEffort: null, source: 'codex-model-rerouted' } } }),
+            event(5, { metadataOnly: true, input: { agentExecution: { turnId: 't1', model: 'initial', reasoningEffort: 'medium', source: 'codex-turn-context' } } })
+        ]
+        const get = (messages: TracedMessage[]) => reduceTimeline(messages, makeContext()).toolBlocksById.get('codex-agent:child')!
+        expect(get(base).tool).toMatchObject({ state: 'completed', result: 'retained', input: { agentExecution: { model: 'routed', reasoningEffort: 'medium' } } })
+        const newer = [...base, event(6, { turnId: 't2', turnOrder: ['t1', 't2'], status: 'completed', activityKind: 'turn_snapshot' }),
+            event(7, { metadataOnly: true, input: { agentExecution: { turnId: 't2', model: 'new', reasoningEffort: 'low' } } }),
+            event(8, { turnId: 't1', startedAt: 1000, status: 'completed', activityKind: 'turn_completed' })]
+        expect(get(newer).tool.input).toMatchObject({ agentExecution: { turnId: 't2', model: 'new' } })
+    })
+})
+
+it.each([null, 1000])('orders authoritative child snapshots with absent or equal timestamps (%s)', startedAt => {
+    const ev = (n: number, body: Record<string, unknown>): TracedMessage => ({ id: `lifecycle-${n}`, localId: null, createdAt: n,
+        role: 'event', isSidechain: false, content: { type: 'agent-run-update', agentId: 'child', cardId: 'codex-agent:child', ...body } } as TracedMessage)
+    const messages = [
+        ev(1, { turnId: 't1', startedAt, activityKind: 'turn_started', status: 'running', input: { agentExecution: { turnId: 't1', model: null } } }),
+        ev(2, { turnId: 't1', activityKind: 'turn_completed', status: 'completed', result: 'old-result' }),
+        ev(3, { turnId: 't2', turnOrder: ['t1', 't2'], startedAt, activityKind: 'turn_snapshot', status: 'completed', input: { agentExecution: { turnId: 't2', model: null } } }),
+        ev(4, { metadataOnly: true, input: { agentExecution: { turnId: 't2', model: 'new-model', reasoningEffort: 'high' } } }),
+        ev(5, { turnId: 't1', startedAt: null, activityKind: 'turn_started', status: 'running', input: { agentExecution: { turnId: 't1', model: null } } }),
+        ev(6, { turnId: 't1', turnOrder: ['t1'], activityKind: 'turn_snapshot', status: 'completed' })
+    ]
+    const block = reduceTimeline(messages, makeContext()).toolBlocksById.get('codex-agent:child')!
+    expect(block.tool).toMatchObject({ state: 'completed', input: { agentExecution: { turnId: 't2', model: 'new-model' } } })
+    expect(block.tool.result).toBeUndefined()
+})
+
+it('does not let unbound parent collaboration state finish a known child turn', () => {
+    const ev = (n: number, body: Record<string, unknown>): TracedMessage => ({ id: `collab-${n}`, localId: null, createdAt: n,
+        role: 'event', isSidechain: false, content: { type: 'agent-run-update', agentId: 'child', cardId: 'codex-agent:child', ...body } } as TracedMessage)
+    const block = reduceTimeline([
+        ev(1, { turnId: 't1', activityKind: 'turn_started', status: 'running', input: { agentExecution: { turnId: 't1', model: null } } }),
+        ev(2, { turnId: 't1', activityKind: 'turn_completed', status: 'completed' }),
+        ev(3, { turnId: 't2', activityKind: 'turn_started', status: 'running', input: { agentExecution: { turnId: 't2', model: null } } }),
+        ev(4, { status: 'completed', result: 'old wait result', input: { type: 'collabAgentToolCall' } })
+    ], makeContext()).toolBlocksById.get('codex-agent:child')!
+    expect(block.tool).toMatchObject({ state: 'running', input: { agentStatus: 'running', agentExecution: { turnId: 't2' } } })
+    expect(block.tool.result).toBeUndefined()
+})
+
+it('keeps a completed native child turn terminal when a stale running snapshot arrives for the same ID', () => {
+    const ev = (n: number, data: Record<string, unknown>): TracedMessage => ({ id: `same-turn-${n}`, localId: null, createdAt: n,
+        role: 'event', isSidechain: false, content: { type: 'agent-run-update', agentId: 'child', cardId: 'codex-agent:child', ...data } } as TracedMessage)
+    const block = reduceTimeline([
+        ev(1, { turnId: 't', status: 'running', activityKind: 'turn_started', input: { agentExecution: { turnId: 't', model: null } } }),
+        ev(2, { metadataOnly: true, input: { agentExecution: { turnId: 't', model: 'actual', reasoningEffort: 'high' } } }),
+        ev(3, { turnId: 't', status: 'completed', activityKind: 'turn_completed', result: 'answer' }),
+        ev(4, { turnId: 't', turnOrder: ['t'], status: 'running', activityKind: 'turn_snapshot', input: { agentExecution: { turnId: 't', model: null } } })
+    ], makeContext()).toolBlocksById.get('codex-agent:child')!
+    expect(block.tool).toMatchObject({ state: 'completed', result: 'answer', input: { agentStatus: 'completed', agentExecution: { turnId: 't', model: 'actual' } } })
+})
+
+it.each([undefined, 15_000])('preserves native child finish time across snapshot replay (end %s)', completedAt => {
+    const ev = (n: number, data: Record<string, unknown>): TracedMessage => ({ id: `timing-${n}`, localId: null, createdAt: n * 100_000,
+        role: 'event', isSidechain: false, content: { type: 'agent-run-update', agentId: 'child', cardId: 'codex-agent:child', ...data } } as TracedMessage)
+    const messages = [
+        ev(1, { turnId: 't', startedAt: 10_000, status: 'running', activityKind: 'turn_started', input: { agentExecution: { turnId: 't', model: null } } }),
+        ev(2, { turnId: 't', completedAt: 15_000, status: 'completed', activityKind: 'turn_completed', result: 'answer' }),
+        ev(3, { turnId: 't', turnOrder: ['t'], startedAt: 10_000, completedAt, status: 'completed', activityKind: 'turn_snapshot', input: { agentExecution: { turnId: 't', model: null } } })
+    ]
+    const block = reduceTimeline(messages, makeContext()).toolBlocksById.get('codex-agent:child')!
+    expect(block.tool.completedAt).toBe(15_000)
+    expect(toolDurationMs(block.tool)).toBe(5_000)
+    expect(block.tool.result).toBe('answer')
+})
+
+it.each([true, false])('shows current execution timing when the same child runs again (live start %s)', liveStart => {
+    const ev = (n: number, data: Record<string, unknown>): TracedMessage => ({ id: `rerun-${n}`, localId: null, createdAt: n * 100_000,
+        role: 'event', isSidechain: false, content: { type: 'agent-run-update', agentId: 'child', cardId: 'codex-agent:child', ...data } } as TracedMessage)
+    const initial = [
+        ev(1, { turnId: 'old', startedAt: 10_000, activityKind: 'turn_started', status: 'running', input: { agentExecution: { turnId: 'old', model: null } } }),
+        ev(2, { turnId: 'old', startedAt: 10_000, completedAt: 15_000, activityKind: 'turn_completed', status: 'completed', result: 'first answer' })
+    ]
+    const second = ev(3, { turnId: 'new', turnOrder: ['old', 'new'], startedAt: 2_000_000, activityKind: liveStart ? 'turn_started' : 'turn_snapshot', status: liveStart ? 'running' : 'completed',
+        ...(liveStart ? {} : { completedAt: 2_005_000 }), input: { agentExecution: { turnId: 'new', model: null } } })
+    const running = reduceTimeline([...initial, second], makeContext()).toolBlocksById.get('codex-agent:child')!
+    expect(running.tool.startedAt).toBe(2_000_000)
+    if (liveStart) expect(running.tool.completedAt).toBeNull()
+    const final = reduceTimeline([...initial, second,
+        ev(4, { turnId: 'new', startedAt: 2_000_000, completedAt: 2_005_000, activityKind: 'turn_completed', status: 'completed', result: 'second answer' }),
+        ev(5, { turnId: 'new', turnOrder: ['old', 'new'], startedAt: 2_000_000, completedAt: 2_005_000, activityKind: 'turn_snapshot', status: 'completed' }),
+        ev(6, { turnId: 'old', turnOrder: ['old'], startedAt: 10_000, completedAt: 15_000, activityKind: 'turn_snapshot', status: 'completed' })
+    ], makeContext()).toolBlocksById.get('codex-agent:child')!
+    expect(final.tool.startedAt).toBe(2_000_000)
+    expect(final.tool.completedAt).toBe(2_005_000)
+    expect(toolDurationMs(final.tool)).toBe(5_000)
+    expect(final.tool.result).toBe('second answer')
+})
+
+it('does not start the execution clock from metadata before the first native turn', () => {
+    const ev = (n: number, data: Record<string, unknown>): TracedMessage => ({ id: `metadata-clock-${n}`, localId: null, createdAt: n * 100_000,
+        role: 'event', isSidechain: false, content: { type: 'agent-run-update', agentId: 'child', cardId: 'codex-agent:child', ...data } } as TracedMessage)
+    const metadata = ev(1, { metadataOnly: true, input: { agentExecution: { turnId: 't', model: 'native' } } })
+    const pending = reduceTimeline([metadata], makeContext()).toolBlocksById.get('codex-agent:child')!
+    expect(pending.tool.startedAt).toBeNull()
+    const started = reduceTimeline([metadata, ev(2, { turnId: 't', status: 'running', activityKind: 'turn_started' })], makeContext()).toolBlocksById.get('codex-agent:child')!
+    expect(started.tool.startedAt).toBe(200_000)
+})
+
+it('keeps an existing terminal card when metadata first supplies its child ID', () => {
+    const messages = [
+        { id: 'identity-order-1', localId: null, createdAt: 1000, role: 'event', isSidechain: false,
+            content: { type: 'agent-run-update', cardId: 'codex-agent:child', status: 'completed', result: 'retained answer' } },
+        { id: 'identity-order-2', localId: null, createdAt: 2000, role: 'event', isSidechain: false,
+            content: { type: 'agent-run-update', cardId: 'codex-agent:child', agentId: 'child', metadataOnly: true, input: { agentIdentity: { taskName: 'known_task' } } } }
+    ] as TracedMessage[]
+    const block = reduceTimeline(messages, makeContext()).toolBlocksById.get('codex-agent:child')!
+    expect(block.tool).toMatchObject({ state: 'completed', result: 'retained answer', input: { agentIdentity: { taskName: 'known_task' } } })
+})
+
+it('leaves legacy historical activity without a lifecycle source Unknown and preserves the log', () => {
+    const ev = (n: number, data: Record<string, unknown> & { type: 'agent-run-update' | 'agent-run-trace' }): TracedMessage => ({ id: `unknown-trace-${n}`, localId: null, createdAt: n * 100_000,
+        role: 'event', isSidechain: false, content: { agentId: 'child', cardId: 'codex-agent:child', ...data } } as TracedMessage)
+    const history = [ev(1, { type: 'agent-run-trace', message: { type: 'message', message: 'Saved historical output', id: 'saved-output' } })]
+    const unknown = reduceTimeline(history, makeContext()).toolBlocksById.get('codex-agent:child')!
+    expect(unknown.tool.state).toBe('pending')
+    expect(unknown.tool.input).not.toHaveProperty('agentStatus')
+    expect(unknown.tool.startedAt).toBeNull()
+    expect(unknown.children).toContainEqual(expect.objectContaining({ kind: 'agent-text', text: 'Saved historical output' }))
+    const running = reduceTimeline([...history,
+        ev(2, { type: 'agent-run-update', turnId: 'new', startedAt: 2_000_000, status: 'running', activityKind: 'turn_started', input: { agentExecution: { turnId: 'new', model: null } } }),
+        ev(3, { type: 'agent-run-trace', startedAt: 10_000, message: { type: 'reasoning', message: 'Late old activity', id: 'late-old' } })
+    ], makeContext()).toolBlocksById.get('codex-agent:child')!
+    expect(running.tool.startedAt).toBe(2_000_000)
+    expect(running.tool.input).toMatchObject({ agentStatus: 'running', agentExecution: { turnId: 'new' } })
+})
+
+it('does not invent a running status for a legacy update that only supplies metadata', () => {
+    const message = { id: 'unknown-update', localId: null, createdAt: 1000, role: 'event', isSidechain: false,
+        content: { type: 'agent-run-update', agentId: 'child', cardId: 'codex-agent:child', input: { agentIdentity: { taskName: 'known' } } } } as TracedMessage
+    const block = reduceTimeline([message], makeContext()).toolBlocksById.get('codex-agent:child')!
+    expect(block.tool.state).toBe('pending')
+    expect(block.tool.input).not.toHaveProperty('agentStatus')
+    expect(block.tool.startedAt).toBeNull()
+})

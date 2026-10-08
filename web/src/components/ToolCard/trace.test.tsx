@@ -392,3 +392,14 @@ describe('TraceSection', () => {
         expect(container.querySelector('.border-l')).not.toBeNull()
     })
 })
+
+it('keeps saved completed Reasoning records readable in the child activity log', () => {
+    const block = makeCodexAgentBlock([], 'completed')
+    block.children = [{ kind: 'agent-reasoning', id: 'native-reasoning', localId: null, createdAt: 1000,
+        text: 'Saved reasoning summary\nRestored reasoning detail' }]
+    render(<TraceSection block={block} metadata={null} />)
+    const row = screen.getByRole('button', { name: /Reasoning.*Saved reasoning summary/ })
+    fireEvent.click(row)
+    expect(screen.getByText(/Restored reasoning detail/)).toBeVisible()
+    expect(block.tool.state).toBe('completed')
+})

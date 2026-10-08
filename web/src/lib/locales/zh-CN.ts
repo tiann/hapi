@@ -1,4 +1,23 @@
 export default {
+  'tool.agent.notFound': '未找到',
+  'tool.agent.requestedModel': '请求的模型',
+  'tool.agent.requestedReasoning': '请求的推理强度',
+  'tool.agent.unknown': '未知',
+  'tool.agent.taskName': '任务名称',
+  'tool.agent.nickname': 'Codex 名称',
+  'tool.agent.model': '模型',
+  'tool.agent.reasoning': '推理强度',
+  'tool.agent.status': '状态',
+  'tool.agent.agentPath': '代理路径',
+  'tool.agent.agentId': '代理 ID',
+  'tool.agent.role': '角色',
+  'tool.agent.running': '运行中',
+  'tool.agent.completed': '已完成',
+  'tool.agent.failed': '失败',
+  'tool.agent.pending': '等待中',
+  'tool.agent.interrupted': '已中断',
+  'tool.agent.shutdown': '已关闭',
+
   // Loading states
   'loading': '加载中…',
   'authorizing': '认证中…',

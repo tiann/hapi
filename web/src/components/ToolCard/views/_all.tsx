@@ -1,4 +1,6 @@
 import type { ComponentType } from 'react'
+import { useTranslation } from '@/lib/use-translation'
+import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import type { ChatToolCall, ToolCallBlock } from '@/chat/types'
 import type { SessionMetadataSummary } from '@/types/api'
 import { CodexDiffCompactView, CodexDiffFullView } from '@/components/ToolCard/views/CodexDiffView'
@@ -16,6 +18,7 @@ import { GoalView } from '@/components/ToolCard/views/GoalView'
 import { canShowGoalPreview, isGoalToolName } from '@/components/ToolCard/goalTools'
 import { getInputStringAny } from '@/lib/toolInputUtils'
 import {
+    codexAgentCard,
     getCodexAgentFieldRows,
     getCodexAgentPrompt,
     summarizeCodexAgentResult
@@ -40,7 +43,10 @@ const SkillFullView: ToolViewComponent = ({ block }: ToolViewProps) => {
 
 const CodexAgentView: ToolViewComponent = ({ block, surface }: ToolViewProps) => {
     const input = block.tool.input
-    const rows = getCodexAgentFieldRows(block.tool.name, input)
+    const { t } = useTranslation()
+    const { copied, copy } = useCopyToClipboard()
+    const rows: Array<{ label: string; value: string; copy?: string | null }> = block.tool.name === 'CodexAgent'
+        ? codexAgentCard(input, t, block.tool.result).rows : getCodexAgentFieldRows(block.tool.name, input, t)
     const prompt = getCodexAgentPrompt(input)
     const resultSummary = surface === 'inline'
         ? summarizeCodexAgentResult(block.tool.name, block.tool.result)
@@ -57,14 +63,15 @@ const CodexAgentView: ToolViewComponent = ({ block, surface }: ToolViewProps) =>
                 </div>
             ) : null}
             {rows.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
+                <div className="flex min-w-0 flex-col gap-2">
                     {rows.map((row) => (
                         <span
                             key={`${row.label}:${row.value}`}
-                            className="inline-flex max-w-full items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-2 py-0.5 text-xs text-[var(--app-hint)]"
+                            className="flex min-w-0 max-w-full flex-wrap items-baseline gap-1 text-xs text-[var(--app-hint)]"
                         >
                             <span className="font-medium text-[var(--app-fg)]">{row.label}:</span>
-                            <span className="truncate font-mono">{row.value}</span>
+                            <span className="min-w-0 whitespace-pre-wrap break-all font-mono">{row.value}</span>
+                            {row.copy ? <button type="button" className="shrink-0 rounded border border-[var(--app-border)] px-2 py-1" aria-label={`${t('message.copy')} ${row.label}`} onClick={() => void copy(row.copy!)}>{t(copied ? 'message.copied' : 'message.copy')}</button> : null}
                         </span>
                     ))}
                 </div>

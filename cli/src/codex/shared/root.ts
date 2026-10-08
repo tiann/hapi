@@ -221,6 +221,7 @@ export class SharedCodexRoot {
     private alive(): void {
         this.publishSteering();
         this.publishPlan();
+        if (!this.closed) for (const child of this.children.values()) void child.refreshEvidence().catch(error => logger.debug('[Codex shared] child execution evidence', error));
         if (!this.closed) this.session.keepAlive(Boolean(this.currentTurn), undefined, this.settings);
     }
     private availablePlanId(): string | null {
@@ -265,6 +266,10 @@ export class SharedCodexRoot {
             if (!projection) {
                 projection = new SharedCodexProjection(this.session, eventThread, async () => {}, this.threadId);
                 this.children.set(eventThread, projection);
+                if (method !== 'thread/started') {
+                    try { projection.childThread(record(record(await this.client.request('thread/read', { threadId: eventThread, includeTurns: false })).thread)); }
+                    catch { /* Identity unavailable: leave fields unknown. */ }
+                }
             }
             await projection.notification(method, params); return;
         }
@@ -308,18 +313,26 @@ export class SharedCodexRoot {
     }
     private async refreshChildren(subscribe: boolean): Promise<void> {
         let cursor: string | undefined;
-        do {
-            const page = record(await this.client.request('thread/list', { ancestorThreadId: this.threadId, cursor,
-                sourceKinds: ['subAgent', 'subAgentReview', 'subAgentCompact', 'subAgentThreadSpawn', 'subAgentOther'] }));
-            for (const value of Array.isArray(page.data) ? page.data : []) {
-                const thread = record(value); const id = string(thread.id);
-                if (id && id !== this.threadId) this.ancestry.set(id, string(thread.parentThreadId) ?? null);
-                if (id && id !== this.threadId && await this.ownsThread(id) && !this.children.has(id)) {
-                    this.children.set(id, new SharedCodexProjection(this.session, id, async () => {}, this.threadId));
+        const archivedChildren = new Set<string>();
+        for (const archived of [false, true]) {
+            cursor = undefined;
+            do {
+                const page = record(await this.client.request('thread/list', { ancestorThreadId: this.threadId, cursor, archived,
+                    sourceKinds: ['subAgent', 'subAgentReview', 'subAgentCompact', 'subAgentThreadSpawn', 'subAgentOther'] }));
+                for (const value of Array.isArray(page.data) ? page.data : []) {
+                    const thread = record(value); const id = string(thread.id);
+                    if (id && id !== this.threadId) this.ancestry.set(id, string(thread.parentThreadId) ?? null);
+                    if (id && id !== this.threadId && await this.ownsThread(id) && !this.children.has(id)) {
+                        this.children.set(id, new SharedCodexProjection(this.session, id, async () => {}, this.threadId));
+                    }
+                    if (id) {
+                        this.children.get(id)?.childThread(thread);
+                        if (archived) archivedChildren.add(id);
+                    }
                 }
-            }
-            cursor = string(page.nextCursor);
-        } while (cursor);
+                cursor = string(page.nextCursor);
+            } while (cursor);
+        }
         const loaded = new Set<string>(); cursor = undefined;
         if (subscribe && this.children.size) do {
             const page = record(await this.client.request('thread/loaded/list', { cursor }));
@@ -329,7 +342,7 @@ export class SharedCodexRoot {
         for (const [id, projection] of this.children) {
             // Replaying a completed/unloaded child must not start its engine.
             try {
-                if (subscribe && loaded.has(id)) await this.client.request('thread/resume', { threadId: id });
+                if (subscribe && loaded.has(id) && !archivedChildren.has(id)) await this.client.request('thread/resume', { threadId: id });
                 projection.reset(); await projection.history(await this.readThread(id));
             } catch (error) { logger.debug('[Codex shared] child history unavailable', { id, error }); }
         }

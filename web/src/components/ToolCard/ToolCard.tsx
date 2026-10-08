@@ -550,7 +550,7 @@ function ToolCardInner(props: ToolCardProps) {
                         }}
                     >
                         <DialogHeader className="text-left">
-                            <DialogTitle>{toolTitle}</DialogTitle>
+                            <DialogTitle className={isCodexAgentCard ? "min-w-0 break-all pr-6" : undefined}>{toolTitle}</DialogTitle>
                         </DialogHeader>
                         <ToolDetailDialogContent block={props.block} metadata={props.metadata} />
                     </DialogContent>
