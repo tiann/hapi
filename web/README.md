@@ -11,7 +11,7 @@ React Mini App / PWA for monitoring and controlling hapi sessions.
   focuses optional notes, supports empty notes, and preserves the canonical
   wire value across languages. Recorded other answers and notes remain visible
   in live and historical cards; Pi/MCP forms without the flag are unchanged.
-- Permission mode and model selection.
+- Permission mode plus capability-driven Model and Effort selection.
 - Machine list and remote session spawn.
 - File browser and git status/diff views.
 - PWA install prompt and offline banner.
@@ -64,7 +64,8 @@ See `src/router.tsx` for route definitions.
 
 - Message thread with infinite scroll.
 - Composer for sending messages.
-- Permission mode and model selection for supported agents.
+- Permission mode selection for supported agents.
+- Model and Effort controls use the same picker across supported agents; unavailable choices stay hidden.
   Cursor Auto uses CLI Auto for new/resumed sessions configured with Auto. When ACP does not advertise a literal Auto option, the session picker warns that switching back from a concrete model requires a restart; HAPI does not automatically restart an active session.
 - Session abort and handoff controls.
 - Codex **Continue planning** hides the current proposal's action menu locally

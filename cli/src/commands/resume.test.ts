@@ -11,6 +11,8 @@ const {
     runCodexMock,
     runClaudeMock,
     runGrokMock,
+    runKimiMock,
+    runCopilotMock,
     runPiMock,
     runAgyMock,
     assertCodexLocalSupportedMock,
@@ -26,6 +28,8 @@ const {
     runCodexMock: vi.fn(async () => {}),
     runClaudeMock: vi.fn(async () => {}),
     runGrokMock: vi.fn(async () => {}),
+    runKimiMock: vi.fn(async () => {}),
+    runCopilotMock: vi.fn(async () => {}),
     runPiMock: vi.fn(async () => {}),
     runAgyMock: vi.fn(async () => {}),
     assertCodexLocalSupportedMock: vi.fn(),
@@ -51,6 +55,8 @@ vi.mock('@/ui/ink/ResumeSessionPicker', () => ({
 vi.mock('@/codex/runCodex', () => ({ runCodex: runCodexMock }))
 vi.mock('@/claude/runClaude', () => ({ runClaude: runClaudeMock }))
 vi.mock('@/grok/runGrok', () => ({ runGrok: runGrokMock }))
+vi.mock('@/kimi/runKimi', () => ({ runKimi: runKimiMock }))
+vi.mock('@/copilot/runCopilot', () => ({ runCopilot: runCopilotMock }))
 vi.mock('@/pi/runPi', () => ({ runPi: runPiMock }))
 vi.mock('@/agy/runAgy', () => ({ runAgy: runAgyMock }))
 vi.mock('@/codex/utils/codexVersion', () => ({ assertCodexLocalSupported: assertCodexLocalSupportedMock }))
@@ -82,6 +88,8 @@ describe('resumeCommand', () => {
         runCodexMock.mockClear()
         runClaudeMock.mockClear()
         runGrokMock.mockClear()
+        runKimiMock.mockClear()
+        runCopilotMock.mockClear()
         runPiMock.mockClear()
         runAgyMock.mockClear()
         assertCodexLocalSupportedMock.mockClear()
@@ -295,6 +303,66 @@ describe('resumeCommand', () => {
             consoleErrorSpy.mockRestore()
             exitSpy.mockRestore()
         }
+    })
+
+    it('resumes a Kimi target with stored effort', async () => {
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-kimi',
+            flavor: 'kimi',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: false,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: 'kimi-session-1',
+            model: 'kimi-k2',
+            effort: 'high',
+            permissionMode: 'default'
+        })
+
+        await resumeCommand.run(createContext(['hapi-session-kimi']))
+
+        expect(runKimiMock).toHaveBeenCalledWith({
+            existingSessionId: 'hapi-session-kimi',
+            workingDirectory: '/tmp/project',
+            resumeSessionId: 'kimi-session-1',
+            startedBy: 'terminal',
+            permissionMode: 'default',
+            startingMode: 'local',
+            model: 'kimi-k2',
+            effort: 'high'
+        })
+    })
+
+    it('resumes a Copilot target with stored effort', async () => {
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-copilot',
+            flavor: 'copilot',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: false,
+            thinking: false,
+            controlledByUser: false,
+            agentSessionId: 'copilot-session-1',
+            model: 'gpt-5.6',
+            effort: 'high',
+            permissionMode: 'default',
+            copilotAgentMode: 'interactive'
+        })
+
+        await resumeCommand.run(createContext(['hapi-session-copilot']))
+
+        expect(runCopilotMock).toHaveBeenCalledWith({
+            existingSessionId: 'hapi-session-copilot',
+            workingDirectory: '/tmp/project',
+            resumeSessionId: 'copilot-session-1',
+            startedBy: 'terminal',
+            permissionMode: 'default',
+            startingMode: 'local',
+            model: 'gpt-5.6',
+            effort: 'high',
+            copilotAgentMode: 'interactive'
+        })
     })
 
     it('resumes an inactive local target even when controlledByUser is sticky', async () => {

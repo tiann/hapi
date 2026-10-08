@@ -6,5 +6,6 @@ export type PermissionMode = CopilotPermissionMode;
 export interface CopilotMode {
     permissionMode: PermissionMode;
     model?: string;
+    effort?: string | null;
     agentMode?: CopilotAgentMode;
 }

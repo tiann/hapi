@@ -300,7 +300,10 @@ export class AcpSdkBackend implements AgentBackend {
             try {
                 await this.transport.sendRequest('session/set_mode', { sessionId, modeId });
                 this.setModeSupported = true;
-                this.updateThoughtLevelCurrentValue(sessionId, modeId);
+                const thoughtLevelOption = this.getThoughtLevelConfigOption(sessionId);
+                if (thoughtLevelOption?.options.some((option) => option.value === modeId)) {
+                    this.updateThoughtLevelCurrentValue(sessionId, modeId);
+                }
                 return;
             } catch (error) {
                 const message = error instanceof Error ? error.message : String(error);

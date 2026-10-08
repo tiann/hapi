@@ -17,6 +17,7 @@ export async function copilotLocalLauncher(
     session: CopilotSession,
     opts: {
         model?: string;
+        effort?: string | null;
     }
 ): Promise<'switch' | 'exit'> {
     const startupTimestampMs = Date.now();
@@ -54,6 +55,7 @@ export async function copilotLocalLauncher(
                 sessionId: session.sessionId,
                 abort: abortSignal,
                 model: opts.model,
+                effort: opts.effort,
                 yolo: approval.yolo,
                 agentMode: session.getAgentMode()
             });
