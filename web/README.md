@@ -24,6 +24,7 @@ React Mini App / PWA for monitoring and controlling hapi sessions.
 - The login screen includes a top-right hub picker; if unset, the app uses the same origin it was loaded from.
 - Live updates come from the hub via SSE.
 - Session `@` suggestions require conversation content, including untitled conversations. Names and directory labels affect display/search, not eligibility; empty stubs stay excluded.
+- On desktop, drag a session with conversation content from the sidebar into the rich composer to insert the same session mention as `@`. It uses the current caret, or the end of the draft when no editor selection exists. The current session cannot reference itself.
 
 ## Routes
 
