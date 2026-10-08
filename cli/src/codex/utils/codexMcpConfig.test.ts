@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
     buildMcpServerConfigArgs,
-    buildDeveloperInstructionsArg,
     buildCodexHookConfigArgs
 } from './codexMcpConfig';
 
@@ -84,44 +83,6 @@ describe('codexMcpConfig', () => {
             const args = buildMcpServerConfigArgs(mcpServers);
 
             expect(args).toContain('mcp_servers.test.command="path/to/server"');
-        });
-    });
-
-    describe('buildDeveloperInstructionsArg', () => {
-        it('builds developer instructions arg', () => {
-            const instructions = 'Call functions.hapi__change_title to set title.';
-
-            const args = buildDeveloperInstructionsArg(instructions);
-
-            expect(args).toEqual([
-                '-c',
-                'developer_instructions="Call functions.hapi__change_title to set title."'
-            ]);
-        });
-
-        it('escapes double quotes', () => {
-            const instructions = 'Use "quotes" in text.';
-
-            const args = buildDeveloperInstructionsArg(instructions);
-
-            expect(args[1]).toContain('\\"quotes\\"');
-        });
-
-        it('escapes newlines', () => {
-            const instructions = 'Line 1\nLine 2';
-
-            const args = buildDeveloperInstructionsArg(instructions);
-
-            expect(args[1]).toContain('\\n');
-            expect(args[1]).not.toContain('\n');
-        });
-
-        it('escapes backslashes', () => {
-            const instructions = 'Path: C:\\Users\\test';
-
-            const args = buildDeveloperInstructionsArg(instructions);
-
-            expect(args[1]).toContain('\\\\');
         });
     });
 

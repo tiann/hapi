@@ -5,6 +5,7 @@ import ripgrepArchiveLicense from '../../tools/archives/ripgrep-LICENSE' assert 
 import difftasticLicense from '../../tools/licenses/difftastic-LICENSE' assert { type: 'file' };
 import ripgrepLicense from '../../tools/licenses/ripgrep-LICENSE' assert { type: 'file' };
 import tunwgLicense from '../../../shared/tools/tunwg/LICENSE' assert { type: 'file' };
+import hapiSessionControlSkill from '../../skills/hapi-session-control/SKILL.md' assert { type: 'file' };
 
 export interface EmbeddedAsset {
     relativePath: string;
@@ -19,6 +20,7 @@ function asset(relativePath: string, sourcePath: string): EmbeddedAsset {
 }
 
 const COMMON_ASSETS: EmbeddedAsset[] = [
+    asset('skills/hapi-session-control/SKILL.md', hapiSessionControlSkill),
     asset('tools/archives/difftastic-LICENSE', difftasticArchiveLicense),
     asset('tools/archives/ripgrep-LICENSE', ripgrepArchiveLicense),
     asset('tools/licenses/difftastic-LICENSE', difftasticLicense),

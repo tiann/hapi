@@ -19,8 +19,7 @@ interface PermissionResponseMessage {
 
 function pickOptionId(
     request: PermissionRequest,
-    preferredKinds: string[],
-    options: { fallbackToFirst?: boolean } = {}
+    preferredKinds: string[]
 ): string | null {
     for (const kind of preferredKinds) {
         const match = request.options.find((option) => option.kind === kind);
@@ -28,15 +27,7 @@ function pickOptionId(
             return match.optionId;
         }
     }
-    if (options.fallbackToFirst === false) {
-        return null;
-    }
     return request.options.length > 0 ? request.options[0].optionId : null;
-}
-
-function mapPlanModeDenialToOutcome(request: PermissionRequest): PermissionResponse {
-    const optionId = pickOptionId(request, ['reject_once', 'reject_always'], { fallbackToFirst: false });
-    return optionId ? { outcome: 'selected', optionId } : { outcome: 'cancelled' };
 }
 
 function mapDecisionToOutcome(request: PermissionRequest, decision: PermissionResponseMessage['decision']): PermissionResponse {
@@ -85,11 +76,6 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
             return;
         }
 
-        if (mode === 'plan') {
-            void this.denyForPlanMode(request, toolName, toolInput);
-            return;
-        }
-
         this.pendingBackendRequests.set(request.id, request);
         this.addPendingRequest(request.id, toolName, toolInput, {
             resolve: () => {},
@@ -124,35 +110,6 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
         }));
 
         logger.debug(`[Opencode] Auto-approved ${toolName} (${request.id}) mode=${decision}`);
-    }
-
-    private async denyForPlanMode(
-        request: PermissionRequest,
-        toolName: string,
-        toolInput: unknown
-    ): Promise<void> {
-        const outcome = mapPlanModeDenialToOutcome(request);
-        await this.backend.respondToPermission(request.sessionId, request, outcome);
-
-        const timestamp = Date.now();
-        const status = outcome.outcome === 'selected' ? 'denied' : 'canceled';
-        this.client.updateAgentState((currentState) => ({
-            ...currentState,
-            completedRequests: {
-                ...currentState.completedRequests,
-                [request.id]: {
-                    tool: toolName,
-                    arguments: toolInput,
-                    createdAt: timestamp,
-                    completedAt: timestamp,
-                    status,
-                    reason: 'Plan mode blocks tool execution',
-                    decision: status === 'denied' ? 'denied' : 'abort'
-                }
-            }
-        }));
-
-        logger.debug(`[Opencode] Denied ${toolName} (${request.id}) in plan mode`);
     }
 
     protected async handlePermissionResponse(

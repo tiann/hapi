@@ -137,6 +137,18 @@ describe('createRunnerLifecycle', () => {
 // uncaught exception) reassign the reason before archive metadata is
 // written.
 describe('createRunnerLifecycle archiveReason defaults (tiann/hapi#914)', () => {
+    it('stops without writing archive metadata', async () => {
+        const session = createMockApiSessionWithMetadataCapture()
+        const lifecycle = createRunnerLifecycle({ session, logTag: 'test' })
+        const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never)
+
+        await lifecycle.stopAndExit()
+
+        expect(session.metadataWrites).toHaveLength(0)
+        expect(session.sendSessionDeath).toHaveBeenCalled()
+        exit.mockRestore()
+    })
+
     it('uses Hub restart as the default archiveReason when no override is applied', async () => {
         const session = createMockApiSessionWithMetadataCapture()
         const lifecycle = createRunnerLifecycle({

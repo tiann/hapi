@@ -242,6 +242,8 @@ describe('SDKToLogConverter', () => {
                 parentUuid: preceding?.uuid,
                 durationMs: 3000,
                 resultSummary: {
+                    subtype: 'success',
+                    is_error: false,
                     usage: sdkMessage.usage,
                     modelUsage: sdkMessage.modelUsage,
                     total_cost_usd: 0.05,
@@ -276,6 +278,8 @@ describe('SDKToLogConverter', () => {
                 subtype: 'turn_duration',
                 durationMs: 5000,
                 resultSummary: {
+                    subtype: 'error_max_turns',
+                    is_error: true,
                     total_cost_usd: 0.1,
                     num_turns: 10,
                     duration_ms: 5000

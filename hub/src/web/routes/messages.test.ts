@@ -10,6 +10,7 @@ import { Hono } from 'hono'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { createMessagesRoutes } from './messages'
+import { MessageLocalIdConflictError } from '../../sync/messageService'
 
 type GetMessagesPage = SyncEngine['getMessagesPage']
 
@@ -431,6 +432,30 @@ describe('POST /api/sessions/:id/messages — inactive session response shape', 
         // the human message; see useSendMessage onError consumer in router.tsx.
         expect(body.code).toBe('session_inactive')
         expect(sentMessages).toHaveLength(0)
+    })
+})
+
+describe('POST /api/sessions/:id/messages — remit conflict', () => {
+    it('returns a stable 409 for a localId bound to another payload', async () => {
+        const { app } = createApp({
+            sendMessage: async () => {
+                throw new MessageLocalIdConflictError(
+                    'localId is already bound to a different message payload'
+                )
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/messages', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ text: 'different', localId: 'same-id' })
+        })
+
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'localId is already bound to a different message payload',
+            code: 'local_id_conflict'
+        })
     })
 })
 

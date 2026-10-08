@@ -2,6 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { convertAgentMessage } from './messageConverter';
 
 describe('convertAgentMessage', () => {
+    it.each(['end_turn', 'success', 'cancelled', 'max_tokens', 'error'])(
+        'preserves native terminal reasons on the wire: %s', (stopReason) => {
+            expect(convertAgentMessage({ type: 'turn_complete', stopReason }))
+                .toEqual({ type: 'turn_complete', stopReason });
+        }
+    );
     it('preserves a stable text stream id on the message wire payload', () => {
         const converted = convertAgentMessage({
             type: 'text',

@@ -42,8 +42,17 @@ Choose a supported coding agent from your terminal and control its sessions remo
 - `hapi dsh` - Start DeepSeek Harness through ACP. See `src/dsh/runDsh.ts`.
   DSH is remote-only and its ACP server must be configured separately.
 - `hapi resume [sessionId]` - List resumable sessions for this machine or resume one locally.
-- `hapi ping-peer <session-id-prefix> <message>` - Resume (if needed) and message another session. Prefer this or MCP `ping_peer` / `list_peers` over reinventing JWT+curl. Also `--message-file` / `--list`.
-- `hapi inspect-peer <session-id-or-prefix>` - Read-only peer metadata + recent message text (no resume). Prefer this or MCP `inspect_peer` when a user cites `[title](/sessions/<id>)` or Copy-reference `See session "…" (/sessions/<id>) for context`. `/sessions/<id>` is a hub path, not a local file. Optional `--limit`.
+- `hapi machines [--machine ID] --json` - List or exactly resolve runner machine IDs and advertised workspace roots.
+- `hapi spawn-peer --dir PATH --name TITLE --message-file - --json` - Create a fresh session and atomically deliver its remit; failed delivery stops and archives the child. Automation may pass `--remit-id UUID` and reuse it only when retrying the same request. Ambiguous failures return the original remit ID; retry the identical request with that ID. `--effort` supports Claude/Grok/Pi/AGY and maps to reasoning effort for Codex/OpenCode; unsupported flavors fail before spawning.
+- `hapi wait-peer <exact-session-id> --remit-id UUID --json` - Wait for that remit's explicit native completion. Failed or aborted turns return an error; idle state or partial output does not count as success. Remits consumed in one batch share the same result.
+- `hapi inspect-peer <exact-session-id> --json` - Read metadata and recent message text without resuming.
+- `hapi ping-peer <exact-session-id> --message-file - --json` - Resume if needed and message one explicitly selected session. After an ambiguous response failure, retry the identical message with the returned `remitId` via `--remit-id UUID`.
+- `hapi abort-peer <exact-session-id> --json` - Abort the current turn.
+- `hapi stop-peer <exact-session-id> --json` - Idempotently stop the session process without archiving. Shared Codex rejects this operation: use `abort-peer` to interrupt its turn or explicitly `archive-peer` to archive it.
+- `hapi archive-peer <exact-session-id> --json` - Idempotently stop and archive the session.
+- `hapi delete-peer <exact-session-id> --json` - Delete an inactive session record after confirming runner process exit; failed confirmation preserves the record.
+
+The peer commands reject prefixes. Successful `--json` output has `ok: true`; errors use `ok: false`, a stable error code, and a non-zero exit status.
 
 The picker lists agents alphabetically by command name. Use Up/Down and Enter
 to choose; Esc or Ctrl-C cancels. It appears on every bare invocation, even
@@ -94,6 +103,14 @@ transcript scan.
 Verified with Claude Code **2.1.221**. Background subagents, `ExitPlanMode`,
 and requests that cannot be unambiguously matched to a native tool call remain
 terminal-only. Earlier Claude versions have not been verified.
+
+### Codex session titles
+
+HAPI mirrors Codex's native thread name without adding instructions to the working conversation. Local mode reads native names periodically; remote mode also consumes name-update notifications and hydrates names on resume.
+
+After the first completed remote task without a name, HAPI makes one isolated, ephemeral Codex request to generate a title and stores it with `thread/name/set`. This uses the runner's existing Codex account/provider; no Hub title-provider API key is required. When available on OpenAI, the request uses Luna at low effort; otherwise it uses the task's model. The request disables tools, MCP, plugins and hooks, requires read-only permissions, and has a 30-second deadline. A failure is logged without blocking the working session or retrying on every turn. Manual HAPI names take display precedence, and a name set while generation is pending is preserved.
+
+The rename dialog's **Generate** action is a separate Hub title-provider feature.
 
 ### Authentication
 
@@ -216,9 +233,15 @@ controls for DSH.
 - `HAPI_WORKTREE_PATH` - Full worktree path.
 - `HAPI_WORKTREE_CREATED_AT` - Creation timestamp (ms).
 
+### Session-control skill
+
+HAPI ships `skills/hapi-session-control/SKILL.md`. Before a fresh local, runner-spawned, or resumed session touches the hub, the CLI installs and verifies this canonical skill in the selected runtime's native user skill directory on the execution host. A conflicting higher-priority skill fails the launch closed. Generic ACP runtimes receive a capability-gated `skill_lookup` tool whose catalog exposes only skill names and descriptions; bodies load only by exact name.
+
+HAPI does not add its own system, developer, appended, or synthetic-user prompt prose. Runtime/user custom prompts remain unchanged.
+
 ### Set for the wrapped agent
 
-- `HAPI_SESSION_ID` - The current HAPI session ID, available inside agent shells. Use it in scripts that target the current conversation without listing sessions.
+- `HAPI_SESSION_ID` - The exact hub session id for the current run, exported to every wrapped flavor for fresh local, runner-spawned, and resumed sessions. Use it in scripts that target the current conversation without listing sessions.
 - An explicitly configured `HAPI_API_URL` is also made available to agent shells. HAPI does not copy settings-backed `CLI_API_TOKEN` secrets into the agent environment; credentials already present in the parent environment may still be inherited. Web terminal PTYs strip hub secrets.
 
 For peer discovery and messaging, use the session's MCP `list_peers`,

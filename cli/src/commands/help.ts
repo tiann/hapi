@@ -22,8 +22,15 @@ Commands:
   hapi server                Alias for hapi hub
   hapi runner                Manage the background runner
   hapi doctor                Run diagnostics and troubleshooting
-  hapi ping-peer             List peers or message another session
-  hapi inspect-peer <id>     Read another session's metadata and messages
+  hapi machines              List available session targets
+  hapi spawn-peer            Create a fresh session and deliver its remit
+  hapi wait-peer <id>         Wait for an exact remit result
+  hapi ping-peer <id>         Message an exact session ID
+  hapi inspect-peer <id>      Read an exact session's metadata and messages
+  hapi abort-peer <id>        Cancel the current turn
+  hapi stop-peer <id>         Stop a session without archiving
+  hapi archive-peer <id>      Stop and archive a session
+  hapi delete-peer <id>       Delete an inactive session
   hapi mcp                   Start the MCP stdio bridge
 
 Options:

@@ -44,6 +44,7 @@ vi.mock('@/cursor/cursorChatStoreStatus', () => ({
 }))
 
 import { ApiMachineClient, normalizeWindowsDriveRoot } from './apiMachine'
+import type { SpawnSessionOptions } from '../modules/common/rpcTypes'
 import type { Machine } from './types'
 
 function makeMachine(id: string): Machine {
@@ -747,10 +748,18 @@ describe('ApiMachineClient SpawnHappySession handler', () => {
         }
     })
 
-    it('returns childStarted:false on outside_workspace_roots so hub deletes the stub', async () => {
+    it('delegates workspace rejection to the runner so it can record no-child evidence', async () => {
         const machine = makeMachine('machine-spawn-outside')
         const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
-        const spawnSession = vi.fn()
+        const spawnSession = vi.fn(async (options: SpawnSessionOptions) => {
+            expect(await options.validateDirectory?.('/tmp/definitely-outside-roots')).toBe(false)
+            return {
+                type: 'error' as const,
+                errorMessage: "Directory is outside this machine's workspace roots",
+                code: 'outside_workspace_roots' as const,
+                childStarted: false as const,
+            }
+        })
 
         client.setRPCHandlers({
             spawnSession,
@@ -770,7 +779,29 @@ describe('ApiMachineClient SpawnHappySession handler', () => {
                 code: 'outside_workspace_roots',
                 childStarted: false,
             })
-            expect(spawnSession).not.toHaveBeenCalled()
+            expect(spawnSession).toHaveBeenCalledOnce()
+        } finally {
+            client.shutdown()
+        }
+    })
+
+    it('does not claim no-child evidence when a blocked path has a cached child', async () => {
+        const machine = makeMachine('machine-spawn-existing-outside')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        client.setRPCHandlers({
+            spawnSession: vi.fn(async () => ({ type: 'success' as const, sessionId: 'existing-child' })),
+            stopSession: vi.fn(async () => 'stopped' as const),
+            requestShutdown: vi.fn()
+        })
+
+        try {
+            expect(await callSpawnHappySession(client, machine.id, {
+                directory: '/tmp/definitely-outside-roots', agent: 'claude'
+            })).toEqual({
+                type: 'error',
+                errorMessage: "Directory is outside this machine's workspace roots",
+                code: 'outside_workspace_roots',
+            })
         } finally {
             client.shutdown()
         }

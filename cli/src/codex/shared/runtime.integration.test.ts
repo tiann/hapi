@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer } from 'node:http';
+import { EventEmitter } from 'node:events';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -11,14 +12,14 @@ import { record } from './gateway';
 import { isProcessAlive } from '@/utils/process';
 
 const state = vi.hoisted(() => ({ home: '', sessions: new Map<string, MockSession>(), beforeBootstrap: undefined as (() => Promise<void>) | undefined }));
-class MockSession {
+class MockSession extends EventEmitter {
     readonly sessionId = randomUUID();
     state: AgentState = { requests: { 'old-worker': { tool: 'request_user_input', arguments: {}, createdAt: 0 } } }; metadata: Metadata;
     messages: unknown[] = []; consumed: string[] = []; dead = false;
     user?: (message: { content: { text: string } }, id?: string) => void;
     rpc = new Map<string, (params: unknown) => Promise<unknown>>();
     rpcHandlerManager = { registerHandler: (name: string, fn: (params: unknown) => Promise<unknown>) => { this.rpc.set(name, fn); } };
-    constructor(cwd: string) { this.metadata = { path: cwd, host: 'test', hostPid: process.pid, machineId: 'test', flavor: 'codex', capabilities: { concurrentClients: true } }; }
+    constructor(cwd: string) { super(); this.metadata = { path: cwd, host: 'test', hostPid: process.pid, machineId: 'test', flavor: 'codex', capabilities: { concurrentClients: true } }; }
     getMetadata() { return this.metadata; }
     updateMetadata(fn: (m: Metadata) => Metadata) { this.metadata = fn(this.metadata); }
     updateAgentState(fn: (s: AgentState) => AgentState) { this.state = fn(this.state); }
@@ -41,7 +42,12 @@ vi.mock('@/agent/sessionFactory', () => ({ bootstrapSession: async (options: { w
     state.sessions.set(session.sessionId, session);
     return { session: session as unknown as ApiSessionClient, sessionInfo: { id: session.sessionId, namespace: 'test' }, metadata: session.metadata,
         workingDirectory: options.workingDirectory, machineId: 'test', startedBy: 'terminal', api: {} };
-}, bootstrapExistingSession: vi.fn() }));
+}, bootstrapExistingSession: async (options: { sessionId: string; workingDirectory: string; metadataOverrides: Partial<Metadata> }) => {
+    const session = state.sessions.get(options.sessionId)!;
+    session.metadata = { ...session.metadata, ...options.metadataOverrides };
+    return { session: session as unknown as ApiSessionClient, sessionInfo: { id: session.sessionId, namespace: 'test' }, metadata: session.metadata,
+        workingDirectory: options.workingDirectory, machineId: 'test', startedBy: 'runner', api: {} };
+} }));
 vi.mock('@/runner/controlClient', () => ({ notifyRunnerSessionStarted: vi.fn(async () => ({})) }));
 vi.mock('../utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: async () => ({ server: { url: 'http://unused', stop() {} }, mcpServers: {} }) }));
 
@@ -97,7 +103,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             }
         } finally { release(); abort.abort(); await running.catch(() => {}); await rm(home, { recursive: true, force: true }); }
     }, 30_000);
-    it('binds empty roots, exchanges messages, isolates /new, and archives only the selected root', async () => {
+    it.each([false, true])('binds empty roots, exchanges messages, isolates /new, and archives only the selected root (reserved remit: %s)', async reservedRemit => {
         const home = await mkdtemp('/tmp/hapi-shared-test-'); state.home = home;
         const ch = join(home, 'codex'); const cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
         const modelRequests: unknown[] = [];
@@ -123,11 +129,14 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
         let ready!: (value: import('./runtime').RuntimeReady) => void;
         const readiness = new Promise<import('./runtime').RuntimeReady>(resolve => { ready = resolve; });
         const abort = new AbortController();
-        const running = runSharedRuntime({ workingDirectory: cwd }, ready, abort.signal);
+        const reserved = reservedRemit ? new MockSession(cwd) : undefined;
+        if (reserved) state.sessions.set(reserved.sessionId, reserved);
+        const running = runSharedRuntime({ workingDirectory: cwd, existingSessionId: reserved?.sessionId }, ready, abort.signal);
         const clients: CodexAppServerClient[] = [];
         let roots: string[] = [];
         try {
             const { runtime, sessionId } = await Promise.race([readiness, running.then(() => { throw new Error('Runtime stopped before ready'); })]);
+            if (reserved) expect(sessionId).toBe(reserved.sessionId);
             const connect = async () => { const client = new CodexAppServerClient({ endpoint: runtime.endpoint, token: runtime.token });
                 client.setServerRequestHandler(() => {}); clients.push(client); await initializeSharedClient(client); return client; };
             const first = await connect(); const second = await connect();

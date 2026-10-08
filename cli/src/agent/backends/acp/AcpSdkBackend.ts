@@ -631,6 +631,9 @@ export class AcpSdkBackend implements AgentBackend {
 
             stopReason = isObject(response) ? asString(response.stopReason) : null;
             promptUsage = this.extractPromptUsage(response);
+        } catch (error) {
+            stopReason = 'error';
+            throw error;
         } finally {
             await this.waitForSessionUpdateQuiet(
                 AcpSdkBackend.UPDATE_QUIET_PERIOD_MS,

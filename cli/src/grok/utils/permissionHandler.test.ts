@@ -6,7 +6,7 @@ import { GrokPermissionHandler } from './permissionHandler'
 
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn() } }))
 
-function createHarness(mode: 'default' | 'auto' | 'plan' | 'bypassPermissions') {
+function createHarness(mode: 'default' | 'auto' | 'bypassPermissions') {
     let state: AgentState = { requests: {}, completedRequests: {} }
     let backendHandler: ((request: PermissionRequest) => void) | null = null
     const responses: PermissionResponse[] = []
@@ -88,14 +88,4 @@ describe('GrokPermissionHandler', () => {
         })
     })
 
-    it('denies tool execution in plan mode', async () => {
-        const harness = createHarness('plan')
-        harness.emit(request())
-        await flush()
-        expect(harness.responses).toEqual([{ outcome: 'selected', optionId: 'reject-once' }])
-        expect(harness.state().completedRequests?.['perm-1']).toMatchObject({
-            status: 'denied',
-            decision: 'denied'
-        })
-    })
 })

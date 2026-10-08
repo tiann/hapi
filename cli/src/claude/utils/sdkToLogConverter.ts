@@ -418,6 +418,8 @@ export class SDKToLogConverter {
                     subtype: 'turn_duration',
                     durationMs: resultMsg.duration_ms,
                     resultSummary: {
+                        subtype: resultMsg.subtype,
+                        is_error: resultMsg.is_error,
                         usage: resultMsg.usage,
                         modelUsage: resultMsg.modelUsage,
                         total_cost_usd: resultMsg.total_cost_usd,

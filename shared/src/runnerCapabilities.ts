@@ -24,7 +24,7 @@ export type RunnerCapabilities = typeof RUNNER_CAPABILITIES
 
 /**
  * Machine-scoped capabilities runners advertise on connect.
- * Hub features that hard-depend on a machine RPC must list that capability
+ * Hub features that hard-depend on runner behavior must list that capability
  * in {@link REQUIRED_MACHINE_CAPABILITIES} so skew surfaces as a banner
  * instead of a silent fail-closed product bug.
  */
@@ -32,6 +32,7 @@ export const MACHINE_CAPABILITIES = {
     AgentAvailability: RPC_METHODS.AgentAvailability,
     CursorChatStoreStatus: RPC_METHODS.CursorChatStoreStatus,
     StopRunner: RPC_METHODS.StopRunner,
+    SessionControlSkill: 'session-control-skill-v1',
 } as const
 
 export type MachineCapability =
@@ -42,6 +43,7 @@ export const CURRENT_MACHINE_CAPABILITIES: readonly MachineCapability[] = [
     MACHINE_CAPABILITIES.AgentAvailability,
     MACHINE_CAPABILITIES.CursorChatStoreStatus,
     MACHINE_CAPABILITIES.StopRunner,
+    MACHINE_CAPABILITIES.SessionControlSkill,
 ]
 
 /**
@@ -52,6 +54,7 @@ export const CURRENT_MACHINE_CAPABILITIES: readonly MachineCapability[] = [
 export const REQUIRED_MACHINE_CAPABILITIES: readonly MachineCapability[] = [
     MACHINE_CAPABILITIES.AgentAvailability,
     MACHINE_CAPABILITIES.CursorChatStoreStatus,
+    MACHINE_CAPABILITIES.SessionControlSkill,
 ]
 
 export function missingRequiredCapabilities(

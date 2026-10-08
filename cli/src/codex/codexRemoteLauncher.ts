@@ -2716,6 +2716,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         this.conversationHistory.setThreadId(threadId);
                         void this.conversationHistory.probeCapabilities().catch(() => {});
                         session.onSessionFound(threadId);
+                        session.titles.sync(threadId, msg.name);
                     } else {
                         logger.debug(
                             `[Codex] Ignoring thread_started for non-active thread; ` +
@@ -3110,6 +3111,12 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
             }
             if (isTerminalEvent) {
+                if (!shouldRetrySameThread && !shouldCompactAndRetrySameThread && !suppressReadyForThisTerminalEvent) {
+                    session.sendAgentMessage({
+                        type: 'turn_complete',
+                        stopReason: msgType === 'task_complete' ? 'success' : msgType === 'turn_aborted' ? 'cancelled' : 'error'
+                    });
+                }
                 setTurnInFlight(false);
                 this.conversationHistory.setBusy(false);
                 allowAnonymousTerminalEvent = false;
@@ -3141,6 +3148,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
 
             if (msgType === 'task_complete') {
+                if (this.currentThreadId && activeMessage) {
+                    void session.titles.generate(this.currentThreadId, activeMessage.message, session.getModel() ?? undefined);
+                }
                 sameThreadRetryAttempt = 0;
                 sameThreadCompactAttempt = 0;
                 recoveryInFlight = false;
@@ -3492,6 +3502,12 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         };
 
         appServerClient.setNotificationHandler((method, params) => {
+            if (method === 'thread/name/updated') {
+                const event = asRecord(params);
+                const threadId = asString(event?.threadId);
+                if (threadId) session.titles.sync(threadId, event?.threadName);
+                return;
+            }
             if (method === 'skills/changed') {
                 void refreshNativeSkills(true).catch((error) => {
                     logger.debug(`[Codex] failed to refresh skills: ${errorMessage(error)}`);
@@ -3788,6 +3804,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 this.conversationHistory.setThreadId(threadId);
                 void this.conversationHistory.probeCapabilities().catch(() => {});
                 session.onSessionFound(threadId);
+                session.titles.sync(threadId, resumeThread?.name);
                 hasThread = true;
                 logger.debug(`[Codex] Resumed app-server thread ${threadId} for /compact`);
                 return threadId;
@@ -3853,6 +3870,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     this.conversationHistory.setThreadId(threadId);
                     void this.conversationHistory.probeCapabilities().catch(() => {});
                     session.onSessionFound(threadId);
+                    session.titles.sync(threadId, resumeThread?.name);
                     hasThread = true;
                     return threadId;
                 } catch (error) {
@@ -3887,6 +3905,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 this.conversationHistory.setThreadId(threadId);
                 void this.conversationHistory.probeCapabilities().catch(() => {});
                 session.onSessionFound(threadId);
+                session.titles.sync(threadId, thread?.name);
                 hasThread = true;
                 return threadId;
             }
@@ -4125,6 +4144,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
                     const resumeCandidate = session.sessionId ?? null;
                     let threadId: string | null = null;
+                    let nativeName: unknown;
 
                     if (resumeCandidate) {
                         try {
@@ -4148,6 +4168,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                             const responseRecord = asRecord(response);
                             const responseThread = responseRecord ? asRecord(responseRecord.thread) : null;
                             threadId = asString(responseThread?.id) ?? resumeCandidate;
+                            nativeName = responseThread?.name;
                             applyResolvedModel(responseRecord?.model);
                             logger.debug(shouldForkImportedSource
                                 ? `[Codex] Forked imported app-server thread ${resumeCandidate} -> ${threadId}`
@@ -4173,6 +4194,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         const threadRecord = asRecord(threadResponse);
                         const thread = threadRecord ? asRecord(threadRecord.thread) : null;
                         threadId = asString(thread?.id);
+                        nativeName = thread?.name;
                         applyResolvedModel(threadRecord?.model);
                         if (!threadId) {
                             throw new Error('app-server thread/start did not return thread.id');
@@ -4187,6 +4209,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     this.conversationHistory.setThreadId(threadId);
                     void this.conversationHistory.probeCapabilities().catch(() => {});
                     session.onSessionFound(threadId);
+                    session.titles.sync(threadId, nativeName);
                     hasThread = true;
                 } else {
                     if (!this.currentThreadId) {

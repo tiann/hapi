@@ -2,11 +2,9 @@ import { logger } from '@/ui/logger';
 import { spawnWithTerminalGuard } from '@/utils/spawnWithTerminalGuard';
 import {
     buildMcpServerConfigArgs,
-    buildDeveloperInstructionsArg,
     buildCodexHookConfigArgs,
     buildModelReasoningEffortConfigArgs
 } from './utils/codexMcpConfig';
-import { getCodexSystemPrompt } from './utils/systemPrompt';
 import type { ReasoningEffort } from './appServerTypes';
 import { resolveCodexCommand } from './utils/codexExecutable';
 import type { McpServersConfig } from './utils/buildHapiMcpBridge';
@@ -151,9 +149,6 @@ export async function codexLocal(opts: {
     if (opts.sessionHook) {
         args.push(...buildCodexHookConfigArgs(opts.sessionHook.port, opts.sessionHook.token));
     }
-
-    // Add developer instructions (system prompt)
-    args.push(...buildDeveloperInstructionsArg(getCodexSystemPrompt()));
 
     if (opts.codexArgs) {
         // Before the first launch, Codex still needs the user's selector (for
