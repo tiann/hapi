@@ -956,3 +956,16 @@ describe('IncomingMessageFilter (HAPI Bot R3 finding #1)', () => {
         expect(filter.accept({ id: 'b', seq: 9 })).toBe(true)
     })
 })
+
+describe('session capacity lifecycle', () => {
+    it('retains capacity through transport loss and releases exactly once on final close', () => {
+        const onClose = vi.fn()
+        const client = new ApiSessionClient('token', createSession(), { onClose })
+        const socket = socketHarness.sockets.at(-1)!
+        socket.trigger('disconnect', 'transport close')
+        expect(onClose).not.toHaveBeenCalled()
+        client.close()
+        client.close()
+        expect(onClose).toHaveBeenCalledOnce()
+    })
+})

@@ -182,11 +182,19 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 reservedSessionId,
                 agentState: { controlledByUser: false },
             });
-        const root = new SharedCodexRoot(bootstrap, { directory: join(runtimeDirectory(), 'queues'), generation: id, endpoint: upstream, token: upstreamToken,
-            settingsFor: threadId => nativeSettings.get(threadId), create, end });
-        prepared.add(root);
-        try { assertRunning(); await root.prepare(); assertRunning(); return root; }
-        catch (error) { await root.close(!stopping && !existingSessionId); prepared.delete(root); throw error; }
+        let root: SharedCodexRoot | undefined;
+        try {
+            root = new SharedCodexRoot(bootstrap, { directory: join(runtimeDirectory(), 'queues'), generation: id, endpoint: upstream, token: upstreamToken,
+                settingsFor: threadId => nativeSettings.get(threadId), create, end });
+            prepared.add(root);
+            assertRunning(); await root.prepare(); assertRunning(); return root;
+        } catch (error) {
+            if (root) {
+                try { await root.close(!stopping && !existingSessionId); }
+                finally { prepared.delete(root); }
+            } else bootstrap.session.close();
+            throw error;
+        }
     };
     const reserveRecord = async (root: SharedCodexRoot, threadId: string) => {
         assertRunning();
