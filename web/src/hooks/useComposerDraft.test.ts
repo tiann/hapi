@@ -15,7 +15,7 @@ vi.mock('@/lib/composer-attachment-drafts', () => ({
 
 import { getDraft, saveDraft } from '@/lib/composer-drafts'
 import { getDraftAttachments, getRestoredUploadMetadata, saveDraftAttachments } from '@/lib/composer-attachment-drafts'
-import { useComposerDraft } from './useComposerDraft'
+import { getLiveComposerDraft, useComposerDraft } from './useComposerDraft'
 
 const mockGetDraft = vi.mocked(getDraft)
 const mockSaveDraft = vi.mocked(saveDraft)
@@ -60,6 +60,7 @@ describe('useComposerDraft', () => {
         // Before rAF fires, setText should not have been called and hydration
         // must prevent failed-send recovery from racing ahead of persistence.
         expect(setText).not.toHaveBeenCalled()
+        expect(getLiveComposerDraft('session-1')?.getText()).toBe('saved text')
         expect(result.current).toEqual({ sessionId: 'session-1', complete: false, restoredAny: false , hasStoredAttachments: false })
 
         // Flush rAF + attachment hydration.
@@ -67,6 +68,19 @@ describe('useComposerDraft', () => {
         expect(mockGetDraft).toHaveBeenCalledWith('session-1')
         expect(setText).toHaveBeenCalledWith('saved text')
         expect(result.current).toEqual({ sessionId: 'session-1', complete: true, restoredAny: true , hasStoredAttachments: false })
+    })
+
+    it('keeps an intentionally cleared live draft authoritative after hydration', async () => {
+        mockGetDraft.mockReturnValue('saved text')
+        const { result } = renderHook(() => {
+            const [text, setText] = useState('')
+            useComposerDraft('hydration-clear', text, [], false, setText, vi.fn())
+            return setText
+        })
+        await act(async () => flushRAF())
+        expect(getLiveComposerDraft('hydration-clear')?.getText()).toBe('saved text')
+        act(() => result.current(''))
+        expect(getLiveComposerDraft('hydration-clear')?.getText()).toBe('')
     })
 
     it('restores only missing stored attachments when a visible pick already exists', async () => {
