@@ -1,4 +1,15 @@
 export default {
+  'codex.reserve.available': '可用',
+  'codex.usage.label': '额度',
+  'codex.usage.details': 'Codex 额度详情',
+  'codex.usage.ordinary': '普通额度',
+  'codex.usage.unknown': '未知',
+  'codex.usage.window': '额度周期',
+  'codex.usage.minutes': '{value} 分钟',
+  'codex.usage.hours': '{value} 小时',
+  'codex.usage.days': '{value} 天',
+  'codex.usage.remaining': '剩余 {value}%',
+  'codex.usage.resets': '{value} 重置',
   // Loading states
   'loading': '加载中…',
   'authorizing': '认证中…',
