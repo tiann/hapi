@@ -201,7 +201,11 @@ export class SharedCodexRoot {
             completedRequests: { ...state.completedRequests, ...Object.fromEntries(Object.entries(state.requests ?? {}).map(([id, request]) =>
                 [id, { ...request, completedAt: Date.now(), status: 'canceled' as const }])) }
         }));
-        if (subscribe) response = record(await this.client.request('thread/resume', { threadId }));
+        // excludeTurns: the app-server would otherwise hydrate the whole thread
+        // and we would replay all of it to the hub here *and* again in refresh()
+        // below. `refresh()` loads the same history through the paged
+        // `readThread`, so nothing is lost by declining the hydration.
+        if (subscribe) response = record(await this.client.request('thread/resume', { threadId, excludeTurns: true }));
         this.acceptSettings(response); this.acceptSettings(this.host.settingsFor(threadId) ?? {});
         await this.projection.history(response.thread); await this.refresh(); await this.refreshChildren(true);
     }
@@ -329,7 +333,9 @@ export class SharedCodexRoot {
         for (const [id, projection] of this.children) {
             // Replaying a completed/unloaded child must not start its engine.
             try {
-                if (subscribe && loaded.has(id)) await this.client.request('thread/resume', { threadId: id });
+                // Response is discarded — only the side effect of loading the child
+                // matters — so never pay for its history hydration.
+                if (subscribe && loaded.has(id)) await this.client.request('thread/resume', { threadId: id, excludeTurns: true });
                 projection.reset(); await projection.history(await this.readThread(id));
             } catch (error) { logger.debug('[Codex shared] child history unavailable', { id, error }); }
         }

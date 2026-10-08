@@ -204,6 +204,87 @@ export function getUsageEvents(db: Database, sessionIds: string[]): UsageEvent[]
     return rows.map(toUsageEvent)
 }
 
+/**
+ * `source_key -> model` for one session's indexed events.
+ *
+ * The scan uses this to recover a model for events whose payload omits it. It
+ * only needs two columns, so it must not go through {@link getUsageEvents},
+ * which materializes every field of every event of the session.
+ */
+export function getUsageIndexedModels(db: Database, sessionId: string): Map<string, string> {
+    const rows = db.prepare(`
+        SELECT source_key, model
+        FROM usage_events
+        WHERE session_id = ? AND model IS NOT NULL
+    `).all(sessionId) as Array<{ source_key: string; model: string }>
+
+    return new Map(rows.map((row) => [row.source_key, row.model]))
+}
+
+/** Keyset cursor over the `(created_at, source_seq, rowid)` ordering below. */
+export type UsageEventCursor = {
+    createdAt: number
+    sourceSeq: number
+    rowId: number
+}
+
+export type PagedUsageEvent = UsageEvent & { rowId: number }
+
+/**
+ * Paged variant of {@link getUsageEvents} for the dashboard aggregate, which
+ * otherwise materializes every event of the namespace at once — hundreds of
+ * thousands of JS objects on a hub with real history.
+ *
+ * The ordering is the same as {@link getUsageEvents} plus `rowid` as a unique
+ * tiebreaker, so callers observe exactly the same sequence; `rowid` only makes
+ * the order of otherwise-tied rows deterministic, and cross-stream order does
+ * not affect the aggregate. Callers advance the cursor to the last row of each
+ * page until a page comes back short.
+ */
+export function getUsageEventsPage(
+    db: Database,
+    sessionIds: string[],
+    cursor: UsageEventCursor | null,
+    limit: number
+): PagedUsageEvent[] {
+    if (sessionIds.length === 0) return []
+
+    const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 5000
+    const placeholders = sessionIds.map(() => '?').join(', ')
+    const rows = db.prepare(`
+        SELECT
+            rowid AS row_id,
+            session_id,
+            source_key,
+            source_seq,
+            created_at,
+            agent,
+            model,
+            kind,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_creation_tokens,
+            last_input_tokens,
+            last_output_tokens,
+            last_cache_read_tokens,
+            last_cache_creation_tokens
+        FROM usage_events
+        WHERE session_id IN (${placeholders})
+          AND (created_at, source_seq, rowid) > (?, ?, ?)
+        ORDER BY created_at ASC, source_seq ASC, rowid ASC
+        LIMIT ?
+    `).all(
+        ...sessionIds,
+        cursor?.createdAt ?? -1,
+        cursor?.sourceSeq ?? -1,
+        cursor?.rowId ?? -1,
+        safeLimit
+    ) as Array<UsageEventRow & { row_id: number }>
+
+    return rows.map((row) => ({ ...toUsageEvent(row), rowId: row.row_id }))
+}
+
 export function getUsageScanStates(db: Database, sessionIds: string[]): Map<string, UsageScanState> {
     if (sessionIds.length === 0) return new Map()
 

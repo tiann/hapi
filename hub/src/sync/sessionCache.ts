@@ -20,6 +20,13 @@ export class SessionCache {
     private readonly sessions: Map<string, Session> = new Map()
     private readonly lastBroadcastAtBySessionId: Map<string, number> = new Map()
     private readonly todoBackfillAttemptedSessionIds: Set<string> = new Set()
+    /**
+     * Memoised `hasConversationContent` answers with the max message seq at the
+     * time of the scan. Messages are append-only, so an unchanged max seq means
+     * the answer still holds. Without it, a session with no conversation
+     * content had its whole history decoded on every single refresh.
+     */
+    private readonly conversationContentScanBySessionId: Map<string, { maxSeq: number; result: boolean }> = new Map()
     private readonly deduplicateInProgress: Set<string> = new Set()
     private readonly deduplicatePending: Set<string> = new Set()
     private readonly pendingThinkingUntilBySessionId: Map<string, number> = new Map()
@@ -156,6 +163,25 @@ export class SessionCache {
         this.refreshSession(sessionId)
     }
 
+    /**
+     * `hasConversationContent` costs a full-history decode when the answer is
+     * not already known, and `refreshSession` runs on every session update —
+     * including once per session from `reloadAll` at startup. Memoise it: a
+     * max-seq watermark suffices because messages are only ever appended, and a
+     * `true` answer is carried forward from the previous snapshot.
+     */
+    private resolveHasConversationContent(sessionId: string, existing: Session | undefined): boolean {
+        if (existing?.hasConversationContent === true) return true
+
+        const maxSeq = this.store.messages.getMaxSeq(sessionId)
+        const cached = this.conversationContentScanBySessionId.get(sessionId)
+        if (cached && cached.maxSeq === maxSeq) return cached.result
+
+        const result = this.store.messages.hasConversationContent(sessionId)
+        this.conversationContentScanBySessionId.set(sessionId, { maxSeq, result })
+        return result
+    }
+
     refreshSession(sessionId: string): Session | null {
         let stored = this.store.sessions.getSession(sessionId)
         if (!stored) {
@@ -210,7 +236,7 @@ export class SessionCache {
         })()
 
         const session: Session = {
-            hasConversationContent: this.store.messages.hasConversationContent(sessionId),
+            hasConversationContent: this.resolveHasConversationContent(sessionId, existing),
             id: stored.id,
             namespace: stored.namespace,
             seq: stored.seq,

@@ -149,6 +149,17 @@ export type ResponseItem = Record<string, unknown>;
 
 export interface ThreadResumeParams {
     threadId: string;
+    /**
+     * Skip the thread's turns in the resume response.
+     *
+     * The app-server hydrates the whole thread by default and warns that this is
+     * deprecated for paginated threads ("use `excludeTurns: true`, then page with
+     * `thread/turns/list` and `thread/items/list`"). Hydrating a long thread
+     * hands the CLI every turn at once, which it then replays to the hub in a
+     * single burst — enough to exhaust a small hub host. We page instead, via
+     * `SharedCodexRoot.readThread`.
+     */
+    excludeTurns?: boolean;
     history?: ResponseItem[];
     path?: string;
     model?: string;

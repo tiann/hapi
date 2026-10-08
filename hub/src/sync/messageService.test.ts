@@ -15,7 +15,7 @@ import { MessageService } from './messageService'
 import type { EventPublisher } from './eventPublisher'
 import { Store } from '../store'
 import type { Server } from 'socket.io'
-import { SESSION_EXPORT_MESSAGE_LIMIT } from '@hapi/protocol/sessionExport'
+import { SESSION_EXPORT_MAX_BYTES, SESSION_EXPORT_MESSAGE_LIMIT } from '@hapi/protocol/sessionExport'
 import type { Session, SyncEvent } from '@hapi/protocol/types'
 
 // ---------------------------------------------------------------------------
@@ -216,8 +216,15 @@ describe('MessageService goal status filtering', () => {
             invokedAt: index + 1,
             scheduledAt: null
         })) as ReturnType<Store['messages']['getAllMessages']>
+        // Stub the paged reads the export now uses; this test is about the
+        // threshold behaviour, not the storage layer.
         const store = {
-            messages: { getAllMessages: () => rows },
+            messages: {
+                getStoredContentBytes: () => 0,
+                countMessages: () => rows.length,
+                getMessagesAfterSeqLimit: (_sessionId: string, afterSeq: number, limit: number) =>
+                    rows.filter((row) => row.seq > afterSeq).slice(0, limit)
+            },
             scratchlist: { list: () => [] }
         } as unknown as Store
 
@@ -236,6 +243,36 @@ describe('MessageService goal status filtering', () => {
         expect(confirmed.type).toBe('success')
         if (confirmed.type !== 'success') throw new Error('Expected confirmed export')
         expect(confirmed.payload.messages).toHaveLength(SESSION_EXPORT_MESSAGE_LIMIT + 1)
+    })
+
+    it('refuses an oversized session without decoding its messages', () => {
+        const sessionStore = makeStore()
+        const session = makeSession(sessionStore, 'session-export-oversized')
+        let pageCalls = 0
+        const store = {
+            messages: {
+                getStoredContentBytes: () => SESSION_EXPORT_MAX_BYTES + 1,
+                countMessages: () => 130_000,
+                getMessagesAfterSeqLimit: () => {
+                    pageCalls += 1
+                    return []
+                }
+            },
+            scratchlist: { list: () => [] }
+        } as unknown as Store
+
+        const service = new MessageService(store, makeIo(() => {}), makePublisher() as any)
+        const result = service.getSessionExport(session.id, toProtocolSession(session))
+
+        // Regression: this used to inflate, filter and sort the entire session and
+        // only then apply the cap — which on a 130k-message session allocated
+        // enough to stall the hub.
+        expect(pageCalls).toBe(0)
+        expect(result).toMatchObject({
+            type: 'too-large',
+            count: 130_000,
+            maxBytes: SESSION_EXPORT_MAX_BYTES
+        })
     })
 
     it('includes scratchlist text and attachment metadata in chronological order (tiann/hapi#1235)', () => {

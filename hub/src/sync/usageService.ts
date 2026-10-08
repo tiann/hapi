@@ -1,6 +1,6 @@
 import type { UsageSummaryBucket, UsageSummaryResponse } from '@hapi/protocol/apiTypes'
 import type { StoredMessage, StoredSession } from '../store'
-import type { UsageEvent } from '../store/usage'
+import type { UsageEvent, UsageEventCursor } from '../store/usage'
 import type { Store } from '../store'
 
 type RecordValue = Record<string, unknown>
@@ -214,54 +214,115 @@ function parseUsageEvent(session: StoredSession, message: StoredMessage): UsageE
     return null
 }
 
-function collectUsageEvents(store: Store, sessions: StoredSession[]): void {
+/**
+ * How many messages to materialize at once while (re)building usage history.
+ *
+ * Message content is zstd-compressed on disk but expands on read, and the
+ * dashboard's first request backfills every session from seq 0. Loading a
+ * whole session in one shot therefore allocates several times the database
+ * size and can exhaust a small host — see the paged loop below.
+ */
+const USAGE_SCAN_BATCH = 1000
+
+/**
+ * How many derived usage events to materialize at once while aggregating the
+ * dashboard summary.
+ *
+ * The scan above only ever appends new events, but the aggregate is computed
+ * from the raw `usage_events` rows, so a hub with real history has to fold
+ * hundreds of thousands of them. Reading the namespace's events in one go
+ * allocates an object per row and can exhaust a small host — so page it, same
+ * as the scan.
+ */
+const USAGE_SUMMARY_BATCH = 5000
+
+/** Hand the event loop back so the hub keeps serving during a long backfill. */
+function yieldToEventLoop(): Promise<void> {
+    return new Promise((resolve) => { setImmediate(resolve) })
+}
+
+async function collectUsageEvents(store: Store, sessions: StoredSession[]): Promise<void> {
     const scanStates = store.usage.getScanStates(sessions.map((session) => session.id))
     for (const session of sessions) {
         const messageEpoch = store.messages.getMessageEpoch(session.id)
         const scanState = scanStates.get(session.id)
-        const replaceEvents = !scanState || scanState.messageEpoch !== messageEpoch
-        const afterSeq = replaceEvents ? 0 : scanState.lastSeq
-        const messages = store.messages.getMessagesAfterSeq(session.id, afterSeq)
-        const events = new Map<string, UsageEvent>()
+        const resumeFrom = scanState !== undefined && scanState.messageEpoch === messageEpoch
+            ? scanState.lastSeq
+            : null
+        // A rebuild wipes the session's events; do that on the first page only,
+        // since the wipe and the reinsert now span several transactions.
+        let dropExistingEvents = resumeFrom === null
+        let cursor = resumeFrom ?? 0
         let indexedModels: Map<string, string> | null = null
         const getIndexedModel = (sourceKey: string): string | null => {
             if (indexedModels === null) {
-                indexedModels = new Map(
-                    store.usage.getEvents([session.id])
-                        .filter((event): event is UsageEvent & { model: string } => event.model !== null)
-                        .map((event) => [event.sourceKey, event.model])
-                )
+                indexedModels = store.usage.getIndexedModels(session.id)
             }
             return indexedModels.get(sourceKey) ?? null
         }
         const fallbackModel = sessionModel(session)
-        for (const message of messages) {
-            const event = parseUsageEvent(session, message)
-            if (!event) continue
-            const existingEvent = events.get(event.sourceKey)
-            const explicitModel = event.model
-            event.model = explicitModel
-                ?? existingEvent?.model
-                ?? getIndexedModel(event.sourceKey)
-                ?? fallbackModel
-            if (event.kind === 'delta' || !existingEvent) {
-                events.set(event.sourceKey, event)
-            } else if (explicitModel !== null) {
-                // A replay may add model metadata missing from the original snapshot.
-                existingEvent.model = explicitModel
+
+        for (;;) {
+            const messages = store.messages.getMessagesAfterSeqLimit(session.id, cursor, USAGE_SCAN_BATCH)
+            if (messages.length === 0) {
+                // A rebuild over an empty session still clears stale events and
+                // records the cursor, matching the original single-shot scan.
+                if (dropExistingEvents) {
+                    store.usage.recordScan(session.id, messageEpoch, cursor, [], true)
+                    dropExistingEvents = false
+                }
+                break
             }
-        }
-        const lastSeq = messages.at(-1)?.seq ?? afterSeq
-        if (messages.length > 0 || replaceEvents) {
+
+            const events = new Map<string, UsageEvent>()
+            for (const message of messages) {
+                const event = parseUsageEvent(session, message)
+                if (!event) continue
+                const existingEvent = events.get(event.sourceKey)
+                const explicitModel = event.model
+                event.model = explicitModel
+                    ?? existingEvent?.model
+                    ?? getIndexedModel(event.sourceKey)
+                    ?? fallbackModel
+                if (event.kind === 'delta' || !existingEvent) {
+                    events.set(event.sourceKey, event)
+                } else if (explicitModel !== null) {
+                    // A replay may add model metadata missing from the original snapshot.
+                    existingEvent.model = explicitModel
+                }
+            }
+
+            cursor = messages.at(-1)?.seq ?? cursor
             store.usage.recordScan(
                 session.id,
                 messageEpoch,
-                lastSeq,
+                cursor,
                 Array.from(events.values()),
-                replaceEvents
+                dropExistingEvents
             )
+            dropExistingEvents = false
+
+            await yieldToEventLoop()
         }
     }
+}
+
+/**
+ * Run at most one backfill per store at a time. Yielding mid-scan lets a second
+ * dashboard request interleave, and two overlapping rebuilds could delete each
+ * other's freshly inserted rows.
+ */
+const activeScans = new WeakMap<Store, Promise<void>>()
+
+function ensureUsageScan(store: Store, sessions: StoredSession[]): Promise<void> {
+    const inFlight = activeScans.get(store)
+    if (inFlight) return inFlight
+
+    const scan = collectUsageEvents(store, sessions).finally(() => {
+        activeScans.delete(store)
+    })
+    activeScans.set(store, scan)
+    return scan
 }
 
 type Totals = Omit<UsageSummaryBucket, 'key'>
@@ -329,23 +390,25 @@ function dayKey(timestamp: number, formatter: Intl.DateTimeFormat): string {
     return `${year}-${month}-${day}`
 }
 
-export function getUsageSummary(
+export async function getUsageSummary(
     store: Store,
     namespace: string,
     range: string | undefined,
     timeZone: string = 'UTC'
-): UsageSummaryResponse {
+): Promise<UsageSummaryResponse> {
     const sessions = store.sessions.getSessionsByNamespace(namespace)
     // This is intentionally lazy. Existing HAPI databases have no usage table;
     // the first dashboard request backfills history, while later requests only
-    // update the idempotent event rows.
-    collectUsageEvents(store, sessions)
+    // update the idempotent event rows. The backfill pages through messages and
+    // yields between pages, so a large database neither blocks the hub nor
+    // materializes its whole history at once.
+    await ensureUsageScan(store, sessions)
 
     const now = Date.now()
     const days = range === '30d' ? 30 : range === 'all' ? null : 7
     const from = days === null ? null : now - days * 24 * 60 * 60 * 1000
     const sessionIds = new Set(sessions.map((session) => session.id))
-    const events = store.usage.getEvents(Array.from(sessionIds))
+    const sessionIdList = Array.from(sessionIds)
     const isInRange = (event: UsageEvent) => (from === null || event.createdAt >= from) && event.createdAt <= now
 
     const totals = emptyTotals()
@@ -357,7 +420,7 @@ export function getUsageSummary(
     const cumulativeFingerprints = new Set<string>()
     const dayFormatter = createDayFormatter(timeZone)
 
-    for (const event of events) {
+    const consumeEvent = (event: UsageEvent): void => {
         let inputTokens = event.inputTokens
         let outputTokens = event.outputTokens
         let cacheReadTokens = event.cacheReadTokens
@@ -408,7 +471,7 @@ export function getUsageSummary(
                 cumulativeFingerprints.add(fingerprint)
             }
         }
-        if (duplicateCumulativeEvent || !isInRange(event) || inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens <= 0) continue
+        if (duplicateCumulativeEvent || !isInRange(event) || inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens <= 0) return
         // Cache reads and writes partition processed input. Preserve the
         // request and its primary token counts when a provider emits an
         // impossible partition, but conservatively decline to credit either
@@ -430,6 +493,28 @@ export function getUsageSummary(
         addTotals(modelTotals, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens)
         byModel.set(modelKey, modelTotals)
         sessionsWithUsage.add(event.sessionId)
+    }
+
+    // Fold the namespace's events one page at a time. The cursor keeps the
+    // original (created_at, source_seq) order, so every accumulator above sees
+    // exactly the sequence it would have seen from a single query.
+    let cursor: UsageEventCursor | null = null
+    for (;;) {
+        const page = store.usage.getEventsPage(sessionIdList, cursor, USAGE_SUMMARY_BATCH)
+        if (page.length === 0) break
+
+        for (const event of page) {
+            consumeEvent(event)
+        }
+
+        const lastEvent = page[page.length - 1]!
+        cursor = {
+            createdAt: lastEvent.createdAt,
+            sourceSeq: lastEvent.sourceSeq,
+            rowId: lastEvent.rowId
+        }
+
+        await yieldToEventLoop()
     }
 
     const sortBuckets = (values: Map<string, Totals>): UsageSummaryBucket[] => Array.from(values.entries())
