@@ -240,7 +240,15 @@ export class SharedCodexRoot {
         if (typeof value.model !== 'string') return;
         this.settingsRevision++;
         if ('collaborationMode' in value && 'sandboxPolicy' in value) this.settingsNotification = value;
-        this.settingsNative = { ...this.settingsNative, ...value };
+        // thread/start and thread/resume use sandbox/reasoningEffort, while
+        // settings notifications use sandboxPolicy/effort. Keep one current
+        // representation so a fresh resume cannot leave an older policy behind.
+        this.settingsNative = { ...this.settingsNative, ...value,
+            ...('sandboxPolicy' in value || 'sandbox' in value
+                ? { sandboxPolicy: value.sandboxPolicy ?? value.sandbox } : {}),
+            ...('effort' in value || 'reasoningEffort' in value
+                ? { effort: 'effort' in value ? value.effort : value.reasoningEffort } : {})
+        };
         const sandbox = record(value.sandboxPolicy ?? value.sandbox).type;
         this.settings = { ...this.settings, model: value.model,
             modelReasoningEffort: string(value.effort ?? value.reasoningEffort) ?? null,
@@ -394,6 +402,12 @@ export class SharedCodexRoot {
                 developer_instructions: null
             } } } : {})
         };
+        // Codex acknowledges unchanged settings without emitting an update
+        // notification. An already observed matching snapshot needs no mutation.
+        if (settingsMatch(this.settingsNative, params)) {
+            this.alive();
+            return { applied: this.settings };
+        }
         let changed!: () => void;
         let timer: ReturnType<typeof setTimeout> | undefined;
         const accepted = new Promise<void>((resolve, reject) => {
@@ -410,7 +424,12 @@ export class SharedCodexRoot {
         } finally { clearTimeout(timer); this.settingsListeners.delete(changed); }
     }
     async initialSettings(options: SharedLaunchOptions): Promise<void> {
-        if (options.collaborationMode) await this.applySettings({ collaborationMode: options.collaborationMode });
+        // Subscription-only resumes can restore native defaults. Reapply an
+        // explicit launch permission before controls or restored input are ready.
+        if (options.permissionMode || options.collaborationMode) await this.applySettings({
+            ...(options.permissionMode ? { permissionMode: options.permissionMode } : {}),
+            ...(options.collaborationMode ? { collaborationMode: options.collaborationMode } : {})
+        });
     }
     private async implementPlan(planId: string): Promise<ImplementCodexPlanResult> {
         const unavailable = (): ImplementCodexPlanResult => ({ ok: false, code: 'unavailable', error: 'Codex is disconnected or stopping. Reconnect before implementing the plan.' });
