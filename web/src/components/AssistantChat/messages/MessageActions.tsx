@@ -1,7 +1,8 @@
 import * as Popover from '@radix-ui/react-popover'
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useAuiState } from '@assistant-ui/react'
-import { CheckIcon, CopyIcon, ForkIcon, InfoIcon, RewindIcon } from '@/components/icons'
+import { CheckIcon, ConversationStartIcon, CopyIcon, ForkIcon, InfoIcon, ReplyPromptIcon, RewindIcon } from '@/components/icons'
+import { Spinner } from '@/components/Spinner'
 import { useCopyToClipboard } from '@/hooks/useCopyToClipboard'
 import { useTranslation } from '@/lib/use-translation'
 import { MessageMetadata, buildMessageMetadataLabels, type MessageMetadataProps } from './MessageMetadata'
@@ -26,6 +27,11 @@ type MessageActionsProps = {
     historyActionPending?: boolean
     onFork?: () => Promise<void>
     onRewind?: () => Promise<void>
+    onJumpToPrompt?: () => void
+    onJumpToConversationStart?: () => void
+    isLoadingConversationStart?: boolean
+    isLoadingPrompt?: boolean
+    isNavigationInFlight?: boolean
 }
 
 type MessageActionsAuiState = {
@@ -54,7 +60,12 @@ export function MessageActions({
     showRewind = false,
     historyActionPending = false,
     onFork,
-    onRewind
+    onRewind,
+    onJumpToPrompt,
+    onJumpToConversationStart,
+    isLoadingConversationStart = false,
+    isLoadingPrompt = false,
+    isNavigationInFlight = false
 }: MessageActionsProps) {
     const { copied, copy } = useCopyToClipboard()
     const { t } = useTranslation()
@@ -123,6 +134,32 @@ export function MessageActions({
                 {align === 'start' && hasMetadata && metadata ? <MessageInfoPopover metadata={metadata} /> : null}
                 {align === 'start' ? <DesktopTimestamp /> : null}
             </div>
+            {align === 'start' && (onJumpToPrompt || onJumpToConversationStart) ? (
+                <div className="happy-message-actions flex h-5 items-center gap-1">
+                    {onJumpToConversationStart ? (
+                        <NavigationButton
+                            title={t('message.jumpToConversationStart')}
+                            onClick={onJumpToConversationStart}
+                            disabled={isNavigationInFlight || isLoadingConversationStart || isLoadingPrompt}
+                        >
+                            {isLoadingConversationStart
+                                ? <Spinner size="sm" className="h-3.5 w-3.5" label={null} />
+                                : <ConversationStartIcon className="h-3.5 w-3.5 -translate-y-px opacity-80" />}
+                        </NavigationButton>
+                    ) : null}
+                    {onJumpToPrompt ? (
+                        <NavigationButton
+                            title={t('message.jumpToPrompt')}
+                            onClick={onJumpToPrompt}
+                            disabled={isNavigationInFlight || isLoadingPrompt || isLoadingConversationStart}
+                        >
+                            {isLoadingPrompt
+                                ? <Spinner size="sm" className="h-3.5 w-3.5" label={null} />
+                                : <ReplyPromptIcon className="h-3.5 w-3.5 -translate-y-px opacity-80" />}
+                        </NavigationButton>
+                    ) : null}
+                </div>
+            ) : null}
 
             <ConfirmDialog
                 isOpen={forkOpen}
@@ -169,6 +206,26 @@ export function MessageActions({
                 }}
             />
         </>
+    )
+}
+
+function NavigationButton(props: {
+    title: string
+    onClick: () => void
+    disabled?: boolean
+    children: ReactNode
+}) {
+    return (
+        <button
+            type="button"
+            title={props.title}
+            aria-label={props.title}
+            onClick={props.onClick}
+            disabled={props.disabled}
+            className="flex h-5 w-5 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] disabled:cursor-wait disabled:opacity-70"
+        >
+            {props.children}
+        </button>
     )
 }
 

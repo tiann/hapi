@@ -35,6 +35,7 @@ function userBlockToOutlineItem(block: UserTextBlock): ConversationOutlineItem {
 
 function isLocatableOutlineBlock(block: ChatBlock): block is UserTextBlock {
     return block.kind === 'user-text'
+        && !block.id.startsWith('__transcript-gap__')
         && !(block.invokedAt === null && block.status !== 'failed')
 }
 

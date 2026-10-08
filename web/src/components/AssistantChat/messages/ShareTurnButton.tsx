@@ -36,6 +36,7 @@ export function ShareTurnButton(props: {
         if (currentIndex < 0) return ''
         for (let index = currentIndex; index >= 0; index -= 1) {
             const candidate = thread.messages[index]
+            if (candidate?.id.includes('__transcript-gap__')) return ''
             if (candidate?.role !== 'user') continue
             return candidate.content
                 .filter((part) => part.type === 'text')

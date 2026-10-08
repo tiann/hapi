@@ -27,6 +27,7 @@ export const EMPTY_STATE: MessageWindowState = {
     viewMode: 'tail',
     messagesVersion: 0,
     historyVersion: 0,
+    navigationLeaseCount: 0,
     tailRevision: 0,
 }
 
@@ -40,7 +41,7 @@ export function useMessages(api: ApiClient | null, sessionId: string | null): {
     messagesVersion: number
     historyVersion: number
     tailRevision: number
-    loadMore: (onBeforeApply?: (historyVersion: number) => boolean) => Promise<OlderLoadOutcome>
+    loadMore: (onBeforeApply?: (historyVersion: number) => boolean, options?: { shouldInstallBoundary?: () => boolean }) => Promise<OlderLoadOutcome>
     cancelLoadMore: () => void
     refetch: () => Promise<void>
     setViewMode: (mode: MessageViewMode) => void
@@ -58,6 +59,12 @@ export function useMessages(api: ApiClient | null, sessionId: string | null): {
         if (sessionId) {
             activateMessageWindow(sessionId)
         }
+        return () => {
+            if (sessionId) {
+                cancelOlderMessageLoad(sessionId)
+                setMessageViewMode(sessionId, 'tail')
+            }
+        }
     }, [sessionId])
 
     useEffect(() => {
@@ -66,11 +73,11 @@ export function useMessages(api: ApiClient | null, sessionId: string | null): {
         }
     }, [api, sessionId])
 
-    const loadMore = useCallback(async (onBeforeApply?: (historyVersion: number) => boolean) => {
+    const loadMore = useCallback(async (onBeforeApply?: (historyVersion: number) => boolean, options?: { shouldInstallBoundary?: () => boolean }) => {
         if (!api || !sessionId) {
             return { kind: 'stopped', reason: 'unavailable' } as const
         }
-        return await fetchOlderMessages(api, sessionId, { onBeforeApply })
+        return await fetchOlderMessages(api, sessionId, { onBeforeApply, ...options })
     }, [api, sessionId])
 
     const cancelLoadMore = useCallback(() => {
@@ -86,9 +93,10 @@ export function useMessages(api: ApiClient | null, sessionId: string | null): {
 
     const setViewMode = useCallback((mode: MessageViewMode) => {
         if (!sessionId) return
-        const previousMode = getMessageWindowState(sessionId).viewMode
+        const previousState = getMessageWindowState(sessionId)
         setMessageViewMode(sessionId, mode)
-        if (mode === 'tail' && previousMode !== 'tail' && api) {
+        const queuedSyncStarted = !previousState.isSyncingTail && getMessageWindowState(sessionId).isSyncingTail
+        if (mode === 'tail' && previousState.viewMode !== 'tail' && api && !queuedSyncStarted) {
             void syncTailMessages(api, sessionId, { ensureAfterCurrent: true })
         }
     }, [api, sessionId])
