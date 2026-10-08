@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { selectMobileSessionHeaderSecondary } from './sessionHeaderMobileMetadata'
 
 describe('selectMobileSessionHeaderSecondary', () => {
+    it('prioritizes the project label when it is available', () => {
+        expect(selectMobileSessionHeaderSecondary({ project: true, machine: true })).toBe('project')
+    })
+
     it('follows the upstream-first display order', () => {
         expect(selectMobileSessionHeaderSecondary({ machine: true, model: true, updatedAt: true })).toBe('machine')
         expect(selectMobileSessionHeaderSecondary({ model: true, updatedAt: true, worktree: true })).toBe('model')

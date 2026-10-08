@@ -21,6 +21,7 @@ export function getShareTurnReasoningLabel(
 
 const SESSION_HEADER_METADATA_ORDER: ReadonlyArray<ShareTurnMetadataKey> = [
     'agent',
+    'project',
     'machine',
     'lastActive',
     'model',
