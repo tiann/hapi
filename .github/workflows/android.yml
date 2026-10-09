@@ -40,6 +40,8 @@ jobs:
               run: ./gradlew :core:protocol:test :core:data:testDebugUnitTest :app:testDebugUnitTest
             - name: Assemble debug APK and lint
               run: ./gradlew :app:assembleDebug :app:lintDebug
+            - name: Assemble Wear OS companion debug APK and lint
+              run: ./gradlew :wear:assembleDebug :wear:lintDebug
 
     transcript-layout:
         runs-on: ubuntu-latest

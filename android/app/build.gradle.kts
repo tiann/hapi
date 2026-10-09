@@ -172,6 +172,9 @@ dependencies {
     // authed + disk-cached hub image client.
     implementation(libs.coil.compose)
 
+    // Wear relay (phone side of the Data Layer bridge to :wear).
+    implementation(libs.play.services.wearable)
+
     // FCM push + notification actions (B-M4a). firebase-messaging is always on
     // the classpath; whether it *activates* depends on google-services.json
     // (conditional plugin above) — PushBinding gates every use at runtime.
