@@ -1042,6 +1042,75 @@ describe('AppServerEventConverter', () => {
         ]);
     });
 
+    it('converts compaction start notifications into scoped compaction_started events', () => {
+        const converter = new AppServerEventConverter();
+        const events = converter.handleNotification('item/started', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: { id: 'compact-item-1', type: 'contextCompaction' }
+        });
+
+        expect(events).toEqual([{
+            type: 'compaction_started',
+            thread_id: 'thread-1',
+            turn_id: 'turn-1',
+            compaction_id: 'compact-item-1'
+        }]);
+    });
+
+    it('dedups duplicate compaction starts per compaction id but allows successive compactions', () => {
+        const converter = new AppServerEventConverter();
+        const params = {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: { id: 'compact-item-1', type: 'contextCompaction' }
+        };
+
+        expect(converter.handleNotification('item/started', params)).toHaveLength(1);
+        expect(converter.handleNotification('item/started', params)).toEqual([]);
+        expect(converter.handleNotification('codex/event/item_started', {
+            msg: {
+                type: 'item_started',
+                thread_id: 'thread-1',
+                turn_id: 'turn-1',
+                item_id: 'compact-item-1',
+                item: { id: 'compact-item-1', type: 'contextCompaction' }
+            }
+        })).toEqual([]);
+        expect(converter.handleNotification('item/started', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: { id: 'compact-item-2', type: 'contextCompaction' }
+        })).toHaveLength(1);
+    });
+
+    it('drops malformed compaction starts without an item id', () => {
+        const converter = new AppServerEventConverter();
+        expect(converter.handleNotification('item/started', {
+            threadId: 'thread-1',
+            item: { type: 'contextCompaction' }
+        })).toEqual([]);
+    });
+
+    it('scopes compaction start dedup by thread so a reused item id still announces', () => {
+        const converter = new AppServerEventConverter();
+        expect(converter.handleNotification('item/started', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: { id: 'compact-item-1', type: 'contextCompaction' }
+        })).toHaveLength(1);
+        expect(converter.handleNotification('item/started', {
+            threadId: 'thread-2',
+            turnId: 'turn-9',
+            item: { id: 'compact-item-1', type: 'contextCompaction' }
+        })).toEqual([{
+            type: 'compaction_started',
+            thread_id: 'thread-2',
+            turn_id: 'turn-9',
+            compaction_id: 'compact-item-1'
+        }]);
+    });
+
     it('ignores compacted notifications without thread ids', () => {
         const converter = new AppServerEventConverter();
 
@@ -1117,5 +1186,19 @@ describe('AppServerEventConverter', () => {
         expect(logged.params?.item?.savedPath).toBe('/tmp/image.png');
 
         debug.mockRestore();
+    });
+
+    it('clears compaction start dedup on reset', () => {
+        const converter = new AppServerEventConverter();
+        const params = { threadId: 'thread-1', turnId: 'turn-1', item: { id: 'compact-item-1', type: 'contextCompaction' } };
+        expect(converter.handleNotification('item/started', params)).toHaveLength(1);
+        converter.reset();
+        expect(converter.handleNotification('item/started', params)).toHaveLength(1);
+    });
+
+    it('announces legacy compaction start without scope', () => {
+        const converter = new AppServerEventConverter();
+        const events = converter.handleNotification('item/started', { item: { id: 'compact-legacy', type: 'contextCompaction' } });
+        expect(events).toEqual([{ type: 'compaction_started', compaction_id: 'compact-legacy' }]);
     });
 });
