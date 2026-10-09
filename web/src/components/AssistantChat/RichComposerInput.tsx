@@ -97,8 +97,14 @@ function createMentionSpan(
     span.dataset.sessionTitle = title
     span.dataset.composerMention = 'session'
     span.className =
-        'mx-0.5 inline-flex max-w-[12rem] items-center truncate rounded-md bg-[var(--app-subtle-bg)] px-1.5 py-0.5 align-baseline text-[0.95em] font-medium text-[var(--app-link)]'
-    span.textContent = `@${title || id.slice(0, 8)}`
+        'mx-0.5 inline-flex max-w-[16rem] items-baseline rounded-md bg-[var(--app-subtle-bg)] px-1.5 py-0.5 align-baseline text-[0.95em] font-medium text-[var(--app-link)]'
+    const label = document.createElement('span')
+    label.textContent = `@${title || id.slice(0, 8)}`
+    // Truncation lives on the inner label so the pill's own baseline stays a
+    // text baseline (an overflow≠visible inline-block would align by its
+    // bottom edge instead).
+    label.className = 'min-w-0 truncate'
+    span.appendChild(label)
     const tip = resolveTooltip?.(id, title)?.model
         ?? formatSessionMentionTooltip(null, title, id)
     span.setAttribute('aria-label', tip.ariaLabel)
