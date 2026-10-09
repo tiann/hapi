@@ -1,18 +1,38 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+import { canonicalizeDiffToolInput } from '@/agent/utils';
 import { isUsableToolInput, parseToolCall, parseToolResult } from './opencodeLocalToolParse';
+
+/** Mirrors the launcher's execute-hook normalization: pairing signatures are
+ *  computed from the RAW name/input BEFORE canonicalizing, so an id-less
+ *  `before` shares a queue key with the full `after`; canonicalization only
+ *  affects what gets emitted. */
+function canonicalizeHookPair(name: string, input: unknown): { name: string; input: unknown } {
+    const canonical = canonicalizeDiffToolInput(input, name);
+    return canonical ? { name: canonical.name, input: canonical.input } : { name, input };
+}
 
 /** Simulate the emit policy used by the local launcher hook handler. */
 function collectMessages(parts: unknown[]): Array<{ type: string; name?: string; callId: string; input?: unknown; output?: unknown }> {
     const sentToolCalls = new Set<string>();
     const sentToolResults = new Set<string>();
+    const emittedToolInputs = new Map<string, unknown>();
     const out: Array<{ type: string; name?: string; callId: string; input?: unknown; output?: unknown }> = [];
 
     for (const part of parts) {
         const toolCall = parseToolCall(part);
-        if (toolCall && isUsableToolInput(toolCall.input) && !sentToolCalls.has(toolCall.callId)) {
-            sentToolCalls.add(toolCall.callId);
-            out.push({ type: 'tool-call', name: toolCall.name, callId: toolCall.callId, input: toolCall.input });
+        if (toolCall && isUsableToolInput(toolCall.input) && !sentToolResults.has(toolCall.callId)) {
+            const previousInput = emittedToolInputs.get(toolCall.callId);
+            const previousCanonical = canonicalizeDiffToolInput(previousInput, toolCall.name);
+            const currentCanonical = canonicalizeDiffToolInput(toolCall.input, toolCall.name);
+            const canonicalChanged = currentCanonical !== null
+                && hashObject(currentCanonical) !== hashObject(previousCanonical);
+            const shouldEmit = previousInput === undefined || canonicalChanged;
+            if (shouldEmit) {
+                emittedToolInputs.set(toolCall.callId, toolCall.input);
+                sentToolCalls.add(toolCall.callId);
+                out.push({ type: 'tool-call', name: toolCall.name, callId: toolCall.callId, input: toolCall.input });
+            }
         }
         const toolResult = parseToolResult(part);
         if (toolResult && !sentToolResults.has(toolResult.callId)) {
@@ -21,6 +41,7 @@ function collectMessages(parts: unknown[]): Array<{ type: string; name?: string;
                 out.push({ type: 'tool-call', name: toolCall.name, callId: toolCall.callId, input: toolCall.input });
             }
             sentToolResults.add(toolResult.callId);
+            emittedToolInputs.delete(toolResult.callId);
             out.push({ type: 'tool-call-result', callId: toolResult.callId, output: toolResult.output });
         }
     }
@@ -39,6 +60,51 @@ describe('OpenCode local tool part parsing', () => {
                 title: 'Run project tests'
             }
         })).toMatchObject({ title: 'Run project tests' });
+    });
+
+    it('canonicalizes edit tool parts to the Edit view shape', () => {
+        expect(parseToolCall({
+            type: 'tool',
+            tool: 'edit',
+            callID: 'call-edit-canonical',
+            state: {
+                status: 'running',
+                input: { filePath: '/tmp/a.ts', oldString: 'foo', newString: 'bar' }
+            }
+        })).toEqual({
+            callId: 'call-edit-canonical',
+            name: 'Edit',
+            input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar' }
+        });
+    });
+
+    it('canonicalizes write tool parts to the Write view shape', () => {
+        expect(parseToolCall({
+            type: 'tool',
+            tool: 'write',
+            callID: 'call-write-canonical',
+            state: {
+                status: 'running',
+                input: { filePath: '/tmp/b.txt', content: 'hello\n' }
+            }
+        })).toEqual({
+            callId: 'call-write-canonical',
+            name: 'Write',
+            input: { file_path: '/tmp/b.txt', content: 'hello\n' }
+        });
+    });
+
+    it('leaves non-diff tool parts untouched', () => {
+        expect(parseToolCall({
+            type: 'tool',
+            tool: 'bash',
+            callID: 'call-bash-canonical',
+            state: { status: 'running', input: { command: 'ls -la' } }
+        })).toEqual({
+            callId: 'call-bash-canonical',
+            name: 'bash',
+            input: { command: 'ls -la' }
+        });
     });
 
     it('does not emit tool-call on pending with empty input; emits on running with real args', () => {
@@ -125,6 +191,38 @@ describe('OpenCode local tool part parsing', () => {
         expect(messages.map((m) => m.type)).toEqual(['tool-call', 'tool-call-result']);
         expect(messages[0].input).toEqual({ command: 'echo hi' });
     });
+
+    it('re-emits a running write when content changes from empty to final (message.part.updated path)', () => {
+        const callId = 'call-write-stream';
+        const messages = collectMessages([
+            {
+                type: 'tool',
+                tool: 'write',
+                callID: callId,
+                state: { status: 'running', input: { filePath: '/tmp/b.txt', content: '' } }
+            },
+            {
+                type: 'tool',
+                tool: 'write',
+                callID: callId,
+                state: { status: 'running', input: { filePath: '/tmp/b.txt', content: 'final\n' } }
+            },
+            {
+                type: 'tool',
+                tool: 'write',
+                callID: callId,
+                state: { status: 'completed', input: { filePath: '/tmp/b.txt', content: 'final\n' }, output: 'wrote' }
+            }
+        ]);
+        const calls = messages.filter((m) => m.type === 'tool-call');
+        const results = messages.filter((m) => m.type === 'tool-call-result');
+        expect(calls.length).toBe(2);
+        expect(results.length).toBe(1);
+        expect(calls[calls.length - 1]).toMatchObject({
+            name: 'Write',
+            input: { file_path: '/tmp/b.txt', content: 'final\n' }
+        });
+    });
 });
 
 function hashObject(obj: unknown): string {
@@ -164,14 +262,29 @@ function collectExecuteHookMessages(
 ): Array<{ type: string; name?: string; callId: string; input?: unknown; output?: unknown }> {
     const sentToolCalls = new Set<string>();
     const sentToolResults = new Set<string>();
+    const emittedToolInputs = new Map<string, unknown>();
     const toolExecutionQueues = new Map<string, string[]>();
     const out: Array<{ type: string; name?: string; callId: string; input?: unknown; output?: unknown }> = [];
     let nextId = 0;
 
+    const shouldEmit = (callId: string, toolInput: unknown, hint: string): boolean => {
+        const previousInput = emittedToolInputs.get(callId);
+        const previousCanonical = canonicalizeDiffToolInput(previousInput, hint);
+        const currentCanonical = canonicalizeDiffToolInput(toolInput, hint);
+        const canonicalChanged = currentCanonical !== null
+            && hashObject(currentCanonical) !== hashObject(previousCanonical);
+        return previousInput === undefined || canonicalChanged;
+    };
+
     for (const event of events) {
-        const toolInput = event.input;
-        const signature = buildToolSignature(event.name, toolInput);
+        // Signature is derived from the raw name/input BEFORE canonicalizing
+        // (mirrors opencodeLocalLauncher): an id-less `before` with empty or
+        // partial args must share a queue key with the full `after`.
+        const signature = buildToolSignature(event.name, event.input);
         const fallbackSignature = buildToolSignature(event.name, null);
+        const normalized = canonicalizeHookPair(event.name, event.input);
+        const eventName = normalized.name;
+        const toolInput = normalized.input;
         const existingId = event.id ?? null;
         const isBefore = event.type === 'before';
         const usableInput = isUsableToolInput(toolInput);
@@ -194,10 +307,11 @@ function collectExecuteHookMessages(
             } else {
                 pushQueue(toolExecutionQueues, fallbackSignature, callId);
             }
-            if (!sentToolCalls.has(callId)) {
+            if (!sentToolResults.has(callId) && shouldEmit(callId, toolInput, eventName)) {
                 if (!usableInput) continue;
+                emittedToolInputs.set(callId, toolInput);
                 sentToolCalls.add(callId);
-                out.push({ type: 'tool-call', name: event.name, callId, input: toolInput });
+                out.push({ type: 'tool-call', name: eventName, callId, input: toolInput });
             }
             continue;
         }
@@ -207,11 +321,13 @@ function collectExecuteHookMessages(
             removeFromQueue(toolExecutionQueues, fallbackSignature, callId);
         }
         if (!sentToolResults.has(callId)) {
-            if (!sentToolCalls.has(callId)) {
+            if (!sentToolCalls.has(callId) || shouldEmit(callId, toolInput, eventName)) {
+                emittedToolInputs.set(callId, toolInput);
                 sentToolCalls.add(callId);
-                out.push({ type: 'tool-call', name: event.name, callId, input: toolInput });
+                out.push({ type: 'tool-call', name: eventName, callId, input: toolInput });
             }
             sentToolResults.add(callId);
+            emittedToolInputs.delete(callId);
             out.push({ type: 'tool-call-result', callId, output: event.output });
         }
     }
@@ -238,5 +354,82 @@ describe('OpenCode local execute-hook tool emit policy', () => {
             { type: 'tool-call', name: 'bash', callId: 'stable-1', input: { command: 'ls' } },
             { type: 'tool-call-result', callId: 'stable-1', output: 'ok' }
         ]);
+    });
+
+    it('canonicalizes edit before/after pairs emitted via the execute hook path', () => {
+        const messages = collectExecuteHookMessages([
+            { type: 'before', name: 'edit', input: {} },
+            { type: 'after', name: 'edit', input: { filePath: '/tmp/a.ts', oldString: 'foo', newString: 'bar' }, output: 'ok' }
+        ]);
+        expect(messages.map((m) => m.type)).toEqual(['tool-call', 'tool-call-result']);
+        expect(messages[0]).toMatchObject({
+            type: 'tool-call',
+            name: 'Edit',
+            callId: messages[1].callId,
+            input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar' }
+        });
+    });
+
+    it('upgrades a partial edit before to the full canonical input when after arrives', () => {
+        // Regression: a partial native `before` ({filePath}) is emitted as-is.
+        // When the full `after` arrives it must REPLACE the earlier partial call
+        // so the web Edit view receives the complete old_string/new_string args.
+        // The replacement is a second tool-call (same callId) followed by the result.
+        const messages = collectExecuteHookMessages([
+            { type: 'before', name: 'edit', input: { filePath: '/tmp/a.ts' } },
+            { type: 'after', name: 'edit', input: { filePath: '/tmp/a.ts', oldString: 'foo', newString: 'bar' }, output: 'ok' }
+        ]);
+        expect(messages.map((m) => m.type)).toEqual(['tool-call', 'tool-call', 'tool-call-result']);
+        expect(messages[0].callId).toEqual(messages[1].callId);
+        expect(messages[0].callId).toEqual(messages[2].callId);
+        expect(messages[1]).toMatchObject({
+            type: 'tool-call',
+            name: 'Edit',
+            input: { file_path: '/tmp/a.ts', old_string: 'foo', new_string: 'bar' }
+        });
+    });
+
+    it('canonicalizes write tool calls emitted via the execute hook path', () => {
+        const messages = collectExecuteHookMessages([
+            { type: 'before', name: 'write', id: 'hook-write-1', input: { filePath: '/tmp/b.txt', content: 'hi\n' } },
+            { type: 'after', name: 'write', id: 'hook-write-1', input: { filePath: '/tmp/b.txt', content: 'hi\n' }, output: 'wrote' }
+        ]);
+        expect(messages[0]).toMatchObject({
+            type: 'tool-call',
+            name: 'Write',
+            input: { file_path: '/tmp/b.txt', content: 'hi\n' }
+        });
+    });
+
+    it('releases completed calls from upgrade tracking (no re-emit after result)', () => {
+        // Once a call is completed (tool-call-result emitted), the upgrade map
+        // entry is released. A later stale part for the same callId must not
+        // trigger a replacement emit or a duplicate result — the lifecycle is
+        // already closed by sentToolResults.
+        const messages = collectExecuteHookMessages([
+            { type: 'before', name: 'edit', id: 'hook-e-1', input: { filePath: '/tmp/a.ts' } },
+            { type: 'after', name: 'edit', id: 'hook-e-1', input: { filePath: '/tmp/a.ts', oldString: 'foo', newString: 'bar' }, output: 'ok' },
+            { type: 'after', name: 'edit', id: 'hook-e-1', input: { filePath: '/tmp/a.ts', oldString: 'x', newString: 'y' }, output: 'late' }
+        ]);
+        expect(messages.map((m) => m.type)).toEqual(['tool-call', 'tool-call', 'tool-call-result']);
+        expect(messages.filter((m) => m.type === 'tool-call').length).toBe(2);
+        expect(messages.filter((m) => m.type === 'tool-call-result').length).toBe(1);
+    });
+
+    it('re-emits a canonical write when content changes from empty to final', () => {
+        // {filePath, content:""} already canonicalizes, so the previous
+        // null->canonical rule would suppress the final content. The canonical
+        // value itself changed, so a replacement tool-call must be emitted.
+        const messages = collectExecuteHookMessages([
+            { type: 'before', name: 'write', id: 'hook-w-1', input: { filePath: '/tmp/b.txt', content: '' } },
+            { type: 'after', name: 'write', id: 'hook-w-1', input: { filePath: '/tmp/b.txt', content: 'final\n' }, output: 'wrote' }
+        ]);
+        expect(messages.map((m) => m.type)).toEqual(['tool-call', 'tool-call', 'tool-call-result']);
+        expect(messages[0].callId).toEqual(messages[1].callId);
+        expect(messages[1]).toMatchObject({
+            type: 'tool-call',
+            name: 'Write',
+            input: { file_path: '/tmp/b.txt', content: 'final\n' }
+        });
     });
 });
