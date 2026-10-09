@@ -10,7 +10,7 @@ class FakeSocket {
     readonly emitted: Array<{ event: string; data: unknown }> = []
     private readonly handlers = new Map<string, (arg?: unknown) => void>()
 
-    constructor(auth: unknown) {
+    constructor(auth: unknown, private readonly autoConnect: boolean) {
         this.auth = auth
     }
 
@@ -26,7 +26,9 @@ class FakeSocket {
 
     connect(): void {
         this.connected = true
-        this.handlers.get('connect')?.()
+        if (this.autoConnect) {
+            this.handlers.get('connect')?.()
+        }
     }
 
     disconnect(): void {
@@ -37,6 +39,20 @@ class FakeSocket {
         this.handlers.clear()
     }
 
+    fireConnect(): void {
+        this.connected = true
+        this.handlers.get('connect')?.()
+    }
+
+    fireConnectError(message: string): void {
+        this.handlers.get('connect_error')?.(new Error(message))
+    }
+
+    fireDisconnect(reason: string): void {
+        this.connected = false
+        this.handlers.get('disconnect')?.(reason)
+    }
+
     subscribeCount(): number {
         return this.emitted.filter((e) => e.event === 'agent-terminal:subscribe').length
     }
@@ -44,10 +60,13 @@ class FakeSocket {
 
 let lastSocket: FakeSocket | null = null
 
+// Lets a test start from a rejected handshake (connect_error instead of connect).
+const testState = vi.hoisted(() => ({ autoConnect: true }))
+
 vi.mock('socket.io-client', () => ({
     Manager: class {
         socket(_nsp: string, opts: { auth: unknown }): FakeSocket {
-            lastSocket = new FakeSocket(opts.auth)
+            lastSocket = new FakeSocket(opts.auth, testState.autoConnect)
             return lastSocket
         }
     }
@@ -60,6 +79,7 @@ const options = { baseUrl: 'http://localhost:3000', token: 'tok', sessionId: 'se
 describe('useAgentTerminalSocket subscribe gating', () => {
     beforeEach(() => {
         lastSocket = null
+        testState.autoConnect = true
     })
 
     it('does NOT subscribe on connect when the viewer never asked (hidden mount)', () => {
@@ -111,5 +131,36 @@ describe('useAgentTerminalSocket subscribe gating', () => {
         expect(
             lastSocket!.emitted.some((e) => e.event === 'agent-terminal:unsubscribe')
         ).toBe(true)
+    })
+})
+
+describe('useAgentTerminalSocket error reporting', () => {
+    beforeEach(() => {
+        lastSocket = null
+        testState.autoConnect = true
+    })
+
+    it('keeps the real connect error when the transport closes right after', () => {
+        testState.autoConnect = false
+        const { result } = renderHook(() => useAgentTerminalSocket(options))
+
+        act(() => result.current.connect())
+        act(() => lastSocket!.fireConnectError('xhr post error'))
+        expect(result.current.state).toEqual({ status: 'error', error: 'xhr post error' })
+
+        act(() => lastSocket!.fireDisconnect('transport error'))
+        expect(result.current.state).toEqual({ status: 'error', error: 'xhr post error' })
+    })
+
+    it('reports a transport error once a later connect succeeded', () => {
+        testState.autoConnect = false
+        const { result } = renderHook(() => useAgentTerminalSocket(options))
+
+        act(() => result.current.connect())
+        act(() => lastSocket!.fireConnectError('xhr post error'))
+        act(() => lastSocket!.fireConnect())
+        act(() => lastSocket!.fireDisconnect('transport error'))
+
+        expect(result.current.state).toEqual({ status: 'error', error: 'Disconnected: transport error' })
     })
 })
