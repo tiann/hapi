@@ -39,11 +39,14 @@ const AUTO_APPROVE_EXACT_TOOL_NAMES = new Set([
     // ACP permission requests often surface MCP tool title, not the snake_case name.
     'list peer sessions'
 ]);
+// session_job is intentionally NOT in this name-only allowlist: ACP titles are
+// spoofable (tool-name derivation prefers backend title). Auto-approve only via
+// trusted HAPI bridge config (Codex tools map / Claude --allowedTools).
 // ping_peer / inspect_peer intentionally omitted from always-approve: they can
 // resume+inject into another session or read peer histories, so permission
 // modes must still gate them. Treat both as write-like in read-only so ACP
 // titles such as "Ping Peer Session" / "Inspect Peer Session" also require
-// approval. list_peers is discovery-only and is auto-approved above.
+// approval. list_peers stays auto-approved above.
 const AUTO_APPROVE_TOOL_ID_HINTS = ['change_title', 'save_memory'];
 const SENSITIVE_TOOL_NAME_HINTS = [
     'ping_peer',
