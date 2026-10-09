@@ -183,4 +183,30 @@ describe('createQwenProxyWebSocketHandler ack-gate', () => {
         handler.close(client, 1000, 'bye')
         expect(upstream.closed).toBe(true)
     })
+
+    test('passes the resolved HTTPS proxy to the Bun WebSocket constructor', () => {
+        const saved = {
+            HTTPS_PROXY: process.env.HTTPS_PROXY,
+            https_proxy: process.env.https_proxy,
+            NO_PROXY: process.env.NO_PROXY,
+            no_proxy: process.env.no_proxy
+        }
+        process.env.HTTPS_PROXY = 'http://proxy.example:7890'
+        delete process.env.https_proxy
+        process.env.NO_PROXY = ''
+        delete process.env.no_proxy
+        try {
+            const handler = createQwenProxyWebSocketHandler(FakeWebSocket)
+            handler.open(newClient())
+            expect(lastUpstream?.opts).toMatchObject({ proxy: 'http://proxy.example:7890' })
+        } finally {
+            for (const [key, value] of Object.entries(saved)) {
+                if (value === undefined) {
+                    delete process.env[key]
+                } else {
+                    process.env[key] = value
+                }
+            }
+        }
+    })
 })

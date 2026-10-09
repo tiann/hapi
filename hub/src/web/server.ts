@@ -7,6 +7,7 @@ import { existsSync } from 'node:fs'
 import { serveStatic } from 'hono/bun'
 import { getConfiguration } from '../configuration'
 import { PROTOCOL_VERSION } from '@hapi/protocol'
+import { bunWebSocketProxyOptions } from '@hapi/protocol/net'
 import { buildGeminiLiveSetupMessage, QWEN_REALTIME_MODEL } from '@hapi/protocol/voice'
 import { getProviderEnvironment } from '../config/providerCredentials'
 import { readTitleProviderConfig } from '../sync/titleSuggestion'
@@ -106,7 +107,8 @@ function createGeminiProxyWebSocketHandler() {
             pendingMap.set(clientWs, pending)
             pendingBytesMap.set(clientWs, 0)
 
-            const upstream = new WebSocket(upstreamUrl)
+            // Bun's native WebSocket ignores proxy env vars; pass it explicitly.
+            const upstream = new WebSocket(upstreamUrl, bunWebSocketProxyOptions(upstreamUrl))
             upstreamMap.set(clientWs, upstream)
 
             upstream.onopen = () => {
