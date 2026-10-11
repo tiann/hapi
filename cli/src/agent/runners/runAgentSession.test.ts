@@ -17,8 +17,9 @@ const harness = vi.hoisted(() => ({
 
 vi.mock('@/agent/sessionFactory', () => ({
     bootstrapSession: vi.fn(async () => ({
+        // bootstrapSession returns ApiSessionClient as `session` (not a wrapper).
         session: {
-            client: { sessionId: 'hub-session-acp-1' },
+            sessionId: 'hub-session-acp-1',
             updateAgentState: vi.fn(),
             onUserMessage: vi.fn((handler) => {
                 harness.userMessageHandler = handler

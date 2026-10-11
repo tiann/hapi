@@ -83,7 +83,7 @@ export async function runAgentSession(opts: {
         '--tools',
         happyServer.toolNames.join(','),
         '--hapi-session-id',
-        session.client.sessionId,
+        session.sessionId,
     ]);
     const mcpServers = [
         {
