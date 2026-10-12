@@ -112,6 +112,14 @@ export class SharedCodexRoot {
         });
         this.client.setTransportAbandonedHandler(() => { void this.reconnect(); });
         this.session.onUserMessage((message, localId) => {
+            const batchKey = JSON.stringify({
+                ...this.settings,
+                fallbackModel: message.meta?.fallbackModel ?? null,
+                customSystemPrompt: message.meta?.customSystemPrompt ?? null,
+                appendSystemPrompt: message.meta?.appendSystemPrompt ?? null,
+                allowedTools: message.meta?.allowedTools ?? null,
+                disallowedTools: message.meta?.disallowedTools ?? null
+            });
             this.work = this.work.catch(() => {}).then(async () => {
                 await this.bound;
                 if (this.closed || this.stopping) return;
@@ -119,7 +127,8 @@ export class SharedCodexRoot {
                 const text = formatMessageWithAttachments(message.content.text, message.content.attachments);
                 const resolved = text.trim().startsWith('/') ? await this.queue.command(id, () => this.command(text)) : text;
                 if (resolved === null) { this.session.emitMessagesConsumed([id], { clearQueuedThinkingGrace: true }); return; }
-                await this.queue.enqueue(id, buildUserInputFromMessage(resolved), this.interrupted);
+                await this.queue.enqueue(id, buildUserInputFromMessage(resolved), this.interrupted,
+                    text.trim().startsWith('/') || message.meta?.isNativeQueuedMessage ? undefined : batchKey);
             }).catch(error => this.notice(`Message not confirmed: ${error instanceof Error ? error.message : error}. Inspect the queue before retrying.`));
         });
         this.session.onCancelQueuedMessage(async id => { await this.bound; return this.stopping ? 'indeterminate' : this.queue.cancel(id); });
@@ -190,7 +199,7 @@ export class SharedCodexRoot {
             (id, input) => this.session.syncNativeQueuedMessage(id, input === null ? null : inputText(input)),
             ids => this.session.setSteerDeliveryState(ids, 'queued'));
         await this.queue.load();
-        this.projection = new SharedCodexProjection(this.session, threadId, id => this.queue.committed(id));
+        this.projection = new SharedCodexProjection(this.session, threadId, (id, content) => this.queue.committed(id, content));
         this.session.updateMetadata(metadata => ({ ...metadata, codexSessionId: threadId, capabilities: {
             ...metadata.capabilities, concurrentClients: true, terminal: true,
             // In-place rewind needs a native + hub commit barrier. Do not
@@ -335,6 +344,11 @@ export class SharedCodexRoot {
         }
     }
     nativeQueueDeleted(nativeId: string): Promise<void> { return this.queue.deleted(nativeId); }
+    async nativeQueueMutation(method: string, params: unknown): Promise<unknown> {
+        await this.bound;
+        if (this.closed || this.stopping) throw new Error('Codex execution is stopping');
+        return this.queue.nativeMutation(method, record(params));
+    }
     replaySettings(): Array<{ method: string; params: unknown }> {
         return this.settingsNotification ? [{ method: 'thread/settings/updated', params: {
             threadId: this.threadId, threadSettings: this.settingsNotification

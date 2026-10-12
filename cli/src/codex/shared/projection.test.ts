@@ -4,6 +4,37 @@ import { SharedCodexProjection, inputText } from './projection';
 import { codexPlanProposalId } from './plan';
 
 describe('shared history projection', () => {
+    it('projects accepted batch members under their original IDs and one native turn', async () => {
+        let metadata: Record<string, unknown> = {};
+        const user = vi.fn();
+        const content = [{ type: 'text', text: 'A' }, { type: 'text', text: 'B' }];
+        const aliases = [{ id: 'original-A', input: [content[0]] }, { id: 'original-B', input: [content[1]] }];
+        const committed = vi.fn(async () => aliases);
+        const session = {
+            getMetadata: () => metadata,
+            updateMetadata: (fn: (value: Record<string, unknown>) => Record<string, unknown>) => { metadata = fn(metadata); },
+            sendUserMessage: user, sendAgentMessage: vi.fn()
+        } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', committed);
+        await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn',
+            item: { id: 'item', type: 'userMessage', clientId: 'native-batch', content } });
+        expect(committed).toHaveBeenCalledWith('native-batch', content);
+        expect(user.mock.calls).toEqual([['A', undefined, 'original-A'], ['B', undefined, 'original-B']]);
+        expect(metadata.conversationHistoryTurns).toEqual({ 'original-A': 'turn', 'original-B': 'turn' });
+        expect(metadata.conversationHistoryPoints).toEqual({ 'original-A': true });
+    });
+
+    it('does not echo or create history points for an unproven batch version', async () => {
+        const user = vi.fn(); const update = vi.fn();
+        const session = { getMetadata: () => ({}), updateMetadata: update, sendUserMessage: user,
+            sendAgentMessage: vi.fn() } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => []);
+        await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn',
+            item: { id: 'item', type: 'userMessage', clientId: 'native-batch', content: [{ type: 'text', text: 'unconfirmed' }] } });
+        expect(user).not.toHaveBeenCalled();
+        expect(update).not.toHaveBeenCalled();
+        expect(projection.turnFor('native-batch')).toBeUndefined();
+    });
     it.each([undefined, 'root'])('persists proposals without approval and replays the same IDs (parent: %s)', async parentThreadId => {
         const send = vi.fn();
         const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;

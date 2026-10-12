@@ -362,13 +362,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             // handleAbort's `leavingRemote` doc comment.
             onAbort: () => this.handleAbort(false),
             onSwitch: () => this.handleSwitchRequest()
-        });
+        }, () => this.abortController.abort());
 
         const sendReady = () => {
             session.sendSessionEvent({ type: 'ready' });
         };
 
         while (!this.shouldExit) {
+            await this.waitForAbortBarrier();
             const waitSignal = this.abortController.signal;
             const batch = await session.queue.waitForMessagesAndGetAsString(waitSignal);
             if (!batch) {
@@ -1140,7 +1141,11 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             await backend.cancelPrompt(this.session.sessionId);
         }
         await this.permissionHandler?.cancelAll('User aborted');
-        this.session.queue.reset();
+        // Plain Stop preserves the pending queue for the next drain; only
+        // terminal cleanup (exit / switch-to-local) resets it.
+        if (leavingRemote) {
+            this.session.queue.reset();
+        }
         this.abortController.abort();
         this.abortController = new AbortController();
         // Re-read here (not the snapshot taken above, before the awaits) in

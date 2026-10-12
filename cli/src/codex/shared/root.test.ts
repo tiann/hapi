@@ -322,3 +322,55 @@ describe('shared steering availability', () => {
         await vi.waitFor(() => expect(end).toHaveBeenCalledTimes(1));
     });
 });
+
+describe('shared root Abort retains the native queue (control: no drain/resume policy change)', () => {
+    it('turn/interrupts only the active turn and leaves native queued entries intact', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const requests: Array<{ method: string; params: unknown }> = [];
+        const client = f.root.client as unknown as { request(method: string, params?: Record<string, unknown>): Promise<unknown> };
+        const origRequest = client.request.bind(client);
+        client.request = async (method: string, params: Record<string, unknown> = {}) => {
+            requests.push({ method, params });
+            if (method === 'turn/interrupt') return {};
+            return origRequest(method, params);
+        };
+
+        // Drive an active native turn.
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'turn-1' } });
+
+        // A native queued submission is pending.
+        await client.request('thread/queue/add', { clientUserMessageId: 'm1', input: [{ type: 'text', text: 'hi' }] });
+        expect(f.native.queue.length).toBe(1);
+        requests.length = 0;
+
+        const abort = f.rpc.get(RPC_METHODS.Abort)!;
+        await abort({});
+
+        // Abort must call exactly one method — turn/interrupt for the active
+        // turn — and must not drain, reset or replay the native queue.
+        expect(requests).toEqual([{ method: 'turn/interrupt', params: { threadId: 'thread', turnId: 'turn-1' } }]);
+        expect(f.native.queue.length).toBe(1);
+
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 'turn-1', status: 'interrupted' } });
+    });
+
+    it('does not call turn/interrupt when no turn is active, and leaves the queue untouched', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const requests: Array<{ method: string; params: unknown }> = [];
+        const client = f.root.client as unknown as { request(method: string, params?: Record<string, unknown>): Promise<unknown> };
+        const origRequest = client.request.bind(client);
+        client.request = async (method: string, params: Record<string, unknown> = {}) => {
+            requests.push({ method, params });
+            if (method === 'turn/interrupt') return {};
+            return origRequest(method, params);
+        };
+
+        const abort = f.rpc.get(RPC_METHODS.Abort)!;
+        await abort({});
+
+        expect(requests.filter((r) => r.method === 'turn/interrupt')).toEqual([]);
+        expect(f.native.queue.length).toBe(0);
+    });
+});
