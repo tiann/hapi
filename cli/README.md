@@ -219,7 +219,7 @@ controls for DSH.
 ### Set for the wrapped agent
 
 - `HAPI_SESSION_ID` - The current HAPI session ID, available inside agent shells. Use it in scripts that target the current conversation without listing sessions.
-- An explicitly configured `HAPI_API_URL` is also made available to agent shells. HAPI does not copy settings-backed `CLI_API_TOKEN` secrets into the agent environment; credentials already present in the parent environment may still be inherited. Web terminal PTYs strip hub secrets.
+- An explicitly configured `HAPI_API_URL` is also made available to agent shells. HAPI does not copy settings-backed `CLI_API_TOKEN` secrets into the agent environment; credentials already present in the parent environment may still be inherited. Web Terminal PTYs (session Terminal button) strip hub secrets and agent-context markers (`HAPI_AGENT_CONTEXT`, `CURSOR_AGENT`, …) and set `HAPI_USER_TERMINAL=1` so operator tools treat that shell as human-facing.
 
 For peer discovery and messaging, use the session's MCP `list_peers`,
 `inspect_peer`, and `ping_peer` tools, or the corresponding CLI commands.
