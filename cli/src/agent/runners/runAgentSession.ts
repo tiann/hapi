@@ -75,12 +75,15 @@ export async function runAgentSession(opts: {
             flavor: opts.agentType
         }
     });
+    // Stamp hub row id for orphan MCP reap (#2003).
     const bridgeCommand = getHappyCliCommand([
         'mcp',
         '--url',
         happyServer.url,
         '--tools',
-        happyServer.toolNames.join(',')
+        happyServer.toolNames.join(','),
+        '--hapi-session-id',
+        session.sessionId,
     ]);
     const mcpServers = [
         {

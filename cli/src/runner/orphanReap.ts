@@ -7,6 +7,9 @@
  * the hub archives by HAPI session id — matching `--started-by runner` plus
  * an explicit `--existing-session-id` / `--hapi-session-id` flag.
  *
+ * Also matches HAPI MCP stdio bridge helpers (`mcp --url … --hapi-session-id`)
+ * which the agent spawns without `--started-by runner` (#2003).
+ *
  * Windows: do not use ps-list. Its fastlist vendor binary is often missing from
  * single-exe bundles and never returns CommandLine — argv matching needs CIM.
  */
@@ -45,6 +48,16 @@ export function isHapiDriverCliCommand(cmd: string, name = ''): boolean {
     )
 }
 
+function commandHasHapiSessionIdFlag(cmd: string, sessionId: string): boolean {
+    if (!sessionId) return false
+    const escaped = sessionId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    // Require an explicit HAPI id flag. Do not match bare `--resume <native-id>`
+    // — that is the agent session, not the HAPI row id.
+    return new RegExp(
+        `(?:^|\\s)(?:--existing-session-id|--hapi-session-id)(?:\\s+|=)${escaped}(?:\\s|$)`
+    ).test(cmd)
+}
+
 /**
  * Token-aware match: session id must appear as its own argv token (or after
  * `--existing-session-id=` / `--hapi-session-id=`), and the process must claim
@@ -53,13 +66,21 @@ export function isHapiDriverCliCommand(cmd: string, name = ''): boolean {
 export function commandMatchesRunnerSpawnedSession(cmd: string, sessionId: string): boolean {
     if (!sessionId || !cmd.includes('--started-by')) return false
     if (!/(?:^|\s)--started-by(?:\s+|=)runner(?:\s|$)/.test(cmd)) return false
+    return commandHasHapiSessionIdFlag(cmd, sessionId)
+}
 
-    const escaped = sessionId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    // Require an explicit HAPI id flag. Do not match bare `--resume <native-id>`
-    // — that is the agent session, not the HAPI row id.
-    return new RegExp(
-        `(?:^|\\s)(?:--existing-session-id|--hapi-session-id)(?:\\s+|=)${escaped}(?:\\s|$)`
-    ).test(cmd)
+/**
+ * HAPI MCP stdio bridge helpers (`hapi … mcp --url …`) are spawned by the agent,
+ * not the runner — they never carry `--started-by runner`. After #1911 roots are
+ * reaped, these helpers often survive (OOM of the root only, KillMode=process
+ * races) and keep holding RAM. Match them by stamped `--hapi-session-id` (#2003).
+ */
+export function commandMatchesHapiMcpBridgeForSession(cmd: string, sessionId: string): boolean {
+    if (!sessionId) return false
+    // Subcommand token `mcp` near a `--url` flag (bridge signature).
+    if (!/(?:^|\s)mcp(?:\s|$)/.test(cmd)) return false
+    if (!/(?:^|\s)--url(?:\s+|=)/.test(cmd)) return false
+    return commandHasHapiSessionIdFlag(cmd, sessionId)
 }
 
 export function selectOrphanTargetsForSession(
@@ -77,7 +98,12 @@ export function selectOrphanTargetsForSession(
         const cmd = proc.cmd || ''
         const name = proc.name || ''
         if (!isHapiDriverCliCommand(cmd, name)) continue
-        if (!commandMatchesRunnerSpawnedSession(cmd, sessionId)) continue
+        if (
+            !commandMatchesRunnerSpawnedSession(cmd, sessionId)
+            && !commandMatchesHapiMcpBridgeForSession(cmd, sessionId)
+        ) {
+            continue
+        }
         targets.push({
             pid,
             startMarker: proc.startMarker === undefined ? null : proc.startMarker,

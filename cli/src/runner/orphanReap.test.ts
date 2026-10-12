@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
+    commandMatchesHapiMcpBridgeForSession,
     commandMatchesRunnerSpawnedSession,
     findRunnerSpawnedOrphanTargets,
     findStopSessionOrphanTargets,
@@ -43,6 +44,34 @@ describe('orphanReap argv matching', () => {
     it('rejects substring false positives', () => {
         const cmd = `bun src/index.ts claude --started-by runner --existing-session-id ${sessionId}-extra`
         expect(commandMatchesRunnerSpawnedSession(cmd, sessionId)).toBe(false)
+    })
+
+    it('matches stamped HAPI MCP bridge helpers without --started-by (#2003)', () => {
+        const cmd = `hapi-hapi-soup mcp --url http://127.0.0.1:45619/ --tools display_image --hapi-session-id ${sessionId}`
+        expect(commandMatchesHapiMcpBridgeForSession(cmd, sessionId)).toBe(true)
+        expect(commandMatchesRunnerSpawnedSession(cmd, sessionId)).toBe(false)
+    })
+
+    it('rejects MCP helpers for a different session id', () => {
+        const cmd = `hapi mcp --url http://127.0.0.1:1/ --hapi-session-id other-sess`
+        expect(commandMatchesHapiMcpBridgeForSession(cmd, sessionId)).toBe(false)
+    })
+
+    it('rejects unstamped legacy MCP helpers (no session flag)', () => {
+        const cmd = 'hapi mcp --url http://127.0.0.1:1/ --tools display_image'
+        expect(commandMatchesHapiMcpBridgeForSession(cmd, sessionId)).toBe(false)
+    })
+
+    it('selectOrphanPidsForSession includes stamped MCP bridges alongside agent roots', () => {
+        const pids = selectOrphanPidsForSession(
+            [
+                { pid: 10, cmd: `bun src/index.ts cursor --started-by runner --existing-session-id ${sessionId}`, name: 'bun' },
+                { pid: 11, cmd: `hapi mcp --url http://127.0.0.1:9/ --hapi-session-id ${sessionId}`, name: 'hapi' },
+                { pid: 12, cmd: `hapi mcp --url http://127.0.0.1:9/ --hapi-session-id other`, name: 'hapi' },
+            ],
+            sessionId
+        )
+        expect(pids.sort((a, b) => a - b)).toEqual([10, 11])
     })
 
     it('treats empty Windows process-list stdout as scan_failed (not no-orphans)', async () => {

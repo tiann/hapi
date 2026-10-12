@@ -36,6 +36,11 @@ function parseArgs(argv: string[]): { url: string | null; toolNames: Set<string>
     } else if (a === '--tools' && i + 1 < argv.length) {
       toolNames = new Set(argv[i + 1].split(',').map((name) => name.trim()).filter(Boolean));
       i++;
+    } else if (a === '--hapi-session-id' && i + 1 < argv.length) {
+      // Orphan-reap stamp only (#2003); consume so the value is not left as a stray argv token.
+      i++;
+    } else if (a.startsWith('--hapi-session-id=')) {
+      // `--hapi-session-id=<uuid>` form — nothing further to consume.
     }
   }
   return { url, toolNames };
