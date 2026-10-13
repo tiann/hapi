@@ -134,6 +134,11 @@ function asRecord(value: unknown): Record<string, unknown> | null {
         : null
 }
 
+/** How long a machine-spawn stub is given to boot before it is considered dead. */
+const SPAWN_STUB_REAP_AFTER_MS = 10 * 60_000
+/** Cheap enough to check on the existing 5s tick, expensive enough to do rarely. */
+const SPAWN_STUB_REAP_INTERVAL_MS = 5 * 60_000
+
 function normalizeUserMessageText(value: string): string | undefined {
     const text = value.trim().replace(/\s+/g, ' ')
     return text.length > 0 ? text : undefined
@@ -185,6 +190,8 @@ export class SyncEngine {
     private readonly titleSuggestionService: TitleSuggestionService
     private readonly rpcGateway: RpcGateway
     private inactivityTimer: NodeJS.Timeout | null = null
+    /** Last spawn-stub reap, so it can ride the 5s tick without running every 5s. */
+    private lastSpawnStubReapAt = 0
     /** Sessions that emitted `session-ready` (Cursor ACP or validated Pi get_state). */
     private readonly sessionReadyIds = new Set<string>()
     /** Same-ID PTY rows with a resume currently in flight. */
@@ -969,6 +976,46 @@ export class SyncEngine {
         // but shares its 5s cadence (avoids a second timer).
         this.messageService.releaseMatureScheduledMessages(Date.now(), this.historyActionsInFlight)
         void this.reconcileOpenCodeClears()
+        this.reapSpawnStubs(Date.now())
+    }
+
+    /**
+     * Remove machine-spawn stubs that never booted.
+     *
+     * A stub is a session row the hub preallocated before asking the runner to
+     * start anything. When the spawn fails after the runner has begun executing,
+     * the hub deliberately keeps the row ("ambiguous" on the spawn paths — see
+     * `deleteStubIfStillPrealloc`) because it cannot tell a dead CLI from a slow
+     * one, and deleting would cascade the transcript away. Nothing else ever
+     * removes them, so a hub that keeps hitting a broken spawn accumulates one
+     * stub per attempt, each inflating the session list.
+     *
+     * Age alone is not proof of death, but the absence of `hostPid` is: the CLI
+     * writes it the moment it boots. A row still tagged `machine-spawn:<id>` with
+     * no `hostPid`, older than the grace period, never got that far — the same
+     * predicate that lets `stopSession` treat it as `already_gone`.
+     */
+    private reapSpawnStubs(now: number): void {
+        if (now - this.lastSpawnStubReapAt < SPAWN_STUB_REAP_INTERVAL_MS) return
+        this.lastSpawnStubReapAt = now
+
+        for (const stored of this.store.sessions.listStaleMachineSpawnStubs(now - SPAWN_STUB_REAP_AFTER_MS)) {
+            if (!isMachineSpawnPreallocatedStub(stored)) continue
+            const hostPid = asRecord(stored.metadata)?.hostPid
+            if (typeof hostPid === 'number' && hostPid > 0) continue
+
+            console.warn('[spawn-stub-reap] removing machine-spawn stub that never booted', {
+                sessionId: stored.id,
+                path: asRecord(stored.metadata)?.path
+            })
+            // Load it into the cache first — deleteSession resolves through the
+            // session cache, and a stub that has not been touched since it was
+            // written may not be there yet.
+            this.sessionCache.refreshSession(stored.id)
+            void this.deleteSession(stored.id).catch((error) => {
+                console.error('[spawn-stub-reap] failed to remove stub', { sessionId: stored.id, error })
+            })
+        }
     }
 
     private async reconcileOpenCodeClears(): Promise<void> {
