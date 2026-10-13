@@ -1090,10 +1090,10 @@ export class SyncEngine {
 
     /**
      * Ask the CLI to deliver one waiting-queue message into the active turn
-     * (native steer). Supported for Pi, Codex, and Cursor ACP sessions; the
-     * CLI's `steer-queued-message` handler is registered per flavor. Legacy
-     * stream-json Cursor sessions and other flavors are rejected by the
-     * capability gate.
+     * (native steer). Supported for Pi, Codex, OpenCode, and Cursor ACP
+     * sessions; the CLI's `steer-queued-message` handler is registered per
+     * flavor. Legacy stream-json Cursor sessions and other flavors are
+     * rejected by the capability gate.
      */
     async steerQueuedMessage(
         sessionId: string,
@@ -1104,7 +1104,7 @@ export class SyncEngine {
             return { status: 'failed', error: 'Session not found', localId: null }
         }
         if (!isSteeringSupportedForSession(session.metadata)) {
-            return { status: 'failed', error: 'Steering is only supported for Pi, Codex, and Cursor ACP sessions', localId: null }
+            return { status: 'failed', error: 'Steering is only supported for Pi, Codex, OpenCode, and Cursor ACP sessions', localId: null }
         }
         if (session.agentState?.controlledByUser === true && !session.metadata?.capabilities?.concurrentClients) {
             return { status: 'failed', error: 'Steering is only available for remote sessions', localId: null }
