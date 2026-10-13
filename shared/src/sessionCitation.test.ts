@@ -134,12 +134,21 @@ describe('SPAWN_PEER_TOOL_DESCRIPTION', () => {
         expect(SPAWN_PEER_TOOL_DESCRIPTION.toLowerCase()).not.toMatch(/strip/)
     })
 
-    it('teaches omit permissionMode = yolo default, not approval-gated default', () => {
+    it('teaches omit permissionMode = hub then stock yolo, not approval-gated default', () => {
         expect(SPAWN_PEER_TOOL_DESCRIPTION.toLowerCase()).toMatch(/yolo/)
         expect(SPAWN_PEER_TOOL_DESCRIPTION.toLowerCase()).toMatch(/omit/)
+        expect(SPAWN_PEER_TOOL_DESCRIPTION.toLowerCase()).toMatch(/hub peerspawndefaults/)
+        expect(SPAWN_PEER_TOOL_DESCRIPTION.toLowerCase()).toMatch(/falling back to stock yolo/)
         expect(SPAWN_PEER_TOOL_DESCRIPTION.toLowerCase()).not.toMatch(
             /pass permissionmode only when the operator asked/
         )
+    })
+
+    it('warns agents not to pass permissionMode default (treated as omit / hub-then-stock)', () => {
+        expect(SPAWN_PEER_TOOL_DESCRIPTION.toLowerCase()).toMatch(/do not pass permissionmode/)
+        expect(SPAWN_PEER_TOOL_DESCRIPTION.toLowerCase()).toMatch(/"default"/)
+        expect(SPAWN_PEER_TOOL_DESCRIPTION.toLowerCase()).toMatch(/hub-then-stock/)
+        expect(SPAWN_PEER_TOOL_DESCRIPTION.toLowerCase()).not.toMatch(/use stock\)/)
     })
 
     it('forbids inventing peer titles and teaches Parent UUID stamp', () => {

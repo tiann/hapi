@@ -123,8 +123,13 @@ export type ResolvedPeerSpawnConfig = {
 }
 
 /**
- * Resolve spawn-peer agent / permission / model / effort:
- * explicit CLI/MCP args → hub settings → stock defaults.
+ * Resolve spawn-peer / machine-spawn agent / permission / model / effort:
+ * explicit args → hub settings → stock defaults.
+ *
+ * Do **not** treat `permissionMode: "default"` as omit here — New Session and
+ * POST /machines/:id/spawn use this resolver and must keep an explicit native
+ * Default selection. CLI/MCP `spawnPeer` normalizes agent-habit `"default"` to
+ * omit before calling this function.
  */
 export function resolvePeerSpawnConfig(
     overrides: PeerSpawnConfigOverrides,
