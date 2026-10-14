@@ -3,16 +3,20 @@ import { RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMethods'
 import { ApiError, type ApiClient } from '@/api/client'
 import type { CodexModelSummary } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
+import type { CodexAccountUsage } from '@hapi/protocol/apiTypes'
 
 export function useCodexModels(args: {
     api: ApiClient | null
     sessionId?: string | null
     machineId?: string | null
     enabled?: boolean
+    sessionScoped?: boolean
 }): {
     models: CodexModelSummary[]
     isLoading: boolean
     error: string | null
+    usage: CodexAccountUsage | null
+    refresh: () => void
 } {
     const { api, sessionId, machineId } = args
     const enabled = Boolean(args.enabled && api && (sessionId || machineId))
@@ -28,17 +32,17 @@ export function useCodexModels(args: {
             }
             throw new Error('Codex models target unavailable')
         },
-        enabled: Boolean(enabled && machineId),
+        enabled: Boolean(enabled && machineId && !args.sessionScoped),
         staleTime: 30_000,
         retry: false,
     })
 
-    // Successful machine discovery stays shared across chats and New Session.
-    // Only an absent machine RPC unlocks the per-session neutral fallback.
+    // Shared runtimes own their account/provider context and conditional Reserve
+    // options. Keep those separate from machine discovery used by New Session.
     const useSessionFallback = Boolean(
         enabled
         && sessionId
-        && (!machineId || (
+        && (args.sessionScoped || !machineId || (
             machineQuery.error instanceof ApiError
             && machineQuery.error.code === RPC_TARGET_MISSING_ERROR_CODE
         ))
@@ -62,6 +66,8 @@ export function useCodexModels(args: {
 
     return {
         models: query.data?.models ?? [],
+        usage: query.data?.usage ?? null,
+        refresh: () => { if (enabled) void query.refetch({ cancelRefetch: false }) },
         isLoading: query.isLoading,
         error: query.data?.success === false
             ? (query.data.error ?? 'Failed to load Codex models')
