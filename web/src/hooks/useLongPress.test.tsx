@@ -98,6 +98,34 @@ describe('useLongPress', () => {
         expect(onClick).not.toHaveBeenCalled()
     })
 
+    it('cancels the long-press timer once an HTML5 drag starts (hold-then-drag must not open the menu)', () => {
+        const onClick = vi.fn()
+        const onLongPress = vi.fn()
+        const { getByTestId } = render(<Probe onClick={onClick} onLongPress={onLongPress} />)
+        const row = getByTestId('row')
+
+        // Desktop: press the row, then the pointer turns into a drag before
+        // the 500ms long-press threshold elapses.
+        fireEvent.mouseDown(row, { button: 0, clientX: 10, clientY: 10 })
+        fireEvent.dragStart(row)
+        act(() => {
+            now += 500
+            vi.advanceTimersByTime(500)
+        })
+        fireEvent.dragEnd(row)
+
+        expect(onLongPress).not.toHaveBeenCalled()
+
+        // The drag consumed the gesture: the drop must not navigate, and the
+        // next plain tap still works (no poisoned long-press state).
+        fireEvent.mouseUp(row, { button: 0, clientX: 10, clientY: 10 })
+        expect(onClick).not.toHaveBeenCalled()
+
+        fireEvent.mouseDown(row, { button: 0, clientX: 10, clientY: 10 })
+        fireEvent.mouseUp(row, { button: 0, clientX: 10, clientY: 10 })
+        expect(onClick).toHaveBeenCalledTimes(1)
+    })
+
     it('still fires onLongPress (and not onClick) for a touch long-press', () => {
         const onClick = vi.fn()
         const onLongPress = vi.fn()
