@@ -10,9 +10,9 @@ import {
 } from './flavors'
 
 describe('hasCapability', () => {
-    test('agy supports model-change but not effort', () => {
+    test('agy supports model-change and effort', () => {
         expect(hasCapability('agy', Capabilities.ModelChange)).toBe(true)
-        expect(hasCapability('agy', Capabilities.Effort)).toBe(false)
+        expect(hasCapability('agy', Capabilities.Effort)).toBe(true)
     })
 
     test('claude supports model-change', () => {
@@ -53,14 +53,14 @@ describe('hasCapability', () => {
         expect(hasCapability('pi', Capabilities.Effort)).toBe(true)
     })
 
-    test('kimi supports model-change but not effort', () => {
+    test('kimi supports model-change and effort', () => {
         expect(hasCapability('kimi', Capabilities.ModelChange)).toBe(true)
-        expect(hasCapability('kimi', Capabilities.Effort)).toBe(false)
+        expect(hasCapability('kimi', Capabilities.Effort)).toBe(true)
     })
 
-    test('copilot supports model-change but not effort', () => {
+    test('copilot supports model-change and effort', () => {
         expect(hasCapability('copilot', Capabilities.ModelChange)).toBe(true)
-        expect(hasCapability('copilot', Capabilities.Effort)).toBe(false)
+        expect(hasCapability('copilot', Capabilities.Effort)).toBe(true)
     })
 
     test('grok supports runtime model and effort switching through ACP', () => {
@@ -143,12 +143,14 @@ describe('convenience functions', () => {
     })
 
     test('supportsEffort matches hasCapability', () => {
+        expect(supportsEffort('agy')).toBe(true)
         expect(supportsEffort('claude')).toBe(true)
         expect(supportsEffort('codex')).toBe(false)
         expect(supportsEffort('gemini')).toBe(false)
         expect(supportsEffort('pi')).toBe(true)
         expect(supportsEffort('grok')).toBe(true)
-        expect(supportsEffort('kimi')).toBe(false)
+        expect(supportsEffort('kimi')).toBe(true)
+        expect(supportsEffort('copilot')).toBe(true)
         expect(supportsEffort(null)).toBe(false)
     })
 })

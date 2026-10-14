@@ -18,13 +18,27 @@ describe('agent config descriptors', () => {
         ])
     })
 
-    test('models Cursor variant as a dependent model field rather than a page-specific control', () => {
+    test('models Cursor variant as a dependent model and effort field', () => {
         const descriptor = getAgentConfigDescriptor('cursor')
         expect(descriptor.fields).toContainEqual(expect.objectContaining({
             id: 'model',
             kind: 'dependent-select',
             optionSource: 'machine'
         }))
+        expect(descriptor.fields).toContainEqual(expect.objectContaining({
+            id: 'effort',
+            kind: 'dependent-select',
+            optionSource: 'model'
+        }))
+    })
+
+    test('advertises runtime effort fields for every wired agent', () => {
+        for (const flavor of ['agy', 'copilot', 'kimi'] as const) {
+            expect(getAgentConfigDescriptor(flavor).fields).toContainEqual(expect.objectContaining({
+                id: 'effort',
+                section: 'effort'
+            }))
+        }
     })
 
     test('reports DSH permission as managed by its ACP composition', () => {
