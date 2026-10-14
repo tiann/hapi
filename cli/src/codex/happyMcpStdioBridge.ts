@@ -1,7 +1,7 @@
 /**
  * HAPI MCP STDIO Bridge
  *
- * Minimal STDIO MCP server exposing HAPI tools such as `change_title`, `display_image`, `display_video`, `display_media`, `list_peers`, `ping_peer`, `inspect_peer`, and `spawn_peer`.
+ * Minimal STDIO MCP server exposing HAPI tools such as `change_title`, `display_image`, `display_video`, `display_media`, `list_peers`, `ping_peer`, `inspect_peer`, `spawn_peer`, and `archive_peer`.
  * On invocation it forwards the tool call to an existing HAPI HTTP MCP server
  * using the StreamableHTTPClientTransport.
  *
@@ -20,6 +20,7 @@ import { PeerDeliveryModeSchema } from '@/modules/pingPeer/deliveryMode';
 import { DISPLAY_IMAGE_TOOL_DESCRIPTION, DISPLAY_MEDIA_TOOL_DESCRIPTION, DISPLAY_VIDEO_TOOL_DESCRIPTION } from '@/modules/common/displayToolDescriptions';
 import { CHANGE_TITLE_TOOL_DESCRIPTION } from '@/modules/common/titleInstruction';
 import {
+  ARCHIVE_PEER_TOOL_DESCRIPTION,
   INSPECT_PEER_TOOL_DESCRIPTION,
   LIST_PEERS_INCLUDE_INACTIVE_PARAM_DESCRIPTION,
   LIST_PEERS_TOOL_DESCRIPTION,
@@ -50,6 +51,7 @@ const DEFAULT_TOOL_NAMES = [
   'ping_peer',
   'inspect_peer',
   'spawn_peer',
+  'archive_peer',
   SESSION_JOB_TOOL_NAME,
 ];
 
@@ -409,6 +411,35 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
             return {
               content: [
                 { type: 'text' as const, text: `Failed to spawn peer: ${error instanceof Error ? error.message : String(error)}` },
+              ],
+              isError: true,
+            };
+          }
+        }
+      );
+    }
+
+    const archivePeerInputSchema: z.ZodTypeAny = z.object({
+      sessionIdPrefix: z.string().trim().min(1).describe(SESSION_ID_PREFIX_PARAM_DESCRIPTION),
+    });
+
+    if (toolNames.has('archive_peer')) {
+      server.registerTool<any, any>(
+        'archive_peer',
+        {
+          description: ARCHIVE_PEER_TOOL_DESCRIPTION,
+          title: 'Archive Peer Session',
+          inputSchema: archivePeerInputSchema,
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            const client = await ensureHttpClient();
+            const response = await client.callTool({ name: 'archive_peer', arguments: args });
+            return response as any;
+          } catch (error) {
+            return {
+              content: [
+                { type: 'text' as const, text: `Failed to archive peer: ${error instanceof Error ? error.message : String(error)}` },
               ],
               isError: true,
             };

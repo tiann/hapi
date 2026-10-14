@@ -1991,6 +1991,9 @@ describe('sessions routes', () => {
             expect(response.status).toBe(500)
         })
 
+        // #2020 soft stand-down refuses WORKING peers via ArchiveCleanupError('unconfirmed')
+        // - covered by the structured cleanup unconfirmed case above (409 + code).
+
         it('returns 404 when the session id is unknown', async () => {
             const session = createSession()
             const { app } = createApp(session, { sessionExists: false })

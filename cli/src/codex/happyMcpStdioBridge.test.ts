@@ -151,6 +151,7 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
             'display_image',
             'display_media',
             'display_video',
+            'archive_peer',
             'inspect_peer',
             'list_peers',
             'ping_peer',
@@ -244,6 +245,23 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
         ])
     })
 
+    it('registers archive_peer when included in --tools', async () => {
+        await runHappyMcpStdioBridge([
+            '--url',
+            'http://127.0.0.1:43006',
+            '--tools',
+            'change_title,display_image,display_video,display_media,archive_peer'
+        ])
+
+        expect([...harness.tools.keys()]).toEqual([
+            'change_title',
+            'display_image',
+            'display_video',
+            'display_media',
+            'archive_peer'
+        ])
+    })
+
     it('registers list_peers when included in --tools', async () => {
         await runHappyMcpStdioBridge([
             '--url',
@@ -271,7 +289,7 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
                 '--url',
                 'http://127.0.0.1:43006',
                 '--tools',
-                'change_title,list_peers,ping_peer,inspect_peer,spawn_peer'
+                'change_title,list_peers,ping_peer,inspect_peer,spawn_peer,archive_peer'
             ])
 
             expect([...harness.tools.keys()]).toEqual(['change_title'])
@@ -294,6 +312,7 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
             'session_job',
             'ping_peer',
             'spawn_peer',
+            'archive_peer',
             'inspect_peer',
             'list_peers'
         ])

@@ -10,6 +10,7 @@ import type { EventPublisher } from './eventPublisher'
 import { SessionCache } from './sessionCache'
 import {
     DEFAULT_SESSION_IDLE_TIMEOUT_MS,
+    canSoftStandDownUnconfirmedStop,
     resolveSessionIdleTimeoutMs,
     shouldClearKeepaliveIdle,
     shouldMarkKeepaliveIdle,
@@ -56,6 +57,35 @@ describe('resolveSessionIdleTimeoutMs', () => {
     it('honours an explicit window, and 0 disables', () => {
         expect(resolveSessionIdleTimeoutMs({ HAPI_SESSION_IDLE_TIMEOUT_MS: '3600000' })).toBe(3_600_000)
         expect(resolveSessionIdleTimeoutMs({ HAPI_SESSION_IDLE_TIMEOUT_MS: '0' })).toBe(0)
+    })
+})
+
+describe('canSoftStandDownUnconfirmedStop', () => {
+    it('allows still-connected Peer Done with no live work', () => {
+        expect(canSoftStandDownUnconfirmedStop(session({ active: true, thinking: false }))).toBe(true)
+        expect(canSoftStandDownUnconfirmedStop(session({
+            active: true,
+            thinking: false,
+            metadata: { path: '/tmp/p', host: 'h', lifecycleState: 'idle' },
+        }))).toBe(true)
+    })
+
+    it('refuses live work even while connected', () => {
+        expect(canSoftStandDownUnconfirmedStop(session({ active: true, thinking: true }))).toBe(false)
+        expect(canSoftStandDownUnconfirmedStop(session({ active: true, backgroundTaskCount: 1 }))).toBe(false)
+    })
+
+    it('refuses disconnected rows even when lifecycle is idle (#2021 Major)', () => {
+        expect(canSoftStandDownUnconfirmedStop(session({
+            active: false,
+            thinking: false,
+            metadata: { path: '/tmp/p', host: 'h', lifecycleState: 'idle' },
+        }))).toBe(false)
+        expect(canSoftStandDownUnconfirmedStop(session({
+            active: false,
+            thinking: false,
+            metadata: { path: '/tmp/p', host: 'h', lifecycleState: 'running' },
+        }))).toBe(false)
     })
 })
 

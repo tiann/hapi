@@ -127,6 +127,7 @@ describe('startHappyServer skill_lookup', () => {
         const tools = await mcp.listTools()
 
         expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
+            'archive_peer',
             'change_title',
             'display_image',
             'display_media',
@@ -492,9 +493,11 @@ describe('startHappyServer skill_lookup', () => {
             'ping_peer',
             'inspect_peer',
             'spawn_peer',
+            'archive_peer',
             'session_job',
         ])
         expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
+            'archive_peer',
             'display_image',
             'display_media',
             'display_video',
@@ -1096,6 +1099,7 @@ describe('toClaudeAllowedHapiMcpTools', () => {
             'ping_peer',
             'inspect_peer',
             'spawn_peer',
+            'archive_peer',
             'session_job',
             'skill_lookup'
         ])).toEqual([
@@ -1107,6 +1111,8 @@ describe('toClaudeAllowedHapiMcpTools', () => {
         ])
         expect(toClaudeAllowedHapiMcpTools(['display_video'])).not.toContain('mcp__hapi__display_video')
         expect(toClaudeAllowedHapiMcpTools(['display_media'])).not.toContain('mcp__hapi__display_media')
+        expect(toClaudeAllowedHapiMcpTools(['spawn_peer'])).not.toContain('mcp__hapi__spawn_peer')
+        expect(toClaudeAllowedHapiMcpTools(['archive_peer'])).not.toContain('mcp__hapi__archive_peer')
     })
 })
 
@@ -1182,27 +1188,27 @@ describe('startHappyServer peer tools kill switch', () => {
         delete process.env.HAPI_DISABLE_PEER_TOOLS
         const { toolNames } = await startServer({
             enableChangeTitle: false,
-            enabledTools: ['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'],
+            enabledTools: ['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'archive_peer'],
         })
-        expect(toolNames).toEqual(['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'])
+        expect(toolNames).toEqual(['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'archive_peer'])
         const tools = await client!.listTools()
-        expect(tools.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer']))
+        expect(tools.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'archive_peer']))
     })
 
     it('does not let the allowlist bypass HAPI_DISABLE_PEER_TOOLS', async () => {
         process.env.HAPI_DISABLE_PEER_TOOLS = '1'
         await expect(startServer({
             enableChangeTitle: false,
-            enabledTools: ['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'],
+            enabledTools: ['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'archive_peer'],
         })).rejects.toThrow('startHappyServer requires at least one enabled tool')
     })
     it('registers peer tools by default', async () => {
         delete process.env.HAPI_DISABLE_PEER_TOOLS
         const { toolNames } = await startServer()
-        expect(toolNames).toEqual(expect.arrayContaining(['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer']))
+        expect(toolNames).toEqual(expect.arrayContaining(['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'archive_peer']))
         const tools = await client!.listTools()
         const names = tools.tools.map((tool) => tool.name)
-        expect(names).toEqual(expect.arrayContaining(['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer']))
+        expect(names).toEqual(expect.arrayContaining(['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'archive_peer']))
     })
 
     it('omits peer tools from registration and toolNames when HAPI_DISABLE_PEER_TOOLS is set', async () => {
@@ -1225,6 +1231,7 @@ describe('startHappyServer peer tools kill switch', () => {
         expect(names).not.toContain('ping_peer')
         expect(names).not.toContain('inspect_peer')
         expect(names).not.toContain('spawn_peer')
+        expect(names).not.toContain('archive_peer')
         expect(names).toEqual(expect.arrayContaining([
             'link_pr',
             'display_image',

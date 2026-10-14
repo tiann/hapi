@@ -26,6 +26,7 @@ import { resolveSkill } from "@/modules/common/skills";
 import { SESSION_NAME_MAX_LENGTH, toSessionSummaryMetadata } from '@hapi/protocol'
 import { isPeerToolsDisabled } from "@/modules/common/peerTools";
 import {
+    ARCHIVE_PEER_TOOL_DESCRIPTION,
     INSPECT_PEER_TOOL_DESCRIPTION,
     LIST_PEERS_INCLUDE_INACTIVE_PARAM_DESCRIPTION,
     LIST_PEERS_TOOL_DESCRIPTION,
@@ -51,6 +52,7 @@ import {
     type SessionJobToolArgs,
 } from "@/modules/sessionJob/sessionJobMcp";
 import { SpawnPeerError, spawnPeer } from "@/modules/spawnPeer/spawnPeer";
+import { ArchivePeerError, archivePeer } from "@/modules/archivePeer/archivePeer";
 
 export type HapiMcpToolName =
     | 'change_title'
@@ -62,6 +64,7 @@ export type HapiMcpToolName =
     | 'ping_peer'
     | 'inspect_peer'
     | 'spawn_peer'
+    | 'archive_peer'
     | 'session_job'
     | 'skill_lookup';
 
@@ -128,13 +131,14 @@ const CLAUDE_MANUAL_APPROVAL_HAPI_TOOLS = new Set([
     'display_video',
     'ping_peer',
     'inspect_peer',
-    'spawn_peer'
+    'spawn_peer',
+    'archive_peer'
 ]);
 
 /**
  * Map HAPI MCP tool names to Claude `--allowedTools` entries.
  * Keeps `display_media` / `display_video` (arbitrary local-path readers), `ping_peer`,
- * `inspect_peer`, and `spawn_peer` off the auto-allow list so they still prompt.
+ * `inspect_peer`, `spawn_peer`, and `archive_peer` off the auto-allow list so they still prompt.
  * `list_peers` stays allowed (discovery shortlist only).
  */
 export function toClaudeAllowedHapiMcpTools(toolNames: string[]): string[] {
@@ -295,6 +299,10 @@ function createHapiMcpServer(
         messageLimit: z.number().int().min(1).max(100).optional().describe(
             'Recent message page size (default 30, max 100). Text snippets only.'
         ),
+    });
+
+    const archivePeerInputSchema: z.ZodTypeAny = z.object({
+        sessionIdPrefix: z.string().trim().min(1).describe(SESSION_ID_PREFIX_PARAM_DESCRIPTION),
     });
 
     const listPeersInputSchema: z.ZodTypeAny = z.object({
@@ -683,6 +691,45 @@ function createHapiMcpServer(
             }
         });
 
+        registerTool('archive_peer', {
+            description: ARCHIVE_PEER_TOOL_DESCRIPTION,
+            title: 'Archive Peer Session',
+            inputSchema: archivePeerInputSchema,
+        }, async (args: { sessionIdPrefix: string }) => {
+            logger.debug('[hapiMCP] archive_peer:', args.sessionIdPrefix);
+            try {
+                const result = await archivePeer({
+                    sessionIdPrefix: args.sessionIdPrefix,
+                });
+                const verb = result.alreadyArchived ? 'Already archived' : 'Archived';
+                return {
+                    content: [
+                        {
+                            type: 'text' as const,
+                            text: `${verb} ${result.sessionId} (${result.name})`,
+                        },
+                    ],
+                    isError: false,
+                };
+            } catch (error) {
+                const message = error instanceof ArchivePeerError
+                    ? error.message
+                    : error instanceof Error
+                        ? error.message
+                        : String(error);
+                logger.debug('[hapiMCP] archive_peer failed:', message);
+                return {
+                    content: [
+                        {
+                            type: 'text' as const,
+                            text: `Failed to archive peer: ${message}`,
+                        },
+                    ],
+                    isError: true,
+                };
+            }
+        });
+
         registerTool('inspect_peer', {
             description: INSPECT_PEER_TOOL_DESCRIPTION,
             title: 'Inspect Peer Session',
@@ -848,7 +895,7 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
         if (includeTool(name)) toolNames.push(name);
     }
     if (!peerToolsDisabled) {
-        for (const name of ['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'] as const) {
+        for (const name of ['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'archive_peer'] as const) {
             if (includeTool(name)) toolNames.push(name);
         }
     }
