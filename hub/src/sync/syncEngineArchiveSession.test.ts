@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach } from 'bun:test'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
-import { SyncEngine } from './syncEngine'
+import { SyncEngine, EngineStillRunningError } from './syncEngine'
 import { RpcTargetMissingError } from './rpcGateway'
 import type { SessionCache } from './sessionCache'
 
@@ -71,7 +71,11 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession =
             async () => 'still_alive'
 
-        await expect(engine.archiveSession(sessionId)).rejects.toThrow()
+        // Typed refusal (not a bare Error) so routes can answer 409
+        // engine_still_running instead of a generic 500.
+        const rejection = await engine.archiveSession(sessionId).catch((e: unknown) => e)
+        expect(rejection).toBeInstanceOf(EngineStillRunningError)
+        expect((rejection as Error).message).toBe('Session process is still running and could not be stopped')
 
         const session = cache().getSession(sessionId)
         expect(session?.active).toBe(true)
