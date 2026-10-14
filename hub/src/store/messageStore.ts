@@ -6,6 +6,7 @@ import { decodeMessageContent } from './contentCodec'
 import type { StoredMessage } from './types'
 import {
     addMessage,
+    hasLocalMessage,
     syncNativeQueuedMessage,
     addImportedMessage,
     cancelQueuedMessage,
@@ -57,6 +58,10 @@ export class MessageStore {
 
     addMessage(sessionId: string, content: unknown, localId?: string, scheduledAt?: number | null, createdAt?: number): StoredMessage {
         return addMessage(this.db, sessionId, content, localId, scheduledAt, createdAt)
+    }
+
+    hasLocalMessage(sessionId: string, localId: string): boolean {
+        return hasLocalMessage(this.db, sessionId, localId)
     }
 
     syncNativeQueuedMessage(sessionId: string, localId: string, text: string): StoredMessage {

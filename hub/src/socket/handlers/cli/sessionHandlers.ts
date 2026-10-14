@@ -155,6 +155,14 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         }
         const session = sessionAccess.value
 
+        // Persistence deduplicates stable IDs, but replaying their side effects
+        // still refreshes activity/state and broadcasts old history. Check after
+        // access validation and before decoding the stored payload. Consumption
+        // acknowledgements have their own handler and must remain independent.
+        if (localId && store.messages.hasLocalMessage(sid, localId)) {
+            return
+        }
+
         if (isRedundantGoalStatusEventContent(content)) {
             return
         }
