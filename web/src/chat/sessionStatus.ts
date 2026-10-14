@@ -148,14 +148,62 @@ function subagentFromBlock(block: ToolCallBlock): SessionStatusSubagent | null {
     }
 }
 
+/**
+ * Start of the latest turn the agent has actually picked up: the newest user
+ * prompt the CLI consumed (`invokedAt`; `createdAt` for rows from hubs that
+ * predate the field). A queued prompt has not started a turn, a sidechain
+ * prompt belongs to a subagent, and a steered prompt joined a turn that was
+ * already running.
+ */
+function latestTurnStartedAt(messages: readonly NormalizedMessage[]): number | null {
+    let latest: number | null = null
+    for (const message of messages) {
+        if (message.role !== 'user' || message.isSidechain || message.steered) continue
+        if (message.invokedAt === null) continue
+        const startedAt = message.invokedAt ?? message.createdAt
+        if (latest === null || startedAt > latest) latest = startedAt
+    }
+    return latest
+}
+
+/**
+ * A Claude Task/Agent call runs inside one turn: its closing tool result
+ * lands before the turn ends. A block still `running` once its turn is over
+ * (the turn was aborted, the CLI restarted mid-Task or the closing result
+ * never reached the hub) is a lost trace, not live work. `thinking === false`
+ * ends the latest turn; a later consumed prompt ends every earlier one, so
+ * the trace does not come back with each new turn.
+ *
+ * Codex child agents are never retired here: they outlive the parent turn
+ * and are closed by their own agent-run-update terminal event, which is why
+ * SessionChat keeps the abort button armed for them independently of
+ * `thinking` (`hasAbortableAgentRun`).
+ */
+function isLostSubagentTrace(
+    block: ToolCallBlock,
+    thinking: boolean | undefined,
+    turnStartedAt: number | null
+): boolean {
+    if (!isSubagentToolName(block.tool.name) || block.tool.state !== 'running') return false
+    if (thinking === false) return true
+    return turnStartedAt !== null && block.createdAt < turnStartedAt
+}
+
 export function buildSessionStatusData(args: {
     goal: ThreadGoal | null | undefined
     tasks: readonly TodoItem[] | null | undefined
     blocks: readonly ChatBlock[]
     messages: readonly NormalizedMessage[]
     backgroundTaskCount?: number
+    /**
+     * Whether a turn is running. `false` retires every unfinished Claude
+     * subagent trace; otherwise only traces left behind by an earlier turn
+     * are retired. See `isLostSubagentTrace`.
+     */
+    thinking?: boolean
 }): SessionStatusData | null {
     const tools = collectToolBlocks(args.blocks)
+    const turnStartedAt = latestTurnStartedAt(args.messages)
     const detectedTerminals = buildBackgroundTerminals(tools, args.messages)
     const terminals = args.backgroundTaskCount === undefined
         ? [...detectedTerminals.confirmed, ...detectedTerminals.uncertain]
@@ -172,6 +220,7 @@ export function buildSessionStatusData(args: {
         goal: args.goal ?? null,
         tasks: args.tasks ? [...args.tasks] : [],
         subagents: tools
+            .filter((block) => !isLostSubagentTrace(block, args.thinking, turnStartedAt))
             .map(subagentFromBlock)
             .filter((subagent): subagent is SessionStatusSubagent => subagent !== null),
         terminals,
