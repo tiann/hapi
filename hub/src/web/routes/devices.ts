@@ -27,7 +27,9 @@ const registerSchema = z.object({
      * Base64 of 32 device-generated random bytes. Required for iOS;
      * optional for phone (old direct-FCM clients), ignored for Wear.
      */
-    pushKey: z.string().optional()
+    pushKey: z.string().optional(),
+    /** App UI language (BCP-47 tag); used for localized notification text. */
+    language: z.string().trim().min(1).max(35).optional().nullable()
 }).superRefine((data, ctx) => {
     if (data.platform === 'wear' || (data.platform === 'phone' && data.pushKey === undefined)) {
         return
@@ -56,7 +58,7 @@ export function createDevicesRoutes(store: Store): Hono<WebAppEnv> {
         }
 
         const namespace = c.get('namespace')
-        const { token, platform, deviceId, pushKey } = parsed.data
+        const { token, platform, deviceId, pushKey, language } = parsed.data
         if (platform !== 'wear' && pushKey !== undefined) {
             // Store the canonical re-encoding so the send path always
             // decodes cleanly regardless of the client's padding style.
@@ -65,10 +67,11 @@ export function createDevicesRoutes(store: Store): Hono<WebAppEnv> {
                 token,
                 platform,
                 deviceId,
-                pushKey: decoded.toString('base64')
+                pushKey: decoded.toString('base64'),
+                language: language ?? null
             })
         } else {
-            store.fcm.upsertDevice(namespace, { token, platform, deviceId })
+            store.fcm.upsertDevice(namespace, { token, platform, deviceId, language: language ?? null })
         }
         return c.json({ ok: true })
     })

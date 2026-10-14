@@ -23,8 +23,11 @@ type FakeService = {
 function makeChannel(result: IosPushSendResult): { channel: IosPushNotificationChannel; service: FakeService } {
     const service: FakeService = { calls: [] }
     const channel = new IosPushNotificationChannel({
-        sendToNamespace: async (namespace: string, payload: IosPushNotificationPayload) => {
-            service.calls.push({ namespace, payload })
+        sendToNamespace: async (
+            namespace: string,
+            payload: IosPushNotificationPayload | ((language: string | null) => IosPushNotificationPayload)
+        ) => {
+            service.calls.push({ namespace, payload: typeof payload === 'function' ? payload(null) : payload })
             return result
         }
     } as never)

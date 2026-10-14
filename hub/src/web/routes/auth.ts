@@ -53,6 +53,11 @@ export function createAuthRoutes(jwtSecret: Uint8Array, store: Store): Hono<WebA
                 return c.json({ error: 'not_bound' }, 401)
             }
 
+            // Refresh the stored language so notifications follow Telegram changes.
+            if (result.user.language_code) {
+                store.users.setUserLanguage('telegram', telegramUserId, result.user.language_code)
+            }
+
             userId = await getOrCreateOwnerId()
             username = result.user.username
             firstName = result.user.first_name
