@@ -9,6 +9,7 @@ type SessionConfigState<TPermissionMode extends PermissionMode = PermissionMode>
     model?: string | null
     modelReasoningEffort?: string | null
     effort?: string | null
+    opencodeAgent?: string | null
 }
 
 type RegisterSessionConfigRpcOptions<TPermissionMode extends PermissionMode = PermissionMode> = {
@@ -17,6 +18,7 @@ type RegisterSessionConfigRpcOptions<TPermissionMode extends PermissionMode = Pe
     modelMode?: 'nullable' | 'ignore' | 'reject'
     modelReasoningEffortMode?: 'nullable' | 'ignore' | 'reject'
     effortMode?: 'nullable' | 'ignore' | 'reject'
+    opencodeAgentMode?: 'nullable' | 'ignore' | 'reject'
     appliedFallback?: () => Record<string, unknown>
     onApply: (config: SessionConfigState<TPermissionMode>) => void | Promise<void>
     onAfterApply?: () => void | Promise<void>
@@ -61,6 +63,7 @@ export function registerSessionConfigRpc<TPermissionMode extends PermissionMode>
     modelMode = 'reject',
     modelReasoningEffortMode = 'reject',
     effortMode = 'reject',
+    opencodeAgentMode = 'reject',
     appliedFallback,
     onApply,
     onAfterApply
@@ -70,7 +73,7 @@ export function registerSessionConfigRpc<TPermissionMode extends PermissionMode>
             throw new Error('Invalid session config payload')
         }
 
-        const config = payload as { permissionMode?: unknown; model?: unknown; modelReasoningEffort?: unknown; effort?: unknown }
+        const config = payload as { permissionMode?: unknown; model?: unknown; modelReasoningEffort?: unknown; effort?: unknown; opencodeAgent?: unknown }
         const applied: Record<string, unknown> = {}
         const next: SessionConfigState<TPermissionMode> = {}
 
@@ -107,6 +110,16 @@ export function registerSessionConfigRpc<TPermissionMode extends PermissionMode>
             if (effortMode === 'nullable') {
                 next.effort = resolveNullableSessionModel(config.effort)
                 applied.effort = next.effort
+            }
+        }
+
+        if (config.opencodeAgent !== undefined) {
+            if (opencodeAgentMode === 'reject') {
+                throw new Error('Invalid opencode agent')
+            }
+            if (opencodeAgentMode === 'nullable') {
+                next.opencodeAgent = resolveNullableSessionModel(config.opencodeAgent)
+                applied.opencodeAgent = next.opencodeAgent
             }
         }
 

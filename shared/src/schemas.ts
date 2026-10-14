@@ -10,6 +10,7 @@ export const CopilotAgentModeSchema = z.union([
     z.enum(COPILOT_AGENT_MODES),
     z.literal('fleet').transform((): CopilotAgentMode => 'interactive'),
 ])
+export const OpencodeAgentSchema = z.string().trim().min(1)
 export const SessionEndReasonSchema = z.enum(['completed', 'terminated', 'error', 'handoff', 'cleared'])
 export type SessionEndReason = z.infer<typeof SessionEndReasonSchema>
 
@@ -138,6 +139,7 @@ export const MetadataSchema = z.object({
     opencodeClearOperation: OpencodeClearOperationSchema.optional(),
     preferredPermissionMode: PermissionModeSchema.optional(),
     preferredCopilotAgentMode: CopilotAgentModeSchema.optional(),
+    preferredOpencodeAgent: OpencodeAgentSchema.optional(),
     flavor: z.string().nullish(),
     // Launch mode, surfaced so the web can show the agent-terminal toggle only
     // for PTY sessions (a 'remote'/SDK session has no agent PTY to view).
@@ -364,7 +366,8 @@ export const SessionSchema = z.object({
     serviceTier: z.string().nullable().optional().default(null),
     permissionMode: PermissionModeSchema.optional(),
     collaborationMode: CodexCollaborationModeSchema.optional(),
-    copilotAgentMode: CopilotAgentModeSchema.optional()
+    copilotAgentMode: CopilotAgentModeSchema.optional(),
+    opencodeAgent: OpencodeAgentSchema.optional()
 })
 
 export type Session = z.infer<typeof SessionSchema>
@@ -423,6 +426,7 @@ export const SessionPatchSchema = z.object({
     permissionMode: PermissionModeSchema.optional(),
     collaborationMode: CodexCollaborationModeSchema.optional(),
     copilotAgentMode: CopilotAgentModeSchema.optional(),
+    opencodeAgent: OpencodeAgentSchema.optional(),
     backgroundTaskCount: z.number().optional(),
     // tiann/hapi#893 (scratchlist v2). Bumped whenever any entry on the
     // session_scratchlist table mutates. Web client uses the change as a

@@ -26,6 +26,7 @@ type SessionAlivePayload = {
     serviceTier?: string | null
     collaborationMode?: CodexCollaborationMode
     copilotAgentMode?: CopilotAgentMode
+    opencodeAgent?: string | null
 }
 
 type SessionEndPayload = {

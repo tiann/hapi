@@ -22,6 +22,7 @@ export function useSessionActions(
     setPermissionMode: (mode: PermissionMode) => Promise<void>
     setCollaborationMode: (mode: CodexCollaborationMode) => Promise<void>
     setCopilotAgentMode: (mode: CopilotAgentMode) => Promise<void>
+    setOpencodeAgent: (agent: string) => Promise<void>
     setModel: (model: { provider: string; modelId: string } | string | null) => Promise<void>
     setModelReasoningEffort: (modelReasoningEffort: string | null) => Promise<void>
     setEffort: (effort: string | null) => Promise<void>
@@ -171,6 +172,19 @@ export function useSessionActions(
         onSuccess: () => void invalidateSession(),
     })
 
+    const opencodeAgentMutation = useMutation({
+        mutationFn: async (agent: string) => {
+            if (!api || !sessionId) {
+                throw new Error('Session unavailable')
+            }
+            if (agentFlavor !== 'opencode') {
+                throw new Error('Agent selection is only supported for OpenCode sessions')
+            }
+            await api.setOpencodeAgent(sessionId, agent)
+        },
+        onSuccess: () => void invalidateSession(),
+    })
+
     const modelMutation = useMutation({
         mutationKey: sessionModelMutationKey(sessionId ?? ''),
         mutationFn: async (model: { provider: string; modelId: string } | string | null) => {
@@ -288,6 +302,7 @@ export function useSessionActions(
         setPermissionMode: permissionMutation.mutateAsync,
         setCollaborationMode: collaborationMutation.mutateAsync,
         setCopilotAgentMode: copilotAgentModeMutation.mutateAsync,
+        setOpencodeAgent: opencodeAgentMutation.mutateAsync,
         setModel: modelMutation.mutateAsync,
         setModelReasoningEffort: modelReasoningEffortMutation.mutateAsync,
         setEffort: effortMutation.mutateAsync,
@@ -304,6 +319,7 @@ export function useSessionActions(
             || permissionMutation.isPending
             || collaborationMutation.isPending
             || copilotAgentModeMutation.isPending
+            || opencodeAgentMutation.isPending
             || modelMutation.isPending
             || modelReasoningEffortMutation.isPending
             || effortMutation.isPending

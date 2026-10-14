@@ -7,6 +7,7 @@ export async function opencodeLocal(opts: {
     abort: AbortSignal;
     env: NodeJS.ProcessEnv;
     sessionId?: string;
+    agent?: string;
 }): Promise<void> {
     const args: string[] = [];
     if (opts.sessionId) {
@@ -14,6 +15,9 @@ export async function opencodeLocal(opts: {
             throw new Error('Invalid sessionId');
         }
         args.push('--session', opts.sessionId);
+    }
+    if (opts.agent) {
+        args.push('--agent', opts.agent);
     }
 
     logger.debug(`[OpencodeLocal] Spawning opencode with args: ${JSON.stringify(args)}`);

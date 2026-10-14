@@ -4,6 +4,7 @@ import {
     getPermissionModeOptionsForFlavor,
     type CopilotAgentMode
 } from '@hapi/protocol'
+import type { OpencodeAgentSummary } from '@/types/api'
 import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react'
 import { flushTapSync } from '@assistant-ui/tap'
 import {
@@ -294,6 +295,7 @@ export function HappyComposer(props: {
     permissionMode?: PermissionMode
     collaborationMode?: CodexCollaborationMode
     copilotAgentMode?: CopilotAgentMode
+    opencodeAgent?: string
     model?: string | null
     modelReasoningEffort?: string | null
     effort?: string | null
@@ -328,6 +330,8 @@ export function HappyComposer(props: {
     resolveModelVariantsForBase?: (baseKey: string) => readonly { value: string; label: string }[]
     onCollaborationModeChange?: (mode: CodexCollaborationMode) => void
     onCopilotAgentModeChange?: (mode: CopilotAgentMode) => void
+    opencodeAgentOptions?: OpencodeAgentSummary[]
+    onOpencodeAgentChange?: (agentId: string) => void
     onPermissionModeChange?: (mode: PermissionMode) => void
     onModelChange?: (model: { provider: string; modelId: string } | string | null) => void
     /** Cursor: effort/variant wire id (separate from base model change). */
@@ -404,6 +408,7 @@ export function HappyComposer(props: {
         permissionMode: rawPermissionMode,
         collaborationMode: rawCollaborationMode,
         copilotAgentMode: rawCopilotAgentMode,
+        opencodeAgent: rawOpencodeAgent,
         model: rawModel,
         modelReasoningEffort: rawModelReasoningEffort,
         effort: rawEffort,
@@ -430,6 +435,8 @@ export function HappyComposer(props: {
         resolveModelVariantsForBase,
         onCollaborationModeChange,
         onCopilotAgentModeChange,
+        opencodeAgentOptions: rawOpencodeAgentOptions,
+        onOpencodeAgentChange,
         onPermissionModeChange,
         onModelChange,
         onModelEffortChange,
@@ -461,6 +468,7 @@ export function HappyComposer(props: {
     const permissionMode = rawPermissionMode ?? 'default'
     const collaborationMode = rawCollaborationMode ?? 'default'
     const copilotAgentMode = rawCopilotAgentMode ?? 'interactive'
+    const opencodeAgent = rawOpencodeAgent
     const model = rawModel ?? null
     const modelReasoningEffort = rawModelReasoningEffort ?? null
     const effort = rawEffort ?? null
@@ -1030,6 +1038,10 @@ export function HappyComposer(props: {
         () => agentFlavor === 'copilot' ? getCopilotAgentModeOptions() : [],
         [agentFlavor]
     )
+    const opencodeAgentOptions = useMemo(
+        () => agentFlavor === 'opencode' ? (rawOpencodeAgentOptions ?? []) : [],
+        [agentFlavor, rawOpencodeAgentOptions]
+    )
     const modelOptions = useMemo(
         () => getModelOptionsForFlavor(agentFlavor, model, availableModelOptions),
         [agentFlavor, model, availableModelOptions]
@@ -1563,6 +1575,13 @@ export function HappyComposer(props: {
         haptic('light')
     }, [onCopilotAgentModeChange, controlsDisabled, haptic, dismissSettings])
 
+    const handleOpencodeAgentChange = useCallback((agentId: string) => {
+        if (!onOpencodeAgentChange || controlsDisabled) return
+        onOpencodeAgentChange(agentId)
+        dismissSettings()
+        haptic('light')
+    }, [onOpencodeAgentChange, controlsDisabled, haptic, dismissSettings])
+
     const handleModelReasoningEffortChange = useCallback((nextModelReasoningEffort: string | null) => {
         if (!onModelReasoningEffortChange || controlsDisabled) return
         onModelReasoningEffortChange(nextModelReasoningEffort)
@@ -1593,6 +1612,7 @@ export function HappyComposer(props: {
 
     const showCollaborationSettings = Boolean(onCollaborationModeChange && collaborationModeOptions.length > 0)
     const showCopilotAgentModeSettings = Boolean(onCopilotAgentModeChange && copilotAgentModeOptions.length > 0)
+    const showOpencodeAgentSettings = Boolean(onOpencodeAgentChange && opencodeAgentOptions.length > 0)
     const showPermissionSettings = Boolean(onPermissionModeChange && permissionModeOptions.length > 0)
     const showModelSettings = agentFlavor === 'pi'
         // Pi models only come from the dynamic piModels catalog; never fall
@@ -1617,10 +1637,11 @@ export function HappyComposer(props: {
     const showEffortSettings = Boolean(onEffortChange && supportsEffort(agentFlavor) && !piEffortUnavailable)
     const showFastModeSettings = Boolean(onServiceTierChange)
     const showModelAreaSettings = showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings
-    const showOtherSettings = showFastModeSettings || showCollaborationSettings || showCopilotAgentModeSettings
+    const showOtherSettings = showFastModeSettings || showCollaborationSettings || showCopilotAgentModeSettings || showOpencodeAgentSettings
     const showSettingsButton = Boolean(
         showCollaborationSettings
         || showCopilotAgentModeSettings
+        || showOpencodeAgentSettings
         || showPermissionSettings
         || showModelSettings
         || showModelEffortSettings
@@ -1750,9 +1771,10 @@ export function HappyComposer(props: {
         const sheetFastModeSettings = showFastModeSettings && sheetOthersOn
         const sheetCollaborationSettings = showCollaborationSettings && sheetOthersOn
         const sheetCopilotAgentModeSettings = showCopilotAgentModeSettings && sheetOthersOn
+        const sheetOpencodeAgentSettings = showOpencodeAgentSettings && sheetOthersOn
         const sheetModelAreaSettings = sheetModelSettings || sheetModelEffortSettings || sheetModelReasoningEffortSettings || sheetEffortSettings
-        const sheetOtherSettings = sheetFastModeSettings || sheetCollaborationSettings || sheetCopilotAgentModeSettings
-        if (showSettings && (sheetCollaborationSettings || sheetCopilotAgentModeSettings || sheetPermissionSettings || sheetModelSettings || sheetModelEffortSettings || sheetModelReasoningEffortSettings || sheetEffortSettings || sheetFastModeSettings)) {
+        const sheetOtherSettings = sheetFastModeSettings || sheetCollaborationSettings || sheetCopilotAgentModeSettings || sheetOpencodeAgentSettings
+        if (showSettings && (sheetCollaborationSettings || sheetCopilotAgentModeSettings || sheetOpencodeAgentSettings || sheetPermissionSettings || sheetModelSettings || sheetModelEffortSettings || sheetModelReasoningEffortSettings || sheetEffortSettings || sheetFastModeSettings)) {
             return (
                 <div ref={settingsOverlayRef} className={`${overlayPositionClass} w-full`}>
                     <FloatingOverlay maxHeight={320}>
@@ -2114,6 +2136,43 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
+                        {sheetOpencodeAgentSettings ? (
+                            <div className="py-2">
+                                <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
+                                    {t('misc.opencodeAgent')}
+                                </div>
+                                {opencodeAgentOptions.map((option) => (
+                                    <button
+                                        key={option.agentId}
+                                        type="button"
+                                        disabled={controlsDisabled}
+                                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                                            controlsDisabled
+                                                ? 'cursor-not-allowed opacity-50'
+                                                : 'cursor-pointer hover:bg-[var(--app-secondary-bg)]'
+                                        }`}
+                                        onClick={() => handleOpencodeAgentChange(option.agentId)}
+                                        onMouseDown={(e) => e.preventDefault()}
+                                    >
+                                        <div
+                                            className={`flex h-4 w-4 items-center justify-center rounded-full border-2 ${
+                                                opencodeAgent === option.agentId
+                                                    ? 'border-[var(--app-link)]'
+                                                    : 'border-[var(--app-hint)]'
+                                            }`}
+                                        >
+                                            {opencodeAgent === option.agentId && (
+                                                <div className="h-2 w-2 rounded-full bg-[var(--app-link)]" />
+                                            )}
+                                        </div>
+                                        <span className={opencodeAgent === option.agentId ? 'text-[var(--app-link)]' : ''}>
+                                            {option.name ?? option.agentId}
+                                        </span>
+                                    </button>
+                                ))}
+                            </div>
+                        ) : null}
+
                         
                     </FloatingOverlay>
                 </div>
@@ -2144,6 +2203,7 @@ export function HappyComposer(props: {
         selectedPiModel,
         showCollaborationSettings,
         showCopilotAgentModeSettings,
+        showOpencodeAgentSettings,
         showPermissionSettings,
         showModelSettings,
         showModelEffortSettings,
@@ -2175,10 +2235,13 @@ export function HappyComposer(props: {
         displayedServiceTier,
         collaborationModeOptions,
         copilotAgentModeOptions,
+        opencodeAgentOptions,
         permissionModeOptions,
         handleCollaborationChange,
         handleCopilotAgentModeChange,
+        handleOpencodeAgentChange,
         copilotAgentMode,
+        opencodeAgent,
         handlePermissionChange,
         handleModelChange,
         handleCursorModelRowClick,

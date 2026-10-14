@@ -9,6 +9,7 @@ export interface OpencodeMode {
     // "no change requested for this batch".
     model?: string | null;
     modelReasoningEffort?: string | null;
+    opencodeAgent?: string | null;
     // Marks this queued item as a /compact request rather than a regular
     // prompt turn. Pushed via `messageQueue.pushIsolated(...)` so it never
     // batches with sibling prompts but still occupies its actual FIFO
