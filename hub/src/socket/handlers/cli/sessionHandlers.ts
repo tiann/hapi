@@ -10,6 +10,7 @@ import { extractTodoWriteTodosFromMessageContent } from '../../../sync/todos'
 import { extractTeamStateFromMessageContent, applyTeamStateDelta } from '../../../sync/teams'
 import { extractBackgroundTaskDelta } from '../../../sync/backgroundTasks'
 import { shouldRecordSessionActivity } from '../../../sync/sessionActivity'
+import { lifecycleRunningSince } from '../../../sync/sessionIdle'
 import type { CliSocketWithData } from '../../socketTypes'
 import type { SessionEndReason } from '@hapi/protocol'
 import type { AccessErrorReason, AccessResult } from './types'
@@ -159,7 +160,13 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
-        const msg = store.messages.addMessage(sid, content, localId, undefined, createdAt)
+        const { message: msg, inserted } = store.messages.addMessageWithStatus(sid, content, localId, undefined, createdAt)
+        // A localId the session already stored is a reconnect replay (history
+        // resync, transcript backfill), not new work: no progress clock, no
+        // activity, no todo/team/background-task deltas, no re-broadcast.
+        if (!inserted) {
+            return
+        }
 
         // A reasoning stream arrives as a series of growing snapshots under one
         // stable id, so a stream should cost one row rather than one per
@@ -328,6 +335,17 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                     updatedAt: stored?.updatedAt ?? Date.now()
                 }
             })
+
+            // A fresh `running` stamp is the CLI bootstrapping into this session
+            // (cli/src/agent/sessionFactory.ts): agent progress at its own time,
+            // or a days-old session reopened from the terminal reads as idle on
+            // the next tick (tiann/hapi#1820). An echo of the row, or the hub's
+            // own idle -> running write coming back, carries the stamp the row
+            // already had and moves nothing.
+            const runningSince = lifecycleRunningSince(result.value as Metadata | null)
+            if (runningSince !== null && runningSince !== lifecycleRunningSince(sessionAccess.value.metadata as Metadata | null)) {
+                onAgentProgress?.(sid, runningSince)
+            }
         }
     }
 
@@ -426,9 +444,9 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
         const invokedAt = Date.now()
-        let sessionUpdatedAt: number
+        let activityAt: number | null
         try {
-            sessionUpdatedAt = store.recordMessagesConsumed(
+            activityAt = store.recordMessagesConsumed(
                 data.sid,
                 localIds,
                 invokedAt,
@@ -439,10 +457,18 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
-        try {
-            onSessionActivity?.(data.sid, sessionUpdatedAt)
-        } catch (err) {
-            console.error('onSessionActivity failed', err)
+        // A repeat (the CLI re-sends `message` + `messages-consumed` for a
+        // prompt it already consumed, e.g. the Codex history projection on
+        // resume) is dated by the invocation it repeats, not by the row clock:
+        // the keepalive-idle progress clock reads this time (tiann/hapi#1820),
+        // and a rename since must not wake an idle session that did nothing.
+        // `null`: none of the ids is stored here, so there is nothing to date.
+        if (activityAt !== null) {
+            try {
+                onSessionActivity?.(data.sid, activityAt)
+            } catch (err) {
+                console.error('onSessionActivity failed', err)
+            }
         }
 
         // Only drop the queued-thinking grace when the CLI explicitly opts in

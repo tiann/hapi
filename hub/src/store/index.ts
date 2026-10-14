@@ -130,16 +130,22 @@ export class Store {
 
     /**
      * Atomically records a CLI prompt-consumption acknowledgement and returns
-     * the persisted session activity timestamp. A duplicate or sibling-stamped
-     * acknowledgement leaves the session untouched while returning its existing
-     * timestamp for replay-safe in-memory cache synchronization.
+     * the activity timestamp to report for it, or `null` when the hub stores
+     * none of the acknowledged ids.
+     *
+     * A first acknowledgement is activity at its own time. A duplicate or
+     * sibling-stamped one leaves the session untouched and reports the
+     * invocation it repeats, so a replay still re-syncs the in-memory cache
+     * without reading whatever metadata write last moved `updated_at` as
+     * agent progress (tiann/hapi#1820); never later than the row clock, which
+     * an acknowledgement that changed nothing must not floor forward.
      */
     recordMessagesConsumed(
         sessionId: string,
         localIds: string[],
         invokedAt: number,
         namespace: string
-    ): number {
+    ): number | null {
         return this.db.transaction(() => {
             const changes = this.messages.markMessagesInvoked(sessionId, localIds, invokedAt)
             if (changes > 0) {
@@ -153,8 +159,17 @@ export class Store {
             if (changes > 0 && session.updatedAt < invokedAt) {
                 throw new Error('session activity was not persisted after messages-consumed transition')
             }
+            if (changes > 0) {
+                return invokedAt
+            }
 
-            return session.updatedAt
+            let repeated: number | null = null
+            for (const state of this.messages.getLocalMessageStates(sessionId, localIds)) {
+                if (state.invokedAt !== null && (repeated === null || state.invokedAt > repeated)) {
+                    repeated = state.invokedAt
+                }
+            }
+            return repeated === null ? null : Math.min(repeated, session.updatedAt)
         })()
     }
 
