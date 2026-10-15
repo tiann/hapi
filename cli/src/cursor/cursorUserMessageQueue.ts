@@ -12,6 +12,9 @@ export function enqueueCursorUserMessage(
     enhancedMode: EnhancedMode,
     localId?: string
 ): void {
+    // Preserve caller localId for messages-consumed / cancel. Bridge provenance
+    // is queue-owned (`internal.kind === 'model-error-bridge'`), so a forged
+    // `bridge:*` localId cannot impersonate a Bridge turn.
     const specialCommand = parseCursorSpecialCommand(formattedText);
     if (specialCommand.type !== null) {
         messageQueue.pushIsolated(formattedText.trim(), enhancedMode, localId);

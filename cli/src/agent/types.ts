@@ -105,7 +105,12 @@ export interface AgentBackend {
     setConfigOption?(sessionId: string, configId: string, value: string): Promise<void>;
     getSessionModelsMetadata?(sessionId: string): AgentSessionModelsMetadata | undefined;
     getThoughtLevelConfigOption?(sessionId: string): AgentSessionConfigOptionDescriptor | undefined;
-    prompt(sessionId: string, content: PromptContent[], onUpdate: (msg: AgentMessage) => void): Promise<void>;
+    prompt(
+        sessionId: string,
+        content: PromptContent[],
+        onUpdate: (msg: AgentMessage) => void,
+        options?: { shouldSend?: () => boolean }
+    ): Promise<void | boolean>;
     cancelPrompt(sessionId: string): Promise<void>;
     respondToPermission(sessionId: string, request: PermissionRequest, response: PermissionResponse): Promise<void>;
     onPermissionRequest(handler: (request: PermissionRequest) => void): void;
