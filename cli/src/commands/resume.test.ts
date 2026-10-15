@@ -155,6 +155,39 @@ describe('resumeCommand', () => {
         expect(runCursorMock).not.toHaveBeenCalled()
     })
 
+    it('hands off an active DSH target to the local terminal before dispatching to runDsh', async () => {
+        // Active targets are stopped via the HandoffLocal RPC first; runDsh
+        // must register that handler, and resume must await the handoff before
+        // dispatching locally so the running copy archives cleanly.
+        let dispatchedBeforeHandoffCompleted = false
+        handoffSessionToLocalMock.mockImplementation(async () => {
+            dispatchedBeforeHandoffCompleted = runDshMock.mock.calls.length > 0
+        })
+        getLocalResumeTargetMock.mockResolvedValue({
+            sessionId: 'hapi-session-dsh',
+            flavor: 'dsh',
+            directory: '/tmp/project',
+            machineId: 'machine-1',
+            active: true,
+            thinking: true,
+            controlledByUser: false,
+            agentSessionId: 'acp-session-1',
+            permissionMode: 'default'
+        })
+
+        await resumeCommand.run(createContext(['hapi-session-dsh']))
+
+        expect(handoffSessionToLocalMock).toHaveBeenCalledWith('hapi-session-dsh')
+        expect(dispatchedBeforeHandoffCompleted).toBe(false)
+        expect(runDshMock).toHaveBeenCalledWith({
+            existingSessionId: 'hapi-session-dsh',
+            workingDirectory: '/tmp/project',
+            resumeSessionId: 'acp-session-1',
+            startedBy: 'terminal',
+            startingMode: 'remote'
+        })
+    })
+
     it('rejects resuming an active AGY session (turn could start before handoff)', async () => {
         const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
         const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
