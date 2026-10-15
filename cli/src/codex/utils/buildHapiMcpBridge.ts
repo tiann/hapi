@@ -115,9 +115,9 @@ export async function buildHapiMcpBridge(
     tools.list_peers = {
         approval_mode: 'approve'
     };
-    // ping_peer / inspect_peer are registered on the HTTP MCP server / stdio
-    // bridge, but are not auto-approved: they target another session (resume +
-    // inject, or read peer histories).
+    // ping_peer / inspect_peer / archive_peer are registered on the HTTP MCP
+    // server / stdio bridge, but are not auto-approved: they target another
+    // session (resume + inject, read peer histories, or soft-archive).
     if (options.skillLookup) {
         tools.skill_lookup = {
             approval_mode: 'approve'

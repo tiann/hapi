@@ -39,7 +39,7 @@ export function resolveSessionIdleTimeoutMs(
 }
 
 /** Work the hub can see that must never be reconciled away as a zombie. */
-function hasLiveWork(session: Session): boolean {
+export function hasLiveWork(session: Session): boolean {
     if (session.thinking) return true
     if ((session.backgroundTaskCount ?? 0) > 0) return true
     // A permission / input request waiting on the operator is real state the
@@ -47,6 +47,20 @@ function hasLiveWork(session: Session): boolean {
     const requests = session.agentState?.requests
     if (requests && Object.keys(requests).length > 0) return true
     return false
+}
+
+/**
+ * Positive evidence that archive may soft stand-down past an unconfirmed
+ * StopSession (`still_alive` / `unknown`) — tiann/hapi#2020.
+ *
+ * Only a still-connected row (`active`) with no hub-visible work is fresh
+ * enough. `expireInactive` clears thinking without clearing a stale
+ * `lifecycleState=idle`, and cache restore initializes thinking=false - so
+ * idle lifecycle alone is unknown after transport loss (#2021 Major).
+ */
+export function canSoftStandDownUnconfirmedStop(session: Session): boolean {
+    if (hasLiveWork(session)) return false
+    return session.active === true
 }
 
 /**
