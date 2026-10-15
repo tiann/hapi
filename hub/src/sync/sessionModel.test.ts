@@ -255,6 +255,65 @@ describe('session model', () => {
         expect(survivors).toHaveLength(1)
     })
 
+    it('notifies onSessionMergedAway when dedup collapses a duplicate row', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const mergedAway: Array<[string, string]> = []
+        const cache = new SessionCache(store, createPublisher(events), {
+            onSessionMergedAway: (oldSessionId, newSessionId) => mergedAway.push([oldSessionId, newSessionId])
+        })
+
+        const oldSession = cache.getOrCreateSession(
+            'agy-merge-hook-old',
+            { path: '/tmp/project', host: 'localhost', flavor: 'agy', agySessionId: 'brain-uuid-hook' },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'agy-merge-hook-new',
+            { path: '/tmp/project', host: 'localhost', flavor: 'agy', agySessionId: 'brain-uuid-hook' },
+            null,
+            'default'
+        )
+
+        await cache.deduplicateByAgentSessionId(newSession.id)
+
+        // The hub's enumeration cache keys entries per session id, so a dedup
+        // that silently removes a row would leak its cached catalogs — the
+        // hook must name the removed id and its merge target.
+        expect(mergedAway).toHaveLength(1)
+        expect(mergedAway[0][1]).toBe(newSession.id)
+        expect(mergedAway[0][0]).toBe(oldSession.id)
+        expect(cache.getSession(oldSession.id)).toBeUndefined()
+    })
+
+    it('does not notify onSessionMergedAway for mergeSessionHistory — the source row survives', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const mergedAway: Array<[string, string]> = []
+        const cache = new SessionCache(store, createPublisher(events), {
+            onSessionMergedAway: (oldSessionId, newSessionId) => mergedAway.push([oldSessionId, newSessionId])
+        })
+
+        const oldSession = cache.getOrCreateSession(
+            'merge-hook-hist-old',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'merge-hook-hist-new',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+
+        await cache.mergeSessionHistory(oldSession.id, newSession.id, 'default')
+
+        expect(mergedAway).toHaveLength(0)
+        expect(cache.getSession(oldSession.id)).toBeDefined()
+    })
+
     it('preserves service tier from old session when merging into resumed session', async () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []
