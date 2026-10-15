@@ -23,6 +23,7 @@ import {
     bumpMessageEpoch,
     getLocalMessageStates,
     getUninvokedLocalMessages,
+    updateMessageContent,
     getMatureScheduledMessages,
     getImmediateQueuedLocalMessages,
     countFutureScheduledBySessionIds,
@@ -38,6 +39,7 @@ import {
     moveUninvokedMessages,
     copyMessageToSession as copyStoredMessageToSession,
     copyMessagesToSession as copyStoredMessagesToSession,
+    mergeCopiedMessagesToSession as mergeCopiedStoredMessagesToSession,
     getAllMessages,
     getMessagesAfterSeq,
     getMessageSeqById,
@@ -84,6 +86,13 @@ export class MessageStore {
         messages: Array<Pick<StoredMessage, 'content' | 'createdAt' | 'localId' | 'invokedAt' | 'scheduledAt' | 'deliveryState'>>
     ): number {
         return copyStoredMessagesToSession(this.db, sessionId, messages)
+    }
+
+    mergeCopiedMessagesToSession(
+        sessionId: string,
+        messages: Array<Pick<StoredMessage, 'content' | 'createdAt' | 'localId' | 'invokedAt' | 'scheduledAt' | 'deliveryState'>>
+    ): number {
+        return mergeCopiedStoredMessagesToSession(this.db, sessionId, messages)
     }
 
     getAllMessages(sessionId: string): StoredMessage[] {
@@ -141,6 +150,10 @@ export class MessageStore {
 
     getUninvokedLocalMessages(sessionId: string, options?: { deliverableOnly?: boolean }): StoredMessage[] {
         return getUninvokedLocalMessages(this.db, sessionId, options)
+    }
+
+    updateMessageContent(messageId: string, content: unknown): boolean {
+        return updateMessageContent(this.db, messageId, content)
     }
 
     getMatureScheduledMessages(beforeTime: number): StoredMessage[] {
