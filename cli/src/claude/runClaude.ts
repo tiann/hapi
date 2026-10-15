@@ -177,6 +177,10 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                 if (previousSessionId !== sessionId) {
                     logger.debug(`[START] Claude session ID changed: ${previousSessionId} -> ${sessionId}`);
                     currentSession.onSessionFound(sessionId);
+                } else {
+                    // Successful --resume reuses the same id, so onSessionFound
+                    // is skipped; still release the mismatch guard for later /clear.
+                    currentSession.confirmResumeSessionId(sessionId);
                 }
             }
 

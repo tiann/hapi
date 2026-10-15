@@ -136,6 +136,8 @@ export type MessagesResponse = {
         snapshotHeadSeq: number | null
         snapshotHeadAt: number | null
         hasMore: boolean
+        /** Total durable message rows for the session (all pages). */
+        totalCount?: number
     }
 }
 
@@ -184,6 +186,13 @@ export const CursorChatStoreStatusSchema = z.object({
 })
 
 export type CursorChatStoreStatus = z.infer<typeof CursorChatStoreStatusSchema>
+
+/** Claude Code transcript probe (Cursor #841 spirit; tiann/hapi#1933). */
+export const ClaudeTranscriptStatusSchema = z.object({
+    onDisk: z.boolean()
+})
+
+export type ClaudeTranscriptStatus = z.infer<typeof ClaudeTranscriptStatusSchema>
 
 export const CodexImportedMessageSchema = z.union([
     z.object({
