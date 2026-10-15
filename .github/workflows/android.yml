@@ -1,6 +1,7 @@
 name: android
 
 on:
+    workflow_dispatch:
     push:
         branches:
             - main
@@ -40,8 +41,21 @@ jobs:
               run: ./gradlew :core:protocol:test :core:data:testDebugUnitTest :app:testDebugUnitTest
             - name: Assemble debug APK and lint
               run: ./gradlew :app:assembleDebug :app:lintDebug
+            - name: Checksum debug APK
+              working-directory: android/app/build/outputs/apk/debug
+              run: sha256sum app-debug.apk > app-debug.apk.sha256
+            - name: Upload debug APK
+              uses: actions/upload-artifact@v4
+              with:
+                  name: hapi-android-debug-${{ github.sha }}
+                  if-no-files-found: error
+                  retention-days: 14
+                  path: |
+                      android/app/build/outputs/apk/debug/app-debug.apk
+                      android/app/build/outputs/apk/debug/app-debug.apk.sha256
 
     transcript-layout:
+        if: github.event_name != 'workflow_dispatch'
         runs-on: ubuntu-latest
         strategy:
             fail-fast: false
