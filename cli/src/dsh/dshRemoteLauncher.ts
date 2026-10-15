@@ -389,17 +389,25 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         // around its `await backend.newSession(...)` to detect aborts that
         // land inside that window.
         this.abortGeneration += 1
-        // Record the abort synchronously: the in-flight prompt can complete
-        // while the close request is still on the wire, and the main loop
-        // awaits abortCompletion before dequeuing the next message.
+        // Tear the queue down synchronously, BEFORE awaiting the close: the
+        // in-flight prompt can complete while the close request is still on
+        // the wire, and the loop would then dequeue a follow-up queued before
+        // the stop with an already-incremented generation — the dequeue-site
+        // generation check cannot catch that ordering, and a reset scheduled
+        // after the await is too late. Aborting (and replacing) the controller
+        // first also unparks a waiting loop iteration via the captured signal
+        // so it re-waits on the fresh controller instead of spinning on the
+        // aborted one.
+        this.abortController.abort()
+        this.abortController = new AbortController()
+        this.session.queue.reset()
+        // Record the abort synchronously: the main loop awaits
+        // abortCompletion before dequeuing the next message.
         this.abortCompletion ??= this.closeSessionForAbort()
         await this.abortCompletion
         await this.permissionHandler?.cancelAll('User aborted')
         this.session.sendSessionEvent({ type: 'message', message: 'Session aborted' })
-        this.session.queue.reset()
         this.session.onThinkingChange(false)
-        this.abortController.abort()
-        this.abortController = new AbortController()
         this.messageBuffer.addMessage('Turn aborted', 'status')
     }
 
