@@ -1176,6 +1176,62 @@ describe('AcpSdkBackend', () => {
         expect(backend.supportsLoadSession()).toBe(false);
     });
 
+    it('supportsSessionResume reflects DSH session capabilities', () => {
+        const backend = new AcpSdkBackend({ command: 'dsh' });
+        const backendInternal = backend as unknown as {
+            initializeResult: {
+                protocolVersion: number;
+                agentCapabilities?: { sessionCapabilities?: Record<string, unknown> };
+            } | null;
+        };
+
+        backendInternal.initializeResult = {
+            protocolVersion: 1,
+            agentCapabilities: { sessionCapabilities: { resume: {} } }
+        };
+        expect(backend.supportsSessionResume()).toBe(true);
+
+        backendInternal.initializeResult = {
+            protocolVersion: 1,
+            agentCapabilities: { sessionCapabilities: { list: {} } }
+        };
+        expect(backend.supportsSessionResume()).toBe(false);
+    });
+
+    it('resumeSession sends DSH session/resume and returns the native id', async () => {
+        const backend = new AcpSdkBackend({ command: 'dsh' });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequest: (method: string, params: unknown) => Promise<unknown>;
+                close: () => Promise<void>;
+            } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                calls.push({ method, params });
+                return { configOptions: [] };
+            },
+            close: async () => {}
+        };
+
+        const sessionId = await backend.resumeSession({
+            sessionId: 'dsh-session-1',
+            cwd: '/tmp/project',
+            mcpServers: []
+        });
+
+        expect(sessionId).toBe('dsh-session-1');
+        expect(calls).toEqual([{
+            method: 'session/resume',
+            params: {
+                sessionId: 'dsh-session-1',
+                cwd: '/tmp/project',
+                mcpServers: []
+            }
+        }]);
+    });
+
     it('setMode falls back to session/set_config_option when session/set_mode is missing', async () => {
         const backend = new AcpSdkBackend({ command: 'agent' });
         const calls: Array<{ method: string; params: unknown }> = [];

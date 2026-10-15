@@ -3172,7 +3172,7 @@ describe('session model', () => {
         }
     })
 
-    it('does not infer a DSH resume target from stale Claude metadata', () => {
+    it('uses the DSH native resume target instead of stale Claude metadata', () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
             store,
@@ -3189,17 +3189,66 @@ describe('session model', () => {
                     host: 'localhost',
                     machineId: 'machine-1',
                     flavor: 'dsh',
-                    claudeSessionId: 'stale-claude-id'
+                    claudeSessionId: 'stale-claude-id',
+                    dshSessionId: 'dsh-session-1'
                 },
                 null,
                 'default'
             )
 
-            expect(engine.resolveLocalResumeTarget(session.id, 'default')).toEqual({
-                type: 'error',
-                message: 'Resume session ID unavailable. Start a new session in this directory, or retry after the agent has initialized.',
-                code: 'resume_unavailable'
+            expect(engine.resolveLocalResumeTarget(session.id, 'default')).toMatchObject({
+                type: 'success',
+                target: {
+                    flavor: 'dsh',
+                    agentSessionId: 'dsh-session-1'
+                }
             })
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('passes the DSH native session id to the runner on resume', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-dsh-resume',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'dsh',
+                    dshSessionId: 'dsh-session-1'
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+            let capturedResumeSessionId: string | undefined
+            ;(engine as any).rpcGateway.spawnSession = async (...args: Parameters<SyncEngine['spawnSession']>) => {
+                capturedResumeSessionId = args[8]
+                return { type: 'success', sessionId: session.id }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.resumeSession(session.id, 'default')
+
+            expect(result).toEqual({ type: 'success', sessionId: session.id })
+            expect(capturedResumeSessionId).toBe('dsh-session-1')
         } finally {
             engine.stop()
         }

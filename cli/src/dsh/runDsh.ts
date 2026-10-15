@@ -15,6 +15,7 @@ export async function runDsh(opts: {
     startedBy?: 'runner' | 'terminal'
     startingMode?: 'remote'
     existingSessionId?: string
+    resumeSessionId?: string
     /** Fresh machine-spawn stub (`--hapi-session-id`); adopt via bootstrapSession. */
     reservedSessionId?: string
     workingDirectory?: string
@@ -41,7 +42,7 @@ export async function runDsh(opts: {
             agentState: initialState,
             reservedSessionId: opts.reservedSessionId
         })
-    const { api, session } = bootstrap
+    const { api, session, sessionInfo } = bootstrap
     setControlledByUser(session, startingMode)
 
     const queue = new MessageQueue2<DshMode>((mode) => hashObject(mode))
@@ -71,6 +72,7 @@ export async function runDsh(opts: {
         client: session,
         path: workingDirectory,
         logPath: logger.getLogPath(),
+        sessionId: opts.resumeSessionId ?? sessionInfo.metadata?.dshSessionId,
         messageQueue: queue,
         onModeChange: () => {},
         startedBy

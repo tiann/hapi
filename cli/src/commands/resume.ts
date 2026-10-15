@@ -107,6 +107,18 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
         throw new Error('Gemini CLI is no longer supported and cannot be resumed (Google sunset the consumer Gemini CLI on 2026-06-18). The session history remains viewable in the web UI.')
     }
 
+    if (target.flavor === 'dsh') {
+        const { runDsh } = await import('@/dsh/runDsh')
+        await runDsh({
+            existingSessionId: base.existingSessionId,
+            workingDirectory: base.workingDirectory,
+            resumeSessionId: base.resumeSessionId,
+            startedBy: base.startedBy,
+            startingMode: 'remote'
+        })
+        return
+    }
+
     if (target.flavor === 'opencode') {
         const { runOpencode } = await import('@/opencode/runOpencode')
         await runOpencode({
