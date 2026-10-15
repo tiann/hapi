@@ -11,6 +11,8 @@ const harness = vi.hoisted(() => ({
     prompts: [] as unknown[][],
     resumeError: null as Error | null,
     resumeSupported: true,
+    newSessionCalls: [] as unknown[],
+    promptSessionIds: [] as string[],
     modelOption: null as { id: string; category?: string; currentValue?: string } | null,
     modelsMetadata: null as {
         availableModels: Array<{ modelId: string; name?: string }>
@@ -18,9 +20,12 @@ const harness = vi.hoisted(() => ({
     } | null,
     setConfigOptionCalls: [] as Array<{ sessionId: string; configId: string; value: string }>,
     configOptionError: null as Error | null,
+    supportsCancel: true,
     // When set, newSession() parks on this promise — lets tests query the
     // catalog RPC while session/new is still pending.
-    newSessionBlocker: null as null | Promise<void>
+    newSessionBlocker: null as null | Promise<void>,
+    // When set, prompt() parks on this promise — lets tests abort mid-turn.
+    promptBlocker: null as null | Promise<void>
 }))
 
 vi.mock('./utils/dshBackend', () => ({
@@ -30,17 +35,22 @@ vi.mock('./utils/dshBackend', () => ({
             supportsSessionResume: vi.fn(() => harness.resumeSupported),
             newSession: vi.fn(async (config: unknown) => {
                 harness.newSessionConfig = config
+                harness.newSessionCalls.push(config)
                 if (harness.newSessionBlocker) {
                     await harness.newSessionBlocker
                 }
-                return 'dsh-session-1'
+                return `dsh-session-${harness.newSessionCalls.length}`
             }),
             resumeSession: vi.fn(async (config: { sessionId: string }) => {
                 if (harness.resumeError) throw harness.resumeError
                 return config.sessionId
             }),
-            prompt: vi.fn(async (_sessionId: string, content: unknown[], onUpdate: (message: unknown) => void) => {
+            prompt: vi.fn(async (sessionId: string, content: unknown[], onUpdate: (message: unknown) => void) => {
+                harness.promptSessionIds.push(sessionId)
                 harness.prompts.push(content)
+                if (harness.promptBlocker) {
+                    await harness.promptBlocker
+                }
                 onUpdate({ type: 'text', text: 'answer' })
             }),
             cancelPrompt: vi.fn(async () => {}),
@@ -51,6 +61,7 @@ vi.mock('./utils/dshBackend', () => ({
                 if (harness.configOptionError) throw harness.configOptionError
                 return {}
             }),
+            supportsCancelNotification: vi.fn(() => harness.supportsCancel),
             onStderrError: vi.fn(),
             onPermissionRequest: vi.fn(),
             disconnect: vi.fn(async () => {})
@@ -77,8 +88,19 @@ function createSessionWithBatches(batches: Array<[string, DshMode]>, sessionId: 
         queue.push(message, mode)
     }
     queue.close()
+    return createSessionWithQueue(queue, sessionId)
+}
 
-    return {
+function createQueue() {
+    const queue = new MessageQueue2<DshMode>((mode) => JSON.stringify(mode))
+    return queue
+}
+
+function createSessionWithQueue(queue = createQueue(), sessionId: string | null = null) {
+    // Mirror AgentSessionBase: onSessionFound persists the native ACP id,
+    // so later close-path reads of session.sessionId (e.g. cancelPrompt on
+    // abort) observe the id reported by the initial launch.
+    const session = {
         path: '/tmp/dsh-test',
         logPath: '/tmp/dsh-test/hapi.log',
         client: { rpcHandlerManager: { registerHandler: vi.fn() } },
@@ -86,10 +108,13 @@ function createSessionWithBatches(batches: Array<[string, DshMode]>, sessionId: 
         sessionId,
         getPermissionMode: () => 'default' as const,
         onThinkingChange: vi.fn(),
-        onSessionFound: vi.fn(),
+        onSessionFound: vi.fn((id: string) => {
+            session.sessionId = id
+        }),
         sendAgentMessage: vi.fn(),
         sendSessionEvent: vi.fn()
     }
+    return session
 }
 
 function createSession(mode?: DshMode, sessionId: string | null = null) {
@@ -100,6 +125,8 @@ describe('DshRemoteLauncher', () => {
     afterEach(() => {
         harness.backend = null
         harness.newSessionConfig = null
+        harness.newSessionCalls = []
+        harness.promptSessionIds = []
         harness.prompts = []
         harness.resumeError = null
         harness.resumeSupported = true
@@ -108,10 +135,15 @@ describe('DshRemoteLauncher', () => {
         harness.setConfigOptionCalls = []
         harness.configOptionError = null
         harness.newSessionBlocker = null
+        harness.supportsCancel = true
+        harness.promptBlocker = null
     })
 
     it('creates a fresh ACP session without MCP injection and forwards text prompts', async () => {
-        const session = createSession()
+        const queue = createQueue()
+        queue.push('first', 'dsh')
+        queue.close()
+        const session = createSessionWithQueue(queue)
         const launcher = new DshRemoteLauncher(session as never)
 
         await launcher.launch()
@@ -375,5 +407,65 @@ describe('DshRemoteLauncher', () => {
             ],
             currentModelId: FLASH
         })
+    })
+
+    it('respawns the ACP session for the next message after a close-based abort', async () => {
+        // dsh advertises close/list/resume without cancel: abort falls back to
+        // session/close, which ends the ACP session but leaves the process
+        // alive. The launcher must open a fresh session before the next prompt.
+        harness.supportsCancel = false
+        let releaseFirstPrompt!: () => void
+        harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
+        const queue = createQueue()
+        queue.push('first', 'dsh')
+        const session = createSessionWithQueue(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+
+        // Abort while the first turn is still in flight (the real-world path).
+        const killPromise = launcher.kill()
+        expect(harness.backend?.cancelPrompt).toHaveBeenCalledWith('dsh-session-1')
+        releaseFirstPrompt()
+        await killPromise
+
+        queue.push('second', 'dsh')
+        queue.close()
+        await done
+
+        expect(harness.newSessionCalls).toHaveLength(2)
+        expect(harness.newSessionCalls[1]).toEqual({ cwd: '/tmp/dsh-test', mcpServers: [] })
+        // The post-abort message must run on the respawned session id.
+        expect(harness.promptSessionIds).toEqual(['dsh-session-1', 'dsh-session-2'])
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }],
+            [{ type: 'text', text: 'second' }]
+        ])
+    })
+
+    it('does not respawn the session after a cancel-notification abort', async () => {
+        harness.supportsCancel = true
+        let releaseFirstPrompt!: () => void
+        harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
+        const queue = createQueue()
+        queue.push('first', 'dsh')
+        const session = createSessionWithQueue(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+
+        const killPromise = launcher.kill()
+        releaseFirstPrompt()
+        await killPromise
+
+        queue.push('second', 'dsh')
+        queue.close()
+        await done
+
+        // session/cancel keeps the ACP session alive: same session for both turns.
+        expect(harness.newSessionCalls).toHaveLength(1)
+        expect(harness.promptSessionIds).toEqual(['dsh-session-1', 'dsh-session-1'])
     })
 })

@@ -798,8 +798,39 @@ export class AcpSdkBackend implements AgentBackend {
         }
     }
 
+    /**
+     * Whether this agent accepts the standard `session/cancel` notification.
+     *
+     * Some agents (dsh 0.2.x) explicitly advertise `sessionCapabilities` with
+     * only close/list/resume and exit the whole process when the standard
+     * `session/cancel` notification arrives, taking every future session with
+     * it. The gate is a *positive absence*: agents that stay silent about
+     * their session capabilities keep the notification (previous behavior).
+     */
+    supportsCancelNotification(): boolean {
+        const sessionCapabilities = this.initializeResult?.agentCapabilities?.sessionCapabilities;
+        return !isObject(sessionCapabilities) || 'cancel' in sessionCapabilities;
+    }
+
     async cancelPrompt(sessionId: string): Promise<void> {
         if (!this.transport) {
+            return;
+        }
+
+        if (!this.supportsCancelNotification()) {
+            const sessionCapabilities = this.initializeResult?.agentCapabilities?.sessionCapabilities;
+            if (isObject(sessionCapabilities) && 'close' in sessionCapabilities) {
+                // Verified against dsh 0.2.0-rc.2: session/close returns
+                // immediately, resolves the in-flight session/prompt with
+                // end_turn, cancels the underlying work, and leaves the
+                // process alive for future sessions — unlike session/cancel,
+                // which kills the process outright.
+                try {
+                    await this.transport.sendRequest('session/close', { sessionId }, { timeoutMs: 5000 });
+                } catch (error) {
+                    logger.debug('[ACP] session/close fallback failed during cancel', error);
+                }
+            }
             return;
         }
 
