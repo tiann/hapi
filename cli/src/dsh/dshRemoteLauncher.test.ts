@@ -27,11 +27,17 @@ const harness = vi.hoisted(() => ({
     // Registered by onSessionClosedByCancel; fired by the cancelPrompt mock
     // on the close path, mirroring the real backend.
     sessionClosedHandler: null as (() => void) | null,
+    // Captured 4th constructor arg of AcpPermissionHandler: the synchronous
+    // pending-close handoff for permission 'abort' decisions.
+    permissionAbortClose: null as ((cancellation: Promise<void>) => void) | null,
     // When set, prompt() parks on this promise — lets tests abort mid-turn.
     promptBlocker: null as null | Promise<void>,
     // When set, a close-path cancelPrompt parks on this promise — lets tests
     // overlap prompt completion with a pending session/close response.
-    cancelBlocker: null as null | Promise<void>
+    cancelBlocker: null as null | Promise<void>,
+    // When set, newSession() parks on this promise — lets tests abort inside
+    // the respawn window.
+    newSessionBlocker: null as null | Promise<void>
 }))
 
 vi.mock('./utils/dshBackend', () => ({
@@ -88,6 +94,14 @@ vi.mock('./utils/dshBackend', () => ({
 
 vi.mock('@/modules/common/permission/AcpPermissionHandler', () => ({
     AcpPermissionHandler: class {
+        constructor(
+            _session: unknown,
+            _backend: unknown,
+            _getPermissionMode: unknown,
+            onAbortClose?: (cancellation: Promise<void>) => void
+        ) {
+            harness.permissionAbortClose = onAbortClose ?? null
+        }
         async cancelAll(): Promise<void> {}
     }
 }))
@@ -152,8 +166,10 @@ describe('DshRemoteLauncher', () => {
         harness.newSessionBlocker = null
         harness.supportsCancel = true
         harness.sessionClosedHandler = null
+        harness.permissionAbortClose = null
         harness.promptBlocker = null
         harness.cancelBlocker = null
+        harness.newSessionBlocker = null
     })
 
     it('creates a fresh ACP session without MCP injection and forwards text prompts', async () => {
@@ -549,5 +565,94 @@ describe('DshRemoteLauncher', () => {
 
         expect(harness.newSessionCalls).toHaveLength(2)
         expect(harness.promptSessionIds).toEqual(['dsh-session-1', 'dsh-session-2'])
+    })
+
+    it('defers a queued message when a permission-abort close is still pending', async () => {
+        // A permission denied with decision 'abort' cancels through
+        // AcpPermissionHandler → backend.cancelPrompt and hands the pending
+        // close to the launcher synchronously. The loop must park on it even
+        // though handleAbort never ran, so the follow-up never targets the
+        // closing session.
+        harness.supportsCancel = false
+        let releaseFirstPrompt!: () => void
+        harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
+        let releaseClose!: () => void
+        harness.cancelBlocker = new Promise((resolve) => { releaseClose = resolve })
+        const queue = createQueue()
+        queue.push('first', 'dsh')
+        const session = createSession(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+
+        queue.push('second', 'dsh')
+
+        // The permission handler's abort path: start the close (parks on
+        // cancelBlocker) and hand the pending promise to the launcher before
+        // awaiting it — exactly what the real handler does.
+        const cancellation = (harness.backend?.cancelPrompt as unknown as (sessionId: string) => Promise<void>)('dsh-session-1')
+        harness.permissionAbortClose?.(cancellation)
+
+        // The prompt completes while the close response is still on the wire.
+        releaseFirstPrompt()
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        // The queued follow-up must NOT have been sent to the closing session.
+        expect(harness.promptSessionIds).toEqual(['dsh-session-1'])
+
+        releaseClose()
+        await cancellation
+        queue.close()
+        await done
+
+        expect(harness.newSessionCalls).toHaveLength(2)
+        expect(harness.promptSessionIds).toEqual(['dsh-session-1', 'dsh-session-2'])
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }],
+            [{ type: 'text', text: 'second' }]
+        ])
+    })
+
+    it('drops the dequeued message when an abort lands while the session is being recreated', async () => {
+        // During the respawn's session/new request, session.sessionId still
+        // names the closed session; an abort in that window must discard the
+        // already-dequeued batch instead of running it on the fresh session.
+        harness.supportsCancel = false
+        let releaseFirstPrompt!: () => void
+        harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
+        const queue = createQueue()
+        queue.push('first', 'dsh')
+        const session = createSession(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+
+        // Abort while the first turn is still in flight (the real-world path).
+        const killPromise = launcher.kill()
+        releaseFirstPrompt()
+        await killPromise
+
+        // The next message enters the respawn branch; park session/new.
+        let releaseNewSession!: () => void
+        harness.newSessionBlocker = new Promise((resolve) => { releaseNewSession = resolve })
+        queue.push('second', 'dsh')
+        await vi.waitFor(() => expect(harness.newSessionCalls).toHaveLength(2))
+
+        // Abort inside the recreation window, then let session/new resolve.
+        const secondKill = launcher.kill()
+        await secondKill
+        releaseNewSession()
+
+        // The aborted 'second' must be dropped, not executed.
+        queue.push('third', 'dsh')
+        queue.close()
+        await done
+
+        expect(harness.promptSessionIds).toEqual(['dsh-session-1', 'dsh-session-3'])
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }],
+            [{ type: 'text', text: 'third' }]
+        ])
     })
 })

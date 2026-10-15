@@ -24,6 +24,9 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     private acpSessionEnded = false
     /** In-flight abort; queued prompts await it so none races the session close. */
     private abortCompletion: Promise<void> | null = null
+    /** Bumped at the top of every handleAbort; lets the respawn branch detect
+     *  an abort that landed while the replacement session was being created. */
+    private abortGeneration = 0
 
     constructor(
         private readonly session: DshSession,
@@ -169,7 +172,14 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         this.permissionHandler = new AcpPermissionHandler(
             this.session.client,
             backend,
-            () => undefined
+            () => undefined,
+            // Permission 'abort' decisions cancel through the backend directly
+            // and never enter handleAbort: record the pending close here so the
+            // main loop defers the next message until the session/close response
+            // lands, exactly like a handleAbort-initiated close.
+            (cancellation) => {
+                this.abortCompletion ??= cancellation
+            }
         )
         this.setupAbortHandlers(this.session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
@@ -196,11 +206,24 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 // Abort on dsh goes through session/close (no cancel capability),
                 // which ends the ACP session but leaves the process alive —
                 // start a fresh session so the next message keeps flowing.
+                // Snapshot the abort generation: an abort landing while the
+                // replacement session is being created targets the old session
+                // id and must also discard the already-dequeued batch (the user
+                // saw 'Session aborted').
+                const generationBeforeRespawn = this.abortGeneration
                 acpSessionId = await backend.newSession({
                     cwd: this.session.path,
                     mcpServers: []
                 })
                 this.session.sessionId = acpSessionId
+                if (generationBeforeRespawn !== this.abortGeneration) {
+                    // Aborted mid-recreation: drop the batch and treat the fresh
+                    // session as ended so the next loop respawns cleanly instead
+                    // of running a message the user aborted.
+                    this.acpSessionEnded = true
+                    this.messageBuffer.addMessage('Aborted while restarting the DSH session; dropping the queued message', 'status')
+                    continue
+                }
                 this.acpSessionEnded = false
                 this.messageBuffer.addMessage('DSH session restarted after abort', 'status')
             }
@@ -341,6 +364,10 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleAbort(): Promise<void> {
+        // Bump first, synchronously: the respawn branch compares generations
+        // around its `await backend.newSession(...)` to detect aborts that
+        // land inside that window.
+        this.abortGeneration += 1
         // Record the abort synchronously: the in-flight prompt can complete
         // while the close request is still on the wire, and the main loop
         // awaits abortCompletion before dequeuing the next message.
