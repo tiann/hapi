@@ -72,8 +72,10 @@ vi.mock('@/lib/toast-context', () => ({
 function makeQueuedMessage(
     scheduledAt: number | null = null,
     id = 'server-message-id',
-    overrides: Partial<DecryptedMessage> = {},
+    options: boolean | Partial<DecryptedMessage> = false,
 ): DecryptedMessage {
+    const withAttachments = typeof options === 'boolean' ? options : false
+    const overrides = typeof options === 'boolean' ? {} : options
     return {
         id,
         localId: `local-${id}`,
@@ -84,7 +86,19 @@ function makeQueuedMessage(
         status: 'queued',
         content: {
             role: 'user',
-            content: { type: 'text', text: 'Queued request' },
+            content: {
+                type: 'text',
+                text: 'Queued request',
+                ...(withAttachments ? {
+                    attachments: [{
+                        id: 'queued-att-1',
+                        filename: 'image.png',
+                        mimeType: 'image/png',
+                        size: 1234,
+                        path: '/tmp/image.png',
+                    }],
+                } : {}),
+            },
         },
         ...overrides,
     } as unknown as DecryptedMessage
@@ -96,10 +110,11 @@ function renderQueuedMessage(
     pendingScheduleRevision = 0,
     canSteer = false,
     api: ApiClient | null = null,
+    withAttachments = false,
 ) {
     const onEdit = vi.fn()
     let currentPendingScheduleRevision = pendingScheduleRevision
-    mocks.messageWindowState = { messages: [makeQueuedMessage(scheduledAt)] }
+    mocks.messageWindowState = { messages: [makeQueuedMessage(scheduledAt, 'server-message-id', withAttachments)] }
     // The real useSteerQueuedMessage hook runs inside the bar, so every render
     // needs a QueryClient (its mutations use the tanstack defaults).
     const queryClient = new QueryClient({
@@ -212,6 +227,13 @@ describe('QueuedMessagesBar layout', () => {
 })
 
 describe('QueuedMessagesBar edit restore', () => {
+    it('disables editing scheduled messages with attachments', () => {
+        renderQueuedMessage(Date.now() + 60_000, null, 0, false, null, true)
+
+        expect(screen.getByRole('button', { name: 'Edit queued message' })).toBeDisabled()
+        expect(screen.getByRole('button', { name: 'Cancel queued message' })).not.toBeDisabled()
+    })
+
     it('keeps a newly typed draft and its schedule when the deferred cancel succeeds', async () => {
         const scheduledAt = Date.now() + 60_000
         const { onEdit } = renderQueuedMessage(scheduledAt)
