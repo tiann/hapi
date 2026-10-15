@@ -1,6 +1,71 @@
 import { describe, it, expect } from 'vitest';
-import { convertPiCompactionUsage, convertPiEvent, convertPiTurnUsage } from './piEventConverter';
+import { clearGeneratedImages, MAX_GENERATED_IMAGE_BASE64_CHARS } from '../modules/common/generatedImages';
+import { convertPiCompactionUsage, convertPiEvent, convertPiTurnUsage, extractPiGeneratedImages } from './piEventConverter';
 import type { PiAgentEvent } from './types';
+
+describe('extractPiGeneratedImages', () => {
+    const PNG_HEADER = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]);
+
+    function imageEndEvent(blocks: unknown[]): PiAgentEvent {
+        return {
+            type: 'tool_execution_end',
+            toolCallId: 'tool-1',
+            toolName: 'read',
+            result: { content: blocks },
+            isError: false,
+        } as PiAgentEvent;
+    }
+
+    it('registers a valid PNG tool-result image', () => {
+        clearGeneratedImages();
+        const messages = extractPiGeneratedImages(imageEndEvent([
+            { type: 'image', mimeType: 'image/png', data: PNG_HEADER.toString('base64') },
+        ]), () => null);
+        expect(messages).toHaveLength(1);
+        expect(messages[0].type).toBe('generated_image');
+        expect(messages[0]).toMatchObject({
+            mimeType: 'image/png',
+            source: { ingress: 'tool_result', flavor: 'pi', toolCallId: 'tool-1' },
+        });
+    });
+
+    it('skips oversized base64 without decoding it', () => {
+        clearGeneratedImages();
+        const messages = extractPiGeneratedImages(imageEndEvent([
+            { type: 'image', mimeType: 'image/png', data: 'A'.repeat(MAX_GENERATED_IMAGE_BASE64_CHARS + 8) },
+        ]), () => null);
+        expect(messages).toEqual([]);
+    });
+
+    it('skips bytes that do not sniff as a real image', () => {
+        clearGeneratedImages();
+        const messages = extractPiGeneratedImages(imageEndEvent([
+            { type: 'image', mimeType: 'image/png', data: Buffer.from('definitely not an image').toString('base64') },
+        ]), () => null);
+        expect(messages).toEqual([]);
+    });
+
+    it('rejects declared-vs-sniffed MIME mismatches', () => {
+        clearGeneratedImages();
+        const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
+        const messages = extractPiGeneratedImages(imageEndEvent([
+            { type: 'image', mimeType: 'image/png', data: jpeg.toString('base64') },
+        ]), () => null);
+        expect(messages).toEqual([]);
+    });
+
+    it('rejects malformed tool_execution_end events missing required fields', () => {
+        clearGeneratedImages();
+        const event = {
+            type: 'tool_execution_end',
+            // toolCallId / toolName / isError 均缺失 —— 同类事件在 convertPiEvent
+            // 的 schema 安检里也会被拒收，这里不能给孤儿图片开绿灯
+            result: { content: [{ type: 'image', mimeType: 'image/png', data: PNG_HEADER.toString('base64') }] },
+        } as PiAgentEvent;
+        const messages = extractPiGeneratedImages(event, () => null);
+        expect(messages).toEqual([]);
+    });
+});
 
 describe('convertPiEvent', () => {
     it('should return empty for message_update with text_delta (accumulated in runPi)', () => {

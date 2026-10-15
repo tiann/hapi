@@ -31,6 +31,43 @@ describe('sessionConfigRpc', () => {
         expect(resolveNullableSessionModel(null)).toBeNull()
     })
 
+    it('qualifies object-form models as provider/modelId when providerQualified is set (OpenCode)', () => {
+        expect(resolveNullableSessionModel({ provider: 'b.ai', modelId: 'mimo-v2.5' }, { providerQualified: true }))
+            .toBe('b.ai/mimo-v2.5')
+    })
+
+    it('keeps bare modelId for object-form models by default (Cursor/Grok/Agy)', () => {
+        expect(resolveNullableSessionModel({ provider: 'b.ai', modelId: 'mimo-v2.5' }))
+            .toBe('mimo-v2.5')
+    })
+
+    it('keeps bare modelId when object form lacks a provider', () => {
+        expect(resolveNullableSessionModel({ modelId: 'mimo-v2.5' }, { providerQualified: true }))
+            .toBe('mimo-v2.5')
+    })
+
+    it('rejects object form without a modelId', () => {
+        expect(() => resolveNullableSessionModel({ provider: 'b.ai' })).toThrow('Invalid model')
+    })
+
+    it('applies provider-qualified model for OpenCode set-session-config', async () => {
+        const harness = createRpcHarness()
+        const onApply = vi.fn()
+
+        registerSessionConfigRpc({
+            rpcHandlerManager: harness.rpcHandlerManager,
+            flavor: 'opencode',
+            modelMode: 'nullable',
+            modelProviderQualified: true,
+            onApply
+        })
+
+        const result = await harness.getHandler()({ model: { provider: 'b.ai', modelId: 'mimo-v2.5' } }) as { applied: Record<string, unknown> }
+
+        expect(result.applied.model).toBe('b.ai/mimo-v2.5')
+        expect(onApply).toHaveBeenCalledWith({ model: 'b.ai/mimo-v2.5' })
+    })
+
     it('rejects empty and non-string models', () => {
         expect(() => resolveNullableSessionModel('')).toThrow('Invalid model')
         expect(() => resolveNullableSessionModel('   ')).toThrow('Invalid model')

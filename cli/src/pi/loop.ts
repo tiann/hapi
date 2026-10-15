@@ -2,11 +2,11 @@ import { logger } from '@/ui/logger';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { createNativeSessionTitleMetadataSync } from '@/agent/nativeSessionTitle';
 import { PiTransport } from './piTransport';
-import { convertPiEvent, convertPiTurnUsage } from './piEventConverter';
+import { convertPiEvent, convertPiTurnUsage, extractPiGeneratedImages } from './piEventConverter';
 import { PiMessageAccumulator } from './piMessageAccumulator';
 import { PiExtensionUiHandler } from './extensionUiHandler';
 import { parsePiModels, parsePiCommands, parsePiContextUsage, PiAgentEndEventSchema, PiAgentSettledEventSchema, PiExtensionUiRequestSchema, PiLifecycleEventSchema, PiResponseEventSchema, PiSessionInfoChangedEventSchema, PiStateDataSchema, PiSetModelDataSchema } from './schemas';
-import type { PiContextUsage, PiResponseEvent, PiRpcCommand, PiThinkingLevel, PiTurnEndEvent } from './types';
+import type { PiContextUsage, PiResponseEvent, PiRpcCommand, PiThinkingLevel, PiToolExecutionStartEvent, PiTurnEndEvent } from './types';
 import type { PiSession } from './session';
 import type { PiConversationHistory } from './conversationHistory';
 
@@ -275,6 +275,9 @@ function handleResponse(
                 if (modelId) {
                     session.currentModel = modelId;
                 }
+                // An accepted set_model is an explicit selection: never let a
+                // late startup-model attempt overwrite it.
+                session.explicitModelSelection = true;
                 if (data.provider && data.provider.length > 0) {
                     session.currentProvider = data.provider;
                 }
@@ -296,27 +299,45 @@ function handleResponse(
         }
         case 'get_available_models': {
             const models = parsePiModels(response.data);
-            if (models.length > 0) {
-                session.cachedPiModels = models;
-                logger.debug(`[pi] Available models: ${models.map((m) => m.modelId).join(', ')}`);
+            // Cache and broadcast metadata are synchronized here for every
+            // response, including empty ones: ListPiModels re-queries this RPC on
+            // each poll (every 15s per open session), so an unchanged catalog
+            // must not version the metadata — that is a hub DB write plus a
+            // Socket.IO/SSE broadcast on every poll.
+            const modelsChanged = JSON.stringify(session.cachedPiModels) !== JSON.stringify(models);
+            session.cachedPiModels = models;
+            if (modelsChanged) {
+                logger.debug(`[pi] Available models: ${models.map((m) => m.modelId).join(', ') || '(none)'}`);
                 session.updateMetadata((meta) => ({
                     ...meta,
                     piAvailableModels: models,
                 }));
+            }
 
-                // Apply the requested startup model only after confirming it exists
-                // in Pi's available models and Pi accepts set_model. Commit
-                // currentModel/currentProvider only on success so the hub does not
-                // persist a model Pi rejected or never had. Fire-and-forget the
-                // await so resolving the get_available_models RPC itself is not
-                // blocked (it may be awaited by ListPiModels).
-                if (session.initialModel && transport) {
-                    const match = models.find((m) => m.modelId === session.initialModel)
-                        ?? models.find((m) => `${m.provider}/${m.modelId}` === session.initialModel);
+            if (models.length > 0) {
+                // The startup model is a *one-shot* bootstrap. It is applied only on
+                // the first discovery that can act on it, and only while the user has
+                // not picked a model in this session. Re-applying it on every response
+                // made any later model-list refresh (the web picker polls ListPiModels)
+                // silently revert the user's own selection back to the launch model.
+                const startupModel = session.initialModel;
+                // Consume regardless of outcome: the startup model gets exactly one chance.
+                if (startupModel) session.initialModel = null;
+                if (startupModel && transport && !session.explicitModelSelection) {
+                    const match = models.find((m) => m.modelId === startupModel)
+                        ?? models.find((m) => `${m.provider}/${m.modelId}` === startupModel);
                     if (match) {
                         void (async () => {
                             try {
-                                await session.runRuntimeMutation(async () => {
+                                const applied = await session.runRuntimeMutation(async () => {
+                                    // Re-check under the lease: the gate above ran before
+                                    // any queued user selection was granted the mutation
+                                    // lease. A selection that got there first must win, and
+                                    // applying the launch model over it would silently
+                                    // revert the user's own choice.
+                                    if (session.explicitModelSelection) {
+                                        return false;
+                                    }
                                     await sendPiRpcAndWait(session, transport, {
                                         type: 'set_model',
                                         provider: match.provider,
@@ -325,8 +346,13 @@ function handleResponse(
                                     session.currentModel = match.modelId;
                                     session.currentProvider = match.provider;
                                     persistSelectedPiModel(session);
+                                    return true;
                                 }, { poisonOnError: (error) => error instanceof PiRpcTimeoutError });
-                                logger.debug(`[pi] Startup model applied: ${match.provider}/${match.modelId}`);
+                                if (applied) {
+                                    logger.debug(`[pi] Startup model applied: ${match.provider}/${match.modelId}`);
+                                } else {
+                                    logger.debug('[pi] Startup model skipped: an explicit selection acquired the mutation lease first');
+                                }
                             } catch (error) {
                                 if (error instanceof PiRpcTimeoutError) {
                                     onStartupFailure?.(new Error(`Pi startup model outcome is indeterminate: ${error.message}`));
@@ -343,10 +369,13 @@ function handleResponse(
                             session.resolveStartupModelSettled?.();
                         })();
                     } else {
-                        logger.debug(`[pi] Startup model not found in available models: ${session.initialModel}`);
+                        logger.debug(`[pi] Startup model not found in available models: ${startupModel}`);
                         session.resolveStartupModelSettled?.();
                     }
                 } else {
+                    if (startupModel && session.explicitModelSelection) {
+                        logger.debug('[pi] Startup model skipped: session already has an explicit model selection');
+                    }
                     session.resolveStartupModelSettled?.();
                 }
             } else {
@@ -533,6 +562,9 @@ export function wireTransportEvents(
     const lifecycleTimeline = new PiLifecycleTimeline();
     let latestContextUsageRequest = 0;
     let deliveredSettlement = false;
+    // Bounded tool-args cache so tool_execution_end can attribute registered
+    // media (e.g. images read by the `read` tool) to their source path.
+    const piToolArgsByCallId = new Map<string, unknown>();
     let legacySettleTimer: ReturnType<typeof setTimeout> | null = null;
     let promptLifecycleTimer: ReturnType<typeof setTimeout> | null = null;
     let compactionRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -849,6 +881,19 @@ export function wireTransportEvents(
             for (const message of messages) {
                 const converted = convertAgentMessage(message, session.currentModel);
                 if (converted) session.sendAgentMessage(converted);
+            }
+            if (event.type === 'tool_execution_start') {
+                if (piToolArgsByCallId.size > 500) piToolArgsByCallId.clear();
+                const startEvent = event as PiToolExecutionStartEvent;
+                piToolArgsByCallId.set(startEvent.toolCallId, startEvent.args);
+            } else if (event.type === 'tool_execution_end') {
+                const endEvent = event as { toolCallId: string };
+                const mediaMessages = extractPiGeneratedImages(event, (toolCallId) => piToolArgsByCallId.get(toolCallId));
+                piToolArgsByCallId.delete(endEvent.toolCallId);
+                for (const message of mediaMessages) {
+                    const converted = convertAgentMessage(message, session.currentModel);
+                    if (converted) session.sendAgentMessage(converted);
+                }
             }
         }
 
