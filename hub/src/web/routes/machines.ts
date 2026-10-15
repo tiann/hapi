@@ -6,16 +6,60 @@ import {
     RenameMachineRequestSchema,
     SpawnSessionRequestSchema
 } from '@hapi/protocol'
+import {
+    resolvePeerSpawnConfig,
+    STOCK_PEER_SPAWN_DEFAULTS,
+    type PeerSpawnDefaults,
+    type ResolvedPeerSpawnDefaults
+} from '@hapi/protocol/peerSpawnDefaults'
+import { getLaunchPermissionModesForFlavor } from '@hapi/protocol/modes'
 import { Hono } from 'hono'
 import { RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMethods'
+import { readPeerSpawnDefaults } from '../../config/peerSpawnDefaults'
 import type { SyncEngine } from '../../sync/syncEngine'
 import { RpcTargetMissingError } from '../../sync/rpcGateway'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireMachine } from './guards'
 
-export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
-    const app = new Hono<WebAppEnv>()
+const SPAWN_REMIT_FIELDS = ['message', 'prompt', 'text'] as const
 
+function spawnRemitField(body: unknown): string | null {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        return null
+    }
+    for (const key of SPAWN_REMIT_FIELDS) {
+        if (Object.prototype.hasOwnProperty.call(body, key)) {
+            return key
+        }
+    }
+    return null
+}
+
+export type MachinesRoutesOptions = {
+    dataDir?: string
+    /** Test seam: override hub peer spawn defaults (resolved or stored partial). */
+    getPeerSpawnDefaults?: () => PeerSpawnDefaults | ResolvedPeerSpawnDefaults | null | Promise<PeerSpawnDefaults | ResolvedPeerSpawnDefaults | null>
+}
+
+async function loadPeerSpawnDefaultsForSpawn(
+    options: MachinesRoutesOptions | undefined
+): Promise<PeerSpawnDefaults | ResolvedPeerSpawnDefaults | null> {
+    if (options?.getPeerSpawnDefaults) {
+        return await options.getPeerSpawnDefaults()
+    }
+    if (options?.dataDir) {
+        // Do not swallow read failures into stock yolo — that would override
+        // operator-configured restrictive defaults on a transient I/O error.
+        return await readPeerSpawnDefaults(options.dataDir)
+    }
+    return null
+}
+
+export function createMachinesRoutes(
+    getSyncEngine: () => SyncEngine | null,
+    options?: MachinesRoutesOptions
+): Hono<WebAppEnv> {
+    const app = new Hono<WebAppEnv>()
     app.get('/machines', (c) => {
         const engine = getSyncEngine()
         if (!engine) {
@@ -85,32 +129,96 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const body = await c.req.json().catch(() => null)
+        const remitField = spawnRemitField(body)
+        if (remitField) {
+            return c.json({
+                error: `POST /api/machines/:id/spawn does not accept '${remitField}'. Machine spawn creates an empty composer. Use hapi spawn-peer / MCP spawn_peer, or POST /api/sessions/:id/messages after spawn.`,
+                code: 'spawn_remit_not_supported'
+            }, 400)
+        }
         const parsed = SpawnSessionRequestSchema.safeParse(body)
         if (!parsed.success) {
             return c.json({ error: 'Invalid body' }, 400)
         }
-        if (
-            (parsed.data.agent === 'agy' || parsed.data.agent === 'dsh')
-            && parsed.data.startingMode
-            && parsed.data.startingMode !== 'remote'
-        ) {
-            return c.json({ error: `${parsed.data.agent.toUpperCase()} only supports remote mode` }, 400)
-        }
         const startingMode = parsed.data.startingMode
         const namespace = c.get('namespace')
+
+        // Apply hub peerSpawnDefaults when agent / permissionMode / model are omitted
+        // so scavenger/raw machine spawn matches Settings → General → Agents (and stock yolo).
+        let hubDefaults: PeerSpawnDefaults | ResolvedPeerSpawnDefaults | null
+        try {
+            hubDefaults = await loadPeerSpawnDefaultsForSpawn(options)
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Cannot load hub spawn defaults'
+            return c.json({ error: message, code: 'hub_spawn_defaults_unavailable' as const }, 500)
+        }
+
+        const effectiveAgent = parsed.data.agent
+            ?? hubDefaults?.agent
+            ?? STOCK_PEER_SPAWN_DEFAULTS.agent
+        // Validate startingMode against the resolved agent (hub default may be
+        // AGY/DSH even when the request omitted agent).
+        if (
+            (effectiveAgent === 'agy' || effectiveAgent === 'dsh')
+            && startingMode
+            && startingMode !== 'remote'
+        ) {
+            return c.json({ error: `${effectiveAgent.toUpperCase()} only supports remote mode` }, 400)
+        }
+        if (
+            parsed.data.permissionMode !== undefined
+            && !getLaunchPermissionModesForFlavor(effectiveAgent).includes(parsed.data.permissionMode)
+        ) {
+            return c.json({
+                error: `permission mode ${parsed.data.permissionMode} is not supported by ${effectiveAgent}`,
+                code: 'invalid_permission_mode' as const
+            }, 400)
+        }
+
+        const resolved = resolvePeerSpawnConfig({
+            ...(parsed.data.agent !== undefined ? { agent: parsed.data.agent } : {}),
+            ...(parsed.data.permissionMode !== undefined ? { permissionMode: parsed.data.permissionMode } : {}),
+            ...(parsed.data.model !== undefined ? { model: parsed.data.model } : {}),
+            ...(parsed.data.effort !== undefined ? { effort: parsed.data.effort } : {})
+        }, hubDefaults)
+
+        // When the caller supplies an explicit yolo boolean without a native
+        // permissionMode, preserve the runner's boolean path — injecting a hub
+        // mode would override yolo:false (runner prioritizes permissionMode).
+        // Flavors with an empty launch catalog (pi/dsh) must omit permissionMode.
+        const permissionModeForSpawn =
+            parsed.data.permissionMode === undefined && parsed.data.yolo !== undefined
+                ? undefined
+                : getLaunchPermissionModesForFlavor(resolved.agent).length === 0
+                    ? undefined
+                    : resolved.permissionMode
+
+        // Apply hub model only when the caller omitted agent+model (full defaults
+        // path). An explicit agent with model omitted means native Default —
+        // do not inject the hub model for that flavor.
+        const modelForSpawn = parsed.data.model !== undefined
+            ? parsed.data.model
+            : parsed.data.agent === undefined
+                ? resolved.model
+                : undefined
+        const effortForSpawn = parsed.data.effort !== undefined
+            ? parsed.data.effort
+            : parsed.data.agent === undefined
+                ? resolved.effort
+                : undefined
 
         const result = await engine.spawnSession(
             machineId,
             parsed.data.directory,
-            parsed.data.agent,
-            parsed.data.model,
+            resolved.agent,
+            modelForSpawn,
             parsed.data.modelReasoningEffort,
             parsed.data.yolo,
             parsed.data.sessionType,
             parsed.data.worktreeName,
             undefined, // resumeSessionId
-            parsed.data.effort,
-            parsed.data.permissionMode,
+            effortForSpawn,
+            permissionModeForSpawn,
             parsed.data.serviceTier,
             undefined,
             parsed.data.collaborationMode,
