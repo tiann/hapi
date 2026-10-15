@@ -461,6 +461,10 @@ export default {
   'terminal.paste.fallbackTitle': '粘贴输入',
   'terminal.paste.fallbackDescription': '无法读取剪贴板，请在下方粘贴文本。',
   'terminal.paste.placeholder': '在此粘贴终端输入…',
+  'terminal.toAgent.buffer': '发送给 Agent',
+  'terminal.toAgent.selection': '选区发送给 Agent',
+  'terminal.toAgent.fueTitle': '把终端发给 Agent',
+  'terminal.toAgent.fueBody': '打开会话终端后点「发送给 Agent」，即可把完整滚动缓冲放进输入框；若先选中文字，按钮会变成「选区发送给 Agent」。可先补一句说明再发送。',
 
   // Code block
   'code.copy': '复制',

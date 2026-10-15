@@ -416,3 +416,72 @@ describe('ComposerButtons responsive toolbar', () => {
         expect(getComposerToolbarJustifyContent('split')).toBe('flex-start')
     })
 })
+
+describe('ComposerButtons terminal To agent FUE', () => {
+    afterEach(() => {
+        cleanup()
+        window.localStorage.removeItem('hapi.fue.v1.composer-terminal-to-agent')
+    })
+
+    function renderTerminalToolbar(onTerminal: () => void) {
+        const noop = () => {}
+        return render(
+            <RuntimeProviders>
+                <ComposerButtons
+                    canSend
+                    controlsDisabled={false}
+                    showSettingsButton={false}
+                    onSettingsToggle={noop}
+                    expanded={false}
+                    onExpandedToggle={noop}
+                    showTerminalButton
+                    terminalDisabled={false}
+                    terminalLabel="Terminal"
+                    onTerminal={onTerminal}
+                    showAbortButton={false}
+                    abortDisabled
+                    isAborting={false}
+                    onAbort={noop}
+                    showSwitchButton={false}
+                    switchDisabled
+                    isSwitching={false}
+                    onSwitch={noop}
+                    voiceEnabled={false}
+                    dictationEnabled={false}
+                    voiceStatus="disconnected"
+                    onVoiceToggle={noop}
+                    onSend={noop}
+                />
+            </RuntimeProviders>,
+        )
+    }
+
+    it('shows a pulsing FUE dot until acknowledged', () => {
+        renderTerminalToolbar(() => {})
+        const terminal = screen.getByRole('button', { name: 'Terminal' })
+        expect(within(terminal).getByRole('status', { name: 'New feature available' })).toBeInTheDocument()
+    })
+
+    it('opens the To agent explainer on first click without navigating', () => {
+        const onTerminal = vi.fn()
+        renderTerminalToolbar(onTerminal)
+
+        fireEvent.click(screen.getByRole('button', { name: 'Terminal' }))
+
+        expect(onTerminal).not.toHaveBeenCalled()
+        expect(screen.getByRole('dialog', { name: 'Send terminal to agent' })).toBeInTheDocument()
+        expect(screen.getByText(/Selection to agent/i)).toBeInTheDocument()
+    })
+
+    it('navigates after Got it and persists acknowledgement', () => {
+        const onTerminal = vi.fn()
+        renderTerminalToolbar(onTerminal)
+
+        fireEvent.click(screen.getByRole('button', { name: 'Terminal' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Got it' }))
+
+        expect(onTerminal).toHaveBeenCalledOnce()
+        expect(window.localStorage.getItem('hapi.fue.v1.composer-terminal-to-agent')).toBe('1')
+        expect(screen.queryByRole('dialog', { name: 'Send terminal to agent' })).not.toBeInTheDocument()
+    })
+})

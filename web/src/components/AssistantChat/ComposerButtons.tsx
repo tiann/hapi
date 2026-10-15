@@ -504,6 +504,66 @@ function ScratchlistToggleButton(props: {
     )
 }
 
+/**
+ * TerminalButton — just-in-time FUE for terminal → agent (#2011).
+ *
+ * The terminal icon is the only composer entry into the session PTY, so it
+ * carries the discovery tip for To agent / Selection to agent. First click
+ * shows the explainer only: navigating away would unmount this button (and
+ * the callout) before the operator could read it. Got it acknowledges and
+ * then performs the navigation they originally wanted.
+ */
+function TerminalButton(props: {
+    label: string
+    onTerminal: () => void
+    disabled: boolean
+}) {
+    const { t } = useTranslation()
+    const fue = useFue('composer-terminal-to-agent')
+    const buttonRef = useRef<HTMLButtonElement>(null)
+
+    return (
+        <>
+            <button
+                ref={buttonRef}
+                type="button"
+                aria-label={props.label}
+                title={props.label}
+                className="relative flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => {
+                    if (fue.status !== 'acknowledged') {
+                        fue.engage()
+                        return
+                    }
+                    props.onTerminal()
+                }}
+                disabled={props.disabled}
+            >
+                <TerminalIcon />
+                {fue.status !== 'acknowledged' ? (
+                    <FueDot
+                        pulsing={fue.status === 'unseen'}
+                        ariaLabel={t('fue.newFeatureDot')}
+                    />
+                ) : null}
+            </button>
+            {fue.status === 'engaging' ? (
+                <FueCallout
+                    title={t('terminal.toAgent.fueTitle')}
+                    body={t('terminal.toAgent.fueBody')}
+                    onDismiss={() => {
+                        fue.dismiss()
+                        props.onTerminal()
+                    }}
+                    dismissLabel={t('fue.gotIt')}
+                    closeAriaLabel={t('fue.closeAriaLabel')}
+                    anchorRef={buttonRef}
+                />
+            ) : null}
+        </>
+    )
+}
+
 function StopIcon() {
     return (
         <svg
@@ -860,16 +920,11 @@ export function ComposerButtons(props: {
 
                 <ToolbarItemSlot item="terminal">
                 {props.showTerminalButton ? (
-                    <button
-                        type="button"
-                        aria-label={props.terminalLabel}
-                        title={props.terminalLabel}
-                        className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
-                        onClick={props.onTerminal}
+                    <TerminalButton
+                        label={props.terminalLabel}
+                        onTerminal={props.onTerminal}
                         disabled={props.terminalDisabled}
-                    >
-                        <TerminalIcon />
-                    </button>
+                    />
                 ) : null}
                 </ToolbarItemSlot>
 
