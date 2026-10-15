@@ -56,6 +56,7 @@ import { getMachinePlatform, presentMachineHealth } from '@/lib/machineHealth'
 import { MachineFilterBar, MachineFilterMenu } from '@/components/MachineFilterBar'
 import { useSessionListMachineFilter } from '@/hooks/useSessionListMachineFilter'
 import { useTransientScrollbar } from '@/hooks/useTransientScrollbar'
+import { useScrollSelectedSessionIntoView } from '@/hooks/useScrollSelectedSessionIntoView'
 import { useCursorChatStoreStatus } from '@/hooks/queries/useCursorChatStoreStatus'
 import { SessionRowSummary } from '@/components/SessionRowSummary'
 import { Spinner } from '@/components/Spinner'
@@ -318,6 +319,63 @@ export function filterUnreadSessionsOnly(
         session.id === selectedSessionId
         || sessionIsUnread(session, { lastSeenAt: getLastSeenAt(session.id) })
     )
+}
+
+// Machine scope lens: show one machine's sessions. Like the active-only and
+// unread-only lenses, it never hides the session the operator currently has
+// open — selecting a session on another machine would otherwise leave the list
+// with no row for it at all.
+export function filterSessionsByMachine(
+    sessions: SessionSummary[],
+    machineId: string | null,
+    selectedSessionId?: string | null
+): SessionSummary[] {
+    if (machineId === null) return sessions
+    return sessions.filter(session =>
+        session.id === selectedSessionId
+        || (session.metadata?.machineId ?? UNKNOWN_MACHINE_ID) === machineId
+    )
+}
+
+/** The pinned sections, in render order, that a selected row can hide inside. */
+export type PinnedSectionKey = 'pinned' | 'running' | 'active'
+
+/**
+ * Which pinned section holds `selectedSessionId`, or `null` when it is not in
+ * one. Directory groups auto-expand around the selected session; the pinned
+ * sections are collapsed by hand and had no equivalent, so a selection inside a
+ * closed one stayed clipped with nothing to reveal.
+ */
+export function resolveSelectedSessionPinnedSection(
+    selectedSessionId: string | null | undefined,
+    sections: {
+        globalPinned: SessionSummary[]
+        running: Record<RunningBucketKey, SessionSummary[]>
+    }
+): PinnedSectionKey | null {
+    if (!selectedSessionId) return null
+    const holds = (sessions: SessionSummary[]) =>
+        sessions.some(session => session.id === selectedSessionId)
+    if (holds(sections.globalPinned)) return 'pinned'
+    if (holds(sections.running.working) || holds(sections.running.pending)) return 'running'
+    if (holds(sections.running.active) || holds(sections.running.idle)) return 'active'
+    return null
+}
+
+/**
+ * Whether a group's header has to name its machine. With no machine scope the
+ * bar labels every group; with a scope active only the groups that are *not*
+ * on it need naming — which is exactly the open session kept visible by
+ * `filterSessionsByMachine`, whose directory can collide with a scoped one.
+ */
+export function shouldLabelGroupMachine(
+    groupMachineId: string | null,
+    activeMachineFilter: string | null,
+    showMachineFilterBar: boolean
+): boolean {
+    if (!showMachineFilterBar) return false
+    if (activeMachineFilter === null) return true
+    return (groupMachineId ?? UNKNOWN_MACHINE_ID) !== activeMachineFilter
 }
 
 // Paginated session previews move one batch at a time in either direction.
@@ -1065,6 +1123,7 @@ function SessionItem(props: {
                 type="button"
                 {...longPressHandlers}
                 data-session-scroll-anchor
+                data-session-id={s.id}
                 className={`session-list-item group/session-row flex w-full flex-col gap-1 py-2 pl-2.5 pr-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
                 style={{ WebkitTouchCallout: 'none' }}
                 aria-current={selected ? 'page' : undefined}
@@ -1365,12 +1424,8 @@ export function SessionList(props: {
         )
     }, [lastSeenVersion, visibleSessions, selectedSessionId, showUnreadOnly])
     const machineFilteredSessions = useMemo(
-        () => activeMachineFilter === null
-            ? unreadFilteredSessions
-            : unreadFilteredSessions.filter(session =>
-                (session.metadata?.machineId ?? UNKNOWN_MACHINE_ID) === activeMachineFilter
-            ),
-        [unreadFilteredSessions, activeMachineFilter]
+        () => filterSessionsByMachine(unreadFilteredSessions, activeMachineFilter, selectedSessionId),
+        [unreadFilteredSessions, activeMachineFilter, selectedSessionId]
     )
     const globalPinnedSessions = useMemo(() => {
         const pinned = machineFilteredSessions.filter((session) => Boolean(session.globalPinned))
@@ -1598,12 +1653,13 @@ export function SessionList(props: {
     const renderActionOnlyGroupHeader = (group: SessionGroup) => {
         // With multiple machines in the unfiltered view, disambiguate
         // same-named directories by suffixing the machine label.
-        const groupTitle = showMachineFilterBar && activeMachineFilter === null
+        const groupTitle = shouldLabelGroupMachine(group.machineId, activeMachineFilter, showMachineFilterBar)
             ? `${group.displayName} · ${resolveMachineLabel(group.machineId)}`
             : group.displayName
         return (
             <div key={group.key} data-session-scroll-anchor>
                 <div
+                    data-session-group-header
                     className="group/project sticky top-0 z-10 flex items-center gap-2 bg-[var(--app-bg)] py-1.5 pl-2 pr-2 text-left rounded-lg transition-colors hover:bg-[var(--app-secondary-bg)] min-w-0 w-full select-none"
                     title={group.directory}
                 >
@@ -1652,12 +1708,13 @@ export function SessionList(props: {
         const canStartInGroupDirectory = group.directory !== 'Other'
         // With multiple machines in the unfiltered view, disambiguate
         // same-named directories by suffixing the machine label.
-        const groupTitle = showMachineFilterBar && activeMachineFilter === null
+        const groupTitle = shouldLabelGroupMachine(group.machineId, activeMachineFilter, showMachineFilterBar)
             ? `${group.displayName} · ${resolveMachineLabel(group.machineId)}`
             : group.displayName
         return (
             <div key={group.key} data-session-scroll-anchor>
                 <div
+                    data-session-group-header
                     className="group/project sticky top-0 z-10 flex items-center gap-2 bg-[var(--app-bg)] py-1.5 pl-2 pr-2 text-left rounded-lg transition-colors hover:bg-[var(--app-secondary-bg)] cursor-pointer min-w-0 w-full select-none"
                     onClick={() => toggleGroup(group.key, isCollapsed)}
                     title={group.directory}
@@ -1778,6 +1835,29 @@ export function SessionList(props: {
         setCollapseOverrides(prev => expandSelectedSessionCollapseOverrides(prev, group))
     }, [selectedSessionId, groups])
 
+    // Same idea for the pinned sections, which collapse by hand and so can hide
+    // the selected row with nothing left to reveal. Guarded on the
+    // selection/section pair for the same reason as the group effect: a section
+    // the operator just closed must stay closed on live refreshes.
+    const autoExpandedSelectedSectionRef = useRef<string | null>(null)
+    useEffect(() => {
+        const section = resolveSelectedSessionPinnedSection(selectedSessionId, {
+            globalPinned: globalPinnedSessions,
+            running: runningSessions,
+        })
+        if (!section) {
+            autoExpandedSelectedSectionRef.current = null
+            return
+        }
+        const autoExpandKey = `${selectedSessionId}::${section}`
+        if (autoExpandedSelectedSectionRef.current === autoExpandKey) return
+        autoExpandedSelectedSectionRef.current = autoExpandKey
+
+        if (section === 'pinned') setPinnedSectionCollapsed(false)
+        else if (section === 'running') setRunningSectionCollapsed(false)
+        else setActiveSectionCollapsed(false)
+    }, [selectedSessionId, globalPinnedSessions, runningSessions])
+
     // Clean up stale collapse overrides
     useEffect(() => {
         setCollapseOverrides(prev => {
@@ -1831,6 +1911,7 @@ export function SessionList(props: {
     // bounce to make a wheel pull feel right, so it stays on live updates.
     const scrollContainerRef = useRef<HTMLDivElement>(null)
     useTransientScrollbar(scrollContainerRef, 'left')
+    useScrollSelectedSessionIntoView(scrollContainerRef, selectedSessionId)
     const [pullState, setPullState] = useState<PullToRefreshState>('idle')
     const pullStateRef = useRef<PullToRefreshState>('idle')
     const [isRefreshing, setIsRefreshing] = useState(false)

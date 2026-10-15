@@ -5,6 +5,7 @@ import {
     deduplicateSessionsByAgentId,
     expandSelectedSessionCollapseOverrides,
     filterActiveSessionsOnly,
+    filterSessionsByMachine,
     filterUnreadSessionsOnly,
     UNKNOWN_MACHINE_ID,
     bucketRunningSessions,
@@ -19,8 +20,10 @@ import {
     isSidebarEmptySessionStub,
     normalizeSearch,
     prepareSidebarSessions,
+    resolveSelectedSessionPinnedSection,
     sessionMatchesQuery,
     sessionMatchesTimeRange,
+    shouldLabelGroupMachine,
     shouldShowPinnedDivider,
     shouldShowSessionInSidebar
 } from './SessionList'
@@ -522,6 +525,110 @@ describe('filterActiveSessionsOnly', () => {
             makeSession({ id: 'c', active: true, metadata: { path: '/p' } })
         ]
         expect(filterActiveSessionsOnly(sessions).map(s => s.id)).toEqual(['a', 'c'])
+    })
+})
+
+describe('resolveSelectedSessionPinnedSection', () => {
+    const buckets = (overrides: Partial<Record<string, SessionSummary[]>> = {}) => ({
+        working: [], pending: [], active: [], idle: [], ...overrides
+    } as Record<'working' | 'pending' | 'active' | 'idle', SessionSummary[]>)
+    const s = (id: string) => makeSession({ id, metadata: { path: '/p' } })
+
+    it('returns null without a selection', () => {
+        expect(resolveSelectedSessionPinnedSection(null, {
+            globalPinned: [s('a')], running: buckets({ working: [s('b')] })
+        })).toBeNull()
+    })
+
+    it('returns null when the selection is in no pinned section', () => {
+        expect(resolveSelectedSessionPinnedSection('elsewhere', {
+            globalPinned: [s('a')], running: buckets({ working: [s('b')] })
+        })).toBeNull()
+    })
+
+    it('finds the globally pinned section', () => {
+        expect(resolveSelectedSessionPinnedSection('a', {
+            globalPinned: [s('a')], running: buckets()
+        })).toBe('pinned')
+    })
+
+    it.each([['working'], ['pending']])('finds the running section via %s', (bucket) => {
+        expect(resolveSelectedSessionPinnedSection('b', {
+            globalPinned: [], running: buckets({ [bucket]: [s('b')] })
+        })).toBe('running')
+    })
+
+    it.each([['active'], ['idle']])('finds the active section via %s', (bucket) => {
+        expect(resolveSelectedSessionPinnedSection('c', {
+            globalPinned: [], running: buckets({ [bucket]: [s('c')] })
+        })).toBe('active')
+    })
+
+    it('prefers the section that renders first', () => {
+        expect(resolveSelectedSessionPinnedSection('a', {
+            globalPinned: [s('a')], running: buckets({ working: [s('a')] })
+        })).toBe('pinned')
+    })
+})
+
+describe('shouldLabelGroupMachine', () => {
+    it('never labels when the machine bar is hidden', () => {
+        expect(shouldLabelGroupMachine('machine-a', null, false)).toBe(false)
+        expect(shouldLabelGroupMachine('machine-a', 'machine-b', false)).toBe(false)
+    })
+
+    it('labels every group when no machine is scoped', () => {
+        expect(shouldLabelGroupMachine('machine-a', null, true)).toBe(true)
+    })
+
+    it('does not label groups that are on the scoped machine', () => {
+        expect(shouldLabelGroupMachine('machine-a', 'machine-a', true)).toBe(false)
+    })
+
+    it('labels the open session kept visible from another machine', () => {
+        // Otherwise a same-named directory renders two identical headers.
+        expect(shouldLabelGroupMachine('machine-b', 'machine-a', true)).toBe(true)
+    })
+
+    it('treats a missing machine id as the unknown bucket', () => {
+        expect(shouldLabelGroupMachine(null, UNKNOWN_MACHINE_ID, true)).toBe(false)
+        expect(shouldLabelGroupMachine(null, 'machine-a', true)).toBe(true)
+    })
+})
+
+describe('filterSessionsByMachine', () => {
+    const sessions = [
+        makeSession({ id: 'here', metadata: { path: '/p', machineId: 'machine-a' } }),
+        makeSession({ id: 'elsewhere', metadata: { path: '/p', machineId: 'machine-b' } }),
+        makeSession({ id: 'nomachine', metadata: { path: '/p' } })
+    ]
+
+    it('returns every session when no machine is selected', () => {
+        expect(filterSessionsByMachine(sessions, null).map(s => s.id))
+            .toEqual(['here', 'elsewhere', 'nomachine'])
+    })
+
+    it('keeps only the chosen machine', () => {
+        expect(filterSessionsByMachine(sessions, 'machine-a').map(s => s.id)).toEqual(['here'])
+    })
+
+    it('buckets sessions without a machine under the unknown id', () => {
+        expect(filterSessionsByMachine(sessions, UNKNOWN_MACHINE_ID).map(s => s.id))
+            .toEqual(['nomachine'])
+    })
+
+    it('keeps the open session visible even when it is on another machine', () => {
+        expect(filterSessionsByMachine(sessions, 'machine-a', 'elsewhere').map(s => s.id))
+            .toEqual(['here', 'elsewhere'])
+    })
+
+    it('does not duplicate the open session when it is on the chosen machine', () => {
+        expect(filterSessionsByMachine(sessions, 'machine-a', 'here').map(s => s.id)).toEqual(['here'])
+    })
+
+    it('preserves input order', () => {
+        expect(filterSessionsByMachine(sessions, 'machine-b', 'nomachine').map(s => s.id))
+            .toEqual(['elsewhere', 'nomachine'])
     })
 })
 
