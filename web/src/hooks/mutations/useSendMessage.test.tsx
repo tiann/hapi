@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { useSendMessage, type SendMessageAcceptance } from './useSendMessage'
 import { ApiError, type ApiClient } from '@/api/client'
+import { recordComposerProgrammaticEdit, resetComposerSendStateForTests } from '@/lib/composer-send-state'
 
 vi.mock('@/lib/message-window-store', () => ({
     appendOptimisticMessage: vi.fn(),
@@ -46,6 +47,7 @@ function deferred<T>() {
 describe('useSendMessage', () => {
     beforeEach(() => {
         vi.clearAllMocks()
+        resetComposerSendStateForTests()
     })
 
     it('calls onSuccess with the session ID that was sent', async () => {
@@ -62,11 +64,74 @@ describe('useSendMessage', () => {
         })
 
         await waitFor(() => {
-            expect(onSuccess).toHaveBeenCalledWith('session-A')
+            expect(onSuccess).toHaveBeenCalledWith('session-A', 'hello')
         })
         expect(result.current.sendSettlement).toEqual({
             attemptId: 'local-id-1',
+            sessionId: 'session-A',
+            text: 'hello',
             status: 'success',
+            source: 'send',
+        })
+    })
+
+    it('carries original composer text separately from normalized send text', async () => {
+        const sendMock = vi.fn(async () => {})
+        const api = createMockApi(sendMock)
+        const { result } = renderHook(
+            () => useSendMessage(api, 'session-A'),
+            { wrapper: createWrapper() },
+        )
+
+        let accepted: SendMessageAcceptance | false = false
+        await act(async () => {
+            accepted = await result.current.sendMessage('foo', undefined, null, 'queue', ' foo\n')
+        })
+
+        expect(sendMock).toHaveBeenCalledWith(
+            'session-A',
+            'foo',
+            'local-id-1',
+            undefined,
+            null,
+            'queue',
+        )
+        expect(accepted).toEqual({
+            attemptId: 'local-id-1',
+            sessionId: 'session-A',
+            programmaticEditRevision: 0,
+            draftRevision: 0,
+            originalText: ' foo\n',
+        })
+        expect(result.current.sendSettlement).toEqual({
+            attemptId: 'local-id-1',
+            sessionId: 'session-A',
+            text: 'foo',
+            originalText: ' foo\n',
+            status: 'success',
+            source: 'send',
+        })
+    })
+
+    it('carries original composer text through inactive-session resume', async () => {
+        const onSessionResolved = vi.fn(async () => {})
+        const api = createMockApi()
+        const { result } = renderHook(
+            () => useSendMessage(api, 'session-original', {
+                resolveSessionId: async () => ({ sessionId: 'session-resolved', resumed: true }),
+                onSessionResolved,
+            }),
+            { wrapper: createWrapper() },
+        )
+
+        await act(async () => {
+            await result.current.sendMessage('foo', undefined, null, 'queue', ' foo\n')
+        })
+
+        expect(onSessionResolved).toHaveBeenCalledWith('session-resolved', {
+            text: 'foo',
+            attachments: undefined,
+            originalText: ' foo\n',
         })
     })
 
@@ -159,8 +224,38 @@ describe('useSendMessage', () => {
         })
 
         await waitFor(() => {
-            expect(onSuccess).toHaveBeenCalledWith('session-resolved')
+            expect(onSuccess).toHaveBeenCalledWith('session-resolved', 'hello')
         })
+    })
+
+    it('captures the resolved target revision before resume navigation', async () => {
+        const targetSessionId = 'session-resolved-before-revision-test'
+        const api = createMockApi()
+        const onSessionResolved = vi.fn(async () => {
+            // Simulate a same-text Queued Edit exposed by the target route
+            // while resume navigation is still in flight.
+            recordComposerProgrammaticEdit(targetSessionId)
+        })
+        const { result } = renderHook(
+            () => useSendMessage(api, 'session-original', {
+                resolveSessionId: async () => ({ sessionId: targetSessionId, resumed: true }),
+                onSessionResolved,
+            }),
+            { wrapper: createWrapper() },
+        )
+
+        let accepted: Awaited<ReturnType<typeof result.current.sendMessage>> | undefined
+        await act(async () => {
+            accepted = await result.current.sendMessage('hello')
+        })
+
+        expect(accepted).toEqual({
+            attemptId: 'local-id-1',
+            sessionId: targetSessionId,
+            programmaticEditRevision: 0,
+            draftRevision: 0,
+        })
+        expect(onSessionResolved).toHaveBeenCalledOnce()
     })
 
     it('does not call onSuccess when send fails', async () => {
@@ -308,7 +403,7 @@ describe('useSendMessage', () => {
             })
 
             await waitFor(() => {
-                expect(onSuccess).toHaveBeenCalledWith('session-A')
+                expect(onSuccess).toHaveBeenCalledWith('session-A', 'clean send')
             })
             expect(onError).not.toHaveBeenCalled()
         })
@@ -484,7 +579,10 @@ describe('useSendMessage', () => {
             })
             expect(result.current.sendSettlement).toEqual({
                 attemptId: 'local-id-1',
+                sessionId: 'session-A',
+                text: 'see this image',
                 status: 'error',
+                source: 'send',
             })
             // No composer-restore: onError is NOT fired and the optimistic
             // row is NOT removed -- both would destroy the attachment UX.
@@ -573,7 +671,12 @@ describe('useSendMessage', () => {
         act(() => {
             acceptedPromise = result.current.sendMessage('hello')
         })
-        await expect(acceptedPromise!).resolves.toEqual({ attemptId: 'local-id-1' })
+        await expect(acceptedPromise!).resolves.toEqual({
+            attemptId: 'local-id-1',
+            sessionId: 'session-A',
+            programmaticEditRevision: 0,
+            draftRevision: 0,
+        })
     })
 
     it('resolves false when blocked (no api) so the caller can preserve schedule state', async () => {
@@ -633,7 +736,12 @@ describe('useSendMessage', () => {
         act(() => {
             acceptedPromise = result.current.sendMessage('hello')
         })
-        await expect(acceptedPromise!).resolves.toEqual({ attemptId: 'local-id-1' })
+        await expect(acceptedPromise!).resolves.toEqual({
+            attemptId: 'local-id-1',
+            sessionId: 'session-resolved',
+            programmaticEditRevision: 0,
+            draftRevision: 0,
+        })
     })
 
     it('awaits onSessionResolved before starting the send mutation', async () => {
@@ -892,6 +1000,75 @@ describe('useSendMessage', () => {
             scheduledAt,
             'queue',
         )
+        await waitFor(() => {
+            expect(result.current.sendSettlement).toEqual({
+                attemptId: 'local-retry-1',
+                sessionId: 'session-A',
+                text: 'hi later',
+                status: 'success',
+                source: 'retry',
+            })
+        })
+    })
+
+    it('preserves settled sends per session while switching routes', async () => {
+        const requests: Array<ReturnType<typeof deferred<void>>> = []
+        const api = createMockApi(() => {
+            const request = deferred<void>()
+            requests.push(request)
+            return request.promise
+        })
+        const { result, rerender } = renderHook(
+            ({ sessionId }: { sessionId: string }) => useSendMessage(api, sessionId),
+            {
+                initialProps: { sessionId: 'session-A' },
+                wrapper: createWrapper(),
+            },
+        )
+
+        act(() => {
+            void result.current.sendMessage('message A')
+        })
+        await waitFor(() => expect(requests).toHaveLength(1))
+
+        rerender({ sessionId: 'session-B' })
+        await act(async () => {
+            requests[0].resolve()
+            await requests[0].promise
+        })
+        await waitFor(() => expect(result.current.isSending).toBe(false))
+        expect(result.current.sendSettlement).toBeNull()
+
+        act(() => {
+            void result.current.sendMessage('message B')
+        })
+        await waitFor(() => expect(requests).toHaveLength(2))
+        await act(async () => {
+            requests[1].resolve()
+            await requests[1].promise
+        })
+
+        await waitFor(() => expect(result.current.sendSettlement).toEqual(expect.objectContaining({
+            sessionId: 'session-B',
+            text: 'message B',
+        })))
+
+        rerender({ sessionId: 'session-A' })
+        expect(result.current.sendSettlement).toEqual(expect.objectContaining({
+            sessionId: 'session-A',
+            text: 'message A',
+        }))
+
+        act(() => {
+            result.current.consumeSendSettlement('local-id-1')
+        })
+        expect(result.current.sendSettlement).toBeNull()
+
+        rerender({ sessionId: 'session-B' })
+        expect(result.current.sendSettlement).toEqual(expect.objectContaining({
+            sessionId: 'session-B',
+            text: 'message B',
+        }))
     })
 
     it('downgrades a failed steer to queue when retrying the message', async () => {

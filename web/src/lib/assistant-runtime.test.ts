@@ -4,12 +4,27 @@ import {
     aggregateResponseGroups,
     assignThreadMessageIds,
     assignThreadMessageIdsWithStableWrappers,
+    extractMessageContent,
     findLatestCompletedBoundaryId,
     getBlockPresentationTimestamp,
     getResponseGroupTimestamps
 } from './assistant-runtime'
 import type { AgentEventBlock, AgentTextBlock, CliOutputBlock, ToolCallBlock, UserTextBlock } from '@/chat/types'
 import { buildVisibleChatBlocks, type ToolGroupBlock, type VisibleChatBlock } from '@/chat/toolGroups'
+
+describe('extractMessageContent', () => {
+    it('keeps the original composer text alongside normalized send text', () => {
+        expect(extractMessageContent({
+            role: 'user',
+            content: [{ type: 'text', text: ' foo\n' }],
+            attachments: [],
+        } as never)).toEqual({
+            text: 'foo',
+            originalText: ' foo\n',
+            attachments: [],
+        })
+    })
+})
 
 // Minimal builders for VisibleChatBlock fixtures. Tests focus on metadata
 // aggregation behavior across response groups; non-metadata fields default to
