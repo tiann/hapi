@@ -231,11 +231,14 @@ export HAPI_DSH_ACP_COMMAND=pnpm
 export HAPI_DSH_ACP_ARGS_JSON='["--dir", "/path/to/deepseek-harness", "run", "demo:acp"]'
 ```
 
-The DSH ACP profile can restore native context through `session/resume` when
-advertised; Hub history remains the transcript source. A legacy server may
-fall back to a fresh session with a visible notice. Model catalogs are exposed
-through `ListDshModels` and selected per turn via `session/set_config_option`.
-DSH owns MCP injection, live tool/reasoning telemetry and permission policy.
+The official ACP entrypoint does not support MCP injection or live
+tool/reasoning telemetry. Native resume is supported: HAPI hands the DSH
+session's native ACP session id to `session/resume`, and sessions without a
+native id report resume as unavailable. Model selection is advertised for DSH:
+the composition's catalog is listed via the `ListDshModels` session RPC and
+applied per turn with ACP `session/set_config_option`. HAPI uses the standard
+chat and pending one-shot permission surfaces; the ACP composition owns the
+overall permission policy.
 
 ### Required
 
