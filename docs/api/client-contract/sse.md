@@ -184,7 +184,13 @@ Patch application, field by field:
 
 The CLI keep-alive makes the hub re-broadcast a patch roughly **every 10 s per active session**, in which typically only `activeAt` moves. Recommendation (web: `isRenderIrrelevantSessionPatch`): treat a patch as render-irrelevant when the only effective change is an `activeAt` delta **< 60 s** (relative-time labels only change at minute boundaries); the session-list path ignores `activeAt` entirely. Apply the data if you like, but do not re-render or re-sort six times a minute for it.
 
-Reference list sort (web): `globalPinned` > `pinned` > `active` > `pendingRequestsCount` (among active) > `updatedAt` desc.
+Reference session-list comparator (shared by the Web reference and the
+Android/iOS ports): `globalPinned` > `pinned` > `active` >
+`pendingRequestsCount` (only when both sessions are active) > `updatedAt`
+descending. Missing pin flags count as false. All three clients use a stable
+sort, so sessions equal on every key keep their incoming order. This is the
+base list/cache order; the Web sidebar may then apply directory grouping and
+client-side search ranking.
 
 ### `active` is transport liveness, not agent health
 
