@@ -21,6 +21,7 @@ React Mini App / PWA for monitoring and controlling hapi sessions.
 
 - When opened inside Telegram, auth uses Telegram WebApp init data.
 - When opened in a normal browser, you can log in with `CLI_API_TOKEN:<namespace>` (or `CLI_API_TOKEN` for the default namespace).
+- With optional Cloudflare Access configured on a same-origin hub, allowlisted users can sign in automatically after Access login, without entering a HAPI access token.
 - The login screen includes a top-right hub picker; if unset, the app uses the same origin it was loaded from.
 - Live updates come from the hub via SSE.
 - Session `@` suggestions require conversation content, including untitled conversations. Names and directory labels affect display/search, not eligibility; empty stubs stay excluded.
@@ -130,8 +131,11 @@ Optional, not a requirement for every feature or a reason to expand a bug fix.
 See `src/hooks/useAuth.ts` and `src/hooks/useAuthSource.ts`.
 
 - Telegram Mini App: Uses initData from WebApp SDK.
-- Browser: Uses CLI_API_TOKEN from login prompt.
+- Source precedence: Telegram initData, URL access token, saved access token, same-origin Cloudflare Access discovery, then manual token login.
+- Cloudflare Access: The hub verifies the signed assertion and exchanges it for an identity-bound HAPI JWT. Discovery is limited to 5 seconds; disabled/older hubs or failed discovery use the manual login flow. Configuration belongs to the Hub process, not the browser. See [deployment setup](../docs/guide/deployment.md#cloudflare-access-optional-web-login).
+- Browser manual login: Uses `CLI_API_TOKEN` or `CLI_API_TOKEN:<namespace>`.
 - JWT tokens with auto-refresh.
+- Cloudflare-derived JWTs expire at the earlier of 4 hours and the Access assertion expiry. Scheduled refreshes have a minimum 15-second interval; a 401 triggers immediate re-exchange through `GET /api/auth/cloudflare`. No long-lived HAPI access token is stored by this flow. Native companion pairing still requires an access token.
 
 ## Data fetching
 

@@ -38,8 +38,9 @@ import type { Server as BunServer, ServerWebSocket } from 'bun'
 import { applyDefaultWsCompression } from './wsCompression'
 import { acceptsGzip } from './sseCompression'
 import type { Server as SocketEngine } from '@socket.io/bun-engine'
-import { jwtVerify } from 'jose'
 import type { WebSocketData } from '@socket.io/bun-engine'
+import { verifyWebAuthToken } from './authToken'
+import type { CloudflareAccessVerifier } from './cloudflareAccess'
 import { loadEmbeddedAssetMap, type EmbeddedWebAsset } from './embeddedAssets'
 import { isBunCompiled } from '../utils/bunCompiled'
 import type { Store } from '../store'
@@ -182,6 +183,40 @@ function createGeminiProxyWebSocketHandler() {
 // Qwen Realtime WebSocket proxy — bridges browser (no custom headers) to DashScope
 // (requires Authorization header). Implementation extracted to `./qwenProxyHandler` so
 // the ack-gating behaviour is unit-testable; `createQwenProxyWebSocketHandler` is imported above.
+
+export interface AuthorizeVoiceWebSocketOptions {
+    /**
+     * Cloudflare Access verifier override (tests only). When omitted, the
+     * verifier for the configured bundle is used; an explicitly null value
+     * models a disabled Cloudflare configuration.
+     */
+    cloudflareAccessVerifier?: CloudflareAccessVerifier | null
+}
+
+/**
+ * Gate for the voice WebSocket upgrade paths (gemini-ws, qwen-ws). Browsers
+ * cannot set custom headers on WebSocket connections, so the HAPI JWT travels
+ * as a query parameter and the Cloudflare Access assertion (when the JWT is
+ * Cloudflare-derived) is read from the real request headers.
+ */
+export async function authorizeVoiceWebSocketRequest(
+    req: Request,
+    jwtSecret: Uint8Array,
+    options: AuthorizeVoiceWebSocketOptions = {}
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+    const token = new URL(req.url).searchParams.get('token')
+    if (!token) {
+        return { ok: false, status: 401, error: 'Missing authorization token' }
+    }
+    const assertion = req.headers.get('Cf-Access-Jwt-Assertion') ?? undefined
+    const result = await verifyWebAuthToken(token, jwtSecret, assertion, {
+        cloudflareAccessVerifier: options.cloudflareAccessVerifier
+    })
+    if (!result.ok) {
+        return { ok: false, status: result.status, error: result.error }
+    }
+    return { ok: true }
+}
 
 function findWebappDistDir(): { distDir: string; indexHtmlPath: string } {
     const candidates = [
@@ -501,14 +536,9 @@ export async function startWebServer(options: {
             // Voice WebSocket proxies — require JWT auth via query param
             // (browser WebSocket API cannot set custom headers)
             if (url.pathname === '/api/voice/gemini-ws' || url.pathname === '/api/voice/qwen-ws') {
-                const token = url.searchParams.get('token')
-                if (!token) {
-                    return new Response('Missing authorization token', { status: 401 })
-                }
-                try {
-                    await jwtVerify(token, options.jwtSecret, { algorithms: ['HS256'] })
-                } catch {
-                    return new Response('Invalid token', { status: 401 })
+                const voiceAuth = await authorizeVoiceWebSocketRequest(req, options.jwtSecret)
+                if (!voiceAuth.ok) {
+                    return new Response(voiceAuth.error, { status: voiceAuth.status })
                 }
             }
 
