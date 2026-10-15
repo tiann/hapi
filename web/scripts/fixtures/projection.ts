@@ -106,6 +106,13 @@ export function projectChatBlock(block: ChatBlock): JsonObject {
             projected.fileName = block.fileName
             projected.mimeType = block.mimeType
             return projected
+        case 'display-links':
+            projected.localId = block.localId
+            projected.urls = block.urls
+            if (block.texts && block.texts.length > 0) {
+                projected.texts = block.texts
+            }
+            return projected
         case 'agent-event':
             // Normalized AgentEvent objects are wire-semantic by construction:
             // carried verbatim (type + typed payload fields).

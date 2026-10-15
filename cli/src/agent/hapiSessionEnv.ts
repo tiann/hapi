@@ -15,7 +15,7 @@ export const HAPI_SESSION_ID_ENV = 'HAPI_SESSION_ID';
  * here covers claude / codex / copilot / cursor / gemini / opencode / kimi / grok / pi at
  * once, including future flavors, without touching each launcher.
  *
- * Prefer the MCP `display_image` tool for inline media when it is available;
+ * Prefer the MCP `display_image` tool when available; Cursor sessions also get `display_links`.
  * `HAPI_SESSION_ID` is the deterministic fallback for hub REST and shell tooling.
  * To discover / read / message another session, prefer MCP `list_peers` /
  * `inspect_peer` / `ping_peer` (or `hapi ping-peer --list` / `inspect-peer` /
