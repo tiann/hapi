@@ -78,9 +78,11 @@ export interface TextInputState {
 
 export function getComposerEscapeAction(input: {
     hasSuggestions: boolean
+    showSettings?: boolean
     threadIsRunning: boolean
     isExpanded: boolean
-}): 'clearSuggestions' | 'abort' | 'collapse' | null {
+}): 'dismissSettings' | 'clearSuggestions' | 'abort' | 'collapse' | null {
+    if (input.showSettings) return 'dismissSettings'
     if (input.hasSuggestions) return 'clearSuggestions'
     if (input.threadIsRunning) return 'abort'
     if (input.isExpanded) return 'collapse'
@@ -1260,6 +1262,25 @@ export function HappyComposer(props: {
         void handleSend(intent)
     }, [handleSend])
 
+    const clearCursorDrillDown = useCallback(() => {
+        setCursorDrillDownBase(null)
+        setCursorDrillDownDefaultVariant(null)
+    }, [])
+
+    const dismissSettings = useCallback(() => {
+        clearCursorDrillDown()
+        setShowSettings(false)
+        setSettingsSection(null)
+    }, [clearCursorDrillDown])
+
+    const dismissSettingsWithFocus = useCallback(() => {
+        const trigger = settingsSection === 'model' ? modelValueButtonRef.current
+            : settingsSection === 'effort' ? effortValueButtonRef.current
+            : settingsButtonRef.current
+        dismissSettings()
+        trigger?.focus({ preventScroll: true })
+    }, [dismissSettings, settingsSection])
+
     const handleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLTextAreaElement | HTMLDivElement>) => {
         const key = e.key
 
@@ -1328,13 +1349,17 @@ export function HappyComposer(props: {
                 return
             }
             const action = getComposerEscapeAction({
+                showSettings,
                 hasSuggestions: suggestions.length > 0,
                 threadIsRunning,
                 isExpanded,
             })
             if (action) {
                 e.preventDefault()
-                if (action === 'clearSuggestions') clearSuggestions()
+                if (action === 'dismissSettings') {
+                    e.stopPropagation()
+                    dismissSettingsWithFocus()
+                } else if (action === 'clearSuggestions') clearSuggestions()
                 else if (action === 'abort') handleAbort()
                 else handleExpandedToggle()
                 return
@@ -1368,6 +1393,8 @@ export function HappyComposer(props: {
         richMentionsEnabled,
         richComposerFueStatus,
         dismissRichComposerFue,
+        showSettings,
+        dismissSettingsWithFocus,
         flushAndSend,
         isExpanded,
         handleExpandedToggle,
@@ -1458,17 +1485,6 @@ export function HappyComposer(props: {
         setShowSettings(true)
     }, [haptic, showSettings, settingsSection])
 
-    const clearCursorDrillDown = useCallback(() => {
-        setCursorDrillDownBase(null)
-        setCursorDrillDownDefaultVariant(null)
-    }, [])
-
-    const dismissSettings = useCallback(() => {
-        clearCursorDrillDown()
-        setShowSettings(false)
-        setSettingsSection(null)
-    }, [clearCursorDrillDown])
-
     const handleModelChange = useCallback((nextModel: { provider: string; modelId: string } | string | null) => {
         if (!onModelChange || configurationControlsDisabled) return
         onModelChange(nextModel)
@@ -1530,9 +1546,21 @@ export function HappyComposer(props: {
             dismissSettings()
         }
 
+        const handleEscape = (event: KeyboardEvent) => {
+            // Child inputs and dialogs handle Escape first. The first-use
+            // callout also keeps priority over settings and running turns.
+            if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || richComposerFueStatus === 'engaging') return
+            if (document.querySelector('[role="dialog"]')) return
+            event.preventDefault()
+            dismissSettingsWithFocus()
+        }
         document.addEventListener('pointerdown', handlePointerDown, true)
-        return () => document.removeEventListener('pointerdown', handlePointerDown, true)
-    }, [dismissSettings, showSettings])
+        window.addEventListener('keydown', handleEscape)
+        return () => {
+            document.removeEventListener('pointerdown', handlePointerDown, true)
+            window.removeEventListener('keydown', handleEscape)
+        }
+    }, [dismissSettings, dismissSettingsWithFocus, showSettings, richComposerFueStatus])
 
     const handleSubmit = useCallback((event?: ReactFormEvent<HTMLFormElement>) => {
         event?.preventDefault()
