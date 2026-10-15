@@ -303,6 +303,27 @@ describe('AcpStdioTransport closed stdin writes', () => {
         expect(() => transport.sendNotification('session/cancel', {})).not.toThrow();
     });
 
+    test('notifies the owner when the ACP process closes, but not for intentional close()', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'gemini' });
+        const onClose = vi.fn();
+        transport.onClose(onClose);
+
+        for (const handler of spawnState.closeHandlers) {
+            handler(1, null);
+        }
+
+        expect(onClose).toHaveBeenCalledOnce();
+        expect(onClose.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+        expect(onClose.mock.calls[0]?.[0].message).toContain('ACP process exited');
+
+        const intentionallyClosed = await AcpStdioTransport.create({ command: 'gemini' });
+        const intentionalOnClose = vi.fn();
+        intentionallyClosed.onClose(intentionalOnClose);
+        await intentionallyClosed.close();
+
+        expect(intentionalOnClose).not.toHaveBeenCalled();
+    });
+
     test('includes recent stderr on process close so callers can classify model rejection', async () => {
         const transport = await AcpStdioTransport.create({ command: 'agent', args: ['acp'] });
         const proc = (transport as unknown as { process: {
