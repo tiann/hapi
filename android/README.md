@@ -33,6 +33,53 @@ differences, pairing and features currently available through the web.
   WorkManager jobs. Workers resolve paired hubs using stored credentials,
   without requiring a foreground `HubGraph`. Firebase-free builds skip push.
 
+## Wear OS companion
+
+`:wear` is a Wear OS 3+ client to the same hub `:app` already talks to — a
+session list, a transcript view, and approve/deny/reply. It holds **no hub
+credentials of its own**: every screen is a request over the Wearable Data
+Layer to `:app`'s `PhoneWearListenerService`, which does the actual hub call
+with the phone's stored JWT and answers with a slim, size-budgeted response.
+Approve/deny/reply from the watch enqueue the exact same `PermissionActionWorker`
+/ `SendMessageWorker` WorkManager jobs a phone notification tap would, so the
+phone's own notification for that request stays in sync (dismissed/updated)
+instead of going stale.
+
+A relayed push (`HapiFirebaseMessagingService`) reaches the watch the same
+way: no separate FCM registration, no second Firebase project. This is a
+deliberate simplification over giving the watch independent push — FCM locks
+one Firebase project per signed APK, and `:wear`'s `applicationId` **must**
+equal `:app`'s exactly for GMS to route Data Layer messages between them at
+all, so a self-hoster building their own signed pair already gets a working
+watch for free, with nothing extra to configure.
+
+All phone<->watch traffic rides `DataClient` (`onDataChanged`), never
+`MessageClient` — prior dogfood on real Wear OS hardware found
+`MESSAGE_RECEIVED` silently undelivered on some device pairs while
+`DataChanged` was reliable; see `:core:data`'s `WearContract` for the full
+path/key contract both modules compile against.
+
+Known v1 scope cuts: transcript rendering is plain text only (no markdown,
+diffs, or tool-call detail — the watch is for scanning a conversation, not
+debugging tool plumbing); a watch-shown notification does not get cancelled
+when the *phone* side (not the watch) answers the same request first.
+
+**Validation status:** `:core:protocol:test`, `:core:data:testDebugUnitTest`
+(including a new `WearTranscriptTest`), `:app:testDebugUnitTest`,
+`:app:assembleDebug`/`:wear:assembleDebug`, and `:app:lintDebug`/`:wear:lintDebug`
+all pass. Installed on a real phone + Wear OS pair (Pixel + Pixel Watch,
+Bluetooth-bonded): session list, transcript (real hub content rendering
+correctly, agent-flavor text extraction included), and the Reply action's
+system mic/keyboard sheet (`RemoteInputIntentHelper`) all confirmed working
+end-to-end over the Data Layer. One real bug this caught that no unit test or
+lint pass would have: `PhoneWearListenerService` needs `android:exported="true"`
+— GMS binds to it from a different uid to deliver `DATA_CHANGED`, so
+`exported="false"` silently drops every watch request with a
+`SecurityException` in `WearableService`'s own log, never the app's. Not yet
+exercised: a full approve/deny/reply round-trip typing real text on-device
+(the system keyboard sheet opens correctly; completing entry needs an actual
+watch keyboard tap sequence, which is impractical to drive over `adb`).
+
 ## Building
 
 Native chat scrolling architecture and acceptance checklist:
@@ -48,6 +95,9 @@ cd android
 ./gradlew :app:assembleDebug :app:lintDebug
 ./gradlew :app:installDebug                  # connected device
 ./gradlew :app:connectedDebugAndroidTest     # emulator/device instrumentation
+
+./gradlew :wear:assembleDebug :wear:lintDebug
+./gradlew :wear:installDebug                 # connected Wear OS device/emulator
 ```
 
 Without an Android SDK you can still run the protocol suite by configuring
@@ -234,8 +284,9 @@ Keystores never live in the repo (`*.keystore` / `*.jks` are gitignored).
 | `:core:protocol` | **pure Kotlin/JVM** (no Android) | Hub wire types, chat pipeline, message pagination, versioned patches, agent/mode catalogs, git parsers, pairing links, and golden-fixture conformance tests. |
 | `:core:data` | Android library | OkHttp API/SSE transport, per-hub authentication, secure credentials, StateFlow stores and disk snapshots, encrypted push registration/decoding, and background notification actions. |
 | `:app` | Android application | Compose screens for pairing, sessions/chat, approvals, new sessions, files, Scratchlist, dictation, usage/storage, and settings; navigation, localization, FCM service, and WorkManager wiring. |
+| `:wear` | Android application (Wear OS) | Session list, transcript, and approve/deny/reply — see [Wear OS companion](#wear-os-companion) below. |
 
-Dependency direction: `:app` → `:core:data` → `:core:protocol`.
+Dependency direction: `:app` → `:core:data` → `:core:protocol`; `:wear` → `:core:data` → `:core:protocol` (the watch has no hub credentials of its own — every screen is a remote view onto `:app`'s `PhoneWearListenerService`, reached over the Wearable Data Layer, never a direct hub connection).
 
 ## Internationalization
 

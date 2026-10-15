@@ -3,6 +3,7 @@ package app.hapi.companion.fcm
 import app.hapi.companion.HapiApp
 import app.hapi.companion.di.AppGraph
 import app.hapi.companion.di.localizedForAppLanguage
+import app.hapi.companion.wear.WearRelay
 import app.hapi.data.push.PushPayload
 import app.hapi.data.push.shouldSuppressPush
 import com.google.firebase.messaging.FirebaseMessagingService
@@ -34,6 +35,10 @@ class HapiFirebaseMessagingService : FirebaseMessagingService() {
     override fun onMessageReceived(message: RemoteMessage) {
         val graph = appGraph
         val payload = graph.pushMessageDecoder.decode(message.data) ?: return
+        // Relayed to any paired watch regardless of the phone-foreground
+        // suppression rule below — the watch has no open-chat-session
+        // concept of its own to suppress against.
+        WearRelay.relay(this, payload)
         if (shouldSuppressPush(graph.foreground, graph.openChatSessionId.value, payload.sessionId)) {
             return
         }
