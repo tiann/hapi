@@ -50,6 +50,34 @@ export type AcpConfigOptionDescriptor = {
     options: Array<{ value: string; name?: string }>;
 };
 
+/**
+ * Normalize ACP config-option choices to a flat `{ value, name }` list.
+ * Most agents send flat `options: [{ value, name }]`, but Zed-style grouped
+ * selects nest the leaves one level deeper:
+ * `options: [{ group, name, options: [{ value, name }] }]`
+ * (DeepSeek Harness 0.2.x uses this shape for its model picker — the leaf
+ * values are opaque strings, there just JSON-encoded provider+model tuples).
+ * Grouped entries carry no `value` of their own; their nested options are the
+ * real choices, so they are flattened recursively. Non-objects and empty
+ * values are dropped.
+ */
+export function flattenConfigOptionChoices(rawOptions: unknown[]): Array<{ value: string; name?: string }> {
+    const choices: Array<{ value: string; name?: string }> = [];
+    for (const entry of rawOptions) {
+        if (!isObject(entry)) continue;
+        const value = asString(entry.value);
+        if (value) {
+            choices.push({ value, name: asString(entry.name) ?? undefined });
+            continue;
+        }
+        const nested = Array.isArray(entry.options) ? entry.options : [];
+        if (nested.length > 0) {
+            choices.push(...flattenConfigOptionChoices(nested));
+        }
+    }
+    return choices;
+}
+
 type AcpInitializeResult = {
     protocolVersion: number;
     authMethods?: Array<{ id: string; name?: string }>;
@@ -1358,13 +1386,7 @@ export class AcpSdkBackend implements AgentBackend {
                     id,
                     category: asString(entry.category) ?? undefined,
                     currentValue: asString(entry.currentValue) ?? undefined,
-                    options: rawOptions
-                        .filter((option): option is Record<string, unknown> => isObject(option))
-                        .map((option) => ({
-                            value: asString(option.value) ?? '',
-                            name: asString(option.name) ?? undefined
-                        }))
-                        .filter((option) => option.value.length > 0)
+                    options: flattenConfigOptionChoices(rawOptions)
                 };
             })
             .filter((entry): entry is AcpConfigOptionDescriptor => entry !== null);
@@ -1502,12 +1524,10 @@ export class AcpSdkBackend implements AgentBackend {
 
         // Cursor often lists one wire id per family in `models` but every variant in
         // `configOptions` category=model — merge so metadata matches Zed-style pickers.
+        // Flatten handles both flat choices and Zed-style grouped ones (dsh).
         if (configModelOption) {
-            for (const entry of configModelOption.options) {
-                if (!isObject(entry)) continue;
-                const modelId = asString(entry.value) ?? asString(entry.modelId);
-                if (!modelId) continue;
-                addModel(modelId, asString(entry.name) ?? undefined);
+            for (const entry of flattenConfigOptionChoices(configModelOption.options)) {
+                addModel(entry.value, entry.name);
             }
         }
 

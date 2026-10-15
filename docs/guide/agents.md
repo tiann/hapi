@@ -30,7 +30,7 @@ Gemini is no longer launchable: `hapi gemini` is kept as a tombstone command tha
 
 ### ACP
 
-Most remote integrations speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) over stdio through a shared HAPI backend. ACP gives remote sessions bidirectional permission approval, plan/todo updates, question UI, model catalogs, and session resume via `session/load`. Cursor, Grok, Copilot, Kimi, OpenCode, and DeepSeek Harness remote sessions all run over ACP. DSH's official ACP server is intentionally automation-only and currently supports fresh sessions, committed assistant output, cancellation, and one-shot permissions; it does not provide native resume, model switching, MCP injection, or live tool/reasoning telemetry.
+Most remote integrations speak the [Agent Client Protocol](https://agentclientprotocol.com) (ACP) over stdio through a shared HAPI backend. ACP gives remote sessions bidirectional permission approval, plan/todo updates, question UI, model catalogs, and session resume via `session/load`. Cursor, Grok, Copilot, Kimi, OpenCode, and DeepSeek Harness remote sessions all run over ACP. DSH's official ACP server is automation-focused and currently supports committed assistant output, cancellation, one-shot permissions, native session resume via `session/resume`, and per-turn model switching through `session/set_config_option`; it does not provide MCP injection or live tool/reasoning telemetry.
 
 ### Permission modes
 
@@ -277,10 +277,12 @@ hapi dsh
 ```
 
 DSH sessions are remote-only and fresh-session-only. HAPI does not inject MCP
-servers or expose model/effort pickers because the official ACP contract leaves
-those surfaces to the DSH composition. Pending one-shot permission requests
-remain answerable in the standard HAPI UI, but the ACP composition owns the
-overall permission policy.
+servers. Model selection is available: the DSH composition's model catalog is
+exposed through the session RPC `ListDshModels` and applied per turn with ACP
+`session/set_config_option`. Effort pickers are not exposed because the
+official ACP contract leaves that surface to the DSH composition. Pending
+one-shot permission requests remain answerable in the standard HAPI UI, but
+the ACP composition owns the overall permission policy.
 
 ## Other agents
 

@@ -39,6 +39,7 @@ import type {
     CursorChatStoreStatus,
     CursorModelsResponse,
     DeleteUploadResponse,
+    DshModelsResponse,
     FileReadResponse,
     GitCommandResponse,
     GrokModelsResponse,
@@ -888,6 +889,12 @@ export class ApiClient {
         )
     }
 
+    async getMachineDshModels(machineId: string): Promise<DshModelsResponse> {
+        return await this.request<DshModelsResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/dsh-models`
+        )
+    }
+
     async getMachinePiModels(machineId: string): Promise<PiModelsResponse> {
         return await this.request<PiModelsResponse>(
             `/api/machines/${encodeURIComponent(machineId)}/pi-models`
@@ -971,6 +978,12 @@ export class ApiClient {
     async getSessionKimiModels(sessionId: string): Promise<KimiModelsResponse> {
         return await this.request<KimiModelsResponse>(
             `/api/sessions/${encodeURIComponent(sessionId)}/kimi-models`
+        )
+    }
+
+    async getSessionDshModels(sessionId: string): Promise<DshModelsResponse> {
+        return await this.request<DshModelsResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/dsh-models`
         )
     }
 
