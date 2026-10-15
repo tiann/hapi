@@ -199,10 +199,12 @@ export function getCodexCollaborationModeOptions(): CodexCollaborationModeOption
  * - Cursor ACP: concurrent `session/prompt` soft-send (no cancel). Legacy
  *   stream-json Cursor sessions are NOT steerable — gate with
  *   {@link isSteeringSupportedForSession}.
+ * - Claude: prompt written to the stream-json input mid-turn; Claude Code
+ *   absorbs it at the next tool boundary (remote mode only)
  *
- * Claude / others: not supported (no reachable soft-steer path) — UI hides Steer.
+ * Others: not supported (no reachable soft-steer path) — UI hides Steer.
  */
-export const STEERING_SUPPORTED_FLAVORS = ['codex', 'cursor', 'pi'] as const
+export const STEERING_SUPPORTED_FLAVORS = ['claude', 'codex', 'cursor', 'pi'] as const
 
 export function isSteeringSupportedForFlavor(flavor?: string | null): boolean {
     return (STEERING_SUPPORTED_FLAVORS as readonly string[]).includes(flavor ?? '')
@@ -221,7 +223,7 @@ export function isSteeringSupportedForSession(metadata?: {
     cursorSessionId?: string | null
     cursorSessionProtocol?: 'acp' | 'stream-json' | null
 } | null): boolean {
-    if (metadata?.flavor === 'codex' || metadata?.flavor === 'pi') {
+    if (metadata?.flavor === 'claude' || metadata?.flavor === 'codex' || metadata?.flavor === 'pi') {
         return true
     }
     if (metadata?.flavor !== 'cursor') {

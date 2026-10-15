@@ -1,7 +1,7 @@
 import React from "react";
 import { Session } from "./session";
 import { RemoteModeDisplay } from "@/ui/ink/RemoteModeDisplay";
-import { claudeRemote } from "./claudeRemote";
+import { claudeRemote, type SteerFunction } from "./claudeRemote";
 import { PermissionHandler } from "./utils/permissionHandler";
 import { Future } from "@/utils/future";
 import { SDKAssistantMessage, SDKMessage, SDKUserMessage } from "./sdk";
@@ -12,6 +12,7 @@ import { PLAN_FAKE_REJECT } from "./sdk/prompts";
 import { EnhancedMode } from "./loop";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
 import type { ClaudePermissionMode } from "@hapi/protocol/types";
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { applySessionTitleFallback } from './utils/sessionTitleFallback';
 import {
     RemoteLauncherBase,
@@ -143,6 +144,70 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         permissionHandler.setOnPermissionRequest((toolCallId: string) => {
             messageQueue.releaseToolCall(toolCallId);
         });
+
+        // Set by claudeRemote() while a turn is running.
+        let steerTarget: { steer: SteerFunction; modeHash: string | null } | null = null;
+        const setSteerTarget = (target: typeof steerTarget) => {
+            steerTarget = target;
+            session.client.updateAgentState?.((state) => ({ ...state, steeringActive: target !== null }));
+        };
+        setSteerTarget(null);
+
+        // Per-message steer from the waiting queue (web "Steer" button).
+        session.client.rpcHandlerManager.registerHandler(
+            RPC_METHODS.SteerQueuedMessage,
+            async (payload: unknown) => {
+                const localId = typeof (payload as { localId?: unknown } | null)?.localId === 'string'
+                    ? (payload as { localId: string }).localId
+                    : '';
+                if (!localId) {
+                    return { steered: false, error: 'Missing localId' };
+                }
+                if (!steerTarget) {
+                    return { steered: false, error: 'No active steerable turn' };
+                }
+                const taken = session.queue.takeByLocalId(localId);
+                if (!taken) {
+                    return { steered: false, error: 'Message not in queue' };
+                }
+                const text = session.expandSkillReference(taken.item.message);
+                if (taken.item.isolate || text.trimStart().startsWith('/')) {
+                    session.queue.restoreReservation(taken);
+                    return { steered: false, error: 'Slash commands cannot be steered' };
+                }
+                if (taken.item.modeHash !== steerTarget.modeHash) {
+                    session.queue.restoreReservation(taken);
+                    return { steered: false, error: 'Queued message mode differs from the active turn' };
+                }
+                if (!session.queue.beginReservationDispatch(taken)) {
+                    return { steered: false, error: 'Steer cancelled' };
+                }
+                // The row stays reserved, not consumed, until Claude takes the
+                // prompt: Claude only holds it in memory until then, so an
+                // abort or crash must be able to put it back in the queue.
+                const steered = steerTarget.steer(text, {
+                    onStarted: async () => {
+                        // Agent output produced before Claude took the prompt
+                        // must reach the hub first, or it sorts below it.
+                        await messageQueue.flush();
+                        session.queue.commitReservation(taken);
+                        session.client.emitMessagesConsumed([localId], { steered: true });
+                    },
+                    onDropped: () => {
+                        session.client.discardPendingHubPromptEcho(localId);
+                        if (taken.state === 'dispatching' && !session.queue.isClosed()) {
+                            session.queue.restoreReservation(taken);
+                        }
+                    }
+                });
+                if (!steered) {
+                    session.queue.restoreReservation(taken);
+                    return { steered: false, error: 'No active steerable turn' };
+                }
+                session.client.notePendingHubPromptEcho(text, localId);
+                return { steered: true };
+            }
+        );
 
         const sdkToLogConverter = new SDKToLogConverter({
             sessionId: session.sessionId || 'unknown',
@@ -496,6 +561,17 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             logger.debug(`[remote]: Completion event: ${message}`);
                             session.client.sendSessionEvent({ type: 'message', message });
                         },
+                        onSteerableChange: (steer) => {
+                            setSteerTarget(steer ? { steer, modeHash } : null);
+                        },
+                        onResult: () => {
+                            // A steered prompt can keep the work going past
+                            // this result without onReady, but the delivered
+                            // message's turn is over: a later failure must not
+                            // replay it.
+                            reachedReadyThisAttempt = true;
+                            inFlightMessage = null;
+                        },
                         onSessionReset: () => {
                             logger.debug('[remote]: Session reset');
                             session.clearSessionId();
@@ -642,6 +718,9 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     }
                 } finally {
                     logger.debug('[remote]: launch finally');
+                    if (steerTarget) {
+                        setSteerTarget(null);
+                    }
 
                     for (let [toolCallId, { parentToolCallId }] of ongoingToolCalls) {
                         const converted = sdkToLogConverter.generateInterruptedToolResult(toolCallId, parentToolCallId);
