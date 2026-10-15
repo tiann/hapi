@@ -18,6 +18,12 @@ describe('createCursorAcpBackend', () => {
         expect(internal).toBeTruthy();
     });
 
+    it('passes session cwd through to AcpSdkBackend for MCP project resolution', () => {
+        const backend = createCursorAcpBackend({ cwd: '/work/coding/quest-audio-relay' });
+        const internal = backend as unknown as { options: { cwd?: string } };
+        expect(internal.options.cwd).toBe('/work/coding/quest-audio-relay');
+    });
+
     it('passes --model before acp when a concrete model is requested', () => {
         expect(
             buildCursorAcpArgs({

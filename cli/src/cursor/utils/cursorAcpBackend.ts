@@ -79,6 +79,10 @@ export function createCursorAcpBackend(opts: CursorAcpBackendOptions): AcpSdkBac
         command: getAgentLaunchCommand('cursor'),
         args: buildCursorAcpArgs(opts),
         env: filterEnv(process.env),
+        // Cursor agent loads `<PWD>/.cursor/mcp.json` (walking parents). Without
+        // this, the child inherits the HAPI CLI package cwd (…/driver/cli) and
+        // latches a stale sibling mailbox (dead loopback → "Unable to connect").
+        cwd: opts.cwd,
         flavor: 'cursor',
     });
 }
