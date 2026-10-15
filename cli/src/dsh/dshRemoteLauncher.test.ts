@@ -655,4 +655,54 @@ describe('DshRemoteLauncher', () => {
             [{ type: 'text', text: 'third' }]
         ])
     })
+
+    it('drops the dequeued message when a user stop lands while it waits for a pending close', async () => {
+        // A permission-abort close can still be on the wire when the loop
+        // dequeues the next message; a user stop during that wait resets the
+        // queue but cannot discard the already-dequeued batch. The generation
+        // snapshot taken before the wait must drop it.
+        harness.supportsCancel = false
+        let releaseFirstPrompt!: () => void
+        harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
+        let releaseClose!: () => void
+        harness.cancelBlocker = new Promise((resolve) => { releaseClose = resolve })
+        const queue = createQueue()
+        queue.push('first', 'dsh')
+        const session = createSession(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+
+        // A follow-up is queued, then a permission abort starts a close that
+        // parks on cancelBlocker and hands the pending close to the launcher.
+        queue.push('second', 'dsh')
+        const cancellation = (harness.backend?.cancelPrompt as unknown as (sessionId: string) => Promise<void>)('dsh-session-1')
+        harness.permissionAbortClose?.(cancellation)
+
+        // The first turn completes; the loop dequeues 'second' and parks on
+        // the pending close.
+        releaseFirstPrompt()
+        await vi.waitFor(() => expect(harness.promptSessionIds).toHaveLength(1))
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        expect(harness.newSessionCalls).toHaveLength(1)
+
+        // The user stops while 'second' waits for the close response.
+        const killPromise = launcher.kill()
+        releaseClose()
+        await killPromise
+
+        // The aborted 'second' must be dropped; 'third' runs on the
+        // respawned session.
+        queue.push('third', 'dsh')
+        queue.close()
+        await done
+
+        expect(harness.newSessionCalls).toHaveLength(2)
+        expect(harness.promptSessionIds).toEqual(['dsh-session-1', 'dsh-session-2'])
+        expect(harness.prompts).toEqual([
+            [{ type: 'text', text: 'first' }],
+            [{ type: 'text', text: 'third' }]
+        ])
+    })
 })

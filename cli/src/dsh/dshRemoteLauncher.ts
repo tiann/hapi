@@ -187,11 +187,24 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         })
 
         while (!this.shouldExit) {
-            const batch = await this.session.queue.waitForMessagesAndGetAsString(this.abortController.signal)
+            // Capture the signal per iteration: handleAbort swaps in a fresh
+            // AbortController right after aborting, so re-reading
+            // this.abortController.signal below would see the replacement
+            // (never aborted) and mistake an aborted wait for a closed queue,
+            // exiting the loop. The captured signal stays aborted forever.
+            const signal = this.abortController.signal
+            const batch = await this.session.queue.waitForMessagesAndGetAsString(signal)
             if (!batch) {
-                if (this.abortController.signal.aborted && !this.shouldExit) continue
+                if (signal.aborted && !this.shouldExit) continue
                 break
             }
+
+            // Snapshot before any await in this iteration: a user stop that
+            // lands while the dequeued batch waits for a pending close (or for
+            // the respawn) resets the queue, but a batch already removed by
+            // waitForMessagesAndGetAsString cannot be discarded that way — the
+            // generation mismatch is what drops it.
+            const generationAtDequeue = this.abortGeneration
 
             if (this.abortCompletion) {
                 // An abort is closing (or just closed) the ACP session; let it
@@ -200,6 +213,14 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 const pending = this.abortCompletion
                 this.abortCompletion = null
                 await pending
+                if (generationAtDequeue !== this.abortGeneration) {
+                    // A user stop landed while this batch waited for the pending
+                    // close: the user saw 'Session aborted' and the queue was
+                    // reset, so this already-dequeued message must not run on
+                    // whatever session comes next.
+                    this.messageBuffer.addMessage('Aborted while waiting for the DSH session close; dropping the queued message', 'status')
+                    continue
+                }
             }
 
             if (this.acpSessionEnded) {
