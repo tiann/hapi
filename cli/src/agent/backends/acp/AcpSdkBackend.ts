@@ -271,6 +271,51 @@ export class AcpSdkBackend implements AgentBackend {
         return this.initializeResult?.agentCapabilities?.loadSession === true;
     }
 
+    /**
+     * Whether the agent advertises the newer `session/resume` capability
+     * (`agentCapabilities.sessionCapabilities.resume`).
+     *
+     * dsh 0.2.x implements `session/resume` (durable on-disk sessions) while
+     * NOT implementing the older `session/load` that `supportsLoadSession`
+     * gates — the two are separate capabilities and must be probed separately.
+     */
+    supportsSessionResume(): boolean {
+        const sessionCapabilities = this.initializeResult?.agentCapabilities?.sessionCapabilities;
+        return isObject(sessionCapabilities) && 'resume' in sessionCapabilities;
+    }
+
+    /**
+     * Resume a previous agent session via `session/resume`.
+     *
+     * Unlike `session/load` responses, dsh 0.2.x returns configOptions
+     * without a `sessionId` — the resumed session keeps the requested id.
+     */
+    async resumeSession(config: AgentSessionConfig & { sessionId: string }): Promise<string> {
+        if (!this.transport) {
+            throw new Error('ACP transport not initialized');
+        }
+
+        const response = await withRetry(
+            () => this.transport!.sendRequest('session/resume', {
+                sessionId: config.sessionId,
+                cwd: config.cwd,
+                mcpServers: config.mcpServers
+            }),
+            {
+                ...AcpSdkBackend.INIT_RETRY_OPTIONS,
+                onRetry: (error, attempt, nextDelayMs) => {
+                    logger.debug(`[ACP] session/resume attempt ${attempt} failed, retrying in ${nextDelayMs}ms`, error);
+                }
+            }
+        );
+
+        const resumedSessionId = isObject(response) ? asString(response.sessionId) : null;
+        const sessionId = resumedSessionId ?? config.sessionId;
+        this.activeSessionId = sessionId;
+        this.captureSessionMetadata(sessionId, response);
+        return sessionId;
+    }
+
     getSessionConfigOptions(sessionId: string): AcpConfigOptionDescriptor[] | undefined {
         return this.sessionConfigOptions.get(sessionId);
     }
