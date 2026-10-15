@@ -162,14 +162,20 @@ environment automatically.
 
 See `src/configuration.ts` for all options.
 
-DeepSeek Harness ACP uses `dsh-acp-demo` by default. Override the executable or
-its arguments without shell parsing:
+DeepSeek Harness ACP uses the official `dsh` CLI with `--profile acp` by default
+(the ACP profile ships with `@deepseek-ai/dsh` since 0.2.0). Override the
+executable or its arguments without shell parsing:
 
 ```bash
 export HAPI_DSH_ACP_COMMAND=dsh-acp-demo
 export HAPI_DSH_ACP_CONFIG=/path/to/deepseek-harness/examples/acp-agent/cordis.yml
 hapi dsh
 ```
+
+`HAPI_DSH_ACP_CONFIG` maps to `--config` for the configured server. Without
+`HAPI_DSH_ACP_COMMAND` it instead applies to the official CLI, which has no
+`--config` flag — the path is passed as a `--patch` overlay on top of
+`--profile acp`.
 
 For a source checkout, use JSON arguments:
 
@@ -195,8 +201,8 @@ controls for DSH.
 - `HAPI_EXPERIMENTAL` - Enable experimental features (true/1/yes).
 - `HAPI_EXTRA_HEADERS_JSON` - JSON object of extra headers to send on CLI → hub requests, e.g. `{"Cookie":"CF_Authorization=..."}`. Can also be set as the `extraHeaders` object in `~/.hapi/settings.json` (environment variable wins).
 - `HAPI_CLAUDE_PATH` - Path to a specific `claude` executable.
-- `HAPI_DSH_ACP_COMMAND` - ACP server executable for `hapi dsh` (default: `dsh-acp-demo`).
-- `HAPI_DSH_ACP_CONFIG` - Optional `dsh-acp-demo --config` path.
+- `HAPI_DSH_ACP_COMMAND` - ACP server executable for `hapi dsh` (default: `dsh` with `--profile acp`).
+- `HAPI_DSH_ACP_CONFIG` - Optional config path for the configured DSH ACP server (`--config` with `HAPI_DSH_ACP_COMMAND`, `--patch` overlay on the default official CLI).
 - `HAPI_DSH_ACP_ARGS_JSON` - Optional JSON array of ACP server arguments.
 - `HAPI_HTTP_MCP_URL` - Default MCP target for `hapi mcp`.
 

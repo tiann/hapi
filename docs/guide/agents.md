@@ -19,7 +19,7 @@ agent's integration; their supported syntax varies by agent.
 | GitHub Copilot | `hapi copilot` | ACP (`copilot --acp --stdio`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
 | Kimi | `hapi kimi` | ACP (`kimi acp`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
 | OpenCode | `hapi opencode` | ACP (`opencode acp`) | ✓ | ✓ | `default` `plan` `yolo` | ✓ |
-| DeepSeek Harness | `hapi dsh` | ACP (`dsh-acp-demo` or configured server) | — | ✓ | Managed by DSH ACP composition | — |
+| DeepSeek Harness | `hapi dsh` | ACP (`dsh --profile acp` or configured server) | — | ✓ | Managed by DSH ACP composition | — |
 | Antigravity (agy) | `hapi agy` | Headless print mode (per-turn `agy -p` + NDJSON) | — | ✓ | `request-review` `always-proceed` | ✓ |
 | Pi | `hapi pi` | `pi --mode rpc` (JSON-line RPC over stdio) | — | ✓ | none (always auto-approve) | ✓ |
 | Gemini CLI | — | **Removed** — Google sunset the consumer Gemini CLI (2026-06-18) | — | — | — | — |
@@ -256,12 +256,22 @@ If a remote session reports authentication failure, run `grok login --device-aut
 ## DeepSeek Harness
 
 `hapi dsh` uses the shared ACP transport and keeps DSH's runtime outside HAPI. The
-default executable is `dsh-acp-demo`; configure a different ACP server or a
+default entrypoint is the official `dsh` CLI with `--profile acp` (the ACP profile
+ships with `@deepseek-ai/dsh` since 0.2.0). Configure a different ACP server or a
 source checkout with `HAPI_DSH_ACP_COMMAND`, `HAPI_DSH_ACP_CONFIG`, or the JSON
-argument array `HAPI_DSH_ACP_ARGS_JSON`.
+argument array `HAPI_DSH_ACP_ARGS_JSON`. `HAPI_DSH_ACP_CONFIG` passes a `--config`
+path to the server named by `HAPI_DSH_ACP_COMMAND`; on the default official CLI
+(which has no `--config` flag) it is applied as a `--patch` overlay on top of
+`--profile acp`.
 
-The official demo is published as `@deepseek-ai/dsh-acp-demo`; use an exact
-version such as `0.1.0-rc.7` rather than npm's stale `latest` tag:
+```bash
+npm install -g @deepseek-ai/dsh@0.2.0-rc.2
+hapi dsh
+```
+
+The standalone legacy demo is still published as `@deepseek-ai/dsh-acp-demo`; use
+it through an explicit override and an exact version such as `0.1.0-rc.7` rather
+than npm's stale `latest` tag:
 
 ```bash
 npm install -g @deepseek-ai/dsh-acp-demo@0.1.0-rc.7
