@@ -18,7 +18,7 @@ jobs:
             # Required by cli/src/utils/windowsProcessTree.pwsh.test.ts — image
             # inspect alone does not pull; silent skip was fake B1 coverage (#1911).
             - run: docker pull mcr.microsoft.com/powershell:latest
-            - run: bun run test:e2e -- terminal-wrap-fidelity.spec.ts composer-copy.spec.ts session-list-scroll.spec.ts cold-initial-tail.spec.ts scrollbar-auto-hide.spec.ts
+            - run: bun run test:e2e -- terminal-wrap-fidelity.spec.ts composer-copy.spec.ts session-list-scroll.spec.ts cold-initial-tail.spec.ts scrollbar-auto-hide.spec.ts session-sidebar-toggle.spec.ts
             - run: bun run test
 
     # Serial runner-integration suite: starts real detached runner/session
