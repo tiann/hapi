@@ -104,6 +104,7 @@ export class AcpSdkBackend implements AgentBackend {
     private transport: AcpStdioTransport | null = null;
     private permissionHandler: ((request: PermissionRequest) => void) | null = null;
     private stderrErrorHandler: ((error: AcpStderrError) => void) | null = null;
+    private sessionClosedByCancelHandler: (() => void) | null = null;
     private readonly pendingPermissions = new Map<string, PendingPermission>();
     private readonly sessionModelsMetadata = new Map<string, AcpSessionModelsMetadata>();
     private readonly sessionConfigOptions = new Map<string, AcpConfigOptionDescriptor[]>();
@@ -848,6 +849,9 @@ export class AcpSdkBackend implements AgentBackend {
         } catch (error) {
             logger.debug('[ACP] session/close cancel failed', error);
         }
+        // Fire even on close failure: callers must treat the session as ended
+        // rather than reusing one whose close outcome is unknown.
+        this.sessionClosedByCancelHandler?.();
     }
 
     /**
@@ -961,6 +965,17 @@ export class AcpSdkBackend implements AgentBackend {
 
     onStderrError(handler: (error: AcpStderrError) => void): void {
         this.stderrErrorHandler = handler;
+    }
+
+    /**
+     * Registers a listener fired whenever {@link cancelPrompt} takes the
+     * `session/close` path — i.e. every close-path cancellation ends the ACP
+     * session, no matter which caller initiated it (user abort, permission
+     * `abort` decision, ...). Listeners run even when the close request fails:
+     * the session must then be treated as ended rather than reusable.
+     */
+    onSessionClosedByCancel(handler: () => void): void {
+        this.sessionClosedByCancelHandler = handler;
     }
 
     /**
