@@ -16,6 +16,29 @@ describe('pi title extension source', () => {
         expect(PI_TITLE_EXTENSION_SOURCE).toContain("import { Type } from '@sinclair/typebox';");
     });
 
+    it('registers the hapi_display_image tool that returns a base64 image block', () => {
+        expect(PI_TITLE_EXTENSION_SOURCE).toContain("name: 'hapi_display_image'");
+        expect(PI_TITLE_EXTENSION_SOURCE).toContain("import('node:fs/promises')");
+        expect(PI_TITLE_EXTENSION_SOURCE).toContain("type: 'image', data: bytes.toString('base64')");
+        expect(PI_TITLE_EXTENSION_SOURCE).toContain('detectImageMime(bytes)');
+        expect(PI_TITLE_EXTENSION_SOURCE).toContain('meta.size > 25 * 1024 * 1024');
+    });
+
+    it('checks stat before reading so oversized or non-regular paths do not allocate', () => {
+        expect(PI_TITLE_EXTENSION_SOURCE).toContain('meta = await stat(filePath)');
+        expect(PI_TITLE_EXTENSION_SOURCE).toContain('if (!meta.isFile())');
+        expect(PI_TITLE_EXTENSION_SOURCE).toContain('meta.size > 25 * 1024 * 1024');
+        expect(PI_TITLE_EXTENSION_SOURCE).toContain('bytes = await readFile(filePath)');
+    });
+
+    it('detects png/jpeg/gif/webp magic bytes for the display tool', () => {
+        expect(PI_TITLE_EXTENSION_SOURCE).toContain("return 'image/png'");
+        expect(PI_TITLE_EXTENSION_SOURCE).toContain("return 'image/jpeg'");
+        expect(PI_TITLE_EXTENSION_SOURCE).toContain("return 'image/gif'");
+        expect(PI_TITLE_EXTENSION_SOURCE).toContain("return 'image/webp'");
+        expect(PI_TITLE_EXTENSION_SOURCE).toContain('return null;');
+    });
+
     it('injects the instruction on every turn, matching the persistent Claude/Codex rule', () => {
         expect(PI_TITLE_EXTENSION_SOURCE).toContain('## Session title');
         expect(PI_TITLE_EXTENSION_SOURCE).toContain('tool once');
