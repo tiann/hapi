@@ -77,6 +77,7 @@ export default {
   'sessions.search.clear': 'Clear search',
   'sessions.search.noResults': 'No sessions match your filters.',
   'sessions.unreadFilter.toggle': 'Unread only',
+  'sessions.openTick.tooltip': 'Open session position — drag the scrollbar to this mark to reach it',
   'sessions.markAllRead.button': 'Mark all as read ({count})',
   'sessions.markAllRead.title': 'Mark all as read?',
   'sessions.markAllRead.description': 'This will mark {count} unread sessions as read on this device.',

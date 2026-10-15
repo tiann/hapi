@@ -612,6 +612,59 @@ export function shouldShowPinnedDivider(sessions: SessionSummary[], index: numbe
     return Boolean(sessions[index - 1]?.pinned) && !sessions[index]?.pinned
 }
 
+/** Upper bound on how often the open-session tick re-measures during list churn. */
+const TICK_RECOMPUTE_THROTTLE_MS = 100
+
+/**
+ * Map the open session's row midpoint in the scroll content onto a 0..1 position
+ * on the session-list scroll rail. Returns null when a mark would lie: nothing
+ * overflows (no scrollbar), or the row has no laid-out height yet.
+ */
+export function computeOpenSessionTickRatio(input: {
+    scrollHeight: number
+    clientHeight: number
+    contentOffsetTop: number
+    targetHeight: number
+}): number | null {
+    const { scrollHeight, clientHeight, contentOffsetTop, targetHeight } = input
+    if (!(scrollHeight > 0) || !(clientHeight > 0)) return null
+    if (scrollHeight <= clientHeight) return null
+    if (!(targetHeight > 0)) return null
+    const ratio = (contentOffsetTop + targetHeight / 2) / scrollHeight
+    if (!Number.isFinite(ratio)) return null
+    return Math.min(1, Math.max(0, ratio))
+}
+
+export function shouldShowOpenSessionTick(input: {
+    selectedSessionId: string | null | undefined
+    rowFound: boolean
+    insideCollapsedPanel: boolean
+    tickRatio: number | null
+}): boolean {
+    if (!input.selectedSessionId) return false
+    if (!input.rowFound) return false
+    if (input.insideCollapsedPanel) return false
+    return input.tickRatio != null
+}
+
+/** True when the row sits inside a closed `.collapsible-panel` (group collapsed). */
+export function isSessionRowInsideCollapsedPanel(row: Element): boolean {
+    const panel = row.closest('.collapsible-panel')
+    return panel ? !panel.hasAttribute('data-open') : false
+}
+
+export function measureOpenSessionTickContentOffset(
+    container: HTMLElement,
+    row: HTMLElement
+): { contentOffsetTop: number; targetHeight: number } {
+    const containerRect = container.getBoundingClientRect()
+    const rowRect = row.getBoundingClientRect()
+    return {
+        contentOffsetTop: rowRect.top - containerRect.top + container.scrollTop,
+        targetHeight: rowRect.height,
+    }
+}
+
 function CalendarIcon(props: { className?: string }) {
     return (
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={props.className}>
@@ -1840,6 +1893,99 @@ export function SessionList(props: {
         onRefreshRef.current = props.onRefresh
     }, [props.onRefresh])
 
+    // Visual-only tick on the session-list scroll rail showing where the open
+    // session sits in the whole list. The mark is not a button — you drag the
+    // native scrollbar to it. Hidden when the row is filtered out or collapsed
+    // away so it never points somewhere wrong.
+    const [openSessionTickRatio, setOpenSessionTickRatio] = useState<number | null>(null)
+    useEffect(() => {
+        const container = scrollContainerRef.current
+        if (!container || !selectedSessionId) {
+            setOpenSessionTickRatio(null)
+            return
+        }
+
+        let frame = 0
+        let throttle: ReturnType<typeof setTimeout> | undefined
+        let measuredAt = 0
+
+        const measureTick = () => {
+            cancelAnimationFrame(frame)
+            frame = requestAnimationFrame(() => {
+                measuredAt = Date.now()
+                // `aria-current="page"` marks the open row; measure the whole
+                // list item it belongs to, not just whichever node carries it.
+                const marked = container.querySelector<HTMLElement>('[aria-current="page"]')
+                const row = marked?.closest<HTMLElement>('.session-list-item') ?? marked
+                const insideCollapsedPanel = row ? isSessionRowInsideCollapsedPanel(row) : false
+                const tickRatio = row && !insideCollapsedPanel
+                    ? computeOpenSessionTickRatio({
+                        scrollHeight: container.scrollHeight,
+                        clientHeight: container.clientHeight,
+                        ...measureOpenSessionTickContentOffset(container, row),
+                    })
+                    : null
+                const visible = shouldShowOpenSessionTick({
+                    selectedSessionId,
+                    rowFound: Boolean(row),
+                    insideCollapsedPanel,
+                    tickRatio,
+                })
+                setOpenSessionTickRatio(visible ? tickRatio : null)
+            })
+        }
+
+        // Sidebar churn is chatty — rows reorder as sessions update, badges and
+        // spinners mount — and each measurement reads layout. The mark only has
+        // to look right, not be frame-exact, so coalesce bursts to ~10/s. The
+        // first measurement and the transition handler still run promptly.
+        const updateTick = () => {
+            if (throttle !== undefined) return
+            throttle = setTimeout(() => {
+                throttle = undefined
+                measureTick()
+            }, Math.max(0, TICK_RECOMPUTE_THROTTLE_MS - (Date.now() - measuredAt)))
+        }
+
+        measureTick()
+
+        // Sections animate `grid-template-rows` for 250ms (see `.collapsible-panel`),
+        // so the scroll container's own box never changes while a group above the
+        // open row collapses — only the scrolled content grows or shrinks. Observe
+        // the content element as well, and recompute once the transition lands, so
+        // the tick settles on the final layout instead of an intermediate frame.
+        // Observing the container also covers viewport resizes: the sidebar is
+        // flex-sized, so a window resize changes its box (or rewraps the content).
+        const content = container.firstElementChild
+        const resizeObserver = typeof ResizeObserver !== 'undefined'
+            ? new ResizeObserver(updateTick)
+            : null
+        resizeObserver?.observe(container)
+        if (content instanceof HTMLElement) {
+            resizeObserver?.observe(content)
+        }
+        const mutationObserver = typeof MutationObserver !== 'undefined'
+            ? new MutationObserver(updateTick)
+            : null
+        mutationObserver?.observe(container, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['data-open'],
+        })
+        const handleTransitionEnd = (event: TransitionEvent) => {
+            if (event.propertyName === 'grid-template-rows') measureTick()
+        }
+        container.addEventListener('transitionend', handleTransitionEnd)
+        return () => {
+            cancelAnimationFrame(frame)
+            clearTimeout(throttle)
+            resizeObserver?.disconnect()
+            mutationObserver?.disconnect()
+            container.removeEventListener('transitionend', handleTransitionEnd)
+        }
+    }, [selectedSessionId])
+
     useEffect(() => {
         const container = scrollContainerRef.current
         if (!container) return
@@ -2119,6 +2265,14 @@ export function SessionList(props: {
                 {actionOnlyGroups.map(renderActionOnlyGroupHeader)}
             </SessionListScrollAnchor>
             </div>
+            {openSessionTickRatio != null ? (
+                <span
+                    className="session-list-open-tick"
+                    style={{ top: `${openSessionTickRatio * 100}%` }}
+                    title={t('sessions.openTick.tooltip')}
+                    aria-hidden="true"
+                />
+            ) : null}
             </div>
             <ConfirmDialog
                 isOpen={markAllReadOpen}

@@ -77,6 +77,7 @@ export default {
   'sessions.search.clear': '清除搜索',
   'sessions.search.noResults': '没有符合筛选条件的会话。',
   'sessions.unreadFilter.toggle': '仅显示未读',
+  'sessions.openTick.tooltip': '当前打开会话的位置 — 将滚动条拖到此标记处即可到达',
   'sessions.markAllRead.button': '全部标为已读（{count}）',
   'sessions.markAllRead.title': '全部标为已读？',
   'sessions.markAllRead.description': '这会将当前设备上的 {count} 个未读会话标记为已读。',
