@@ -2046,6 +2046,11 @@ function SessionChatInner(props: SessionChatProps) {
                             />
                         </div>
 
+                        {props.session.active && props.session.agentState?.waitingForInput ? (
+                            <div role="status" className="mx-auto w-full max-w-content px-4 py-2 text-sm text-[var(--app-hint)]">
+                                {t('session.codexWaitingForInput')}
+                            </div>
+                        ) : null}
                         <HappyComposer
                         focusInputRef={focusComposerRef}
                         key={`composer-${props.session.id}`}

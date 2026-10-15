@@ -541,6 +541,10 @@ export class ApiSessionClient extends EventEmitter {
         return this.state
     }
 
+    getAgentState(): Readonly<AgentState> | null {
+        return this.agentState
+    }
+
     getMetadata(): Readonly<Metadata> | null {
         return this.metadata
     }

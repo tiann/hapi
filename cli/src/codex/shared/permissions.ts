@@ -30,8 +30,9 @@ export class SharedCodexPermissions {
             scope: { role: 'child', threadId: request.threadId, parentThreadId: rootThreadId }, scope_role: 'child'
         } : message, id);
     }
-    constructor(private readonly session: ApiSessionClient, private readonly client: CodexAppServerClient, private readonly generation: string) {
+    constructor(private readonly session: ApiSessionClient, private readonly client: CodexAppServerClient, private readonly generation: string, private readonly asyncReply?: (raw: unknown) => Promise<boolean>) {
         session.rpcHandlerManager.registerHandler(RPC_METHODS.Permission, async (raw: unknown) => {
+            if (await this.asyncReply?.(raw)) return;
             const reply = ReplySchema.parse(raw);
             const request = this.pending.get(reply.id);
             if (!request || request.submitted) throw new Error('Request already resolved or submitted');

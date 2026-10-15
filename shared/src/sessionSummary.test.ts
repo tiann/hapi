@@ -301,6 +301,12 @@ describe('getPendingRequestKinds', () => {
 // list summary consistent with structured todos/teamState/metadata/agentState
 // patches landing for the second half of #884.
 describe('summary derivation helpers', () => {
+    it('surfaces native waiting for input without inventing a permission request', () => {
+        expect(computePendingRequestKinds({ waitingForInput: true })).toEqual(['input'])
+        expect(computePendingRequestsCount({ waitingForInput: true })).toBe(0)
+        expect(computePendingRequestKinds({ waitingForInput: false })).toEqual([])
+    })
+
     it('computeTodoProgress returns null for empty / undefined todos', () => {
         expect(computeTodoProgress(undefined)).toBeNull()
         expect(computeTodoProgress([])).toBeNull()

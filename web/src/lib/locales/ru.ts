@@ -190,6 +190,7 @@ export default {
   'session.item.active': 'Активна',
   'session.item.idle': 'Простаивает (только keepalive)',
   'session.item.permission': 'Требуется разрешение',
+  'session.codexWaitingForInput': 'Codex ожидает. Ответьте на вопрос или отправьте сообщение, чтобы направить текущую задачу.',
   'session.item.needsInput': 'Нужен ввод',
   'session.item.background': 'Выполняются фоновые задачи',
   'session.item.newActivity': 'Новая активность',

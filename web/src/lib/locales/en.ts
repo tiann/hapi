@@ -190,6 +190,7 @@ export default {
   'session.item.active': 'Active',
   'session.item.idle': 'Idle (keepalive only)',
   'session.item.permission': 'Permission required',
+  'session.codexWaitingForInput': 'Codex is waiting. Answer a question or send a message to steer the current task.',
   'session.item.needsInput': 'Needs input',
   'session.item.background': 'Background tasks running',
   'session.item.newActivity': 'New activity',
