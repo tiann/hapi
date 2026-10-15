@@ -178,16 +178,32 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
         // already holds it, answer 304 *before* the RPC so revalidation skips the CLI round-trip
         // entirely (and still works even if the image was evicted from CLI memory). Issue #927.
         const etag = `"${parsed.data.imageId}"`
-        if (ifNoneMatchMatches(c.req.header('if-none-match'), etag)) {
+        const metadataOnly = c.req.query('metadata') === '1'
+        if (!metadataOnly && ifNoneMatchMatches(c.req.header('if-none-match'), etag)) {
             return c.body(null, 304, {
                 'Cache-Control': GENERATED_IMAGE_CACHE_CONTROL,
                 ETag: etag
             })
         }
 
-        const result = await runRpc(() => engine.readGeneratedImage(sessionResult.sessionId, parsed.data.imageId))
-        if (!result.success || !result.content) {
+        const result = await runRpc(() => engine.readGeneratedImage(
+            sessionResult.sessionId,
+            parsed.data.imageId,
+            metadataOnly ? { metadataOnly: true } : undefined
+        ))
+        if (!result.success || (!metadataOnly && !result.content)) {
             return c.json({ success: false, error: result.error ?? 'Generated image not found' }, 404)
+        }
+        if (metadataOnly) {
+            return c.json({
+                success: true,
+                size: result.size ?? (result.content ? Buffer.byteLength(result.content, 'base64') : undefined),
+                mimeType: result.mimeType,
+                fileName: result.fileName
+            })
+        }
+        if (!result.content) {
+            return c.json({ success: false, error: 'Generated image not found' }, 404)
         }
 
         const bytes = Uint8Array.from(Buffer.from(result.content, 'base64'))
