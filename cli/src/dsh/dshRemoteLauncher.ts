@@ -106,7 +106,6 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         let acpSessionId: string
         try {
             await backend.initialize()
-
             const resumeSessionId = this.session.sessionId
             if (resumeSessionId) {
                 try {
@@ -120,31 +119,45 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                     acpSessionId = await backend.resumeSession({
                         sessionId: resumeSessionId,
                         cwd: this.session.path,
+                        // Same as session/new: the official DSH ACP composition
+                        // rejects non-empty MCP servers.
                         mcpServers: []
                     })
+                    this.messageBuffer.addMessage('DSH session resumed', 'status')
                 } catch (error) {
-                    logger.warn('[dsh-acp] resume failed, starting a new session', error)
+                    // The on-disk dsh session may be gone (cleaned ~/.dsh, version
+                    // migration): start fresh instead of stranding the HAPI session.
+                    const message = error instanceof Error ? error.message : String(error)
+                    logger.warn('[dsh-acp] session/resume failed; starting a fresh session', { message })
+                    acpSessionId = await backend.newSession({
+                        cwd: this.session.path,
+                        mcpServers: []
+                    })
+                    this.messageBuffer.addMessage('DSH resume failed; started a fresh session', 'status')
                     this.session.sendSessionEvent({
                         type: 'message',
                         message: 'DSH resume failed; starting a new session.'
-                    })
-                    acpSessionId = await backend.newSession({
-                        cwd: this.session.path,
-                        // The official DSH ACP composition rejects non-empty MCP
-                        // servers; its tools are configured by the DSH server.
-                        mcpServers: []
                     })
                 }
             } else {
                 acpSessionId = await backend.newSession({
                     cwd: this.session.path,
-                    // The official DSH ACP composition rejects non-empty MCP
-                    // servers; its tools are configured by the DSH server.
+                    // The official DSH ACP composition rejects non-empty MCP servers;
+                    // its tools are configured by the DSH server itself.
                     mcpServers: []
                 })
+                this.session.sessionId = acpSessionId
             }
-            this.session.onSessionFound(acpSessionId)
-        } catch (error) {
+            if (acpSessionId !== resumeSessionId) {
+                // Pin dshSessionId before the main loop so a runner restart can
+                // resume (tiann/hapi#913: gate until the metadata write reaches
+                // the hub — a SIGTERM before that strands the session).
+                this.session.onSessionFound(acpSessionId)
+                const flushed = await this.session.client.flushMetadata()
+                if (!flushed) {
+                    logger.warn(`[dsh-acp] dshSessionId metadata write did not ACK within the flush window (acpSessionId=${acpSessionId})`)
+                }
+            }        } catch (error) {
             markFailed(error)
             throw error
         }
