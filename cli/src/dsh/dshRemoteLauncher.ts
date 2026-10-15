@@ -148,16 +148,18 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 })
                 this.session.sessionId = acpSessionId
             }
-            if (acpSessionId !== resumeSessionId) {
-                // Pin dshSessionId before the main loop so a runner restart can
-                // resume (tiann/hapi#913: gate until the metadata write reaches
-                // the hub — a SIGTERM before that strands the session).
-                this.session.onSessionFound(acpSessionId)
-                const flushed = await this.session.client.flushMetadata()
-                if (!flushed) {
-                    logger.warn(`[dsh-acp] dshSessionId metadata write did not ACK within the flush window (acpSessionId=${acpSessionId})`)
-                }
-            }        } catch (error) {
+            // Pin dshSessionId before the main loop so a runner restart can resume
+            // (tiann/hapi#913: gate until the metadata write reaches the hub — a
+            // SIGTERM before that strands the session). Persist even when the id
+            // matches the requested resume: an explicit `--resume` on a fresh
+            // HAPI row must still store it, and re-pinning a stored id is an
+            // idempotent metadata merge.
+            this.session.onSessionFound(acpSessionId)
+            const flushed = await this.session.client.flushMetadata()
+            if (!flushed) {
+                logger.warn(`[dsh-acp] dshSessionId metadata write did not ACK within the flush window (acpSessionId=${acpSessionId})`)
+            }
+        } catch (error) {
             markFailed(error)
             throw error
         }

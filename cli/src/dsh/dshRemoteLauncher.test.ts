@@ -733,8 +733,29 @@ describe('DshRemoteLauncher', () => {
         }])
         expect(harness.newSessionCalls).toHaveLength(0)
         expect(harness.promptSessionIds).toEqual(['dsh-stored-1'])
-        // Resumed id unchanged → no metadata re-pin needed.
-        expect(session.onSessionFound).not.toHaveBeenCalled()
+        // Resumed id unchanged → still re-pinned: the write is an idempotent
+        // metadata merge that self-heals rows whose earlier pin was lost.
+        expect(session.onSessionFound).toHaveBeenCalledWith('dsh-stored-1')
+        expect(session.client.flushMetadata).toHaveBeenCalled()
+    })
+
+    it('persists the native id when an explicit resume opens a fresh HAPI row', async () => {
+        // `hapi dsh --resume <id>` without --existing-session-id starts from a
+        // new row whose metadata has no dshSessionId; the launcher must pin
+        // the id even though the resume returns exactly the requested one.
+        harness.supportsResume = true
+        const queue = createQueue()
+        queue.push('continue', {})
+        queue.close()
+        const session = createSessionWithQueue(queue, 'dsh-explicit-1')
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+
+        expect(harness.resumeCalls).toHaveLength(1)
+        expect(harness.promptSessionIds).toEqual(['dsh-explicit-1'])
+        expect(session.onSessionFound).toHaveBeenCalledWith('dsh-explicit-1')
+        expect(session.client.flushMetadata).toHaveBeenCalled()
     })
 
     it('falls back to a fresh session when resume fails and re-pins metadata', async () => {
