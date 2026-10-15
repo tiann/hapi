@@ -774,8 +774,10 @@ export function SessionListSearch(props: {
     // Layout A (#2019 / Quest): calendar sits INSIDE the expanded field,
     // immediately left of the furthest-right 48px clear end-cap. Both hit
     // targets are min 48x48 so the clear is no longer a ~14px absolute X.
-    const renderDateFilter = (variant: 'standalone' | 'embedded') => (
-        <div className={cn('relative shrink-0', variant === 'embedded' && 'flex items-stretch')}>
+    // Date button only — picker mounts on the search-group container so
+    // left-0 / right-0 stay viewport-safe (not a 48px button containing block).
+    const renderDateButton = (variant: 'standalone' | 'embedded') => (
+        <div className={cn('shrink-0', variant === 'embedded' && 'flex items-stretch')}>
             <button
                 ref={dateButtonRef}
                 type="button"
@@ -817,38 +819,39 @@ export function SessionListSearch(props: {
                     />
                 ) : null}
             </button>
-            {datePickerOpen ? (
-                <>
-                    <button
-                        type="button"
-                        aria-label={t('sessions.timeFilter.close')}
-                        className="fixed inset-0 z-20 cursor-default"
-                        onClick={() => {
-                            setDatePickerOpen(false)
-                            returnDateFocus()
-                        }}
-                    />
-                    <SessionDateRangePicker
-                        start={props.customStart}
-                        end={props.customEnd}
-                        sessionActivityDates={props.sessionActivityDates}
-                        onChange={props.onDateRangeChange}
-                        onClear={() => {
-                            props.onDateRangeChange('', '')
-                            // The footer Clear button unmounts once the range is
-                            // empty; return focus so it does not drop to <body>.
-                            returnDateFocus()
-                        }}
-                        onClose={() => {
-                            setDatePickerOpen(false)
-                            returnDateFocus()
-                        }}
-                        align={variant === 'standalone' ? 'left' : 'right'}
-                    />
-                </>
-            ) : null}
         </div>
     )
+
+    const datePicker = datePickerOpen ? (
+        <>
+            <button
+                type="button"
+                aria-label={t('sessions.timeFilter.close')}
+                className="fixed inset-0 z-20 cursor-default"
+                onClick={() => {
+                    setDatePickerOpen(false)
+                    returnDateFocus()
+                }}
+            />
+            <SessionDateRangePicker
+                start={props.customStart}
+                end={props.customEnd}
+                sessionActivityDates={props.sessionActivityDates}
+                onChange={props.onDateRangeChange}
+                onClear={() => {
+                    props.onDateRangeChange('', '')
+                    // The footer Clear button unmounts once the range is
+                    // empty; return focus so it does not drop to <body>.
+                    returnDateFocus()
+                }}
+                onClose={() => {
+                    setDatePickerOpen(false)
+                    returnDateFocus()
+                }}
+                align={props.expanded ? 'right' : 'left'}
+            />
+        </>
+    ) : null
 
     const searchLabel = t('sessions.search.open')
 
@@ -856,12 +859,12 @@ export function SessionListSearch(props: {
         const hasTextQuery = props.value.length > 0
         const collapsedLabel = hasTextQuery ? `${searchLabel}: ${props.value}` : searchLabel
         return (
-            // shrink-0: collapsed search must not steal the header row from
-            // neighboring toolbar controls (filter / blocked jump / +).
+            // min-w-0 (no shrink-0): group can yield space to neighboring toolbar
+            // controls; calendar + clear stay shrink-0; query text truncates.
             <div
                 data-testid="session-list-search"
                 data-expanded="false"
-                className="relative flex min-w-0 shrink-0 flex-nowrap items-center gap-1"
+                className="relative flex min-w-0 flex-nowrap items-center gap-1"
             >
                 <div className={cn(
                     'relative flex min-w-0 items-center rounded-full transition-colors',
@@ -875,10 +878,10 @@ export function SessionListSearch(props: {
                         type="button"
                         onClick={() => props.onExpandedChange(true)}
                         className={cn(
-                            'relative flex min-h-[40px] min-w-[40px] items-center gap-1 transition-colors',
+                            'relative flex min-h-[40px] items-center gap-1 transition-colors',
                             hasTextQuery
-                                ? 'flex-1 rounded-l-full bg-[var(--app-chat-user-chip-bg)] px-2 py-1 text-[var(--app-chat-user-chip-fg)] hover:opacity-90'
-                                : 'shrink-0 rounded-full p-2 text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]'
+                                ? 'min-w-0 flex-1 rounded-l-full bg-[var(--app-chat-user-chip-bg)] px-2 py-1 text-[var(--app-chat-user-chip-fg)] hover:opacity-90'
+                                : 'min-w-[40px] shrink-0 rounded-full p-2 text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]'
                         )}
                         title={collapsedLabel}
                         aria-label={collapsedLabel}
@@ -905,7 +908,8 @@ export function SessionListSearch(props: {
                         </button>
                     ) : null}
                 </div>
-                {renderDateFilter('standalone')}
+                {renderDateButton('standalone')}
+                {datePicker}
             </div>
         )
     }
@@ -935,7 +939,7 @@ export function SessionListSearch(props: {
                     title={searchLabel}
                     className="min-w-0 flex-1 appearance-none bg-transparent px-2 py-1.5 text-sm text-[var(--app-fg)] outline-none placeholder:text-[var(--app-hint)] [text-overflow:ellipsis] [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden"
                 />
-                {renderDateFilter('embedded')}
+                {renderDateButton('embedded')}
                 {props.value ? (
                     <button
                         type="button"
@@ -953,6 +957,7 @@ export function SessionListSearch(props: {
                     </button>
                 ) : null}
             </div>
+            {datePicker}
         </div>
     )
 }

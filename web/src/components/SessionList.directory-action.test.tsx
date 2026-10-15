@@ -197,7 +197,8 @@ describe('SessionList time filter', () => {
         const searchControl = searchButton.parentElement
         expect(searchControl?.nextElementSibling).toBe(filterButton.parentElement)
         expect(searchControl?.parentElement).toBe(filterButton.parentElement?.parentElement)
-        expect(searchControl?.parentElement).toHaveClass('relative', 'gap-1', 'shrink-0')
+        expect(searchControl?.parentElement).toHaveClass('relative', 'gap-1', 'min-w-0')
+        expect(searchControl?.parentElement?.className.split(/\s+/)).not.toContain('shrink-0')
         expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
 
         fireEvent.click(filterButton)
