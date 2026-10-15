@@ -714,8 +714,16 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             }
         }
 
+        // Only Claude applies a model and an effort as one config change; Pi
+        // commits the model before setting its thinking level, so a failure in
+        // between would leave half of the request applied.
+        const { model, effort } = parsed.data
+        if (effort !== undefined && flavor !== 'claude') {
+            return c.json({ error: 'Effort can only be sent with a model change for Claude sessions' }, 400)
+        }
+
         try {
-            await engine.applySessionConfig(sessionResult.sessionId, { model: parsed.data.model })
+            await engine.applySessionConfig(sessionResult.sessionId, effort === undefined ? { model } : { model, effort })
             return c.json({ ok: true })
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Failed to apply model'

@@ -1,4 +1,5 @@
-import { getAgyModelLabel } from '@hapi/protocol'
+import { getAgyModelLabel, getClaudeModelChoices, getClaudeModelLabel } from '@hapi/protocol'
+import type { ClaudeModelSummary } from '@hapi/protocol/apiTypes'
 import { MODEL_OPTIONS } from '@/components/NewSession/types'
 import { CURSOR_AUTO_MODEL_LABEL } from '@/lib/cursorModelOptions'
 import { getClaudeComposerModelOptions, getNextClaudeComposerModel } from './claudeModelOptions'
@@ -53,32 +54,47 @@ function getClaudeModelOptions(currentModel?: string | null, customOptions?: Mod
         return getClaudeComposerModelOptions(currentModel)
     }
 
-    const options = getClaudeComposerModelOptions(currentModel)
-    const nextOptions = [...options]
-    let insertIndex = Math.max(1, nextOptions.findIndex((option) => option.value !== null))
-
+    // Supplied options lead in their own order. Presets they do not list stay
+    // selectable after them: a partial list must not hide Opus (#718).
+    const listed: ModelOption[] = []
     for (const option of customOptions) {
-        const normalizedValue = normalizeCurrentModel(option.value)
-        if (!normalizedValue) {
-            continue
+        const value = normalizeCurrentModel(option.value)
+        if (value && !listed.some((existing) => existing.value === value)) {
+            listed.push({ value, label: option.label })
         }
-
-        const existingIndex = nextOptions.findIndex((nextOption) => nextOption.value === normalizedValue)
-        if (existingIndex >= 0) {
-            if (nextOptions[existingIndex]?.label === normalizedValue) {
-                nextOptions[existingIndex] = option
-            }
-            continue
-        }
-
-        nextOptions.splice(insertIndex, 0, {
-            value: normalizedValue,
-            label: option.label
-        })
-        insertIndex += 1
     }
+    const presets = getClaudeComposerModelOptions(null)
+        .filter((option) => option.value !== null && !listed.some((existing) => existing.value === option.value))
 
-    return nextOptions
+    return withCurrentModelOption(
+        [{ value: null, label: 'Default' }, ...listed, ...presets],
+        currentModel,
+        getClaudeModelLabel
+    )
+}
+
+/**
+ * Create-session model options for Claude (`auto` = Default). A saved model the
+ * loaded catalog no longer offers stays selectable, labelled as such, so the
+ * form never silently switches it to another model.
+ */
+export function getClaudeLaunchModelOptions(
+    catalog: readonly ClaudeModelSummary[],
+    selectedModel: string,
+    notListedSuffix: string
+): Array<{ value: string; label: string }> {
+    const catalogOptions = getClaudeModelChoices(catalog)
+    const presetValues = new Set(getClaudeComposerModelOptions(null).map((option) => option.value))
+    const selected = normalizeCurrentModel(selectedModel)
+    const isGone = catalog.length > 0
+        && selected !== null
+        && !presetValues.has(selected)
+        && !catalogOptions.some((option) => option.value === selected)
+
+    return getClaudeModelOptions(selectedModel, catalogOptions).map((option) => ({
+        value: option.value ?? 'auto',
+        label: isGone && option.value === selected ? `${option.label} (${notListedSuffix})` : option.label
+    }))
 }
 
 function getAgyModelOptions(currentModel?: string | null, customOptions?: ModelOption[]): ModelOption[] {
