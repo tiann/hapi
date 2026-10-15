@@ -63,6 +63,66 @@ describe('attachmentAdapter', () => {
         })])
     })
 
+    it('assigns a fresh id when a restored failed upload is retried', async () => {
+        const drafts = await import('./composer-attachment-drafts')
+        const { createAttachmentAdapter } = await import('./attachmentAdapter')
+        const file = new File(['broken'], 'broken.txt', { type: 'text/plain', lastModified: 123 })
+        drafts.saveDraftAttachments('session-1', [{ id: 'restored-failed', file }])
+        const [restored] = await drafts.getDraftAttachments('session-1')
+        expect(restored).toBeDefined()
+
+        const uploadFile = vi.fn()
+            .mockResolvedValueOnce({ success: false })
+            .mockResolvedValueOnce({ success: true, path: '/uploads/retried.txt' })
+        const adapter = createAttachmentAdapter({ uploadFile } as never, 'session-1')
+
+        const firstEmitted: Record<string, unknown>[] = []
+        for await (const attachment of adapter.add({ file: restored! }) as AsyncIterable<Record<string, unknown>>) {
+            firstEmitted.push(attachment)
+        }
+        const failed = firstEmitted.at(-1)!
+        expect(failed).toMatchObject({
+            id: 'restored-failed',
+            status: { type: 'incomplete', reason: 'error' },
+        })
+        await adapter.remove(failed as never)
+
+        const retryFile = new File([restored!], restored!.name, {
+            type: restored!.type,
+            lastModified: restored!.lastModified,
+        })
+        const retriedEmitted: Record<string, unknown>[] = []
+        for await (const attachment of adapter.add({ file: retryFile }) as AsyncIterable<Record<string, unknown>>) {
+            retriedEmitted.push(attachment)
+        }
+
+        expect(uploadFile).toHaveBeenCalledTimes(2)
+        expect(retriedEmitted.at(-1)).toMatchObject({
+            status: { type: 'requires-action', reason: 'composer-send' },
+            path: '/uploads/retried.txt',
+        })
+        expect(retriedEmitted.at(-1)?.id).not.toBe('restored-failed')
+    })
+
+    it('marks deterministic size failures as non-retryable', async () => {
+        const { createAttachmentAdapter, MAX_UPLOAD_BYTES } = await import('./attachmentAdapter')
+        const file = new File(['too-large'], 'too-large.txt', { type: 'text/plain' })
+        Object.defineProperty(file, 'size', { value: MAX_UPLOAD_BYTES + 1 })
+        const uploadFile = vi.fn()
+        const adapter = createAttachmentAdapter({ uploadFile } as never, 'session-1')
+        const emitted: Record<string, unknown>[] = []
+
+        for await (const attachment of adapter.add({ file }) as AsyncIterable<Record<string, unknown>>) {
+            emitted.push(attachment)
+        }
+
+        expect(emitted.at(-1)).toMatchObject({
+            status: { type: 'incomplete', reason: 'error' },
+            retryable: false,
+        })
+        expect(uploadFile).not.toHaveBeenCalled()
+    })
+
     it('uploads an image when the initial preview read fails', async () => {
         let readCount = 0
         class FileReaderMock {
