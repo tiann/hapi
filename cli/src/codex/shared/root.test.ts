@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import type { ApiSessionClient } from '@/api/apiSession';
-import type { AgentState, Metadata } from '@/api/types';
+import type { AgentState, Metadata, UserMessage } from '@/api/types';
 import type { SessionBootstrapResult } from '@/agent/sessionFactory';
 import { SharedCodexRoot, type RootHost } from './root';
 import { codexPlanProposalId } from './plan';
@@ -41,7 +41,7 @@ vi.mock('../codexAppServerClient', () => ({
             throw new Error(`Unexpected request: ${method}`);
         }
     },
-    isIndeterminateError: () => false
+    isIndeterminateError: (error: Error) => error.message === 'uncertain'
 }));
 vi.mock('../utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: async () => ({
     mcpServers: {}, server: { stop() {} }
@@ -61,20 +61,23 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
     const updateState = vi.fn((fn: (value: AgentState) => AgentState) => { state = fn(state); });
     const rpc = new Map<string, (raw: unknown) => Promise<unknown>>();
     const send = vi.fn();
+    let receive: (message: UserMessage, localId?: string) => void = () => { };
+    const consumed = vi.fn();
+    const uncertain = vi.fn();
     const hubArchivedListeners: Array<() => void> = [];
     const session = {
         sessionId: 'sid', getMetadata: () => metadata,
         hubArchived: opts?.hubArchived ?? false,
         updateMetadata: (fn: (value: Metadata) => Metadata) => { metadata = fn(metadata); },
         updateAgentState: updateState, keepAlive() {},
-        onUserMessage() {}, onCancelQueuedMessage() {}, onRetryQueuedMessage() {},
+        onUserMessage(fn: typeof receive) { receive = fn; }, onCancelQueuedMessage() { }, onRetryQueuedMessage() { },
         onReconnect: (fn: (() => void) | null) => { reconnect = fn; },
         on(event: string, listener: () => void) {
             if (event === 'hub-archived') hubArchivedListeners.push(listener);
         },
         rpcHandlerManager: { registerHandler: (name: string, handler: (raw: unknown) => Promise<unknown>) => rpc.set(name, handler) },
         sendSessionEvent() {}, sendAgentMessage: send, emitSessionReady() {},
-        sendUserMessage() {}, emitMessagesConsumed() {}, emitSteerIndeterminate() {}, syncNativeQueuedMessage() {},
+        sendUserMessage() { }, emitMessagesConsumed: consumed, emitSteerIndeterminate: uncertain, syncNativeQueuedMessage() { },
         sendSessionDeath() {}, async flush() {}, close() {}
     } as unknown as ApiSessionClient;
     const end = opts?.end ?? (async () => { throw new Error('Unexpected root archive'); });
@@ -94,7 +97,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
         abandoned(): void;
     };
     return {
-        root, native, rpc, send, metadata: () => metadata, state: () => state, updateState,
+        root, native, rpc, send, consumed, uncertain, receive: (mode: 'queue' | 'steer', id = 'followup') => receive({ role: 'user', content: { type: 'text', text: 'follow up' }, meta: { deliveryMode: mode } } as UserMessage, id), metadata: () => metadata, state: () => state, updateState,
         reconnect: () => reconnect?.(),
         emitHubArchived: () => { for (const listener of hubArchivedListeners) listener(); },
         hubArchivedListenerCount: () => hubArchivedListeners.length,
@@ -114,6 +117,58 @@ async function completePlan(f: Awaited<ReturnType<typeof fixture>>, status = 'co
     await vi.waitFor(() => expect(f.send).toHaveBeenCalledWith(expect.objectContaining({ name: 'ExitPlanMode' }), expect.any(String)));
     return codexPlanProposalId('thread', turn.id, 'plan-item');
 }
+
+describe('ordinary Codex follow-ups', () => {
+    it.each(['success', 'rejected', 'uncertain'] as const)('handles a %s steer without duplicate delivery', async outcome => {
+        const f = await fixture();
+        await f.root.activate();
+        const request = f.root.client.request.bind(f.root.client);
+        const spy = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'turn/steer') {
+                if (outcome !== 'success') throw new Error(outcome);
+                return {};
+            }
+            return request(method, params);
+        });
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'active' } });
+        f.receive('steer');
+        await vi.waitFor(() => {
+            if (outcome === 'success') expect(f.consumed).toHaveBeenCalledWith(['followup'], { steered: true });
+            else if (outcome === 'uncertain') expect(f.uncertain).toHaveBeenCalledWith(['followup']);
+            else expect(f.native.queue).toHaveLength(1);
+        });
+        expect(spy).toHaveBeenCalledWith('turn/steer', expect.objectContaining({ expectedTurnId: 'active', clientUserMessageId: 'followup' }));
+        expect(f.native.queue).toHaveLength(outcome === 'rejected' ? 1 : 0);
+        f.receive('queue');
+        f.receive('queue', 'barrier');
+        await vi.waitFor(() => expect(f.native.queue.some(item => item.clientUserMessageId === 'barrier')).toBe(true));
+        expect(spy.mock.calls.filter(([method]) => method === 'turn/steer')).toHaveLength(1);
+        expect(f.native.queue.filter(item => item.clientUserMessageId === 'followup')).toHaveLength(outcome === 'rejected' ? 1 : 0);
+    });
+
+    it('queues a follow-up when its target turn ends before dispatch', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const spy = vi.spyOn(f.root.client, 'request');
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'original' } });
+        f.receive('steer');
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 'original', status: 'completed' } });
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'replacement' } });
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+        expect(spy.mock.calls.some(([method]) => method === 'turn/steer')).toBe(false);
+    });
+
+    it('queues idle sends and explicit queue requests', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const spy = vi.spyOn(f.root.client, 'request');
+        f.receive('steer', 'idle');
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'later' } });
+        f.receive('queue', 'explicit');
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(2));
+        expect(spy.mock.calls.some(([method]) => method === 'turn/steer')).toBe(false);
+    });
+});
 
 describe('shared plan actions', () => {
     it('applies remote change_title as metadata.name then lets native terminal rename win', async () => {

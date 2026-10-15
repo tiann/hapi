@@ -158,6 +158,24 @@ describe('getOrCreateSession: requested identity', () => {
         store.close()
     })
 
+    it('preserves a Codex prompt preference through adoption and metadata refresh', () => {
+        const store = makeStore()
+        const id = randomUUID()
+        store.sessions.getOrCreateSession(`machine-spawn:${id}`, {
+            path: '/tmp', host: 'test', flavor: 'codex', codexPromptMode: 'steer',
+        }, null, 'default', undefined, undefined, undefined, id)
+        const adopted = store.sessions.adoptPreallocatedSession(id, randomUUID(), {
+            path: '/tmp', host: 'test', flavor: 'codex', hostPid: 42,
+        }, null, 'default')
+        expect(adopted.metadata).toMatchObject({ codexPromptMode: 'steer' })
+        const updated = store.sessions.updateSessionMetadata(id, {
+            path: '/tmp', host: 'test', flavor: 'codex', codexSessionId: 'thread',
+        }, adopted.metadataVersion, 'default')
+        expect(updated.result).toBe('success')
+        expect(store.sessions.getSession(id)?.metadata).toMatchObject({ codexPromptMode: 'steer' })
+        store.close()
+    })
+
     it('adopts a machine-spawn preallocated stub and overwrites tag + metadata', () => {
         const store = makeStore()
         const allocatedId = randomUUID()
