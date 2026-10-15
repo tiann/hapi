@@ -13,6 +13,8 @@ export function parseDshCommandOptions(commandArgs: string[]) {
     if (options.effort || options.modelReasoningEffort) {
         throw new Error('DeepSeek Harness effort is configured by the ACP server')
     }
+    // --resume is accepted: its value is the native ACP session id, resumed
+    // via session/resume by the launcher (stored ids ride --existing-session-id).
     return { ...options, startingMode: 'remote' as const }
 }
 

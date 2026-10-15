@@ -102,7 +102,8 @@ export async function runDsh(opts: {
         path: workingDirectory,
         logPath: logger.getLogPath(),
         model: opts.model,
-        sessionId: opts.resumeSessionId ?? sessionInfo.metadata?.dshSessionId,        messageQueue: queue,
+        sessionId: opts.resumeSessionId ?? sessionInfo.metadata?.dshSessionId,
+        messageQueue: queue,
         onModeChange: () => {},
         startedBy
     })
