@@ -172,6 +172,38 @@ describe('ApiClient error mapping', () => {
         expect(fetchMock.mock.calls[0]?.[0]).toBe('/health')
     })
 
+    it('routes Runner usage-query settings and tests without exposing credentials in the client', async () => {
+        fetchMock
+            .mockResolvedValueOnce(new Response(JSON.stringify({
+                agent: 'claude',
+                enabled: false,
+                templateId: 'generic-rate-limits',
+                template: { id: 'generic-rate-limits', name: 'Generic', request: { url: '{{baseUrl}}/usage', method: 'GET', headers: {} }, fiveHour: {}, sevenDay: {} },
+                credentials: {
+                    baseUrl: { configured: true, source: 'config' },
+                    apiKey: { configured: true, source: 'config' }
+                }
+            }), { status: 200 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify({
+                agent: 'claude', templateId: 'generic-rate-limits', status: 'success',
+                fiveHour: { usedPercent: 10, resetsAt: null }, sevenDay: null,
+                queriedAt: 1, stale: false
+            }), { status: 200 }))
+
+        const api = new ApiClient('test-token')
+        const settings = await api.getMachineUsageQuerySettings('machine /?#', 'claude')
+        const result = await api.queryMachineUsage('machine /?#', 'claude')
+
+        expect(settings.credentials.apiKey.configured).toBe(true)
+        expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/machines/machine%20%2F%3F%23/usage-query/settings?agent=claude')
+        expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/machines/machine%20%2F%3F%23/usage-query/query')
+        expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+            method: 'POST',
+            body: JSON.stringify({ agent: 'claude', force: false })
+        })
+        expect(result.status).toBe('success')
+    })
+
     it('asks the machine to re-probe agy only when the caller forces a refresh', async () => {
         fetchMock.mockImplementation(() => Promise.resolve(
             new Response(JSON.stringify({ success: true, availableModels: [] }), { status: 200 })

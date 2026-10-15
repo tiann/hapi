@@ -83,6 +83,14 @@ export type {
 } from '@hapi/protocol/types'
 
 export type {
+    UsageQueryAgent,
+    UsageQueryAgentSettings,
+    UsageQueryResult,
+    UsageQuerySettingsResponse,
+    UsageQueryTemplate
+} from '@hapi/protocol/usageQuery'
+
+export type {
     HapiSessionExport,
     HapiSessionExportResponse,
     HapiSessionExportWarning

@@ -31,6 +31,7 @@ export default defineConfig({
         text: 'Guide',
         items: [
           { text: 'How it Works', link: '/guide/how-it-works' },
+          { text: 'Agent quota queries', link: '/guide/usage-query' },
           { text: 'Voice Assistant', link: '/guide/voice-assistant' },
           { text: 'Why HAPI', link: '/guide/why-hapi' },
           { text: 'FAQ', link: '/guide/faq' }
