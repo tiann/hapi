@@ -277,6 +277,11 @@ than npm's stale `latest` tag:
 npm install -g @deepseek-ai/dsh-acp-demo@0.1.0-rc.7
 ```
 
+The demo package has not tracked recent DSH releases; resume support here was
+validated against `@deepseek-ai/dsh` 0.2.0-rc.2 launched with `dsh --profile
+acp` (via `HAPI_DSH_ACP_COMMAND=dsh` and
+`HAPI_DSH_ACP_ARGS_JSON='["--profile","acp"]'`).
+
 A published package still needs a DSH Cordis composition/config. A source
 checkout can be launched directly:
 
