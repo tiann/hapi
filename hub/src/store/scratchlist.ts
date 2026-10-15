@@ -246,7 +246,7 @@ export function deleteScratchlistEntry(
  * writers. Returns counts so the caller can decide whether to fire
  * SSE patches.
  */
-export function transferScratchlistEntries(
+export function transferScratchlistEntriesInTransaction(
     db: Database,
     fromSessionId: string,
     toSessionId: string
@@ -255,25 +255,30 @@ export function transferScratchlistEntries(
         return { moved: 0, collided: 0 }
     }
 
-    try {
-        db.exec('BEGIN')
-        const before = db.prepare(
-            'SELECT COUNT(*) AS n FROM session_scratchlist WHERE session_id = ?'
-        ).get(fromSessionId) as { n: number } | undefined
-        const total = before?.n ?? 0
-        const moved = db.prepare(
-            'UPDATE OR IGNORE session_scratchlist SET session_id = ? WHERE session_id = ?'
-        ).run(toSessionId, fromSessionId).changes
-        const collided = total - moved
-        if (collided > 0) {
-            db.prepare(
-                'DELETE FROM session_scratchlist WHERE session_id = ?'
-            ).run(fromSessionId)
-        }
-        db.exec('COMMIT')
-        return { moved, collided }
-    } catch (error) {
-        db.exec('ROLLBACK')
-        throw error
+    const before = db.prepare(
+        'SELECT COUNT(*) AS n FROM session_scratchlist WHERE session_id = ?'
+    ).get(fromSessionId) as { n: number } | undefined
+    const total = before?.n ?? 0
+    const moved = db.prepare(
+        'UPDATE OR IGNORE session_scratchlist SET session_id = ? WHERE session_id = ?'
+    ).run(toSessionId, fromSessionId).changes
+    const collided = total - moved
+    if (collided > 0) {
+        db.prepare(
+            'DELETE FROM session_scratchlist WHERE session_id = ?'
+        ).run(fromSessionId)
     }
+    return { moved, collided }
+}
+
+export function transferScratchlistEntries(
+    db: Database,
+    fromSessionId: string,
+    toSessionId: string
+): { moved: number; collided: number } {
+    return db.transaction(() => transferScratchlistEntriesInTransaction(
+        db,
+        fromSessionId,
+        toSessionId
+    ))()
 }

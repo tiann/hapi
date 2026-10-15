@@ -309,6 +309,74 @@ export function copyMessagesToSession(
     })()
 }
 
+/**
+ * Hydrate messages into a shared fork without duplicating native projections.
+ * A shared child may already have the same localId as a text-only projection;
+ * update that row in place, otherwise insert the copied message.
+ */
+export function mergeCopiedMessagesToSession(
+    db: Database,
+    sessionId: string,
+    messages: CopyStoredMessageInput[]
+): number {
+    if (messages.length === 0) return 0
+
+    return db.transaction(() => {
+        let nextSeq = getMaxSeq(db, sessionId) + 1
+        const existing = db.prepare(
+            'SELECT id FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1'
+        )
+        const update = db.prepare(`
+            UPDATE messages
+            SET content = ?
+            WHERE id = ?
+        `)
+        const insert = db.prepare(`
+            INSERT INTO messages (
+                id, session_id, content, created_at, seq, local_id, invoked_at, scheduled_at, delivery_state
+            ) VALUES (
+                @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at, @scheduled_at, @delivery_state
+            )
+        `)
+        let changed = 0
+
+        for (const message of messages) {
+            const createdAt = Number.isFinite(message.createdAt) ? message.createdAt : Date.now()
+            const localId = message.localId ?? null
+            const encoded = encodeMessageContent(message.content)
+            if (localId) {
+                const row = existing.get(sessionId, localId) as { id: string } | undefined
+                if (row) {
+                    update.run(
+                        encoded,
+                        row.id
+                    )
+                    changed += 1
+                    continue
+                }
+            }
+
+            const invokedAt = localId ? message.invokedAt : (message.invokedAt ?? createdAt)
+            insert.run({
+                id: randomUUID(),
+                session_id: sessionId,
+                content: encoded,
+                created_at: createdAt,
+                seq: nextSeq,
+                local_id: localId,
+                invoked_at: invokedAt ?? null,
+                scheduled_at: message.scheduledAt ?? null,
+                delivery_state: message.deliveryState ?? 'queued'
+            })
+            nextSeq += 1
+            changed += 1
+        }
+
+        if (changed > 0) bumpMessageEpoch(db, sessionId)
+        return changed
+    })()
+}
+
 export function getMessages(
     db: Database,
     sessionId: string,
@@ -554,6 +622,12 @@ export function getUninvokedLocalMessages(
         `SELECT * FROM messages WHERE session_id = ? AND invoked_at IS NULL AND local_id IS NOT NULL${deliverableClause} ORDER BY seq ASC`
     ).all(sessionId) as DbMessageRow[]
     return rows.map(toStoredMessage)
+}
+
+export function updateMessageContent(db: Database, messageId: string, content: unknown): boolean {
+    return db.prepare(
+        'UPDATE messages SET content = ? WHERE id = ?'
+    ).run(encodeMessageContent(truncateOversizedMessageContent(content)), messageId).changes > 0
 }
 
 export type LocalMessageState = {
@@ -1056,7 +1130,7 @@ export function moveUninvokedMessages(db: Database, fromSessionId: string, toSes
     })()
 }
 
-export function mergeSessionMessages(
+export function mergeSessionMessagesInTransaction(
     db: Database,
     fromSessionId: string,
     toSessionId: string
@@ -1068,53 +1142,57 @@ export function mergeSessionMessages(
     const oldMaxSeq = getMaxSeq(db, fromSessionId)
     const newMaxSeq = getMaxSeq(db, toSessionId)
 
-    try {
-        db.exec('BEGIN')
-
-        if (newMaxSeq > 0 && oldMaxSeq > 0) {
-            prepareCached(db, 
-                'UPDATE messages SET seq = seq + ? WHERE session_id = ?'
-            ).run(oldMaxSeq, toSessionId)
-        }
-
-        const collisions = prepareCached(db, `
-            SELECT local_id FROM messages
-            WHERE session_id = ? AND local_id IS NOT NULL
-            INTERSECT
-            SELECT local_id FROM messages
-            WHERE session_id = ? AND local_id IS NOT NULL
-        `).all(toSessionId, fromSessionId) as Array<{ local_id: string }>
-
-        if (collisions.length > 0) {
-            const localIds = collisions.map((row) => row.local_id)
-            const placeholders = localIds.map(() => '?').join(', ')
-            // Force-invoke the older copy: clearing local_id severs its ack path
-            // (markMessagesInvoked matches by local_id), so leaving invoked_at
-            // NULL would strand the row in the queued floating bar forever.
-            // Use COALESCE so an already-invoked row keeps its server timestamp.
-            prepareCached(db, 
-                `UPDATE messages
-                 SET local_id = NULL,
-                     invoked_at = COALESCE(invoked_at, created_at)
-                 WHERE session_id = ? AND local_id IN (${placeholders})`
-            ).run(fromSessionId, ...localIds)
-        }
-
-        const result = prepareCached(db, 
-            'UPDATE messages SET session_id = ? WHERE session_id = ?'
-        ).run(toSessionId, fromSessionId)
-
-        if (result.changes > 0) {
-            bumpMessageEpoch(db, fromSessionId)
-            bumpMessageEpoch(db, toSessionId)
-        }
-
-        db.exec('COMMIT')
-        return { moved: result.changes, oldMaxSeq, newMaxSeq }
-    } catch (error) {
-        db.exec('ROLLBACK')
-        throw error
+    if (newMaxSeq > 0 && oldMaxSeq > 0) {
+        prepareCached(db,
+            'UPDATE messages SET seq = seq + ? WHERE session_id = ?'
+        ).run(oldMaxSeq, toSessionId)
     }
+
+    const collisions = prepareCached(db, `
+        SELECT local_id FROM messages
+        WHERE session_id = ? AND local_id IS NOT NULL
+        INTERSECT
+        SELECT local_id FROM messages
+        WHERE session_id = ? AND local_id IS NOT NULL
+    `).all(toSessionId, fromSessionId) as Array<{ local_id: string }>
+
+    if (collisions.length > 0) {
+        const localIds = collisions.map((row) => row.local_id)
+        const placeholders = localIds.map(() => '?').join(', ')
+        // Force-invoke the older copy: clearing local_id severs its ack path
+        // (markMessagesInvoked matches by local_id), so leaving invoked_at
+        // NULL would strand the row in the queued floating bar forever.
+        // Use COALESCE so an already-invoked row keeps its server timestamp.
+        prepareCached(db,
+            `UPDATE messages
+             SET local_id = NULL,
+                 invoked_at = COALESCE(invoked_at, created_at)
+             WHERE session_id = ? AND local_id IN (${placeholders})`
+        ).run(fromSessionId, ...localIds)
+    }
+
+    const result = prepareCached(db,
+        'UPDATE messages SET session_id = ? WHERE session_id = ?'
+    ).run(toSessionId, fromSessionId)
+
+    if (result.changes > 0) {
+        bumpMessageEpoch(db, fromSessionId)
+        bumpMessageEpoch(db, toSessionId)
+    }
+
+    return { moved: result.changes, oldMaxSeq, newMaxSeq }
+}
+
+export function mergeSessionMessages(
+    db: Database,
+    fromSessionId: string,
+    toSessionId: string
+): { moved: number; oldMaxSeq: number; newMaxSeq: number } {
+    return db.transaction(() => mergeSessionMessagesInTransaction(
+        db,
+        fromSessionId,
+        toSessionId
+    ))()
 }
 
 /**

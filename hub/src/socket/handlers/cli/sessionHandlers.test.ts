@@ -438,7 +438,7 @@ describe('cli session handlers', () => {
         expect(uuids).toEqual(['msg-1', 'msg-2'])
     })
 
-    it.each(['supersededBySessionId', 'opencodeClearOperation'] as const)(
+    it.each(['supersededBySessionId', 'opencodeClearOperation', 'sharedForkAttachmentsHydrated'] as const)(
         'ignores a forged hub-owned %s addition from CLI metadata',
         (field) => {
             const store = new Store(':memory:')
@@ -456,7 +456,9 @@ describe('cli session handlers', () => {
                     path: '/tmp/project',
                     [field]: field === 'supersededBySessionId'
                         ? 'foreign-session'
-                        : { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }
+                        : field === 'sharedForkAttachmentsHydrated'
+                            ? true
+                            : { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }
                 }
             }, () => {})
             expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).not.toHaveProperty(field)
@@ -467,7 +469,7 @@ describe('cli session handlers', () => {
         const store = new Store(':memory:')
         const operation = { replacementSessionId: 'owned-target', state: 'completed', updatedAt: Date.now() }
         const session = store.sessions.getOrCreateSession('preserve-clear-link', {
-            supersededBySessionId: 'owned-target', opencodeClearOperation: operation
+            supersededBySessionId: 'owned-target', opencodeClearOperation: operation, sharedForkAttachmentsHydrated: true
         }, null, 'default')
         const socket = new FakeSocket()
         registerSessionHandlers(socket as unknown as CliSocketWithData, {
@@ -485,7 +487,8 @@ describe('cli session handlers', () => {
             }
         }, () => {})
         expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).toMatchObject({
-            supersededBySessionId: 'owned-target', opencodeClearOperation: operation, lifecycleState: 'archived'
+            supersededBySessionId: 'owned-target', opencodeClearOperation: operation,
+            sharedForkAttachmentsHydrated: true, lifecycleState: 'archived'
         })
     })
 })
