@@ -877,6 +877,8 @@ export default {
   'settings.display.activeSessionsOnly.desc': 'Hide inactive sessions in the sidebar. The session you have open stays visible.',
   'settings.display.pinInProgressSessions': 'Pin in-progress sessions',
   'settings.display.pinInProgressSessions.desc': 'Move unpinned connected sessions into sections above project folders: running and pending work first, then quiet active sessions (finished executing, still connected). Global pins remain above them. Off keeps everything in directory groups.',
+  'settings.display.fixedSessionOrder': 'Fixed session order',
+  'settings.display.fixedSessionOrder.desc': 'Keep the session list from jumping: sessions and workspaces no longer reorder on updates or status changes; newest-created first. Pins still float to the top, and "Pin in-progress sessions" is paused while this is on.',
   'settings.display.appBadge': 'Taskbar unread badge',
   'settings.display.appBadge.desc': 'Show the number of sessions with new activity on an installed Edge or Chrome PWA. The host browser controls its appearance; this has no effect in a normal browser tab.',
   'settings.display.sessionListStatus': 'Session list status hints',
