@@ -33,6 +33,18 @@ export type AcpModelDescriptor = {
     reasoningEfforts?: Array<{ value: string; name?: string; isDefault?: boolean }>;
 };
 
+/**
+ * How {@link AcpSdkBackend.cancelPrompt} cancels an in-flight prompt.
+ *
+ * - `standard` (default): send the `session/cancel` notification. ACP v1
+ *   defines no capability field for cancel — it is unconditional baseline
+ *   behavior, so standard adapters never gate on advertised capabilities.
+ * - `close-fallback`: for agents known to mishandle `session/cancel`
+ *   (dsh 0.2.x exits its whole process on it). Cancel by closing the session
+ *   when the agent advertises `close`; otherwise fall back to the baseline.
+ */
+export type AcpCancelMode = 'standard' | 'close-fallback';
+
 export type AcpSessionModelsMetadata = {
     availableModels: AcpModelDescriptor[];
     currentModelId: string | null;
@@ -188,6 +200,7 @@ export class AcpSdkBackend implements AgentBackend {
         childSessionUpdates?: boolean;
         textChunkMode?: AcpTextChunkMode;
         flavor?: AgentFlavor;
+        cancelMode?: AcpCancelMode;
     }) {}
 
     async initialize(): Promise<void> {
@@ -799,17 +812,21 @@ export class AcpSdkBackend implements AgentBackend {
     }
 
     /**
-     * Whether this agent accepts the standard `session/cancel` notification.
+     * Whether this backend will send the standard `session/cancel`
+     * notification from {@link cancelPrompt}.
      *
-     * Some agents (dsh 0.2.x) explicitly advertise `sessionCapabilities` with
-     * only close/list/resume and exit the whole process when the standard
-     * `session/cancel` notification arrives, taking every future session with
-     * it. The gate is a *positive absence*: agents that stay silent about
-     * their session capabilities keep the notification (previous behavior).
+     * Always true for standard adapters (ACP v1 requires `session/cancel`
+     * baseline behavior unconditionally — there is no capability field to
+     * gate it on). For `close-fallback` adapters (dsh), false when the agent
+     * advertises `close`: the notification would exit its process, so
+     * cancellation goes through `session/close` instead.
      */
     supportsCancelNotification(): boolean {
+        if (this.options.cancelMode !== 'close-fallback') {
+            return true;
+        }
         const sessionCapabilities = this.initializeResult?.agentCapabilities?.sessionCapabilities;
-        return !isObject(sessionCapabilities) || 'cancel' in sessionCapabilities;
+        return !(isObject(sessionCapabilities) && 'close' in sessionCapabilities);
     }
 
     async cancelPrompt(sessionId: string): Promise<void> {
@@ -817,24 +834,20 @@ export class AcpSdkBackend implements AgentBackend {
             return;
         }
 
-        if (!this.supportsCancelNotification()) {
-            const sessionCapabilities = this.initializeResult?.agentCapabilities?.sessionCapabilities;
-            if (isObject(sessionCapabilities) && 'close' in sessionCapabilities) {
-                // Verified against dsh 0.2.0-rc.2: session/close returns
-                // immediately, resolves the in-flight session/prompt with
-                // end_turn, cancels the underlying work, and leaves the
-                // process alive for future sessions — unlike session/cancel,
-                // which kills the process outright.
-                try {
-                    await this.transport.sendRequest('session/close', { sessionId }, { timeoutMs: 5000 });
-                } catch (error) {
-                    logger.debug('[ACP] session/close fallback failed during cancel', error);
-                }
-            }
+        if (this.supportsCancelNotification()) {
+            this.transport.sendNotification('session/cancel', { sessionId });
             return;
         }
 
-        this.transport.sendNotification('session/cancel', { sessionId });
+        // close-fallback (dsh): verified against dsh 0.2.0-rc.2, session/close
+        // returns immediately, resolves the in-flight session/prompt with
+        // end_turn, cancels the underlying work, and leaves the process alive
+        // for future sessions — unlike session/cancel, which kills the process.
+        try {
+            await this.transport.sendRequest('session/close', { sessionId }, { timeoutMs: 5000 });
+        } catch (error) {
+            logger.debug('[ACP] session/close cancel failed', error);
+        }
     }
 
     /**

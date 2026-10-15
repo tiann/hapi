@@ -40,6 +40,13 @@ function sentMethods(state: typeof transportState): string[] {
     return [...state.calls.map((call) => call.method), ...state.notifications.map((note) => note.method)];
 }
 
+const DSH_SESSION_CAPS = {
+    protocolVersion: 1,
+    agentCapabilities: {
+        sessionCapabilities: { close: {}, list: {}, resume: {} }
+    }
+};
+
 describe('AcpSdkBackend.cancel', () => {
     beforeEach(() => {
         transportState.calls = [];
@@ -48,22 +55,51 @@ describe('AcpSdkBackend.cancel', () => {
         transportState.failNextClose = false;
     });
 
-    it('falls back to session/close when capabilities advertise sessions without cancel', async () => {
-        transportState.initializeResponse = {
-            protocolVersion: 1,
-            agentCapabilities: {
-                sessionCapabilities: { close: {}, list: {}, resume: {} }
-            }
-        };
+    it('keeps the session/cancel baseline for standard adapters regardless of capabilities', async () => {
+        // ACP v1 defines no cancel capability field: session/cancel is
+        // unconditional baseline behavior. An agent advertising
+        // sessionCapabilities without a cancel key (e.g. {close, list,
+        // resume}) must still receive the standard notification.
+        transportState.initializeResponse = DSH_SESSION_CAPS;
         const backend = new AcpSdkBackend({ command: 'agent', args: ['acp'] });
+        await backend.initialize();
+
+        expect(backend.supportsCancelNotification()).toBe(true);
+
+        await backend.cancelPrompt('session-1');
+
+        expect(transportState.notifications).toContainEqual({
+            method: 'session/cancel',
+            params: { sessionId: 'session-1' }
+        });
+        expect(sentMethods(transportState)).not.toContain('session/close');
+    });
+
+    it('keeps the session/cancel baseline for standard adapters that stay silent', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent', args: ['acp'] });
+        await backend.initialize();
+
+        expect(backend.supportsCancelNotification()).toBe(true);
+
+        await backend.cancelPrompt('session-1');
+
+        expect(transportState.notifications).toContainEqual({
+            method: 'session/cancel',
+            params: { sessionId: 'session-1' }
+        });
+    });
+
+    it('cancels via session/close in close-fallback mode when close is advertised', async () => {
+        transportState.initializeResponse = DSH_SESSION_CAPS;
+        const backend = new AcpSdkBackend({ command: 'dsh', cancelMode: 'close-fallback' });
         await backend.initialize();
 
         expect(backend.supportsCancelNotification()).toBe(false);
 
         await backend.cancelPrompt('session-1');
 
-        // dsh-style capability set: closing the session is the only safe abort
-        // — session/cancel kills the whole process.
+        // dsh-style capability set: closing the session is the only safe
+        // abort — the session/cancel notification kills the whole process.
         expect(transportState.calls).toContainEqual({
             method: 'session/close',
             params: { sessionId: 'session-1' },
@@ -72,69 +108,46 @@ describe('AcpSdkBackend.cancel', () => {
         expect(sentMethods(transportState)).not.toContain('session/cancel');
     });
 
-    it('sends session/cancel when the cancel capability is advertised', async () => {
-        transportState.initializeResponse = {
-            protocolVersion: 1,
-            agentCapabilities: {
-                sessionCapabilities: { cancel: {}, close: {} }
-            }
-        };
-        const backend = new AcpSdkBackend({ command: 'agent', args: ['acp'] });
-        await backend.initialize();
-
-        expect(backend.supportsCancelNotification()).toBe(true);
-
-        await backend.cancelPrompt('session-1');
-
-        expect(transportState.notifications).toContainEqual({
-            method: 'session/cancel',
-            params: { sessionId: 'session-1' }
-        });
-        expect(sentMethods(transportState)).not.toContain('session/close');
-    });
-
-    it('keeps session/cancel for agents that stay silent about session capabilities', async () => {
-        // Positive-absence back-compat: zed-based flavors do not advertise
-        // sessionCapabilities and previously received session/cancel.
-        const backend = new AcpSdkBackend({ command: 'agent', args: ['acp'] });
-        await backend.initialize();
-
-        expect(backend.supportsCancelNotification()).toBe(true);
-
-        await backend.cancelPrompt('session-1');
-
-        expect(transportState.notifications).toContainEqual({
-            method: 'session/cancel',
-            params: { sessionId: 'session-1' }
-        });
-    });
-
-    it('does nothing when capabilities advertise neither cancel nor close', async () => {
+    it('falls back to the session/cancel baseline in close-fallback mode without close', async () => {
+        // No close advertised: there is nothing safer to try than the spec
+        // baseline, even in close-fallback mode.
         transportState.initializeResponse = {
             protocolVersion: 1,
             agentCapabilities: {
                 sessionCapabilities: { list: {} }
             }
         };
-        const backend = new AcpSdkBackend({ command: 'agent', args: ['acp'] });
+        const backend = new AcpSdkBackend({ command: 'dsh', cancelMode: 'close-fallback' });
         await backend.initialize();
 
-        expect(backend.supportsCancelNotification()).toBe(false);
+        expect(backend.supportsCancelNotification()).toBe(true);
 
         await backend.cancelPrompt('session-1');
 
-        expect(sentMethods(transportState)).not.toContain('session/cancel');
+        expect(transportState.notifications).toContainEqual({
+            method: 'session/cancel',
+            params: { sessionId: 'session-1' }
+        });
         expect(sentMethods(transportState)).not.toContain('session/close');
     });
 
-    it('swallows session/close fallback failures', async () => {
-        transportState.initializeResponse = {
-            protocolVersion: 1,
-            agentCapabilities: {
-                sessionCapabilities: { close: {} }
-            }
-        };
-        const backend = new AcpSdkBackend({ command: 'agent', args: ['acp'] });
+    it('falls back to the session/cancel baseline in close-fallback mode when capabilities are silent', async () => {
+        const backend = new AcpSdkBackend({ command: 'dsh', cancelMode: 'close-fallback' });
+        await backend.initialize();
+
+        expect(backend.supportsCancelNotification()).toBe(true);
+
+        await backend.cancelPrompt('session-1');
+
+        expect(transportState.notifications).toContainEqual({
+            method: 'session/cancel',
+            params: { sessionId: 'session-1' }
+        });
+    });
+
+    it('swallows session/close failures in close-fallback mode', async () => {
+        transportState.initializeResponse = DSH_SESSION_CAPS;
+        const backend = new AcpSdkBackend({ command: 'dsh', cancelMode: 'close-fallback' });
         await backend.initialize();
 
         // Transport rejects (agent already gone, timeout, ...) — cancelPrompt
