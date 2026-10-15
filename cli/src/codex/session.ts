@@ -5,11 +5,49 @@ import type { EnhancedMode, PermissionMode } from './loop';
 import type { CodexCliOverrides } from './utils/codexCliOverrides';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
 import type { Metadata, SessionModel, SessionModelReasoningEffort } from '@/api/types';
+import { normalizeCodexUsageUpdate } from './utils/codexUsage';
+import type { CodexUsage } from '@hapi/protocol/types';
 
 type LocalLaunchFailure = {
     message: string;
     exitReason: LocalLaunchExitReason;
 };
+
+function mergeRateLimitBuckets(
+    previous: CodexUsage['rateLimits'] | undefined,
+    next: CodexUsage['rateLimits'] | undefined,
+    present: { fiveHour: boolean; weekly: boolean }
+): CodexUsage['rateLimits'] {
+    if (present.fiveHour && present.weekly) {
+        return next ?? {};
+    }
+    const merged: NonNullable<CodexUsage['rateLimits']> = { ...previous };
+    if (present.fiveHour) {
+        if (next?.fiveHour) merged.fiveHour = next.fiveHour;
+        else delete merged.fiveHour;
+    }
+    if (present.weekly) {
+        if (next?.weekly) merged.weekly = next.weekly;
+        else delete merged.weekly;
+    }
+    return merged;
+}
+
+function applyPresentAccountField(
+    merged: Record<string, unknown>,
+    previous: CodexUsage | undefined,
+    usage: CodexUsage,
+    present: { credits: boolean; rateLimitReachedType: boolean; planType: boolean; limitId: boolean },
+    field: 'credits' | 'rateLimitReachedType' | 'planType' | 'limitId'
+): void {
+    if (!present[field]) {
+        if (previous?.[field] !== undefined) merged[field] = previous[field];
+        else delete merged[field];
+        return;
+    }
+    if (usage[field] !== undefined) merged[field] = usage[field];
+    else delete merged[field];
+}
 
 export class CodexSession extends AgentSessionBase<EnhancedMode> {
     transcriptPath: string | null = null;
@@ -121,7 +159,29 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
             // mergeSessionMetadata. The value is `null` on the wire only;
             // MetadataSchema parses `string().optional()`, so the
             // post-merge persisted blob carries no key.
+            //
+            // Drop thread-local context/token totals after /clear, but keep
+            // account-scoped rate-limit / credit fields. Those are not reset by
+            // starting a replacement thread and may not be re-emitted soon.
+            const previousUsage = metadata.codexUsage;
             const updated: Record<string, unknown> = { ...metadata, codexSessionId: null };
+            if (previousUsage) {
+                const accountUsage: Record<string, unknown> = {};
+                if (previousUsage.rateLimits !== undefined) accountUsage.rateLimits = previousUsage.rateLimits;
+                if (previousUsage.credits !== undefined) accountUsage.credits = previousUsage.credits;
+                if (previousUsage.rateLimitReachedType !== undefined) {
+                    accountUsage.rateLimitReachedType = previousUsage.rateLimitReachedType;
+                }
+                if (previousUsage.planType !== undefined) accountUsage.planType = previousUsage.planType;
+                if (previousUsage.limitId !== undefined) accountUsage.limitId = previousUsage.limitId;
+                if (Object.keys(accountUsage).length > 0) {
+                    updated.codexUsage = accountUsage;
+                } else {
+                    delete updated.codexUsage;
+                }
+            } else {
+                delete updated.codexUsage;
+            }
             return updated as unknown as Metadata;
         });
     }
@@ -136,6 +196,33 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
 
     setModelReasoningEffort = (modelReasoningEffort: SessionModelReasoningEffort): void => {
         this.modelReasoningEffort = modelReasoningEffort;
+    };
+
+    recordCodexUsage = (payload: unknown): void => {
+        const update = normalizeCodexUsageUpdate(payload);
+        if (!update) {
+            return;
+        }
+        const { usage, hasRateLimitSnapshot, presentRateLimitBuckets, presentAccountFields } = update;
+        this.client.updateMetadata((metadata) => {
+            const previous = metadata.codexUsage;
+            const nextRateLimits = !hasRateLimitSnapshot
+                ? previous?.rateLimits ?? usage.rateLimits
+                : mergeRateLimitBuckets(previous?.rateLimits, usage.rateLimits, presentRateLimitBuckets);
+            const merged = {
+                ...previous,
+                ...usage,
+                rateLimits: nextRateLimits
+            };
+            applyPresentAccountField(merged, previous, usage, presentAccountFields, 'credits');
+            applyPresentAccountField(merged, previous, usage, presentAccountFields, 'rateLimitReachedType');
+            applyPresentAccountField(merged, previous, usage, presentAccountFields, 'planType');
+            applyPresentAccountField(merged, previous, usage, presentAccountFields, 'limitId');
+            return {
+                ...metadata,
+                codexUsage: merged
+            };
+        });
     };
 
     setCollaborationMode = (mode: EnhancedMode['collaborationMode']): void => {

@@ -925,4 +925,29 @@ describe('convertCodexEvent', () => {
             payload
         })).toBeNull();
     });
+
+    it('preserves thread id and scope role on token_count events', () => {
+        const result = convertCodexEvent({
+            type: 'event_msg',
+            thread_id: 'parent-thread',
+            payload: {
+                type: 'token_count',
+                scope_role: 'child',
+                info: {
+                    total_token_usage: { total_tokens: 100 }
+                }
+            }
+        });
+
+        expect(result?.messages?.[0]).toMatchObject({
+            type: 'token_count',
+            thread_id: 'parent-thread',
+            threadId: 'parent-thread',
+            scope_role: 'child',
+            scopeRole: 'child',
+            info: {
+                total_token_usage: { total_tokens: 100 }
+            }
+        });
+    });
 });
