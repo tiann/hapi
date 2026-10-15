@@ -18,6 +18,10 @@ import { BaseLocalLauncher } from '@/modules/common/launcher/BaseLocalLauncher';
 import { createCodexTranscriptLocator, type CodexTranscriptLocator } from './utils/codexTranscriptLocator';
 import { CodexToolHookBridge, isCodexToolHookEvent } from './utils/codexToolHookBridge';
 import { countHookCoveredExecCalls } from './utils/codexExecWrapper';
+import { buildCodexContextDetails, publishContextDetails } from '@/agent/contextDetails';
+import { listSlashCommands } from '@/modules/common/slashCommands';
+import { listSkills } from '@/modules/common/skills';
+import { listConfiguredCodexMcpServers } from './utils/codexMcpInventory';
 
 type ProposedPlanMessage = Extract<CodexMessage, { type: 'proposed_plan' }>;
 type ToolCallMessage = Extract<CodexMessage, { type: 'tool-call' }>;
@@ -87,10 +91,67 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         : session.codexArgs;
     const cwdOverride = parseCodexCliOverrides(session.codexArgs).cwd;
     const effectiveCodexCwd = cwdOverride ? resolve(session.path, cwdOverride) : session.path;
+    let availableSlashCommands: string[] = [];
+    let availableSkills: Array<{ name: string; enabled: boolean }> = [];
+    let slashCommandsLoaded = false;
+    let skillsLoaded = false;
+    let mcpInventoryLoaded = false;
+    let mcpServerInventory: Awaited<ReturnType<typeof listConfiguredCodexMcpServers>> = undefined;
 
     // Start hapi hub for MCP bridge (same as remote mode)
-    const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client);
+    const { server: happyServer, mcpServers, toolNames: hapiToolNames } = await buildHapiMcpBridge(session.client);
     logger.debug(`[codex-local]: Started hapi MCP bridge server at ${happyServer.url}`);
+    const getMcpContextArgs = () => {
+        const savedMcpServers = session.client.getMetadata()?.contextDetails?.codex?.mcpServers;
+        const includeKnownBridge = mcpInventoryLoaded
+            || ((savedMcpServers?.length ?? 0) === 0 && Object.keys(mcpServers).length > 0);
+        return {
+            mcpServers: includeKnownBridge ? mcpServers : undefined,
+            mcpServerInventory: includeKnownBridge
+                ? [
+                    ...(mcpInventoryLoaded ? (mcpServerInventory ?? []) : []),
+                    ...(Object.keys(mcpServers).length > 0 ? [{ name: 'hapi', toolNames: [...hapiToolNames] }] : [])
+                ]
+                : undefined
+        };
+    };
+    const inventoryTask = Promise.all([
+        listConfiguredCodexMcpServers(effectiveCodexCwd, session.codexArgs)
+            .then((inventory) => {
+                if (inventory === undefined) return;
+                mcpServerInventory = inventory;
+                mcpInventoryLoaded = true;
+            })
+            .catch((error) => {
+                logger.debug(`[codex-local]: Failed to list configured MCP servers: ${error instanceof Error ? error.message : String(error)}`);
+            }),
+        listSlashCommands('codex', effectiveCodexCwd)
+            .then((commands) => {
+                availableSlashCommands = commands.map((command) => command.name);
+                slashCommandsLoaded = true;
+            })
+            .catch((error) => {
+                logger.debug(`[codex-local]: Failed to list slash commands: ${error instanceof Error ? error.message : String(error)}`);
+            }),
+        listSkills(effectiveCodexCwd, { flavor: 'codex' })
+            .then((skills) => {
+                availableSkills = skills.map((skill) => ({ name: skill.name, enabled: true }));
+                skillsLoaded = true;
+            })
+            .catch((error) => {
+                logger.debug(`[codex-local]: Failed to list skills: ${error instanceof Error ? error.message : String(error)}`);
+            })
+    ]).then(() => {
+        if (shuttingDown) return;
+        publishContextDetails(session.client, buildCodexContextDetails({
+            slashCommands: slashCommandsLoaded ? availableSlashCommands : undefined,
+            skills: skillsLoaded ? availableSkills : undefined,
+            ...getMcpContextArgs()
+        }));
+    });
+    void inventoryTask.catch((error) => {
+        logger.debug(`[codex-local]: Failed to collect capability inventory: ${error instanceof Error ? error.message : String(error)}`);
+    });
 
     const reportTranscriptSyncFailure = (transcriptPath: string, error: unknown): void => {
         const detail = error instanceof Error ? error.message : String(error);
@@ -222,6 +283,16 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                     flushPendingExecWrapper(message.callId, message);
                 }
             } else {
+                if (message.type === 'token_count') {
+                    publishContextDetails(session.client, buildCodexContextDetails({
+                        info: message.info,
+                        model: transcriptModel,
+                        threadId: primarySessionId,
+                        slashCommands: slashCommandsLoaded ? availableSlashCommands : undefined,
+                        skills: skillsLoaded ? availableSkills : undefined,
+                        ...getMcpContextArgs()
+                    }));
+                }
                 const scopedMessage = message.type !== 'token_count'
                     ? message
                     : context.replayedHistory
