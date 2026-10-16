@@ -71,7 +71,8 @@ describe('pingPeer', () => {
         sleepCalls = []
     })
 
-    it('sends to an already-active session without resume', async () => {
+    it('uses a fresh UUID localId for each identical send without resuming an active peer', async () => {
+        const localIds: string[] = []
         const sessionId = '05d9f0f2-9273-4137-933c-07459a1146a2'
         const http = createHttpMock({
             post: (url, body) => {
@@ -80,7 +81,11 @@ describe('pingPeer', () => {
                     return { status: 200, data: { token: 'jwt' } }
                 }
                 if (url.endsWith(`/api/sessions/${sessionId}/messages`)) {
-                    expect(body).toEqual({ text: 'hello peer' })
+                    expect(body).toEqual({
+                        text: 'hello peer',
+                        localId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
+                    })
+                    localIds.push((body as { localId: string }).localId)
                     return { status: 200, data: { ok: true } }
                 }
                 throw new Error(`unexpected POST ${url}`)
@@ -114,20 +119,24 @@ describe('pingPeer', () => {
             }
         })
 
-        const result = await pingPeer({
-            sessionIdPrefix: '05d9f0f2',
-            message: 'hello peer',
-            accessToken: 'tok',
-            apiUrl: 'http://127.0.0.1:3006',
-            http: http as never
-        })
+        for (let send = 0; send < 2; send++) {
+            const result = await pingPeer({
+                sessionIdPrefix: '05d9f0f2',
+                message: 'hello peer',
+                accessToken: 'tok',
+                apiUrl: 'http://127.0.0.1:3006',
+                http: http as never
+            })
 
-        expect(result).toEqual({
-            sessionId,
-            name: 'Orchestrator',
-            resumed: false
-        })
-        expect(http.post).toHaveBeenCalledTimes(2)
+            expect(result).toEqual({
+                sessionId,
+                name: 'Orchestrator',
+                resumed: false
+            })
+        }
+
+        expect(new Set(localIds).size).toBe(2)
+        expect(http.post).toHaveBeenCalledTimes(4)
     })
 
     it('resumes an inactive session, waits for active, then sends', async () => {

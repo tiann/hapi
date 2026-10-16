@@ -8,6 +8,7 @@
  * Callers must not invent parallel auth or arbitrary hosts.
  */
 
+import { randomUUID } from 'node:crypto'
 import axios, { type AxiosInstance } from 'axios'
 import { extractAssistantPlainText, isObject } from '@hapi/protocol'
 import { normalizeSessionIdPrefix } from '@hapi/protocol/sessionCitation'
@@ -349,7 +350,7 @@ async function sendMessage(
 ): Promise<void> {
     const response = await http.post(
         `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages`,
-        { text: message },
+        { text: message, localId: randomUUID() },
         {
             headers: authHeaders(jwt),
             timeout: 30_000,
