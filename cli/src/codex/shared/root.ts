@@ -39,6 +39,19 @@ const SettingsSchema = z.object({
     personality: z.enum(['friendly', 'pragmatic', 'none']).optional()
 });
 
+/**
+ * App-server refusals that mean "this thread has no history to page through",
+ * rather than a transport or protocol failure:
+ *
+ * - `not materialized yet` — a thread has no rollout until its first user message.
+ * - `missing source rollout` / `no rollout found` — the thread's lineage points at
+ *   a rollout that has been pruned.
+ */
+function isMissingThreadHistoryError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return /not materialized yet|missing source rollout|no rollout found/i.test(message);
+}
+
 /** One immutable HAPI identity + independent subscription for one root. */
 export class SharedCodexRoot {
     readonly client: CodexAppServerClient;
@@ -201,7 +214,25 @@ export class SharedCodexRoot {
             completedRequests: { ...state.completedRequests, ...Object.fromEntries(Object.entries(state.requests ?? {}).map(([id, request]) =>
                 [id, { ...request, completedAt: Date.now(), status: 'canceled' as const }])) }
         }));
-        if (subscribe) response = record(await this.client.request('thread/resume', { threadId }));
+        // excludeTurns: the app-server would otherwise hydrate the whole thread
+        // and we would replay all of it to the hub here *and* again in refresh()
+        // below. `refresh()` loads the same history through the paged
+        // `readThread`, so nothing is lost by declining the hydration.
+        if (subscribe) {
+            try {
+                response = record(await this.client.request('thread/resume', { threadId, excludeTurns: true }));
+            } catch (error) {
+                // A thread we have just started has no rollout until its first user
+                // message, and the app-server refuses to resume it —
+                // "invalid paginated history lineage ... missing source rollout",
+                // or "not materialized yet". There is nothing to resume *into*:
+                // this thread is already the one we want, and the response we
+                // already hold describes it. Letting this escape killed every
+                // session launch.
+                if (!isMissingThreadHistoryError(error)) throw error;
+                logger.debug('[Codex shared] nothing to resume into yet', { threadId, error });
+            }
+        }
         this.acceptSettings(response); this.acceptSettings(this.host.settingsFor(threadId) ?? {});
         await this.projection.history(response.thread); await this.refresh(); await this.refreshChildren(true);
     }
@@ -277,17 +308,30 @@ export class SharedCodexRoot {
         await this.projection.notification(method, params, modelAtReceipt); this.alive();
     }
     async readThread(threadId = this.threadId): Promise<Record<string, unknown>> {
-        let thread = record(record(await this.client.request('thread/read', { threadId, includeTurns: false })).thread);
-        if (thread.historyMode === 'paginated') {
-            const turns: unknown[] = []; let cursor: string | undefined;
-            do {
-                const page = record(await this.client.request('thread/turns/list', { threadId, cursor, sortDirection: 'asc', itemsView: 'full' }));
-                if (!Array.isArray(page.data)) throw new Error('Invalid Codex history');
-                turns.push(...page.data); cursor = string(page.nextCursor);
-            } while (cursor);
-            thread.turns = turns;
-        } else thread = record(record(await this.client.request('thread/read', { threadId, includeTurns: true })).thread);
-        return thread;
+        // Both the metadata read and the paginated read can fail on a thread that
+        // has no history yet — the app-server answers `thread/read` with
+        // "invalid paginated history lineage ... missing source rollout", and
+        // `thread/turns/list` with "not materialized yet" (no rollout exists
+        // until the first user message). Neither means the session is broken, so
+        // both are treated as "nothing to replay yet"; letting either escape
+        // killed the launch before the session could start.
+        try {
+            let thread = record(record(await this.client.request('thread/read', { threadId, includeTurns: false })).thread);
+            if (thread.historyMode === 'paginated') {
+                const turns: unknown[] = []; let cursor: string | undefined;
+                do {
+                    const page = record(await this.client.request('thread/turns/list', { threadId, cursor, sortDirection: 'asc', itemsView: 'full' }));
+                    if (!Array.isArray(page.data)) throw new Error('Invalid Codex history');
+                    turns.push(...page.data); cursor = string(page.nextCursor);
+                } while (cursor);
+                thread.turns = turns;
+            } else thread = record(record(await this.client.request('thread/read', { threadId, includeTurns: true })).thread);
+            return thread;
+        } catch (error) {
+            if (!isMissingThreadHistoryError(error)) throw error;
+            logger.debug('[Codex shared] no thread history to replay', { threadId, error });
+            return { id: threadId, turns: [] };
+        }
     }
     refresh(): Promise<void> {
         return this.refreshing ??= this.refreshNow().finally(() => { this.refreshing = undefined; });
@@ -329,7 +373,9 @@ export class SharedCodexRoot {
         for (const [id, projection] of this.children) {
             // Replaying a completed/unloaded child must not start its engine.
             try {
-                if (subscribe && loaded.has(id)) await this.client.request('thread/resume', { threadId: id });
+                // Response is discarded — only the side effect of loading the child
+                // matters — so never pay for its history hydration.
+                if (subscribe && loaded.has(id)) await this.client.request('thread/resume', { threadId: id, excludeTurns: true });
                 projection.reset(); await projection.history(await this.readThread(id));
             } catch (error) { logger.debug('[Codex shared] child history unavailable', { id, error }); }
         }

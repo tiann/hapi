@@ -363,7 +363,10 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 const root = await prepare(launch.cwd, existing);
                 await reserveRecord(root, threadId); return root;
             });
-            const params = root.config({ ...launch.threadParams, threadId });
+            // excludeTurns: `bind` replays `response.thread` to the hub, so a
+            // hydrated resume would push the entire thread in one burst. Decline
+            // it and let `bind`'s paged `refresh()` load the history instead.
+            const params = { ...root.config({ ...launch.threadParams, threadId }), excludeTurns: true };
             let response: Record<string, unknown>;
             try {
                 response = record(await root.client.request('thread/resume', params));
