@@ -385,37 +385,113 @@ async function killProcessTree(pid: number, force: boolean): Promise<boolean> {
   return pids.every((candidate) => !isProcessAlive(candidate));
 }
 
+export type ProcessTreeStopReport = {
+  rootPid: number;
+  outcome: 'verified' | 'scan_failed' | 'unconfirmed';
+  elapsedMs: number;
+  phaseMs: Record<string, number>;
+  members: Array<{
+    pid: number;
+    expectedMarker: string | null;
+    observedMarker?: string | null;
+    alive?: boolean;
+    observedAt?: number;
+    resolution?: 'exited' | 'generation_changed';
+  }>;
+};
+
 /** Kill a PID and all descendants, verifying the complete tree is gone. */
-export async function killProcessTreeByPid(pid: number, force: boolean = false): Promise<boolean> {
+export async function killProcessTreeByPid(
+  pid: number,
+  force: boolean = false,
+  onReport?: (report: ProcessTreeStopReport) => void
+): Promise<boolean> {
   const n = typeof pid === 'number' ? pid : Number(pid)
   if (!Number.isFinite(n) || n <= 0) return false;
   if (isWindows()) {
+    const started = Date.now();
+    const phaseMs: Record<string, number> = {};
+    const members = new Map<number, ProcessTreeStopReport['members'][number]>();
+    const finish = (outcome: ProcessTreeStopReport['outcome']): boolean => {
+      // Report observations already made by the verifier. Re-probing here can
+      // both hide the failing instant and add seconds to an archive request.
+      try { onReport?.({ rootPid: n, outcome, elapsedMs: Date.now() - started, phaseMs, members: [...members.values()] }); }
+      catch { /* Diagnostics must not change the termination decision. */ }
+      return outcome === 'verified';
+    };
     // taskkill /T exit 0 means "signalled", not "every descendant is dead".
     // Collect the tree + generation markers first, signal the root with /T,
     // then individually signal any surviving pre-kill PIDs whose generation
     // still matches (PID reuse must not be killed) (#1911 bot Major).
     const treePids = collectWindowsProcessTree(n);
+    phaseMs.scan = Date.now() - started;
     if (treePids === 'scan_failed') {
       // Still signal the (known) root — scan failure must not mean zero kill —
       // but never claim stopped without a full-tree verify (#1911 Opus Major).
       await signalAndWaitWindowsRoot(n, force);
-      return false;
+      phaseMs.signal = Date.now() - started - phaseMs.scan;
+      return finish('scan_failed');
     }
     const markers = new Map<number, string | null>();
     for (const candidate of treePids) {
+      // CIM/tasklist probes are synchronous and can take seconds per PID.
+      // Let the runner accept session-started webhooks between probes.
+      await new Promise<void>(resolve => setImmediate(resolve));
       markers.set(candidate, getProcessStartMarker(candidate));
+      members.set(candidate, { pid: candidate, expectedMarker: markers.get(candidate) ?? null });
     }
+    phaseMs.markers = Date.now() - started - phaseMs.scan;
+    const signallingStarted = Date.now();
     await signalAndWaitWindowsRoot(n, force);
     for (const survivor of treePids) {
+      await new Promise<void>(resolve => setImmediate(resolve));
       if (survivor === n) continue;
       if (!isProcessAlive(survivor)) continue;
       const expected = markers.get(survivor);
       const current = getProcessStartMarker(survivor);
-      // Unverifiable or reused PID — leave alone; final every() fails closed.
+      Object.assign(members.get(survivor)!, { observedMarker: current, observedAt: Date.now() });
+      // Unverifiable or reused PID — never signal the new/unknown process.
       if (!expected || !current || current !== expected) continue;
       await signalAndWaitWindowsRoot(survivor, true);
     }
-    return treePids.every((candidate) => !isProcessAlive(candidate));
+    phaseMs.signal = Date.now() - signallingStarted;
+    // A wrapper can exit before its descendants finish draining. Keep the
+    // full-tree proof, allowing a bounded grace period without signalling an
+    // unverified or reused PID.
+    const deadline = Date.now() + 2_000;
+    const verificationStarted = Date.now();
+    const remaining = new Set(treePids);
+    for (;;) {
+      for (const candidate of remaining) {
+        await new Promise<void>(resolve => setImmediate(resolve));
+        const member = members.get(candidate)!;
+        const alive = isProcessAlive(candidate);
+        Object.assign(member, { alive, observedAt: Date.now() });
+        if (!alive) {
+          member.resolution = 'exited';
+          remaining.delete(candidate);
+          continue;
+        }
+        const expected = markers.get(candidate);
+        const current = expected ? getProcessStartMarker(candidate) : null;
+        member.observedMarker = current;
+        // A different known generation proves this tree member exited. Once
+        // proven gone, a PID must never re-enter the tree through later reuse.
+        // A missing marker alone is ambiguous and cannot prove termination.
+        if (expected && current && current !== expected) {
+          member.resolution = 'generation_changed';
+          remaining.delete(candidate);
+        } else if (!isProcessAlive(candidate)) {
+          Object.assign(member, { alive: false, resolution: 'exited' });
+          remaining.delete(candidate);
+        }
+        member.observedAt = Date.now();
+      }
+      phaseMs.verify = Date.now() - verificationStarted;
+      if (remaining.size === 0) return finish('verified');
+      if (Date.now() >= deadline) return finish('unconfirmed');
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
   }
   return killProcessTree(n, force);
 }
@@ -457,7 +533,8 @@ async function waitForProcessToDie(pid: number, force: boolean): Promise<void> {
 
 export async function killProcessByChildProcess(
   child: ChildProcess,
-  force: boolean = false
+  force: boolean = false,
+  onReport?: (report: ProcessTreeStopReport) => void
 ): Promise<boolean> {
   const pid = child.pid;
   if (!pid) {
@@ -465,5 +542,5 @@ export async function killProcessByChildProcess(
   }
 
   // Both platforms: tree-kill + full-tree verify (win32 must not trust root-only).
-  return killProcessTreeByPid(pid, force);
+  return killProcessTreeByPid(pid, force, onReport);
 }

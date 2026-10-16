@@ -335,6 +335,33 @@ describe('killProcess on Windows (orphanReap / stopSession)', () => {
         expect(taskkills[0]![1]).toEqual(['/F', '/T', '/PID', '9901'])
     })
 
+    it('services queued control work between Windows tree generation probes', async () => {
+        vi.useRealTimers()
+        const { killProcessTreeByPid } = await import('./process')
+        const alive = new Set([100, 200])
+        let controlServiced = false
+        let controlServicedBeforeSignalling = false
+        setImmediate(() => { controlServiced = true })
+        spawnSyncMock.mockImplementation((cmd: string, args: string[] = []) => {
+            if (cmd === 'powershell') {
+                const script = args.at(-1) ?? ''
+                return completed(script.includes('ParentProcessId') ? 'OK:200,100' : 'generation')
+            }
+            if (cmd === 'tasklist') {
+                const pid = Number(args.find(a => a.startsWith('PID eq '))?.slice(7))
+                return completed(alive.has(pid) ? `proc.exe ${pid} Console` : 'INFO: No tasks')
+            }
+            if (cmd === 'taskkill') {
+                if (alive.size === 2) controlServicedBeforeSignalling = controlServiced
+                alive.delete(Number(args[args.indexOf('/PID') + 1]))
+            }
+            return completed('')
+        })
+        await expect(killProcessTreeByPid(100, true)).resolves.toBe(true)
+        expect(controlServicedBeforeSignalling).toBe(true)
+        expect(alive.size).toBe(0)
+    })
+
     it('killProcessTreeByPid signals surviving descendants after taskkill /T misses them', async () => {
         // #1911 bot Major: taskkill /T exit 0 is "signalled", not "tree gone".
         // When the root dies but a grandchild survives (broken intermediate link),
@@ -396,8 +423,98 @@ describe('killProcess on Windows (orphanReap / stopSession)', () => {
         expect(alive.size).toBe(0)
     })
 
+    it('waits for an unverifiable descendant to finish exiting without signalling it', async () => {
+        const { killProcessTreeByPid } = await import('./process')
+        const alive = new Set([100, 200])
+        const signalled: number[] = []
+        spawnSyncMock.mockImplementation((cmd: string, args: string[] = []) => {
+            if (cmd === 'powershell') {
+                const script = args.at(-1) ?? ''
+                if (script.includes('ParentProcessId')) return completed('OK:200,100')
+                return completed(script.includes('ProcessId = 100') ? 'generation-100' : '')
+            }
+            if (cmd === 'tasklist') {
+                const pid = Number(args.find(a => a.startsWith('PID eq '))?.slice(7))
+                return completed(alive.has(pid) ? `proc.exe ${pid} Console` : 'INFO: No tasks')
+            }
+            if (cmd === 'taskkill') {
+                const pid = Number(args[args.indexOf('/PID') + 1])
+                signalled.push(pid);alive.delete(pid)
+                setTimeout(() => alive.delete(200), 200)
+            }
+            return completed('')
+        })
+        const done = killProcessTreeByPid(100, true)
+        await vi.advanceTimersByTimeAsync(3_000)
+        await expect(done).resolves.toBe(true)
+        expect(signalled).toEqual([100])
+    })
+
+    it('does not reintroduce an exited tree member when its PID is reused during the grace wait', async () => {
+        const { killProcessTreeByPid } = await import('./process')
+        const alive = new Set([100, 200, 300])
+        const signalled: number[] = []
+        spawnSyncMock.mockImplementation((cmd: string, args: string[] = []) => {
+            if (cmd === 'powershell') {
+                const script = args.at(-1) ?? ''
+                if (script.includes('ParentProcessId')) return completed('OK:300,200,100')
+                return completed(script.includes('ProcessId = 300') ? '' : 'generation')
+            }
+            if (cmd === 'tasklist') {
+                const pid = Number(args.find(a => a.startsWith('PID eq '))?.slice(7))
+                return completed(alive.has(pid) ? `proc.exe ${pid} Console` : 'INFO: No tasks')
+            }
+            if (cmd === 'taskkill') {
+                const pid = Number(args[args.indexOf('/PID') + 1])
+                signalled.push(pid); alive.delete(pid); alive.delete(200)
+                setTimeout(() => alive.add(200), 100)
+                setTimeout(() => alive.delete(300), 200)
+            }
+            return completed('')
+        })
+        const done = killProcessTreeByPid(100, true)
+        await vi.advanceTimersByTimeAsync(3_000)
+        await expect(done).resolves.toBe(true)
+        expect(signalled).toEqual([100])
+        expect(alive.has(200)).toBe(true)
+    })
+
+    it('fails closed without signalling a surviving descendant whose generation cannot be read', async () => {
+        const { killProcessTreeByPid } = await import('./process')
+        const report = vi.fn()
+        const alive = new Set([100, 200])
+        const signalled: number[] = []
+        spawnSyncMock.mockImplementation((cmd: string, args: string[] = []) => {
+            if (cmd === 'powershell') {
+                const script = args.at(-1) ?? ''
+                if (script.includes('ParentProcessId')) return completed('OK:200,100')
+                return completed(script.includes('ProcessId = 100') ? 'generation-100' : '')
+            }
+            if (cmd === 'tasklist') {
+                const pid = Number(args.find(a => a.startsWith('PID eq '))?.slice(7))
+                return completed(alive.has(pid) ? `proc.exe ${pid} Console` : 'INFO: No tasks')
+            }
+            if (cmd === 'taskkill') {
+                const pid = Number(args[args.indexOf('/PID') + 1])
+                signalled.push(pid); alive.delete(pid)
+            }
+            return completed('')
+        })
+        const done = killProcessTreeByPid(100, true, report)
+        await vi.advanceTimersByTimeAsync(3_000)
+        await expect(done).resolves.toBe(false)
+        expect(signalled).toEqual([100])
+        expect(alive.has(200)).toBe(true)
+        expect(report).toHaveBeenCalledTimes(1)
+        expect(report.mock.calls[0]![0]).toMatchObject({
+            rootPid: 100, outcome: 'unconfirmed',
+            members: expect.arrayContaining([expect.objectContaining({pid: 200, expectedMarker: null, alive: true})])
+        })
+    })
+
     it('killProcessTreeByPid does not kill a surviving PID that was reused', async () => {
         const { killProcessTreeByPid } = await import('./process')
+        const report = vi.fn((_report: import('./process').ProcessTreeStopReport) => { throw new Error('diagnostic sink unavailable') })
         const alive = new Set([100, 200])
         // After root kill, PID 200 is recycled with a new generation marker.
         let rootGone = false
@@ -451,12 +568,20 @@ describe('killProcess on Windows (orphanReap / stopSession)', () => {
             return completed('')
         })
 
-        const done = killProcessTreeByPid(100, true)
-        await vi.advanceTimersByTimeAsync(500)
-        // Root signalled; reused descendant left alone → tree verify fails closed.
-        await expect(done).resolves.toBe(false)
+        const done = killProcessTreeByPid(100, true, report)
+        await vi.advanceTimersByTimeAsync(3_000)
+        // A different creation marker proves the original descendant exited.
+        // The new process must remain alive and must not block archive.
+        await expect(done).resolves.toBe(true)
         expect(taskkillPids).toEqual([100])
         expect(alive.has(200)).toBe(true)
+        expect(report).toHaveBeenCalledTimes(1)
+        expect(report.mock.calls[0]![0]).toMatchObject({
+            rootPid: 100, outcome: 'verified',
+            members: expect.arrayContaining([expect.objectContaining({
+                pid: 200, expectedMarker: 'gen-200', observedMarker: 'gen-200-reused', resolution: 'generation_changed'
+            })])
+        })
     })
 
     it('windowsProcessTreeCimCommand is newline-separated (WinPS-parseable)', async () => {
