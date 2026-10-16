@@ -271,7 +271,11 @@ describe('DshRemoteLauncher', () => {
         // The mode picker applies changes via SetSessionConfig →
         // session.setPermissionMode; the bridge must read through to the
         // session on each permission request, not a launch-time copy.
-        const session = createSession('default')
+        harness.sessionPermissionMode = 'default'
+        const queue = createQueue()
+        queue.push('first', {})
+        queue.close()
+        const session = createSessionWithQueue(queue)
         const launcher = new DshRemoteLauncher(session as never)
 
         await launcher.launch()
