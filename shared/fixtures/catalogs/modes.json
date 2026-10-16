@@ -125,7 +125,28 @@
                 "tone": "danger"
             }
         ],
-        "dsh": [],
+        "dsh": [
+            {
+                "label": "Default",
+                "mode": "default",
+                "tone": "neutral"
+            },
+            {
+                "label": "Read Only",
+                "mode": "read-only",
+                "tone": "warning"
+            },
+            {
+                "label": "Safe Yolo",
+                "mode": "safe-yolo",
+                "tone": "warning"
+            },
+            {
+                "label": "Yolo",
+                "mode": "yolo",
+                "tone": "danger"
+            }
+        ],
         "gemini": [
             {
                 "label": "Default",

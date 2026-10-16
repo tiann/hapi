@@ -10,6 +10,7 @@ import {
 } from '@/modules/common/remote/RemoteLauncherBase'
 import { RemoteModeDisplay } from '@/ui/ink/RemoteModeDisplay'
 import { AcpPermissionHandler } from '@/modules/common/permission/AcpPermissionHandler'
+import type { PermissionMode } from '@hapi/protocol/types'
 import { createDshBackend } from './utils/dshBackend'
 import type { DshSession } from './session'
 
@@ -187,7 +188,10 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         this.permissionHandler = new AcpPermissionHandler(
             this.session.client,
             backend,
-            () => undefined,
+            // The session's current permission mode drives auto-approval
+            // decisions (e.g. yolo approves for the session); without this,
+            // every DSH permission request escalates to a permission card.
+            () => this.session.getPermissionMode() as PermissionMode | undefined,
             // Permission 'abort' decisions cancel through the backend directly
             // and never enter handleAbort: record the pending close here so the
             // main loop defers the next message until the session/close response

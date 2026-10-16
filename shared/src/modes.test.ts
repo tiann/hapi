@@ -40,8 +40,13 @@ describe('getPermissionModesForFlavor', () => {
         ])
     })
 
-    test("returns no HAPI mode selector for DSH's server-owned permission policy", () => {
-        expect(getPermissionModesForFlavor('dsh')).toEqual([])
+    test("returns the ACP-bridge modes for DSH (auto-approval via the shared permission bridge)", () => {
+        expect(getPermissionModesForFlavor('dsh')).toEqual([
+            'default',
+            'read-only',
+            'safe-yolo',
+            'yolo'
+        ])
     })
 
     test("returns [] for flavor 'pi' (RPC mode has no runtime permission switching)", () => {
@@ -76,8 +81,16 @@ describe('isPermissionModeAllowedForFlavor', () => {
         expect(isPermissionModeAllowedForFlavor('acceptEdits', 'grok')).toBe(false)
         expect(isPermissionModeAllowedForFlavor('auto', 'grok')).toBe(true)
         expect(isPermissionModeAllowedForFlavor('yolo', 'grok')).toBe(false)
-        expect(isPermissionModeAllowedForFlavor('read-only', 'dsh')).toBe(false)
+    })
+
+    test("allows the ACP-bridge modes for dsh and rejects others", () => {
+        expect(isPermissionModeAllowedForFlavor('default', 'dsh')).toBe(true)
+        expect(isPermissionModeAllowedForFlavor('read-only', 'dsh')).toBe(true)
+        expect(isPermissionModeAllowedForFlavor('safe-yolo', 'dsh')).toBe(true)
+        expect(isPermissionModeAllowedForFlavor('yolo', 'dsh')).toBe(true)
         expect(isPermissionModeAllowedForFlavor('plan', 'dsh')).toBe(false)
+        expect(isPermissionModeAllowedForFlavor('acceptEdits', 'dsh')).toBe(false)
+        expect(isPermissionModeAllowedForFlavor('bypassPermissions', 'dsh')).toBe(false)
     })
 
     test("no mode is allowed for pi", () => {

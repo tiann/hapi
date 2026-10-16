@@ -37,6 +37,9 @@ export type GeminiPermissionMode = typeof GEMINI_PERMISSION_MODES[number]
 export const KIMI_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
 export type KimiPermissionMode = typeof KIMI_PERMISSION_MODES[number]
 
+export const DSH_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
+export type DshPermissionMode = typeof DSH_PERMISSION_MODES[number]
+
 export const COPILOT_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
 export type CopilotPermissionMode = typeof COPILOT_PERMISSION_MODES[number]
 
@@ -140,7 +143,9 @@ export function getPermissionModesForFlavor(flavor?: string | null): readonly Pe
         return KIMI_PERMISSION_MODES
     }
     if (flavor === 'dsh') {
-        return []
+        // DSH permission requests surface through the one-shot ACP permission
+        // bridge (same as Kimi); HAPI-side modes map onto auto-approval there.
+        return DSH_PERMISSION_MODES
     }
     if (flavor === 'copilot') {
         return COPILOT_PERMISSION_MODES
