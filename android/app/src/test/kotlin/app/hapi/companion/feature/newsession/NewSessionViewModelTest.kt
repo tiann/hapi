@@ -268,14 +268,15 @@ class SpawnBodyTest {
     }
 
     @Test
-    fun `dsh uses managed permission policy and omits yolo`() {
+    fun `dsh forwards chosen permission mode and omits yolo`() {
         val body = encode(
             NewSessionLogic.buildSpawnRequest(
-                NewSessionForm(directory = "/repo", agent = "dsh", yolo = true),
+                NewSessionForm(directory = "/repo", agent = "dsh", yolo = true, permissionMode = "yolo"),
                 codexFastTierVisible = false,
             ),
         )
-        assertEquals(setOf("directory", "agent", "sessionType"), body.keys)
+        assertEquals(setOf("directory", "agent", "permissionMode", "sessionType"), body.keys)
+        assertEquals("yolo", body["permissionMode"]!!.jsonPrimitive.content)
     }
 
     @Test
