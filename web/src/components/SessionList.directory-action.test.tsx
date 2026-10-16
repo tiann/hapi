@@ -1,11 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider } from '@/lib/toast-context'
-import { SessionList } from './SessionList'
+import { SessionList, SessionListSearch } from './SessionList'
 
 const SEARCH_LABEL = 'Search sessions (title, path, Agent, machine name, ID, and more)'
 const SEARCH_PLACEHOLDER = 'Search title/path/Agent/machine/ID…'
@@ -164,7 +164,7 @@ describe('SessionList time filter', () => {
         vi.useRealTimers()
     })
 
-    it('keeps the date filter beside collapsed search and filters without expanding it', () => {
+    it('opens the date filter from the unified menu and filters without expanding search', () => {
         const recent = makeSession({
             id: 'recent',
             updatedAt: Date.now(),
@@ -193,17 +193,18 @@ describe('SessionList time filter', () => {
         expect(screen.getByRole('button', { name: /Old session/ })).toBeInTheDocument()
 
         const searchButton = screen.getByRole('button', { name: SEARCH_LABEL })
-        const filterButton = screen.getByRole('button', { name: 'Filter sessions by last activity' })
+        const filterButton = screen.getByRole('button', { name: 'Filter sessions' })
         const searchControl = searchButton.parentElement
-        expect(searchControl?.nextElementSibling).toBe(filterButton.parentElement)
-        expect(searchControl?.parentElement).toBe(filterButton.parentElement?.parentElement)
         expect(searchControl?.parentElement).toHaveClass('relative', 'gap-1', 'min-w-0')
         expect(searchControl?.parentElement?.className.split(/\s+/)).not.toContain('shrink-0')
+        expect(screen.queryByRole('button', { name: 'Filter sessions by last activity' })).toBeNull()
         expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
 
         fireEvent.click(filterButton)
-        const emptyDate = screen.getByRole('button', { name: new Date(2026, 6, 17).toLocaleDateString() })
-        const activeDate = screen.getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` })
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Date' }))
+        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by last activity' })
+        const emptyDate = within(calendar).getByRole('button', { name: new Date(2026, 6, 17).toLocaleDateString() })
+        const activeDate = within(calendar).getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` })
         expect(emptyDate).toHaveClass('text-[var(--app-hint)]')
         expect(activeDate).toHaveClass('text-[var(--app-fg)]')
         expect(activeDate).toHaveAttribute('title', `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity`)
@@ -213,9 +214,8 @@ describe('SessionList time filter', () => {
         expect(screen.getByRole('button', { name: /Recent session/ })).toBeInTheDocument()
         expect(screen.queryByRole('button', { name: /Old session/ })).toBeNull()
         expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
-        expect(filterButton).toHaveAttribute('title', '2026-07-17 - 2026-07-18')
-        expect(filterButton).toHaveAccessibleName('Filter sessions by last activity: 2026-07-17 - 2026-07-18')
-        expect(filterButton).toHaveFocus()
+        expect(filterButton).toHaveAttribute('aria-expanded', 'true')
+        expect(screen.getByRole('menuitemcheckbox', { name: /^Date/ })).toHaveAttribute('aria-checked', 'true')
     })
 
     it('highlights today without requiring hover or session activity', () => {
@@ -238,10 +238,11 @@ describe('SessionList time filter', () => {
             />
         )
 
-        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
-        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions by last activity' }))
-        const today = screen.getByRole('button', { name: new Date(2026, 6, 18).toLocaleDateString() })
-        const anotherDay = screen.getByRole('button', { name: new Date(2026, 6, 17).toLocaleDateString() })
+        fireEvent.click(screen.getByRole('button', { name: 'Filter sessions' }))
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Date' }))
+        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by last activity' })
+        const today = within(calendar).getByRole('button', { name: new Date(2026, 6, 18).toLocaleDateString() })
+        const anotherDay = within(calendar).getByRole('button', { name: new Date(2026, 6, 17).toLocaleDateString() })
 
         expect(today).toHaveClass('bg-[var(--app-subtle-bg)]')
         expect(today).toHaveAttribute('aria-current', 'date')
@@ -268,21 +269,21 @@ describe('SessionList time filter', () => {
             />
         )
 
-        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
-        const filterButton = screen.getByRole('button', { name: 'Filter sessions by last activity' })
+        const filterButton = screen.getByRole('button', { name: 'Filter sessions' })
         fireEvent.click(filterButton)
-        const startDate = screen.getByRole('button', { name: new Date(2026, 6, 1).toLocaleDateString() })
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Date' }))
+        const calendar = screen.getByRole('dialog', { name: 'Filter sessions by last activity' })
+        const startDate = within(calendar).getByRole('button', { name: new Date(2026, 6, 1).toLocaleDateString() })
         fireEvent.click(startDate)
         expect(startDate).toHaveClass('bg-[var(--app-button)]', 'text-[var(--app-button-text)]')
         expect(startDate).not.toHaveClass('text-white')
         expect(screen.getByText('Select end date')).toBeInTheDocument()
-        fireEvent.click(screen.getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` }))
+        fireEvent.click(within(calendar).getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` }))
 
-        expect(filterButton).toHaveAttribute('aria-expanded', 'false')
-        expect(filterButton).toHaveAttribute('title', '2026-07-01 - 2026-07-18')
+        expect(filterButton).toHaveAttribute('aria-expanded', 'true')
     })
 
-    it('returns focus to the search input after clearing the date range', () => {
+    it('returns focus to the date filter row after clearing the date range', () => {
         const session = makeSession({
             id: 'session-1',
             updatedAt: Date.now(),
@@ -302,19 +303,20 @@ describe('SessionList time filter', () => {
             />
         )
 
-        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
-        const input = screen.getByPlaceholderText(SEARCH_PLACEHOLDER)
-        const filterButton = screen.getByRole('button', { name: 'Filter sessions by last activity' })
+        const filterButton = screen.getByRole('button', { name: 'Filter sessions' })
         fireEvent.click(filterButton)
-        fireEvent.click(screen.getByRole('button', { name: new Date(2026, 6, 1).toLocaleDateString() }))
-        fireEvent.click(screen.getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` }))
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Date' }))
+        let calendar = screen.getByRole('dialog', { name: 'Filter sessions by last activity' })
+        fireEvent.click(within(calendar).getByRole('button', { name: new Date(2026, 6, 1).toLocaleDateString() }))
+        fireEvent.click(within(calendar).getByRole('button', { name: `${new Date(2026, 6, 18).toLocaleDateString()}, has session activity` }))
 
         // The footer Clear button unmounts with the range; focus must not drop to body.
-        fireEvent.click(filterButton)
-        fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /^Date/ }))
+        calendar = screen.getByRole('dialog', { name: 'Filter sessions by last activity' })
+        fireEvent.click(within(calendar).getByRole('button', { name: 'Clear' }))
 
-        expect(input).toHaveFocus()
-        expect(filterButton).toHaveAttribute('title', 'Filter sessions by last activity')
+        expect(screen.getByRole('menuitemcheckbox', { name: 'Date' })).toHaveFocus()
+        expect(screen.getByRole('menuitemcheckbox', { name: 'Date' })).toHaveAttribute('aria-checked', 'false')
     })
 })
 
@@ -1093,7 +1095,7 @@ describe('SessionList search toggle', () => {
         expect(screen.getByRole('button', { name: /Other task/ })).toBeInTheDocument()
     })
 
-    it('gives expanded search a 48px clear end-cap with calendar immediately left (tiann/hapi#2019)', () => {
+    it('hides the expanded-search calendar when the unified filter owns date filtering', () => {
         renderWithProviders(
             <SessionList
                 sessions={[makeSession({
@@ -1120,9 +1122,27 @@ describe('SessionList search toggle', () => {
         expect(clearButton.className).toMatch(/min-h-\[48px\]/)
         expect(clearButton.className).toMatch(/min-w-\[48px\]/)
 
+        expect(screen.queryByTestId('session-list-search-date-embedded')).toBeNull()
+    })
+
+    it('keeps the embedded calendar when expanded search enables date filtering', () => {
+        renderWithProviders(
+            <SessionListSearch
+                value="DJ"
+                onChange={vi.fn()}
+                customStart=""
+                customEnd=""
+                sessionActivityDates={new Set()}
+                onDateRangeChange={vi.fn()}
+                expanded={true}
+                onExpandedChange={vi.fn()}
+            />
+        )
+
         const dateButton = screen.getByTestId('session-list-search-date-embedded')
         expect(dateButton.className).toMatch(/min-h-\[48px\]/)
         expect(dateButton.className).toMatch(/min-w-\[48px\]/)
+        const clearButton = screen.getByRole('button', { name: 'Clear search' })
         expect(clearButton.parentElement?.contains(dateButton)).toBe(true)
 
         const fieldChildren = Array.from(clearButton.parentElement?.children ?? [])

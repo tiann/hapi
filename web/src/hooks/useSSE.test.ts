@@ -4,6 +4,7 @@ import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionSummary } from '@/types/api'
 import type { Session } from '@/types/api'
+import { queryKeys } from '@/lib/query-keys'
 import {
     applySessionDetailPatch,
     canApplyVersionedSummaryPatch,
@@ -49,7 +50,7 @@ function renderUseSSE(options?: { onDisconnect?: (reason: string) => void }) {
     const queryClient = new QueryClient()
     const wrapper = ({ children }: { children: ReactNode }) =>
         createElement(QueryClientProvider, { client: queryClient }, children)
-    return renderHook(() => useSSE({
+    const hook = renderHook(() => useSSE({
         enabled: true,
         token: 'test-token',
         baseUrl: 'http://hub.test',
@@ -57,6 +58,7 @@ function renderUseSSE(options?: { onDisconnect?: (reason: string) => void }) {
         onEvent: () => {},
         onDisconnect: options?.onDisconnect
     }), { wrapper })
+    return { ...hook, queryClient }
 }
 
 describe('useSSE connection liveness (mobile suspend/resume)', () => {
@@ -157,6 +159,37 @@ describe('useSSE connection liveness (mobile suspend/resume)', () => {
         expect(onDisconnect).toHaveBeenCalledWith('connect-timeout')
         expect(FakeEventSource.instances[1]?.readyState).toBe(FakeEventSource.CLOSED)
 
+        unmount()
+    })
+})
+
+describe('useSSE scratchlist status invalidation', () => {
+    beforeEach(() => {
+        vi.useFakeTimers()
+        FakeEventSource.instances = []
+        vi.stubGlobal('EventSource', FakeEventSource)
+    })
+
+    afterEach(() => {
+        vi.unstubAllGlobals()
+        vi.useRealTimers()
+    })
+
+    it('invalidates both the session scratchlist and batch status queries', () => {
+        const { unmount, queryClient } = renderUseSSE()
+        const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries').mockResolvedValue(undefined)
+
+        act(() => {
+            FakeEventSource.instances[0]?.simulateMessage({
+                type: 'session-updated',
+                sessionId: 'session-1',
+                data: { scratchlistUpdatedAt: 1234 }
+            })
+            vi.advanceTimersByTime(20)
+        })
+
+        expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.scratchlist('session-1') })
+        expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.scratchlistSessionIds })
         unmount()
     })
 })
