@@ -44,6 +44,7 @@ Choose a supported coding agent from your terminal and control its sessions remo
 - `hapi resume [sessionId]` - List resumable sessions for this machine or resume one locally.
 - `hapi ping-peer <session-id-prefix> <message>` - Resume (if needed) and message another session. Prefer this or MCP `ping_peer` / `list_peers` over reinventing JWT+curl. Also `--message-file` / `--list`.
 - `hapi inspect-peer <session-id-or-prefix>` - Read-only peer metadata + recent message text (no resume). Prefer this or MCP `inspect_peer` when a user cites `[title](/sessions/<id>)` or Copy-reference `See session "…" (/sessions/<id>) for context`. `/sessions/<id>` is a hub path, not a local file. Optional `--limit`.
+- `hapi archive-peer <session-id-or-prefix>` or `hapi archive-peer --self` - Archive a chat using the existing user action and retain its history. Also available as MCP `archive_peer`.
 
 The picker lists agents alphabetically by command name. Use Up/Down and Enter
 to choose; Esc or Ctrl-C cancels. It appears on every bare invocation, even
@@ -232,6 +233,38 @@ session when MCP is unavailable:
 ```bash
 bun scripts/tooling/hapi-display-image.mjs /absolute/path/to/image.png "optional title"
 ```
+
+### Archive a chat from an agent
+
+Use MCP `archive_peer` without arguments to archive the current HAPI chat. Pass
+`sessionIdPrefix` to archive another chat. For shell access:
+
+```bash
+hapi archive-peer <full-session-id>
+hapi archive-peer --self
+```
+
+`--self` uses `HAPI_SESSION_ID`; an omitted CLI target is an error. Full IDs are
+preferred. Ambiguous prefixes and inaccessible IDs fail without archiving a chat.
+The tool uses the configured hub credentials and namespace, like `ping_peer`.
+Any chat in that namespace can be targeted; a parent relationship grants no extra
+access. A token cannot target a chat in another namespace.
+
+Archiving follows the same stop-and-archive operation as the UI. It preserves the
+session record and conversation history and requests agent shutdown. Existing
+runner stop checks still apply, including refusal when a runner reports an
+unconfirmed stop. Repeated requests for an already-archived, inactive chat succeed.
+Ordinary inactive chats without an archived or live lifecycle retain the API's
+409 response. Ordinary metadata updates cannot clear the archived lifecycle;
+reopening explicitly clears it. A late heartbeat can still briefly report a
+connected wrapper while shutdown finishes. Use **Reopen** in the chat action menu to continue an archived chat;
+follow the returned session ID if the provider creates a replacement session.
+
+Archiving adds no confirmation prompt. Save work and send any final handoff
+before archiving yourself: shutdown can close the MCP connection or CLI before
+the success response arrives. A missing response is an unknown outcome. Inspect
+the target from another chat before retrying; the tool never retries an archive
+mutation automatically. It never resumes or deletes a chat.
 
 ## Session lifecycle invariants
 

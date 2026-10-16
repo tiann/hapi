@@ -101,3 +101,14 @@ describe('resolveToolAutoApprovalDecision list_peers', () => {
         )).toBeNull()
     })
 })
+
+describe('archive_peer approval', () => {
+    it.each(['archive_peer', 'mcp__hapi__archive_peer', 'hapi_archive_peer', 'happy__archive_peer', 'Archive Peer Session'])(
+        'does not add a confirmation for %s', (name) => {
+            expect(resolveToolAutoApprovalDecision('default', name, 'call-archive')).toBe('approved')
+        }
+    )
+    it('does not approve arbitrary tools containing the archive name', () => {
+        expect(resolveToolAutoApprovalDecision('default', 'archive_peer_delete', 'call-archive')).toBeNull()
+    })
+})

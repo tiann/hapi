@@ -1531,6 +1531,15 @@ describe('sessions routes', () => {
             expect(await response.json()).toEqual({ ok: true })
         })
 
+        it('reports an unconfirmed runner stop as a conflict without claiming archive success', async () => {
+            const { app } = createApp(createSession({ active: true }), {
+                archiveSession: async () => { throw new Error('Session process is still running and could not be stopped') }
+            })
+            const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
+            expect(response.status).toBe(409)
+            expect(await response.json()).toEqual({ error: 'Session process is still running and could not be stopped' })
+        })
+
         it('still surfaces a 5xx for non-RPC errors (e.g. DB write failure)', async () => {
             const session = createSession({ active: true })
             const { app } = createApp(session, {

@@ -23,6 +23,7 @@ export type PingPeerErrorCode =
     | 'resume_failed'
     | 'timeout'
     | 'send_failed'
+    | 'archive_failed'
 
 export class PingPeerError extends Error {
     readonly code: PingPeerErrorCode
@@ -536,6 +537,7 @@ export function exitCodeForPingPeerError(error: PingPeerError): number {
             return 3
         case 'timeout':
         case 'send_failed':
+        case 'archive_failed':
             return 4
         default:
             return 1
@@ -718,4 +720,51 @@ export function formatInspectPeerReport(result: InspectPeerResult): string {
         }
     }
     return lines.join('\n')
+}
+
+
+export type ArchivePeerOptions = {
+    sessionIdPrefix?: string
+    /** Bound by the MCP server, or explicitly selected with CLI --self. */
+    currentSessionId?: string
+    apiUrl?: string
+    accessToken?: string
+    http?: AxiosInstance
+}
+
+export type ArchivePeerResult = {
+    sessionId: string
+    name: string
+    alreadyArchived: boolean
+}
+
+/** Archive through the user action's endpoint; never resume or delete a target. */
+export async function archivePeer(options: ArchivePeerOptions): Promise<ArchivePeerResult> {
+    const target = options.sessionIdPrefix === undefined ? options.currentSessionId : options.sessionIdPrefix
+    const prefix = normalizeSessionIdPrefix(target ?? '')
+    if (!prefix) {
+        throw new PingPeerError('bad_args', 'Provide a session id, or select the current HAPI session with --self')
+    }
+    const apiUrl = resolveApiUrl(options.apiUrl)
+    const http = options.http ?? axios
+    const jwt = await exchangeJwt(apiUrl, resolveAccessToken(options.accessToken), http)
+    const matched = resolveSessionByPrefix(await listSessions(apiUrl, jwt, http), prefix)
+    let response
+    try {
+        response = await http.post(
+            `${apiUrl}/api/sessions/${encodeURIComponent(matched.id)}/archive`,
+            {},
+            { headers: authHeaders(jwt), timeout: 60_000, validateStatus: () => true }
+        )
+    } catch {
+        throw new PingPeerError('archive_failed',
+            `Archive outcome for ${matched.id} is unconfirmed. Inspect the session before retrying; the request may have succeeded.`)
+    }
+    if (response.status < 200 || response.status >= 300 || response.data?.ok !== true) {
+        const detail = typeof response.data?.error === 'string' ? response.data.error : `HTTP ${response.status}`
+        const code = response.status === 404 ? 'not_found'
+            : response.status === 401 || response.status === 403 ? 'auth_failed' : 'archive_failed'
+        throw new PingPeerError(code, `Archive failed for ${matched.id}: ${detail}`)
+    }
+    return { sessionId: matched.id, name: resolvePeerSessionLabel(matched), alreadyArchived: response.data.alreadyArchived === true }
 }
