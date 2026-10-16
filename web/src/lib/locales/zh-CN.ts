@@ -650,6 +650,7 @@ export default {
   'composer.settings': '设置',
   'composer.terminal': '终端',
   'composer.abort': '中止',
+  'composer.abortFailed': '停止失败，请重试。',
   'composer.switchRemote': '切换到远程模式',
   'composer.attach': '添加文件',
   'composer.expand': '展开消息编辑器',
