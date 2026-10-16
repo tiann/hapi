@@ -54,7 +54,7 @@ object PermissionModes {
         PermissionMode.BypassPermissions, PermissionMode.Plan,
     )
 
-    /** `CODEX_PERMISSION_MODES` (gemini/kimi/copilot share the same list). */
+    /** `CODEX_PERMISSION_MODES` (gemini/kimi/copilot/dsh share the same list). */
     val CODEX = listOf(
         PermissionMode.Default, PermissionMode.ReadOnly,
         PermissionMode.SafeYolo, PermissionMode.Yolo,
@@ -87,7 +87,7 @@ object PermissionModes {
         "copilot" -> CODEX
         "grok" -> GROK
         "opencode" -> OPENCODE
-        "dsh" -> emptyList()
+        "dsh" -> CODEX
         "agy" -> AGY
         "cursor" -> CURSOR
         "pi" -> emptyList()

@@ -180,9 +180,10 @@ export HAPI_DSH_ACP_ARGS_JSON='["--dir", "/path/to/deepseek-harness", "run", "de
 
 The official ACP demo is fresh-session-only and does not support native resume,
 model switching, MCP injection, or live tool/reasoning telemetry. HAPI uses the
-standard chat and pending one-shot permission surfaces; the ACP composition
-owns the overall permission policy and HAPI does not advertise resume or model
-controls for DSH.
+standard chat and pending one-shot permission surfaces; permission policy is
+controlled HAPI-side through the shared ACP permission bridge (launch with
+`--permission-mode` or `--yolo`, switch mid-session from the web UI), while
+resume and model controls remain unadvertised for DSH.
 
 ### Required
 

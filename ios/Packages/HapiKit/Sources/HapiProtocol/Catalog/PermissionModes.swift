@@ -94,14 +94,12 @@ extension AgentFlavor {
     /// Claude set, and Pi offers none (its RPC mode always auto-approves).
     public var permissionModes: [PermissionMode] {
         switch self {
-        case .codex, .gemini, .kimi, .copilot:
+        case .codex, .gemini, .kimi, .copilot, .dsh:
             return [.default, .readOnly, .safeYolo, .yolo]
         case .grok:
             return [.default, .auto, .plan, .bypassPermissions]
         case .opencode:
             return [.default, .plan, .yolo]
-        case .dsh:
-            return []
         case .agy:
             return [.requestReview, .alwaysProceed]
         case .cursor:

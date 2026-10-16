@@ -2,11 +2,13 @@ import { hashObject } from '@/utils/deterministicJson'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler'
 import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle'
+import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc'
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory'
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { logger } from '@/ui/logger'
 import type { AgentState } from '@/api/types'
+import type { DshPermissionMode } from '@hapi/protocol/types'
 import { DshRemoteLauncher } from './dshRemoteLauncher'
 import { DshSession } from './session'
 import type { DshMode } from './types'
@@ -18,6 +20,7 @@ export async function runDsh(opts: {
     /** Fresh machine-spawn stub (`--hapi-session-id`); adopt via bootstrapSession. */
     reservedSessionId?: string
     workingDirectory?: string
+    permissionMode?: DshPermissionMode
 } = {}): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd()
     const startedBy = opts.startedBy ?? 'terminal'
@@ -57,6 +60,20 @@ export async function runDsh(opts: {
     })
     session.onCancelQueuedMessage((localId) => queue.cancelByLocalId(localId))
 
+    // Runtime permission-mode switching (mode picker in the web/mobile UI).
+    // The applied mode is what the ACP permission bridge consults per request.
+    registerSessionConfigRpc({
+        rpcHandlerManager: session.rpcHandlerManager,
+        flavor: 'dsh',
+        modelMode: 'ignore',
+        onApply: (config) => {
+            if (config.permissionMode !== undefined) {
+                sessionRef.current?.setPermissionMode(config.permissionMode)
+            }
+        },
+        onAfterApply: () => sessionRef.current?.pushKeepAlive()
+    })
+
     const lifecycle = createRunnerLifecycle({
         session,
         logTag: 'dsh',
@@ -73,7 +90,8 @@ export async function runDsh(opts: {
         logPath: logger.getLogPath(),
         messageQueue: queue,
         onModeChange: () => {},
-        startedBy
+        startedBy,
+        permissionMode: opts.permissionMode
     })
     const launcher = new DshRemoteLauncher(dshSession)
     sessionRef.current = dshSession
