@@ -2,8 +2,32 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { SharedCodexProjection, inputText } from './projection';
 import { codexPlanProposalId } from './plan';
+import { extractNotifySummary } from '@hapi/protocol/messages';
 
 describe('shared history projection', () => {
+    it.each([undefined, 'root'])('publishes only final summaries in live output and history replay (parent: %s)', async parentThreadId => {
+        const send = vi.fn();
+        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {}, parentThreadId);
+        const footer = 'AGENT_NOTIFY_SUMMARY {"status":"done","summary":"Finished"}';
+        const items = [
+            { id: 'progress', type: 'agentMessage', phase: 'commentary', text: `Still working.\n${footer}` },
+            { id: 'partial', type: 'agentMessage', phase: 'partial_answer', text: `More work.\n${footer}` },
+            { id: 'footer-only', type: 'agentMessage', phase: 'commentary', text: footer },
+            { id: 'final', type: 'agentMessage', phase: 'final_answer', text: `Finished.\n${footer}` }
+        ];
+        for (const item of items) {
+            await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item });
+        }
+        const live = send.mock.calls.slice();
+        const bodies = live.map(([body]) => parentThreadId ? body.message : body);
+        expect(bodies.map(body => body.message)).toEqual(['Still working.', 'More work.', `Finished.\n${footer}`]);
+        expect(bodies.filter(body => extractNotifySummary(body.message))).toHaveLength(1);
+        projection.reset(); send.mockClear();
+        await projection.history({ turns: [{ id: 'turn', status: 'completed', items }] });
+        expect(send.mock.calls).toEqual(live);
+    });
+
     it.each([undefined, 'root'])('persists proposals without approval and replays the same IDs (parent: %s)', async parentThreadId => {
         const send = vi.fn();
         const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;

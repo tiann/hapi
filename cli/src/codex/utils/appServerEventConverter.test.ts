@@ -3,6 +3,43 @@ import { logger } from '@/ui/logger';
 import { AppServerEventConverter } from './appServerEventConverter';
 
 describe('AppServerEventConverter', () => {
+    const footer = 'AGENT_NOTIFY_SUMMARY {"status":"done","summary":"Finished"}';
+
+    it.each(['commentary', 'partial_answer'])('removes a summary footer from %s while preserving progress text', phase => {
+        const converter = new AppServerEventConverter();
+        converter.handleNotification('item/agentMessage/delta', { itemId: 'progress', delta: `Still working.\n${footer}` });
+        expect(converter.handleNotification('item/completed', {
+            item: { id: 'progress', type: 'agentMessage', phase }
+        })).toEqual([{ type: 'agent_message', message: 'Still working.' }]);
+    });
+
+    it.each(['final_answer', undefined, null, 'unknown'])('preserves summary footers when phase is %s', phase => {
+        const converter = new AppServerEventConverter();
+        const message = `Finished.\n${footer}`;
+        expect(converter.handleNotification('item/completed', {
+            item: { id: 'answer', type: 'agentMessage', text: message, phase }
+        })).toEqual([{ type: 'agent_message', message }]);
+    });
+
+    it('suppresses and deduplicates footer-only commentary without suppressing the final answer', () => {
+        const converter = new AppServerEventConverter();
+        const item = { id: 'progress', type: 'agentMessage', text: footer, phase: 'commentary' };
+        expect(converter.handleNotification('item/completed', { item })).toEqual([]);
+        expect(converter.handleNotification('item/completed', { item: { ...item, phase: undefined } })).toEqual([]);
+        expect(converter.handleNotification('item/completed', {
+            item: { ...item, id: 'final', phase: 'final_answer' }
+        })).toEqual([{ type: 'agent_message', message: footer }]);
+    });
+
+    it('leaves literal examples and malformed footers in commentary unchanged', () => {
+        const converter = new AppServerEventConverter();
+        for (const text of [`Example: ${footer}`, `${footer}\nMore explanation.`, 'AGENT_NOTIFY_SUMMARY {invalid}']) {
+            expect(converter.handleNotification('item/completed', {
+                item: { id: text, type: 'agentMessage', text, phase: 'commentary' }
+            })).toEqual([{ type: 'agent_message', message: text }]);
+        }
+    });
+
     it('maps thread/started', () => {
         const converter = new AppServerEventConverter();
         const events = converter.handleNotification('thread/started', { thread: { id: 'thread-1' } });

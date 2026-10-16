@@ -9,16 +9,6 @@ import {
     withSessionSummaryInstruction
 } from './sessionSummaryInstruction'
 
-const PREVIOUS_SESSION_SUMMARY_INSTRUCTION = [
-    'Session status summary:',
-    'End every response with a single machine-readable status line (no backticks)',
-    'so this workspace\'s session tracking can record progress. Put it on its own',
-    'final line after all other content:',
-    'AGENT_NOTIFY_SUMMARY {"version":1,"agent":"<agent-id>","project":"<project>","status":"done|blocked|needs_review|needs_decision|failed|stalled","action":"<=12 words","summary":"one-line triage"}',
-    'Use status "blocked" if unsure. Keep action to 12 words or fewer when status',
-    'is "done" and follow-up remains.'
-].join('\n')
-
 const USER_LANGUAGE_INSTRUCTION = [
     'Use the language used by the user in the current conversation for the',
     'human-readable "action" and "summary" values.'
@@ -66,17 +56,14 @@ describe('sessionSummaryInstruction', () => {
         expect(body.toLowerCase()).not.toContain('surveillance')
     })
 
-    it('adds user-language guidance without changing the existing prompt contract', () => {
+    it('limits summaries to the final answer while preserving language and footer guidance', () => {
         applyHubSessionSummaryContract(true)
         const body = sessionSummaryInstructionOrEmpty({})
-        const previousLines = PREVIOUS_SESSION_SUMMARY_INSTRUCTION.split('\n')
-        const expected = [
-            ...previousLines.slice(0, 5),
-            USER_LANGUAGE_INSTRUCTION,
-            ...previousLines.slice(5)
-        ].join('\n')
-
-        expect(body).toBe(expected)
+        expect(body).toContain('At the end of each turn, append exactly one')
+        expect(body).toContain('final answer only')
+        expect(body).toContain('Do not emit this line in commentary, progress updates, or before tool calls.')
+        expect(body).toContain(USER_LANGUAGE_INSTRUCTION)
+        expect(body).not.toContain('End every response')
     })
 
     it('preserves the exact machine-readable footer format', () => {

@@ -1,5 +1,6 @@
 import { INCLUSIVE_INPUT_TOKEN_USAGE_MARKER } from '@hapi/protocol/usage';
 import { logger } from '@/ui/logger';
+import { codexAssistantText } from './assistantText';
 
 type ConvertedEvent = {
     type: string;
@@ -1003,7 +1004,8 @@ export class AppServerEventConverter {
                     }
                     const text = extractItemText(item) ?? this.agentMessageBuffers.get(itemId);
                     if (text) {
-                        events.push(scoped({ type: 'agent_message', message: text }));
+                        const message = codexAssistantText(text, item.phase);
+                        if (message) events.push(scoped({ type: 'agent_message', message }));
                         this.completedAgentMessageItems.add(itemId);
                         this.agentMessageBuffers.delete(itemId);
                     }
