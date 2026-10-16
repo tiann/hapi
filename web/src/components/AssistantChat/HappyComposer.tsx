@@ -1411,14 +1411,13 @@ export function HappyComposer(props: {
 
     const handlePaste = useCallback(async (e: ReactClipboardEvent<HTMLTextAreaElement | HTMLDivElement>) => {
         const files = Array.from(e.clipboardData?.files || [])
-        const imageFiles = files.filter(file => file.type.startsWith('image/'))
 
-        if (imageFiles.length === 0) return
+        if (files.length === 0) return
 
         // The backend rejects scheduledAt + attachments (per-CLI upload dir is
         // torn down before a mature emit could read the files). The button-based
         // attachment flow is disabled by ComposerButtons.hasAttachments, but the
-        // paste path bypasses that — guard here so a pasted image while a
+        // paste path bypasses that — guard here so a pasted file while a
         // schedule is active cannot produce a submission the hub will reject.
         if (pendingSchedule != null) {
             e.preventDefault()
@@ -1428,11 +1427,11 @@ export function HappyComposer(props: {
         e.preventDefault()
 
         try {
-            for (const file of imageFiles) {
+            for (const file of files) {
                 await api.composer().addAttachment(file)
             }
         } catch (error) {
-            console.error('Error adding pasted image:', error)
+            console.error('Error adding pasted file:', error)
         }
     }, [api, pendingSchedule])
 

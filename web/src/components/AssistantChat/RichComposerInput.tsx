@@ -966,8 +966,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
 
     const handlePaste = useCallback((e: ReactClipboardEvent<HTMLDivElement>) => {
         const files = Array.from(e.clipboardData?.files ?? [])
-        const hasImage = files.some((file) => file.type.startsWith('image/'))
-        if (hasImage) {
+        if (files.length > 0) {
             onPaste?.(e)
             return
         }

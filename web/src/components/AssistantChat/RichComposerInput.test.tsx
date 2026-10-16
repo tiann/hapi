@@ -309,3 +309,44 @@ describe('RichComposerInput controlled synchronization', () => {
         expect(serializeComposerSegments(segmentsFromEditor(editor))).toBe('hello')
     })
 })
+
+describe('RichComposerInput paste', () => {
+    it('forwards pasted non-image files to onPaste', () => {
+        const onPaste = vi.fn()
+        render(
+            <RichComposerInput
+                value=""
+                onValueChange={() => {}}
+                onMirrorChange={() => {}}
+                onPaste={onPaste}
+            />
+        )
+
+        const file = new File(['%PDF'], 'report.pdf', { type: 'application/pdf' })
+        fireEvent.paste(screen.getByTestId('rich-composer-input'), {
+            clipboardData: { files: [file], getData: () => '' },
+        })
+
+        expect(onPaste).toHaveBeenCalledTimes(1)
+    })
+
+    it('inserts plain text without calling onPaste when no files are pasted', () => {
+        const onPaste = vi.fn()
+        const onValueChange = vi.fn()
+        render(
+            <RichComposerInput
+                value=""
+                onValueChange={onValueChange}
+                onMirrorChange={() => {}}
+                onPaste={onPaste}
+            />
+        )
+
+        fireEvent.paste(screen.getByTestId('rich-composer-input'), {
+            clipboardData: { files: [], getData: () => 'pasted text' },
+        })
+
+        expect(onPaste).not.toHaveBeenCalled()
+        expect(onValueChange).toHaveBeenLastCalledWith('pasted text')
+    })
+})
