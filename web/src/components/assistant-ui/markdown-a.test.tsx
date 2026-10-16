@@ -55,11 +55,11 @@ function chatContext(overrides: Partial<HappyChatContextValue> = {}): HappyChatC
         metadata: { path: '/home/ada/coding/hapi', host: 'local' },
         terminalToolDisplayMode: 'compact',
         disabled: false,
+        showSessionSummaryInChat: false,
         onRefresh: () => {},
         hasMoreMessages: false,
         isSyncingTail: false,
         isLoadingMoreMessages: false,
-        showSessionSummaryInChat: false,
         loadOlderMessagesPreservingScroll: async () => 'loaded',
         ...overrides,
     }

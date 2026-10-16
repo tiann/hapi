@@ -540,6 +540,9 @@ export function UnifiedButton(props: {
     canSend: boolean
     voiceStatus: ConversationStatus
     voiceEnabled: boolean
+    dictationEnabled?: boolean
+    /** When false, the dictation Send button is hidden (direct send not eligible). */
+    dictationCanDirectSend?: boolean
     controlsDisabled: boolean
     onSend: (intent?: ComposerSendIntent) => void
     onVoiceToggle: () => void
@@ -567,6 +570,7 @@ export function UnifiedButton(props: {
     const isConnecting = props.voiceStatus === 'connecting'
     const isConnected = props.voiceStatus === 'connected'
     const isVoiceActive = isConnecting || isConnected
+    const isDictation = props.dictationEnabled ?? false
     const hasText = props.canSend
     const routesToScratchlist = props.routesToScratchlist ?? false
     const fillHeight = props.fillHeight ?? true
@@ -627,18 +631,36 @@ export function UnifiedButton(props: {
     )
 
     return (
-        <button
-            type="button"
-            onClick={handleClick}
-            disabled={isDisabled}
-            aria-label={ariaLabel}
-            title={ariaLabel}
-            data-testid="composer-unified-button"
-            data-size={fillHeight ? 'fill' : 'compact'}
-            className={`flex ${unifiedButtonSizeClass(fillHeight)} items-center justify-center transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
-        >
-            {icon}
-        </button>
+        <>
+            <button
+                type="button"
+                onClick={handleClick}
+                disabled={isDisabled}
+                aria-label={ariaLabel}
+                title={ariaLabel}
+                data-testid="composer-unified-button"
+                data-size={fillHeight ? 'fill' : 'compact'}
+                className={`flex ${unifiedButtonSizeClass(fillHeight)} items-center justify-center transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
+            >
+                {icon}
+            </button>
+            {isDictation && isConnected && props.dictationCanDirectSend ? (
+                // Explicit send action while dictation is connected: mouse/touch
+                // users must be able to reach the session-bound stopAndSend path
+                // (handleSend's dictation branch) without first stopping the
+                // recording, or the transcript is only sendable via keyboard.
+                <button
+                    type="button"
+                    onClick={() => props.onSend('default')}
+                    disabled={props.controlsDisabled}
+                    aria-label={t('composer.send')}
+                    title={t('composer.send')}
+                    className="ml-1 flex self-center h-8 w-8 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 bg-black text-white"
+                >
+                    <SendIcon />
+                </button>
+            ) : null}
+        </>
     )
 }
 
@@ -715,6 +737,8 @@ export function ComposerButtons(props: {
     onSwitch: () => void
     voiceEnabled: boolean
     dictationEnabled?: boolean
+    /** When false, the dictation Send button is hidden (direct send not eligible). */
+    dictationCanDirectSend?: boolean
     voiceStatus: ConversationStatus
     voiceMicMuted?: boolean
     onVoiceToggle: () => void
@@ -1011,6 +1035,8 @@ export function ComposerButtons(props: {
                     canSend={props.canSend}
                     voiceStatus={props.voiceStatus}
                     voiceEnabled={props.voiceEnabled}
+                    dictationEnabled={props.dictationEnabled}
+                    dictationCanDirectSend={props.dictationCanDirectSend}
                     controlsDisabled={props.controlsDisabled}
                     onSend={props.onSend}
                     onVoiceToggle={props.onVoiceToggle}
