@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ApiSessionClient } from '@/api/apiSession'
+import { applyHubAutoTitlePerTurn, resetAutoTitlePerTurnForTests } from '@/modules/common/titleInstruction'
 import { startHappyServer, toClaudeAllowedHapiMcpTools } from './startHappyServer'
 
 type ToolResult = {
@@ -282,6 +283,39 @@ describe('startHappyServer change_title', () => {
         expect(result.isError).toBe(true)
         expect(result.content?.[0]?.text).toContain('Failed to change chat title')
         expect(updateMetadata).not.toHaveBeenCalled()
+    })
+
+    it('advertises the per-turn description only when the toggle is on', async () => {
+        const sessionClient = {
+            updateMetadata: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+
+        const descriptionOf = async (): Promise<string> => {
+            const mcp = await connectChangeTitleServer(sessionClient)
+            const listed = await mcp.listTools()
+            const description = listed.tools.find((tool) => tool.name === 'change_title')?.description ?? ''
+            await client?.close()
+            stopServer?.()
+            client = null
+            stopServer = null
+            return description
+        }
+
+        try {
+            resetAutoTitlePerTurnForTests()
+            const off = await descriptionOf()
+            expect(off).toContain("Call once when the user's primary objective is clear")
+            expect(off).not.toContain('Per-turn mode is enabled')
+
+            applyHubAutoTitlePerTurn(true)
+            const on = await descriptionOf()
+            expect(on).toContain('Per-turn mode is enabled')
+            expect(on).toContain('end of every user turn')
+        } finally {
+            resetAutoTitlePerTurnForTests()
+        }
     })
 
     it('does not write titles when emitTitleSummary is disabled (Codex child isolation)', async () => {

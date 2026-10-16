@@ -4,6 +4,7 @@ import {
     DISPLAY_MEDIA_PROMPT_HAPI_MCP,
     DISPLAY_VIDEO_PROMPT_HAPI_MCP,
 } from './displayImagePrompt';
+import { buildPerTurnTitleParagraph, isAutoTitlePerTurnEnabled } from './titleInstruction';
 
 /** Shell fallback for `hapi doctor inline-media` only — not injected into agent prompts. */
 export const INLINE_MEDIA_SHELL_FALLBACK = trimIdent(`
@@ -28,3 +29,20 @@ export const HAPI_MCP_BRIDGE_PROMPT = trimIdent(`
     ${DISPLAY_VIDEO_PROMPT_HAPI_MCP}
     ${DISPLAY_MEDIA_PROMPT_HAPI_MCP}
 `);
+
+/**
+ * Per-turn aware bridge prompt: with the toggle on, the sparing title block
+ * is swapped for the shared rewrite steer (same tool id). Off-mode returns
+ * the constant above byte-identically.
+ */
+export function buildHapiMcpBridgePrompt(env: NodeJS.ProcessEnv = process.env): string {
+    if (!isAutoTitlePerTurnEnabled(env)) {
+        return HAPI_MCP_BRIDGE_PROMPT;
+    }
+    return trimIdent(`
+    ${buildPerTurnTitleParagraph('hapi_change_title')}
+    ${DISPLAY_IMAGE_PROMPT_HAPI_MCP}
+    ${DISPLAY_VIDEO_PROMPT_HAPI_MCP}
+    ${DISPLAY_MEDIA_PROMPT_HAPI_MCP}
+`);
+}

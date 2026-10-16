@@ -4717,6 +4717,80 @@ describe('session model', () => {
             expect(meta?.name).toBe('final-name')
         })
 
+        it('renameSession pins the name with nameLocked for per-turn protection', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const session = cache.getOrCreateSession(
+                'session-rename-lock',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex', name: 'Agent old' },
+                null,
+                'default'
+            )
+
+            await expect(cache.renameSession(session.id, 'Manual name')).resolves.toBeUndefined()
+
+            // nameLocked is a hub-owned key: it persists in the raw DB row
+            // (the CLI socket merge base) even though the cache view parses
+            // metadata through MetadataSchema, which strips it. The lock's
+            // enforcement path reads the raw row, so assert against it.
+            const rawMeta = () =>
+                store.sessions.getSessionByNamespace(session.id, 'default')!.metadata as Record<string, unknown>
+            const meta = cache.getSession(session.id)?.metadata as Record<string, unknown> | null | undefined
+            expect(meta?.name).toBe('Manual name')
+            expect(rawMeta().name).toBe('Manual name')
+            expect(rawMeta().nameLocked).toBe(true)
+
+            // A later manual rename keeps exactly one lock, refreshing the pin.
+            await expect(cache.renameSession(session.id, 'Manual name 2')).resolves.toBeUndefined()
+            const meta2 = cache.getSession(session.id)?.metadata as Record<string, unknown> | null | undefined
+            expect(meta2?.name).toBe('Manual name 2')
+            expect(rawMeta().name).toBe('Manual name 2')
+            expect(rawMeta().nameLocked).toBe(true)
+        })
+
+        it('hub metadata writes built from the sanitized cache view keep the manual-name lock', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+
+            const session = cache.getOrCreateSession(
+                'session-summary-keeps-lock',
+                { path: '/tmp/project', host: 'localhost', flavor: 'codex', name: 'Agent old' },
+                null,
+                'default'
+            )
+
+            await expect(cache.renameSession(session.id, 'Manual name')).resolves.toBeUndefined()
+
+            const rawMeta = () =>
+                store.sessions.getSessionByNamespace(session.id, 'default')!.metadata as Record<string, unknown>
+
+            // Precondition: the in-memory cache view really is sanitized —
+            // MetadataSchema strips the hub-owned nameLocked key — while the
+            // raw row carries the lock.
+            const cached = cache.getSession(session.id)?.metadata as Record<string, unknown>
+            expect(cached).not.toHaveProperty('nameLocked')
+            expect(rawMeta().nameLocked).toBe(true)
+
+            // Ordinary hub-side writers (summary updates, lifecycle ticks,
+            // archive bookkeeping, preferred-mode persists) rebuild a full
+            // snapshot from that stripped view. Before the store-level
+            // re-pin, this write silently dropped the lock from the raw row.
+            await expect(cache.updateSessionSummary(session.id, 'generated summary')).resolves.toBeUndefined()
+
+            expect(rawMeta().summary).toMatchObject({ text: 'generated summary' })
+            expect(rawMeta().name).toBe('Manual name')
+            expect(rawMeta().nameLocked).toBe(true)
+
+            // The cache view stays sanitized (wire shape unchanged); only the
+            // raw row keeps the lock.
+            const cachedAfter = cache.getSession(session.id)?.metadata as Record<string, unknown>
+            expect(cachedAfter?.summary).toMatchObject({ text: 'generated summary' })
+            expect(cachedAfter).not.toHaveProperty('nameLocked')
+        })
+
         it('clearSessionArchiveMetadata recovers after a stale cache snapshot', async () => {
             const store = new Store(':memory:')
             const events: SyncEvent[] = []
