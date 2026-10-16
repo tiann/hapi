@@ -9,12 +9,26 @@ import { findRuntime, runtimeAlive, type CodexRuntimeRecord } from './registry';
 import { initializeSharedClient, sharedLaunchConfig, SharedLaunchSchema, type SharedLaunchOptions } from './launch';
 import { runSharedRuntime, type RuntimeReady } from './runtime';
 
-export async function runtimeControl(runtime: CodexRuntimeRecord, method: string, sessionId: string): Promise<unknown> {
+export async function runtimeControl(runtime: CodexRuntimeRecord, method: string, sessionId: string, options?: { timeoutMs: number }): Promise<unknown> {
     if (!runtimeAlive(runtime)) throw new Error('Shared runtime is not alive');
     const client = new CodexAppServerClient({ endpoint: runtime.endpoint, token: runtime.token });
     client.setServerRequestHandler(() => {});
-    try { await initializeSharedClient(client); return await client.request(method, { sessionId }); }
-    finally { await client.disconnect(); }
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const request = async () => {
+        await initializeSharedClient(client);
+        if (timedOut) throw new Error('Shared runtime control timed out');
+        return await client.request(method, { sessionId });
+    };
+    try {
+        if (!options) return await request();
+        return await Promise.race([request(), new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => {
+                timedOut = true;
+                reject(new Error('Shared runtime control timed out'));
+            }, options.timeoutMs);
+        })]);
+    } finally { clearTimeout(timer); await client.disconnect(); }
 }
 
 export async function attachSharedSession(runtime: CodexRuntimeRecord, sessionId: string, args: string[] = [], signal?: AbortSignal): Promise<void> {

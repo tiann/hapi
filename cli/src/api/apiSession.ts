@@ -1596,6 +1596,28 @@ export class ApiSessionClient extends EventEmitter {
         return await this.drainLock(this.metadataLock, timeoutMs)
     }
 
+    /** Repair only this session's Hub transport; keep the native execution alive. */
+    async reconnectHub(timeoutMs: number = 5_000): Promise<boolean> {
+        const canReconnect = () => this.state === 'active' && this.allowReconnect
+        if (!canReconnect() || timeoutMs <= 0) return false
+        const deadline = Date.now() + timeoutMs
+        const remaining = () => Math.max(0, deadline - Date.now())
+        const ping = async (budget: number): Promise<boolean> => {
+            if (budget <= 0 || !canReconnect()) return false
+            try {
+                await this.socket.timeout(budget).emitWithAck('ping')
+                return canReconnect() && this.socket.connected
+            } catch { return false }
+        }
+        if (this.socket.connected) {
+            if (await ping(Math.min(1_000, Math.floor(remaining() / 2)))) return true
+            if (!canReconnect()) return false
+            this.socket.disconnect()
+        }
+        if (!canReconnect() || !await this.waitForConnected(remaining())) return false
+        return await ping(remaining())
+    }
+
     async flush(options?: { timeoutMs?: number }): Promise<boolean> {
         const deadlineMs = Date.now() + (options?.timeoutMs ?? 5_000)
         const remainingMs = () => Math.max(0, deadlineMs - Date.now())
