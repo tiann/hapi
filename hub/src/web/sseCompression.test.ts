@@ -112,6 +112,38 @@ describe('compressSseResponse', () => {
         const original = new Response(null, { status: 204 })
         expect(compressSseResponse(original, 'gzip')).toBe(original)
     })
+
+    it('delivers a new event after a large replay burst while the connection stays open', async () => {
+        let emit!: (value: string) => void
+        const encoder = new TextEncoder()
+        const source = new Response(new ReadableStream<Uint8Array>({
+            start(controller) { emit = value => controller.enqueue(encoder.encode(value)) }
+        }))
+        const reader = compressSseResponse(source, 'gzip').body!.getReader()
+        const inflate = zlib.createGunzip()
+        let seen = ''
+        inflate.on('data', chunk => { seen += chunk.toString() })
+        const pumping = (async () => {
+            for (;;) {
+                const part = await reader.read()
+                if (part.done) return
+                inflate.write(Buffer.from(part.value))
+            }
+        })()
+        const waitFor = async (marker: string) => {
+            const until = Date.now() + 2_000
+            while (!seen.includes(marker) && Date.now() < until) await Bun.sleep(5)
+            expect(seen).toContain(marker)
+        }
+        try {
+            for (let id = 0; id < 2_000; id++) emit(`data: ${JSON.stringify({ type: 'messages-consumed', localIds: [`local-${id}`], invokedAt: id })}\n\n`)
+            emit('data: REPLAY_DONE\n\n')
+            await waitFor('REPLAY_DONE')
+            await Bun.sleep(50)
+            emit('data: LIVE_AFTER_REPLAY\n\n')
+            await waitFor('LIVE_AFTER_REPLAY')
+        } finally { await reader.cancel();inflate.destroy();await pumping }
+    })
 })
 
 describe('compressSseResponse cleanup', () => {

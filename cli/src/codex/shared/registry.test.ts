@@ -3,13 +3,14 @@ import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-const state = vi.hoisted(() => ({ home: '', auth: 'token', processes: new Map<number, string | undefined>() }));
+const state = vi.hoisted(() => ({ home: '', auth: 'token', processes: new Map<number, string | undefined>(), windows: false, snapshot: new Map<number, string | null>(), snapshotError: false }));
 vi.mock('@/configuration', () => ({ configuration: { get happyHomeDir() { return state.home; }, apiUrl: 'hub', get cliApiToken() { return state.auth; } } }));
-vi.mock('@/utils/process', () => ({ isProcessAlive: (pid: number) => state.processes.has(pid), getProcessStartMarker: (pid: number) => state.processes.get(pid) }));
+vi.mock('./ownershipLiveness', () => ({ readOwnershipProcessSnapshot: () => { if (state.snapshotError) throw new Error('snapshot failed'); return state.snapshot; }, snapshotGenerationMayBeAlive: (snapshot: Map<number,string|null>, pid:number, marker?:string) => snapshot.has(pid) && (!snapshot.get(pid) || !marker || snapshot.get(pid) === marker) }));
+vi.mock('@/utils/process', () => ({ isWindows: () => state.windows, isProcessAlive: (pid: number) => state.processes.has(pid), getProcessStartMarker: (pid: number) => state.processes.get(pid) }));
 import { findRuntime, readRuntimes, runtimeAlive, runtimeAuthHash, runtimeMayBeAlive, saveRuntime, withThreadOwnership, type CodexRuntimeRecord } from './registry';
 
 const directories: string[] = [];
-afterEach(async () => { state.processes.clear(); state.auth = 'token'; await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
+afterEach(async () => { state.processes.clear(); state.windows=false;state.snapshot.clear();state.snapshotError=false; state.auth = 'token'; await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 async function fixture(): Promise<CodexRuntimeRecord> {
     const home = await mkdtemp(join(tmpdir(), 'hapi-owner-')); directories.push(home); state.home = join(home, 'hapi');
     return { id: 'owner', pid: 1111, marker: 'worker-start', serverPid: 2222, serverMarker: 'server-start', command: 'codex', args: [],
@@ -48,5 +49,26 @@ describe('shared runtime ownership', () => {
         await writeFile(join(directory, 'broken.json'), '{');
         expect(await readRuntimes()).toEqual([]);
         await expect(readRuntimes({ strict: true })).rejects.toThrow('Cannot verify');
+    });
+});
+
+describe('Windows native ownership snapshots', () => {
+    it('uses snapshot generation evidence rather than per-owner probes during Windows cold recovery', async () => {
+        const owner = await fixture();state.windows=true;
+        state.processes.set(owner.pid,owner.marker);state.processes.set(owner.serverPid!,owner.serverMarker);
+        await saveRuntime(owner);
+        state.snapshot.set(owner.pid,'reused-wrapper');state.snapshot.set(owner.serverPid!,'reused-engine');
+        await expect(withThreadOwnership(owner.codexHome,'thread','new',async()=> 'restored')).resolves.toBe('restored');
+    });
+    it('preserves Windows live-owner, orphan, unknown-generation and scanner-failure protection', async () => {
+        const owner=await fixture();state.windows=true;await saveRuntime(owner);
+        state.snapshot.set(owner.pid,owner.marker);
+        await expect(withThreadOwnership(owner.codexHome,'thread','new',async()=>{})).rejects.toThrow('another Codex runtime');
+        state.snapshot.clear();state.snapshot.set(owner.serverPid!,owner.serverMarker!);
+        await expect(withThreadOwnership(owner.codexHome,'thread','new',async()=>{})).rejects.toThrow('orphaned');
+        state.snapshot.clear();state.snapshot.set(owner.pid,null);
+        await expect(withThreadOwnership(owner.codexHome,'thread','new',async()=>{})).rejects.toThrow('another Codex runtime');
+        state.snapshotError=true;
+        await expect(withThreadOwnership(owner.codexHome,'thread','new',async()=>{})).rejects.toThrow('snapshot failed');
     });
 });

@@ -5,7 +5,8 @@ import { randomUUID, createHash } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { z } from 'zod';
 import { configuration } from '@/configuration';
-import { getProcessStartMarker, isProcessAlive } from '@/utils/process';
+import { getProcessStartMarker, isProcessAlive, isWindows } from '@/utils/process';
+import { readOwnershipProcessSnapshot, snapshotGenerationMayBeAlive } from './ownershipLiveness';
 import { withSettingsFileLock } from '@hapi/protocol/settingsFileLock';
 
 const RuntimeSchema = z.object({
@@ -78,16 +79,26 @@ export async function withThreadOwnership<T>(home: string, threadId: string, own
     const directory = join(home, 'hapi-runtime-owners');
     await mkdir(directory, { recursive: true, mode: 0o700 });
     return withSettingsFileLock(join(directory, 'ownership'), async () => {
-        for (const owner of await readRecords(directory, true)) {
+        const owners = (await readRecords(directory, true)).filter(owner => owner.id !== ownId && owner.codexHome === home);
+        // Read records first under the ownership lock, then take a fresh OS
+        // snapshot. Old generations must not cost one synchronous probe each.
+        const snapshot = isWindows() && owners.some(owner => owner.pendingCreations?.length
+            || Object.values(owner.sessions).some(session => session.threadId === threadId && session.active))
+            ? readOwnershipProcessSnapshot() : undefined;
+        const mayBeAlive = (pid: number, marker?: string) => snapshot
+            ? snapshotGenerationMayBeAlive(snapshot, pid, marker) : generationMayBeAlive(pid, marker);
+        for (const owner of owners) {
             if (owner.id === ownId || owner.codexHome !== home) continue;
-            if (owner.pendingCreations?.length && runtimeMayBeAlive(owner)) {
+            if (owner.pendingCreations?.length && (mayBeAlive(owner.pid, owner.marker)
+                || Boolean(owner.serverPid && mayBeAlive(owner.serverPid, owner.serverMarker)))) {
                 throw new Error(`Codex runtime ${owner.id} has an unconfirmed creation. Inspect/stop that runtime before cold resume; its thread ID may be unknown.`);
             }
             const match = Object.entries(owner.sessions).find(([, session]) => session.threadId === threadId && session.active);
             if (!match) continue;
-            const orphanAlive = owner.serverPid && generationMayBeAlive(owner.serverPid, owner.serverMarker);
-            if (generationMayBeAlive(owner.pid, owner.marker) || orphanAlive) {
-                throw new Error(`Thread belongs to another Codex runtime. Use hapi resume ${match[0]}.${orphanAlive && !runtimeAlive(owner) ? ' Its wrapper exited; stop the orphaned runtime before recovery.' : ''}`);
+            const orphanAlive = owner.serverPid && mayBeAlive(owner.serverPid, owner.serverMarker);
+            const wrapperAlive = mayBeAlive(owner.pid, owner.marker);
+            if (wrapperAlive || orphanAlive) {
+                throw new Error(`Thread belongs to another Codex runtime. Use hapi resume ${match[0]}.${orphanAlive && !wrapperAlive ? ' Its wrapper exited; stop the orphaned runtime before recovery.' : ''}`);
             }
         }
         return work();

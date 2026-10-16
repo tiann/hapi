@@ -43,20 +43,22 @@ export class SharedCodexProjection {
     private readonly completedTitles = new Set<string>();
     private titleRevision = 0;
     constructor(private readonly session: ApiSessionClient, readonly threadId: string,
-        private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string) {
+        private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string,
+        private readonly committedHistory?: (ids: string[]) => Promise<void>) {
         if (!parentThreadId) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
     }
 
     turnFor(id: string): string | undefined { return this.turns.get(id); }
     reset(): void { this.converter = new AppServerEventConverter(); this.emitted.clear(); }
-    private send(body: Record<string, unknown>, key: string): void {
+    private send(body: Record<string, unknown>, key: string, consumed: Set<string>): void {
+        const id = `codex:${this.threadId}:${key}`;
+        consumed.add(id);
         if (this.emitted.has(key)) return;
         this.emitted.add(key);
-        const id = `codex:${this.threadId}:${key}`;
         this.session.sendAgentMessage(this.parentThreadId && !String(body.type).startsWith('agent-run-') ? {
             type: 'agent-run-trace', agentId: this.threadId, cardId: `codex-agent:${this.threadId}`, message: { ...body, id }, id,
             scope: { role: 'child', threadId: this.threadId, parentThreadId: this.parentThreadId }, scope_role: 'child'
-        } : { ...body, id }, id);
+        } : { ...body, id }, id, { acknowledgeConsumption: false });
     }
 
     private applyDisplayRename(title: string, revision: number): void {
@@ -87,10 +89,13 @@ export class SharedCodexProjection {
                 }
             }
         }
-        await this.project(method, params, modelAtReceipt);
+        const consumed = new Set<string>();
+        await this.project(method, params, modelAtReceipt, false, consumed);
+        if (consumed.size) this.session.emitMessagesConsumed([...consumed]);
     }
 
-    private async project(method: string, params: unknown, modelAtReceipt?: string, fromHistory = false): Promise<void> {
+    private async project(method: string, params: unknown, modelAtReceipt: string | undefined, fromHistory: boolean, consumed: Set<string>): Promise<void> {
+        const send = (body: Record<string, unknown>, key: string) => this.send(body, key, consumed);
         if (method.startsWith('codex/event/')) return;
         const p = record(params);
         const item = record(p.item);
@@ -107,18 +112,24 @@ export class SharedCodexProjection {
         if (!this.parentThreadId && (method === 'item/started' || method === 'item/completed') && item.type === 'userMessage') {
             const id = string(item.clientId ?? item.clientUserMessageId) ?? (itemId ? `codex:${this.threadId}:user:${itemId}` : undefined);
             if (id) {
+                const previousTurn = this.turns.get(id);
                 const firstInTurn = turnId ? [...this.turns].find(([, value]) => value === turnId)?.[0] : undefined;
                 if (turnId) this.turns.set(id, turnId);
-                await this.committed(id);
+                if (!fromHistory || !this.committedHistory) await this.committed(id);
                 const text = inputText(item.content);
-                if (text) this.session.sendUserMessage(text, undefined, id);
-                this.session.updateMetadata(metadata => ({ ...metadata, conversationHistoryTurns: Object.fromEntries(this.turns),
+                // The queue owns durable user consumption (batched for history).
+                // Sending the transcript must not generate another implicit ACK.
+                if (text) this.session.sendUserMessage(text, undefined, id, { acknowledgeConsumption: false });
+                consumed.add(id);
+                const needsPoint = turnId && (!firstInTurn || firstInTurn === id)
+                    && !this.session.getMetadata()?.conversationHistoryPoints?.[id];
+                if (previousTurn !== turnId || needsPoint) this.session.updateMetadata(metadata => ({ ...metadata, conversationHistoryTurns: Object.fromEntries(this.turns),
                     ...(turnId && (!firstInTurn || firstInTurn === id) ? { conversationHistoryPoints: { ...metadata.conversationHistoryPoints, [id]: true } } : {})
                 }));
             }
         }
         if (this.parentThreadId && (method === 'turn/started' || method === 'turn/completed')) {
-            this.send({ type: 'agent-run-update', agentId: this.threadId, cardId: `codex-agent:${this.threadId}`,
+            send({ type: 'agent-run-update', agentId: this.threadId, cardId: `codex-agent:${this.threadId}`,
                 status: method === 'turn/started' ? 'running' : record(p.turn).status === 'completed' ? 'completed' : 'failed'
             }, `lifecycle:${turnId}:${method}`);
         }
@@ -126,32 +137,32 @@ export class SharedCodexProjection {
         for (const event of events) {
             const callId = string(event.call_id);
             const key = `${turnId ?? 'thread'}:${itemId ?? callId ?? createHash('sha256').update(JSON.stringify(event)).digest('hex')}:${event.type}`;
-            if (event.type === 'agent_message') this.send({ type: 'message', message: event.message }, key);
-            else if (event.type === 'agent_reasoning') this.send({ type: 'reasoning', message: event.text }, key);
+            if (event.type === 'agent_message') send({ type: 'message', message: event.message }, key);
+            else if (event.type === 'agent_reasoning') send({ type: 'reasoning', message: event.text }, key);
             else if (event.type === 'exec_command_begin' && callId) {
-                this.send({ type: 'tool-call', name: 'CodexBash', callId, input: event }, key);
+                send({ type: 'tool-call', name: 'CodexBash', callId, input: event }, key);
             } else if (event.type === 'exec_command_end' && callId) {
-                this.send({ type: 'tool-call-result', callId, output: { ...event, stdout: event.output } }, key);
+                send({ type: 'tool-call-result', callId, output: { ...event, stdout: event.output } }, key);
             } else if (event.type === 'patch_apply_begin' && callId) {
-                this.send({ type: 'tool-call', name: 'CodexPatch', callId, input: { changes: event.changes, auto_approved: event.auto_approved } }, key);
+                send({ type: 'tool-call', name: 'CodexPatch', callId, input: { changes: event.changes, auto_approved: event.auto_approved } }, key);
             } else if (event.type === 'patch_apply_end' && callId) {
-                this.send({ type: 'tool-call-result', callId, output: { stdout: event.stdout, stderr: event.stderr, success: event.success } }, key);
+                send({ type: 'tool-call-result', callId, output: { stdout: event.stdout, stderr: event.stderr, success: event.success } }, key);
             } else if (event.type === 'mcp_tool_call_begin' && callId) {
                 const invocation = record(event.invocation);
-                this.send({ type: 'tool-call', name: `mcp__${invocation.server}__${invocation.tool}`, callId, input: invocation.arguments ?? {} }, key);
+                send({ type: 'tool-call', name: `mcp__${invocation.server}__${invocation.tool}`, callId, input: invocation.arguments ?? {} }, key);
             } else if (event.type === 'mcp_tool_call_end' && callId) {
                 const result = record(event.result);
-                this.send({ type: 'tool-call-result', callId, output: result.Ok ?? result.Err ?? event.result, is_error: 'Err' in result }, key);
+                send({ type: 'tool-call-result', callId, output: result.Ok ?? result.Err ?? event.result, is_error: 'Err' in result }, key);
             } else if (event.type === 'codex_tool_call_begin' && callId) {
-                this.send({ type: 'tool-call', name: event.name, callId, input: event.input ?? event.arguments }, key);
+                send({ type: 'tool-call', name: event.name, callId, input: event.input ?? event.arguments }, key);
             } else if (event.type === 'codex_tool_call_end' && callId) {
-                this.send({ type: 'tool-call-result', callId, output: event.output, is_error: event.is_error }, key);
+                send({ type: 'tool-call-result', callId, output: event.output, is_error: event.is_error }, key);
             } else if (event.type === 'compaction_started') {
                 // History replay re-projects every completed item's start;
                 // a finished compaction must not announce a live status.
                 if (fromHistory) continue;
                 if (this.parentThreadId) {
-                    this.send({ type: 'compaction_started', statusText: '📦 Compaction started' }, key);
+                    send({ type: 'compaction_started', statusText: '📦 Compaction started' }, key);
                 } else {
                     // Status UI listens on session events; an agent message
                     // would render as a normal assistant bubble instead.
@@ -162,27 +173,27 @@ export class SharedCodexProjection {
                 }
             } else if (event.type === 'token_count' || event.type === 'context_compacted' || event.type.startsWith('thread_goal_')) {
                 const model = event.type === 'token_count' && turnId ? this.turnModels.get(turnId) : undefined;
-                this.send({ ...event, ...(model ? { model } : {}), flavor: 'codex', scope: { role: 'parent', threadId: this.threadId }, scope_role: 'parent', thread_id: this.threadId }, key);
+                send({ ...event, ...(model ? { model } : {}), flavor: 'codex', scope: { role: 'parent', threadId: this.threadId }, scope_role: 'parent', thread_id: this.threadId }, key);
             } else if (event.type === 'proposed_plan' && turnId && itemId) {
                 const planId = codexPlanProposalId(this.threadId, turnId, itemId);
-                this.send({ type: 'tool-call', name: 'ExitPlanMode', callId: planId, input: { plan: event.plan } }, key);
+                send({ type: 'tool-call', name: 'ExitPlanMode', callId: planId, input: { plan: event.plan } }, key);
                 // A proposal is durable content, not a native approval request.
-                this.send({ type: 'tool-call-result', callId: planId, output: null }, `${key}:result`);
+                send({ type: 'tool-call-result', callId: planId, output: null }, `${key}:result`);
             } else if (event.type === 'plan_update') {
-                this.send({ type: 'tool-call', name: 'update_plan', callId: 'codex-plan-state', input: { plan: event.plan, source: 'codex' } }, key);
-                this.send({ type: 'tool-call-result', callId: 'codex-plan-state', output: { plan: event.plan, source: 'codex', status: 'updated' } }, `${key}:result`);
+                send({ type: 'tool-call', name: 'update_plan', callId: 'codex-plan-state', input: { plan: event.plan, source: 'codex' } }, key);
+                send({ type: 'tool-call-result', callId: 'codex-plan-state', output: { plan: event.plan, source: 'codex', status: 'updated' } }, `${key}:result`);
             } else if (event.type === 'generated_image' && typeof event.saved_path === 'string') {
                 const image = await registerGeneratedImageFromPath({ path: event.saved_path, id: createHash('sha256').update(`${this.threadId}:${key}`).digest('hex'), fileName: string(event.file_name) });
-                if (image) this.send({ type: 'generated-image', imageId: image.id, fileName: image.fileName, mimeType: image.mimeType }, key);
+                if (image) send({ type: 'generated-image', imageId: image.id, fileName: image.fileName, mimeType: image.mimeType }, key);
             } else if (event.type === 'task_failed') {
-                this.send({ type: 'message', message: `Codex error: ${event.error ?? event.message ?? 'Turn failed'}` }, key);
+                send({ type: 'message', message: `Codex error: ${event.error ?? event.message ?? 'Turn failed'}` }, key);
             }
         }
         if (item.type === 'collabAgentToolCall') {
             const states = record(item.agentsStates);
             for (const [agentId, state] of Object.entries(states)) {
                 const status = string(record(state).status) ?? 'running';
-                this.send({ type: 'agent-run-update', agentId, cardId: `codex-agent:${agentId}`,
+                send({ type: 'agent-run-update', agentId, cardId: `codex-agent:${agentId}`,
                     status: status === 'completed' ? 'completed' : status === 'errored' ? 'failed' : 'running',
                     summary: record(state).message, input: item, scope: { role: 'child', threadId: agentId, parentThreadId: this.threadId }, scope_role: 'child', thread_id: agentId
                 }, `agent:${agentId}:${itemId}:${method}:${JSON.stringify(state)}`);
@@ -193,6 +204,24 @@ export class SharedCodexProjection {
     async history(thread: unknown): Promise<void> {
         const turns = record(thread).turns;
         if (!Array.isArray(turns)) return;
+        const consumed = new Set<string>();
+        if (!this.parentThreadId && this.committedHistory) {
+            const ids = turns.flatMap(value => {
+                const items = record(value).items;
+                return (Array.isArray(items) ? items : []).flatMap(value => {
+                    const item = record(value);
+                    if (item.type !== 'userMessage') return [];
+                    const id = string(item.clientId ?? item.clientUserMessageId)
+                        ?? (string(item.id) ? `codex:${this.threadId}:user:${item.id}` : undefined);
+                    return id ? [id] : [];
+                });
+            });
+            // Persist consumption first, but acknowledge only after transcript
+            // packets: the Hub cannot mark an ID that has not been inserted yet.
+            await this.committedHistory(ids);
+            // Collect ACK IDs below in transcript order, so separate bounded
+            // packets cannot place every historical prompt ahead of its reply.
+        }
         const titleRevision = this.titleRevision;
         let latestTitle: string | undefined;
         for (const value of turns) {
@@ -205,7 +234,7 @@ export class SharedCodexProjection {
                 if (!this.parentThreadId && string(record(item).id) && pendingTitle && !this.completedTitles.has(titleKey)) {
                     this.pendingTitles.set(titleKey, pendingTitle);
                 }
-                await this.project('item/started', params, undefined, true);
+                await this.project('item/started', params, undefined, true, consumed);
                 // Active snapshots can contain partial assistant text. Do not
                 // settle it under the final stable id and suppress completion.
                 if (turn.status !== 'inProgress' || record(item).status === 'completed' || record(item).type === 'userMessage') {
@@ -217,10 +246,11 @@ export class SharedCodexProjection {
                         }
                         this.pendingTitles.delete(titleKey);
                     }
-                    await this.project('item/completed', params, undefined, true);
+                    await this.project('item/completed', params, undefined, true, consumed);
                 }
             }
         }
+        if (consumed.size) this.session.emitMessagesConsumed([...consumed]);
         // Repair sessions created while remote title projection was missing.
         // Recheck inside the metadata lock: live updates may still be queued,
         // and a replay must never replace an existing or newer display title.
