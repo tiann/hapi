@@ -9,6 +9,11 @@ import { extractBackgroundTaskDelta } from './backgroundTasks'
 import { resolveSessionIdleTimeoutMs, shouldClearKeepaliveIdle, shouldMarkKeepaliveIdle } from './sessionIdle'
 
 const QUEUED_MESSAGE_THINKING_GRACE_MS = 15_000
+// A runner's machine-alive heartbeat arrives every ~20s; honor its session
+// liveness declarations for long enough to ride out a few missed heartbeats,
+// but no longer — a runner that goes silent must not pin sessions online
+// forever (the normal keepalive timeouts take over again).
+export const RUNNER_DECLARED_ALIVE_TTL_MS = 90_000
 // tiann/hapi#919: metadata writers (renameSession, clearSessionArchiveMetadata,
 // restoreSessionArchiveMetadata) retry on version-mismatch with a fresh cache
 // snapshot. Cap retries so genuine concurrent contention still surfaces to the
@@ -32,6 +37,16 @@ export class SessionCache {
      */
     private readonly agentProgressAtBySessionId: Map<string, number> = new Map()
     private readonly sessionIdleTimeoutMs: number = resolveSessionIdleTimeoutMs()
+    /**
+     * Runner-verified session liveness, carried on `machine-alive`. The runner
+     * daemon supervises the agent processes, so its heartbeat can vouch for a
+     * session whose own socket is down (long transport blackouts outlive any
+     * keepalive timeout). Declarations replace the machine's previous set, so
+     * a session that ends normally drops out on the next heartbeat; the TTL
+     * bounds trust when the runner itself goes silent.
+     */
+    private readonly runnerDeclaredSessionsByMachineId = new Map<string, Set<string>>()
+    private readonly runnerDeclaredAliveAtBySessionId = new Map<string, number>()
 
     constructor(
         private readonly store: Store,
@@ -784,6 +799,10 @@ export class SessionCache {
         for (const session of this.sessions.values()) {
             if (!session.active) continue
             if (now - session.activeAt <= sessionTimeoutMs) continue
+            // The runner daemon still vouches for this session's process: its
+            // socket is down, not the agent. Keep it online; the TTL check in
+            // isRunnerDeclaredAlive drops the vouch once the runner goes quiet.
+            if (this.isRunnerDeclaredAlive(session.id, now)) continue
             session.active = false
             this.store.sessions.setSessionActive(session.id, false, now, session.namespace)
             session.thinking = false
@@ -796,7 +815,67 @@ export class SessionCache {
             })
         }
 
+        this.evictStaleRunnerDeclarations(now)
+
         return expired
+    }
+
+    /**
+     * Record the set of sessions whose processes the runner daemon currently
+     * verifies as alive (OS-level check on the runner side). Called from
+     * `SyncEngine.handleMachineAlive` with the `aliveSessions` list carried on
+     * the machine heartbeat.
+     *
+     * Each declaration REPLACES the machine's previous set, so a session that
+     * ended normally — or whose process died — drops out on the next heartbeat
+     * and the normal keepalive timeouts take over again within ~20s.
+     *
+     * A declaration for a session the hub has already expired revives it: the
+     * process is verified alive while its own socket was blacked out, so
+     * flipping it back online (and persisting + broadcasting that) is the
+     * truthful state, not waiting for the session socket to reconnect.
+     */
+    noteRunnerDeclaredSessions(machineId: string, sessionIds: string[], now: number = Date.now()): void {
+        const previous = this.runnerDeclaredSessionsByMachineId.get(machineId)
+        const next = new Set(sessionIds)
+        this.runnerDeclaredSessionsByMachineId.set(machineId, next)
+
+        if (previous) {
+            for (const sessionId of previous) {
+                if (!next.has(sessionId)) {
+                    this.runnerDeclaredAliveAtBySessionId.delete(sessionId)
+                }
+            }
+        }
+
+        for (const sessionId of next) {
+            this.runnerDeclaredAliveAtBySessionId.set(sessionId, now)
+
+            const session = this.sessions.get(sessionId)
+            if (session && !session.active) {
+                session.active = true
+                session.activeAt = Math.max(session.activeAt, now)
+                this.store.sessions.setSessionActive(sessionId, true, now, session.namespace)
+                this.publisher.emit({
+                    type: 'session-updated',
+                    sessionId,
+                    data: { active: true } satisfies SessionPatch
+                })
+            }
+        }
+    }
+
+    private isRunnerDeclaredAlive(sessionId: string, now: number): boolean {
+        const declaredAt = this.runnerDeclaredAliveAtBySessionId.get(sessionId)
+        return declaredAt !== undefined && now - declaredAt <= RUNNER_DECLARED_ALIVE_TTL_MS
+    }
+
+    private evictStaleRunnerDeclarations(now: number): void {
+        for (const [sessionId, declaredAt] of this.runnerDeclaredAliveAtBySessionId) {
+            if (now - declaredAt > RUNNER_DECLARED_ALIVE_TTL_MS) {
+                this.runnerDeclaredAliveAtBySessionId.delete(sessionId)
+            }
+        }
     }
 
     applySessionConfig(

@@ -3,7 +3,8 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildCliArgs, classifyRecoveredProcessGeneration, createSpawnDeduplicator, releaseRecoveredSpawnDedupe } from './run'
+import { buildCliArgs, classifyRecoveredProcessGeneration, collectAliveSessionIds, createSpawnDeduplicator, releaseRecoveredSpawnDedupe } from './run'
+import type { TrackedSession } from './types'
 
 describe('buildCliArgs', () => {
     it('adds --permission-mode for valid permission mode', () => {
@@ -580,5 +581,95 @@ describe('releaseRecoveredSpawnDedupe', () => {
 
         expect(calls).toBe(1)
         expect(recovered.has(123)).toBe(false)
+    })
+})
+
+describe('SpawnDeduplicator.isChildStopping', () => {
+    it('flips true only after markChildStopping on a tracked child', async () => {
+        const dedupe = createSpawnDeduplicator(async () => ({ type: 'success' as const, sessionId: 's' }))
+
+        expect(dedupe.isChildStopping('s')).toBe(false)
+        dedupe.recoverChild('s', { type: 'success', sessionId: 's' })
+        expect(dedupe.isChildStopping('s')).toBe(false)
+        dedupe.markChildStopping('s')
+        expect(dedupe.isChildStopping('s')).toBe(true)
+        dedupe.markChildAlive('s')
+        expect(dedupe.isChildStopping('s')).toBe(false)
+        dedupe.onChildExited('s')
+        expect(dedupe.isChildStopping('s')).toBe(false)
+    })
+
+    it('reports unknown sessions as not stopping', async () => {
+        const dedupe = createSpawnDeduplicator(async () => ({ type: 'success' as const, sessionId: 's' }))
+        dedupe.markChildStopping('never-tracked')
+        expect(dedupe.isChildStopping('never-tracked')).toBe(false)
+    })
+})
+
+describe('collectAliveSessionIds', () => {
+    const neverStopping = (sessionId: string) => false
+
+    function tracked(sessionId: string | undefined, shared: string[] = []): TrackedSession {
+        return {
+            pid: 1,
+            startedBy: 'remote',
+            happySessionId: sessionId,
+            sharedSessions: Object.fromEntries(shared.map((id) => [id, {}])),
+        } as unknown as TrackedSession
+    }
+
+    it('unions all three pid maps plus sharedSessions and dedupes', () => {
+        const ids = collectAliveSessionIds({
+            trackedByPid: new Map([
+                [1, tracked('tracked-main', ['tracked-shared'])],
+                [2, tracked(undefined)],
+            ]),
+            sessionIdByChildPid: new Map([[3, 'existing-id']]),
+            confirmedSessionIdByPid: new Map([[4, 'confirmed-id'], [5, 'tracked-main']]),
+            isChildStopping: neverStopping,
+            isProcessAlive: () => true,
+        })
+
+        expect(ids.sort()).toEqual(['confirmed-id', 'existing-id', 'tracked-main', 'tracked-shared'])
+    })
+
+    it('drops entries whose pid no longer exists', () => {
+        const alive = new Set([1, 4])
+        const ids = collectAliveSessionIds({
+            trackedByPid: new Map([
+                [1, tracked('alive-main', ['alive-shared'])],
+                [2, tracked('dead-main', ['never-included'])],
+            ]),
+            sessionIdByChildPid: new Map([[3, 'dead-existing']]),
+            confirmedSessionIdByPid: new Map([[4, 'alive-confirmed']]),
+            isChildStopping: neverStopping,
+            isProcessAlive: (pid) => alive.has(pid),
+        })
+
+        expect(ids.sort()).toEqual(['alive-confirmed', 'alive-main', 'alive-shared'])
+    })
+
+    it('excludes sessions the runner is stopping', () => {
+        const ids = collectAliveSessionIds({
+            trackedByPid: new Map([[1, tracked('stopping-main', ['stopping-shared'])]]),
+            sessionIdByChildPid: new Map([[2, 'stopping-existing']]),
+            confirmedSessionIdByPid: new Map([[3, 'stopping-confirmed']]),
+            isChildStopping: (sessionId) => sessionId.startsWith('stopping-'),
+            isProcessAlive: () => true,
+        })
+
+        expect(ids).toEqual([])
+    })
+
+    it('returns an empty list when nothing is alive', () => {
+        const ids = collectAliveSessionIds({
+            trackedByPid: new Map([[1, tracked('gone')]]),
+            sessionIdByChildPid: new Map(),
+            confirmedSessionIdByPid: new Map(),
+            isChildStopping: neverStopping,
+            isProcessAlive: () => false,
+        })
+
+        expect(ids).toEqual([])
     })
 })

@@ -909,8 +909,16 @@ export class SyncEngine {
         return { buffer: read.buffer, mimeType: 'application/octet-stream', filename: 'attachment' }
     }
 
-    handleMachineAlive(payload: { machineId: string; time: number; health?: unknown }): void {
+    handleMachineAlive(payload: { machineId: string; time: number; health?: unknown; aliveSessions?: string[] }): void {
         this.machineCache.handleMachineAlive(payload)
+        // Guard the runtime shape too: the socket layer sanitizes, but a rogue
+        // payload must not reach the declared-alive cache as e.g. a string.
+        // An explicitly empty list still flows through — it REPLACES the
+        // machine's previous declaration, so ended sessions lose their vouch
+        // on the very next heartbeat.
+        if (Array.isArray(payload.aliveSessions)) {
+            this.sessionCache.noteRunnerDeclaredSessions(payload.machineId, payload.aliveSessions)
+        }
     }
 
     /**
