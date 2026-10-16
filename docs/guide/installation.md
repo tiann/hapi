@@ -185,6 +185,7 @@ On first run, HAPI:
 | `HAPI_IOS_PUSH` | `relay` | `iosPushMode` | iOS push: `relay`, direct `apns`, or `off` |
 | `HAPI_PUSH_RELAY_URL` | `https://push.hapi.run` | `iosPushRelayUrl` | Shared Android/iOS push relay, independent of the network tunnel |
 | `FCM_SERVICE_ACCOUNT_PATH` | - | `fcmServiceAccountPath` | Direct FCM credentials for private builds using the same Firebase project |
+| `HAPI_MAX_LIVE_SESSIONS` | `20` | - | CLI: maximum live session roots per `HAPI_HOME`; `0` disables the limit. Set consistently in runner and terminal environments. |
 | `HAPI_HOME` | `~/.hapi` | - | Config directory path |
 | `DB_PATH` | `~/.hapi/hapi.db` | - | Database file path |
 | `HAPI_EXPERIMENTAL` | - | - | CLI: enable experimental features (`true`/`1`/`yes`) |

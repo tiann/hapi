@@ -53,7 +53,7 @@ afterEach(async () => {
     finally { vi.useRealTimers(); }
 });
 
-async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) {
+async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; expectedCloseError?: Error }) {
     const directory = await mkdtemp('/tmp/hapi-shared-root-');
     let state: AgentState = { steeringActive: true };
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
@@ -83,7 +83,12 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
         create: async () => { throw new Error('Unexpected root creation'); },
         end
     } satisfies RootHost);
-    cleanups.push(async () => { await root.close(false); await rm(directory, { recursive: true, force: true }); });
+    cleanups.push(async () => {
+        try {
+            if (opts?.expectedCloseError) await expect(root.close(false)).rejects.toBe(opts.expectedCloseError);
+            else await root.close(false);
+        } finally { await rm(directory, { recursive: true, force: true }); }
+    });
     await root.prepare();
     await root.bind('thread', { model: 'mock', thread: { turns: [] } }, false);
     const native = root.client as unknown as {
@@ -116,6 +121,18 @@ async function completePlan(f: Awaited<ReturnType<typeof fixture>>, status = 'co
 }
 
 describe('shared plan actions', () => {
+    it('closes the HAPI session exactly once when native cleanup fails', async () => {
+        const failure = new Error('native disconnect failed');
+        const f = await fixture({ expectedCloseError: failure });
+        vi.spyOn(f.root.client, 'disconnect').mockRejectedValue(failure);
+        const closeSession = vi.spyOn(f.root.session, 'close');
+
+        await expect(f.root.close(false)).rejects.toBe(failure);
+        expect(closeSession).toHaveBeenCalledTimes(1);
+        await expect(f.root.close(false)).rejects.toBe(failure);
+        expect(closeSession).toHaveBeenCalledTimes(1);
+    });
+
     it('applies remote change_title as metadata.name then lets native terminal rename win', async () => {
         const f = await fixture();
         const item = { id: 'title', type: 'mcpToolCall', server: 'hapi', tool: 'change_title',
