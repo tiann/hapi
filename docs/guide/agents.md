@@ -19,7 +19,7 @@ agent's integration; their supported syntax varies by agent.
 | GitHub Copilot | `hapi copilot` | ACP (`copilot --acp --stdio`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
 | Kimi | `hapi kimi` | ACP (`kimi acp`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
 | OpenCode | `hapi opencode` | ACP (`opencode acp`) | ✓ | ✓ | `default` `plan` `yolo` | ✓ |
-| DeepSeek Harness | `hapi dsh` | ACP (`dsh --profile acp` or configured server) | — | ✓ | Managed by DSH ACP composition | ✓* |
+| DeepSeek Harness | `hapi dsh` | ACP (`dsh --profile acp` or configured server) | — | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓* |
 | Antigravity (agy) | `hapi agy` | Persistent headless NDJSON over stdio | — | ✓ | `request-review` `always-proceed` | ✓ |
 | Pi | `hapi pi` | `pi --mode rpc` (JSON-line RPC over stdio) | — | ✓ | none (always auto-approve) | ✓ |
 | Gemini CLI | — | **Removed** — Google sunset the consumer Gemini CLI (2026-06-18) | — | — | — | — |
@@ -291,18 +291,19 @@ export HAPI_DSH_ACP_ARGS_JSON='["--dir", "/path/to/deepseek-harness", "run", "de
 hapi dsh
 ```
 
-DSH sessions are remote-only. With a persistent DSH ACP profile, HAPI stores the
-native DSH session id and restores model context with `session/resume` after a
-restart or archive. The resume call does not replay the transcript; HAPI's Hub
-message history remains the source for the chat UI. HAPI does not inject MCP
-servers. Model selection is available: the DSH composition's model catalog is
-exposed through the session RPC `ListDshModels` and applied per turn with ACP
-`session/set_config_option`. Effort pickers are not exposed because the
-official ACP contract leaves that surface to the DSH composition. Pending
-one-shot permission requests remain answerable in the standard HAPI UI, but
-the ACP composition owns the overall permission policy. A legacy or
-fresh-session-only server falls back to a new session and surfaces that outcome
-in the chat.
+DSH sessions are remote-only. HAPI resumes DSH sessions through their native
+ACP session ids (`session/resume`); sessions without a native id report resume
+as unavailable rather than falling back to a fresh shell. The resume call does
+not replay the transcript; HAPI's Hub message history remains the source for
+the chat UI. HAPI does not inject MCP servers. Model selection is available:
+the DSH composition's model catalog is exposed through the session RPC
+`ListDshModels` and applied per turn with ACP `session/set_config_option`.
+Effort pickers are not exposed because the official ACP contract leaves that
+surface to the DSH composition. Permission policy is controlled HAPI-side
+through the shared ACP permission bridge: pick a launch mode
+(`--permission-mode`, or `--yolo`) and switch mid-session from the web UI;
+one-shot permission requests auto-approve under yolo-style modes and escalate
+to the standard HAPI permission card otherwise.
 
 `*` Resume requires a DSH ACP server that implements `session/resume`.
 

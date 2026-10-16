@@ -237,8 +237,9 @@ session's native ACP session id to `session/resume`, and sessions without a
 native id report resume as unavailable. Model selection is advertised for DSH:
 the composition's catalog is listed via the `ListDshModels` session RPC and
 applied per turn with ACP `session/set_config_option`. HAPI uses the standard
-chat and pending one-shot permission surfaces; the ACP composition owns the
-overall permission policy.
+chat and pending one-shot permission surfaces; permission policy is controlled
+HAPI-side through the shared ACP permission bridge (launch with
+`--permission-mode` or `--yolo`, switch mid-session from the web UI).
 
 ### Required
 

@@ -1121,6 +1121,15 @@ class NewSessionViewModelTest {
         advanceUntilIdle()
         assertTrue(vm.uiState.value.permission is PermissionUi.Managed)
 
+        vm.setAgent("dsh")
+        advanceUntilIdle()
+        val dshSelect = vm.uiState.value.permission
+        assertTrue(dshSelect is PermissionUi.NativeSelect)
+        assertEquals(
+            listOf("default", "read-only", "safe-yolo", "yolo"),
+            (dshSelect as PermissionUi.NativeSelect).options.map { it.value },
+        )
+
         vm.setAgent("claude")
         advanceUntilIdle()
         // Claude is on the native select now; the YOLO toggle only remains for

@@ -28,6 +28,17 @@ final class NewSessionDirectoryTests: XCTestCase {
         XCTAssertEqual(harness.model.form.model, "opus")
     }
 
+    func testDshLaunchPermissionOffersTheFourBridgeModes() async throws {
+        let harness = try NewSessionDirectoryHarness()
+        defer { harness.model.stopDirectoryWork() }
+        await harness.model.start()
+        harness.model.setAgent(.dsh)
+        guard case .nativeSelect(let options) = harness.model.permission else {
+            return XCTFail("DSH should use the native permission select, got \(harness.model.permission)")
+        }
+        XCTAssertEqual(options.map(\.mode), [.default, .readOnly, .safeYolo, .yolo])
+    }
+
     func testExplicitPickOfFallbackSurvivesLateRecentDirectoryResponse() async throws {
         let harness = try NewSessionDirectoryHarness()
         defer { harness.model.stopDirectoryWork() }
