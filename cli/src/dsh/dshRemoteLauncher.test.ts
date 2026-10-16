@@ -267,6 +267,19 @@ describe('DshRemoteLauncher', () => {
         expect(harness.permissionGetMode?.()).toBe('yolo')
     })
 
+    it('observes runtime mode changes made after launch (SetSessionConfig wiring)', async () => {
+        // The mode picker applies changes via SetSessionConfig →
+        // session.setPermissionMode; the bridge must read through to the
+        // session on each permission request, not a launch-time copy.
+        const session = createSession('default')
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await launcher.launch()
+        session.getPermissionMode = () => 'yolo'
+
+        expect(harness.permissionGetMode?.()).toBe('yolo')
+    })
+
     it('reports an unset permission mode to the bridge (card escalation)', async () => {
         const queue = createQueue()
         queue.push('first', {})

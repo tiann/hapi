@@ -60,7 +60,7 @@ object PermissionModes {
         PermissionMode.AutoReview, PermissionMode.Yolo,
     )
 
-    /** `GEMINI_PERMISSION_MODES` (kimi/copilot share the same list). */
+    /** `GEMINI_PERMISSION_MODES` (kimi/copilot/dsh share the same list). */
     val GEMINI = listOf(
         PermissionMode.Default, PermissionMode.ReadOnly,
         PermissionMode.SafeYolo, PermissionMode.Yolo,
@@ -93,7 +93,7 @@ object PermissionModes {
         "copilot" -> GEMINI
         "grok" -> GROK
         "opencode" -> OPENCODE
-        "dsh" -> emptyList()
+        "dsh" -> GEMINI
         "agy" -> AGY
         "cursor" -> CURSOR
         "pi" -> emptyList()
