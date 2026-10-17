@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import * as Popover from '@radix-ui/react-popover'
 import { SessionListScrollAnchor } from './SessionListScrollAnchor'
 import type { SessionSummary } from '@/types/api'
 import { SESSION_LIFECYCLE_IDLE } from '@hapi/protocol'
@@ -26,6 +27,55 @@ function PinnedSectionIcon(props: { className?: string }) {
             <path d="M5 17h14" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" />
             <path d="M7 4V2h10v2l-2 5v4l2 2H7l2-2V9Z" />
         </svg>
+    )
+}
+
+function MoreHorizontalIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+            aria-hidden="true"
+        >
+            <circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none" />
+            <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+            <circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none" />
+        </svg>
+    )
+}
+
+/** Narrow-header overflow for shed secondary actions (tiann/hapi#2039). */
+function SessionListHeaderOverflow(props: { children: ReactNode }) {
+    const { t } = useTranslation()
+    return (
+        <Popover.Root>
+            <Popover.Trigger asChild>
+                <button
+                    type="button"
+                    data-testid="session-list-header-overflow"
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                    title={t('sessions.toolbar.more')}
+                    aria-label={t('sessions.toolbar.more')}
+                >
+                    <MoreHorizontalIcon className="h-5 w-5" />
+                </button>
+            </Popover.Trigger>
+            <Popover.Portal>
+                <Popover.Content
+                    align="end"
+                    sideOffset={6}
+                    className="z-50 flex max-w-[min(100vw-1rem,20rem)] flex-wrap items-center justify-end gap-1 rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-1.5 shadow-xl"
+                >
+                    {props.children}
+                </Popover.Content>
+            </Popover.Portal>
+        </Popover.Root>
     )
 }
 import { cn } from '@/lib/utils'
@@ -62,6 +112,35 @@ import { Spinner } from '@/components/Spinner'
 import { transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { useToast } from '@/lib/toast-context'
 import { getPathDisplayName } from '@/utils/path'
+import {
+    shedToolbarSlots,
+    toolbarActionBudget,
+    TOOLBAR_GAP_PX,
+    TOOLBAR_ICON_PX,
+    TOOLBAR_MORE_PX,
+    type ToolbarShedSlot
+} from '@/components/sessionToolbarShed'
+
+/** Hit targets that must stay visible: icon, clear, calendar. Not the query text. */
+function measureSearchChrome(search: HTMLElement): number {
+    const parts = [...search.querySelectorAll<HTMLElement>('[data-toolbar-chrome]')]
+    if (parts.length === 0) return search.offsetWidth
+    const gap = Number.parseFloat(getComputedStyle(search).columnGap) || 0
+    const trigger = search.querySelector('button')
+    const triggerStyle = trigger ? getComputedStyle(trigger) : null
+    const triggerPad = triggerStyle
+        ? (Number.parseFloat(triggerStyle.paddingLeft) || 0) + (Number.parseFloat(triggerStyle.paddingRight) || 0)
+        : 0
+    return parts.reduce((sum, el) => sum + el.offsetWidth, 0) + triggerPad + gap * Math.max(0, parts.length - 1)
+}
+
+export type SessionToolbarExtra = {
+    id: string
+    /** Higher sheds into More first. See sessionToolbarShed.ts. */
+    keep: number
+    node: ReactNode
+    widthPx?: number
+}
 
 export { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
 
@@ -747,6 +826,8 @@ export function SessionListSearch(props: {
     onDateRangeChange: (start: string, end: string) => void
     expanded: boolean
     onExpandedChange: (expanded: boolean) => void
+    /** Minimum width of icon + clear + calendar. Query text may shrink; these may not. */
+    chromeMinPx?: number
 }) {
     const { t } = useTranslation()
     const [datePickerOpen, setDatePickerOpen] = useState(false)
@@ -784,6 +865,7 @@ export function SessionListSearch(props: {
                 data-testid={variant === 'embedded'
                     ? 'session-list-search-date-embedded'
                     : 'session-list-search-date-standalone'}
+                data-toolbar-chrome=""
                 onClick={() => setDatePickerOpen(open => !open)}
                 className={cn(
                     'relative flex shrink-0 items-center justify-center transition-colors',
@@ -859,17 +941,28 @@ export function SessionListSearch(props: {
         const hasTextQuery = props.value.length > 0
         const collapsedLabel = hasTextQuery ? `${searchLabel}: ${props.value}` : searchLabel
         return (
-            // min-w-0 (no shrink-0): group can yield space to neighboring toolbar
-            // controls; calendar + clear stay shrink-0; query text truncates.
+            // Idle (no query): shrink-0 so the icon does not crush under neighbors
+            // (tiann/hapi#2039 overlap). Active query: min-w-0 so the chip text
+            // yields to More + machine menu at 320px / 130% (#2040 Major). Clear
+            // and calendar stay shrink-0 chrome; only the query text truncates.
             <div
                 data-testid="session-list-search"
                 data-expanded="false"
-                className="relative flex min-w-0 flex-nowrap items-center gap-1"
+                style={hasTextQuery && props.chromeMinPx && props.chromeMinPx > 0
+                    ? { minWidth: props.chromeMinPx }
+                    : undefined}
+                className={cn(
+                    'relative flex max-w-full flex-nowrap items-center gap-1',
+                    // Query text shrinks. minWidth is the icon/clear/calendar floor
+                    // so a flex-1 actions box cannot crush those hit targets.
+                    hasTextQuery ? 'min-w-0 max-w-full shrink' : 'shrink-0'
+                )}
             >
                 <div className={cn(
                     'relative flex min-w-0 items-center rounded-full transition-colors',
                     hasTextQuery
                         // Keep the query and its clear action inside the same compact chip.
+                        // Cap stays modest so [chip][⋯] fits a 320px phone (#2039 Major).
                         ? 'max-w-[9rem] bg-[var(--app-chat-user-chip-bg)] text-[var(--app-chat-user-chip-fg)]'
                         : 'shrink-0'
                 )}>
@@ -886,7 +979,9 @@ export function SessionListSearch(props: {
                         title={collapsedLabel}
                         aria-label={collapsedLabel}
                     >
-                        <SearchIcon className="h-5 w-5 shrink-0" />
+                        <span data-toolbar-chrome="" className="inline-flex shrink-0">
+                            <SearchIcon className="h-5 w-5 shrink-0" />
+                        </span>
                         {hasTextQuery ? (
                             <span className="min-w-0 truncate text-xs font-medium">{props.value}</span>
                         ) : null}
@@ -900,6 +995,7 @@ export function SessionListSearch(props: {
                                 // the collapsed search trigger instead of dropping to body.
                                 collapsedButtonRef.current?.focus()
                             }}
+                            data-toolbar-chrome=""
                             className="flex h-10 w-10 min-h-[40px] min-w-[40px] shrink-0 items-center justify-center rounded-r-full bg-[var(--app-chat-user-chip-action-bg)] text-[var(--app-chat-user-chip-action-fg)] transition-colors hover:text-[var(--app-chat-user-chip-action-hover-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] focus-visible:ring-inset"
                             title={t('sessions.search.clear')}
                             aria-label={t('sessions.search.clear')}
@@ -1247,7 +1343,9 @@ export function SessionList(props: {
     onRefresh: () => Promise<unknown> | void
     isLoading: boolean
     renderHeader?: boolean
+    /** @deprecated Prefer `toolbarExtras` so each control has its own keep rank. */
     headerActions?: React.ReactNode
+    toolbarExtras?: SessionToolbarExtra[]
     api: ApiClient | null
     titleSuggestionAvailable?: boolean
     machineLabelsById?: Record<string, string>
@@ -1279,6 +1377,45 @@ export function SessionList(props: {
     const [customEnd, setCustomEnd] = useState('')
     const [markAllReadOpen, setMarkAllReadOpen] = useState(false)
     const [, setCodexImportedSessionsVersion] = useState(0)
+    // Actions-box width is the real icon budget (#2039). Measuring the full
+    // row and subtracting a guessed search reserve left empty space after More.
+    const headerRowRef = useRef<HTMLDivElement>(null)
+    const headerActionsRef = useRef<HTMLDivElement>(null)
+    const toolbarMeasureRef = useRef<HTMLDivElement>(null)
+    const machineMenuRef = useRef<HTMLDivElement>(null)
+    const actionsObserverRef = useRef<ResizeObserver | null>(null)
+    const [headerRowWidth, setHeaderRowWidth] = useState(0)
+    const [toolbarSlotWidths, setToolbarSlotWidths] = useState<Record<string, number>>({})
+    const [toolbarChrome, setToolbarChrome] = useState({ morePx: TOOLBAR_MORE_PX, gapPx: TOOLBAR_GAP_PX, machinePx: 0 })
+    const [searchChromePx, setSearchChromePx] = useState(0)
+    // Search expand unmounts the actions box. A callback ref re-observes the
+    // new node when search collapses; an effect keyed only on showHeaderRow does not.
+    const setHeaderActionsNode = useCallback((node: HTMLDivElement | null) => {
+        headerActionsRef.current = node
+        actionsObserverRef.current?.disconnect()
+        actionsObserverRef.current = null
+        // Search expand unmounts this node — keep the last positive width so
+        // we do not fall back to a permissive unmeasured budget mid-cycle.
+        if (!node || typeof ResizeObserver === 'undefined') return
+        const publish = (reported = 0) => {
+            // flex-1 allocation, not the icon cluster's intrinsic width and not
+            // the previous expanded-search layout (#2040).
+            const allocated = node.clientWidth
+            const width = allocated > 0 ? allocated : reported
+            if (width > 0) setHeaderRowWidth(width)
+        }
+        const ro = new ResizeObserver((entries) => {
+            const target = entries[0]?.target
+            const reported = entries[0]?.contentRect.width ?? 0
+            const client = target instanceof HTMLElement ? target.clientWidth : 0
+            publish(client > 0 ? client : reported)
+        })
+        ro.observe(node)
+        const row = headerRowRef.current
+        if (row && row !== node) ro.observe(row)
+        actionsObserverRef.current = ro
+        publish(node.clientWidth || node.getBoundingClientRect().width)
+    }, [])
     const normalizedQuery = normalizeSearch(searchQuery)
     const timeRange = getSessionTimeRange(customStart, customEnd)
     const isFiltering = normalizedQuery.length > 0 || timeRange !== null
@@ -1856,7 +1993,45 @@ export function SessionList(props: {
         if (!showSearch) setSearchExpanded(false)
     }, [showSearch])
 
-    const showHeaderRow = showSearch || renderHeader || Boolean(props.headerActions)
+    const showHeaderRow = showSearch || renderHeader || Boolean(props.headerActions) || Boolean(props.toolbarExtras?.length)
+
+    useEffect(() => () => {
+        actionsObserverRef.current?.disconnect()
+    }, [])
+    useLayoutEffect(() => {
+        const search = headerRowRef.current?.querySelector<HTMLElement>('[data-testid="session-list-search"]')
+        const nextChrome = search && search.dataset.expanded !== 'true'
+            ? measureSearchChrome(search)
+            : 0
+        setSearchChromePx((previous) => previous === nextChrome ? previous : nextChrome)
+        const root = toolbarMeasureRef.current
+        if (!root) return
+        const next: Record<string, number> = {}
+        for (const node of root.querySelectorAll<HTMLElement>('[data-measure-id]')) {
+            const id = node.dataset.measureId
+            if (!id || id === '__more') continue
+            const width = node.offsetWidth
+            if (width > 0) next[id] = width
+        }
+        setToolbarSlotWidths((previous) => {
+            const previousKeys = Object.keys(previous)
+            const nextKeys = Object.keys(next)
+            if (previousKeys.length === nextKeys.length && nextKeys.every((key) => previous[key] === next[key])) {
+                return previous
+            }
+            return next
+        })
+        const moreNode = root.querySelector<HTMLElement>('[data-measure-id="__more"]')
+        const parsedGap = Number.parseFloat(getComputedStyle(root).columnGap)
+        const morePx = moreNode && moreNode.offsetWidth > 0 ? moreNode.offsetWidth : TOOLBAR_MORE_PX
+        const gapPx = Number.isFinite(parsedGap) && parsedGap > 0 ? parsedGap : TOOLBAR_GAP_PX
+        const machinePx = machineMenuRef.current?.offsetWidth ?? 0
+        setToolbarChrome((previous) => (
+            previous.morePx === morePx && previous.gapPx === gapPx && previous.machinePx === machinePx
+                ? previous
+                : { morePx, gapPx, machinePx }
+        ))
+    })
 
     // Pull-to-refresh on the scrollable list. Touch-only gesture mirroring the
     // pull-to-load-older pattern in HappyThread; desktop has no overscroll
@@ -1952,7 +2127,15 @@ export function SessionList(props: {
         <div className="flex min-h-0 w-full flex-1 flex-col">
             <div className="session-list-scrollbar-offset mx-auto w-full max-w-content shrink-0">
             {showHeaderRow ? (
-                <div className="flex items-center gap-1 px-2 py-1">
+                // One toolbar row always. Never flex-wrap: wrapping burned a whole
+                // line on Quest when the icon slab did not fit beside search
+                // (tiann/hapi#2039). Secondary chrome sheds via container query
+                // instead of taking a second row.
+                <div
+                    ref={headerRowRef}
+                    data-testid="session-list-header-row"
+                    className="@container flex min-w-0 w-full flex-nowrap items-center gap-1 px-2 py-1"
+                >
                     {showSearch ? (
                         <SessionListSearch
                             value={searchQuery}
@@ -1966,66 +2149,173 @@ export function SessionList(props: {
                             }}
                             expanded={searchExpanded}
                             onExpandedChange={setSearchExpanded}
+                            chromeMinPx={searchQuery.length > 0 ? searchChromePx : 0}
                         />
                     ) : null}
                     {!(showSearch && searchExpanded) ? (
-                        <>
-                            <div className="flex-1" />
-                            {showMachineFilterBar ? (
-                                <MachineFilterMenu
-                                    machines={machineFilterItems}
-                                    totalCount={allSessions.length}
-                                    value={activeMachineFilter}
-                                    onChange={setMachineFilter}
-                                />
-                            ) : null}
-                            {unreadSessionCount > 0 ? (
-                                <button
-                                    type="button"
-                                    onClick={() => setMarkAllReadOpen(true)}
-                                    title={t('sessions.markAllRead.button', { count: unreadSessionCount })}
-                                    aria-label={t('sessions.markAllRead.button', { count: unreadSessionCount })}
-                                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
-                                >
-                                    <MarkAllReadIcon className="h-5 w-5" />
-                                </button>
-                            ) : null}
-                            <button
-                                type="button"
-                                onClick={() => setShowUnreadOnly(!showUnreadOnly)}
-                                aria-pressed={showUnreadOnly}
-                                title={t('sessions.unreadFilter.toggle')}
-                                aria-label={t('sessions.unreadFilter.toggle')}
-                                className={cn(
-                                    'flex h-9 w-9 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]',
-                                    showUnreadOnly
-                                        ? 'bg-[var(--app-subtle-bg)]'
-                                        : 'hover:bg-[var(--app-subtle-bg)]'
-                                )}
-                            >
-                                {/* Same shape/color language as session-row unread dots (SessionAttentionIndicator). */}
-                                <span
-                                    aria-hidden
-                                    className={cn(
-                                        'inline-flex h-2.5 w-2.5 shrink-0 rounded-full',
-                                        showUnreadOnly
-                                            ? 'bg-[var(--app-link)]'
-                                            : 'bg-[var(--app-hint)]'
-                                    )}
-                                />
-                            </button>
-                            {renderHeader ? (
-                                <button
-                                    type="button"
-                                    onClick={props.onNewSession}
-                                    className="session-list-new-button flex h-9 w-9 items-center justify-center rounded-full text-[var(--app-link)] transition-colors"
-                                    title={t('sessions.new')}
-                                >
-                                    <PlusIcon className="h-5 w-5" />
-                                </button>
-                            ) : null}
-                            {props.headerActions}
-                        </>
+                        <div
+                            ref={setHeaderActionsNode}
+                            data-testid="session-list-header-actions"
+                            // flex-1 min-w-0: the box is the row's leftover after search
+                            // chrome, not the width of whatever icons are already
+                            // showing. shrink-0 made that leftover follow the
+                            // cluster and search overlapped (#2040).
+                            className="relative flex min-w-0 flex-1 flex-nowrap items-center gap-1"
+                        >
+                            {(() => {
+                                // Shed one control at a time, highest keep first.
+                                // Do not ml-auto a lone ⋯ across empty space, and do
+                                // not fold the whole row at a single width gate (#2039).
+                                const machineAndGap = toolbarChrome.machinePx > 0
+                                    ? toolbarChrome.machinePx + toolbarChrome.gapPx
+                                    : 0
+                                // Prefer the flex allocation. It tracks the row, not the
+                                // icons already on it. If they all fit, More is empty.
+                                const allocated = headerActionsRef.current?.clientWidth ?? 0
+                                const gutter = allocated > 0
+                                    ? allocated
+                                    : headerRowWidth > 0
+                                        ? headerRowWidth
+                                        : 0
+                                const budget = gutter > 0
+                                    ? Math.max(0, gutter - machineAndGap)
+                                    : toolbarActionBudget(0, searchQuery.length > 0)
+                                const slotWidth = (id: string, fallback: number) => {
+                                    const measured = toolbarSlotWidths[id] ?? 0
+                                    return measured > 0 ? measured : fallback
+                                }
+                                const definedSlots: Array<ToolbarShedSlot & { node: ReactNode }> = []
+                                if (unreadSessionCount > 0) {
+                                    definedSlots.push({
+                                        id: 'mark-all',
+                                        keep: 7,
+                                        widthPx: slotWidth('mark-all', TOOLBAR_ICON_PX),
+                                        node: (
+                                            <button
+                                                type="button"
+                                                onClick={() => setMarkAllReadOpen(true)}
+                                                title={t('sessions.markAllRead.button', { count: unreadSessionCount })}
+                                                aria-label={t('sessions.markAllRead.button', { count: unreadSessionCount })}
+                                                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
+                                            >
+                                                <MarkAllReadIcon className="h-5 w-5" />
+                                            </button>
+                                        )
+                                    })
+                                }
+                                definedSlots.push({
+                                    id: 'unread',
+                                    keep: 5,
+                                    widthPx: slotWidth('unread', TOOLBAR_ICON_PX),
+                                    node: (
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowUnreadOnly(!showUnreadOnly)}
+                                            aria-pressed={showUnreadOnly}
+                                            title={t('sessions.unreadFilter.toggle')}
+                                            aria-label={t('sessions.unreadFilter.toggle')}
+                                            className={cn(
+                                                'flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]',
+                                                showUnreadOnly
+                                                    ? 'bg-[var(--app-subtle-bg)]'
+                                                    : 'hover:bg-[var(--app-subtle-bg)]'
+                                            )}
+                                        >
+                                            <span
+                                                aria-hidden
+                                                className={cn(
+                                                    'inline-flex h-2.5 w-2.5 shrink-0 rounded-full',
+                                                    showUnreadOnly
+                                                        ? 'bg-[var(--app-link)]'
+                                                        : 'bg-[var(--app-hint)]'
+                                                )}
+                                            />
+                                        </button>
+                                    )
+                                })
+                                if (renderHeader) {
+                                    definedSlots.push({
+                                        id: 'new',
+                                        keep: 4,
+                                        widthPx: slotWidth('new', TOOLBAR_ICON_PX),
+                                        node: (
+                                            <button
+                                                type="button"
+                                                onClick={props.onNewSession}
+                                                className="session-list-new-button flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--app-link)] transition-colors"
+                                                title={t('sessions.new')}
+                                            >
+                                                <PlusIcon className="h-5 w-5" />
+                                            </button>
+                                        )
+                                    })
+                                }
+                                for (const extra of props.toolbarExtras ?? []) {
+                                    definedSlots.push({
+                                        id: extra.id,
+                                        keep: extra.keep,
+                                        widthPx: slotWidth(extra.id, extra.widthPx ?? TOOLBAR_ICON_PX),
+                                        node: extra.node
+                                    })
+                                }
+                                if (props.headerActions) {
+                                    definedSlots.push({
+                                        id: 'header-actions',
+                                        keep: 6,
+                                        widthPx: slotWidth('header-actions', TOOLBAR_ICON_PX),
+                                        node: props.headerActions
+                                    })
+                                }
+                                const { visibleIds, overflowIds } = shedToolbarSlots(definedSlots, budget, {
+                                    morePx: toolbarChrome.morePx,
+                                    gapPx: toolbarChrome.gapPx
+                                })
+                                const byId = new Map(definedSlots.map((slot) => [slot.id, slot]))
+                                const visible = visibleIds.map((id) => byId.get(id)).filter((slot) => slot != null)
+                                const overflow = overflowIds.map((id) => byId.get(id)).filter((slot) => slot != null)
+                                return (
+                                    <>
+                                        <div
+                                            ref={toolbarMeasureRef}
+                                            aria-hidden
+                                            inert
+                                            className="pointer-events-none absolute left-0 top-0 -z-10 flex h-0 w-max gap-1 overflow-hidden opacity-0"
+                                        >
+                                            {definedSlots.map((slot) => (
+                                                <span key={slot.id} data-measure-id={slot.id} className="inline-flex shrink-0">
+                                                    {slot.node}
+                                                </span>
+                                            ))}
+                                            <span data-measure-id="__more" className="inline-flex h-9 w-9 shrink-0" />
+                                        </div>
+                                        {showMachineFilterBar ? (
+                                            <div ref={machineMenuRef} className="inline-flex shrink-0">
+                                                <MachineFilterMenu
+                                                    machines={machineFilterItems}
+                                                    totalCount={allSessions.length}
+                                                    value={activeMachineFilter}
+                                                    onChange={setMachineFilter}
+                                                />
+                                            </div>
+                                        ) : null}
+                                        {visible.map((slot) => (
+                                            <span key={slot.id} data-testid={`session-toolbar-slot-${slot.id}`} className="contents">
+                                                {slot.node}
+                                            </span>
+                                        ))}
+                                        {overflow.length > 0 ? (
+                                            <SessionListHeaderOverflow>
+                                                {overflow.map((slot) => (
+                                                    <span key={slot.id} data-testid={`session-toolbar-slot-${slot.id}`} className="contents">
+                                                        {slot.node}
+                                                    </span>
+                                                ))}
+                                            </SessionListHeaderOverflow>
+                                        ) : null}
+                                    </>
+                                )
+                            })()}
+                        </div>
                     ) : null}
                 </div>
             ) : null}

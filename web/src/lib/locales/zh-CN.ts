@@ -77,6 +77,7 @@ export default {
   'sessions.search.clear': '清除搜索',
   'sessions.search.noResults': '没有符合筛选条件的会话。',
   'sessions.unreadFilter.toggle': '仅显示未读',
+  'sessions.toolbar.more': '更多会话列表操作',
   'sessions.markAllRead.button': '全部标为已读（{count}）',
   'sessions.markAllRead.title': '全部标为已读？',
   'sessions.markAllRead.description': '这会将当前设备上的 {count} 个未读会话标记为已读。',

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
@@ -128,11 +128,12 @@ describe('SessionList directory action', () => {
         expect(listContent).not.toHaveClass('pt-1')
 
         fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
-        const searchInput = screen.getByPlaceholderText(SEARCH_PLACEHOLDER)
-        // input → field row → session-list-search → header actions row
-        const headerRow = searchInput.parentElement?.parentElement?.parentElement
+        const headerRow = screen.getByTestId('session-list-header-row')
         expect(headerRow).toHaveClass('px-2')
         expect(headerRow).toHaveClass('py-1')
+        expect(headerRow).toHaveClass('@container')
+        expect(headerRow).toHaveClass('flex-nowrap')
+        expect(headerRow.className.split(/\s+/)).not.toContain('flex-wrap')
     })
 
     it('hides the directory action for sessions without path metadata', () => {
@@ -197,8 +198,12 @@ describe('SessionList time filter', () => {
         const searchControl = searchButton.parentElement
         expect(searchControl?.nextElementSibling).toBe(filterButton.parentElement)
         expect(searchControl?.parentElement).toBe(filterButton.parentElement?.parentElement)
-        expect(searchControl?.parentElement).toHaveClass('relative', 'gap-1', 'min-w-0')
-        expect(searchControl?.parentElement?.className.split(/\s+/)).not.toContain('shrink-0')
+        // #2039: collapsed search must not shrink under neighbors (overlap);
+        // header wraps trailing actions instead.
+        expect(searchControl?.parentElement).toHaveClass('relative', 'gap-1', 'shrink-0', 'max-w-full')
+        expect(searchControl?.parentElement?.className.split(/\s+/)).not.toContain('min-w-0')
+        expect(screen.getByTestId('session-list-header-row')).toHaveClass('flex-nowrap', '@container')
+        expect(screen.getByTestId('session-list-header-actions')).toBeInTheDocument()
         expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
 
         fireEvent.click(filterButton)
@@ -1091,6 +1096,336 @@ describe('SessionList search toggle', () => {
         expect(screen.getByRole('button', { name: SEARCH_LABEL })).toHaveFocus()
         expect(screen.getByRole('button', { name: /Matching task/ })).toBeInTheDocument()
         expect(screen.getByRole('button', { name: /Other task/ })).toBeInTheDocument()
+    })
+
+    it('keeps collapsed search chrome from sharing a shrink row with header actions (tiann/hapi#2039)', () => {
+        renderWithProviders(
+            <SessionList
+                sessions={[makeSession({
+                    id: 'session-1',
+                    updatedAt: 100,
+                    metadata: { path: '/work/hapi', name: 'Matching task', flavor: 'codex' },
+                })]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                headerActions={<button type="button">Settings</button>}
+                api={null}
+            />
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+        const input = screen.getByPlaceholderText(SEARCH_PLACEHOLDER)
+        fireEvent.change(input, { target: { value: 'Matching' } })
+        fireEvent.blur(input)
+
+        const searchGroup = screen.getByTestId('session-list-search')
+        const headerRow = screen.getByTestId('session-list-header-row')
+        const actions = screen.getByTestId('session-list-header-actions')
+        const clearButton = screen.getByRole('button', { name: 'Clear search' })
+
+        expect(searchGroup).toHaveAttribute('data-expanded', 'false')
+        // Active query yields (min-w-0) so More stays on-screen; idle search keeps shrink-0.
+        expect(searchGroup).toHaveClass('min-w-0')
+        expect(searchGroup.className.split(/\s+/)).not.toContain('shrink-0')
+        expect(headerRow).toContainElement(searchGroup)
+        expect(headerRow).toContainElement(actions)
+        expect(actions).not.toContainElement(clearButton)
+        expect(searchGroup).toContainElement(clearButton)
+        // Actions stay on the same row; with a query chip, primaries fold into More
+        // so [chip][⋯] fits ~320px instead of pushing Settings offscreen.
+        expect(searchGroup.nextElementSibling).toBe(actions)
+        // Actions stay flex-1 so the budget is the row leftover, not the icon cluster.
+        expect(actions).toHaveClass('flex-1', 'min-w-0', 'flex-nowrap')
+        expect(actions.className.split(/\s+/)).not.toContain('shrink-0')
+        expect(actions.className.split(/\s+/)).not.toContain('flex-wrap')
+        expect(headerRow).toHaveClass('flex-nowrap', '@container')
+        expect(headerRow.className.split(/\s+/)).not.toContain('flex-wrap')
+        // Unmeasured query: keep the daily lens on the row. Do not collapse
+        // to [chip][⋯] and waste the right half of a Quest sidebar.
+        expect(within(actions).getByRole('button', { name: 'Unread only' })).toBeInTheDocument()
+        expect(within(actions).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
+        expect(screen.queryByTestId('session-list-header-overflow')).toBeNull()
+    })
+
+    it('reobserves the actions box after search expands and collapses (tiann/hapi#2040)', () => {
+        const observed: Element[] = []
+        class FakeResizeObserver {
+            observe = (target: Element) => { observed.push(target) }
+            unobserve = vi.fn()
+            disconnect = vi.fn()
+        }
+        vi.stubGlobal('ResizeObserver', FakeResizeObserver)
+
+        renderWithProviders(
+            <SessionList
+                sessions={[makeSession({
+                    id: 'session-1',
+                    updatedAt: 100,
+                    metadata: { path: '/work/hapi', name: 'Matching task', flavor: 'codex' },
+                })]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        const first = screen.getByTestId('session-list-header-actions')
+        expect(observed).toContain(first)
+        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+        expect(screen.queryByTestId('session-list-header-actions')).toBeNull()
+        fireEvent.blur(screen.getByPlaceholderText(SEARCH_PLACEHOLDER))
+        const second = screen.getByTestId('session-list-header-actions')
+        expect(second).not.toBe(first)
+        expect(observed).toContain(second)
+        vi.unstubAllGlobals()
+    })
+
+    function stubHeaderWidth(width: number) {
+        class FakeResizeObserver {
+            callback: ResizeObserverCallback
+            constructor(cb: ResizeObserverCallback) {
+                this.callback = cb
+            }
+            observe = (target: Element) => {
+                this.callback(
+                    [{ target, contentRect: { width } as DOMRectReadOnly } as ResizeObserverEntry],
+                    this as unknown as ResizeObserver
+                )
+            }
+            unobserve = vi.fn()
+            disconnect = vi.fn()
+        }
+        vi.stubGlobal('ResizeObserver', FakeResizeObserver)
+    }
+
+    it('folds primary actions into More on a narrow empty-query header (tiann/hapi#2040)', () => {
+        localStorage.setItem('hapi-font-scale', '1.3')
+        stubHeaderWidth(320)
+
+        const now = Date.now()
+        renderWithProviders(
+            <SessionList
+                sessions={[
+                    makeSession({
+                        id: 'session-a',
+                        updatedAt: now,
+                        metadata: {
+                            path: '/work/hapi',
+                            name: 'Machine A task',
+                            flavor: 'codex',
+                            machineId: 'machine-a',
+                        },
+                    }),
+                    makeSession({
+                        id: 'session-b',
+                        updatedAt: now - 1000,
+                        metadata: {
+                            path: '/work/other',
+                            name: 'Machine B task',
+                            flavor: 'codex',
+                            machineId: 'machine-b',
+                        },
+                    }),
+                ]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader
+                headerActions={<button type="button">Settings</button>}
+                api={null}
+                machineLabelsById={{ 'machine-a': 'Mint', 'machine-b': 'Teemo' }}
+            />
+        )
+
+        // Empty query + 320px still fits the daily controls. Do not collapse
+        // the row to [search][⋯]. Machine menu stays in the row (not shed).
+        const actions = screen.getByTestId('session-list-header-actions')
+        expect(within(actions).getByRole('button', { name: 'Unread only' })).toBeInTheDocument()
+        expect(within(actions).getByRole('button', { name: 'New Session' })).toBeInTheDocument()
+        expect(within(actions).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
+        expect(within(actions).getByRole('button', { name: 'Filter sessions by machine' })).toBeInTheDocument()
+        expect(screen.queryByTestId('session-list-header-overflow')).toBeNull()
+
+        vi.unstubAllGlobals()
+        localStorage.removeItem('hapi-font-scale')
+    })
+
+    it('lets a long query chip yield so More stays on-screen at 320px / 130% (tiann/hapi#2040)', () => {
+        localStorage.setItem('hapi-font-scale', '1.3')
+        stubHeaderWidth(80)
+
+        const now = Date.now()
+        renderWithProviders(
+            <SessionList
+                sessions={[
+                    makeSession({
+                        id: 'session-a',
+                        updatedAt: now,
+                        metadata: {
+                            path: '/work/hapi',
+                            name: 'Machine A task',
+                            flavor: 'codex',
+                            machineId: 'machine-a',
+                        },
+                    }),
+                    makeSession({
+                        id: 'session-b',
+                        updatedAt: now - 1000,
+                        metadata: {
+                            path: '/work/other',
+                            name: 'Machine B task',
+                            flavor: 'codex',
+                            machineId: 'machine-b',
+                        },
+                    }),
+                ]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader
+                headerActions={<button type="button">Settings</button>}
+                api={null}
+                machineLabelsById={{ 'machine-a': 'Mint', 'machine-b': 'Teemo' }}
+            />
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+        const input = screen.getByPlaceholderText(SEARCH_PLACEHOLDER)
+        fireEvent.change(input, {
+            target: { value: 'a very long session search query that fills the chip' },
+        })
+        fireEvent.blur(input)
+
+        const searchGroup = screen.getByTestId('session-list-search')
+        const actions = screen.getByTestId('session-list-header-actions')
+        // Chip text may shrink; More (+ machine menu) must not be crushed offscreen.
+        expect(searchGroup).toHaveClass('min-w-0')
+        expect(actions).toHaveClass('flex-1', 'min-w-0')
+        expect(screen.getByTestId('session-list-header-overflow')).toBeInTheDocument()
+        expect(within(actions).getByRole('button', { name: /more/i })).toBeInTheDocument()
+
+        vi.unstubAllGlobals()
+        localStorage.removeItem('hapi-font-scale')
+    })
+
+    it('keeps primary actions inline on a Quest-width empty-query header (tiann/hapi#2040)', () => {
+        // ~400px empty query must NOT collapse to [search][⋯] — that was the
+        // 32rem-for-everything regression on Quest dogfood.
+        stubHeaderWidth(400)
+
+        renderWithProviders(
+            <SessionList
+                sessions={[makeSession({
+                    id: 'session-1',
+                    updatedAt: Date.now(),
+                    metadata: { path: '/work/hapi', name: 'Quest width', flavor: 'codex' },
+                })]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader
+                headerActions={<button type="button">Settings</button>}
+                api={null}
+            />
+        )
+
+        const actions = screen.getByTestId('session-list-header-actions')
+        expect(actions).toHaveClass('flex-1')
+        expect(within(actions).getByRole('button', { name: 'Unread only' })).toBeInTheDocument()
+        expect(within(actions).getByRole('button', { name: 'New Session' })).toBeInTheDocument()
+        expect(within(actions).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
+        // Nothing shed — no More, and no ml-auto hole between + and ⋯.
+        expect(screen.queryByTestId('session-list-header-overflow')).toBeNull()
+
+        vi.unstubAllGlobals()
+    })
+
+    it('keeps primary actions inline with a query chip when the header is wide (tiann/hapi#2040)', () => {
+        const observe = vi.fn()
+        const disconnect = vi.fn()
+        class FakeResizeObserver {
+            callback: ResizeObserverCallback
+            constructor(cb: ResizeObserverCallback) {
+                this.callback = cb
+            }
+            observe = (target: Element) => {
+                observe(target)
+                this.callback(
+                    [{ target, contentRect: { width: 640 } as DOMRectReadOnly } as ResizeObserverEntry],
+                    this as unknown as ResizeObserver
+                )
+            }
+            unobserve = vi.fn()
+            disconnect = disconnect
+        }
+        vi.stubGlobal('ResizeObserver', FakeResizeObserver)
+
+        renderWithProviders(
+            <SessionList
+                sessions={[makeSession({
+                    id: 'session-1',
+                    updatedAt: 100,
+                    metadata: { path: '/work/hapi', name: 'Wide header', flavor: 'codex' },
+                })]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader
+                headerActions={<button type="button">Settings</button>}
+                api={null}
+            />
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+        const input = screen.getByPlaceholderText(SEARCH_PLACEHOLDER)
+        fireEvent.change(input, { target: { value: 'Wide' } })
+        fireEvent.blur(input)
+
+        // Wide header + query: New stays inline (not folded into More-only).
+        expect(screen.getByRole('button', { name: 'New Session' })).toBeInTheDocument()
+        expect(within(screen.getByTestId('session-list-header-actions')).getByRole('button', { name: 'Unread only' })).toBeInTheDocument()
+
+        vi.unstubAllGlobals()
+    })
+
+    it('keeps secondary headerActions inline via container query when search is idle (tiann/hapi#2039)', () => {
+        renderWithProviders(
+            <SessionList
+                sessions={[makeSession({
+                    id: 'session-1',
+                    updatedAt: 100,
+                    metadata: { path: '/work/hapi', name: 'Idle search', flavor: 'codex' },
+                })]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                headerActions={<button type="button">Settings</button>}
+                api={null}
+            />
+        )
+
+        expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Unread only' })).toBeInTheDocument()
+        expect(screen.queryByTestId('session-list-header-overflow')).toBeNull()
     })
 
     it('gives expanded search a 48px clear end-cap with calendar immediately left (tiann/hapi#2019)', () => {

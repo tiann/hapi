@@ -96,26 +96,6 @@ function BackIcon(props: { className?: string }) {
     )
 }
 
-function PlusIcon(props: { className?: string }) {
-    return (
-        <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="24"
-            height="24"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className={props.className}
-        >
-            <line x1="12" y1="5" x2="12" y2="19" />
-            <line x1="5" y1="12" x2="19" y2="12" />
-        </svg>
-    )
-}
-
 function FolderOpenIcon(props: { className?: string }) {
     return (
         <svg
@@ -224,7 +204,10 @@ function SessionsPage() {
         <>
             <div className="flex h-full min-h-0">
             <div
-                className={`${isSessionsIndex ? 'flex' : 'hidden split:flex'} w-full shrink-0 flex-col bg-[var(--app-bg)]`}
+                // min-w-0: without it, shrink-0 toolbar icons inflate the flex
+                // item's min-content past --sidebar-w and the shed never sees a
+                // tight budget (#2039 desktop overflow past the split).
+                className={`${isSessionsIndex ? 'flex' : 'hidden split:flex'} min-w-0 w-full shrink-0 flex-col bg-[var(--app-bg)]`}
                 style={{ '--sidebar-w': `${sidebar.width}px` } as React.CSSProperties}
             >
                 <div className="flex min-h-0 flex-1 flex-col pt-[env(safe-area-inset-top)]">
@@ -246,10 +229,14 @@ function SessionsPage() {
                         onBrowse={canBrowse ? () => navigate({ to: '/browse' }) : undefined}
                         onRefresh={handleRefresh}
                         isLoading={isLoading}
-                        renderHeader={false}
-                        headerActions={(
-                            <div className="flex items-center gap-2">
-                                {canBrowse && (
+                        // Keep ranks: new 4, unread lens 5, settings 6,
+                        // mark-all 7, browse 8. Higher sheds into More first (#2039).
+                        renderHeader
+                        toolbarExtras={[
+                            ...(canBrowse ? [{
+                                id: 'browse',
+                                keep: 8,
+                                node: (
                                     <button
                                         type="button"
                                         onClick={() => navigate({ to: '/browse' })}
@@ -258,28 +245,23 @@ function SessionsPage() {
                                     >
                                         <FolderOpenIcon className="h-5 w-5" />
                                     </button>
-                                )}
-                                <button
-                                    type="button"
-                                    onClick={() => navigate({ to: '/settings' })}
-                                    className="p-1.5 rounded-full text-[var(--app-hint)] hover:text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)] transition-colors"
-                                    title={t('settings.title')}
-                                >
-                                    <SettingsIcon className="h-5 w-5" />
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => navigate({
-                                        to: '/sessions/new',
-                                        ...PRESERVE_SESSION_SIDEBAR_SCROLL,
-                                    })}
-                                    className="session-list-new-button flex h-9 w-9 items-center justify-center rounded-full text-[var(--app-link)] transition-colors"
-                                    title={t('sessions.new')}
-                                >
-                                    <PlusIcon className="h-5 w-5" />
-                                </button>
-                            </div>
-                        )}
+                                )
+                            }] : []),
+                            {
+                                id: 'settings',
+                                keep: 6,
+                                node: (
+                                    <button
+                                        type="button"
+                                        onClick={() => navigate({ to: '/settings' })}
+                                        className="p-1.5 rounded-full text-[var(--app-hint)] hover:text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)] transition-colors"
+                                        title={t('settings.title')}
+                                    >
+                                        <SettingsIcon className="h-5 w-5" />
+                                    </button>
+                                )
+                            }
+                        ]}
                         api={api}
                         titleSuggestionAvailable={titleSuggestionAvailable}
                         machineLabelsById={machineLabelsById}
