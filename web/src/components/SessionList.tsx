@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { SessionListScrollAnchor } from './SessionListScrollAnchor'
-import type { SessionSummary } from '@/types/api'
+import type { SessionContentSearchResponse, SessionSummary } from '@/types/api'
 import { SESSION_LIFECYCLE_IDLE } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import {
@@ -17,7 +17,7 @@ import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
-import { CopyIcon, CheckIcon, MarkAllReadIcon } from '@/components/icons'
+import { CheckIcon, CopyIcon, InfoIcon, MarkAllReadIcon } from '@/components/icons'
 
 function PinnedSectionIcon(props: { className?: string }) {
     return (
@@ -75,6 +75,8 @@ type SessionGroup = {
     hasActiveSession: boolean
     hasPinnedSession: boolean
 }
+
+const MIN_CONTENT_SEARCH_QUERY_LENGTH = 2
 
 const RUNNING_BUCKETS = [
     { key: 'working', labelKey: 'session.item.running', colorClass: 'text-[var(--app-badge-success-text)]', pulse: true },
@@ -506,6 +508,26 @@ function XIcon(props: { className?: string }) {
     )
 }
 
+function ChevronDownIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+            aria-hidden="true"
+        >
+            <path d="m6 9 6 6 6-6" />
+        </svg>
+    )
+}
+
 function PlusIcon(props: { className?: string }) {
     return (
         <svg
@@ -747,9 +769,12 @@ export function SessionListSearch(props: {
     onDateRangeChange: (start: string, end: string) => void
     expanded: boolean
     onExpandedChange: (expanded: boolean) => void
+    searchMode?: 'metadata' | 'content'
+    onSearchModeChange?: (mode: 'metadata' | 'content') => void
 }) {
     const { t } = useTranslation()
     const [datePickerOpen, setDatePickerOpen] = useState(false)
+    const [searchModeOpen, setSearchModeOpen] = useState(false)
     const inputRef = useRef<HTMLInputElement>(null)
     const collapsedButtonRef = useRef<HTMLButtonElement>(null)
     const dateButtonRef = useRef<HTMLButtonElement>(null)
@@ -760,6 +785,7 @@ export function SessionListSearch(props: {
             inputRef.current?.focus()
         } else {
             setDatePickerOpen(false)
+            setSearchModeOpen(false)
         }
     }, [props.expanded])
 
@@ -771,11 +797,6 @@ export function SessionListSearch(props: {
         dateButtonRef.current?.focus()
     }
 
-    // Layout A (#2019 / Quest): calendar sits INSIDE the expanded field,
-    // immediately left of the furthest-right 48px clear end-cap. Both hit
-    // targets are min 48x48 so the clear is no longer a ~14px absolute X.
-    // Date button only — picker mounts on the search-group container so
-    // left-0 / right-0 stay viewport-safe (not a 48px button containing block).
     const renderDateButton = (variant: 'standalone' | 'embedded') => (
         <div className={cn('shrink-0', variant === 'embedded' && 'flex items-stretch')}>
             <button
@@ -801,10 +822,10 @@ export function SessionListSearch(props: {
                         )
                 )}
                 title={hasDateRange
-                    ? `${props.customStart} - ${props.customEnd}`
+                    ? props.customStart + ' - ' + props.customEnd
                     : t('sessions.timeFilter.label')}
                 aria-label={hasDateRange
-                    ? `${t('sessions.timeFilter.label')}: ${props.customStart} - ${props.customEnd}`
+                    ? t('sessions.timeFilter.label') + ': ' + props.customStart + ' - ' + props.customEnd
                     : t('sessions.timeFilter.label')}
                 aria-expanded={datePickerOpen}
             >
@@ -840,8 +861,6 @@ export function SessionListSearch(props: {
                 onChange={props.onDateRangeChange}
                 onClear={() => {
                     props.onDateRangeChange('', '')
-                    // The footer Clear button unmounts once the range is
-                    // empty; return focus so it does not drop to <body>.
                     returnDateFocus()
                 }}
                 onClose={() => {
@@ -853,14 +872,57 @@ export function SessionListSearch(props: {
         </>
     ) : null
 
-    const searchLabel = t('sessions.search.open')
+    const searchMode = props.searchMode ?? 'metadata'
+    const canSearchContent = Boolean(props.onSearchModeChange)
+    const searchLabel = searchMode === 'content'
+        ? t('sessions.search.content.placeholder')
+        : t('sessions.search.open')
+
+    const renderSearchMode = () => canSearchContent ? (
+        <div className="relative shrink-0">
+            <button
+                type="button"
+                aria-label={t('sessions.search.scope.toggle')}
+                aria-expanded={searchModeOpen}
+                onClick={() => setSearchModeOpen(open => !open)}
+                className="flex h-full w-auto items-center gap-0.5 border-r border-[var(--app-border)] px-1.5 text-xs leading-none text-[var(--app-hint)] transition-colors hover:text-[var(--app-fg)]"
+            >
+                <span className="shrink-0 whitespace-nowrap leading-none">{t('sessions.search.scope.' + searchMode)}</span>
+                <ChevronDownIcon className={cn(
+                    'h-3.5 w-3.5 shrink-0 transition-transform duration-200',
+                    searchModeOpen && 'rotate-180'
+                )} />
+            </button>
+            {searchModeOpen ? (
+                <div className="absolute left-0 top-full z-30 mt-1 flex w-max min-w-full flex-col gap-0.5 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-0.5 shadow-lg">
+                    {(['metadata', 'content'] as const).map((mode) => (
+                        <button
+                            key={mode}
+                            type="button"
+                            aria-pressed={searchMode === mode}
+                            onClick={() => {
+                                props.onSearchModeChange?.(mode)
+                                setSearchModeOpen(false)
+                            }}
+                            className={cn(
+                                'flex min-h-8 w-full items-center justify-center whitespace-nowrap rounded-md px-2 py-0.5 text-center text-sm leading-none transition-colors',
+                                searchMode === mode
+                                    ? 'bg-[var(--app-subtle-bg)] text-[var(--app-fg)]'
+                                    : 'text-[var(--app-hint)] hover:text-[var(--app-fg)]'
+                            )}
+                        >
+                            {t('sessions.search.scope.' + mode)}
+                        </button>
+                    ))}
+                </div>
+            ) : null}
+        </div>
+    ) : null
 
     if (!props.expanded) {
         const hasTextQuery = props.value.length > 0
-        const collapsedLabel = hasTextQuery ? `${searchLabel}: ${props.value}` : searchLabel
+        const collapsedLabel = hasTextQuery ? searchLabel + ': ' + props.value : searchLabel
         return (
-            // min-w-0 (no shrink-0): group can yield space to neighboring toolbar
-            // controls; calendar + clear stay shrink-0; query text truncates.
             <div
                 data-testid="session-list-search"
                 data-expanded="false"
@@ -869,7 +931,6 @@ export function SessionListSearch(props: {
                 <div className={cn(
                     'relative flex min-w-0 items-center rounded-full transition-colors',
                     hasTextQuery
-                        // Keep the query and its clear action inside the same compact chip.
                         ? 'max-w-[9rem] bg-[var(--app-chat-user-chip-bg)] text-[var(--app-chat-user-chip-fg)]'
                         : 'shrink-0'
                 )}>
@@ -896,8 +957,6 @@ export function SessionListSearch(props: {
                             type="button"
                             onClick={() => {
                                 props.onChange('')
-                                // The clear button unmounts with the query; keep focus on
-                                // the collapsed search trigger instead of dropping to body.
                                 collapsedButtonRef.current?.focus()
                             }}
                             className="flex h-10 w-10 min-h-[40px] min-w-[40px] shrink-0 items-center justify-center rounded-r-full bg-[var(--app-chat-user-chip-action-bg)] text-[var(--app-chat-user-chip-action-fg)] transition-colors hover:text-[var(--app-chat-user-chip-action-hover-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] focus-visible:ring-inset"
@@ -926,15 +985,18 @@ export function SessionListSearch(props: {
             }}
         >
             <div className="relative flex min-h-12 min-w-0 items-stretch rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] transition-colors focus-within:border-[var(--app-link)]">
-                <div className="pointer-events-none flex shrink-0 items-center pl-2.5 text-[var(--app-hint)]">
-                    <SearchIcon className="h-3.5 w-3.5" />
+                <div className="pointer-events-none flex shrink-0 items-center pl-2 text-[var(--app-hint)]">
+                    <SearchIcon className="h-5 w-5" />
                 </div>
+                {renderSearchMode()}
                 <input
                     ref={inputRef}
                     type="search"
                     value={props.value}
                     onChange={(event) => props.onChange(event.target.value)}
-                    placeholder={t('sessions.search.placeholder')}
+                    placeholder={searchMode === 'content'
+                        ? t('sessions.search.content.placeholder')
+                        : t('sessions.search.placeholder')}
                     aria-label={searchLabel}
                     title={searchLabel}
                     className="min-w-0 flex-1 appearance-none bg-transparent px-2 py-1.5 text-sm text-[var(--app-fg)] outline-none placeholder:text-[var(--app-hint)] [text-overflow:ellipsis] [&::-webkit-search-cancel-button]:hidden [&::-webkit-search-decoration]:hidden"
@@ -945,8 +1007,6 @@ export function SessionListSearch(props: {
                         type="button"
                         onClick={() => {
                             props.onChange('')
-                            // The clear button unmounts with the query; keep focus off <body>
-                            // so a later outside click still routes blur through the wrapper.
                             inputRef.current?.focus()
                         }}
                         className="session-list-search-clear-endcap flex min-h-[48px] min-w-[48px] shrink-0 items-center justify-center border-l border-[var(--app-border)] bg-[var(--app-subtle-bg)] text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] focus-visible:ring-inset"
@@ -961,10 +1021,9 @@ export function SessionListSearch(props: {
         </div>
     )
 }
-
 function SessionItem(props: {
     session: SessionSummary
-    onSelect: (sessionId: string) => void
+    onSelect: (sessionId: string, targetMessageId?: string, targetMessageQuery?: string) => void
     showPath?: boolean
     api: ApiClient | null
     titleSuggestionAvailable?: boolean
@@ -973,6 +1032,10 @@ function SessionItem(props: {
     inRunningSection?: boolean
     projectLabel?: string
     machineLabel?: string
+    contentSnippet?: string
+    contentSearchTruncated?: boolean
+    targetMessageId?: string
+    targetMessageQuery?: string
     lastSeenVersion: number
 }) {
     const { t } = useTranslation()
@@ -988,6 +1051,10 @@ function SessionItem(props: {
         inRunningSection = false,
         projectLabel,
         machineLabel,
+        contentSnippet,
+        contentSearchTruncated,
+        targetMessageId,
+        targetMessageQuery,
         lastSeenVersion
     } = props
     const { haptic } = usePlatform()
@@ -1069,7 +1136,7 @@ function SessionItem(props: {
         },
         onClick: () => {
             if (!menuOpen) {
-                onSelect(s.id)
+                onSelect(s.id, targetMessageId, targetMessageQuery)
             }
         },
         threshold: 500
@@ -1114,6 +1181,8 @@ function SessionItem(props: {
                     inRunningSection={inRunningSection}
                     projectLabel={projectLabel}
                     machineLabel={machineLabel}
+                    contentSnippet={contentSnippet}
+                    contentSearchTruncated={contentSearchTruncated}
                 />
             </button>
 
@@ -1240,7 +1309,7 @@ function PullRefreshIcon(props: { rotation: number }) {
 
 export function SessionList(props: {
     sessions: SessionSummary[]
-    onSelect: (sessionId: string) => void
+    onSelect: (sessionId: string, targetMessageId?: string, targetMessageQuery?: string) => void
     onNewSession: () => void
     onNewSessionInDirectory?: (args: { machineId: string | null; directory: string }) => void
     onBrowse?: () => void
@@ -1274,6 +1343,10 @@ export function SessionList(props: {
     const { machineFilter, setMachineFilter } = useSessionListMachineFilter()
     const showDetailedStatus = sessionListStatusMode === 'detailed'
     const [searchQuery, setSearchQuery] = useState('')
+    const [searchMode, setSearchMode] = useState<'metadata' | 'content'>('metadata')
+    const [contentSearchResponse, setContentSearchResponse] = useState<SessionContentSearchResponse | null>(null)
+    const [contentSearchLoading, setContentSearchLoading] = useState(false)
+    const [contentSearchError, setContentSearchError] = useState(false)
     const [searchExpanded, setSearchExpanded] = useState(false)
     const [customStart, setCustomStart] = useState('')
     const [customEnd, setCustomEnd] = useState('')
@@ -1282,6 +1355,14 @@ export function SessionList(props: {
     const normalizedQuery = normalizeSearch(searchQuery)
     const timeRange = getSessionTimeRange(customStart, customEnd)
     const isFiltering = normalizedQuery.length > 0 || timeRange !== null
+    const contentSearchActive = searchMode === 'content' && normalizedQuery.length > 0
+    const contentSearchReady = contentSearchActive
+        && Array.from(normalizedQuery).length >= MIN_CONTENT_SEARCH_QUERY_LENGTH
+    const contentSearchHasIncompleteResults = contentSearchActive
+        && contentSearchReady
+        && !contentSearchLoading
+        && !contentSearchError
+        && contentSearchResponse?.hasPotentiallyIncompleteResults === true
 
     useEffect(() => {
         // 中文注释：监听导入标记变化，让列表在“导入完成”或“用户已在 Hapi 中继续会话”后立即刷新时间文案。
@@ -1322,7 +1403,7 @@ export function SessionList(props: {
         () => new Set(allSessions.map(session => formatDateValue(new Date(session.updatedAt)))),
         [allSessions]
     )
-    const hasTextQuery = normalizedQuery.length > 0
+    const hasTextQuery = normalizedQuery.length > 0 && !contentSearchActive
     const timeScopedSessions = useMemo(
         () => timeRange === null
             ? allSessions
@@ -1337,6 +1418,14 @@ export function SessionList(props: {
     )
     const visibleSessions = useMemo(
         () => {
+            if (contentSearchActive) {
+                const results = contentSearchResponse?.results.map((result) => result.session) ?? []
+                const prepared = prepareSidebarSessions(results, selectedSessionId)
+                const sidebarSessions = showActiveSessionsOnly
+                    ? filterActiveSessionsOnly(prepared, selectedSessionId)
+                    : prepared
+                return sidebarSessions.filter(session => sessionMatchesTimeRange(session, timeRange))
+            }
             if (!isFiltering) return allSessions
             const matched = hasTextQuery && searchScoreIndex
                 ? timeScopedSessions.filter(session => searchScoreIndex.matchedIds.has(session.id))
@@ -1352,8 +1441,29 @@ export function SessionList(props: {
             }
             return matched
         },
-        [allSessions, hasTextQuery, isFiltering, normalizedQuery, searchScoreIndex, timeScopedSessions, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
+        [allSessions, contentSearchActive, contentSearchResponse, hasTextQuery, isFiltering, normalizedQuery, searchScoreIndex, selectedSessionId, showActiveSessionsOnly, timeScopedSessions, timeRange?.start, timeRange?.end, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
     )
+    const contentSnippetBySessionId = useMemo(() => {
+        const snippets = new Map<string, string>()
+        for (const result of contentSearchResponse?.results ?? []) {
+            snippets.set(result.session.id, result.match.snippet)
+        }
+        return snippets
+    }, [contentSearchResponse])
+    const contentTargetMessageIdBySessionId = useMemo(() => {
+        const messageIds = new Map<string, string>()
+        for (const result of contentSearchResponse?.results ?? []) {
+            messageIds.set(result.session.id, result.match.messageId)
+        }
+        return messageIds
+    }, [contentSearchResponse])
+    const contentSearchTruncatedBySessionId = useMemo(() => {
+        const truncated = new Set<string>()
+        for (const result of contentSearchResponse?.results ?? []) {
+            if (result.match.truncated) truncated.add(result.session.id)
+        }
+        return truncated
+    }, [contentSearchResponse])
     const allGroups = useMemo(
         () => groupSessionsByDirectory(allSessions),
         [allSessions]
@@ -1384,6 +1494,75 @@ export function SessionList(props: {
         && machineFilters.some(mg => (mg.machineId ?? UNKNOWN_MACHINE_ID) === machineFilter)
         ? machineFilter
         : null
+    const contentSearchCandidateSessions = useMemo(() => {
+        const timeFiltered = allSessions.filter(session => sessionMatchesTimeRange(session, timeRange))
+        const lastSeenById = showUnreadOnly ? getSessionLastSeenSnapshot() : null
+        const unreadFiltered = showUnreadOnly
+            ? filterUnreadSessionsOnly(
+                timeFiltered,
+                selectedSessionId,
+                id => lastSeenById?.[id] ?? 0
+            )
+            : timeFiltered
+        return activeMachineFilter === null
+            ? unreadFiltered
+            : unreadFiltered.filter(session =>
+                (session.metadata?.machineId ?? UNKNOWN_MACHINE_ID) === activeMachineFilter
+            )
+    }, [allSessions, activeMachineFilter, selectedSessionId, showUnreadOnly, lastSeenVersion, timeRange?.start, timeRange?.end])
+    const contentSearchSessionIds = useMemo(
+        () => contentSearchCandidateSessions.map(session => session.id),
+        [contentSearchCandidateSessions]
+    )
+
+    useEffect(() => {
+        if (!contentSearchReady || !api) {
+            setContentSearchResponse(null)
+            setContentSearchLoading(false)
+            setContentSearchError(false)
+            return
+        }
+
+        // Do not leave the previous query's targets clickable while the new
+        // request is waiting for its debounce window.
+        setContentSearchResponse(null)
+        setContentSearchError(false)
+        if (contentSearchSessionIds.length === 0) {
+            setContentSearchResponse({ results: [], hasPotentiallyIncompleteResults: false })
+            setContentSearchLoading(false)
+            return
+        }
+
+        const controller = new AbortController()
+        setContentSearchLoading(true)
+        const timer = window.setTimeout(() => {
+            const limit = Math.min(100, Math.max(50, contentSearchSessionIds.length))
+            void api.searchSessionContent(
+                normalizedQuery,
+                limit,
+                controller.signal,
+                contentSearchSessionIds
+            )
+                .then((response) => {
+                    if (controller.signal.aborted) return
+                    setContentSearchResponse(response)
+                })
+                .catch(() => {
+                    if (controller.signal.aborted) return
+                    setContentSearchResponse({ results: [], hasPotentiallyIncompleteResults: false })
+                    setContentSearchError(true)
+                })
+                .finally(() => {
+                    if (!controller.signal.aborted) setContentSearchLoading(false)
+                })
+        }, 180)
+
+        return () => {
+            window.clearTimeout(timer)
+            controller.abort()
+        }
+    }, [api, contentSearchReady, contentSearchSessionIds, normalizedQuery])
+
     // Unread after search/time, before machine scope — so machineFilters (from allSessions)
     // stay stable. Filtering unread into allSessions would drop machines with zero unread
     // and clear a persisted machine selection (showing other machines' unread instead).
@@ -1614,6 +1793,10 @@ export function SessionList(props: {
                                             inRunningSection
                                             projectLabel={getPathDisplayName(s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')}
                                             machineLabel={resolveMachineLabel(s.metadata?.machineId ?? null)}
+                                            contentSnippet={contentSnippetBySessionId.get(s.id)}
+                                            contentSearchTruncated={contentSearchTruncatedBySessionId.has(s.id)}
+                                            targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
+                                            targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                             lastSeenVersion={lastSeenVersion}
                                         />
                                     ))}
@@ -1742,6 +1925,10 @@ export function SessionList(props: {
                                     titleSuggestionAvailable={titleSuggestionAvailable}
                                     selected={s.id === selectedSessionId}
                                     showDetailedStatus={showDetailedStatus}
+                                    contentSnippet={contentSnippetBySessionId.get(s.id)}
+                                    contentSearchTruncated={contentSearchTruncatedBySessionId.has(s.id)}
+                                    targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
+                                    targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                     lastSeenVersion={lastSeenVersion}
                                 />
                             </div>
@@ -1966,6 +2153,8 @@ export function SessionList(props: {
                             }}
                             expanded={searchExpanded}
                             onExpandedChange={setSearchExpanded}
+                            searchMode={searchMode}
+                            onSearchModeChange={setSearchMode}
                         />
                     ) : null}
                     {!(showSearch && searchExpanded) ? (
@@ -2070,9 +2259,42 @@ export function SessionList(props: {
                     />
                 ) : null}
 
-                {props.sessions.length > 0 && (isFiltering || activeMachineFilter !== null || showUnreadOnly) && groups.length === 0 && runningSessionTotal === 0 && activeSessionTotal === 0 && globalPinnedSessions.length === 0 ? (
+                {props.sessions.length > 0 && contentSearchLoading ? (
                     <div className="px-4 py-8 text-center text-sm text-[var(--app-hint)]">
-                        {t('sessions.search.noResults')}
+                        {t('sessions.search.content.loading')}
+                    </div>
+                ) : null}
+
+                {props.sessions.length > 0 && contentSearchError ? (
+                    <div className="px-4 py-8 text-center text-sm text-[var(--app-hint)]">
+                        {t('sessions.search.content.error')}
+                    </div>
+                ) : null}
+
+                {props.sessions.length > 0 && contentSearchHasIncompleteResults ? (
+                    <div
+                        role="status"
+                        aria-live="polite"
+                        className="mx-2 my-1 flex items-start gap-1.5 rounded-md border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-2.5 py-2 text-xs text-[var(--app-hint)]"
+                    >
+                        <InfoIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <span>
+                            {contentSearchResponse?.results.length
+                                ? t('sessions.search.content.incomplete')
+                                : t('sessions.search.content.noResultsIncomplete')}
+                        </span>
+                    </div>
+                ) : null}
+
+                {props.sessions.length > 0 && !contentSearchLoading && !contentSearchError && !contentSearchHasIncompleteResults && (isFiltering || activeMachineFilter !== null || showUnreadOnly) && groups.length === 0 && runningSessionTotal === 0 && activeSessionTotal === 0 && globalPinnedSessions.length === 0 ? (
+                    <div className="px-4 py-8 text-center text-sm text-[var(--app-hint)]">
+                        {contentSearchActive
+                            ? contentSearchReady
+                                ? contentSearchResponse?.hasPotentiallyIncompleteResults
+                                    ? t('sessions.search.content.noResultsIncomplete')
+                                    : t('sessions.search.content.noResults')
+                                : t('sessions.search.content.minQuery')
+                            : t('sessions.search.noResults')}
                     </div>
                 ) : null}
 
@@ -2120,6 +2342,10 @@ export function SessionList(props: {
                                             inRunningSection
                                             projectLabel={getPathDisplayName(s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')}
                                             machineLabel={resolveMachineLabel(s.metadata?.machineId ?? null)}
+                                            contentSnippet={contentSnippetBySessionId.get(s.id)}
+                                            contentSearchTruncated={contentSearchTruncatedBySessionId.has(s.id)}
+                                            targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
+                                            targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                             lastSeenVersion={lastSeenVersion}
                                         />
                                     ))}

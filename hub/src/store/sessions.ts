@@ -6,6 +6,11 @@ import { randomUUID } from 'node:crypto'
 import type { StoredSession, VersionedUpdateResult } from './types'
 import { safeJsonParse } from './json'
 import { updateVersionedField } from './versionedUpdates'
+import { removeMessageContentSearchForSession } from './messageContentSearch'
+
+function runInTransaction<T>(db: Database, operation: () => T): T {
+    return db.inTransaction ? operation() : db.transaction(operation)()
+}
 
 // Carry-forward fields that the hub preserves across any metadata
 // replacement when the incoming write omits them.
@@ -199,7 +204,7 @@ export function getOrCreateSession(
     modelReasoningEffort?: string,
     requestedId?: string
 ): StoredSession {
-    const existing = prepareCached(db, 
+    const existing = prepareCached(db,
         'SELECT * FROM sessions WHERE tag = ? AND namespace = ? ORDER BY created_at DESC LIMIT 1'
     ).get(tag, namespace) as DbSessionRow | undefined
 
@@ -854,7 +859,7 @@ export function getSession(db: Database, id: string): StoredSession | null {
 }
 
 export function getSessionByNamespace(db: Database, id: string, namespace: string): StoredSession | null {
-    const row = prepareCached(db, 
+    const row = prepareCached(db,
         'SELECT * FROM sessions WHERE id = ? AND namespace = ?'
     ).get(id, namespace) as DbSessionRow | undefined
     return row ? toStoredSession(row) : null
@@ -866,21 +871,28 @@ export function getSessions(db: Database): StoredSession[] {
 }
 
 export function getSessionsByNamespace(db: Database, namespace: string): StoredSession[] {
-    const rows = prepareCached(db, 
+    const rows = prepareCached(db,
         'SELECT * FROM sessions WHERE namespace = ? ORDER BY updated_at DESC'
     ).all(namespace) as DbSessionRow[]
     return rows.map(toStoredSession)
 }
 
 export function deleteSession(db: Database, id: string, namespace: string): boolean {
-    const result = prepareCached(db,
-        'DELETE FROM sessions WHERE id = ? AND namespace = ?'
-    ).run(id, namespace)
-    if (result.changes > 0) {
-        // Per-socket access memos stamp the epoch they were filled under;
-        // bumping makes their next event re-resolve instead of serving a
-        // grant for a row that no longer exists.
-        bumpSessionDeletionEpoch()
-    }
-    return result.changes > 0
+    return runInTransaction(db, () => {
+        const existing = prepareCached(db,
+            'SELECT 1 FROM sessions WHERE id = ? AND namespace = ?'
+        ).get(id, namespace)
+        if (!existing) return false
+        removeMessageContentSearchForSession(db, id)
+        const result = prepareCached(db,
+            'DELETE FROM sessions WHERE id = ? AND namespace = ?'
+        ).run(id, namespace)
+        if (result.changes > 0) {
+            // Per-socket access memos stamp the epoch they were filled under;
+            // bumping makes their next event re-resolve instead of serving a
+            // grant for a row that no longer exists.
+            bumpSessionDeletionEpoch()
+        }
+        return result.changes > 0
+    })
 }
