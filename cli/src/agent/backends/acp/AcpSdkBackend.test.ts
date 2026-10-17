@@ -1865,3 +1865,109 @@ describe('AcpSdkBackend abortSoftSteers', () => {
         expect(backend.processingMessage).toBe(false);
     });
 });
+
+describe('AcpSdkBackend acpModelSwitchViaConfigOption', () => {
+    async function makeBackendWithModelOption(flag: boolean, opts?: { configOptionError?: string }) {
+        const backend = new AcpSdkBackend({
+            command: 'opencode',
+            acpModelSwitchViaConfigOption: flag
+        });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+            sessionConfigOptions: Map<string, Array<{ id: string; category?: string; options: Array<{ value: string }> }>>;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                calls.push({ method, params });
+                if (method === 'session/new') {
+                    return {
+                        sessionId: 's1',
+                        configOptions: [{
+                            id: 'model',
+                            category: 'model',
+                            currentValue: 'ollama/a',
+                            options: [{ value: 'ollama/a', name: 'a' }, { value: 'ollama/b', name: 'b' }]
+                        }]
+                    };
+                }
+                if (method === 'session/set_config_option') {
+                    if (opts?.configOptionError) {
+                        throw new Error(opts.configOptionError);
+                    }
+                    return {
+                        configOptions: [{
+                            id: 'model',
+                            category: 'model',
+                            currentValue: 'ollama/b',
+                            options: [{ value: 'ollama/a', name: 'a' }, { value: 'ollama/b', name: 'b' }]
+                        }]
+                    };
+                }
+                return null;
+            },
+            close: async () => {}
+        };
+        await backend.newSession({ cwd: '/tmp/x', mcpServers: [] });
+        calls.length = 0;
+        return { backend, calls, backendInternal };
+    }
+
+    it('uses session/set_config_option with the model option id when the flag is on', async () => {
+        const { backend, calls } = await makeBackendWithModelOption(true);
+        await backend.setModel('s1', 'ollama/b', { flavor: 'opencode' });
+        expect(calls).toEqual([
+            { method: 'session/set_config_option', params: { sessionId: 's1', configId: 'model', value: 'ollama/b' } }
+        ]);
+        expect(backend.getSessionModelsMetadata('s1')?.currentModelId).toBe('ollama/b');
+    });
+
+    it('falls back to the legacy set_model path when no model option exists (flag on)', async () => {
+        const { backend, calls, backendInternal } = await makeBackendWithModelOption(true, { configOptionError: 'Method not found' });
+        backendInternal.sessionConfigOptions.set('s1', [
+            { id: 'effort', category: 'thought_level', options: [{ value: 'high' }] }
+        ]);
+        await backend.setModel('s1', 'ollama/b', { flavor: 'opencode' });
+        expect(calls).toEqual([
+            { method: 'session/set_config_option', params: { sessionId: 's1', configId: 'model', value: 'ollama/b' } },
+            { method: 'session/set_model', params: { sessionId: 's1', modelId: 'ollama/b' } }
+        ]);
+    });
+
+    it('flag off with a non-opencode flavor sends only session/set_model (shared-backend guarantee)', async () => {
+        const backend = new AcpSdkBackend({
+            command: 'opencode',
+            acpModelSwitchViaConfigOption: false
+        });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                calls.push({ method, params });
+                if (method === 'session/new') {
+                    return { sessionId: 's1', configOptions: [{ id: 'model', category: 'model', currentValue: 'ollama/a', options: [] }] };
+                }
+                return null;
+            },
+            close: async () => {}
+        };
+        await backend.newSession({ cwd: '/tmp/x', mcpServers: [] });
+        calls.length = 0;
+        // No flavor: neither the v2 shortcut nor the opencode legacy
+        // config-option attempt may run.
+        await backend.setModel('s1', 'ollama/b');
+        expect(calls).toEqual([
+            { method: 'session/set_model', params: { sessionId: 's1', modelId: 'ollama/b' } }
+        ]);
+    });
+
+    it('keeps the legacy set_model path unchanged when the flag is off', async () => {
+        const { backend, calls } = await makeBackendWithModelOption(false);
+        await backend.setModel('s1', 'ollama/b', { flavor: 'opencode' });
+        expect(calls).toEqual([
+            { method: 'session/set_config_option', params: { sessionId: 's1', configId: 'model', value: 'ollama/b' } }
+        ]);
+    });
+});

@@ -136,6 +136,10 @@ export class AcpSdkBackend implements AgentBackend {
         command: string;
         args?: string[];
         env?: Record<string, string>;
+        /** Working directory passed to the spawned process (v2 `opencode acp` ignores `--cwd`). */
+        spawnCwd?: string;
+        /** v2 model switching: use `session/set_config_option('model')` instead of `session/set_model` (removed in v2). */
+        acpModelSwitchViaConfigOption?: boolean;
         textChunkMode?: AcpTextChunkMode;
         flavor?: AgentFlavor;
     }) {}
@@ -161,7 +165,8 @@ export class AcpSdkBackend implements AgentBackend {
         const transport = await AcpStdioTransport.create({
             command: this.options.command,
             args: this.options.args,
-            env: this.options.env
+            env: this.options.env,
+            cwd: this.options.spawnCwd
         });
 
         if (this.transport) {
@@ -386,6 +391,23 @@ export class AcpSdkBackend implements AgentBackend {
         // The launcher serializes setModel between turns, but defensively wait for any
         // in-flight prompt to drain so we never interleave a switch with a session/prompt.
         await this.waitForResponseComplete();
+
+        // opencode v2 removed `session/set_model` from the wire (verified
+        // 2026-10-15: "Method not found"); the replacement is
+        // `session/set_config_option` with the fixed configId "model". Only
+        // taken when the launcher opted in via `acpModelSwitchViaConfigOption`
+        // AND the session actually advertises a model config option —
+        // otherwise fall through to the legacy path below unchanged.
+        if (this.options.acpModelSwitchViaConfigOption === true) {
+            const modelOption = this.sessionConfigOptions.get(sessionId)?.find((option) => option.id === 'model');
+            if (modelOption) {
+                await this.setConfigOption(sessionId, 'model', modelId);
+                if (opts?.flavor === 'opencode' || opts?.flavor === 'grok') {
+                    this.updateCurrentModelOptimistic(sessionId, modelId);
+                }
+                return;
+            }
+        }
 
         // ACP defines `session/set_model` ({ sessionId, modelId }) for inline model
         // switching — see ACP SDK schema `x-method: session/set_model`. OpenCode
@@ -892,6 +914,11 @@ export class AcpSdkBackend implements AgentBackend {
 
     getPromptGeneration(): number {
         return this.promptGeneration;
+    }
+
+    /** PID of the spawned ACP agent process, when known (used by the opencode v2 REST discovery). */
+    getProcessPid(): number | null {
+        return this.transport ? this.transport.getProcessPid() : null;
     }
 
     getLastSessionUpdateAt(): number {
