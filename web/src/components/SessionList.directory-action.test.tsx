@@ -1138,8 +1138,9 @@ describe('SessionList search toggle', () => {
         // Actions stay on the same row; with a query chip, primaries fold into More
         // so [chip][⋯] fits ~320px instead of pushing Settings offscreen.
         expect(searchGroup.nextElementSibling).toBe(actions)
-        expect(actions).toHaveClass('shrink-0', 'flex-nowrap')
-        expect(actions.className.split(/\s+/)).not.toContain('flex-1')
+        // Actions stay flex-1 so the budget is the row leftover, not the icon cluster.
+        expect(actions).toHaveClass('flex-1', 'min-w-0', 'flex-nowrap')
+        expect(actions.className.split(/\s+/)).not.toContain('shrink-0')
         expect(actions.className.split(/\s+/)).not.toContain('flex-wrap')
         expect(headerRow).toHaveClass('flex-nowrap', '@container')
         expect(headerRow.className.split(/\s+/)).not.toContain('flex-wrap')
@@ -1311,7 +1312,7 @@ describe('SessionList search toggle', () => {
         const actions = screen.getByTestId('session-list-header-actions')
         // Chip text may shrink; More (+ machine menu) must not be crushed offscreen.
         expect(searchGroup).toHaveClass('min-w-0')
-        expect(actions).toHaveClass('shrink-0')
+        expect(actions).toHaveClass('flex-1', 'min-w-0')
         expect(screen.getByTestId('session-list-header-overflow')).toBeInTheDocument()
         expect(within(actions).getByRole('button', { name: /more/i })).toBeInTheDocument()
 

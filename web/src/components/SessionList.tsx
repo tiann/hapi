@@ -115,20 +115,23 @@ import { getPathDisplayName } from '@/utils/path'
 import {
     shedToolbarSlots,
     toolbarActionBudget,
-    toolbarGutterPx,
     TOOLBAR_GAP_PX,
     TOOLBAR_ICON_PX,
     TOOLBAR_MORE_PX,
     type ToolbarShedSlot
 } from '@/components/sessionToolbarShed'
 
-function readToolbarGutter(row: HTMLElement | null, actions: HTMLElement | null): number {
-    if (!row || !actions) return 0
-    const rowRect = row.getBoundingClientRect()
-    const actionsRect = actions.getBoundingClientRect()
-    if (rowRect.width <= 0 || actionsRect.width <= 0) return 0
-    const padRight = Number.parseFloat(getComputedStyle(row).paddingRight) || 0
-    return toolbarGutterPx(actionsRect.left, rowRect.right, padRight)
+/** Hit targets that must stay visible: icon, clear, calendar. Not the query text. */
+function measureSearchChrome(search: HTMLElement): number {
+    const parts = [...search.querySelectorAll<HTMLElement>('[data-toolbar-chrome]')]
+    if (parts.length === 0) return search.offsetWidth
+    const gap = Number.parseFloat(getComputedStyle(search).columnGap) || 0
+    const trigger = search.querySelector('button')
+    const triggerStyle = trigger ? getComputedStyle(trigger) : null
+    const triggerPad = triggerStyle
+        ? (Number.parseFloat(triggerStyle.paddingLeft) || 0) + (Number.parseFloat(triggerStyle.paddingRight) || 0)
+        : 0
+    return parts.reduce((sum, el) => sum + el.offsetWidth, 0) + triggerPad + gap * Math.max(0, parts.length - 1)
 }
 
 export type SessionToolbarExtra = {
@@ -823,6 +826,8 @@ export function SessionListSearch(props: {
     onDateRangeChange: (start: string, end: string) => void
     expanded: boolean
     onExpandedChange: (expanded: boolean) => void
+    /** Minimum width of icon + clear + calendar. Query text may shrink; these may not. */
+    chromeMinPx?: number
 }) {
     const { t } = useTranslation()
     const [datePickerOpen, setDatePickerOpen] = useState(false)
@@ -860,6 +865,7 @@ export function SessionListSearch(props: {
                 data-testid={variant === 'embedded'
                     ? 'session-list-search-date-embedded'
                     : 'session-list-search-date-standalone'}
+                data-toolbar-chrome=""
                 onClick={() => setDatePickerOpen(open => !open)}
                 className={cn(
                     'relative flex shrink-0 items-center justify-center transition-colors',
@@ -942,9 +948,14 @@ export function SessionListSearch(props: {
             <div
                 data-testid="session-list-search"
                 data-expanded="false"
+                style={hasTextQuery && props.chromeMinPx && props.chromeMinPx > 0
+                    ? { minWidth: props.chromeMinPx }
+                    : undefined}
                 className={cn(
                     'relative flex max-w-full flex-nowrap items-center gap-1',
-                    hasTextQuery ? 'min-w-0' : 'shrink-0'
+                    // Query text shrinks. minWidth is the icon/clear/calendar floor
+                    // so a flex-1 actions box cannot crush those hit targets.
+                    hasTextQuery ? 'min-w-0 max-w-full shrink' : 'shrink-0'
                 )}
             >
                 <div className={cn(
@@ -968,7 +979,9 @@ export function SessionListSearch(props: {
                         title={collapsedLabel}
                         aria-label={collapsedLabel}
                     >
-                        <SearchIcon className="h-5 w-5 shrink-0" />
+                        <span data-toolbar-chrome="" className="inline-flex shrink-0">
+                            <SearchIcon className="h-5 w-5 shrink-0" />
+                        </span>
                         {hasTextQuery ? (
                             <span className="min-w-0 truncate text-xs font-medium">{props.value}</span>
                         ) : null}
@@ -982,6 +995,7 @@ export function SessionListSearch(props: {
                                 // the collapsed search trigger instead of dropping to body.
                                 collapsedButtonRef.current?.focus()
                             }}
+                            data-toolbar-chrome=""
                             className="flex h-10 w-10 min-h-[40px] min-w-[40px] shrink-0 items-center justify-center rounded-r-full bg-[var(--app-chat-user-chip-action-bg)] text-[var(--app-chat-user-chip-action-fg)] transition-colors hover:text-[var(--app-chat-user-chip-action-hover-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] focus-visible:ring-inset"
                             title={t('sessions.search.clear')}
                             aria-label={t('sessions.search.clear')}
@@ -1373,6 +1387,7 @@ export function SessionList(props: {
     const [headerRowWidth, setHeaderRowWidth] = useState(0)
     const [toolbarSlotWidths, setToolbarSlotWidths] = useState<Record<string, number>>({})
     const [toolbarChrome, setToolbarChrome] = useState({ morePx: TOOLBAR_MORE_PX, gapPx: TOOLBAR_GAP_PX, machinePx: 0 })
+    const [searchChromePx, setSearchChromePx] = useState(0)
     // Search expand unmounts the actions box. A callback ref re-observes the
     // new node when search collapses; an effect keyed only on showHeaderRow does not.
     const setHeaderActionsNode = useCallback((node: HTMLDivElement | null) => {
@@ -1383,8 +1398,10 @@ export function SessionList(props: {
         // we do not fall back to a permissive unmeasured budget mid-cycle.
         if (!node || typeof ResizeObserver === 'undefined') return
         const publish = (reported = 0) => {
-            const gutter = readToolbarGutter(headerRowRef.current, node)
-            const width = gutter > 0 ? gutter : reported
+            // flex-1 allocation, not the icon cluster's intrinsic width and not
+            // the previous expanded-search layout (#2040).
+            const allocated = node.clientWidth
+            const width = allocated > 0 ? allocated : reported
             if (width > 0) setHeaderRowWidth(width)
         }
         const ro = new ResizeObserver((entries) => {
@@ -1982,6 +1999,11 @@ export function SessionList(props: {
         actionsObserverRef.current?.disconnect()
     }, [])
     useLayoutEffect(() => {
+        const search = headerRowRef.current?.querySelector<HTMLElement>('[data-testid="session-list-search"]')
+        const nextChrome = search && search.dataset.expanded !== 'true'
+            ? measureSearchChrome(search)
+            : 0
+        setSearchChromePx((previous) => previous === nextChrome ? previous : nextChrome)
         const root = toolbarMeasureRef.current
         if (!root) return
         const next: Record<string, number> = {}
@@ -2127,19 +2149,18 @@ export function SessionList(props: {
                             }}
                             expanded={searchExpanded}
                             onExpandedChange={setSearchExpanded}
+                            chromeMinPx={searchQuery.length > 0 ? searchChromePx : 0}
                         />
                     ) : null}
                     {!(showSearch && searchExpanded) ? (
                         <div
                             ref={setHeaderActionsNode}
                             data-testid="session-list-header-actions"
-                            // Empty query: flex-1 is the icon budget (#2039).
-                            // Active query: shrink-0 reserves More (+ machine menu)
-                            // so a long chip cannot push overflow offscreen (#2040).
-                            className={cn(
-                                'relative flex flex-nowrap items-center gap-1',
-                                searchQuery.length > 0 ? 'shrink-0' : 'min-w-0 flex-1'
-                            )}
+                            // flex-1 min-w-0: the box is the row's leftover after search
+                            // chrome, not the width of whatever icons are already
+                            // showing. shrink-0 made that leftover follow the
+                            // cluster and search overlapped (#2040).
+                            className="relative flex min-w-0 flex-1 flex-nowrap items-center gap-1"
                         >
                             {(() => {
                                 // Shed one control at a time, highest keep first.
@@ -2148,11 +2169,11 @@ export function SessionList(props: {
                                 const machineAndGap = toolbarChrome.machinePx > 0
                                     ? toolbarChrome.machinePx + toolbarChrome.gapPx
                                     : 0
-                                // Budget is the row's right edge, not a guessed search
-                                // reserve. If every slot fits, More stays empty.
-                                const liveGutter = readToolbarGutter(headerRowRef.current, headerActionsRef.current)
-                                const gutter = liveGutter > 0
-                                    ? liveGutter
+                                // Prefer the flex allocation. It tracks the row, not the
+                                // icons already on it. If they all fit, More is empty.
+                                const allocated = headerActionsRef.current?.clientWidth ?? 0
+                                const gutter = allocated > 0
+                                    ? allocated
                                     : headerRowWidth > 0
                                         ? headerRowWidth
                                         : 0
