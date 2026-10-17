@@ -45,24 +45,39 @@ export function toolbarActionBudget(headerRowWidth: number, hasQuery: boolean): 
     return Math.max(0, headerRowWidth - searchReserve - rowPadding)
 }
 
-function clusterWidth(slots: readonly ToolbarShedSlot[], includeMore: boolean): number {
+export type ToolbarShedMetrics = {
+    /** Rendered More button width. Defaults to TOOLBAR_MORE_PX. */
+    morePx?: number
+    /** Rendered column gap. Defaults to TOOLBAR_GAP_PX. */
+    gapPx?: number
+}
+
+function clusterWidth(
+    slots: readonly ToolbarShedSlot[],
+    includeMore: boolean,
+    metrics: ToolbarShedMetrics
+): number {
+    const morePx = metrics.morePx ?? TOOLBAR_MORE_PX
+    const gapPx = metrics.gapPx ?? TOOLBAR_GAP_PX
     const itemCount = slots.length + (includeMore ? 1 : 0)
     if (itemCount === 0) return 0
-    const icons = slots.reduce((sum, slot) => sum + slot.widthPx, 0) + (includeMore ? TOOLBAR_MORE_PX : 0)
-    return icons + TOOLBAR_GAP_PX * (itemCount - 1)
+    const icons = slots.reduce((sum, slot) => sum + slot.widthPx, 0) + (includeMore ? morePx : 0)
+    return icons + gapPx * (itemCount - 1)
 }
 
 /**
  * Drop the highest `keep` until the cluster fits. Paint order of survivors
- * matches input order.
+ * matches input order. `metrics` must be the rendered More width and gap
+ * (font scale), not the 16px constants.
  */
 export function shedToolbarSlots(
     slots: readonly ToolbarShedSlot[],
-    budgetPx: number
+    budgetPx: number,
+    metrics: ToolbarShedMetrics = {}
 ): { visibleIds: string[]; overflowIds: string[] } {
     const overflow: ToolbarShedSlot[] = []
     let visible = [...slots]
-    while (visible.length > 0 && clusterWidth(visible, overflow.length > 0) > budgetPx) {
+    while (visible.length > 0 && clusterWidth(visible, overflow.length > 0, metrics) > budgetPx) {
         let worstIndex = 0
         for (let index = 1; index < visible.length; index += 1) {
             const candidate = visible[index]

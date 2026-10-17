@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import * as Popover from '@radix-ui/react-popover'
 import { SessionListScrollAnchor } from './SessionListScrollAnchor'
 import type { SessionSummary } from '@/types/api'
@@ -115,7 +115,9 @@ import { getPathDisplayName } from '@/utils/path'
 import {
     shedToolbarSlots,
     toolbarActionBudget,
+    TOOLBAR_GAP_PX,
     TOOLBAR_ICON_PX,
+    TOOLBAR_MORE_PX,
     type ToolbarShedSlot
 } from '@/components/sessionToolbarShed'
 
@@ -1354,8 +1356,30 @@ export function SessionList(props: {
     const headerRowRef = useRef<HTMLDivElement>(null)
     const headerActionsRef = useRef<HTMLDivElement>(null)
     const toolbarMeasureRef = useRef<HTMLDivElement>(null)
+    const machineMenuRef = useRef<HTMLDivElement>(null)
+    const actionsObserverRef = useRef<ResizeObserver | null>(null)
     const [headerRowWidth, setHeaderRowWidth] = useState(0)
     const [toolbarSlotWidths, setToolbarSlotWidths] = useState<Record<string, number>>({})
+    const [toolbarChrome, setToolbarChrome] = useState({ morePx: TOOLBAR_MORE_PX, gapPx: TOOLBAR_GAP_PX, machinePx: 0 })
+    // Search expand unmounts the actions box. A callback ref re-observes the
+    // new node when search collapses; an effect keyed only on showHeaderRow does not.
+    const setHeaderActionsNode = useCallback((node: HTMLDivElement | null) => {
+        headerActionsRef.current = node
+        actionsObserverRef.current?.disconnect()
+        actionsObserverRef.current = null
+        if (!node || typeof ResizeObserver === 'undefined') {
+            setHeaderRowWidth(0)
+            return
+        }
+        const ro = new ResizeObserver((entries) => {
+            const width = entries[0]?.contentRect.width
+            if (typeof width === 'number') setHeaderRowWidth(width)
+        })
+        ro.observe(node)
+        actionsObserverRef.current = ro
+        const initial = node.getBoundingClientRect().width
+        if (initial > 0) setHeaderRowWidth(initial)
+    }, [])
     const normalizedQuery = normalizeSearch(searchQuery)
     const timeRange = getSessionTimeRange(customStart, customEnd)
     const isFiltering = normalizedQuery.length > 0 || timeRange !== null
@@ -1935,31 +1959,18 @@ export function SessionList(props: {
 
     const showHeaderRow = showSearch || renderHeader || Boolean(props.headerActions) || Boolean(props.toolbarExtras?.length)
 
-    useEffect(() => {
-        if (!showHeaderRow) {
-            setHeaderRowWidth(0)
-            return
-        }
-        const el = headerActionsRef.current ?? headerRowRef.current
-        if (!el || typeof ResizeObserver === 'undefined') return
-        const ro = new ResizeObserver((entries) => {
-            const width = entries[0]?.contentRect.width
-            if (typeof width === 'number') setHeaderRowWidth(width)
-        })
-        ro.observe(el)
-        // Initial measure (jsdom RO may not fire until observe callback stubs).
-        const initial = el.getBoundingClientRect().width
-        if (initial > 0) setHeaderRowWidth(initial)
-        return () => ro.disconnect()
-    }, [showHeaderRow])
+    useEffect(() => () => {
+        actionsObserverRef.current?.disconnect()
+    }, [])
     useLayoutEffect(() => {
         const root = toolbarMeasureRef.current
         if (!root) return
         const next: Record<string, number> = {}
         for (const node of root.querySelectorAll<HTMLElement>('[data-measure-id]')) {
             const id = node.dataset.measureId
-            if (!id) continue
-            next[id] = node.offsetWidth
+            if (!id || id === '__more') continue
+            const width = node.offsetWidth
+            if (width > 0) next[id] = width
         }
         setToolbarSlotWidths((previous) => {
             const previousKeys = Object.keys(previous)
@@ -1969,6 +1980,16 @@ export function SessionList(props: {
             }
             return next
         })
+        const moreNode = root.querySelector<HTMLElement>('[data-measure-id="__more"]')
+        const parsedGap = Number.parseFloat(getComputedStyle(root).columnGap)
+        const morePx = moreNode && moreNode.offsetWidth > 0 ? moreNode.offsetWidth : TOOLBAR_MORE_PX
+        const gapPx = Number.isFinite(parsedGap) && parsedGap > 0 ? parsedGap : TOOLBAR_GAP_PX
+        const machinePx = machineMenuRef.current?.offsetWidth ?? 0
+        setToolbarChrome((previous) => (
+            previous.morePx === morePx && previous.gapPx === gapPx && previous.machinePx === machinePx
+                ? previous
+                : { morePx, gapPx, machinePx }
+        ))
     })
 
     // Pull-to-refresh on the scrollable list. Touch-only gesture mirroring the
@@ -2091,7 +2112,7 @@ export function SessionList(props: {
                     ) : null}
                     {!(showSearch && searchExpanded) ? (
                         <div
-                            ref={headerActionsRef}
+                            ref={setHeaderActionsNode}
                             data-testid="session-list-header-actions"
                             // flex-1 is the real icon budget (#2039).
                             className="relative flex min-w-0 flex-1 flex-nowrap items-center gap-1"
@@ -2100,8 +2121,11 @@ export function SessionList(props: {
                                 // Shed one control at a time, highest keep first.
                                 // Do not ml-auto a lone ⋯ across empty space, and do
                                 // not fold the whole row at a single width gate (#2039).
+                                const machineAndGap = toolbarChrome.machinePx > 0
+                                    ? toolbarChrome.machinePx + toolbarChrome.gapPx
+                                    : 0
                                 const budget = headerRowWidth > 0
-                                    ? headerRowWidth
+                                    ? Math.max(0, headerRowWidth - machineAndGap)
                                     : toolbarActionBudget(0, searchQuery.length > 0)
                                 const slotWidth = (id: string, fallback: number) => {
                                     const measured = toolbarSlotWidths[id] ?? 0
@@ -2189,7 +2213,10 @@ export function SessionList(props: {
                                         node: props.headerActions
                                     })
                                 }
-                                const { visibleIds, overflowIds } = shedToolbarSlots(definedSlots, budget)
+                                const { visibleIds, overflowIds } = shedToolbarSlots(definedSlots, budget, {
+                                    morePx: toolbarChrome.morePx,
+                                    gapPx: toolbarChrome.gapPx
+                                })
                                 const byId = new Map(definedSlots.map((slot) => [slot.id, slot]))
                                 const visible = visibleIds.map((id) => byId.get(id)).filter((slot) => slot != null)
                                 const overflow = overflowIds.map((id) => byId.get(id)).filter((slot) => slot != null)
@@ -2206,14 +2233,17 @@ export function SessionList(props: {
                                                     {slot.node}
                                                 </span>
                                             ))}
+                                            <span data-measure-id="__more" className="inline-flex h-9 w-9 shrink-0" />
                                         </div>
                                         {showMachineFilterBar ? (
-                                            <MachineFilterMenu
-                                                machines={machineFilterItems}
-                                                totalCount={allSessions.length}
-                                                value={activeMachineFilter}
-                                                onChange={setMachineFilter}
-                                            />
+                                            <div ref={machineMenuRef} className="inline-flex shrink-0">
+                                                <MachineFilterMenu
+                                                    machines={machineFilterItems}
+                                                    totalCount={allSessions.length}
+                                                    value={activeMachineFilter}
+                                                    onChange={setMachineFilter}
+                                                />
+                                            </div>
                                         ) : null}
                                         {visible.map((slot) => (
                                             <span key={slot.id} data-testid={`session-toolbar-slot-${slot.id}`} className="contents">

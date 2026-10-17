@@ -32,6 +32,18 @@ describe('shedToolbarSlots', () => {
         expect(tighter.overflowIds).toEqual(['mark-all', 'settings', 'browse'])
     })
 
+    it('uses the measured More width and gap instead of 16px constants', () => {
+        const slots = [icon('new', 4), icon('filter', 5), icon('browse', 8)]
+        // 130px fits all three icons at a 4px gap (128) but not at a 5.2px gap
+        // (130.4), and a 47px More cannot replace one of them either.
+        const atScale = shedToolbarSlots(slots, 130, { morePx: 47, gapPx: 5.2 })
+        expect(atScale.visibleIds).toEqual(['new'])
+        expect(atScale.overflowIds).toEqual(['filter', 'browse'])
+        const atDefault = shedToolbarSlots(slots, 130, { morePx: 40, gapPx: 4 })
+        expect(atDefault.visibleIds).toEqual(['new', 'filter', 'browse'])
+        expect(atDefault.overflowIds).toEqual([])
+    })
+
     it('drops new only after the lower-priority controls are already in More', () => {
         // New + More. A single equal-width icon cannot be swapped for More
         // without also shedding the next one — More occupies a slot too.

@@ -1148,6 +1148,43 @@ describe('SessionList search toggle', () => {
         expect(screen.queryByTestId('session-list-header-overflow')).toBeNull()
     })
 
+    it('reobserves the actions box after search expands and collapses (tiann/hapi#2040)', () => {
+        const observed: Element[] = []
+        class FakeResizeObserver {
+            observe = (target: Element) => { observed.push(target) }
+            unobserve = vi.fn()
+            disconnect = vi.fn()
+        }
+        vi.stubGlobal('ResizeObserver', FakeResizeObserver)
+
+        renderWithProviders(
+            <SessionList
+                sessions={[makeSession({
+                    id: 'session-1',
+                    updatedAt: 100,
+                    metadata: { path: '/work/hapi', name: 'Matching task', flavor: 'codex' },
+                })]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        const first = screen.getByTestId('session-list-header-actions')
+        expect(observed).toContain(first)
+        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+        expect(screen.queryByTestId('session-list-header-actions')).toBeNull()
+        fireEvent.blur(screen.getByPlaceholderText(SEARCH_PLACEHOLDER))
+        const second = screen.getByTestId('session-list-header-actions')
+        expect(second).not.toBe(first)
+        expect(observed).toContain(second)
+        vi.unstubAllGlobals()
+    })
+
     function stubHeaderWidth(width: number) {
         class FakeResizeObserver {
             callback: ResizeObserverCallback
