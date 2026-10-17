@@ -1,7 +1,9 @@
-import { useQuery } from '@tanstack/react-query'
+import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
-import type { Session } from '@/types/api'
+import type { Session, SessionResponse, SessionsResponse } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
+import { mergeSessionResponse, needsSessionResponseRetry } from '@/lib/sessionCache'
 
 export function isSessionNotFoundError(error: unknown): boolean {
     return error instanceof Error
@@ -27,13 +29,55 @@ export function useSession(api: ApiClient | null, sessionId: string | null): {
     refetch: () => Promise<unknown>
 } {
     const resolvedSessionId = sessionId ?? 'unknown'
+    const queryClient = useQueryClient()
+    // Subscribe to the list cache without registering another observer for
+    // the shared query. A disabled useQuery observer still updates the
+    // shared query options, so its cache-only queryFn could replace the real
+    // REST fetcher used by useSessions during invalidation.
+    const subscribeToSessions = useCallback((listener: () => void) => (
+        queryClient.getQueryCache().subscribe((event) => {
+            if (event.query.queryKey[0] === queryKeys.sessions[0]) {
+                listener()
+            }
+        })
+    ), [queryClient])
+    const getSessionsSnapshot = useCallback(
+        () => queryClient.getQueryData<SessionsResponse>(queryKeys.sessions),
+        [queryClient]
+    )
+    const sessionsData = useSyncExternalStore(
+        subscribeToSessions,
+        getSessionsSnapshot,
+        getSessionsSnapshot
+    )
     const query = useQuery({
         queryKey: queryKeys.session(resolvedSessionId),
         queryFn: async () => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
             }
-            return await api.getSession(sessionId)
+            let incoming = await api.getSession(sessionId)
+            let current = queryClient.getQueryData<SessionResponse>(queryKeys.session(resolvedSessionId))
+            let currentSummary = sessionsData
+                ?.sessions.find((summary) => summary.id === sessionId)
+            if (needsSessionResponseRetry(current, incoming, currentSummary)) {
+                // A newer SSE patch may only carry the reply clock. Retry once
+                // so unrelated fields from the discarded REST snapshot are
+                // not left stale indefinitely on an otherwise quiet session.
+                incoming = await api.getSession(sessionId)
+                current = queryClient.getQueryData<SessionResponse>(queryKeys.session(resolvedSessionId)) ?? current
+                currentSummary = queryClient.getQueryData<SessionsResponse>(queryKeys.sessions)
+                    ?.sessions.find((summary) => summary.id === sessionId) ?? currentSummary
+                const listWatermark = currentSummary?.lastAssistantMessageVersion ?? 0
+                const cachedDetailVersion = current?.session?.seq ?? 0
+                if (
+                    cachedDetailVersion < listWatermark
+                    && incoming.session.seq < listWatermark
+                ) {
+                    throw new Error('Session detail response is older than the cached session list')
+                }
+            }
+            return mergeSessionResponse(current, incoming, currentSummary)
         },
         enabled: Boolean(api && sessionId),
         staleTime: SESSION_DETAIL_STALE_TIME_MS,
@@ -45,8 +89,25 @@ export function useSession(api: ApiClient | null, sessionId: string | null): {
         },
     })
 
+    const cachedSummary = sessionsData
+        ?.sessions.find((summary) => summary.id === sessionId)
+    const cachedSession = query.data?.session
+    const listWatermark = cachedSummary?.lastAssistantMessageVersion ?? 0
+    const isBelowListWatermark = Boolean(
+        cachedSession
+        && cachedSession.seq < listWatermark
+    )
+    const refreshAttemptedForWatermark = useRef<string | null>(null)
+    const refreshKey = `${sessionId ?? ''}:${listWatermark}`
+    useEffect(() => {
+        if (!isBelowListWatermark || query.isFetching || refreshAttemptedForWatermark.current === refreshKey) {
+            return
+        }
+        refreshAttemptedForWatermark.current = refreshKey
+        void query.refetch()
+    }, [isBelowListWatermark, query.isFetching, query.refetch, refreshKey])
     return {
-        session: query.data?.session ?? null,
+        session: isBelowListWatermark ? null : cachedSession ?? null,
         isLoading: query.isLoading,
         error: query.error instanceof Error ? query.error.message : query.error ? 'Failed to load session' : null,
         notFound: isSessionNotFoundError(query.error) && !query.isFetching,

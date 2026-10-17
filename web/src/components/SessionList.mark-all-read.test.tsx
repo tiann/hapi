@@ -68,7 +68,7 @@ describe('SessionList mark all as read', () => {
     })
 
     it('only shows the independent action when unread sessions exist', () => {
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ read: 1000 }))
+        localStorage.setItem('hapi.sessionLastSeen.v2', JSON.stringify({ read: 1000 }))
         renderSessionList([
             makeSession({ id: 'read', updatedAt: 1000, metadata: { path: '/work/read', name: 'Read' } })
         ])
@@ -76,7 +76,7 @@ describe('SessionList mark all as read', () => {
         expect(screen.queryByRole('button', { name: 'Mark all as read (1)' })).toBeNull()
 
         cleanup()
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ unread: 1000 }))
+        localStorage.setItem('hapi.sessionLastSeen.v2', JSON.stringify({ unread: 1000 }))
         renderSessionList([
             makeSession({ id: 'unread', updatedAt: 2000, metadata: { path: '/work/unread', name: 'Unread' } })
         ])
@@ -89,7 +89,7 @@ describe('SessionList mark all as read', () => {
     })
 
     it('requires confirmation before marking every unread session read', async () => {
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({
+        localStorage.setItem('hapi.sessionLastSeen.v2', JSON.stringify({
             unreadA: 1000,
             unreadB: 2000,
             read: 3000
@@ -107,14 +107,14 @@ describe('SessionList mark all as read', () => {
         expect(title).toHaveClass('min-h-6', 'px-10', 'text-center', 'leading-6')
         expect(screen.getByText('This will mark 2 unread sessions as read on this device.')).toBeTruthy()
         expect(within(dialog).getByRole('button', { name: 'Confirm' })).toHaveClass('bg-red-600', 'text-white')
-        expect(JSON.parse(localStorage.getItem('hapi.sessionLastSeen.v1')!)).toMatchObject({ unreadA: 1000, unreadB: 2000 })
+        expect(JSON.parse(localStorage.getItem('hapi.sessionLastSeen.v2')!)).toMatchObject({ unreadA: 1000, unreadB: 2000 })
 
         fireEvent.click(screen.getByRole('button', { name: 'Confirm' }))
 
         await waitFor(() => {
             expect(screen.queryByRole('button', { name: 'Mark all as read (2)' })).toBeNull()
         })
-        expect(JSON.parse(localStorage.getItem('hapi.sessionLastSeen.v1')!)).toMatchObject({
+        expect(JSON.parse(localStorage.getItem('hapi.sessionLastSeen.v2')!)).toMatchObject({
             unreadA: 1100,
             unreadB: 2200,
             read: 3000
@@ -123,7 +123,7 @@ describe('SessionList mark all as read', () => {
     })
 
     it('leaves unread state unchanged when the confirmation is cancelled', () => {
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ unread: 1000 }))
+        localStorage.setItem('hapi.sessionLastSeen.v2', JSON.stringify({ unread: 1000 }))
         renderSessionList([
             makeSession({ id: 'unread', updatedAt: 2000, metadata: { path: '/work/unread', name: 'Unread' } })
         ])
@@ -132,11 +132,11 @@ describe('SessionList mark all as read', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
 
         expect(screen.getByRole('button', { name: 'Mark all as read (1)' })).toBeTruthy()
-        expect(JSON.parse(localStorage.getItem('hapi.sessionLastSeen.v1')!)).toEqual({ unread: 1000 })
+        expect(JSON.parse(localStorage.getItem('hapi.sessionLastSeen.v2')!)).toEqual({ unread: 1000 })
     })
 
     it('marks hidden duplicate session IDs so a dedup winner change stays read', async () => {
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({
+        localStorage.setItem('hapi.sessionLastSeen.v2', JSON.stringify({
             visibleWinner: 2000,
             hiddenDuplicate: 0,
         }))
@@ -189,14 +189,14 @@ describe('SessionList mark all as read', () => {
         ))))
 
         expect(screen.queryByRole('button', { name: 'Mark all as read (1)' })).toBeNull()
-        expect(JSON.parse(localStorage.getItem('hapi.sessionLastSeen.v1')!)).toMatchObject({
+        expect(JSON.parse(localStorage.getItem('hapi.sessionLastSeen.v2')!)).toMatchObject({
             visibleWinner: 2000,
             hiddenDuplicate: 1000,
         })
     })
 
     it('does not count unread inactive empty session stubs', () => {
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({
+        localStorage.setItem('hapi.sessionLastSeen.v2', JSON.stringify({
             visible: 2000,
             emptyStub: 0,
         }))

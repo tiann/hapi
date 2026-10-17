@@ -31,6 +31,7 @@ private class FakeSessionStore : SessionListStore {
     override val sessions: StateFlow<List<SessionSummary>> = backing
     val calls = MutableStateFlow<List<String>>(emptyList())
     var failRefresh = false
+    var rowsOnRefresh: List<SessionSummary>? = null
 
     fun set(vararg rows: SessionSummary) {
         backing.value = sortSessionSummaries(rows.toList())
@@ -43,6 +44,7 @@ private class FakeSessionStore : SessionListStore {
     override suspend fun refresh() {
         record("refresh")
         if (failRefresh) throw RuntimeException("offline")
+        rowsOnRefresh?.let { backing.value = sortSessionSummaries(it) }
     }
 
     override fun scheduleRefresh() = record("scheduleRefresh")
@@ -98,6 +100,8 @@ private class FakeMachineStore : MachineListStore {
 private fun summary(
     id: String,
     updatedAt: Long = 0,
+    lastAssistantMessageAt: Long? = null,
+    assistantReplyClockBackfilled: Boolean? = null,
     active: Boolean = false,
     machineId: String? = null,
     name: String? = null,
@@ -110,6 +114,8 @@ private fun summary(
     thinking = false,
     activeAt = 0,
     updatedAt = updatedAt,
+    lastAssistantMessageAt = lastAssistantMessageAt,
+    assistantReplyClockBackfilled = assistantReplyClockBackfilled,
     metadata = SessionSummaryMetadata(
         name = name,
         path = path,
@@ -237,8 +243,9 @@ class SessionListViewModelTest {
         assertTrue(byId.getValue("s2").machine!!.unnamed)
         assertEquals("repo/tail-name", byId.getValue("s3").meta)
 
-        // No baseline seeded (no successful refresh yet) → activity is unread.
-        assertTrue(byId.getValue("s1").unread)
+        // No baseline seeded (no successful refresh yet) → cached history is
+        // not treated as a new reply.
+        assertFalse(byId.getValue("s1").unread)
     }
 
     @Test
@@ -333,6 +340,70 @@ class SessionListViewModelTest {
     }
 
     @Test
+    fun `cached rows stay read when the initial refresh fails`() = runTest {
+        val sessions = FakeSessionStore()
+        sessions.set(summary("cached", updatedAt = 9_000, lastAssistantMessageAt = 5_000))
+        sessions.failRefresh = true
+        val (viewModel, _, _) = buildViewModel(sessions = sessions)
+
+        viewModel.refresh()
+        val state = viewModel.uiState.first { it.isOffline }
+
+        assertFalse(state.rows.single().unread)
+    }
+
+    @Test
+    fun `SSE does not baseline cached rows before authoritative refresh`() = runTest {
+        val sessions = FakeSessionStore()
+        val machines = FakeMachineStore()
+        val lastSeenStore = LastSeenStore(backgroundScope)
+        val viewModel = SessionListViewModel(
+            sessionStore = sessions,
+            machineStore = machines,
+            lastSeenStore = lastSeenStore,
+            scope = backgroundScope,
+            hubKey = "hub-test",
+        )
+
+        // Simulate an old sessions.json snapshot plus an early SSE row. The
+        // snapshot has no reply-clock fields, so it must not establish the
+        // hub-wide baseline before REST hydration supplies server truth.
+        sessions.set(
+            summary("legacy", updatedAt = 9_000),
+            summary("early-sse", updatedAt = 100),
+        )
+        runCurrent()
+        assertEquals(0, lastSeenStore.lastSeenAt("legacy"))
+        assertFalse(viewModel.uiState.value.rows.associate { it.id to it.unread }.getValue("legacy"))
+
+        sessions.rowsOnRefresh = listOf(
+            summary(
+                "legacy",
+                updatedAt = 9_000,
+                lastAssistantMessageAt = 5_000,
+                assistantReplyClockBackfilled = true,
+            ),
+            summary(
+                "early-sse",
+                updatedAt = 100,
+                lastAssistantMessageAt = 50,
+                assistantReplyClockBackfilled = true,
+            ),
+        )
+        viewModel.refresh()
+        viewModel.uiState.first { state ->
+            lastSeenStore.lastSeenAt("legacy") == 5_000L
+                && state.rows.any { it.id == "legacy" && !it.unread }
+        }
+
+        assertEquals(5_000, lastSeenStore.lastSeenAt("legacy"))
+        assertEquals(50, lastSeenStore.lastSeenAt("early-sse"))
+        val hydrated = viewModel.uiState.value.rows.associateBy { it.id }
+        assertFalse(hydrated.getValue("legacy").unread)
+        assertFalse(hydrated.getValue("early-sse").unread)
+    }
+
+    @Test
     fun `start runs the entry refresh (the global pipe belongs to HubGraph)`() = runTest {
         // SSE handshake/resync behavior for the global pipe is covered by
         // GlobalSsePipeTest — this VM only owns the explicit entry refresh.
@@ -360,8 +431,18 @@ class SessionListViewModelTest {
 
     @Test
     fun `onSessionOpened stamps the last-seen watermark and clears unread`() = runTest {
-        val (viewModel, sessions, _) = buildViewModel()
+        val sessions = FakeSessionStore()
+        val lastSeenStore = LastSeenStore(backgroundScope)
+        val viewModel = SessionListViewModel(
+            sessionStore = sessions,
+            machineStore = FakeMachineStore(),
+            lastSeenStore = lastSeenStore,
+            scope = backgroundScope,
+            hubKey = "hub-test",
+        )
         sessions.set(summary("s1", updatedAt = 900))
+        lastSeenStore.initializeBaseline("hub-test", sessions.backing.value)
+        sessions.set(summary("s1", updatedAt = 901))
         assertTrue(viewModel.uiState.first { it.rows.size == 1 }.rows.single().unread)
 
         viewModel.onSessionOpened("s1")
