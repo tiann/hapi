@@ -1,3 +1,4 @@
+import { CodexRoundDuration } from './utils/roundDuration';
 import { logger } from '@/ui/logger';
 import { resolve } from 'node:path';
 import { startHookServer } from '@/claude/utils/startHookServer';
@@ -122,13 +123,15 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
             name: 'ExitPlanMode',
             callId,
             input: { plan: message.plan },
-            id: message.id
+            id: message.id,
+            turn_id: message.turnId
         });
         session.sendAgentMessage({
             type: 'tool-call-result',
             callId,
             output: null,
-            id: `${message.id}:result`
+            id: `${message.id}:result`,
+            turn_id: message.turnId
         });
     };
 
@@ -171,6 +174,8 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         pendingExecWrappers.clear();
     };
 
+    const roundDuration = new CodexRoundDuration();
+
     const dispatchTranscriptActions = (
         actions: CodexConversionAction[],
         context: { replayedHistory: boolean }
@@ -200,7 +205,8 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 continue;
             }
 
-            const message = action.message;
+            const turnId = action.turnId ?? roundDuration.turnId;
+            const message = { ...action.message, ...(turnId ? { turn_id: turnId } : {}) };
             if (message.type === 'proposed_plan') {
                 // Codex may complete the Plan item before emitting its final text preface.
                 pendingPlansByTurnId.set(message.turnId, message);
@@ -325,6 +331,15 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 dispatchTranscriptActions(convertTranscriptEvent(event), context);
                 if (event.type === 'event_msg' && event.payload && typeof event.payload === 'object') {
                     const payload = event.payload as Record<string, unknown>;
+                    const timestamp = typeof event.timestamp === 'string' ? Date.parse(event.timestamp) : NaN;
+                    const turnId = typeof payload.turn_id === 'string' ? payload.turn_id : null;
+                    if (!context.replayedHistory) {
+                        if (payload.type === 'task_started') roundDuration.start(turnId, timestamp);
+                        if (payload.type === 'task_complete' || payload.type === 'turn_aborted' || payload.type === 'task_failed') {
+                            const duration = roundDuration.finish(turnId, timestamp, payload.type === 'task_complete');
+                            if (duration) session.sendAgentMessage(duration);
+                        }
+                    }
                     if (payload.type === 'task_started' || payload.type === 'user_message'
                         || payload.type === 'turn_aborted' || payload.type === 'task_failed') {
                         cancelReady();
@@ -404,7 +419,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                     return;
                 }
                 for (const message of toolHookBridge.handle(data)) {
-                    session.sendAgentMessage(message);
+                    session.sendAgentMessage({ ...message, turn_id: data.turn_id });
                 }
                 return;
             }

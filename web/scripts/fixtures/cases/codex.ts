@@ -7,6 +7,19 @@ import { T0, wireMessage } from './support'
  * stream snapshots keyed by data.id.
  */
 export const codexCases: FixtureCase[] = [
+    ...([false, true] as const).map((imported): FixtureCase => ({
+        name: imported ? 'codex-imported-duration-rejected' : 'codex-persisted-round-duration-tail',
+        description: 'A completed Codex tail contains duration metadata without its initiating user row. Imported history cannot supply trusted timing. Metadata adds no visible chat row or duplicate usage.',
+        messages: [
+            { type: 'message', message: 'Completed Codex answer' },
+            { type: 'token_count', ...(imported ? { hapiUsageScope: 'imported-history' } : { flavor: 'codex' }),
+                model: 'gpt-5.4', info: { last_token_usage: { input_tokens: 100, output_tokens: 10 } } },
+            { type: 'turn_duration', flavor: 'codex', durationMs: 39_426,
+                ...(imported ? { hapiUsageScope: 'imported-history' } : {}) }
+        ].map((data, index) => wireMessage({ id: `duration-tail-${index}`, seq: index + 1,
+            createdAt: T0 + index * 1000, content: { role: 'agent', content: { type: 'codex', data: { ...data, turn_id: 'round' } } }
+        }))
+    })),
     ...([true, false] as const).map((available): FixtureCase => {
         const callId = 'codex-proposed-plan:root:turn:plan-item'
         const data = [

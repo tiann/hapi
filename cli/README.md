@@ -139,6 +139,14 @@ See `src/ui/doctor.ts`.
 - `hapi hub` - Start the bundled hub (single binary workflow).
 - `hapi server` - Alias for `hapi hub`.
 
+### Codex round timing
+
+Completed live Codex turns persist their duration in the message stream, so Web
+and PWA response details keep the same Round duration after refresh or a cached
+tail reload. Local transcript timing uses the original start and completion
+timestamps; imported history and turns without an observed live start do not
+receive a new duration.
+
 ### Codex MCP servers
 
 Codex sessions keep the MCP servers configured in the user's Codex

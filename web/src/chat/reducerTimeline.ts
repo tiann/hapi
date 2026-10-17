@@ -85,8 +85,19 @@ function attachCodexRoundSummaryToLatestGroup(blocks: ChatBlock[], summary: Roun
         && block.kind !== 'agent-event'
         && !(block.kind === 'cli-output' && block.source === 'user')
 
+    let targetIndex = summary.turnId
+        ? blocks.findLastIndex(block => isSummaryTarget(block) && isObject(block.meta) && block.meta.codexTurnId === summary.turnId)
+        : blocks.length - 1
+    // Persisted replies from earlier versions have no native turn IDs.
+    if (targetIndex === -1 && summary.usage) {
+        for (let index = blocks.length - 1; index >= 0 && isSummaryTarget(blocks[index]); index -= 1) {
+            const meta = blocks[index].meta
+            if (isObject(meta) && typeof meta.codexTurnId === 'string') return
+        }
+        targetIndex = blocks.length - 1
+    }
     let firstIndex = -1
-    for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    for (let index = targetIndex; index >= 0; index -= 1) {
         if (!isSummaryTarget(blocks[index])) break
         firstIndex = index
     }
@@ -94,7 +105,21 @@ function attachCodexRoundSummaryToLatestGroup(blocks: ChatBlock[], summary: Roun
 
     const firstBlock = blocks[firstIndex]
     if (isSummaryTarget(firstBlock)) {
-        firstBlock.roundSummary = summary
+        const previousSummary = firstBlock.roundSummary
+        if (previousSummary?.turnId && summary.turnId && previousSummary.turnId !== summary.turnId) {
+            for (let index = targetIndex + 1; index < blocks.length && isSummaryTarget(blocks[index]); index += 1) {
+                const meta = blocks[index].meta
+                if (isObject(meta) && meta.codexTurnId === previousSummary.turnId) return
+            }
+        }
+        const previous = previousSummary?.provider === 'codex'
+            && (!summary.turnId || previousSummary.turnId === summary.turnId) ? previousSummary : undefined
+        firstBlock.roundSummary = {
+            ...previous,
+            ...summary,
+            modelUsage: summary.usage ? summary.modelUsage : previous?.modelUsage ?? summary.modelUsage,
+            durationMs: summary.durationMs ?? previous?.durationMs
+        }
     }
 }
 
@@ -507,6 +532,7 @@ export function reduceTimeline(
                 const tokenCount = msg.content as {
                     type: 'token-count'
                     provider?: 'codex'
+                    turnId?: string
                     model?: string | null
                 }
                 if (
@@ -524,6 +550,7 @@ export function reduceTimeline(
                         }
                     attachCodexRoundSummaryToLatestGroup(blocks, {
                         provider: 'codex',
+                        turnId: tokenCount.turnId,
                         usage: displayUsage,
                         modelUsage: model
                             ? {
@@ -564,6 +591,12 @@ export function reduceTimeline(
                 continue
             }
             if (msg.content.type === 'turn-duration') {
+                if (msg.content.provider === 'codex') {
+                    attachCodexRoundSummaryToLatestGroup(blocks, {
+                        provider: 'codex', turnId: msg.content.turnId as string, modelUsage: {}, numTurns: 1, durationMs: msg.content.durationMs as number
+                    })
+                    continue
+                }
                 const targetId = msg.content.targetMessageId
                 const durationMs = msg.content.durationMs as number
                 type DurationBearingBlock = AgentTextBlock | AgentReasoningBlock | CliOutputBlock | ToolCallBlock
@@ -1001,6 +1034,11 @@ export function reduceTimeline(
                         permission,
                         agentTimestamp: msg.agentTimestamp
                     })
+
+                    if (isObject(msg.meta) && typeof msg.meta.codexTurnId === 'string') {
+                        if (!isObject(block.meta) || block.meta.codexTurnId !== msg.meta.codexTurnId) block.roundSummary = undefined
+                        block.meta = msg.meta
+                    }
 
                     if (block.tool.state === 'pending') {
                         block.tool = { ...block.tool, state: 'running' }
