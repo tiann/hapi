@@ -3,6 +3,12 @@ import { logger } from '@/ui/logger';
 import { AppServerEventConverter } from './appServerEventConverter';
 
 describe('AppServerEventConverter', () => {
+    it('preserves a native name on thread start', () => {
+        const converter = new AppServerEventConverter();
+        expect(converter.handleNotification('thread/started', { thread: { id: 'thread-1', name: 'Native name' } }))
+            .toEqual([{ type: 'thread_started', thread_id: 'thread-1', name: 'Native name' }]);
+    });
+
     it('maps thread/started', () => {
         const converter = new AppServerEventConverter();
         const events = converter.handleNotification('thread/started', { thread: { id: 'thread-1' } });

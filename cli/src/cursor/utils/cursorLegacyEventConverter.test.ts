@@ -43,6 +43,11 @@ describe('cursorLegacyEventConverter', () => {
     });
 
     describe('convertCursorEventToAgentMessage', () => {
+        it.each([false, true])('preserves result errors: %s', (is_error) => {
+            expect(convertCursorEventToAgentMessage({ type: 'result', subtype: 'success', session_id: 's', is_error }))
+                .toEqual({ type: 'turn_complete', stopReason: is_error ? 'error' : 'success' });
+        });
+
         it('converts assistant to text message', () => {
             const event = {
                 type: 'assistant',

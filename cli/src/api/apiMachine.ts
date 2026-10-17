@@ -411,16 +411,7 @@ export class ApiMachineClient {
             }
 
             const resolvedDirectory = await this.pathPolicy.resolveForCheck(directory)
-            if (!this.pathPolicy.isWithinSpawnRoots(resolvedDirectory)) {
-                return {
-                    type: 'error',
-                    errorMessage: 'Directory is outside this machine\'s workspace roots',
-                    code: 'outside_workspace_roots',
-                    // Pre-exec: no OS child — hub must delete the prealloc stub (#1911).
-                    childStarted: false,
-                }
-            }
-
+            const withinRoots = this.pathPolicy.isWithinSpawnRoots(resolvedDirectory)
             const result = await spawnSession({
                 directory,
                 sessionId,
@@ -443,8 +434,17 @@ export class ApiMachineClient {
                 worktreeName,
                 startingMode,
                 forkSession: forkSession === true,
-                validateDirectory: async (path) => await this.pathPolicy.allowsSpawn(path),
+                validateDirectory: async (path) => withinRoots && await this.pathPolicy.allowsSpawn(path),
             })
+
+            if (!withinRoots) {
+                return {
+                    type: 'error',
+                    errorMessage: 'Directory is outside this machine\'s workspace roots',
+                    code: 'outside_workspace_roots',
+                    ...(result.type === 'error' && result.childStarted === false ? { childStarted: false } : {}),
+                }
+            }
 
             switch (result.type) {
                 case 'success':
@@ -457,6 +457,7 @@ export class ApiMachineClient {
                         errorMessage: result.errorMessage,
                         code: result.code,
                         agent: result.agent,
+                        childStarted: result.childStarted,
                     }
             }
         })

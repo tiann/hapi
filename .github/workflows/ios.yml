@@ -43,10 +43,12 @@ jobs:
                   python3 ios/scripts/localizations.py --check
                   python3 -m unittest discover -s ios/scripts/tests -p 'test_localizations.py'
             - name: Build Hapi app for iOS Simulator
+              id: app_build
               run: xcodebuild build -project ios/Hapi.xcodeproj -scheme Hapi -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
             - name: Transcript layout regression tests
               run: ios/scripts/test-transcript.sh
             - name: iPad navigation and layout regression tests
+              if: ${{ !cancelled() && steps.app_build.outcome == 'success' }}
               env:
                   HAPI_TEST_DEVICE_TYPE: com.apple.CoreSimulator.SimDeviceType.iPad-Air-11-inch-M2
               run: >-

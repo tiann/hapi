@@ -61,7 +61,11 @@ export async function runSharedCodex(raw: SharedLaunchOptions): Promise<void> {
         }
         if (session.active) throw new Error('Existing session is active in another or legacy runtime. Stop it explicitly before cold resume; no hot migration.');
         options.resumeSessionId ??= session.metadata?.codexSessionId;
-        if (!options.resumeSessionId) throw new Error('Existing HAPI session has no Codex thread binding');
+        const freshRemit = options.startedBy === 'runner'
+            && session.metadata?.spawnRemitOperation?.state === 'pending'
+            && !session.metadata?.hostPid
+            && session.metadata?.lifecycleState !== 'archived';
+        if (!options.resumeSessionId && !freshRemit) throw new Error('Existing HAPI session has no Codex thread binding');
     }
     const runner = await readRunnerState();
     if (runner && isProcessAlive(runner.pid) && !runner.sharedCodexRuntime) {

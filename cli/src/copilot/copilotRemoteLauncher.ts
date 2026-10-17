@@ -59,8 +59,7 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         const messageBuffer = this.messageBuffer;
 
         const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
-            enableChangeTitle: false,
-            skillLookup: { workingDirectory: session.path, flavor: 'copilot' }
+            enableChangeTitle: false
         });
         this.happyServer = happyServer;
 

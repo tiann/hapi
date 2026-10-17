@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test'
+import { MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
 import { SyncEngine } from './syncEngine'
@@ -93,7 +94,12 @@ describe('permission mode persistence', () => {
 
         const machine = engine.getOrCreateMachine(
             'machine-1',
-            { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+            {
+                host: 'localhost',
+                platform: 'linux',
+                happyCliVersion: '0.1.0',
+                capabilities: [MACHINE_CAPABILITIES.SessionControlSkill]
+            },
             null,
             'default'
         )

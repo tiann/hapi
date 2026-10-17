@@ -343,20 +343,30 @@ export class CodexAppServerClient extends JsonLineParser {
         return await this.sendRequest(method, params, { timeoutMs: 20_000 }) as T;
     }
 
-    async initialize(params: InitializeParams): Promise<InitializeResponse> {
-        const response = await this.sendRequest('initialize', params, { timeoutMs: 30_000 });
+    async initialize(params: InitializeParams, options?: { signal?: AbortSignal }): Promise<InitializeResponse> {
+        const response = await this.sendRequest('initialize', params, { signal: options?.signal, timeoutMs: 30_000 });
         this.sendNotification('initialized');
         this.initialized = true;
         return response as InitializeResponse;
     }
 
-    async readConfig(params: ConfigReadParams): Promise<ConfigReadResponse> {
-        const response = await this.sendRequest('config/read', params, { timeoutMs: 30_000 });
+    async readConfig(params: ConfigReadParams, options?: { signal?: AbortSignal }): Promise<ConfigReadResponse> {
+        const response = await this.sendRequest('config/read', params, { signal: options?.signal, timeoutMs: 30_000 });
         return response as ConfigReadResponse;
     }
 
-    async listModels(params?: ModelListParams): Promise<ModelListResponse> {
+    async setThreadName(threadId: string, name: string, signal?: AbortSignal): Promise<void> {
+        await this.sendRequest('thread/name/set', { threadId, name }, { signal, timeoutMs: 30_000 });
+    }
+
+    async unsubscribeThread(threadId: string): Promise<void> {
+        if (!this.initialized) return;
+        await this.sendRequest('thread/unsubscribe', { threadId }, { timeoutMs: 5_000 });
+    }
+
+    async listModels(params?: ModelListParams, options?: { signal?: AbortSignal }): Promise<ModelListResponse> {
         const response = await this.sendRequest('model/list', params ?? {}, {
+            signal: options?.signal,
             timeoutMs: 30_000
         });
         return response as ModelListResponse;

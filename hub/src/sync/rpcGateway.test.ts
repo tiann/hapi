@@ -4,7 +4,7 @@ import { PERMISSION_REQUEST_NOT_FOUND_MESSAGE } from '@hapi/protocol/rpcMethods'
 import type { RpcRegistry } from '../socket/rpcRegistry'
 import { PermissionRequestNotFoundError, RpcGateway, RpcTargetMissingError } from './rpcGateway'
 
-function createGateway() {
+function createGateway(response?: Record<string, unknown>) {
     const timeouts: number[] = []
     const calls: Array<{ method: string; params: string }> = []
     const socket = {
@@ -13,6 +13,7 @@ function createGateway() {
             return {
                 async emitWithAck(_event: string, payload: { method: string; params: string }) {
                     calls.push(payload)
+                    if (response) return JSON.stringify(response)
                     if (payload.method.endsWith(':cursor-chat-store-status')) {
                         return JSON.stringify({ onDisk: false, store: null })
                     }
@@ -52,6 +53,17 @@ function createGateway() {
 }
 
 describe('RpcGateway RPC timeouts', () => {
+    it('requests a non-archiving stop and returns the acknowledged wrapper PID', async () => {
+        const { gateway, calls } = createGateway({ success: true, pid: 4242 })
+        await expect(gateway.stopSessionProcess('session-1')).resolves.toEqual({ pid: 4242 })
+        expect(calls).toEqual([{ method: 'session-1:killSession', params: JSON.stringify({ archive: false }) }])
+    })
+
+    it('rejects an unacknowledged process-only stop', async () => {
+        const { gateway } = createGateway({ success: false })
+        await expect(gateway.stopSessionProcess('session-1')).rejects.toThrow(/non-archiving stop/)
+    })
+
     it('uses the default RPC timeout for regular machine RPCs', async () => {
         const { gateway, timeouts } = createGateway()
 

@@ -14,7 +14,7 @@ type FakeAgentState = {
     completedRequests: Record<string, unknown>;
 };
 
-function createHarness(getPermissionMode: () => 'default' | 'plan' | 'yolo' = () => 'default') {
+function createHarness(getPermissionMode: () => 'default' | 'yolo' = () => 'default') {
     let agentState: FakeAgentState = {
         requests: {},
         completedRequests: {}
@@ -69,11 +69,6 @@ function createHarness(getPermissionMode: () => 'default' | 'plan' | 'yolo' = ()
     };
 }
 
-async function flushAsyncWork(): Promise<void> {
-    await Promise.resolve();
-    await Promise.resolve();
-}
-
 function buildRequest(overrides?: Partial<PermissionRequest>): PermissionRequest {
     return {
         id: 'perm-1',
@@ -97,86 +92,13 @@ function buildRequest(overrides?: Partial<PermissionRequest>): PermissionRequest
     };
 }
 
-describe('OpencodePermissionHandler plan mode', () => {
-    it('denies non-auto-approved tool requests instead of queueing them', async () => {
-        const harness = createHarness(() => 'plan');
+describe('OpencodePermissionHandler', () => {
+    it('queues default-mode tool requests for user approval', () => {
+        const harness = createHarness();
 
         harness.emitPermissionRequest(buildRequest());
-        await flushAsyncWork();
 
-        expect(harness.respondCalls).toEqual([
-            {
-                sessionId: 'session-1',
-                request: expect.objectContaining({ id: 'perm-1', title: 'Write' }),
-                response: { outcome: 'selected', optionId: 'reject-once' }
-            }
-        ]);
-        expect(harness.getAgentState().requests).toEqual({});
-        expect(harness.getAgentState().completedRequests).toMatchObject({
-            'perm-1': {
-                tool: 'Write',
-                status: 'denied',
-                decision: 'denied',
-                reason: 'Plan mode blocks tool execution'
-            }
-        });
-    });
-
-    it('cancels plan-mode requests when OpenCode offers no reject option', async () => {
-        const harness = createHarness(() => 'plan');
-
-        harness.emitPermissionRequest(buildRequest({
-            id: 'perm-no-reject',
-            options: [
-                {
-                    optionId: 'allow-once',
-                    name: 'Allow once',
-                    kind: 'allow_once'
-                }
-            ]
-        }));
-        await flushAsyncWork();
-
-        expect(harness.respondCalls).toEqual([
-            {
-                sessionId: 'session-1',
-                request: expect.objectContaining({ id: 'perm-no-reject' }),
-                response: { outcome: 'cancelled' }
-            }
-        ]);
-        expect(harness.getAgentState().completedRequests).toMatchObject({
-            'perm-no-reject': {
-                status: 'canceled',
-                decision: 'abort'
-            }
-        });
-    });
-
-    it('still auto-approves hapi title updates in plan mode', async () => {
-        const harness = createHarness(() => 'plan');
-
-        harness.emitPermissionRequest(buildRequest({
-            id: 'perm-title',
-            toolCallId: 'perm-title',
-            title: 'hapi_change_title',
-            rawInput: { title: 'Planning' }
-        }));
-        await flushAsyncWork();
-
-        expect(harness.respondCalls).toEqual([
-            {
-                sessionId: 'session-1',
-                request: expect.objectContaining({ id: 'perm-title', title: 'hapi_change_title' }),
-                response: { outcome: 'selected', optionId: 'allow-once' }
-            }
-        ]);
-        expect(harness.getAgentState().requests).toEqual({});
-        expect(harness.getAgentState().completedRequests).toMatchObject({
-            'perm-title': {
-                tool: 'hapi_change_title',
-                status: 'approved',
-                decision: 'approved'
-            }
-        });
+        expect(harness.respondCalls).toEqual([]);
+        expect(harness.getAgentState().requests).toHaveProperty('perm-1');
     });
 });

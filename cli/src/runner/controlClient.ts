@@ -103,8 +103,12 @@ export async function stopRunnerSession(sessionId: string): Promise<'stopped' | 
     : 'still_alive';
 }
 
-export async function spawnRunnerSession(directory: string, sessionId?: string): Promise<any> {
-  const result = await runnerPost('/spawn-session', { directory, sessionId });
+export async function spawnRunnerSession(
+  directory: string,
+  sessionId?: string,
+  options?: { sessionType?: 'simple' | 'worktree'; worktreeName?: string }
+): Promise<any> {
+  const result = await runnerPost('/spawn-session', { directory, sessionId, ...options });
   return result;
 }
 

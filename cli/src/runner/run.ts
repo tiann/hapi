@@ -38,7 +38,11 @@ import { startRunnerControlServer } from './controlServer';
 import { createWorktree, removeWorktree, type WorktreeInfo } from './worktree';
 import { validateWorkspaceDirectory } from './validateWorkspaceDirectory';
 import { join } from 'path';
-import { buildMachineMetadata } from '@/agent/sessionFactory';
+import {
+  buildMachineMetadata,
+  HAPI_RUNNER_SESSION_TYPE_ENV,
+  HAPI_RUNNER_WORKTREE_NAME_ENV
+} from '@/agent/sessionFactory';
 import { resolveWorkspaceRoots } from '@/utils/workspaceRoot';
 import { hashRunnerCliApiToken, hashRunnerExtraHeaders } from './runnerIdentity';
 import { readRuntimes, runtimeMayBeAlive, runtimeAuthHash } from '@/codex/shared/registry';
@@ -590,6 +594,12 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
       const { directory, sessionId, machineId, approvedNewDirectoryCreation = true } = options;
       const agent = options.agent ?? 'claude';
+      const requestedId = options.existingSessionId ?? options.sessionId;
+      if (requestedId) invalidateVerifiedExit(requestedId);
+      const failBeforeChild = (result: SpawnSessionResult): SpawnSessionResult => {
+        if (requestedId) rememberVerifiedExit(requestedId);
+        return result;
+      };
       const availability = getAgentAvailability(agent);
       if (!availability.available) {
         const errorMessage = agentUnavailableMessage(availability);
@@ -598,21 +608,21 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           type: 'error',
           details: { message: errorMessage }
         });
-        return {
+        return failBeforeChild({
           type: 'error',
           errorMessage,
           code: 'agent_unavailable',
           agent,
           childStarted: false,
-        };
+        });
       }
       if (options.validateDirectory && !(await options.validateDirectory(directory))) {
-        return {
+        return failBeforeChild({
           type: 'error',
           errorMessage: 'Directory is outside this machine\'s workspace roots',
           code: 'outside_workspace_roots',
           childStarted: false,
-        };
+        });
       }
       const yolo = options.yolo === true;
       const sessionType = options.sessionType ?? 'simple';
@@ -620,6 +630,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       let directoryCreated = false;
       let spawnDirectory = directory;
       let worktreeInfo: WorktreeInfo | null = null;
+      let cursorNativeWorktree = false;
       let happyProcess: ReturnType<typeof spawnHappyCLI> | null = null;
       let copiedCodexConfigPath: string | null = null;
 
@@ -643,19 +654,19 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         });
         if (validation.type === 'requestApproval') {
           logger.debug(`[RUNNER RUN] Directory creation not approved for: ${directory}`);
-          return {
+          return failBeforeChild({
             type: 'requestToApproveDirectoryCreation',
             directory,
             childStarted: false,
-          };
+          });
         }
         if (validation.type === 'error') {
           logger.debug(`[RUNNER RUN] Workspace directory validation failed: ${validation.errorMessage}`);
-          return {
+          return failBeforeChild({
             type: 'error',
             errorMessage: validation.errorMessage,
             childStarted: false,
-          };
+          });
         }
         directoryCreated = validation.created;
         if (validation.created) {
@@ -669,11 +680,11 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           logger.debug(`[RUNNER RUN] Worktree base directory exists: ${directory}`);
         } catch (error) {
           logger.debug(`[RUNNER RUN] Worktree base directory missing: ${directory}`);
-          return {
+          return failBeforeChild({
             type: 'error',
             errorMessage: `Worktree sessions require an existing Git repository. Directory not found: ${directory}`,
             childStarted: false,
-          };
+          });
         }
       }
 
@@ -681,12 +692,12 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       // symlink swap cannot escape the roots checked by the machine RPC layer.
       if (options.validateDirectory && !(await options.validateDirectory(directory))) {
         logger.debug(`[RUNNER RUN] Workspace directory escaped roots during validation: ${directory}`);
-        return {
+        return failBeforeChild({
           type: 'error',
           errorMessage: 'Directory is outside this machine\'s workspace roots',
           code: 'outside_workspace_roots',
           childStarted: false,
-        };
+        });
       }
 
       if (sessionType === 'worktree') {
@@ -701,6 +712,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
               `[RUNNER RUN] Directory is already a linked git worktree; skipping Cursor --worktree (cwd=${directory})`
             );
           } else {
+            cursorNativeWorktree = true;
             logger.debug(`[RUNNER RUN] Cursor-native worktree requested (nameHint=${worktreeName ?? '(auto)'})`);
           }
         } else {
@@ -710,11 +722,11 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           });
           if (!worktreeResult.ok) {
             logger.debug(`[RUNNER RUN] Worktree creation failed: ${worktreeResult.error}`);
-            return {
+            return failBeforeChild({
               type: 'error',
               errorMessage: worktreeResult.error,
               childStarted: false,
-            };
+            });
           }
           worktreeInfo = worktreeResult.info;
           spawnDirectory = worktreeInfo.worktreePath;
@@ -787,6 +799,14 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           };
         }
 
+        const appliedWorktreeName = worktreeInfo?.name
+          ?? (cursorNativeWorktree ? worktreeName?.trim() || undefined : undefined);
+        extraEnv = {
+          ...extraEnv,
+          [HAPI_RUNNER_SESSION_TYPE_ENV]: sessionType,
+          [HAPI_RUNNER_WORKTREE_NAME_ENV]: appliedWorktreeName ?? ''
+        };
+
         const args = buildCliArgs(agent, options, yolo);
 
         // sessionId reserved for future use
@@ -848,10 +868,11 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           });
           await cleanupCopiedCodexConfig('no-pid');
           await maybeCleanupWorktree('no-pid');
-          return {
+          return failBeforeChild({
             type: 'error',
-            errorMessage
-          };
+            errorMessage,
+            childStarted: false,
+          });
         }
         happyProcess.removeListener('error', captureSpawnErrorBeforePidCheck);
 
@@ -1068,10 +1089,11 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             message: `Failed to spawn session: ${errorMessage}`
           }
         });
-        return {
+        const result: SpawnSessionResult = {
           type: 'error',
           errorMessage: `Failed to spawn session: ${errorMessage}`
         };
+        return happyProcess?.pid ? result : failBeforeChild(result);
       }
     };
 
@@ -1998,7 +2020,6 @@ export function buildCliArgs(
     args.push('--fork-session');
   }
   const startingMode = options.startingMode || 'remote';
-  // Codex shares one engine; Runner owns the wrapper, not a remote mode.
   if (agent !== 'codex') args.push('--hapi-starting-mode', startingMode);
   args.push('--started-by', 'runner');
   // Stamp the HAPI row id on argv for orphan reap after tracking loss (#1910).

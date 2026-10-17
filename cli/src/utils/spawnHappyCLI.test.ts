@@ -251,4 +251,40 @@ describe('spawnHappyCLI windowsHide behavior', () => {
     const options = getSpawnOptionsOrThrow();
     expect(options.env?.HAPI_INVOKED_CWD).toBe(inheritedInvokedCwd);
   });
+  it('reports the logical directory after a compiled-style symlink launch', async () => {
+    const fs = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const actual = await vi.importActual<typeof import('child_process')>('child_process');
+    setPlatform(originalPlatformDescriptor!.value);
+    isBunCompiledMock.mockReturnValue(true);
+    delete process.env.HAPI_INVOKED_CWD;
+    const root = await fs.mkdtemp(join(tmpdir(), 'hapi-compiled-cwd-'));
+    try {
+      const physical = join(root, 'physical');
+      const logical = join(root, 'logical');
+      await fs.mkdir(physical);
+      await fs.symlink(physical, logical, 'junction');
+      const executable = actual.execFileSync('bun', ['-e', 'process.stdout.write(process.execPath)'], { encoding: 'utf8' });
+      process.env.HAPI_CLI_EXECUTABLE = executable;
+      spawnMock.mockImplementation(actual.spawn as any);
+      const { spawnHappyCLI } = await import('./spawnHappyCLI');
+      const moduleUrl = new URL('./invokedCwd.ts', import.meta.url).href;
+      const child = spawnHappyCLI(['-e', `import { getInvokedCwd } from ${JSON.stringify(moduleUrl)}; console.log(JSON.stringify({ physical: process.cwd(), reported: getInvokedCwd() }))`], {
+        cwd: logical,
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
+      let output = '';
+      child.stdout!.on('data', chunk => { output += chunk.toString(); });
+      await new Promise<void>((resolve, reject) => {
+        child.once('error', reject);
+        child.once('close', code => code === 0 ? resolve() : reject(new Error(`child exited ${code}`)));
+      });
+      const result = JSON.parse(output);
+      expect(result.physical).toBe(await fs.realpath(physical));
+      expect(result.reported).toBe(logical);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });

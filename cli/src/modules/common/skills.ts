@@ -55,6 +55,14 @@ function getAgentConfigDir(flavor?: string): string {
             return process.env.CODEX_HOME || join(getHomeDirectory(), '.codex');
         case 'grok':
             return process.env.GROK_HOME || join(getHomeDirectory(), '.grok');
+        case 'dsh':
+            return process.env.DSH_HOME || join(getHomeDirectory(), '.dsh');
+        case 'opencode':
+            return process.env.OPENCODE_CONFIG_DIR || join(getHomeDirectory(), '.config', 'opencode');
+        case 'agy':
+            return join(getHomeDirectory(), '.gemini', 'antigravity-cli');
+        case 'pi':
+            return join(getHomeDirectory(), '.pi', 'agent');
         default:
             return join(getHomeDirectory(), `.${normalizedFlavor}`);
     }
@@ -73,7 +81,17 @@ function getUserSkillsRoots(flavor?: string): string[] {
         case 'grok':
             roots.push(join(getAgentConfigDir(flavor), 'skills'));
             break;
+        case 'dsh':
+            roots.push(join(getAgentConfigDir(flavor), 'skills'));
+            break;
         case 'copilot':
+            roots.push(join(getAgentConfigDir(flavor), 'skills'));
+            break;
+        case 'cursor':
+        case 'opencode':
+        case 'kimi':
+        case 'agy':
+        case 'pi':
             roots.push(join(getAgentConfigDir(flavor), 'skills'));
             break;
     }
@@ -96,9 +114,18 @@ function getProjectSkillsRoots(directory: string, flavor?: string): string[] {
         case 'grok':
             roots.push(join(directory, '.grok', 'skills'));
             break;
+        case 'dsh':
+            roots.push(join(directory, '.dsh', 'skills'));
+            break;
         case 'copilot':
             roots.push(join(directory, '.copilot', 'skills'));
             roots.push(join(directory, '.github', 'skills'));
+            break;
+        case 'cursor':
+        case 'opencode':
+        case 'kimi':
+        case 'pi':
+            roots.push(join(directory, `.${normalizeFlavor(flavor)}`, 'skills'));
             break;
     }
     return roots;
