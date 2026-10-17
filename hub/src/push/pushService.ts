@@ -1,4 +1,5 @@
 import * as webPush from 'web-push'
+import { resolveProxyUrl } from '@hapi/protocol/net'
 import type { Store } from '../store'
 import type { VapidKeys } from '../config/vapidKeys'
 
@@ -64,7 +65,9 @@ export class PushService {
         }
 
         try {
-            await webPush.sendNotification(pushSubscription, body)
+            // web-push only honors an explicit proxy option, not HTTPS_PROXY.
+            const proxy = resolveProxyUrl(subscription.endpoint)
+            await webPush.sendNotification(pushSubscription, body, proxy ? { proxy: proxy.href } : undefined)
         } catch (error) {
             const statusCode = typeof (error as { statusCode?: unknown }).statusCode === 'number'
                 ? (error as { statusCode: number }).statusCode

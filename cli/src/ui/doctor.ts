@@ -6,6 +6,7 @@
  */
 
 import chalk from 'chalk'
+import { describeEgress, redactProxyValue } from '@hapi/protocol/net'
 import { configuration } from '@/configuration'
 import { readSettings } from '@/persistence'
 import { checkIfRunnerRunningAndCleanupStaleState } from '@/runner/controlClient'
@@ -118,6 +119,28 @@ export async function runDoctorCommand(filter?: 'all' | 'runner'): Promise<void>
         console.log(`hapi Home: ${chalk.blue(configuration.happyHomeDir)}`);
         console.log(`Bot URL: ${chalk.blue(configuration.apiUrl)}`);
         console.log(`Logs Dir: ${chalk.blue(configuration.logsDir)}`);
+
+        // Network / proxy egress
+        console.log(chalk.bold('\n🌐 Network / Proxy'));
+        const proxyEnvKeys = [
+            'HTTP_PROXY', 'http_proxy', 'HTTPS_PROXY', 'https_proxy',
+            'ALL_PROXY', 'all_proxy', 'NO_PROXY', 'no_proxy'
+        ] as const;
+        let sawProxyEnv = false;
+        for (const key of proxyEnvKeys) {
+            const value = process.env[key];
+            if (!value) {
+                continue;
+            }
+            sawProxyEnv = true;
+            const display = key.toLowerCase() === 'no_proxy' ? value : redactProxyValue(value);
+            console.log(`${key}: ${chalk.blue(display)}`);
+        }
+        if (!sawProxyEnv) {
+            console.log(chalk.gray('No proxy environment variables set'));
+        }
+        console.log(`HTTP API egress: ${chalk.blue(describeEgress(configuration.apiUrl))}`);
+        console.log(`Machine WS egress: ${chalk.blue(describeEgress(`${configuration.apiUrl}/cli`))}`);
 
         // Environment
         console.log(chalk.bold('\n🌍 Environment Variables'));
