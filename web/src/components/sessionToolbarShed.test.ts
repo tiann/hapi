@@ -34,14 +34,24 @@ describe('shedToolbarSlots', () => {
 
     it('uses the measured More width and gap instead of 16px constants', () => {
         const slots = [icon('new', 4), icon('filter', 5), icon('browse', 8)]
-        // 130px fits all three icons at a 4px gap (128) but not at a 5.2px gap
-        // (130.4), and a 47px More cannot replace one of them either.
-        const atScale = shedToolbarSlots(slots, 130, { morePx: 47, gapPx: 5.2 })
-        expect(atScale.visibleIds).toEqual(['new'])
-        expect(atScale.overflowIds).toEqual(['filter', 'browse'])
-        const atDefault = shedToolbarSlots(slots, 130, { morePx: 40, gapPx: 4 })
-        expect(atDefault.visibleIds).toEqual(['new', 'filter', 'browse'])
-        expect(atDefault.overflowIds).toEqual([])
+        // 82px fits one icon + a 40px More (after one-gap tolerance), not a 47px More.
+        const atScale = shedToolbarSlots(slots, 82, { morePx: 47, gapPx: 5.2 })
+        expect(atScale.visibleIds).toEqual([])
+        expect(atScale.overflowIds).toEqual(['new', 'filter', 'browse'])
+        const atDefault = shedToolbarSlots(slots, 82, { morePx: 40, gapPx: 4 })
+        expect(atDefault.visibleIds).toEqual(['new'])
+        expect(atDefault.overflowIds).toEqual(['filter', 'browse'])
+    })
+
+    it('keeps the next icon when the hole is one gap short of its width', () => {
+        const slots = [
+            { id: 'blocked', keep: 2, widthPx: 110 },
+            { id: 'new', keep: 4, widthPx: 40 },
+            { id: 'filter', keep: 5, widthPx: 40 },
+        ]
+        const result = shedToolbarSlots(slots, 238)
+        expect(result.visibleIds).toEqual(['blocked', 'new', 'filter'])
+        expect(result.overflowIds).toEqual([])
     })
 
     it('drops new only after the lower-priority controls are already in More', () => {

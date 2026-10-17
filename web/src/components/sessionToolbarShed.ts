@@ -79,7 +79,10 @@ export function shedToolbarSlots(
 ): { visibleIds: string[]; overflowIds: string[] } {
     const overflow: ToolbarShedSlot[] = []
     let visible = [...slots]
-    while (visible.length > 0 && clusterWidth(visible, overflow.length > 0, metrics) > budgetPx) {
+    const gapPx = metrics.gapPx ?? TOOLBAR_GAP_PX
+    // Tolerate one column-gap. Otherwise a hole the size of the next icon
+    // (short by only the gap) stays empty, which reads as wasted space.
+    while (visible.length > 0 && clusterWidth(visible, overflow.length > 0, metrics) - gapPx > budgetPx) {
         let worstIndex = 0
         for (let index = 1; index < visible.length; index += 1) {
             const candidate = visible[index]
