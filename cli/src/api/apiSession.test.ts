@@ -2,11 +2,13 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Session } from './types'
 
 const socketHarness = vi.hoisted(() => ({
+    connectImmediately: true,
     sockets: [] as Array<{
         connected: boolean
         connectCalls: number
         connectImmediately: boolean
         emitted: Array<{ event: string; args: unknown[] }>
+        volatileEmitted: Array<{ event: string; args: unknown[] }>
         listeners: Map<string, Array<(...args: any[]) => void>>
         trigger: (event: string, ...args: any[]) => void
         triggerConnect: () => void
@@ -24,8 +26,9 @@ vi.mock('socket.io-client', () => ({
         const state: (typeof socketHarness.sockets)[number] = {
             connected: false,
             connectCalls: 0,
-            connectImmediately: true,
+            connectImmediately: socketHarness.connectImmediately,
             emitted: [] as Array<{ event: string; args: unknown[] }>,
+            volatileEmitted: [],
             listeners: new Map<string, Array<(...args: any[]) => void>>(),
             trigger: () => {},
             triggerConnect: () => {},
@@ -81,7 +84,13 @@ vi.mock('socket.io-client', () => ({
             }
         }
         Object.assign(socket, {
-            volatile: socket,
+            volatile: {
+                emit: (event: string, ...args: unknown[]) => {
+                    state.volatileEmitted.push({ event, args })
+                    if (state.connected) state.emitted.push({ event, args })
+                    return socket
+                }
+            },
             io: { opts: { reconnection: true } }
         })
         socketHarness.sockets.push(state)
@@ -169,6 +178,84 @@ function triggerIncomingUserMessage(
         }
     })
 }
+
+describe('ApiSessionClient initial runtime heartbeat', () => {
+    const runtime = {
+        permissionMode: 'bypassPermissions' as const,
+        model: 'claude-sonnet-4-6',
+        effort: 'high',
+        serviceTier: null,
+        collaborationMode: 'plan' as const
+    }
+
+    function createDisconnectedClient() {
+        socketHarness.connectImmediately = false
+        const client = new ApiSessionClient('token', createSession())
+        socketHarness.connectImmediately = true
+        return { client, socket: socketHarness.sockets.at(-1)! }
+    }
+
+    it('publishes the latest pre-connect runtime in the first regular heartbeat', () => {
+        const { client, socket } = createDisconnectedClient()
+        client.keepAlive(false, 'local', { permissionMode: 'default' })
+        client.keepAlive(true, 'remote', runtime)
+        expect(socket.emitted).toEqual([])
+        expect(socket.volatileEmitted).toEqual([])
+
+        socket.triggerConnect()
+        expect(socket.emitted).toEqual([{
+            event: 'session-alive',
+            args: [{ sid: client.sessionId, time: expect.any(Number), thinking: true, mode: 'remote', ...runtime }]
+        }])
+        expect(socket.volatileEmitted).toEqual([])
+        client.close()
+    })
+
+    it('reliably publishes runtime initialized after connection, then uses volatile heartbeats', () => {
+        const client = new ApiSessionClient('token', createSession())
+        const socket = socketHarness.sockets.at(-1)!
+        client.keepAlive(true, 'remote', runtime)
+        expect(socket.emitted.at(-1)?.args[0]).toMatchObject({ thinking: true, mode: 'remote', ...runtime })
+        expect(socket.volatileEmitted).toEqual([])
+
+        client.keepAlive(false, 'local', runtime)
+        expect(socket.volatileEmitted).toHaveLength(1)
+        expect(socket.volatileEmitted[0]?.args[0]).toMatchObject({ thinking: false, mode: 'local', ...runtime })
+        client.close()
+    })
+
+    it('replays only the latest disconnected state on reconnect', () => {
+        const client = new ApiSessionClient('token', createSession())
+        const socket = socketHarness.sockets.at(-1)!
+        client.keepAlive(false, 'remote', runtime)
+        socket.connected = false
+        client.keepAlive(true, 'remote', { ...runtime, effort: 'low' })
+        client.keepAlive(false, 'local', runtime)
+        socket.emitted.length = 0
+        socket.triggerConnect()
+        expect(socket.emitted.filter(entry => entry.event === 'session-alive')).toEqual([{
+            event: 'session-alive',
+            args: [{ sid: client.sessionId, time: expect.any(Number), thinking: false, mode: 'local', ...runtime }]
+        }])
+        expect(socket.volatileEmitted).toEqual([])
+        client.close()
+    })
+
+    it('retains runtime before lazy materialization without connecting the idle session', async () => {
+        const client = new ApiSessionClient('token', createSession(), {
+            materialize: async () => createSession({ namespace: 'default' })
+        })
+        const socket = socketHarness.sockets.at(-1)!
+        client.keepAlive(false, 'local', runtime)
+        expect(socket.connectCalls).toBe(0)
+        expect(socket.emitted).toEqual([])
+
+        expect(await client.materialize()).toBe(true)
+        expect(socket.emitted.find(entry => entry.event === 'session-alive')?.args[0]).toMatchObject(runtime)
+        expect(socket.volatileEmitted).toEqual([])
+        client.close()
+    })
+})
 
 describe('ApiSessionClient lazy materialization', () => {
     it('does not connect or materialize without a real user message', async () => {
