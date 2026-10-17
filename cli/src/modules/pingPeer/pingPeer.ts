@@ -47,15 +47,16 @@ export class PingPeerError extends Error {
 }
 
 /**
- * Defense-in-depth gate for HAPI_DISABLE_PEER_TOOLS: the MCP server and CLI
- * surface refuse earlier, but any other caller (stale --tools bridge, shell
- * `hapi ping-peer` from a wrapped agent) lands here and fails loudly.
+ * Defense-in-depth gate for the peer-tools switch (hub toggle or
+ * HAPI_DISABLE_PEER_TOOLS): the MCP server and CLI surface refuse earlier,
+ * but any other caller (stale --tools bridge, shell `hapi ping-peer` from a
+ * wrapped agent) lands here and fails loudly.
  */
 function assertPeerToolsEnabled(): void {
     if (isPeerToolsDisabled()) {
         throw new PingPeerError(
             'disabled',
-            'peer session tools are disabled on this machine (HAPI_DISABLE_PEER_TOOLS is set)'
+            'peer session tools are disabled (disabled by your hub administrator, or HAPI_DISABLE_PEER_TOOLS is set)'
         )
     }
 }

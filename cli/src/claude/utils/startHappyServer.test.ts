@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import type { ApiSessionClient } from '@/api/apiSession'
 import * as peerMessages from '@/modules/pingPeer/pingPeer'
 import * as peerSpawn from '@/modules/spawnPeer/spawnPeer'
+import { applyHubPeerToolsDisabled, resetPeerToolsForTests } from '@/modules/common/peerTools'
 import { startHappyServer, toClaudeAllowedHapiMcpTools } from './startHappyServer'
 
 type ToolResult = {
@@ -519,6 +520,7 @@ describe('startHappyServer peer tools kill switch', () => {
         } else {
             process.env.HAPI_DISABLE_PEER_TOOLS = originalFlag
         }
+        resetPeerToolsForTests()
     })
 
     async function startServer(): Promise<{ url: string; toolNames: string[] }> {
@@ -557,5 +559,17 @@ describe('startHappyServer peer tools kill switch', () => {
         expect(names).not.toContain('inspect_peer')
         expect(names).not.toContain('spawn_peer')
         expect(names).toEqual(expect.arrayContaining(['display_image', 'display_video', 'display_media']))
+    })
+
+    it('omits peer tools from registration and toolNames when the hub preference disables them', async () => {
+        delete process.env.HAPI_DISABLE_PEER_TOOLS
+        applyHubPeerToolsDisabled(true)
+        const { toolNames } = await startServer()
+        expect(toolNames).toEqual(['change_title', 'display_image', 'display_video', 'display_media'])
+        const tools = await client!.listTools()
+        const names = tools.tools.map((tool) => tool.name)
+        expect(names).not.toContain('list_peers')
+        expect(names).not.toContain('ping_peer')
+        expect(names).not.toContain('inspect_peer')
     })
 })
