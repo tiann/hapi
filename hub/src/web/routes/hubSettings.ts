@@ -13,7 +13,8 @@ const OWNER_ONLY_ERROR = 'Hub settings are only available to the hub owner'
 function toHubSettings(settings: Settings): HubSettingsResponse {
     return {
         sessionSummaryContract: settings.sessionSummaryContract === true,
-        sessionSummaryInChat: settings.sessionSummaryInChat === true
+        sessionSummaryInChat: settings.sessionSummaryInChat === true,
+        disablePeerTools: settings.disablePeerTools === true
     }
 }
 
@@ -44,6 +45,9 @@ export function createHubSettingsRoutes(dataDir: string): Hono<WebAppEnv> {
             }
             if (parsed.data.sessionSummaryInChat !== undefined) {
                 settings.sessionSummaryInChat = parsed.data.sessionSummaryInChat
+            }
+            if (parsed.data.disablePeerTools !== undefined) {
+                settings.disablePeerTools = parsed.data.disablePeerTools
             }
             return {
                 settings,

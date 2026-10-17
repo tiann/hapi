@@ -34,7 +34,8 @@ describe('GET/PUT /api/hub-settings', () => {
         expect(response.headers.get('cache-control')).toBe('no-store')
         expect(await response.json()).toEqual({
             sessionSummaryContract: false,
-            sessionSummaryInChat: false
+            sessionSummaryInChat: false,
+            disablePeerTools: false
         })
     })
 
@@ -48,13 +49,15 @@ describe('GET/PUT /api/hub-settings', () => {
         expect(put.status).toBe(200)
         expect(await put.json()).toEqual({
             sessionSummaryContract: true,
-            sessionSummaryInChat: false
+            sessionSummaryInChat: false,
+            disablePeerTools: false
         })
 
         const get = await app.request('/api/hub-settings')
         expect(await get.json()).toEqual({
             sessionSummaryContract: true,
-            sessionSummaryInChat: false
+            sessionSummaryInChat: false,
+            disablePeerTools: false
         })
     })
 
@@ -70,7 +73,8 @@ describe('GET/PUT /api/hub-settings', () => {
         expect(put.status).toBe(200)
         expect(await put.json()).toEqual({
             sessionSummaryContract: true,
-            sessionSummaryInChat: true
+            sessionSummaryInChat: true,
+            disablePeerTools: false
         })
     })
 
@@ -109,7 +113,8 @@ describe('GET/PUT /api/hub-settings', () => {
         expect(get.status).toBe(200)
         expect(await get.json()).toEqual({
             sessionSummaryContract: false,
-            sessionSummaryInChat: true
+            sessionSummaryInChat: true,
+            disablePeerTools: false
         })
 
         const put = await tenantApp.request('/api/hub-settings', {
@@ -120,6 +125,31 @@ describe('GET/PUT /api/hub-settings', () => {
         expect(put.status).toBe(403)
     })
 
+    it('persists peer-tools toggle alone without touching other settings', async () => {
+        const { app, dataDir } = await createApp()
+        await writeSessionSummaryContractEnabled(dataDir, true)
+        await writeSessionSummaryInChatEnabled(dataDir, true)
+
+        const put = await app.request('/api/hub-settings', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ disablePeerTools: true })
+        })
+        expect(put.status).toBe(200)
+        expect(await put.json()).toEqual({
+            sessionSummaryContract: true,
+            sessionSummaryInChat: true,
+            disablePeerTools: true
+        })
+
+        const get = await app.request('/api/hub-settings')
+        expect(await get.json()).toEqual({
+            sessionSummaryContract: true,
+            sessionSummaryInChat: true,
+            disablePeerTools: true
+        })
+    })
+
     it('survives a prior write via settings helpers', async () => {
         const { app, dataDir } = await createApp()
         await writeSessionSummaryContractEnabled(dataDir, true)
@@ -127,7 +157,8 @@ describe('GET/PUT /api/hub-settings', () => {
         const response = await app.request('/api/hub-settings')
         expect(await response.json()).toEqual({
             sessionSummaryContract: true,
-            sessionSummaryInChat: true
+            sessionSummaryInChat: true,
+            disablePeerTools: false
         })
     })
 })
