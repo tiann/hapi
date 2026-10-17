@@ -1,4 +1,5 @@
 import { z } from 'zod'
+
 import {
     AttachmentMetadataSchema,
     CodexCollaborationModeSchema,
@@ -1006,3 +1007,9 @@ export type UsageSummaryResponse = {
     byModel: UsageSummaryBucket[]
     updatedAt: number
 }
+
+/** Explicit resolution of unknown delivery; does not imply cancellation or consumption. */
+export type AbandonMessageResponse =
+    | { status: 'abandoned' | 'unavailable'; localId: string | null }
+    | { status: 'invoked'; message: import('./types').DecryptedMessage }
+    | { status: 'not-found' }

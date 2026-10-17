@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '@/api/client'
@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
     steerMessage: vi.fn(),
     resolveSteer: null as ((result: unknown) => void) | null,
     markMessagesConsumed: vi.fn(),
+    removeOptimisticMessage: vi.fn(),
     saveDraft: vi.fn(),
     messageWindowState: { messages: [] as unknown[] },
 }))
@@ -47,6 +48,7 @@ vi.mock('@/lib/message-window-store', () => ({
     getMessageWindowState: () => mocks.messageWindowState,
     subscribeMessageWindow: () => () => {},
     markMessagesConsumed: mocks.markMessagesConsumed,
+    removeOptimisticMessage: mocks.removeOptimisticMessage,
 }))
 
 vi.mock('@/hooks/mutations/useCancelQueuedMessage', () => ({
@@ -96,10 +98,12 @@ function renderQueuedMessage(
     pendingScheduleRevision = 0,
     canSteer = false,
     api: ApiClient | null = null,
+    canAbandon = false,
+    overrides: Partial<DecryptedMessage> = {},
 ) {
     const onEdit = vi.fn()
     let currentPendingScheduleRevision = pendingScheduleRevision
-    mocks.messageWindowState = { messages: [makeQueuedMessage(scheduledAt)] }
+    mocks.messageWindowState = { messages: [makeQueuedMessage(scheduledAt, 'server-message-id', overrides)] }
     // The real useSteerQueuedMessage hook runs inside the bar, so every render
     // needs a QueryClient (its mutations use the tanstack defaults).
     const queryClient = new QueryClient({
@@ -114,6 +118,7 @@ function renderQueuedMessage(
                 pendingScheduleRevision={currentPendingScheduleRevision}
                 onEdit={onEdit}
                 canSteer={canSteer}
+                canAbandon={canAbandon}
             />
         </QueryClientProvider>
     )
@@ -131,6 +136,7 @@ function renderQueuedMessage(
                         pendingScheduleRevision={currentPendingScheduleRevision}
                         onEdit={onEdit}
                         canSteer={canSteer}
+                canAbandon={canAbandon}
                     />
                 </QueryClientProvider>
             )
@@ -867,5 +873,32 @@ describe('QueuedMessagesBar steer action', () => {
             5_000,
         )
         expect(mocks.addToast).not.toHaveBeenCalled()
+    })
+})
+
+describe('QueuedMessagesBar explicit abandonment', () => {
+    it('shows hidden unknown input again, requires confirmation and never calls normal cancellation', async () => {
+        const abandon = vi.fn().mockResolvedValue({ status: 'abandoned', localId: 'local-server-message-id' })
+        const api = { abandonIndeterminateMessage: abandon } as unknown as ApiClient
+        renderQueuedMessage(null, null, 0, false, api, true, { deliveryState: 'indeterminate', queueDismissed: true })
+        fireEvent.click(screen.getByRole('button', { name: 'queuedMessages.abandon' }))
+        const dialog = screen.getByRole('dialog')
+        expect(within(dialog).getByText('queuedMessages.abandonDescription')).toBeTruthy()
+        expect(abandon).not.toHaveBeenCalled()
+        fireEvent.click(within(dialog).getByRole('button', { name: 'queuedMessages.abandon' }))
+        await waitFor(() => expect(abandon).toHaveBeenCalledWith('session-1', 'server-message-id'))
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+        expect(mocks.mutateAsync).not.toHaveBeenCalled()
+    })
+
+    it('keeps the dialog and queued row on an unavailable abandonment', async () => {
+        const abandon = vi.fn().mockResolvedValue({ status: 'unavailable', localId: 'local-server-message-id' })
+        renderQueuedMessage(null, null, 0, false, { abandonIndeterminateMessage: abandon } as unknown as ApiClient,
+            true, { deliveryState: 'indeterminate' })
+        fireEvent.click(screen.getByRole('button', { name: 'queuedMessages.abandon' }))
+        fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'queuedMessages.abandon' }))
+        await waitFor(() => expect(screen.getByText('queuedMessages.abandonUnavailable')).toBeTruthy())
+        expect(screen.getByRole('dialog')).toBeTruthy()
+        expect(screen.getByText('Queued request')).toBeTruthy()
     })
 })

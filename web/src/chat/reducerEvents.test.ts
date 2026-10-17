@@ -1,6 +1,25 @@
 import { describe, expect, it } from 'vitest'
-import { parseMessageAsEvent } from './reducerEvents'
-import type { NormalizedMessage } from './types'
+import { dedupeAgentEvents, parseMessageAsEvent } from './reducerEvents'
+import type { AgentEventBlock, NormalizedMessage } from './types'
+
+describe('delivery resolution records', () => {
+    const notice = (id: string, localId?: string): AgentEventBlock => ({
+        kind: 'agent-event', id, createdAt: 1,
+        event: { type: 'message', message: 'Delivery confirmation abandoned.\n\ncontinue after restart' },
+        ...(localId ? { meta: { abandonedDelivery: { localId } } } : {}),
+    })
+
+    it('retains separate resolutions for identical inputs while deduplicating the same resolution', () => {
+        const first = notice('notice-1', 'original-input-1')
+        const second = notice('notice-2', 'original-input-2')
+        expect(dedupeAgentEvents([first, second, { ...second }])).toEqual([first, second])
+    })
+
+    it('still deduplicates ordinary repeated message events', () => {
+        const first = notice('notice-1')
+        expect(dedupeAgentEvents([first, notice('notice-2')])).toEqual([first])
+    })
+})
 
 function makeAgentTextMessage(text: string): NormalizedMessage {
     return {

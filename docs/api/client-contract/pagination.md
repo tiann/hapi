@@ -191,6 +191,25 @@ Response `{"ok": true}`. Sending to an inactive session returns `409 {"error":"S
 
 Other subscribers learn the same outcome via `message-cancelled` / `messages-consumed` SSE events.
 
+**Abandon unknown delivery**: `POST /api/sessions/:id/messages/:messageId/abandon`
+with `{"confirm":true}`. Available only for an active, idle shared Codex session
+with one connected worker. The worker refreshes native history, verifies that the
+input is no longer queued, and durably records abandonment before the Hub retires
+the unresolved row. Its localId is retained for late consumption acknowledgements;
+the row remains uninvoked and is excluded from pending delivery and visible history. This does not claim native cancellation or consumption and
+never resubmits the input. Its original content is retained in a conversation note
+(`meta.abandonedDelivery`). Other clients receive `message-cancelled` and the note
+as `message-received`; the message epoch advances.
+
+- `abandoned {localId}`: stop showing the unresolved row.
+- `invoked {message}`: consumption won the race; ingest the authoritative message.
+- `unavailable {localId}`: keep the unresolved row visible. The worker may be busy,
+  disconnected, unsupported, or unable to prove and persist the transition.
+- `not-found`: the row is already gone; reconcile locally.
+
+A lost response is retryable: a persisted worker abandonment is idempotent.
+Ordinary Cancel remains separate and still requires confirmed native removal.
+
 **Steer a queued message into the current turn**: `POST /api/sessions/:id/messages/:messageId/steer` → `SteerQueuedMessageResponseSchema`. Unlike the send-time `deliveryMode` option above, this endpoint supports Pi, Codex, and Cursor ACP sessions (`isSteeringSupportedForSession` in `shared/src/modes.ts`). It rejects all scheduled messages, and rejects terminal-controlled sessions unless they advertise `concurrentClients`.
 
 | Response | Client action |

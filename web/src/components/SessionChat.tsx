@@ -2030,6 +2030,7 @@ function SessionChatInner(props: SessionChatProps) {
                                 />
                             ) : null}
                             <QueuedMessagesBar
+                                canAbandon={props.session.active && props.session.metadata?.capabilities?.concurrentClients === true}
                                 sessionId={props.session.id}
                                 api={props.api}
                                 pendingSchedule={pendingSchedule}

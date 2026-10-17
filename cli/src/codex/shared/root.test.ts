@@ -58,6 +58,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
     let state: AgentState = { steeringActive: true };
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
     let reconnect: (() => void) | null = null;
+    let abandon: ((id: string) => Promise<string>) | undefined;
     const updateState = vi.fn((fn: (value: AgentState) => AgentState) => { state = fn(state); });
     const rpc = new Map<string, (raw: unknown) => Promise<unknown>>();
     const send = vi.fn();
@@ -67,7 +68,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
         hubArchived: opts?.hubArchived ?? false,
         updateMetadata: (fn: (value: Metadata) => Metadata) => { metadata = fn(metadata); },
         updateAgentState: updateState, keepAlive() {},
-        onUserMessage() {}, onCancelQueuedMessage() {}, onRetryQueuedMessage() {},
+        onUserMessage() {}, onCancelQueuedMessage() {}, onAbandonQueuedMessage(fn: typeof abandon) { abandon = fn; }, onRetryQueuedMessage() {},
         onReconnect: (fn: (() => void) | null) => { reconnect = fn; },
         on(event: string, listener: () => void) {
             if (event === 'hub-archived') hubArchivedListeners.push(listener);
@@ -94,6 +95,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
         abandoned(): void;
     };
     return {
+        abandon: (id: string) => abandon!(id),
         root, native, rpc, send, metadata: () => metadata, state: () => state, updateState,
         reconnect: () => reconnect?.(),
         emitHubArchived: () => { for (const listener of hubArchivedListeners) listener(); },
@@ -320,5 +322,19 @@ describe('shared steering availability', () => {
         const f = await fixture({ hubArchived: true, end });
         await f.root.activate();
         await vi.waitFor(() => expect(end).toHaveBeenCalledTimes(1));
+    });
+});
+
+describe('shared unknown delivery abandonment', () => {
+    it('refreshes native state, refuses a live turn, then permits explicit abandonment when idle', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        await (f.root as any).queue.enqueue('unknown', [{ type: 'text', text: 'never resend' }]);
+        f.native.queue.length = 0;
+        f.native.thread.turns.push({ id: 'busy', status: 'inProgress', items: [] });
+        expect(await f.abandon('unknown')).toBe('indeterminate');
+        f.native.thread.turns.length = 0;
+        expect(await f.abandon('unknown')).toBe('abandoned');
+        expect((f.root as any).queue.state('unknown')).toBe('abandoned');
     });
 });

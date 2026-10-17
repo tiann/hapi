@@ -17,9 +17,14 @@ type DecryptedMessage = {
   createdAt: number           // hub receive time (epoch ms)
   invokedAt?: number | null   // when the agent consumed it (null = still queued)
   scheduledAt?: number | null // future-scheduled sends
-  deliveryState?: 'indeterminate' // steer dispatched, outcome unproven; explicit retry/cancel required
+  deliveryState?: 'indeterminate' | 'abandoned' // unknown delivery, or explicitly retired delivery tracking
 }
 ```
+
+An uninvoked message with `deliveryState: 'abandoned'` is not pending and must
+not be rendered as delivered user input or automatically resent. The Hub hides
+this retained correlation row from history pages and emits a separate note. A
+later authoritative consumption acknowledgement can still reconcile its localId.
 
 `content` is deliberately `unknown` on the wire. **Decoding must be total**:
 never crash on unfamiliar content. Use stringified fallbacks for unknown

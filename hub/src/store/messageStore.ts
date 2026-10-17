@@ -12,6 +12,7 @@ import {
     deleteLiveReasoningSnapshots,
     deleteQueuedMessageById,
     claimIndeterminateMessage,
+    abandonIndeterminateMessage,
     lookupQueuedMessage,
     getMessages,
     getFirstMessages,
@@ -188,6 +189,10 @@ export class MessageStore {
 
     lookupQueuedMessage(sessionId: string, messageId: string): LookupQueuedMessageResult {
         return lookupQueuedMessage(this.db, sessionId, messageId)
+    }
+
+    abandonIndeterminateMessage(sessionId: string, messageId: string): StoredMessage | null {
+        return abandonIndeterminateMessage(this.db, sessionId, messageId)
     }
 
     deleteQueuedMessageById(sessionId: string, messageId: string): boolean {

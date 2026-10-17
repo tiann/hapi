@@ -8,7 +8,7 @@ import { isIndeterminateError } from '../codexAppServerClient';
 const InputSchema = z.array(z.object({ type: z.string() }).passthrough());
 export const SubmissionSchema = z.object({ id: z.string(), input: InputSchema, clientUserMessageId: z.string() });
 const LedgerSchema = z.record(z.string(), z.object({
-    input: InputSchema, state: z.enum(['unknown', 'queued', 'consumed', 'canceled', 'rejected', 'released']), nativeId: z.string().optional()
+    input: InputSchema, state: z.enum(['unknown', 'queued', 'consumed', 'canceled', 'rejected', 'released', 'abandoned']), nativeId: z.string().optional()
 }));
 export type QueueInput = z.infer<typeof InputSchema>;
 type Entry = z.infer<typeof LedgerSchema>[string];
@@ -49,6 +49,7 @@ export class SharedCodexQueue {
     command(id: string, work: () => Promise<string | null>): Promise<string | null> {
         return this.serial(async () => {
             const existing = this.entries[id];
+            if (existing?.state === 'abandoned') throw new Error('Delivery confirmation was abandoned; not replaying');
             if (existing?.state === 'consumed') { this.consumed([id]); return null; }
             if (existing && !['rejected', 'canceled'].includes(existing.state)) {
                 this.uncertain([id]); throw new Error('Previous command outcome is unknown; not replaying');
@@ -86,7 +87,7 @@ export class SharedCodexQueue {
         for (const item of await this.list()) {
             const id = item.clientUserMessageId; present.add(id);
             const entry = this.entries[id] ??= { input: item.input, state: 'queued' };
-            if (entry.state !== 'consumed' && entry.state !== 'canceled') {
+            if (entry.state !== 'consumed' && entry.state !== 'canceled' && entry.state !== 'abandoned') {
                 const changed = entry.nativeId !== item.id || JSON.stringify(entry.input) !== JSON.stringify(item.input);
                 entry.nativeId = item.id; entry.input = item.input; entry.state = 'queued';
                 if (changed) this.mirror?.(id, item.input);
@@ -167,7 +168,7 @@ export class SharedCodexQueue {
             const existing = this.entries[id];
             if (existing && !['rejected', 'canceled', 'released'].includes(existing.state)) {
                 if (existing.state === 'consumed') this.consumed([id]);
-                else await this.reconcileNow();
+                else if (existing.state !== 'abandoned') await this.reconcileNow();
                 return;
             }
             // Preserve native edits and non-text input when the hub redelivers.
@@ -195,11 +196,32 @@ export class SharedCodexQueue {
         });
     }
 
+    /** Explicitly stop tracking unknown delivery. This is not proof of non-execution. */
+    abandon(id: string, canAbandon: () => boolean = () => true): Promise<'abandoned' | 'consumed' | 'indeterminate'> {
+        return this.serial(async () => {
+            const entry = this.entries[id];
+            if (!entry) return 'indeterminate';
+            if (entry.state === 'consumed') return 'consumed';
+            if (entry.state === 'abandoned') return 'abandoned';
+            try { await this.reconcileNow(); } catch { return 'indeterminate'; }
+            if (this.state(id) === 'consumed') return 'consumed';
+            // A present native submission must be canceled normally, never abandoned.
+            if (entry.state !== 'unknown' || !canAbandon()) return 'indeterminate';
+            entry.state = 'abandoned';
+            try { await this.save(); } catch (error) {
+                if (entry.state === 'abandoned') entry.state = 'unknown';
+                throw error;
+            }
+            return 'abandoned';
+        });
+    }
+
     cancel(id: string): Promise<boolean | 'consumed' | 'indeterminate'> {
         return this.serial(async () => {
             const entry = this.entries[id];
             if (!entry) return 'indeterminate';
             if (entry.state === 'consumed') return 'consumed';
+            if (entry.state === 'abandoned') return 'indeterminate';
             if (entry.state === 'canceled' || entry.state === 'rejected' || entry.state === 'released') {
                 entry.state = 'canceled'; await this.save(); return true;
             }

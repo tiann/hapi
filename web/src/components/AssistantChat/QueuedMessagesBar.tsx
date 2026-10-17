@@ -1,5 +1,5 @@
 import { useAui, useAuiState } from '@assistant-ui/react'
-import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { ApiClient } from '@/api/client'
 import { getMessageWindowState, subscribeMessageWindow } from '@/lib/message-window-store'
 import { isQueuedForInvocation } from '@/lib/messages'
@@ -8,6 +8,8 @@ import { normalizeDecryptedMessage } from '@/chat/normalize'
 import type { DecryptedMessage } from '@/types/api'
 import { useCancelQueuedMessage } from '@/hooks/mutations/useCancelQueuedMessage'
 import { useSteerQueuedMessage } from '@/hooks/mutations/useSteerQueuedMessage'
+import { useAbandonIndeterminateMessage } from '@/hooks/mutations/useAbandonIndeterminateMessage'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { useRetryIndeterminateMessage } from '@/hooks/mutations/useRetryIndeterminateMessage'
 import { useTranslation } from '@/lib/use-translation'
 import { useToast } from '@/lib/toast-context'
@@ -88,7 +90,7 @@ export function sortQueuedMessages(msgs: DecryptedMessage[]): DecryptedMessage[]
  * Returns user messages that haven't been invoked yet (invokedAt == null and not sent/failed).
  * Covers both optimistic (status='queued') and server-loaded (status=undefined, invokedAt=null) cases.
  */
-function useQueuedMessages(sessionId: string): DecryptedMessage[] {
+function useQueuedMessages(sessionId: string, canAbandon: boolean): DecryptedMessage[] {
     const state = useSyncExternalStore(
         useCallback((listener) => subscribeMessageWindow(sessionId, listener), [sessionId]),
         useCallback(() => getMessageWindowState(sessionId), [sessionId]),
@@ -102,9 +104,9 @@ function useQueuedMessages(sessionId: string): DecryptedMessage[] {
     // unchanged, so [state] as the dependency avoids unnecessary re-sorts.
     return useMemo(() => {
         return sortQueuedMessages(
-            state.messages.filter((msg) => isQueuedForInvocation(msg) && !msg.queueDismissed)
+            state.messages.filter((msg) => isQueuedForInvocation(msg) && (!msg.queueDismissed || (canAbandon && msg.deliveryState === 'indeterminate')))
         )
-    }, [state])
+    }, [state, canAbandon])
 }
 
 /** @internal Exported for unit testing. */
@@ -198,6 +200,7 @@ export function QueuedMessagesBar({
     pendingSchedule,
     pendingScheduleRevision,
     onEdit,
+    canAbandon = false,
     canSteer,
 }: {
     sessionId: string
@@ -218,13 +221,18 @@ export function QueuedMessagesBar({
      * as: pi flavor && session thinking && remote-controlled.
      */
     canSteer?: boolean
+    /** Keep unresolved shared input visible and offer explicit abandonment. */
+    canAbandon?: boolean
 }) {
-    const queued = useQueuedMessages(sessionId)
+    const queued = useQueuedMessages(sessionId, canAbandon)
     const assistantApi = useAui()
     const composerText = useAuiState((state) => state.composer.text)
     const cancelMutation = useCancelQueuedMessage(api)
     const steerMutation = useSteerQueuedMessage(api)
     const retryMutation = useRetryIndeterminateMessage(api)
+    const abandonMutation = useAbandonIndeterminateMessage(api)
+    const [abandonTarget, setAbandonTarget] = useState<DecryptedMessage | null>(null)
+    useEffect(() => setAbandonTarget(null), [sessionId])
     const { t } = useTranslation()
     const { addToast } = useToast()
     const pendingScheduleRef = useRef(pendingSchedule)
@@ -363,6 +371,7 @@ export function QueuedMessagesBar({
                                 messageId: msg.id,
                                 localId,
                                 snapshot: msg,
+                                preserveUnknown: canAbandon,
                             }).catch(() => {
                                 // useCancelQueuedMessage restores the optimistic row and gives haptic feedback.
                             }).finally(() => {
@@ -431,6 +440,7 @@ export function QueuedMessagesBar({
                                     messageId: msg.id,
                                     localId,
                                     snapshot: msg,
+                                    preserveUnknown: canAbandon,
                                 })
                                 // Race guard: if the agent already consumed this message, skip prefill
                                 // and inform the user so they aren't confused by the row disappearing.
@@ -560,6 +570,13 @@ export function QueuedMessagesBar({
                                             <span aria-hidden="true">↻</span>
                                         </button>
                                     ) : null}
+                                    {canAbandon && msg.deliveryState === 'indeterminate' ? (
+                                        <button type="button" disabled={!canCancel || abandonMutation.isPending}
+                                            onClick={() => setAbandonTarget(msg)}
+                                            className="rounded px-2 py-1 text-xs text-[var(--app-warning-text)] hover:bg-[var(--app-border)] disabled:opacity-40">
+                                            {t('queuedMessages.abandon')}
+                                        </button>
+                                    ) : null}
                                     {canSteerRow ? (
                                         <button
                                             type="button"
@@ -624,6 +641,23 @@ export function QueuedMessagesBar({
                     })}
                 </ul>
             </div>
+            <ConfirmDialog
+                isOpen={abandonTarget !== null}
+                onClose={() => setAbandonTarget(null)}
+                title={t('queuedMessages.abandonTitle')}
+                description={t('queuedMessages.abandonDescription')}
+                confirmLabel={t('queuedMessages.abandon')}
+                confirmingLabel={t('queuedMessages.abandonPending')}
+                isPending={abandonMutation.isPending}
+                onConfirm={async () => {
+                    if (!abandonTarget) return
+                    const token = beginQueuedOperation(sessionId)
+                    if (!token) throw new Error(t('queuedMessages.abandonUnavailable'))
+                    try {
+                        await abandonMutation.mutateAsync({ sessionId, messageId: abandonTarget.id, localId: abandonTarget.localId ?? abandonTarget.id })
+                    } finally { endQueuedOperation(sessionId, token) }
+                }}
+            />
         </div>
     )
 }

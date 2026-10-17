@@ -1074,6 +1074,12 @@ export class SyncEngine {
         this.sessionCache.recordSessionActivity(actualSessionId, Date.now())
     }
 
+    async abandonIndeterminateMessage(sessionId: string, messageId: string) {
+        const session = this.sessionCache.getSession(sessionId)
+        if (!session?.active || session.thinking) return { status: 'unavailable' as const, localId: null }
+        return this.messageService.abandonIndeterminateMessage(sessionId, messageId)
+    }
+
     async cancelQueuedMessage(
         sessionId: string,
         messageId: string
@@ -1197,6 +1203,9 @@ export class SyncEngine {
             throw new Error('Conversation history is diverged; refuse further fork/rewind')
         }
         const queued = this.store.messages.getUninvokedLocalMessages(session.id)
+        if (queued.some(message => message.deliveryState === 'indeterminate')) {
+            throw new Error('Session has unresolved message delivery. Resolve it in Queued messages before forking or rewinding.')
+        }
         if (queued.length > 0) {
             throw new Error('Session has queued messages')
         }
