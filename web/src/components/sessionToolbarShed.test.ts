@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { shedToolbarSlots, toolbarActionBudget, TOOLBAR_ICON_PX } from './sessionToolbarShed'
+import { shedToolbarSlots, toolbarActionBudget, toolbarGutterPx, TOOLBAR_ICON_PX } from './sessionToolbarShed'
 
 const icon = (id: string, keep: number) => ({ id, keep, widthPx: TOOLBAR_ICON_PX })
 
@@ -74,6 +74,19 @@ describe('toolbarActionBudget', () => {
         expect(toolbarActionBudget(400, true)).toBeGreaterThanOrEqual(220)
         expect(toolbarActionBudget(320, true)).toBeGreaterThanOrEqual(140)
         expect(toolbarActionBudget(320, true)).toBeLessThan(toolbarActionBudget(320, false))
+    })
+
+    it('measures the gutter to the row edge, not a guessed search reserve', () => {
+        const gutter = toolbarGutterPx(160, 520, 8)
+        expect(gutter).toBe(352)
+        const slots = [
+            { id: 'blocked', keep: 2, widthPx: 110 },
+            icon('filter', 5),
+            icon('new', 4),
+            icon('settings', 6),
+            icon('browse', 8),
+        ]
+        expect(shedToolbarSlots(slots, gutter).overflowIds).toEqual([])
     })
 
     it('uses a finite unmeasured budget so first paint can still shed', () => {

@@ -115,11 +115,21 @@ import { getPathDisplayName } from '@/utils/path'
 import {
     shedToolbarSlots,
     toolbarActionBudget,
+    toolbarGutterPx,
     TOOLBAR_GAP_PX,
     TOOLBAR_ICON_PX,
     TOOLBAR_MORE_PX,
     type ToolbarShedSlot
 } from '@/components/sessionToolbarShed'
+
+function readToolbarGutter(row: HTMLElement | null, actions: HTMLElement | null): number {
+    if (!row || !actions) return 0
+    const rowRect = row.getBoundingClientRect()
+    const actionsRect = actions.getBoundingClientRect()
+    if (rowRect.width <= 0 || actionsRect.width <= 0) return 0
+    const padRight = Number.parseFloat(getComputedStyle(row).paddingRight) || 0
+    return toolbarGutterPx(actionsRect.left, rowRect.right, padRight)
+}
 
 export type SessionToolbarExtra = {
     id: string
@@ -1372,20 +1382,22 @@ export function SessionList(props: {
         // Search expand unmounts this node — keep the last positive width so
         // we do not fall back to a permissive unmeasured budget mid-cycle.
         if (!node || typeof ResizeObserver === 'undefined') return
+        const publish = (reported = 0) => {
+            const gutter = readToolbarGutter(headerRowRef.current, node)
+            const width = gutter > 0 ? gutter : reported
+            if (width > 0) setHeaderRowWidth(width)
+        }
         const ro = new ResizeObserver((entries) => {
             const target = entries[0]?.target
             const reported = entries[0]?.contentRect.width ?? 0
-            // Prefer clientWidth (constrained gutter). Fall back to contentRect
-            // so jsdom stubs that only fill contentRect still work. Ignore 0
-            // so a hidden frame cannot re-open the permissive unmeasured path.
             const client = target instanceof HTMLElement ? target.clientWidth : 0
-            const width = client > 0 ? client : reported
-            if (width > 0) setHeaderRowWidth(width)
+            publish(client > 0 ? client : reported)
         })
         ro.observe(node)
+        const row = headerRowRef.current
+        if (row && row !== node) ro.observe(row)
         actionsObserverRef.current = ro
-        const initial = node.clientWidth || node.getBoundingClientRect().width
-        if (initial > 0) setHeaderRowWidth(initial)
+        publish(node.clientWidth || node.getBoundingClientRect().width)
     }, [])
     const normalizedQuery = normalizeSearch(searchQuery)
     const timeRange = getSessionTimeRange(customStart, customEnd)
@@ -2136,23 +2148,14 @@ export function SessionList(props: {
                                 const machineAndGap = toolbarChrome.machinePx > 0
                                     ? toolbarChrome.machinePx + toolbarChrome.gapPx
                                     : 0
-                                // Cap the actions-box reading by the real row
-                                // gutter (row − search). A content-sized flex
-                                // item can report a width that "fits" every
-                                // icon while those icons paint past the split.
-                                const rowPx = headerRowRef.current?.clientWidth ?? 0
-                                const searchPx = headerRowRef.current
-                                    ?.querySelector<HTMLElement>('[data-testid="session-list-search"]')
-                                    ?.offsetWidth ?? 0
-                                const fromRow = rowPx > 0
-                                    ? Math.max(0, rowPx - searchPx - toolbarChrome.gapPx)
-                                    : 0
-                                const fromActions = headerRowWidth > 0 ? headerRowWidth : 0
-                                const gutter = fromActions > 0 && fromRow > 0
-                                    ? Math.min(fromActions, fromRow)
-                                    : fromActions > 0
-                                        ? fromActions
-                                        : fromRow
+                                // Budget is the row's right edge, not a guessed search
+                                // reserve. If every slot fits, More stays empty.
+                                const liveGutter = readToolbarGutter(headerRowRef.current, headerActionsRef.current)
+                                const gutter = liveGutter > 0
+                                    ? liveGutter
+                                    : headerRowWidth > 0
+                                        ? headerRowWidth
+                                        : 0
                                 const budget = gutter > 0
                                     ? Math.max(0, gutter - machineAndGap)
                                     : toolbarActionBudget(0, searchQuery.length > 0)

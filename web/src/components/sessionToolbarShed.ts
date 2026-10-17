@@ -34,6 +34,16 @@ export const TOOLBAR_GAP_PX = 4
  * The collapsed query chip is `max-w-[9rem]` + a 40px clear — not 200px.
  * Reserving 200 left a Quest-width desert of empty space after More (#2039).
  */
+/**
+ * Pixels from the actions box's left edge to the row's content-box right edge.
+ * This is the space the icons may fill. A content-sized flex item and a
+ * guessed search reserve both lie; the row edge does not.
+ */
+export function toolbarGutterPx(actionsLeft: number, rowRight: number, rowPaddingRight: number): number {
+    if (!(rowRight > actionsLeft)) return 0
+    return Math.max(0, rowRight - rowPaddingRight - actionsLeft)
+}
+
 export function toolbarActionBudget(headerRowWidth: number, hasQuery: boolean): number {
     if (headerRowWidth <= 0) {
         // Unmeasured must stay finite. Infinity kept every shrink-0 icon inline
