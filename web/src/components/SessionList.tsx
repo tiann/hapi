@@ -925,15 +925,17 @@ export function SessionListSearch(props: {
         const hasTextQuery = props.value.length > 0
         const collapsedLabel = hasTextQuery ? `${searchLabel}: ${props.value}` : searchLabel
         return (
-            // shrink-0 + max-w-full: do not let the group crush below its chrome
-            // (icon / clear / calendar). Crushing with overflow:visible was how
-            // clear painted over filter / BlockedJumpPill at narrow widths
-            // (tiann/hapi#2039). Query text still truncates inside the chip.
-            // Neighboring toolbar icons wrap via the header row instead.
+            // Idle (no query): shrink-0 so the icon does not crush under neighbors
+            // (tiann/hapi#2039 overlap). Active query: min-w-0 so the chip text
+            // yields to More + machine menu at 320px / 130% (#2040 Major). Clear
+            // and calendar stay shrink-0 chrome; only the query text truncates.
             <div
                 data-testid="session-list-search"
                 data-expanded="false"
-                className="relative flex max-w-full shrink-0 flex-nowrap items-center gap-1"
+                className={cn(
+                    'relative flex max-w-full flex-nowrap items-center gap-1',
+                    hasTextQuery ? 'min-w-0' : 'shrink-0'
+                )}
             >
                 <div className={cn(
                     'relative flex min-w-0 items-center rounded-full transition-colors',
@@ -2114,8 +2116,13 @@ export function SessionList(props: {
                         <div
                             ref={setHeaderActionsNode}
                             data-testid="session-list-header-actions"
-                            // flex-1 is the real icon budget (#2039).
-                            className="relative flex min-w-0 flex-1 flex-nowrap items-center gap-1"
+                            // Empty query: flex-1 is the icon budget (#2039).
+                            // Active query: shrink-0 reserves More (+ machine menu)
+                            // so a long chip cannot push overflow offscreen (#2040).
+                            className={cn(
+                                'relative flex flex-nowrap items-center gap-1',
+                                searchQuery.length > 0 ? 'shrink-0' : 'min-w-0 flex-1'
+                            )}
                         >
                             {(() => {
                                 // Shed one control at a time, highest keep first.

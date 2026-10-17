@@ -1128,8 +1128,9 @@ describe('SessionList search toggle', () => {
         const clearButton = screen.getByRole('button', { name: 'Clear search' })
 
         expect(searchGroup).toHaveAttribute('data-expanded', 'false')
-        expect(searchGroup).toHaveClass('shrink-0')
-        expect(searchGroup.className.split(/\s+/)).not.toContain('min-w-0')
+        // Active query yields (min-w-0) so More stays on-screen; idle search keeps shrink-0.
+        expect(searchGroup).toHaveClass('min-w-0')
+        expect(searchGroup.className.split(/\s+/)).not.toContain('shrink-0')
         expect(headerRow).toContainElement(searchGroup)
         expect(headerRow).toContainElement(actions)
         expect(actions).not.toContainElement(clearButton)
@@ -1137,7 +1138,8 @@ describe('SessionList search toggle', () => {
         // Actions stay on the same row; with a query chip, primaries fold into More
         // so [chip][⋯] fits ~320px instead of pushing Settings offscreen.
         expect(searchGroup.nextElementSibling).toBe(actions)
-        expect(actions).toHaveClass('flex-1', 'flex-nowrap')
+        expect(actions).toHaveClass('shrink-0', 'flex-nowrap')
+        expect(actions.className.split(/\s+/)).not.toContain('flex-1')
         expect(actions.className.split(/\s+/)).not.toContain('flex-wrap')
         expect(headerRow).toHaveClass('flex-nowrap', '@container')
         expect(headerRow.className.split(/\s+/)).not.toContain('flex-wrap')
@@ -1252,6 +1254,66 @@ describe('SessionList search toggle', () => {
         expect(within(actions).getByRole('button', { name: 'Settings' })).toBeInTheDocument()
         expect(within(actions).getByRole('button', { name: 'Filter sessions by machine' })).toBeInTheDocument()
         expect(screen.queryByTestId('session-list-header-overflow')).toBeNull()
+
+        vi.unstubAllGlobals()
+        localStorage.removeItem('hapi-font-scale')
+    })
+
+    it('lets a long query chip yield so More stays on-screen at 320px / 130% (tiann/hapi#2040)', () => {
+        localStorage.setItem('hapi-font-scale', '1.3')
+        stubHeaderWidth(80)
+
+        const now = Date.now()
+        renderWithProviders(
+            <SessionList
+                sessions={[
+                    makeSession({
+                        id: 'session-a',
+                        updatedAt: now,
+                        metadata: {
+                            path: '/work/hapi',
+                            name: 'Machine A task',
+                            flavor: 'codex',
+                            machineId: 'machine-a',
+                        },
+                    }),
+                    makeSession({
+                        id: 'session-b',
+                        updatedAt: now - 1000,
+                        metadata: {
+                            path: '/work/other',
+                            name: 'Machine B task',
+                            flavor: 'codex',
+                            machineId: 'machine-b',
+                        },
+                    }),
+                ]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader
+                headerActions={<button type="button">Settings</button>}
+                api={null}
+                machineLabelsById={{ 'machine-a': 'Mint', 'machine-b': 'Teemo' }}
+            />
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+        const input = screen.getByPlaceholderText(SEARCH_PLACEHOLDER)
+        fireEvent.change(input, {
+            target: { value: 'a very long session search query that fills the chip' },
+        })
+        fireEvent.blur(input)
+
+        const searchGroup = screen.getByTestId('session-list-search')
+        const actions = screen.getByTestId('session-list-header-actions')
+        // Chip text may shrink; More (+ machine menu) must not be crushed offscreen.
+        expect(searchGroup).toHaveClass('min-w-0')
+        expect(actions).toHaveClass('shrink-0')
+        expect(screen.getByTestId('session-list-header-overflow')).toBeInTheDocument()
+        expect(within(actions).getByRole('button', { name: /more/i })).toBeInTheDocument()
 
         vi.unstubAllGlobals()
         localStorage.removeItem('hapi-font-scale')
