@@ -36,9 +36,11 @@ export const TOOLBAR_GAP_PX = 4
  */
 export function toolbarActionBudget(headerRowWidth: number, hasQuery: boolean): number {
     if (headerRowWidth <= 0) {
-        // Unmeasured: idle lists keep everything. With a query chip, keep the
-        // daily controls (blocked + filter + new + More) — never [chip][P][⋯].
-        return hasQuery ? 220 : Number.POSITIVE_INFINITY
+        // Unmeasured must stay finite. Infinity kept every shrink-0 icon inline
+        // on first paint, the sidebar min-content grew around them, and the
+        // overflow menu never appeared on desktop (#2039 / #2040).
+        // Empty: ~Quest actions gutter. Query: daily controls, not [chip][⋯].
+        return hasQuery ? 220 : 280
     }
     const searchReserve = hasQuery ? 152 : 56
     const rowPadding = 16

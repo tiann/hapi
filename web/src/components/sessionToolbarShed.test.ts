@@ -66,8 +66,23 @@ describe('toolbarActionBudget', () => {
         expect(toolbarActionBudget(320, true)).toBeLessThan(toolbarActionBudget(320, false))
     })
 
-    it('keeps daily controls before the row has been measured', () => {
-        expect(toolbarActionBudget(0, false)).toBe(Number.POSITIVE_INFINITY)
+    it('uses a finite unmeasured budget so first paint can still shed', () => {
+        // Infinity left every icon inline and the desktop split never recovered.
+        expect(toolbarActionBudget(0, false)).toBe(280)
         expect(toolbarActionBudget(0, true)).toBe(220)
+        const soupExtras = [
+            icon('blocked', 2),
+            icon('filter', 5),
+            icon('new', 4),
+            icon('settings', 6),
+            icon('browse', 8),
+            icon('overseer', 9),
+            icon('import', 10),
+        ]
+        const firstPaint = shedToolbarSlots(soupExtras, toolbarActionBudget(0, false))
+        expect(firstPaint.overflowIds).toContain('import')
+        expect(firstPaint.overflowIds).toContain('overseer')
+        expect(firstPaint.visibleIds).toContain('new')
+        expect(firstPaint.visibleIds).toContain('filter')
     })
 })

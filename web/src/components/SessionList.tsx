@@ -1369,17 +1369,22 @@ export function SessionList(props: {
         headerActionsRef.current = node
         actionsObserverRef.current?.disconnect()
         actionsObserverRef.current = null
-        if (!node || typeof ResizeObserver === 'undefined') {
-            setHeaderRowWidth(0)
-            return
-        }
+        // Search expand unmounts this node — keep the last positive width so
+        // we do not fall back to a permissive unmeasured budget mid-cycle.
+        if (!node || typeof ResizeObserver === 'undefined') return
         const ro = new ResizeObserver((entries) => {
-            const width = entries[0]?.contentRect.width
-            if (typeof width === 'number') setHeaderRowWidth(width)
+            const target = entries[0]?.target
+            const reported = entries[0]?.contentRect.width ?? 0
+            // Prefer clientWidth (constrained gutter). Fall back to contentRect
+            // so jsdom stubs that only fill contentRect still work. Ignore 0
+            // so a hidden frame cannot re-open the permissive unmeasured path.
+            const client = target instanceof HTMLElement ? target.clientWidth : 0
+            const width = client > 0 ? client : reported
+            if (width > 0) setHeaderRowWidth(width)
         })
         ro.observe(node)
         actionsObserverRef.current = ro
-        const initial = node.getBoundingClientRect().width
+        const initial = node.clientWidth || node.getBoundingClientRect().width
         if (initial > 0) setHeaderRowWidth(initial)
     }, [])
     const normalizedQuery = normalizeSearch(searchQuery)
@@ -2095,7 +2100,7 @@ export function SessionList(props: {
                 <div
                     ref={headerRowRef}
                     data-testid="session-list-header-row"
-                    className="@container flex flex-nowrap items-center gap-1 px-2 py-1"
+                    className="@container flex min-w-0 w-full flex-nowrap items-center gap-1 px-2 py-1"
                 >
                     {showSearch ? (
                         <SessionListSearch
@@ -2131,8 +2136,25 @@ export function SessionList(props: {
                                 const machineAndGap = toolbarChrome.machinePx > 0
                                     ? toolbarChrome.machinePx + toolbarChrome.gapPx
                                     : 0
-                                const budget = headerRowWidth > 0
-                                    ? Math.max(0, headerRowWidth - machineAndGap)
+                                // Cap the actions-box reading by the real row
+                                // gutter (row − search). A content-sized flex
+                                // item can report a width that "fits" every
+                                // icon while those icons paint past the split.
+                                const rowPx = headerRowRef.current?.clientWidth ?? 0
+                                const searchPx = headerRowRef.current
+                                    ?.querySelector<HTMLElement>('[data-testid="session-list-search"]')
+                                    ?.offsetWidth ?? 0
+                                const fromRow = rowPx > 0
+                                    ? Math.max(0, rowPx - searchPx - toolbarChrome.gapPx)
+                                    : 0
+                                const fromActions = headerRowWidth > 0 ? headerRowWidth : 0
+                                const gutter = fromActions > 0 && fromRow > 0
+                                    ? Math.min(fromActions, fromRow)
+                                    : fromActions > 0
+                                        ? fromActions
+                                        : fromRow
+                                const budget = gutter > 0
+                                    ? Math.max(0, gutter - machineAndGap)
                                     : toolbarActionBudget(0, searchQuery.length > 0)
                                 const slotWidth = (id: string, fallback: number) => {
                                     const measured = toolbarSlotWidths[id] ?? 0
