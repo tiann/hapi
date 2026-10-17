@@ -15,6 +15,15 @@ describe('ApiClient error mapping', () => {
         globalThis.fetch = originalFetch
     })
 
+    it('creates through shared preferences with explicit native-default clears and false', async () => {
+        fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ type: 'success', sessionId: 'child' }), { status: 200 }))
+        const api = new ApiClient('test-token')
+        await api.spawnSession('machine-1', '/repo', 'codex', undefined, undefined, false)
+        const [url, request] = fetchMock.mock.calls[0]!
+        expect(url).toBe('/api/sessions/create')
+        expect(JSON.parse(request.body)).toMatchObject({ machineId: 'machine-1', directory: '/repo', agent: 'codex', model: null, modelReasoningEffort: null, yolo: false, permissionMode: null, serviceTier: null, collaborationMode: null })
+    })
+
     it('prefers the stable `code` field over the human-readable `error` message in ApiError.code', async () => {
         // Match the shape /sessions/:id/reopen actually returns on a 503.
         fetchMock.mockResolvedValueOnce(

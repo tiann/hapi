@@ -131,6 +131,9 @@ export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     merged = carryForwardIfMissing(prior, next, merged, ROUTING_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, SIMPLE_RESUME_TOKENS)
     merged = preserveCursorProtocolPair(prior, next, merged)
+    if (prior.launchOrigin !== undefined) {
+        merged = { ...(merged ?? next), launchOrigin: prior.launchOrigin }
+    }
     return merged ?? next
 }
 
@@ -364,7 +367,7 @@ export function adoptPreallocatedSession(
         }
 
         const now = Date.now()
-        const metadataJson = JSON.stringify(metadata)
+        const metadataJson = JSON.stringify(mergeSessionMetadata(existing.metadata, metadata))
         const agentStateJson = agentState === null || agentState === undefined ? null : JSON.stringify(agentState)
         const stubTag = machineSpawnPreallocTag(id)
 

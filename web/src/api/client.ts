@@ -841,6 +841,10 @@ export class ApiClient {
         )
     }
 
+    async importCreationPreferences(preferences: import('@hapi/protocol').ChatCreationPreferences): Promise<import('@hapi/protocol').ChatCreationPreferences> {
+        return await this.request('/api/new-chat-preferences/import', { method: 'POST', body: JSON.stringify(preferences) })
+    }
+
     async spawnSession(
         machineId: string,
         directory: string,
@@ -857,22 +861,23 @@ export class ApiClient {
         copilotAgentMode?: CopilotAgentMode,
         startingMode?: 'remote' | 'pty'
     ): Promise<SpawnResponse> {
-        return await this.request<SpawnResponse>(`/api/machines/${encodeURIComponent(machineId)}/spawn`, {
+        return await this.request<SpawnResponse>('/api/sessions/create', {
             method: 'POST',
             body: JSON.stringify({
+                machineId,
                 directory,
                 agent,
-                model,
-                modelReasoningEffort,
-                yolo,
-                sessionType,
-                worktreeName,
-                effort,
-                permissionMode,
-                serviceTier,
-                collaborationMode,
-                copilotAgentMode,
-                startingMode
+                model: model ?? null,
+                modelReasoningEffort: modelReasoningEffort ?? null,
+                yolo: yolo ?? null,
+                sessionType: sessionType ?? 'simple',
+                worktreeName: worktreeName ?? null,
+                effort: effort ?? null,
+                permissionMode: permissionMode ?? null,
+                serviceTier: serviceTier ?? null,
+                collaborationMode: collaborationMode ?? null,
+                copilotAgentMode: copilotAgentMode ?? null,
+                startingMode: startingMode ?? null
             })
         })
     }

@@ -1,3 +1,4 @@
+import { useSharedCreationPreferences } from './sharedPreferences'
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, PiLocalSessionSummary } from '@/types/api'
@@ -100,6 +101,8 @@ export function NewSession(props: {
     const { sessions, refetch: refetchSessions } = useSessions(props.api)
     const { getRecentPaths, addRecentPath, getLastUsedMachineId, setLastUsedMachineId } = useRecentPaths()
 
+    const sharedPreferences = useSharedCreationPreferences(props.api, props.machines)
+    const initializedSharedPreferencesRef = useRef(false)
     const [machineId, setMachineId] = useState<string | null>(props.initialMachineId ?? null)
     const [directory, setDirectory] = useState(props.initialDirectory ?? '')
     const [suppressSuggestions, setSuppressSuggestions] = useState(false)
@@ -155,7 +158,8 @@ export function NewSession(props: {
     const [isDuplicateMergeConfirmOpen, setIsDuplicateMergeConfirmOpen] = useState(false)
     const [isMergingDuplicateSessions, setIsMergingDuplicateSessions] = useState(false)
     const isFormDisabled = Boolean(
-        isCreating
+        !sharedPreferences.data
+        || isCreating
         || isPending
         || props.isLoading
         || isImportingCodexSession
@@ -165,6 +169,20 @@ export function NewSession(props: {
     )
     const worktreeInputRef = useRef<HTMLInputElement>(null)
     const preserveRestoredDraftRef = useRef(false)
+
+    useEffect(() => {
+        if (!sharedPreferences.data || initializedSharedPreferencesRef.current || props.machines.length === 0) return
+        initializedSharedPreferencesRef.current = true
+        if (restoredFromBrowseRef.current) return
+        setAgent(sharedPreferences.data.lastAgent ?? 'claude')
+        const savedMachine = sharedPreferences.data.lastMachineId
+        const selectedMachine = props.initialMachineId
+            ?? (props.machines.some(m => m.id === savedMachine) ? savedMachine : props.machines[0]?.id)
+        if (selectedMachine) {
+            setMachineId(selectedMachine)
+            if (props.initialDirectory === undefined) setDirectory(sharedPreferences.data.machines[selectedMachine]?.directory ?? '')
+        }
+    }, [sharedPreferences.data, props.initialMachineId, props.initialDirectory, props.machines])
 
     useEffect(() => {
         if (sessionType === 'worktree') {
@@ -874,11 +892,25 @@ export function NewSession(props: {
             return
         }
 
+        const saved = sharedPreferences.data?.machines[machineId]?.agents[agent]
         const preferred = resolvePreferredLaunchSettings(
             agent,
-            loadPreferredLaunchSettings(machineId, agent),
-            legacyYoloAgent === agent
+            sharedPreferences.data ? {
+                model: saved?.model ?? 'auto', cursorSelectedBase: 'auto',
+                effort: saved?.effort ?? 'auto', modelReasoningEffort: saved?.modelReasoningEffort ?? 'default',
+                permissionMode: saved?.permissionMode ?? undefined
+            } : loadPreferredLaunchSettings(machineId, agent),
+            !sharedPreferences.data && legacyYoloAgent === agent
         )
+        if (sharedPreferences.data) {
+            setServiceTier(saved?.serviceTier ?? 'standard')
+            setCollaborationMode(saved?.collaborationMode ?? 'default')
+            setCopilotAgentMode(saved?.copilotAgentMode ?? 'interactive')
+            setYoloMode(saved?.yolo ?? false)
+            setGrokPermissionMode(agent === 'grok' ? (saved?.permissionMode as GrokPermissionMode ?? 'default') : 'default')
+            setSessionType(saved?.sessionType ?? 'simple')
+            setWorktreeName(saved?.worktreeName ?? '')
+        }
 
         setModel(agent === 'opencode' ? 'auto' : preferred.model)
         setCursorSelectedBase(preferred.cursorSelectedBase)
@@ -894,7 +926,7 @@ export function NewSession(props: {
         setAgySelectedModel(
             agent === 'agy' && preferred.model !== 'auto' ? preferred.model : null
         )
-    }, [agent, legacyYoloAgent, machineId, usesSharedPermissionMode])
+    }, [agent, legacyYoloAgent, machineId, usesSharedPermissionMode, sharedPreferences.data])
 
     useEffect(() => {
         if (
@@ -1375,13 +1407,13 @@ export function NewSession(props: {
         setSelectedPiImportSessionId(null)
         setPiImportSessions([])
         setPiImportMachineId(null)
-        const paths = getRecentPaths(newMachineId)
+        const paths = [sharedPreferences.data?.machines[newMachineId]?.directory, ...getRecentPaths(newMachineId)].filter((path): path is string => Boolean(path))
         if (paths[0]) {
             setDirectory(paths[0])
         } else {
             setDirectory('')
         }
-    }, [getRecentPaths])
+    }, [getRecentPaths, sharedPreferences.data])
 
     const handleCursorBaseChange = useCallback((baseKey: string) => {
         if (baseKey === 'auto') {
@@ -1680,10 +1712,12 @@ export function NewSession(props: {
                 serviceTier: resolvedServiceTier,
                 collaborationMode: resolvedCollaborationMode,
                 copilotAgentMode: agent === 'copilot' ? copilotAgentMode : undefined,
+                startingMode: sharedPreferences.data?.machines[machineId]?.agents[agent]?.startingMode ?? undefined,
             })
 
 
             if (result.type === 'success') {
+                if (result.preferencesWarning) addToast({ title: 'New Chat settings', body: result.preferencesWarning, sessionId: result.sessionId, url: `/sessions/${result.sessionId}` })
                 haptic.notification('success')
                 savePreferredLaunchSettings(machineId, agent, preferredLaunchSettings)
                 clearNewSessionFormDraft()
@@ -2013,9 +2047,10 @@ export function NewSession(props: {
                 onChange={setServiceTier}
             />
 
-            {(error ?? spawnError) ? (
+            {(sharedPreferences.error ?? error ?? spawnError) ? (
                 <div className="px-3 py-2 text-sm text-red-600">
-                    {error ?? spawnError}
+                    {sharedPreferences.error ?? error ?? spawnError}
+                    {sharedPreferences.error ? <button type="button" className="ml-2 underline" onClick={sharedPreferences.retry}>{t('button.retry')}</button> : null}
                 </div>
             ) : null}
 
