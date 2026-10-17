@@ -328,3 +328,56 @@ describe('toClaudeAllowedHapiMcpTools', () => {
         expect(toClaudeAllowedHapiMcpTools(['display_media'])).not.toContain('mcp__hapi__display_media')
     })
 })
+
+describe('startHappyServer peer tools kill switch', () => {
+    const originalFlag = process.env.HAPI_DISABLE_PEER_TOOLS
+    let client: Client | null
+    let stopServer: (() => void) | null
+
+    afterEach(async () => {
+        await client?.close()
+        stopServer?.()
+        if (originalFlag === undefined) {
+            delete process.env.HAPI_DISABLE_PEER_TOOLS
+        } else {
+            process.env.HAPI_DISABLE_PEER_TOOLS = originalFlag
+        }
+    })
+
+    async function startServer(): Promise<{ url: string; toolNames: string[] }> {
+        const sessionClient = {
+            updateMetadata: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+        const server = await startHappyServer(sessionClient, {})
+        stopServer = server.stop
+        client = new Client(
+            { name: 'hapi-peer-tools-test', version: '1.0.0' },
+            { capabilities: {} }
+        )
+        await client.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+        return { url: server.url, toolNames: server.toolNames }
+    }
+
+    it('registers peer tools by default', async () => {
+        delete process.env.HAPI_DISABLE_PEER_TOOLS
+        const { toolNames } = await startServer()
+        expect(toolNames).toEqual(expect.arrayContaining(['list_peers', 'ping_peer', 'inspect_peer']))
+        const tools = await client!.listTools()
+        const names = tools.tools.map((tool) => tool.name)
+        expect(names).toEqual(expect.arrayContaining(['list_peers', 'ping_peer', 'inspect_peer']))
+    })
+
+    it('omits peer tools from registration and toolNames when HAPI_DISABLE_PEER_TOOLS is set', async () => {
+        process.env.HAPI_DISABLE_PEER_TOOLS = '1'
+        const { toolNames } = await startServer()
+        expect(toolNames).toEqual(['change_title', 'display_image', 'display_video', 'display_media'])
+        const tools = await client!.listTools()
+        const names = tools.tools.map((tool) => tool.name)
+        expect(names).not.toContain('list_peers')
+        expect(names).not.toContain('ping_peer')
+        expect(names).not.toContain('inspect_peer')
+        expect(names).toEqual(expect.arrayContaining(['display_image', 'display_video', 'display_media']))
+    })
+})

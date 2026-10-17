@@ -9,6 +9,7 @@ import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { exportHapiSessionEnv } from '@/agent/hapiSessionEnv';
+import { isPeerToolsDisabled } from '@/modules/common/peerTools';
 import type { CodexMcpServerConfig } from './codexMcpServers';
 
 /**
@@ -112,9 +113,12 @@ export async function buildHapiMcpBridge(
         };
     }
     // Discovery shortlist only - same trust as skill_lookup / change_title.
-    tools.list_peers = {
-        approval_mode: 'approve'
-    };
+    // Skipped under HAPI_DISABLE_PEER_TOOLS (tool is not registered then).
+    if (!isPeerToolsDisabled()) {
+        tools.list_peers = {
+            approval_mode: 'approve'
+        };
+    }
     // ping_peer / inspect_peer are registered on the HTTP MCP server / stdio
     // bridge, but are not auto-approved: they target another session (resume +
     // inject, or read peer histories).
