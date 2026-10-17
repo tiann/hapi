@@ -227,7 +227,7 @@ function SessionsPage() {
                 className={`${isSessionsIndex ? 'flex' : 'hidden split:flex'} w-full shrink-0 flex-col bg-[var(--app-bg)]`}
                 style={{ '--sidebar-w': `${sidebar.width}px` } as React.CSSProperties}
             >
-                <div className="flex min-h-0 flex-1 flex-col pt-[env(safe-area-inset-top)]">
+                <div className="session-list-safe-area flex min-h-0 flex-1 flex-col pt-[env(safe-area-inset-top)]">
                     {error ? (
                         <div className="mx-auto w-full max-w-content px-3 py-2">
                             <div className="text-sm text-red-600">{error}</div>
