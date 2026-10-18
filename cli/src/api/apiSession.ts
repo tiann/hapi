@@ -7,6 +7,7 @@ import type { ZodType } from 'zod'
 import { logger } from '@/ui/logger'
 import { backoff } from '@/utils/time'
 import { apiValidationError } from '@/utils/errorUtils'
+import type { SessionBootstrapInfo } from './api'
 import { AsyncLock } from '@/utils/lock'
 import type { RawJSONLines } from '@/claude/types'
 import { configuration } from '@/configuration'
@@ -243,6 +244,15 @@ export class ApiSessionClient extends EventEmitter {
      * the handler must read this synchronously at registration.
      */
     hubArchived = false
+    /**
+     * Peer-tools kill switch captured from THIS session's create response
+     * (undefined when an older hub does not send it, or until a lazy pending
+     * session materializes). Authoritative for tool registration, prompts and
+     * wrapped-agent child env derived from this session; the module-wide
+     * preference only serves as fallback (#2056 review: keep the resolved
+     * preference scoped per session/root).
+     */
+    peerToolsDisabled?: boolean
     private readonly token: string
     readonly sessionId: string
     private metadata: Metadata | null
@@ -301,6 +311,7 @@ export class ApiSessionClient extends EventEmitter {
         this.metadataVersion = session.metadataVersion
         this.agentState = session.agentState
         this.agentStateVersion = session.agentStateVersion
+        this.peerToolsDisabled = (session as SessionBootstrapInfo).peerToolsDisabled
         this.materializer = options.materialize
         this.onMaterialized = options.onMaterialized
         this.state = this.materializer ? 'pending' : 'active'
@@ -609,6 +620,7 @@ export class ApiSessionClient extends EventEmitter {
                 this.metadataVersion = materialized.metadataVersion
                 this.agentState = materialized.agentState
                 this.agentStateVersion = materialized.agentStateVersion
+                this.peerToolsDisabled = (materialized as SessionBootstrapInfo).peerToolsDisabled ?? this.peerToolsDisabled
                 this.state = 'active'
 
                 if (shouldSyncMetadata && latestMetadata) {

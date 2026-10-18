@@ -51,9 +51,15 @@ export class PingPeerError extends Error {
  * HAPI_DISABLE_PEER_TOOLS): the MCP server and CLI surface refuse earlier,
  * but any other caller (stale --tools bridge, shell `hapi ping-peer` from a
  * wrapped agent) lands here and fails loudly.
+ *
+ * MCP handlers pass their session's create-time snapshot so a later session
+ * bootstrapping with a different hub preference cannot flip an
+ * already-registered tool (new-session-only semantics). Without the snapshot
+ * (CLI entry points) the module-wide resolution applies — env first, then the
+ * latest bootstrap — which keeps the operator terminal env-only.
  */
-function assertPeerToolsEnabled(): void {
-    if (isPeerToolsDisabled()) {
+function assertPeerToolsEnabled(sessionPreference?: boolean): void {
+    if (sessionPreference ?? isPeerToolsDisabled()) {
         throw new PingPeerError(
             'disabled',
             'peer session tools are disabled (disabled by your hub administrator, or HAPI_DISABLE_PEER_TOOLS is set)'
@@ -86,6 +92,8 @@ export type PingPeerOptions = {
     sessionId?: string
     message: string
     deliveryMode?: PeerDeliveryMode
+    /** Create-time session snapshot; see assertPeerToolsEnabled. */
+    peerToolsDisabled?: boolean
     waitActiveSecs?: number
     /**
      * Fresh spawn: poll until active instead of POST /resume on the first
@@ -128,6 +136,8 @@ export function createPeerMessageLocalId(): string {
 
 export type ListPeerSessionsOptions = {
     apiUrl?: string
+    /** Create-time session snapshot; see assertPeerToolsEnabled. */
+    peerToolsDisabled?: boolean
     accessToken?: string
     http?: AxiosInstance
     limit?: number
@@ -471,7 +481,7 @@ async function sendMessage(
 export async function listPeerSessions(
     options: ListPeerSessionsOptions = {}
 ): Promise<PingPeerSessionSummary[]> {
-    assertPeerToolsEnabled()
+    assertPeerToolsEnabled(options.peerToolsDisabled)
     const apiUrl = resolveApiUrl(options.apiUrl)
     const accessToken = resolveAccessToken(options.accessToken)
     const http = options.http ?? axios
@@ -577,7 +587,7 @@ function getSteeringUnavailableReason(session: PingPeerSessionSummary): string |
 }
 
 export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult> {
-    assertPeerToolsEnabled()
+    assertPeerToolsEnabled(options.peerToolsDisabled)
     const knownSessionId = (options.sessionId ?? '').trim()
     const prefix = knownSessionId ? '' : normalizeSessionIdPrefix(options.sessionIdPrefix ?? '')
     const message = options.message ?? ''
@@ -699,6 +709,8 @@ export function exitCodeForPingPeerError(error: PingPeerError): number {
 
 export type InspectPeerOptions = {
     sessionIdPrefix: string
+    /** Create-time session snapshot; see assertPeerToolsEnabled. */
+    peerToolsDisabled?: boolean
     /** Recent message page size (default 30, clamped 1..100). */
     messageLimit?: number
     apiUrl?: string
@@ -815,7 +827,7 @@ async function fetchSessionMessages(
  * Read-only: never resumes inactive sessions (unlike `pingPeer`).
  */
 export async function inspectPeer(options: InspectPeerOptions): Promise<InspectPeerResult> {
-    assertPeerToolsEnabled()
+    assertPeerToolsEnabled(options.peerToolsDisabled)
     const prefix = normalizeSessionIdPrefix(options.sessionIdPrefix ?? '')
     if (!prefix) {
         throw new PingPeerError('bad_args', 'session id prefix is required')

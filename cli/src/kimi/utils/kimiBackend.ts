@@ -18,11 +18,11 @@ function filterEnv(env: NodeJS.ProcessEnv): Record<string, string> {
  * is applied over ACP (`session/set_model` / `session/set_config_option`)
  * after session creation — see kimiRemoteLauncher.
  */
-export function createKimiBackend(): AcpSdkBackend {
+export function createKimiBackend(env: NodeJS.ProcessEnv = process.env): AcpSdkBackend {
     return new AcpSdkBackend({
         command: getAgentLaunchCommand('kimi'),
         args: ['acp'],
-        env: filterEnv(process.env),
+        env: filterEnv(env),
         flavor: 'kimi',
     });
 }

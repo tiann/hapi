@@ -39,3 +39,31 @@ export function isPeerToolsDisabled(env: NodeJS.ProcessEnv = process.env): boole
     }
     return hubPreference === true
 }
+
+/**
+ * Env overlay resolving the kill switch for one session's captured preference.
+ *
+ * Used in two places that cannot read the module memory:
+ * - wrapped-agent child environments (claude/opencode/ACP spawn env, Codex
+ *   per-root `shell_environment_policy.set`): an agent shelling out
+ *   `hapi ping-peer` starts a fresh process where `hubPreference` is lost, so
+ *   the resolved preference must travel as an explicit env value;
+ * - call-time prompt resolution inside one runner process hosting sessions
+ *   with different captured preferences (a flipped global must not rewrite a
+ *   live session's prompt), so both branches pin an explicit value.
+ *
+ * A non-empty machine-level `HAPI_DISABLE_PEER_TOOLS` stays authoritative
+ * (deploy-time override inherits naturally into children). The operator
+ * terminal never passes through a wrapped-agent spawn, so its exemption is
+ * untouched.
+ */
+export function peerToolsEnvOverlay(disabled: boolean, env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+    const raw = env.HAPI_DISABLE_PEER_TOOLS
+    if (raw !== undefined && raw !== '') return {}
+    return { HAPI_DISABLE_PEER_TOOLS: disabled ? '1' : '0' }
+}
+
+/** Env for prompt/child resolution after applying the session overlay. */
+export function withPeerToolsPreference(disabled: boolean, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+    return { ...env, ...peerToolsEnvOverlay(disabled, env) }
+}

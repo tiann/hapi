@@ -23,6 +23,14 @@ import { ApiMachineClient } from './apiMachine'
 import { ApiSessionClient, type ApiSessionClientOptions } from './apiSession'
 import { buildHubRequestHeaders } from './hubExtraHeaders'
 
+/**
+ * Session row plus the hub-level peer-tools preference captured from this
+ * session's own create response. The create-time snapshot is authoritative
+ * for everything derived from this session (tool registration, prompts,
+ * wrapped-agent child env); absent when an older hub does not send it.
+ */
+export type SessionBootstrapInfo = Session & { peerToolsDisabled?: boolean }
+
 export class ApiClient {
     static async create(): Promise<ApiClient> {
         return new ApiClient(getAuthToken())
@@ -54,7 +62,7 @@ export class ApiClient {
         }
         timeoutMs?: number
         signal?: AbortSignal
-    }): Promise<Session> {
+    }): Promise<SessionBootstrapInfo> {
         const response = await axios.post<CreateSessionResponse>(
             `${configuration.apiUrl}/cli/sessions`,
             {
@@ -130,7 +138,13 @@ export class ApiClient {
             effort: raw.effort,
             serviceTier: raw.serviceTier,
             permissionMode: raw.permissionMode,
-            collaborationMode: raw.collaborationMode
+            collaborationMode: raw.collaborationMode,
+            // Create-time peer-tools snapshot rides the row so downstream
+            // session state (ApiSessionClient) captures its own preference
+            // instead of the process-wide module value.
+            ...(typeof parsed.data.disablePeerTools === 'boolean'
+                ? { peerToolsDisabled: parsed.data.disablePeerTools }
+                : {})
         }
     }
 
