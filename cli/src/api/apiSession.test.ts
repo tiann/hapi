@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Session } from './types'
 import type { SessionBootstrapInfo } from './api'
+import { resetPeerToolsForTests } from '@/modules/common/peerTools'
 
 const socketHarness = vi.hoisted(() => ({
     sockets: [] as Array<{
@@ -1082,6 +1083,17 @@ describe('ApiSessionClient durable status identity', () => {
 });
 
 describe('ApiSessionClient peer-tools snapshot (#2056)', () => {
+    const originalEnv = process.env.HAPI_DISABLE_PEER_TOOLS
+
+    afterEach(() => {
+        if (originalEnv === undefined) {
+            delete process.env.HAPI_DISABLE_PEER_TOOLS
+        } else {
+            process.env.HAPI_DISABLE_PEER_TOOLS = originalEnv
+        }
+        resetPeerToolsForTests()
+    })
+
     it('captures the create-time preference from the bootstrap row', () => {
         socketHarness.sockets.length = 0
         const client = new ApiSessionClient('token', { ...createSession(), peerToolsDisabled: true } as SessionBootstrapInfo)
@@ -1113,4 +1125,38 @@ describe('ApiSessionClient peer-tools snapshot (#2056)', () => {
         expect(adopted.peerToolsDisabled).toBe(true)
         adopted.close()
     })
-}
+
+    it('resolves the snapshot through the machine env at capture time (both directions)', () => {
+        socketHarness.sockets.length = 0
+        delete process.env.HAPI_DISABLE_PEER_TOOLS
+        const faithful = new ApiSessionClient('token', { ...createSession(), peerToolsDisabled: true } as SessionBootstrapInfo)
+        expect(faithful.peerToolsDisabled).toBe(true)
+        faithful.close()
+
+        socketHarness.sockets.length = 0
+        // A non-empty deploy override must beat the hub value in BOTH
+        // directions at capture, so the stored snapshot never flips later
+        // with the process-wide module value (#2056 round 2).
+        process.env.HAPI_DISABLE_PEER_TOOLS = '1'
+        const machineWinsDisable = new ApiSessionClient('token', { ...createSession(), peerToolsDisabled: false } as SessionBootstrapInfo)
+        expect(machineWinsDisable.peerToolsDisabled).toBe(true)
+        machineWinsDisable.close()
+
+        socketHarness.sockets.length = 0
+        process.env.HAPI_DISABLE_PEER_TOOLS = '0'
+        const machineWinsEnable = new ApiSessionClient('token', { ...createSession(), peerToolsDisabled: true } as SessionBootstrapInfo)
+        expect(machineWinsEnable.peerToolsDisabled).toBe(false)
+        machineWinsEnable.close()
+    })
+
+    it('resolves the adopted snapshot through the machine env too (lazy materialization)', async () => {
+        socketHarness.sockets.length = 0
+        process.env.HAPI_DISABLE_PEER_TOOLS = '0'
+        const materializeDisabled = vi.fn(async () => ({ ...createSession({ namespace: 'default' }), peerToolsDisabled: true } as SessionBootstrapInfo))
+        const adopted = new ApiSessionClient('token', createSession(), { materialize: materializeDisabled })
+        adopted.sendUserMessage('hello')
+        expect(await adopted.materialize()).toBe(true)
+        expect(adopted.peerToolsDisabled).toBe(false)
+        adopted.close()
+    })
+})

@@ -25,9 +25,10 @@ import { buildHubRequestHeaders } from './hubExtraHeaders'
 
 /**
  * Session row plus the hub-level peer-tools preference captured from this
- * session's own create response. The create-time snapshot is authoritative
- * for everything derived from this session (tool registration, prompts,
- * wrapped-agent child env); absent when an older hub does not send it.
+ * session's own create/fetch response. The bootstrap-time snapshot is
+ * authoritative for everything derived from this session (tool registration,
+ * prompts, wrapped-agent child env); absent when an older hub does not send
+ * it.
  */
 export type SessionBootstrapInfo = Session & { peerToolsDisabled?: boolean }
 
@@ -148,7 +149,7 @@ export class ApiClient {
         }
     }
 
-    async getSession(sessionId: string): Promise<Session> {
+    async getSession(sessionId: string): Promise<SessionBootstrapInfo> {
         const response = await axios.get(
             `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}`,
             {
@@ -201,7 +202,13 @@ export class ApiClient {
             effort: raw.effort,
             serviceTier: raw.serviceTier,
             permissionMode: raw.permissionMode,
-            collaborationMode: raw.collaborationMode
+            collaborationMode: raw.collaborationMode,
+            // Bootstrap-time peer-tools snapshot rides the row so existing-
+            // session bootstraps (cold resume) capture their own preference
+            // instead of racing the process-wide module value.
+            ...(typeof parsed.data.disablePeerTools === 'boolean'
+                ? { peerToolsDisabled: parsed.data.disablePeerTools }
+                : {})
         }
     }
 

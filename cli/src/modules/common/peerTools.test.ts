@@ -4,6 +4,7 @@ import {
     isPeerToolsDisabled,
     peerToolsEnvOverlay,
     resetPeerToolsForTests,
+    resolveSessionPeerToolsDisabled,
     withPeerToolsPreference
 } from './peerTools'
 
@@ -113,5 +114,40 @@ describe('withPeerToolsPreference', () => {
         const merged = withPeerToolsPreference(true, source)
         expect(merged).toEqual({ PATH: '/usr/bin', HAPI_DISABLE_PEER_TOOLS: '1' })
         expect(source).toEqual({ PATH: '/usr/bin' })
+    })
+})
+
+describe('resolveSessionPeerToolsDisabled', () => {
+    const original = process.env.HAPI_DISABLE_PEER_TOOLS
+
+    afterEach(() => {
+        if (original === undefined) {
+            delete process.env.HAPI_DISABLE_PEER_TOOLS
+        } else {
+            process.env.HAPI_DISABLE_PEER_TOOLS = original
+        }
+        resetPeerToolsForTests()
+    })
+
+    it('honors the hub snapshot in both directions when env is unset', () => {
+        delete process.env.HAPI_DISABLE_PEER_TOOLS
+        expect(resolveSessionPeerToolsDisabled(true)).toBe(true)
+        expect(resolveSessionPeerToolsDisabled(false)).toBe(false)
+    })
+
+    it('lets a machine-level env beat the hub snapshot at capture time (both directions)', () => {
+        // The snapshot must land already env-resolved, otherwise a session
+        // captured while the deploy override stands would later flip with
+        // the process-wide module value (#2056 round 2).
+        process.env.HAPI_DISABLE_PEER_TOOLS = '1'
+        expect(resolveSessionPeerToolsDisabled(false)).toBe(true)
+
+        process.env.HAPI_DISABLE_PEER_TOOLS = '0'
+        expect(resolveSessionPeerToolsDisabled(true)).toBe(false)
+    })
+
+    it('treats an unrecognized env value as disabled (fail-safe kill switch)', () => {
+        process.env.HAPI_DISABLE_PEER_TOOLS = 'banana'
+        expect(resolveSessionPeerToolsDisabled(false)).toBe(true)
     })
 })

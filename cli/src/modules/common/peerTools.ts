@@ -67,3 +67,15 @@ export function peerToolsEnvOverlay(disabled: boolean, env: NodeJS.ProcessEnv = 
 export function withPeerToolsPreference(disabled: boolean, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
     return { ...env, ...peerToolsEnvOverlay(disabled, env) }
 }
+
+/**
+ * Resolve a session's create-time hub preference into the effective state,
+ * honoring the machine-level deploy override: a non-empty
+ * `HAPI_DISABLE_PEER_TOOLS` beats the hub value in both directions, otherwise
+ * the hub value stands. ApiSessionClient captures snapshots through this so
+ * every consumer (`client.peerToolsDisabled ?? isPeerToolsDisabled()`) reads
+ * an already-env-resolved truth instead of the raw hub boolean.
+ */
+export function resolveSessionPeerToolsDisabled(hubDisabled: boolean): boolean {
+    return isPeerToolsDisabled(withPeerToolsPreference(hubDisabled))
+}

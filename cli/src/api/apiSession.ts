@@ -8,6 +8,7 @@ import { logger } from '@/ui/logger'
 import { backoff } from '@/utils/time'
 import { apiValidationError } from '@/utils/errorUtils'
 import type { SessionBootstrapInfo } from './api'
+import { resolveSessionPeerToolsDisabled } from '@/modules/common/peerTools'
 import { AsyncLock } from '@/utils/lock'
 import type { RawJSONLines } from '@/claude/types'
 import { configuration } from '@/configuration'
@@ -245,12 +246,14 @@ export class ApiSessionClient extends EventEmitter {
      */
     hubArchived = false
     /**
-     * Peer-tools kill switch captured from THIS session's create response
-     * (undefined when an older hub does not send it, or until a lazy pending
-     * session materializes). Authoritative for tool registration, prompts and
-     * wrapped-agent child env derived from this session; the module-wide
-     * preference only serves as fallback (#2056 review: keep the resolved
-     * preference scoped per session/root).
+     * Peer-tools kill switch captured from THIS session's create/fetch
+     * response and resolved through the machine-level deploy override at
+     * capture time (a non-empty HAPI_DISABLE_PEER_TOOLS beats the hub value in
+     * both directions; undefined when an older hub does not send it, or until
+     * a lazy pending session materializes). Authoritative for tool
+     * registration, prompts and wrapped-agent child env derived from this
+     * session; the module-wide preference only serves as fallback (#2056
+     * review: keep the resolved preference scoped per session/root).
      */
     peerToolsDisabled?: boolean
     private readonly token: string
@@ -311,7 +314,8 @@ export class ApiSessionClient extends EventEmitter {
         this.metadataVersion = session.metadataVersion
         this.agentState = session.agentState
         this.agentStateVersion = session.agentStateVersion
-        this.peerToolsDisabled = (session as SessionBootstrapInfo).peerToolsDisabled
+        const bootstrapSnapshot = (session as SessionBootstrapInfo).peerToolsDisabled
+        this.peerToolsDisabled = bootstrapSnapshot === undefined ? undefined : resolveSessionPeerToolsDisabled(bootstrapSnapshot)
         this.materializer = options.materialize
         this.onMaterialized = options.onMaterialized
         this.state = this.materializer ? 'pending' : 'active'
@@ -620,7 +624,10 @@ export class ApiSessionClient extends EventEmitter {
                 this.metadataVersion = materialized.metadataVersion
                 this.agentState = materialized.agentState
                 this.agentStateVersion = materialized.agentStateVersion
-                this.peerToolsDisabled = (materialized as SessionBootstrapInfo).peerToolsDisabled ?? this.peerToolsDisabled
+                const materializedSnapshot = (materialized as SessionBootstrapInfo).peerToolsDisabled
+                this.peerToolsDisabled = materializedSnapshot === undefined
+                    ? this.peerToolsDisabled
+                    : resolveSessionPeerToolsDisabled(materializedSnapshot)
                 this.state = 'active'
 
                 if (shouldSyncMetadata && latestMetadata) {
