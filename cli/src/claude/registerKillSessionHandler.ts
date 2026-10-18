@@ -4,7 +4,7 @@ import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { getProcessStartMarker } from '@/utils/process';
 
 interface KillSessionRequest {
-    // No parameters needed
+    archive?: boolean;
 }
 
 interface KillSessionResponse {
@@ -19,13 +19,13 @@ interface KillSessionResponse {
 /**
  * tiann/hapi#914: callers can pass either a bare `cleanupAndExit` closure
  * (legacy) or an options object that lets the kill-RPC stamp an explicit
- * `archiveReason` before the lifecycle teardown runs. The hub only sends
- * KillSession when the operator clicked Archive in the UI, so this RPC is
- * the authoritative "user-terminated" signal; out-of-band SIGTERM from a
- * hub-restart cascade no longer collides with the default archive reason.
+ * `archiveReason` before the lifecycle teardown runs. The request selects
+ * process-only stop or archive; out-of-band SIGTERM from a hub-restart cascade
+ * remains distinct from an operator archive.
  */
 export interface KillSessionLifecycle {
     cleanupAndExit: () => Promise<void>;
+    stopAndExit?: () => Promise<void>;
     setArchiveReason?: (reason: string) => void;
 }
 
@@ -47,8 +47,19 @@ export function registerKillSessionHandler(
         void lifecycle.cleanupAndExit();
     };
 
-    rpcHandlerManager.registerHandler<KillSessionRequest, KillSessionResponse>(RPC_METHODS.KillSession, async () => {
+    rpcHandlerManager.registerHandler<KillSessionRequest, KillSessionResponse>(RPC_METHODS.KillSession, async (request) => {
         logger.debug('Kill session request received');
+        const processStartMarker = getProcessStartMarker(process.pid) ?? undefined;
+
+        if (request?.archive === false) {
+            void (lifecycle.stopAndExit ?? lifecycle.cleanupAndExit)();
+            return {
+                success: true,
+                message: 'Stopping hapi CLI process',
+                pid: process.pid,
+                ...(processStartMarker ? { processStartMarker } : {}),
+            };
+        }
 
         // tiann/hapi#914: stamp the archive reason from the RPC path so the
         // default in `runnerLifecycle.ts` can be reassigned away from
@@ -62,7 +73,6 @@ export function registerKillSessionHandler(
 
         // Include pid + start marker so archive can ask the runner to verify
         // this exact process generation exited (#1910) — not a reused PID.
-        const processStartMarker = getProcessStartMarker(process.pid) ?? undefined;
         return {
             success: true,
             message: 'Killing hapi CLI process',

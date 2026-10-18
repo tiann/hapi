@@ -219,7 +219,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         await notifyRunnerSessionStarted(root.session.sessionId, root.session.getMetadata() ?? root.bootstrap.metadata);
     };
     const create = (method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot, initialOptions?: SharedLaunchOptions): Promise<SharedCodexRoot> => operation(async () => {
-        const root = await prepare(string(params.cwd) ?? launch.cwd, undefined, parent);
+        const root = await prepare(string(params.cwd) ?? launch.cwd, initialOptions?.existingSessionId, parent);
         let nativeSucceeded = false;
         try {
             runtime.pendingCreations = [...runtime.pendingCreations ?? [], root.session.sessionId]; await persist();

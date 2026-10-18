@@ -194,6 +194,9 @@ final class TranscriptLayout: UICollectionViewLayout {
                                                withOriginalAttributes: originalAttributes)
         let index = originalAttributes.indexPath.item
         guard ids.indices.contains(index), let view = collectionView else { return context }
+        // UIKit may supply attributes from before width or typography invalidation.
+        prepare()
+        let currentFrame = frames[index]
         let height = max(1, preferredAttributes.size.height)
         let delta = height - estimatedHeight(for: ids[index])
         heights[ids[index]] = height
@@ -201,13 +204,13 @@ final class TranscriptLayout: UICollectionViewLayout {
         dirtyFromIndex = min(dirtyFromIndex ?? index, index)
         context.invalidateItems(at: [preferredAttributes.indexPath])
         let viewportTop = view.contentOffset.y + view.adjustedContentInset.top
-        if followsTail || originalAttributes.frame.maxY <= viewportTop {
+        if followsTail || currentFrame.maxY <= viewportTop {
             context.contentOffsetAdjustment.y += delta
-        } else if originalAttributes.frame.minY <= viewportTop,
-                  originalAttributes.frame.minY + height <= viewportTop {
+        } else if currentFrame.minY <= viewportTop,
+                  currentFrame.minY + height <= viewportTop {
             // A font reduction can make the first partial row shorter than
             // the reading offset. Keep its last point visible, not a later row.
-            context.contentOffsetAdjustment.y += originalAttributes.frame.minY + height - 1 - viewportTop
+            context.contentOffsetAdjustment.y += currentFrame.minY + height - 1 - viewportTop
         }
         return context
     }

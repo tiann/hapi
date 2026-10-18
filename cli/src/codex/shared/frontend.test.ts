@@ -2,12 +2,13 @@ import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RuntimeReady } from './runtime';
 import type { SharedLaunchOptions } from './launch';
+import type { Metadata } from '@/api/types';
 
-const state = vi.hoisted(() => ({ existing: false, run: vi.fn(), spawn: vi.fn(), kill: vi.fn() }));
+const state = vi.hoisted(() => ({ existing: false, metadata: {} as Partial<Metadata>, run: vi.fn(), spawn: vi.fn(), kill: vi.fn() }));
 const runtime: RuntimeReady['runtime'] = { id: 'runtime', pid: 1, marker: 'start', endpoint: 'unix://private', command: '/resolved/codex',
     args: [], codexHome: '/isolated/codex', hub: 'hub', authHash: 'auth', sessions: { sid: { threadId: 'thread', namespace: 'ns', active: true } } };
 vi.mock('node:child_process', () => ({ spawn: state.spawn, execFileSync: vi.fn() }));
-vi.mock('@/api/api', () => ({ ApiClient: { create: async () => ({ getSession: async () => ({ id: 'sid', namespace: 'ns', active: state.existing, metadata: { path: '/work' } }) }) } }));
+vi.mock('@/api/api', () => ({ ApiClient: { create: async () => ({ getSession: async () => ({ id: 'sid', namespace: 'ns', active: state.existing, metadata: { path: '/work', ...state.metadata } }) }) } }));
 vi.mock('@/persistence', () => ({ readRunnerState: async () => null }));
 vi.mock('@/utils/process', () => ({ isProcessAlive: () => true, killProcessByChildProcess: state.kill }));
 vi.mock('./registry', () => ({ findRuntime: async () => state.existing ? runtime : undefined, runtimeAlive: () => true }));
@@ -20,7 +21,7 @@ import { runSharedCodex } from './frontend';
 
 const tty = [Object.getOwnPropertyDescriptor(process.stdin, 'isTTY'), Object.getOwnPropertyDescriptor(process.stdout, 'isTTY')];
 beforeEach(() => {
-    vi.clearAllMocks(); state.existing = false;
+    vi.clearAllMocks(); state.existing = false; state.metadata = {};
     Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
     Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
     state.spawn.mockImplementation(() => new EventEmitter());
@@ -79,6 +80,26 @@ describe('shared frontend execution ownership', () => {
             existingSessionId: 'sid',
         })).rejects.toThrow('no Codex thread binding');
         expect(state.run).not.toHaveBeenCalled();
+    });
+    it.each(['fresh', 'claimed', 'archived', 'failed', 'terminal'] as const)('only starts an untouched runner remit reservation (%s)', async kind => {
+        state.metadata = {
+            spawnRemitOperation: { remitId: 'remit', requestHash: 'hash', machineId: 'machine',
+                state: kind === 'failed' ? 'failed' : 'pending', updatedAt: 1 },
+            ...(kind === 'claimed' ? { hostPid: 123 } : {}),
+            ...(kind === 'archived' ? { lifecycleState: 'archived' as const } : {}),
+        };
+        state.run.mockResolvedValue(undefined);
+        const options = { startedBy: kind === 'terminal' ? 'terminal' as const : 'runner' as const,
+            workingDirectory: '/work', existingSessionId: 'sid' };
+        const result = runSharedCodex(options);
+        if (kind === 'fresh') {
+            await result;
+            expect(state.run).toHaveBeenCalledWith(expect.objectContaining(options));
+            expect(state.run.mock.calls[0][0].resumeSessionId).toBeUndefined();
+        } else {
+            await expect(result).rejects.toThrow('no Codex thread binding');
+            expect(state.run).not.toHaveBeenCalled();
+        }
     });
     it('stops the engine on TUI spawn error and leaves no execution on startup failure', async () => {
         state.run.mockRejectedValueOnce(new Error('startup failed'));

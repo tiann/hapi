@@ -169,6 +169,9 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
   let shouldSetEnv = false;
   if (compiledMode) {
     finalEnv[HAPI_CLI_EXECUTABLE_ENV] = spawnCommand;
+    if ('cwd' in options && options.cwd !== undefined) {
+      finalEnv.HAPI_INVOKED_CWD = resolveInvokedCwd(options.cwd);
+    }
     shouldSetEnv = true;
   } else {
     const invokedCwd = finalEnv.HAPI_INVOKED_CWD?.trim();

@@ -13,8 +13,8 @@ afterEach(() => {
     }
 })
 
-describe('schema migration v25 to v26', () => {
-    it('adds an index used by immediate queued-message replay', () => {
+describe('schema migration v25/v26', () => {
+    it.each([25, 26])('upgrades v%s with the queue index and persisted steering', (versionBefore) => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v25-'))
         tempDirs.push(dir)
         const dbPath = join(dir, 'hapi.db')
@@ -22,8 +22,9 @@ describe('schema migration v25 to v26', () => {
         new Store(dbPath).close()
         const legacy = new Database(dbPath)
         legacy.exec(`
-            DROP INDEX idx_messages_immediate_queued;
-            PRAGMA user_version = 25;
+            ${versionBefore === 25 ? 'DROP INDEX idx_messages_immediate_queued;' : ''}
+            ALTER TABLE messages DROP COLUMN steered;
+            PRAGMA user_version = ${versionBefore};
         `)
         legacy.close()
 
@@ -41,7 +42,9 @@ describe('schema migration v25 to v26', () => {
             ORDER BY seq ASC
         `).all('session-id') as Array<{ detail: string }>
 
-        expect(version.user_version).toBe(26)
+        expect(version.user_version).toBe(27)
+        const columns = internalDb.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string; dflt_value: string }>
+        expect(columns.find(column => column.name === 'steered')?.dflt_value).toBe('0')
         expect(plan.some((row) => row.detail.includes('idx_messages_immediate_queued'))).toBe(true)
         migrated.close()
     })

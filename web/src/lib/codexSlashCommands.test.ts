@@ -19,6 +19,7 @@ describe('getBuiltinSlashCommands', () => {
             'effort',
             'permission',
         ]))
+        expect(getBuiltinSlashCommands('codex').map((command) => command.name)).not.toContain('agent')
     })
 
     it('exposes Cursor pass-through builtins', () => {

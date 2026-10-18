@@ -7,7 +7,7 @@ import { parseRemoteAgentCommandOptions } from './agentCommandOptions'
 
 export const piCommand: CommandDefinition = {
     name: 'pi',
-    requiresRuntimeAssets: false,
+    requiresRuntimeAssets: true,
     run: async ({ commandArgs }) => {
         try {
             // Pi RPC mode has no runtime permission switching; pass an empty

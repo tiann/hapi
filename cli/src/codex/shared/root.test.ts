@@ -116,16 +116,16 @@ async function completePlan(f: Awaited<ReturnType<typeof fixture>>, status = 'co
 }
 
 describe('shared plan actions', () => {
-    it('applies remote change_title as metadata.name then lets native terminal rename win', async () => {
+    it('keeps a remote change_title while mirroring the native thread title as summary', async () => {
         const f = await fixture();
         const item = { id: 'title', type: 'mcpToolCall', server: 'hapi', tool: 'change_title',
             arguments: { title: 'Remote title' }, status: 'completed', result: { content: [], isError: false } };
         f.native.notify('item/completed', { threadId: 'thread', turnId: 'turn', item });
         await vi.waitFor(() => expect(f.metadata().name).toBe('Remote title'));
         f.native.notify('thread/name/updated', { threadId: 'thread', threadName: 'Terminal title' });
-        await vi.waitFor(() => expect(f.metadata().name).toBe('Terminal title'));
+        await vi.waitFor(() => expect(f.metadata().summary?.text).toBe('Terminal title'));
         await f.root.refresh();
-        expect(f.metadata().name).toBe('Terminal title');
+        expect(f.metadata().name).toBe('Remote title');
     });
 
     it('preserves content while native turns, mode changes and disconnects withdraw controls', async () => {
@@ -256,6 +256,16 @@ describe('shared plan actions', () => {
 });
 
 describe('shared steering availability', () => {
+    it('mirrors root native names without overwriting manual names or accepting child titles', async () => {
+        const f = await fixture();
+        f.root.session.updateMetadata(metadata => ({ ...metadata, name: 'Manual title' }));
+        f.native.notify('thread/name/updated', { threadId: 'thread', threadName: 'Native title' });
+        await vi.waitFor(() => expect(f.root.session.getMetadata()?.summary?.text).toBe('Native title'));
+        f.native.notify('thread/name/updated', { threadId: 'child', threadName: 'Child title' });
+        await f.root.close(false);
+        expect(f.root.session.getMetadata()?.name).toBe('Manual title');
+        expect(f.root.session.getMetadata()?.summary?.text).toBe('Native title');
+    });
     it('keeps idle sessions online without polling usage or publishing agent-state updates', async () => {
         const f = await fixture();
         const requests = vi.spyOn(f.root.client, 'request');

@@ -196,6 +196,15 @@ export class RpcGateway {
         }
     }
 
+    async stopSessionProcess(sessionId: string): Promise<{ pid?: number }> {
+        const result = await this.sessionRpc(sessionId, RPC_METHODS.KillSession, { archive: false })
+        if (!result || typeof result !== 'object' || (result as { success?: unknown }).success !== true) {
+            throw new Error('Session did not acknowledge a non-archiving stop')
+        }
+        const pid = (result as { pid?: unknown }).pid
+        return typeof pid === 'number' && Number.isInteger(pid) && pid > 0 ? { pid } : {}
+    }
+
     async stopRunnerSession(
         machineId: string,
         sessionId: string,

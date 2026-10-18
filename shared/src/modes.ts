@@ -40,10 +40,10 @@ export type KimiPermissionMode = typeof KIMI_PERMISSION_MODES[number]
 export const COPILOT_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
 export type CopilotPermissionMode = typeof COPILOT_PERMISSION_MODES[number]
 
-export const GROK_PERMISSION_MODES = ['default', 'auto', 'plan', 'bypassPermissions'] as const
+export const GROK_PERMISSION_MODES = ['default', 'auto', 'bypassPermissions'] as const
 export type GrokPermissionMode = typeof GROK_PERMISSION_MODES[number]
 
-export const OPENCODE_PERMISSION_MODES = ['default', 'plan', 'yolo'] as const
+export const OPENCODE_PERMISSION_MODES = ['default', 'yolo'] as const
 export type OpencodePermissionMode = typeof OPENCODE_PERMISSION_MODES[number]
 
 export const CURSOR_PERMISSION_MODES = ['default', 'plan', 'ask', 'debug', 'autoReview', 'yolo'] as const

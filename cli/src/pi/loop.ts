@@ -548,6 +548,7 @@ export function wireTransportEvents(
     // Retain that exact local ID so a later matching response failure can reject
     // the history registration even after pendingLocalIds has been drained.
     let activePromptLocalId: string | undefined;
+    let promptStopReason: string | null = null;
 
     const clearLegacySettleFallback = (): void => {
         if (legacySettleTimer) clearTimeout(legacySettleTimer);
@@ -563,6 +564,7 @@ export function wireTransportEvents(
         compactionRetryTimer = null;
     };
     const beginPromptLifecycle = (promptId: string): void => {
+        promptStopReason = null;
         lifecycleGeneration += 1;
         activePromptId = promptId;
         promptLifecycleAborted = false;
@@ -578,6 +580,9 @@ export function wireTransportEvents(
         clearPromptLifecycleFallback();
     };
     const abortPromptLifecycle = (): void => {
+        if (!deliveredSettlement && agentLifecycleSeen) {
+            session.sendAgentMessage({ type: 'turn_complete', stopReason: 'aborted' });
+        }
         lifecycleGeneration += 1;
         activePromptId = null;
         promptLifecycleAborted = true;
@@ -593,6 +598,7 @@ export function wireTransportEvents(
         clearPromptLifecycleFallback();
     };
     const rejectPromptLifecycle = (): void => {
+        session.sendAgentMessage({ type: 'turn_complete', stopReason: 'error' });
         // A rejected prompt is terminal for this generation. Invalidate all
         // delayed settlement work before notifying runPi so it can immediately
         // resume FIFO pumping without a stale grace timer changing its state.
@@ -615,6 +621,10 @@ export function wireTransportEvents(
     };
     const deliverSettlement = (): void => {
         if (deliveredSettlement || (activePromptId !== null && !activePromptResponseAccepted)) return;
+        flushAccumulator();
+        if (promptStopReason) {
+            session.sendAgentMessage({ type: 'turn_complete', stopReason: promptStopReason });
+        }
         deliveredSettlement = true;
         clearCompactionRetryPending();
         clearLegacySettleFallback();
@@ -803,6 +813,7 @@ export function wireTransportEvents(
                 // history-sync callback (still in flight) turns stale and
                 // cannot mark this new lifecycle's abort boundary as settled.
                 lifecycleGeneration += 1;
+                promptStopReason = null;
                 deliveredSettlement = false;
                 agentEndObserved = false;
                 activeAgentSettledSeen = false;
@@ -847,6 +858,7 @@ export function wireTransportEvents(
         if (event.type !== 'message_start' && event.type !== 'message_update' && event.type !== 'message_end') {
             const messages = convertPiEvent(event);
             for (const message of messages) {
+                if (message.type === 'turn_complete') continue;
                 const converted = convertAgentMessage(message, session.currentModel);
                 if (converted) session.sendAgentMessage(converted);
             }
@@ -867,6 +879,7 @@ export function wireTransportEvents(
                 void options.conversationHistory.syncEntries().catch(() => {});
             }
         } else if (event.type === 'turn_end') {
+            promptStopReason = (event as PiTurnEndEvent).message?.stopReason ?? null;
             // Pi emits turn_end for each LLM/tool-loop iteration. The enclosing
             // user prompt remains active until agent_end, so keep both streaming
             // state and the local FIFO blocked here.

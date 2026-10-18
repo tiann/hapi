@@ -1,5 +1,5 @@
 import chalk from 'chalk'
-import { initializeToken } from '@/ui/tokenInit'
+import { initializeToken, TokenInitializationError } from '@/ui/tokenInit'
 import {
     PingPeerError,
     exitCodeForPingPeerError,
@@ -10,88 +10,56 @@ import type { CommandDefinition } from './types'
 
 type ParsedInspectPeerArgs = {
     help: boolean
-    sessionIdPrefix?: string
+    json: boolean
+    sessionId?: string
     messageLimit?: number
 }
 
 function showHelp(): void {
     console.log(`
-${chalk.bold('hapi inspect-peer')} - Read another HAPI session's metadata + recent messages
+${chalk.bold('hapi inspect-peer')} - Read one user-selected HAPI session
 
 ${chalk.bold('Usage:')}
-  hapi inspect-peer <session-id-or-prefix>
-  hapi inspect-peer <session-id-or-prefix> --limit 50
+  hapi inspect-peer <exact-session-id> [--limit 50] [--json]
 
-${chalk.bold('Notes:')}
-  Read-only twin of ping-peer. Prefer this (or MCP inspect_peer) over JWT+curl.
-  Resolves by id prefix (8 chars OK; full UUID best). Same hub token/namespace.
-  Does NOT resume inactive sessions.
-  When a user cites [title](/sessions/<id>) or Copy-reference
-  See session "…" (/sessions/<id>) for context, pass that <id> here.
-  /sessions/<id> is a hub path - not a local filesystem path.
-
-${chalk.bold('Env:')}
-  HAPI_API_URL / CLI_API_TOKEN (or ~/.hapi/settings.json via \`hapi auth login\`)
+Read-only. The exact session UUID must come from the user; prefixes are rejected.
 `)
 }
 
 export function parseInspectPeerArgs(args: string[]): ParsedInspectPeerArgs {
-    const result: ParsedInspectPeerArgs = { help: false }
-
+    const result: ParsedInspectPeerArgs = { help: false, json: false }
     for (let i = 0; i < args.length; i++) {
         const arg = args[i]!
-        if (arg === '--help' || arg === '-h') {
-            result.help = true
-            continue
-        }
-        if (arg === '--limit') {
+        if (arg === '--help' || arg === '-h') result.help = true
+        else if (arg === '--json') result.json = true
+        else if (arg === '--limit') {
             const value = args[++i]
-            if (!value) {
-                throw new PingPeerError('bad_args', '--limit requires a number')
-            }
+            if (!value || value.startsWith('-')) throw new PingPeerError('bad_args', '--limit requires a number')
             result.messageLimit = Number(value)
-            continue
-        }
-        if (arg.startsWith('--limit=')) {
+        } else if (arg.startsWith('--limit=')) {
             result.messageLimit = Number(arg.slice('--limit='.length))
-            continue
-        }
-        if (arg.startsWith('-')) {
+        } else if (arg.startsWith('-')) {
             throw new PingPeerError('bad_args', `unexpected flag: ${arg}`)
+        } else if (!result.sessionId) {
+            result.sessionId = arg
+        } else {
+            throw new PingPeerError('bad_args', `unexpected arg: ${arg}`)
         }
-        if (!result.sessionIdPrefix) {
-            result.sessionIdPrefix = arg
-            continue
-        }
-        throw new PingPeerError('bad_args', `unexpected arg: ${arg}`)
     }
-
-    if (result.messageLimit !== undefined && !Number.isFinite(result.messageLimit)) {
-        throw new PingPeerError('bad_args', '--limit must be a number')
+    if (result.messageLimit !== undefined && (!Number.isInteger(result.messageLimit) || result.messageLimit < 1 || result.messageLimit > 100)) {
+        throw new PingPeerError('bad_args', '--limit must be an integer between 1 and 100')
     }
-
     return result
 }
 
 export async function handleInspectPeerCommand(args: string[]): Promise<void> {
     const parsed = parseInspectPeerArgs(args)
-    if (parsed.help) {
-        showHelp()
-        return
-    }
+    if (parsed.help) return showHelp()
+    if (!parsed.sessionId) throw new PingPeerError('bad_args', 'exact session id is required')
 
-    await initializeToken()
-
-    if (!parsed.sessionIdPrefix) {
-        showHelp()
-        throw new PingPeerError('bad_args', 'missing session id; usage: hapi inspect-peer <session-id>')
-    }
-
-    const result = await inspectPeer({
-        sessionIdPrefix: parsed.sessionIdPrefix,
-        messageLimit: parsed.messageLimit
-    })
-    console.log(formatInspectPeerReport(result))
+    await initializeToken({ interactive: !parsed.json })
+    const result = await inspectPeer({ sessionId: parsed.sessionId, messageLimit: parsed.messageLimit })
+    console.log(parsed.json ? JSON.stringify({ ok: true, ...result }) : formatInspectPeerReport(result))
 }
 
 export const inspectPeerCommand: CommandDefinition = {
@@ -101,17 +69,17 @@ export const inspectPeerCommand: CommandDefinition = {
         try {
             await handleInspectPeerCommand(commandArgs)
         } catch (error) {
-            if (error instanceof PingPeerError) {
-                console.error(chalk.red('hapi inspect-peer:'), error.message)
-                process.exit(exitCodeForPingPeerError(error))
+            if (error instanceof PingPeerError || error instanceof TokenInitializationError) {
+                const output = commandArgs.includes('--json')
+                    ? JSON.stringify({ ok: false, error: { code: error.code, message: error.message } })
+                    : `${chalk.red('hapi inspect-peer:')} ${error.message}`
+                commandArgs.includes('--json') ? console.log(output) : console.error(output)
+                process.exit(error instanceof TokenInitializationError ? 2 : exitCodeForPingPeerError(error))
             }
-            console.error(
-                chalk.red('hapi inspect-peer:'),
-                error instanceof Error ? error.message : 'Unknown error'
-            )
-            if (process.env.DEBUG) {
-                console.error(error)
-            }
+            const output = commandArgs.includes('--json')
+                ? JSON.stringify({ ok: false, error: { code: 'internal', message: error instanceof Error ? error.message : 'Unknown error' } })
+                : `${chalk.red('hapi inspect-peer:')} ${error instanceof Error ? error.message : 'Unknown error'}`
+            commandArgs.includes('--json') ? console.log(output) : console.error(output)
             process.exit(1)
         }
     }

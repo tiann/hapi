@@ -3,6 +3,7 @@ import { MessagesQuerySchema, QueuedStateRequestSchema, SendMessageRequestSchema
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
+import { MessageLocalIdConflictError } from '../../sync/messageService'
 
 export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
@@ -141,14 +142,21 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Message requires text or attachments' }, 400)
         }
 
-        await engine.sendMessage(sessionId, {
-            text: parsed.data.text,
-            localId: parsed.data.localId,
-            attachments: parsed.data.attachments,
-            sentFrom: 'webapp',
-            scheduledAt: parsed.data.scheduledAt,
-            deliveryMode: parsed.data.deliveryMode
-        })
+        try {
+            await engine.sendMessage(sessionId, {
+                text: parsed.data.text,
+                localId: parsed.data.localId,
+                attachments: parsed.data.attachments,
+                sentFrom: 'webapp',
+                scheduledAt: parsed.data.scheduledAt,
+                deliveryMode: parsed.data.deliveryMode
+            })
+        } catch (error) {
+            if (error instanceof MessageLocalIdConflictError) {
+                return c.json({ error: error.message, code: 'local_id_conflict' }, 409)
+            }
+            throw error
+        }
         return c.json({ ok: true })
     })
 

@@ -24,10 +24,6 @@ vi.mock('./utils/mcpConfig', () => ({
     appendMcpConfigArg: () => undefined
 }))
 
-vi.mock('./utils/systemPrompt', () => ({
-    getSystemPrompt: () => 'HAPI system prompt'
-}))
-
 vi.mock('@/utils/bunRuntime', () => ({
     withBunRuntimeEnv: (env: NodeJS.ProcessEnv) => env
 }))
@@ -38,10 +34,6 @@ vi.mock('@/utils/spawnWithTerminalGuard', () => ({
 
 vi.mock('@/constants/uploadPaths', () => ({
     getHapiBlobsDir: () => '/tmp/hapi-blobs'
-}))
-
-vi.mock('@/utils/shellEscape', () => ({
-    stripNewlinesForWindowsShellArg: (value: string) => value
 }))
 
 vi.mock('./sdk/utils', () => ({
@@ -71,7 +63,6 @@ describe('claudeLocal model arguments', () => {
         })
 
         expect(getSpawnArgs()).toEqual([
-            '--append-system-prompt', 'HAPI system prompt',
             '--model', 'claude-opus-4-1',
             '--settings', '/tmp/hooks.json',
             '--add-dir', '/tmp/hapi-blobs'
