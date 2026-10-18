@@ -1188,15 +1188,20 @@ describe('SessionList search toggle', () => {
         vi.unstubAllGlobals()
     })
 
-    function stubHeaderWidth(width: number) {
+    function stubHeaderWidth(width: number | { row: number; actions: number }) {
+        const widths = typeof width === 'number'
+            ? { row: width, actions: width }
+            : width
         class FakeResizeObserver {
             callback: ResizeObserverCallback
             constructor(cb: ResizeObserverCallback) {
                 this.callback = cb
             }
             observe = (target: Element) => {
+                const isRow = (target as HTMLElement).dataset?.testid === 'session-list-header-row'
+                const reported = isRow ? widths.row : widths.actions
                 this.callback(
-                    [{ target, contentRect: { width } as DOMRectReadOnly } as ResizeObserverEntry],
+                    [{ target, contentRect: { width: reported } as DOMRectReadOnly } as ResizeObserverEntry],
                     this as unknown as ResizeObserver
                 )
             }
@@ -1262,7 +1267,24 @@ describe('SessionList search toggle', () => {
 
     it('lets a long query chip yield so More stays on-screen at 320px / 130% (tiann/hapi#2040)', () => {
         localStorage.setItem('hapi-font-scale', '1.3')
-        stubHeaderWidth(80)
+        // Phone row 320px; actions leftover crushed to ~80px (the bug geometry).
+        // Search must cap itself so machine menu + More still fit in that row.
+        stubHeaderWidth({ row: 320, actions: 80 })
+        const machineMenuPx = 47
+        const morePx = 47
+        const originalOffset = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth')
+        Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
+            configurable: true,
+            get() {
+                if ((this as HTMLElement).dataset?.testid === 'session-list-header-machine-menu') {
+                    return machineMenuPx
+                }
+                if ((this as HTMLElement).dataset?.measureId === '__more') {
+                    return morePx
+                }
+                return originalOffset?.get?.call(this) ?? 0
+            },
+        })
 
         const now = Date.now()
         renderWithProviders(
@@ -1313,9 +1335,17 @@ describe('SessionList search toggle', () => {
         // Chip text may shrink; More (+ machine menu) must not be crushed offscreen.
         expect(searchGroup).toHaveClass('min-w-0')
         expect(actions).toHaveClass('flex-1', 'min-w-0')
+        // row 320 - pad 16 - gap - machine - gap - More ≈ 201 at 130% metrics.
+        const maxWidth = Number.parseFloat(searchGroup.style.maxWidth)
+        expect(maxWidth).toBeGreaterThan(0)
+        expect(maxWidth).toBeLessThanOrEqual(320 - machineMenuPx - morePx)
         expect(screen.getByTestId('session-list-header-overflow')).toBeInTheDocument()
         expect(within(actions).getByRole('button', { name: /more/i })).toBeInTheDocument()
+        expect(within(actions).getByTestId('session-list-header-machine-menu')).toBeInTheDocument()
 
+        if (originalOffset) {
+            Object.defineProperty(HTMLElement.prototype, 'offsetWidth', originalOffset)
+        }
         vi.unstubAllGlobals()
         localStorage.removeItem('hapi-font-scale')
     })

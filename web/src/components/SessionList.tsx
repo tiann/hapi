@@ -828,6 +828,11 @@ export function SessionListSearch(props: {
     onExpandedChange: (expanded: boolean) => void
     /** Minimum width of icon + clear + calendar. Query text may shrink; these may not. */
     chromeMinPx?: number
+    /**
+     * Caps the collapsed query group so machine menu + More stay in the row.
+     * The 9rem chip is a ceiling, not a reservation (#2040).
+     */
+    maxWidthPx?: number
 }) {
     const { t } = useTranslation()
     const [datePickerOpen, setDatePickerOpen] = useState(false)
@@ -940,16 +945,24 @@ export function SessionListSearch(props: {
     if (!props.expanded) {
         const hasTextQuery = props.value.length > 0
         const collapsedLabel = hasTextQuery ? `${searchLabel}: ${props.value}` : searchLabel
+        // Idle: shrink-0 so the icon does not crush under neighbors (#2039).
+        // Active query: maxWidth reserves machine menu + More before the 9rem
+        // chip can take ~240px and shove More off a 320px / 130% row (#2040).
+        const chromeFloor = hasTextQuery && props.chromeMinPx && props.chromeMinPx > 0
+            ? props.chromeMinPx
+            : 0
+        const reservedCap = hasTextQuery && props.maxWidthPx && props.maxWidthPx > 0
+            ? Math.max(props.maxWidthPx, chromeFloor)
+            : 0
         return (
-            // Idle (no query): shrink-0 so the icon does not crush under neighbors
-            // (tiann/hapi#2039 overlap). Active query: min-w-0 so the chip text
-            // yields to More + machine menu at 320px / 130% (#2040 Major). Clear
-            // and calendar stay shrink-0 chrome; only the query text truncates.
             <div
                 data-testid="session-list-search"
                 data-expanded="false"
-                style={hasTextQuery && props.chromeMinPx && props.chromeMinPx > 0
-                    ? { minWidth: props.chromeMinPx }
+                style={chromeFloor > 0 || reservedCap > 0
+                    ? {
+                        ...(chromeFloor > 0 ? { minWidth: chromeFloor } : {}),
+                        ...(reservedCap > 0 ? { maxWidth: reservedCap } : {}),
+                    }
                     : undefined}
                 className={cn(
                     'relative flex max-w-full flex-nowrap items-center gap-1',
@@ -1388,6 +1401,9 @@ export function SessionList(props: {
     const [toolbarSlotWidths, setToolbarSlotWidths] = useState<Record<string, number>>({})
     const [toolbarChrome, setToolbarChrome] = useState({ morePx: TOOLBAR_MORE_PX, gapPx: TOOLBAR_GAP_PX, machinePx: 0 })
     const [searchChromePx, setSearchChromePx] = useState(0)
+    const [searchMaxPx, setSearchMaxPx] = useState(0)
+    // jsdom reports clientWidth 0; the row observer publishes the stubbed width.
+    const [toolbarRowBoxPx, setToolbarRowBoxPx] = useState(0)
     // Search expand unmounts the actions box. A callback ref re-observes the
     // new node when search collapses; an effect keyed only on showHeaderRow does not.
     const setHeaderActionsNode = useCallback((node: HTMLDivElement | null) => {
@@ -1397,7 +1413,7 @@ export function SessionList(props: {
         // Search expand unmounts this node — keep the last positive width so
         // we do not fall back to a permissive unmeasured budget mid-cycle.
         if (!node || typeof ResizeObserver === 'undefined') return
-        const publish = (reported = 0) => {
+        const publishActions = (reported = 0) => {
             // flex-1 allocation, not the icon cluster's intrinsic width and not
             // the previous expanded-search layout (#2040).
             const allocated = node.clientWidth
@@ -1405,16 +1421,28 @@ export function SessionList(props: {
             if (width > 0) setHeaderRowWidth(width)
         }
         const ro = new ResizeObserver((entries) => {
-            const target = entries[0]?.target
-            const reported = entries[0]?.contentRect.width ?? 0
-            const client = target instanceof HTMLElement ? target.clientWidth : 0
-            publish(client > 0 ? client : reported)
+            let actionsWidth = 0
+            let sawActions = false
+            for (const entry of entries) {
+                const target = entry.target
+                const reported = entry.contentRect.width ?? 0
+                const client = target instanceof HTMLElement ? target.clientWidth : 0
+                const width = client > 0 ? client : reported
+                if (target === headerRowRef.current && target !== node && width > 0) {
+                    setToolbarRowBoxPx((previous) => previous === width ? previous : width)
+                }
+                if (target === node) {
+                    sawActions = true
+                    actionsWidth = width
+                }
+            }
+            if (sawActions) publishActions(actionsWidth)
         })
         ro.observe(node)
         const row = headerRowRef.current
         if (row && row !== node) ro.observe(row)
         actionsObserverRef.current = ro
-        publish(node.clientWidth || node.getBoundingClientRect().width)
+        publishActions(node.clientWidth || node.getBoundingClientRect().width)
     }, [])
     const normalizedQuery = normalizeSearch(searchQuery)
     const timeRange = getSessionTimeRange(customStart, customEnd)
@@ -2031,6 +2059,19 @@ export function SessionList(props: {
                 ? previous
                 : { morePx, gapPx, machinePx }
         ))
+        // Search may use a 9rem chip. Reserve padding + gap + visible machine
+        // menu + More so that chip cannot eat the trailing controls (#2040).
+        const row = headerRowRef.current
+        const rowBox = row && row.clientWidth > 0 ? row.clientWidth : toolbarRowBoxPx
+        const rowStyle = row ? getComputedStyle(row) : null
+        const rowPad = rowStyle
+            ? (Number.parseFloat(rowStyle.paddingLeft) || 0) + (Number.parseFloat(rowStyle.paddingRight) || 0)
+            : 0
+        const trailing = gapPx
+            + (machinePx > 0 ? machinePx + gapPx : 0)
+            + morePx
+        const nextSearchMax = rowBox > 0 ? Math.max(0, rowBox - rowPad - trailing) : 0
+        setSearchMaxPx((previous) => previous === nextSearchMax ? previous : nextSearchMax)
     })
 
     // Pull-to-refresh on the scrollable list. Touch-only gesture mirroring the
@@ -2150,6 +2191,7 @@ export function SessionList(props: {
                             expanded={searchExpanded}
                             onExpandedChange={setSearchExpanded}
                             chromeMinPx={searchQuery.length > 0 ? searchChromePx : 0}
+                            maxWidthPx={searchQuery.length > 0 ? searchMaxPx : 0}
                         />
                     ) : null}
                     {!(showSearch && searchExpanded) ? (
@@ -2289,7 +2331,11 @@ export function SessionList(props: {
                                             <span data-measure-id="__more" className="inline-flex h-9 w-9 shrink-0" />
                                         </div>
                                         {showMachineFilterBar ? (
-                                            <div ref={machineMenuRef} className="inline-flex shrink-0">
+                                            <div
+                                                ref={machineMenuRef}
+                                                data-testid="session-list-header-machine-menu"
+                                                className="inline-flex shrink-0"
+                                            >
                                                 <MachineFilterMenu
                                                     machines={machineFilterItems}
                                                     totalCount={allSessions.length}
