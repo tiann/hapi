@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Session } from './types'
+import type { SessionBootstrapInfo } from './api'
 
 const socketHarness = vi.hoisted(() => ({
     sockets: [] as Array<{
@@ -1083,7 +1084,7 @@ describe('ApiSessionClient durable status identity', () => {
 describe('ApiSessionClient peer-tools snapshot (#2056)', () => {
     it('captures the create-time preference from the bootstrap row', () => {
         socketHarness.sockets.length = 0
-        const client = new ApiSessionClient('token', { ...createSession(), peerToolsDisabled: true })
+        const client = new ApiSessionClient('token', { ...createSession(), peerToolsDisabled: true } as SessionBootstrapInfo)
         expect(client.peerToolsDisabled).toBe(true)
         client.close()
     })
@@ -1105,7 +1106,7 @@ describe('ApiSessionClient peer-tools snapshot (#2056)', () => {
         client.close()
 
         socketHarness.sockets.length = 0
-        const materializeDisabled = vi.fn(async () => ({ ...createSession({ namespace: 'default' }), peerToolsDisabled: true }))
+        const materializeDisabled = vi.fn(async () => ({ ...createSession({ namespace: 'default' }), peerToolsDisabled: true } as SessionBootstrapInfo))
         const adopted = new ApiSessionClient('token', createSession(), { materialize: materializeDisabled })
         adopted.sendUserMessage('hello')
         expect(await adopted.materialize()).toBe(true)
