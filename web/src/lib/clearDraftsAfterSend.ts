@@ -1,9 +1,13 @@
 import { clearDraft } from '@/lib/composer-drafts'
 import { clearDraftAttachments } from '@/lib/composer-attachment-drafts'
+import { clearComposerDraftSnapshotIfText } from '@/lib/composer-draft-transfer'
 
-function clearComposerDraft(sessionId: string): void {
+function clearComposerDraft(sessionId: string, sentText?: string): void {
     clearDraft(sessionId)
     clearDraftAttachments(sessionId)
+    if (sentText !== undefined) {
+        clearComposerDraftSnapshotIfText(sessionId, sentText)
+    }
 }
 
 /**
@@ -14,9 +18,10 @@ function clearComposerDraft(sessionId: string): void {
 export function clearDraftsAfterSend(
     sentSessionId: string,
     routeSessionId: string | null,
+    sentText?: string,
 ): void {
-    clearComposerDraft(sentSessionId)
+    clearComposerDraft(sentSessionId, sentText)
     if (routeSessionId && sentSessionId !== routeSessionId) {
-        clearComposerDraft(routeSessionId)
+        clearComposerDraft(routeSessionId, sentText)
     }
 }
