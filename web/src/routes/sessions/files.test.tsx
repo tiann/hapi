@@ -9,6 +9,7 @@ import FilesPage from './files'
 const mocks = vi.hoisted(() => ({
     navigate: vi.fn(),
     fileSearch: vi.fn(),
+    listRecycleBin: vi.fn(async () => ({ success: true, entries: [], retentionDays: 30 })),
     sessionId: 'session-1',
     transferComposerDraftThenNavigate: vi.fn(async (
         _source: string,
@@ -40,7 +41,7 @@ vi.mock('@/lib/composer-draft-transfer', () => ({
 }))
 
 vi.mock('@/lib/app-context', () => ({
-    useAppContext: () => ({ api: {} }),
+    useAppContext: () => ({ api: { listRecycleBin: mocks.listRecycleBin } }),
 }))
 
 vi.mock('@/hooks/useAppGoBack', () => ({
@@ -112,6 +113,7 @@ beforeEach(() => {
 describe('FilesPage search navigation', () => {
     beforeEach(() => {
         vi.clearAllMocks()
+        mocks.listRecycleBin.mockResolvedValue({ success: true, entries: [], retentionDays: 30 })
         mocks.sessionId = 'session-1'
         mocks.search = { tab: 'directories', query: '感' }
         window.localStorage.clear()
@@ -260,6 +262,16 @@ describe('FilesPage reopen draft transfer', () => {
         renderFilesPage()
         const secondScrollRegion = document.querySelector('[data-hapi-session-files-scroll="true"]') as HTMLElement
         expect(secondScrollRegion.scrollTop).toBe(87)
+    })
+
+    it('opens the Recycle Bin from the Files toolbar', async () => {
+        renderFilesPage()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Open Recycle Bin' }))
+
+        expect(await screen.findByRole('heading', { name: 'HAPI Recycle Bin' })).toBeInTheDocument()
+        expect(mocks.listRecycleBin).toHaveBeenCalledWith('session-1')
+        expect(await screen.findByText('The Recycle Bin is empty')).toBeInTheDocument()
     })
 })
 
