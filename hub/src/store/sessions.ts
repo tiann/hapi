@@ -3,7 +3,7 @@ import { prepareCached } from './statementCache'
 import { bumpSessionDeletionEpoch } from './sessionInvalidation'
 import { randomUUID } from 'node:crypto'
 
-import type { StoredSession, VersionedUpdateResult } from './types'
+import type { SessionTodoSource, StoredSession, VersionedUpdateResult } from './types'
 import { safeJsonParse } from './json'
 import { updateVersionedField } from './versionedUpdates'
 
@@ -153,6 +153,8 @@ type DbSessionRow = {
     service_tier: string | null
     todos: string | null
     todos_updated_at: number | null
+    todos_source_at: number | null
+    todos_source_seq: number | null
     team_state: string | null
     team_state_updated_at: number | null
     active: number
@@ -180,6 +182,8 @@ function toStoredSession(row: DbSessionRow): StoredSession {
         serviceTier: row.service_tier,
         todos: safeJsonParse(row.todos),
         todosUpdatedAt: row.todos_updated_at,
+        todosSourceAt: row.todos_source_at,
+        todosSourceSeq: row.todos_source_seq,
         teamState: safeJsonParse(row.team_state),
         teamStateUpdatedAt: row.team_state_updated_at,
         active: row.active === 1,
@@ -529,29 +533,55 @@ export function updateSessionAgentState(
     })
 }
 
+/** Persist structured tasks in canonical transcript position order.
+ *
+ * `todos_source_*` tracks the message that produced the snapshot. The public
+ * `todos_updated_at` field remains a strictly increasing SSE version and is
+ * intentionally independent from the source timestamp.
+ */
 export function setSessionTodos(
     db: Database,
     id: string,
     todos: unknown,
-    todosUpdatedAt: number,
-    namespace: string
+    source: SessionTodoSource,
+    namespace: string,
+    options: { touchUpdatedAt?: boolean } = {}
 ): boolean {
     try {
         const json = todos === null || todos === undefined ? null : JSON.stringify(todos)
+        const now = Date.now()
         const result = prepareCached(db, `
             UPDATE sessions
             SET todos = @todos,
-                todos_updated_at = @todos_updated_at,
-                updated_at = CASE WHEN updated_at > @updated_at THEN updated_at ELSE @updated_at END,
+                todos_updated_at = CASE
+                    WHEN todos_updated_at IS NULL OR todos_updated_at < @now THEN @now
+                    ELSE todos_updated_at + 1
+                END,
+                todos_source_at = @source_at,
+                todos_source_seq = @source_seq,
+                updated_at = CASE
+                    WHEN @touch_updated_at = 1
+                        THEN CASE WHEN updated_at > @source_at THEN updated_at ELSE @source_at END
+                    ELSE updated_at
+                END,
                 seq = seq + 1
             WHERE id = @id
               AND namespace = @namespace
-              AND (todos_updated_at IS NULL OR todos_updated_at < @todos_updated_at)
+              AND (
+                  todos_source_at IS NULL
+                  OR
+                  (todos_source_at IS NOT NULL AND (
+                      todos_source_at < @source_at
+                      OR (todos_source_at = @source_at AND COALESCE(todos_source_seq, -1) < @source_seq)
+                  ))
+              )
         `).run({
             id,
             todos: json,
-            todos_updated_at: todosUpdatedAt,
-            updated_at: todosUpdatedAt,
+            now,
+            source_at: source.at,
+            source_seq: source.seq,
+            touch_updated_at: options.touchUpdatedAt === false ? 0 : 1,
             namespace
         })
 
@@ -562,9 +592,10 @@ export function setSessionTodos(
 }
 
 /**
- * Force-replace todos after rewind/fork (ignores the normal
- * `todos_updated_at < candidate` guard so an older remaining TodoWrite can
- * land). The watermark itself MUST still advance: SSE clients gate structured
+ * Force-replace todos after rewind/fork (ignores the normal source-position
+ * guard so an older remaining TodoWrite can land). The source position is a
+ * barrier and never moves backwards: late pre-rewind messages must not revive
+ * deleted tasks. The watermark itself MUST still advance: SSE clients gate structured
  * todos patches on `todosUpdatedAt`, and dual EventSources can deliver a
  * buffered pre-rewind patch after the post-rewind Session. Writing the
  * remaining message's older `createdAt` here would let that stale patch win
@@ -577,7 +608,9 @@ export function replaceSessionTodos(
     db: Database,
     id: string,
     todos: unknown,
-    namespace: string
+    namespace: string,
+    source: SessionTodoSource | null = null,
+    options: { touchUpdatedAt?: boolean } = {}
 ): boolean {
     try {
         const json = todos === null || todos === undefined ? null : JSON.stringify(todos)
@@ -589,7 +622,23 @@ export function replaceSessionTodos(
                     WHEN todos_updated_at IS NULL THEN @now
                     ELSE todos_updated_at + 1
                 END,
-                updated_at = CASE WHEN updated_at > @now THEN updated_at ELSE @now END,
+                todos_source_at = CASE
+                    WHEN @source_at IS NULL THEN todos_source_at
+                    WHEN todos_source_at IS NULL OR todos_source_at < @source_at THEN @source_at
+                    WHEN todos_source_at = @source_at AND COALESCE(todos_source_seq, -1) < @source_seq THEN @source_at
+                    ELSE todos_source_at
+                END,
+                todos_source_seq = CASE
+                    WHEN @source_at IS NULL THEN todos_source_seq
+                    WHEN todos_source_at IS NULL OR todos_source_at < @source_at THEN @source_seq
+                    WHEN todos_source_at = @source_at AND COALESCE(todos_source_seq, -1) < @source_seq THEN @source_seq
+                    ELSE todos_source_seq
+                END,
+                updated_at = CASE
+                    WHEN @touch_updated_at = 1
+                        THEN CASE WHEN updated_at > @now THEN updated_at ELSE @now END
+                    ELSE updated_at
+                END,
                 seq = seq + 1
             WHERE id = @id
               AND namespace = @namespace
@@ -597,6 +646,9 @@ export function replaceSessionTodos(
             id,
             todos: json,
             now,
+            source_at: source?.at ?? null,
+            source_seq: source?.seq ?? null,
+            touch_updated_at: options.touchUpdatedAt === false ? 0 : 1,
             namespace
         })
         return result.changes === 1
