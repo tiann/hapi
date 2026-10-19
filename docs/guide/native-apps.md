@@ -14,6 +14,16 @@ The repository provides these build paths:
 | iOS | iOS 17 or newer | [iOS README](https://github.com/tiann/hapi/blob/main/ios/README.md): Xcode 16 or newer, shared `Hapi` scheme; device builds require signing. |
 | Android | Android 8.0 (API 26) or newer | [Android README](https://github.com/tiann/hapi/blob/main/android/README.md): JDK 17+, Android SDK, Gradle wrapper; build/install a debug APK or configure release signing. |
 
+For a prebuilt Android test APK, open the
+[Android workflow](https://github.com/tiann/hapi/actions/workflows/android.yml),
+choose a run with a successful **build** job, and download the
+`hapi-android-debug-<commit SHA>` artifact (GitHub sign-in required). Extract
+the ZIP to get `app-debug.apk` and its SHA-256 checksum. These debug builds
+expire after 14 days and have no FCM push configuration. Installing a build
+with a different signing key may require uninstalling the previous app,
+which removes local app data. See the
+[CI APK instructions](https://github.com/tiann/hapi/blob/main/android/README.md#download-a-ci-apk).
+
 Maintainers can use the [Android Official Build workflow](https://github.com/tiann/hapi/blob/main/.github/workflows/android-release.yml)
 to produce signed APK/AAB artifacts with the official Firebase configuration.
 That workflow does not publish to Google Play. Push setup depends on the build
