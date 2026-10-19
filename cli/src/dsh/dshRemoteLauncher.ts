@@ -16,6 +16,8 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     private backend: ReturnType<typeof createDshBackend> | null = null
     private permissionHandler: AcpPermissionHandler | null = null
     private abortController = new AbortController()
+    private transportFailure: Error | null = null
+    private cleanupStarted = false
 
     constructor(private readonly session: DshSession) {
         super(process.env.DEBUG ? session.logPath : undefined)
@@ -40,6 +42,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     protected async runMainLoop(): Promise<void> {
         const backend = createDshBackend()
         this.backend = backend
+        backend.onTransportClosed((error) => this.handleTransportClosed(error))
         backend.onStderrError((error) => {
             logger.debug('[dsh-acp] stderr error', error)
             this.session.sendSessionEvent({ type: 'message', message: error.message })
@@ -47,12 +50,14 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         })
 
         await backend.initialize()
+        this.throwIfTransportFailed()
         const acpSessionId = await backend.newSession({
             cwd: this.session.path,
             // The official DSH ACP composition rejects non-empty MCP servers;
             // its tools are configured by the DSH server itself.
             mcpServers: []
         })
+        this.throwIfTransportFailed()
         this.session.sessionId = acpSessionId
 
         this.permissionHandler = new AcpPermissionHandler(
@@ -68,9 +73,12 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         while (!this.shouldExit) {
             const batch = await this.session.queue.waitForMessagesAndGetAsString(this.abortController.signal)
             if (!batch) {
+                this.throwIfTransportFailed()
                 if (this.abortController.signal.aborted && !this.shouldExit) continue
                 break
             }
+
+            this.throwIfTransportFailed()
 
             this.session.onThinkingChange(true)
             this.messageBuffer.addMessage(batch.message, 'user')
@@ -78,6 +86,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             try {
                 await backend.prompt(acpSessionId, prompt, (message) => this.handleAgentMessage(message))
             } catch (error) {
+                this.throwIfTransportFailed()
                 const message = error instanceof Error ? error.message : String(error)
                 logger.warn('[dsh-acp] prompt failed', { message })
                 this.session.sendSessionEvent({ type: 'message', message: `DSH prompt failed: ${message}` })
@@ -85,14 +94,17 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             } finally {
                 this.session.onThinkingChange(false)
                 await this.permissionHandler?.cancelAll('Prompt finished')
-                if (this.session.queue.size() === 0 && !this.shouldExit) {
+                if (this.session.queue.size() === 0 && !this.shouldExit && !this.transportFailure) {
                     this.session.sendSessionEvent({ type: 'ready' })
                 }
             }
         }
+
+        this.throwIfTransportFailed()
     }
 
     protected async cleanup(): Promise<void> {
+        this.cleanupStarted = true
         this.clearAbortHandlers(this.session.client.rpcHandlerManager)
         await this.permissionHandler?.cancelAll('Session ended')
         this.permissionHandler = null
@@ -131,6 +143,13 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleAbort(): Promise<void> {
+        if (this.transportFailure) {
+            await this.permissionHandler?.cancelAll('Session ended')
+            this.abortController.abort()
+            this.session.onThinkingChange(false)
+            return
+        }
+
         if (this.backend && this.session.sessionId) {
             await this.backend.cancelPrompt(this.session.sessionId)
         }
@@ -141,6 +160,25 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         this.abortController.abort()
         this.abortController = new AbortController()
         this.messageBuffer.addMessage('Turn aborted', 'status')
+    }
+
+    private handleTransportClosed(error: Error): void {
+        if (this.cleanupStarted || this.shouldExit || this.transportFailure) return
+
+        this.transportFailure = error
+        logger.warn('[dsh-acp] transport closed unexpectedly', { message: error.message })
+        this.session.sendSessionEvent({
+            type: 'message',
+            message: `DSH ACP process stopped: ${error.message}`
+        })
+        this.messageBuffer.addMessage(`DSH ACP process stopped: ${error.message}`, 'status')
+        this.abortController.abort()
+    }
+
+    private throwIfTransportFailed(): void {
+        if (this.transportFailure) {
+            throw this.transportFailure
+        }
     }
 
     private async handleExitFromUi(): Promise<void> {
