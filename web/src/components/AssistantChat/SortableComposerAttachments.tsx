@@ -10,8 +10,9 @@ import {
     useRef,
     useState,
 } from 'react'
+import type { MutableRefObject } from 'react'
 import { type AttachmentDropPosition } from '@/lib/attachmentOrder'
-import { AttachmentItem, type AttachmentDragHandleProps } from './AttachmentItem'
+import { AttachmentItem, type AttachmentDragHandleProps, type AttachmentRetryHandler } from './AttachmentItem'
 
 const DRAG_START_DISTANCE_PX = 6
 
@@ -32,6 +33,9 @@ type SortableComposerAttachmentProps = {
     onKeyDown: (event: ReactKeyboardEvent<HTMLButtonElement>, id: string) => void
     onContextMenu: (event: ReactMouseEvent<Element>, id: string) => void
     onClick: (event: ReactMouseEvent<Element>, id: string) => void
+    attachmentOrderRef?: MutableRefObject<string[]>
+    retryingAttachmentIdsRef?: MutableRefObject<Set<string>>
+    onRetry?: AttachmentRetryHandler
 }
 
 type AttachmentDropTarget = {
@@ -64,6 +68,9 @@ function SortableComposerAttachment(props: SortableComposerAttachmentProps) {
         onKeyDown,
         onContextMenu,
         onClick,
+        attachmentOrderRef,
+        retryingAttachmentIdsRef,
+        onRetry,
     } = props
     const handlePointerDown = useCallback(
         (event: ReactPointerEvent<HTMLButtonElement>) => onPointerDown(event, attachment.id, false),
@@ -100,8 +107,15 @@ function SortableComposerAttachment(props: SortableComposerAttachmentProps) {
         [attachment.name, disabled, handleKeyDown, handlePointerDown],
     )
     const AttachmentWithHandle = useCallback(
-        () => <AttachmentItem dragHandleProps={dragHandleProps} />,
-        [dragHandleProps],
+        () => (
+            <AttachmentItem
+                dragHandleProps={dragHandleProps}
+                attachmentOrderRef={attachmentOrderRef}
+                retryingAttachmentIdsRef={retryingAttachmentIdsRef}
+                onRetry={onRetry}
+            />
+        ),
+        [attachmentOrderRef, dragHandleProps, onRetry],
     )
 
     return (
@@ -123,8 +137,19 @@ export function SortableComposerAttachments(props: {
     orderedAttachmentIds: readonly string[]
     disabled?: boolean
     onReorder: (activeId: string, targetId: string, position: AttachmentDropPosition) => void
+    attachmentOrderRef?: MutableRefObject<string[]>
+    retryingAttachmentIdsRef?: MutableRefObject<Set<string>>
+    onRetry?: AttachmentRetryHandler
 }) {
-    const { attachments, orderedAttachmentIds, onReorder, disabled = false } = props
+    const {
+        attachments,
+        orderedAttachmentIds,
+        onReorder,
+        disabled = false,
+        attachmentOrderRef,
+        retryingAttachmentIdsRef,
+        onRetry,
+    } = props
     const [draggingId, setDraggingId] = useState<string | null>(null)
     const dragRef = useRef<DragState | null>(null)
     const suppressClickIdRef = useRef<string | null>(null)
@@ -267,6 +292,9 @@ export function SortableComposerAttachments(props: {
                         onKeyDown={handleKeyDown}
                         onContextMenu={handleContextMenu}
                         onClick={handleClick}
+                        attachmentOrderRef={attachmentOrderRef}
+                        retryingAttachmentIdsRef={retryingAttachmentIdsRef}
+                        onRetry={onRetry}
                     />
                 )
             })}
