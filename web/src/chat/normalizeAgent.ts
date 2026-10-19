@@ -999,6 +999,8 @@ export function normalizeAgentRecord(
     if (content.type === AGENT_MESSAGE_PAYLOAD_TYPE) {
         const data = isObject(content.data) ? content.data : null
         if (!data || typeof data.type !== 'string') return null
+        const turnId = asString(data.turn_id ?? data.turnId) ?? undefined
+        if (turnId) meta = { ...(isObject(meta) ? meta : {}), codexTurnId: turnId }
 
         if (
             data.type === 'agent-run-start'
@@ -1139,6 +1141,23 @@ export function normalizeAgentRecord(
             }
         }
 
+        if (data.type === 'turn_duration') {
+            const durationMs = nonNegativeNumber(data.durationMs)
+            const scope = isObject(data.scope) ? data.scope : null
+            const scopeRole = asString(data.scope_role ?? data.scopeRole ?? scope?.role)
+            if (data.flavor !== 'codex' || data.hapiUsageScope === 'imported-history'
+                || scopeRole === 'child' || !turnId || durationMs === undefined) return null
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'event',
+                content: { type: 'turn-duration', provider: 'codex', durationMs, turnId },
+                isSidechain: false,
+                meta
+            }
+        }
+
         if (data.type === 'token_count') {
             const usage = normalizeCodexTokenUsage(data.info, data)
             return usage ? {
@@ -1152,6 +1171,7 @@ export function normalizeAgentRecord(
                     ...(data.flavor === 'codex'
                         ? {
                             provider: 'codex' as const,
+                            turnId,
                             model: asString(data.model) ?? undefined
                         }
                         : {})

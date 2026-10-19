@@ -175,7 +175,13 @@ final class TranscriptTypographyTests: XCTestCase {
         let offset = cell.frame.minY - view.contentOffset.y
         for width: CGFloat in [1024, 768, 507, 320] {
             driver.width = width
-            await settle { abs(view.bounds.width - width) < 1 }
+            await settle {
+                guard let frame = view.cellForItem(at: IndexPath(item: 25, section: 0))?.frame else { return false }
+                return abs(view.bounds.width - width) < 1
+                    && abs(frame.width - HapiReadingLayout.contentWidth(in: width)) < 1
+                    && abs(frame.midX - width / 2) < 1
+                    && abs(frame.minY - view.contentOffset.y - offset) < 1
+            }
             let frame = try XCTUnwrap(view.cellForItem(at: IndexPath(item: 25, section: 0))).frame
             XCTAssertEqual(frame.width, HapiReadingLayout.contentWidth(in: width), accuracy: 1)
             XCTAssertEqual(frame.midX, width / 2, accuracy: 1)

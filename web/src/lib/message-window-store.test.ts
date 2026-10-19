@@ -1,4 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { normalizeDecryptedMessage } from '@/chat/normalize'
+import { reduceChatBlocks } from '@/chat/reducer'
+import type { NormalizedMessage } from '@/chat/types'
+import { aggregateResponseGroups } from '@/lib/assistant-runtime'
+import { buildVisibleChatBlocks } from '@/chat/toolGroups'
 import type { ApiClient } from '@/api/client'
 import type { DecryptedMessage, MessagesResponse } from '@/types/api'
 import {
@@ -423,6 +428,39 @@ describe('message tail synchronization', () => {
         expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(['latest'])
         expect(getMessageWindowState(id).hasMore).toBe(true)
         expect('pending' in getMessageWindowState(id)).toBe(false)
+    })
+
+    it('retains Codex round duration through persisted re-entry and a user-free latest tail', async () => {
+        const id = sessionId('codex-round-duration')
+        const tail: DecryptedMessage[] = [
+            { type: 'message', message: 'completed answer' },
+            { type: 'token_count', flavor: 'codex', model: 'gpt-5.4',
+                info: { last_token_usage: { input_tokens: 100, output_tokens: 10 } } },
+            { type: 'turn_duration', flavor: 'codex', durationMs: 39_426 }
+        ].map((data, index) => ({ id: `round-${index}`, seq: 40 + index, localId: null,
+            createdAt: 40_000 + index, content: { role: 'agent', content: { type: 'codex', data: { ...data, turn_id: 'round' } } } }))
+        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+            messages: tail, hasMore: true, oldestPositionAt: 40_000, oldestPositionSeq: 40,
+            newestPositionAt: 40_002, newestPositionSeq: 42, epoch: 3
+        }))
+        const assertDuration = () => {
+            const messages = getMessageWindowState(id).messages
+            expect(messages.map(message => message.id)).toEqual(['round-0', 'round-1', 'round-2'])
+            const normalized = messages.map(normalizeDecryptedMessage).filter((message): message is NormalizedMessage => message !== null)
+            const { blocks } = reduceChatBlocks(normalized, null)
+            const visible = buildVisibleChatBlocks(blocks, { hasMoreMessages: true })
+            expect(aggregateResponseGroups(visible).get('round-0:0')?.roundSummary).toMatchObject({
+                durationMs: 39_426, numTurns: 1, usage: { input_tokens: 100, output_tokens: 10 }
+            })
+        }
+        assertDuration()
+        activateMessageWindow(id)
+        const getMessages = vi.fn(async () => latestResponse(JSON.parse(JSON.stringify(tail)) as DecryptedMessage[], {
+            epoch: 3, limit: 20, hasMore: true, nextBeforeAt: 40_000, nextBeforeSeq: 40
+        }))
+        await syncTailMessages(createApi(getMessages), id)
+        expect(getMessages).toHaveBeenCalledWith(id, { limit: 20 })
+        assertDuration()
     })
 
     it('preserves queued rows while replacing stale server rows on re-entry', async () => {
