@@ -17,6 +17,51 @@ async function fixture() {
     return { queue, rpc, consumed, uncertain, client, dir };
 }
 describe('shared native queue', () => {
+    it('persists explicit abandonment without claiming consumption or replaying after restart', async () => {
+        const { queue, rpc, client, dir, consumed, uncertain } = await fixture();
+        rpc.mockResolvedValueOnce({ queuedSubmission: { id: 'n', input, clientUserMessageId: 'local' } });
+        await queue.enqueue('local', input);
+        rpc.mockResolvedValue({ data: [] }); await queue.reconcile();
+        expect(await queue.abandon('local')).toBe('abandoned');
+        expect(consumed).not.toHaveBeenCalled();
+        const restarted = new SharedCodexQueue(client, 'thread', join(dir, 'ledger.json'), consumed, uncertain);
+        await restarted.load(); expect(restarted.state('local')).toBe('abandoned');
+        uncertain.mockClear();
+        await restarted.enqueue('local', input); await restarted.reconcile(); await restarted.suspend();
+        expect(rpc.mock.calls.filter(([method]) => method === 'thread/queue/add')).toHaveLength(1);
+        expect(uncertain).not.toHaveBeenCalled();
+        expect(await restarted.abandon('local')).toBe('abandoned');
+        await restarted.committed('local'); expect(restarted.state('local')).toBe('consumed');
+    });
+
+    it('refuses abandonment of native queued input or an unavailable native snapshot', async () => {
+        const { queue, rpc } = await fixture();
+        const native = { id: 'n', input, clientUserMessageId: 'local' };
+        rpc.mockResolvedValueOnce({ queuedSubmission: native }); await queue.enqueue('local', input);
+        rpc.mockResolvedValue({ data: [native] });
+        expect(await queue.abandon('local')).toBe('indeterminate');
+        rpc.mockRejectedValue(new Error('snapshot unavailable'));
+        expect(await queue.abandon('local')).toBe('indeterminate');
+        expect(rpc.mock.calls.some(([method]) => method === 'thread/queue/delete')).toBe(false);
+    });
+
+    it('does not acknowledge an abandonment whose tombstone could not be persisted', async () => {
+        const { queue, rpc } = await fixture();
+        rpc.mockResolvedValueOnce({ queuedSubmission: { id: 'n', input, clientUserMessageId: 'local' } });
+        await queue.enqueue('local', input); rpc.mockResolvedValue({ data: [] }); await queue.reconcile();
+        const save = vi.spyOn(queue as any, 'save').mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('disk unavailable'));
+        await expect(queue.abandon('local')).rejects.toThrow('disk unavailable');
+        expect(queue.state('local')).toBe('unknown'); save.mockRestore();
+        expect(await queue.abandon('local')).toBe('abandoned');
+    });
+
+    it('returns consumed when a matching native event wins reconciliation', async () => {
+        const { queue, rpc } = await fixture();
+        rpc.mockResolvedValueOnce({ queuedSubmission: { id: 'n', input, clientUserMessageId: 'local' } }); await queue.enqueue('local', input);
+        rpc.mockImplementationOnce(async () => { await queue.committed('local'); return { data: [] }; });
+        expect(await queue.abandon('local')).toBe('consumed');
+    });
+
     it('does not restore potentially stale input when the shutdown snapshot is unavailable', async () => {
         const { queue, rpc, uncertain } = await fixture();
         rpc.mockResolvedValueOnce({ queuedSubmission: { id: 'n', input, clientUserMessageId: 'local' } }); await queue.enqueue('local', input);

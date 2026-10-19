@@ -52,8 +52,44 @@ function makeSnapshot(overrides: Partial<DecryptedMessage> = {}): DecryptedMessa
 }
 
 describe('useCancelQueuedMessage', () => {
+    it('keeps unresolved shared input visible instead of locally dismissing its backend blocker', async () => {
+        const api = {
+            cancelMessage: vi.fn().mockResolvedValue({ status: 'busy', localId: 'local-1' }),
+            getQueuedState: vi.fn().mockResolvedValue({ invokedLocalMessages: [], queuedLocalIds: [], indeterminateLocalIds: ['local-1'] }),
+        } as unknown as ApiClient
+        const snapshot = makeSnapshot({ deliveryState: 'indeterminate', queueDismissed: true })
+        const { result } = renderHook(() => useCancelQueuedMessage(api), { wrapper: createWrapper() })
+        await act(async () => { await result.current.mutateAsync({ sessionId: 'session-1', messageId: snapshot.id, localId: 'local-1', snapshot, preserveUnknown: true }) })
+        expect(storeMocks.appendOptimisticMessage).toHaveBeenCalledWith('session-1', expect.objectContaining({ deliveryState: 'indeterminate', queueDismissed: false }))
+        expect(storeMocks.markMessagesConsumed).not.toHaveBeenCalled()
+    })
+
     beforeEach(() => {
-        vi.clearAllMocks()
+        vi.resetAllMocks()
+    })
+
+    it('does not resurrect shared input when abandonment SSE precedes a busy Cancel response', async () => {
+        let visible = true
+        storeMocks.appendOptimisticMessage.mockImplementation(() => { visible = true })
+        storeMocks.removeOptimisticMessage.mockImplementation(() => { visible = false })
+        let reply!: (value: unknown) => void
+        const api = {
+            cancelMessage: vi.fn().mockReturnValue(new Promise(resolve => { reply = resolve })),
+            getQueuedState: vi.fn().mockResolvedValue({ invokedLocalMessages: [], queuedLocalIds: [], indeterminateLocalIds: [] }),
+        } as unknown as ApiClient
+        const snapshot = makeSnapshot({ deliveryState: 'indeterminate' })
+        const { result } = renderHook(() => useCancelQueuedMessage(api), { wrapper: createWrapper() })
+        let cancellation!: Promise<unknown>
+        await act(async () => {
+            cancellation = result.current.mutateAsync({ sessionId: 'session-1', messageId: snapshot.id, localId: 'local-1', snapshot, preserveUnknown: true })
+        })
+        await waitFor(() => expect(api.cancelMessage).toHaveBeenCalled())
+        // Another client's successful abandonment removes the row before Cancel settles.
+        storeMocks.removeOptimisticMessage('session-1', 'local-1')
+        await act(async () => { reply({ status: 'busy', localId: 'local-1' }); await cancellation })
+        expect(api.getQueuedState).toHaveBeenCalledWith('session-1', ['local-1'])
+        expect(visible).toBe(false)
+        expect(storeMocks.markMessagesConsumed).not.toHaveBeenCalled()
     })
 
     it('restores an indeterminate held row when cancel returns busy for a normal queued message', async () => {

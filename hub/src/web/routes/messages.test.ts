@@ -72,6 +72,7 @@ function createApp(opts: {
         sendMessage,
         getQueuedState,
         cancelQueuedMessage: async () => ({ status: 'cancelled' }),
+        abandonIndeterminateMessage: async () => ({ status: 'abandoned', localId: 'local' }),
         steerQueuedMessage: opts.steerQueuedMessage ?? (async () => ({ status: 'failed', error: 'Steer failed', localId: null })),
         getMessagesPage,
     } as unknown as SyncEngine
@@ -517,5 +518,19 @@ describe('POST /api/sessions/:id/messages/:messageId/steer', () => {
         const body = await response.json() as { error: string; code: string }
         expect(body.error).toBe('Session is inactive')
         expect(body.code).toBe('session_inactive')
+    })
+})
+
+describe('explicit abandon endpoint', () => {
+    it('requires a confirmed body and an active authorized session', async () => {
+        const { app } = createApp({})
+        const url = '/api/sessions/session-1/messages/local/abandon'
+        const unconfirmed = await app.request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+        expect(unconfirmed.status).toBe(400)
+        const confirmed = await app.request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"confirm":true}' })
+        expect(confirmed.status).toBe(200)
+        expect(await confirmed.json()).toEqual({ status: 'abandoned', localId: 'local' })
+        const { app: inactive } = createApp({ active: false })
+        expect((await inactive.request(url, { method: 'POST', body: '{"confirm":true}' })).status).toBe(409)
     })
 })

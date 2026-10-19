@@ -122,6 +122,14 @@ export class SharedCodexRoot {
                 await this.queue.enqueue(id, buildUserInputFromMessage(resolved), this.interrupted);
             }).catch(error => this.notice(`Message not confirmed: ${error instanceof Error ? error.message : error}. Inspect the queue before retrying.`));
         });
+        this.session.onAbandonQueuedMessage(async id => {
+            await this.bound;
+            if (this.closed || this.stopping) return 'indeterminate';
+            await this.refresh();
+            if (this.currentTurn) return 'indeterminate';
+            const revision = this.turnRevision;
+            return this.queue.abandon(id, () => !this.closed && !this.stopping && !this.currentTurn && this.turnRevision === revision);
+        });
         this.session.onCancelQueuedMessage(async id => { await this.bound; return this.stopping ? 'indeterminate' : this.queue.cancel(id); });
         // Absence from history is NOT proof an uncertain mutation failed.
         this.session.onRetryQueuedMessage(async id => {

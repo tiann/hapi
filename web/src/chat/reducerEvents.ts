@@ -1,4 +1,5 @@
 import type { AgentEvent, AgentEventBlock, ChatBlock, NormalizedMessage } from '@/chat/types'
+import { isObject } from '@hapi/protocol'
 
 function parseClaudeUsageLimit(text: string): AgentEvent | null {
     const reachedMatch = text.match(/^Claude AI usage limit reached\|(\d+)(?:\|([^|]*))?$/)
@@ -66,7 +67,13 @@ export function dedupeAgentEvents(blocks: ChatBlock[]): ChatBlock[] {
 
         if (event.type === 'message' && typeof event.message === 'string') {
             const message = event.message.trim()
-            const key = `message:${message}`
+            const resolution = isObject(block.meta) && isObject(block.meta.abandonedDelivery)
+                ? block.meta.abandonedDelivery : null
+            // Identical inputs can have separate delivery outcomes. Preserve each
+            // resolution while still deduplicating repeated copies of that outcome.
+            const key = resolution && typeof resolution.localId === 'string'
+                ? `abandoned-delivery:${resolution.localId}:${message}`
+                : `message:${message}`
             if (key === prevEventKey) {
                 continue
             }

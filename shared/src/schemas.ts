@@ -321,9 +321,9 @@ export const DecryptedMessageSchema = z.object({
     createdAt: z.number(),
     invokedAt: z.number().nullable().optional(),
     scheduledAt: z.number().nullable().optional(),
-    // The agent was sent the steer but its final outcome could not be proven.
-    // The row stays uninvoked and requires an explicit user resolution.
-    deliveryState: z.literal('indeterminate').optional(),
+    // Unknown delivery stays uninvoked. Explicit abandonment is a durable
+    // non-delivery state; it is not evidence that the agent consumed the input.
+    deliveryState: z.enum(['indeterminate', 'abandoned']).optional(),
     // Live signal via messages-consumed (steered:true); not persisted by the hub.
     steered: z.boolean().optional()
 })

@@ -38,6 +38,17 @@ type SSESubscription = {
 
 export type SSEScope = 'global' | 'full'
 
+function removeCancelledMessage(sessionId: string, messageId: string, localId?: string) {
+    for (const id of [messageId, localId]) {
+        if (!id) continue
+        const consumed = getMessageWindowState(sessionId).messages.some(message =>
+            (message.id === id || message.localId === id) && message.invokedAt !== null)
+        // The app has independent global/session streams. An older cancellation
+        // on either connection must not erase consumption established by the other.
+        if (!consumed) removeOptimisticMessage(sessionId, id)
+    }
+}
+
 const MESSAGE_STREAM_EVENT_TYPES = new Set<SyncEvent['type']>([
     'message-received',
     'messages-consumed',
@@ -703,7 +714,7 @@ export function useSSE(options: {
                     markMessagesRequeued(event.sessionId, event.localIds)
                 }
                 if (event.type === 'message-cancelled') {
-                    removeOptimisticMessage(event.sessionId, event.messageId)
+                    removeCancelledMessage(event.sessionId, event.messageId, event.localId)
                 }
                 onEventRef.current(event)
                 return
@@ -724,7 +735,7 @@ export function useSSE(options: {
             if (event.type === 'message-cancelled') {
                 // Remove the cancelled message from the store. If the local
                 // optimistic removal already cleared it, this is a no-op.
-                removeOptimisticMessage(event.sessionId, event.messageId)
+                removeCancelledMessage(event.sessionId, event.messageId, event.localId)
             }
 
             if (event.type === 'message-received') {

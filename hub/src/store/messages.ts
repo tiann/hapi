@@ -93,7 +93,7 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
         localId: row.local_id,
         invokedAt: row.invoked_at ?? null,
         scheduledAt: row.scheduled_at ?? null,
-        ...(row.delivery_state && row.delivery_state !== 'queued' ? { deliveryState: 'indeterminate' as const } : {})
+        ...(row.delivery_state && row.delivery_state !== 'queued' ? { deliveryState: row.delivery_state === 'abandoned' ? 'abandoned' as const : 'indeterminate' as const } : {})
     }
 }
 
@@ -551,7 +551,7 @@ export function getUninvokedLocalMessages(
 ): StoredMessage[] {
     const deliverableClause = options?.deliverableOnly ? " AND delivery_state = 'queued'" : ''
     const rows = prepareCached(db, 
-        `SELECT * FROM messages WHERE session_id = ? AND invoked_at IS NULL AND local_id IS NOT NULL${deliverableClause} ORDER BY seq ASC`
+        `SELECT * FROM messages WHERE session_id = ? AND invoked_at IS NULL AND local_id IS NOT NULL AND (delivery_state IS NULL OR delivery_state != 'abandoned')${deliverableClause} ORDER BY seq ASC`
     ).all(sessionId) as DbMessageRow[]
     return rows.map(toStoredMessage)
 }
@@ -827,6 +827,8 @@ export function lookupQueuedMessage(
         return { status: 'invoked' as const, message: toStoredMessage(row) }
     }
 
+    if (row.delivery_state === 'abandoned') return { status: 'absent' as const }
+
     if (row.delivery_state === 'dispatching') {
         return { status: 'dispatching' as const, localId: row.local_id, resolvedId: row.id, scheduledAt: row.scheduled_at }
     }
@@ -866,6 +868,20 @@ export function claimIndeterminateMessage(
             LIMIT 1
         `).get(sessionId, messageId, messageId) as DbMessageRow | undefined
         return updated ? toStoredMessage(updated) : null
+    })()
+}
+
+/** Retire unknown delivery without adding visible history or destroying late-ACK correlation. */
+export function abandonIndeterminateMessage(db: Database, sessionId: string, messageId: string): boolean {
+    return db.transaction(() => {
+        const row = prepareCached(db, `SELECT id FROM messages WHERE session_id = ?
+            AND (id = ? OR local_id = ?) AND invoked_at IS NULL AND delivery_state = 'indeterminate' LIMIT 1`)
+            .get(sessionId, messageId, messageId) as Pick<DbMessageRow, 'id'> | undefined
+        if (!row) return false
+        // Preserve localId for late authoritative consumption acknowledgements.
+        prepareCached(db, "UPDATE messages SET delivery_state = 'abandoned' WHERE id = ? AND session_id = ? AND invoked_at IS NULL").run(row.id, sessionId)
+        bumpMessageEpoch(db, sessionId)
+        return true
     })()
 }
 
@@ -1095,7 +1111,7 @@ export function mergeSessionMessages(
             prepareCached(db, 
                 `UPDATE messages
                  SET local_id = NULL,
-                     invoked_at = COALESCE(invoked_at, created_at)
+                     invoked_at = CASE WHEN delivery_state = 'abandoned' THEN invoked_at ELSE COALESCE(invoked_at, created_at) END
                  WHERE session_id = ? AND local_id IN (${placeholders})`
             ).run(fromSessionId, ...localIds)
         }

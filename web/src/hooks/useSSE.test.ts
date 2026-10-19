@@ -4,6 +4,8 @@ import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionSummary } from '@/types/api'
 import type { Session } from '@/types/api'
+import { appendOptimisticMessage, clearMessageWindow, getMessageWindowState } from '@/lib/message-window-store'
+import type { DecryptedMessage } from '@/types/api'
 import {
     applySessionDetailPatch,
     canApplyVersionedSummaryPatch,
@@ -45,7 +47,7 @@ class FakeEventSource {
     }
 }
 
-function renderUseSSE(options?: { onDisconnect?: (reason: string) => void }) {
+function renderUseSSE(options?: { onDisconnect?: (reason: string) => void; scope?: 'global' | 'full' }) {
     const queryClient = new QueryClient()
     const wrapper = ({ children }: { children: ReactNode }) =>
         createElement(QueryClientProvider, { client: queryClient }, children)
@@ -54,6 +56,7 @@ function renderUseSSE(options?: { onDisconnect?: (reason: string) => void }) {
         token: 'test-token',
         baseUrl: 'http://hub.test',
         subscription: { all: true },
+        scope: options?.scope,
         onEvent: () => {},
         onDisconnect: options?.onDisconnect
     }), { wrapper })
@@ -159,6 +162,69 @@ describe('useSSE connection liveness (mobile suspend/resume)', () => {
 
         unmount()
     })
+})
+
+describe('useSSE cancelled delivery reconciliation', () => {
+    beforeEach(() => {
+        FakeEventSource.instances = []
+        vi.stubGlobal('EventSource', FakeEventSource)
+        clearMessageWindow('cancelled-session')
+    })
+
+    afterEach(() => {
+        clearMessageWindow('cancelled-session')
+        vi.unstubAllGlobals()
+    })
+
+    for (const scope of ['global', 'full'] as const) {
+        it(`preserves authoritative consumption before a late cancellation in ${scope} scope`, () => {
+            const message: DecryptedMessage = {
+                id: 'cancelled-server', localId: 'cancelled-local', seq: 1, createdAt: 1000, invokedAt: null,
+                content: { role: 'user', content: { type: 'text', text: 'original input' } },
+            }
+            appendOptimisticMessage('cancelled-session', message)
+            const { unmount } = renderUseSSE({ scope })
+            try {
+                act(() => {
+                    const source = FakeEventSource.instances[0]!
+                    source.simulateOpen()
+                    source.simulateMessage({ type: 'messages-consumed', sessionId: 'cancelled-session', localIds: ['cancelled-local'], invokedAt: 2000 })
+                    source.simulateMessage({ type: 'message-received', sessionId: 'cancelled-session', message: { ...message, invokedAt: 2000 } })
+                    // The other app connection may deliver its older cancellation
+                    // after this connection has already established consumption.
+                    source.simulateMessage({ type: 'message-cancelled', sessionId: 'cancelled-session', messageId: message.id, localId: message.localId })
+                })
+                expect(getMessageWindowState('cancelled-session').messages).toEqual([
+                    expect.objectContaining({ id: message.id, invokedAt: 2000 }),
+                ])
+            } finally { unmount() }
+        })
+        it.each([
+            { name: 'optimistic attachment retry with a missed server echo', id: 'cancelled-local', localId: 'cancelled-local', eventLocalId: 'cancelled-local' },
+            { name: 'server-echoed message', id: 'cancelled-server', localId: 'cancelled-local', eventLocalId: 'cancelled-local' },
+            { name: 'legacy cancellation without localId', id: 'cancelled-server', localId: 'cancelled-local', eventLocalId: undefined },
+        ])(`removes $name by cancellation event in ${scope} scope`, ({ id, localId, eventLocalId }) => {
+            const row = (messageId: string, clientId: string): DecryptedMessage => ({
+                id: messageId, localId: clientId, seq: null, createdAt: 1000, invokedAt: null, status: 'queued',
+                content: { role: 'user', content: { type: 'text', text: 'attachment request', attachments: [{ filename: 'test.txt' }] } },
+            })
+            appendOptimisticMessage('cancelled-session', row(id, localId))
+            appendOptimisticMessage('cancelled-session', row('other-server', 'other-local'))
+            const { unmount } = renderUseSSE({ scope })
+            try {
+                act(() => {
+                    FakeEventSource.instances[0]!.simulateOpen()
+                    FakeEventSource.instances[0]!.simulateMessage({
+                        type: 'message-cancelled', sessionId: 'cancelled-session',
+                        messageId: 'cancelled-server', ...(eventLocalId ? { localId: eventLocalId } : {}),
+                    })
+                })
+                expect(getMessageWindowState('cancelled-session').messages.map(message => message.localId)).toEqual(['other-local'])
+            } finally {
+                unmount()
+            }
+        })
+    }
 })
 
 function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
