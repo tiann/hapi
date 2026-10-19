@@ -66,9 +66,10 @@ describe('SessionRowSummary background status', () => {
         const session = makeSummary({
             active: false,
             backgroundTaskCount: 0,
-            updatedAt: 2_000,
+            updatedAt: 3_000,
+            lastAssistantMessageAt: 2_000,
         })
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ [session.id]: 2_000 }))
+        localStorage.setItem('hapi.sessionLastSeen.v2', JSON.stringify({ [session.id]: 2_000 }))
         const view = render(
             <I18nProvider>
                 <SessionRowSummary
@@ -81,7 +82,7 @@ describe('SessionRowSummary background status', () => {
 
         expect(screen.queryByRole('tooltip', { hidden: true })).not.toBeInTheDocument()
 
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ [session.id]: 1_999 }))
+        localStorage.setItem('hapi.sessionLastSeen.v2', JSON.stringify({ [session.id]: 1_999 }))
         view.rerender(
             <I18nProvider>
                 <SessionRowSummary
@@ -102,8 +103,8 @@ describe('SessionRowSummary background status', () => {
             backgroundTaskCount: 0,
             updatedAt: 2_000,
         })
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ [session.id]: 2_000 }))
-        localStorage.setItem('hapi.sessionManualUnread.v1', JSON.stringify({ [session.id]: 2_000 }))
+        localStorage.setItem('hapi.sessionLastSeen.v2', JSON.stringify({ [session.id]: 2_000 }))
+        localStorage.setItem('hapi.sessionManualUnread.v2', JSON.stringify({ [session.id]: 2_000 }))
 
         const view = render(
             <I18nProvider>
@@ -138,8 +139,8 @@ describe('SessionRowSummary background status', () => {
             thinking: true,
             updatedAt: 2_000,
         })
-        localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ [session.id]: 2_000 }))
-        localStorage.setItem('hapi.sessionManualUnread.v1', JSON.stringify({ [session.id]: 2_000 }))
+        localStorage.setItem('hapi.sessionLastSeen.v2', JSON.stringify({ [session.id]: 2_000 }))
+        localStorage.setItem('hapi.sessionManualUnread.v2', JSON.stringify({ [session.id]: 2_000 }))
 
         render(
             <I18nProvider>

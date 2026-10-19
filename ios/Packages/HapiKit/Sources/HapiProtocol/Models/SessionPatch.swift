@@ -53,6 +53,12 @@ public struct SessionPatch: Equatable, Sendable {
     public var activeTurnStartedAt: PatchField<Int>?
     public var activeAt: Int?
     public var updatedAt: Int?
+    /// Latest visible assistant prose; explicit `.null` clears the clock.
+    public var lastAssistantMessageAt: PatchField<Int>?
+    /// Session sequence that observed `lastAssistantMessageAt`.
+    public var lastAssistantMessageVersion: Int?
+    /// False while the legacy transcript reply-clock scan is incomplete.
+    public var assistantReplyClockBackfilled: Bool?
     public var metadata: VersionedValue<SessionMetadata>?
     public var agentState: VersionedValue<AgentState>?
     public var todos: VersionedValue<[TodoItem]>?
@@ -75,6 +81,9 @@ public struct SessionPatch: Equatable, Sendable {
         activeTurnStartedAt: PatchField<Int>? = nil,
         activeAt: Int? = nil,
         updatedAt: Int? = nil,
+        lastAssistantMessageAt: PatchField<Int>? = nil,
+        lastAssistantMessageVersion: Int? = nil,
+        assistantReplyClockBackfilled: Bool? = nil,
         metadata: VersionedValue<SessionMetadata>? = nil,
         agentState: VersionedValue<AgentState>? = nil,
         todos: VersionedValue<[TodoItem]>? = nil,
@@ -94,6 +103,9 @@ public struct SessionPatch: Equatable, Sendable {
         self.activeTurnStartedAt = activeTurnStartedAt
         self.activeAt = activeAt
         self.updatedAt = updatedAt
+        self.lastAssistantMessageAt = lastAssistantMessageAt
+        self.lastAssistantMessageVersion = lastAssistantMessageVersion
+        self.assistantReplyClockBackfilled = assistantReplyClockBackfilled
         self.metadata = metadata
         self.agentState = agentState
         self.todos = todos
@@ -117,6 +129,9 @@ extension SessionPatch: Codable {
         case activeTurnStartedAt
         case activeAt
         case updatedAt
+        case lastAssistantMessageAt
+        case lastAssistantMessageVersion
+        case assistantReplyClockBackfilled
         case metadata
         case agentState
         case todos
@@ -145,6 +160,9 @@ extension SessionPatch: Codable {
         activeTurnStartedAt = try Self.decodePatchField(Int.self, in: container, forKey: .activeTurnStartedAt)
         activeAt = try container.decodeIfPresent(Int.self, forKey: .activeAt)
         updatedAt = try container.decodeIfPresent(Int.self, forKey: .updatedAt)
+        lastAssistantMessageAt = try Self.decodePatchField(Int.self, in: container, forKey: .lastAssistantMessageAt)
+        lastAssistantMessageVersion = try container.decodeIfPresent(Int.self, forKey: .lastAssistantMessageVersion)
+        assistantReplyClockBackfilled = try container.decodeIfPresent(Bool.self, forKey: .assistantReplyClockBackfilled)
         metadata = try container.decodeIfPresent(VersionedValue<SessionMetadata>.self, forKey: .metadata)
         agentState = try container.decodeIfPresent(VersionedValue<AgentState>.self, forKey: .agentState)
         todos = try container.decodeIfPresent(VersionedValue<[TodoItem]>.self, forKey: .todos)
@@ -167,6 +185,9 @@ extension SessionPatch: Codable {
         try Self.encodePatchField(activeTurnStartedAt, in: &container, forKey: .activeTurnStartedAt)
         try container.encodeIfPresent(activeAt, forKey: .activeAt)
         try container.encodeIfPresent(updatedAt, forKey: .updatedAt)
+        try Self.encodePatchField(lastAssistantMessageAt, in: &container, forKey: .lastAssistantMessageAt)
+        try container.encodeIfPresent(lastAssistantMessageVersion, forKey: .lastAssistantMessageVersion)
+        try container.encodeIfPresent(assistantReplyClockBackfilled, forKey: .assistantReplyClockBackfilled)
         try container.encodeIfPresent(metadata, forKey: .metadata)
         try container.encodeIfPresent(agentState, forKey: .agentState)
         try container.encodeIfPresent(todos, forKey: .todos)

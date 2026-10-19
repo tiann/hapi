@@ -10,6 +10,7 @@ class SessionSortingTest {
         id: String,
         active: Boolean = false,
         updatedAt: Long = 0,
+        lastAssistantMessageAt: Long? = null,
         pinned: Boolean? = null,
         globalPinned: Boolean? = null,
         pendingRequestsCount: Int = 0,
@@ -19,6 +20,7 @@ class SessionSortingTest {
         thinking = false,
         activeAt = 0,
         updatedAt = updatedAt,
+        lastAssistantMessageAt = lastAssistantMessageAt,
         pinned = pinned,
         globalPinned = globalPinned,
         metadata = null,
@@ -105,5 +107,17 @@ class SessionSortingTest {
             )
         )
         assertEquals(listOf("new", "old"), sorted.map { it.id })
+    }
+
+    @Test
+    fun `reply time sorts before updatedAt and falls back when absent`() {
+        val sorted = sortSessionSummaries(
+            listOf(
+                summary("activity-newer", updatedAt = 9_000, lastAssistantMessageAt = 1_000),
+                summary("reply-newer", updatedAt = 1_000, lastAssistantMessageAt = 9_000),
+                summary("legacy-fallback", updatedAt = 8_000),
+            )
+        )
+        assertEquals(listOf("reply-newer", "legacy-fallback", "activity-newer"), sorted.map { it.id })
     }
 }
