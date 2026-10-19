@@ -58,6 +58,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
     let state: AgentState = { steeringActive: true };
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
     let reconnect: (() => void) | null = null;
+    let userMessage: Parameters<ApiSessionClient['onUserMessage']>[0];
     const updateState = vi.fn((fn: (value: AgentState) => AgentState) => { state = fn(state); });
     const rpc = new Map<string, (raw: unknown) => Promise<unknown>>();
     const send = vi.fn();
@@ -67,13 +68,13 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
         hubArchived: opts?.hubArchived ?? false,
         updateMetadata: (fn: (value: Metadata) => Metadata) => { metadata = fn(metadata); },
         updateAgentState: updateState, keepAlive() {},
-        onUserMessage() {}, onCancelQueuedMessage() {}, onRetryQueuedMessage() {},
+        onUserMessage: (handler: Parameters<ApiSessionClient['onUserMessage']>[0]) => { userMessage = handler; }, onCancelQueuedMessage() {}, onRetryQueuedMessage() {},
         onReconnect: (fn: (() => void) | null) => { reconnect = fn; },
         on(event: string, listener: () => void) {
             if (event === 'hub-archived') hubArchivedListeners.push(listener);
         },
         rpcHandlerManager: { registerHandler: (name: string, handler: (raw: unknown) => Promise<unknown>) => rpc.set(name, handler) },
-        sendSessionEvent() {}, sendAgentMessage: send, emitSessionReady() {},
+        sendSessionEvent() {}, sendAgentMessage: send, getAgentState: () => state, emitSessionReady() {},
         sendUserMessage() {}, emitMessagesConsumed() {}, emitSteerIndeterminate() {}, syncNativeQueuedMessage() {},
         sendSessionDeath() {}, async flush() {}, close() {}
     } as unknown as ApiSessionClient;
@@ -94,7 +95,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
         abandoned(): void;
     };
     return {
-        root, native, rpc, send, metadata: () => metadata, state: () => state, updateState,
+        root, native, rpc, send, userMessage: (text: string, deliveryMode: 'steer' | 'queue') => userMessage?.({ role: 'user', content: { type: 'text', text }, meta: { deliveryMode } }, 'message-id'), metadata: () => metadata, state: () => state, updateState,
         reconnect: () => reconnect?.(),
         emitHubArchived: () => { for (const listener of hubArchivedListeners) listener(); },
         hubArchivedListenerCount: () => hubArchivedListeners.length,
@@ -320,5 +321,72 @@ describe('shared steering availability', () => {
         const f = await fixture({ hubArchived: true, end });
         await f.root.activate();
         await vi.waitFor(() => expect(end).toHaveBeenCalledTimes(1));
+    });
+});
+
+
+describe('shared Codex input delivery', () => {
+    it('answers a live async question through the permission RPC and native steer', async () => {
+        const f = await fixture(); await f.root.activate();
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'turn' } });
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 'turn', item: {
+            type: 'agentMessage', id: 'ask', delivery: 'async', text: '', questions: [{ title: 'Scope?', options: ['Small', 'Full'] }]
+        } });
+        const id = 'codex-async:thread:ask';
+        await vi.waitFor(() => expect(f.state().requests?.[id]).toBeDefined());
+        const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'turn/steer') {
+                f.native.notify('item/started', { threadId: 'thread', turnId: 'turn', item: {
+                    id: 'reply', type: 'userMessage', clientId: (params as Record<string, unknown>)?.clientUserMessageId, content: (params as Record<string, unknown>)?.input
+                } });
+                return { turnId: 'turn' };
+            }
+            throw new Error(`Unexpected request: ${method}`);
+        });
+        const answers = { '0': { answers: ['Small'] } };
+        await f.rpc.get(RPC_METHODS.Permission)!({ id, approved: true, answers });
+        expect(request).toHaveBeenCalledWith('turn/steer', expect.objectContaining({ clientUserMessageId: `${id}:answer` }));
+        await vi.waitFor(() => expect(f.state().completedRequests?.[id]).toMatchObject({ status: 'approved', answers }));
+    });
+
+    it.each(['explicit steer', 'waiting for answer'])('steers %s into the active native turn', async (reason) => {
+        const f = await fixture(); await f.root.activate();
+        const request = vi.spyOn(f.root.client, 'request');
+        request.mockImplementation(async (method) => {
+            if (method === 'turn/steer') return { turnId: 'turn' };
+            throw new Error(`Unexpected request: ${method}`);
+        });
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'turn' } });
+        if (reason === 'waiting for answer') {
+            f.native.notify('thread/status/changed', { threadId: 'thread', status: { type: 'active', activeFlags: ['waitingOnUserInput'] } });
+            expect(f.state().waitingForInput).toBe(true);
+        }
+        f.userMessage('Keep the change small', reason === 'explicit steer' ? 'steer' : 'queue');
+        await vi.waitFor(() => expect(request).toHaveBeenCalledWith('turn/steer', {
+            threadId: 'thread', expectedTurnId: 'turn', clientUserMessageId: 'message-id',
+            input: [{ type: 'text', text: 'Keep the change small' }]
+        }));
+        f.native.notify('thread/status/changed', { threadId: 'thread', status: { type: 'active', activeFlags: [] } });
+        expect(f.state().waitingForInput).toBe(false);
+    });
+    it('keeps clock.sleep interruptible and clears waiting when sleep completes', async () => {
+        const f = await fixture(); await f.root.activate();
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'turn' } });
+        const params = { threadId: 'thread', turnId: 'turn', item: { type: 'sleep', id: 'sleep', durationMs: 60000 } };
+        f.native.notify('item/started', params);
+        expect(f.state().waitingForInput).toBe(true);
+        f.native.notify('thread/status/changed', { threadId: 'thread', status: { type: 'active', activeFlags: [] } });
+        expect(f.state().waitingForInput).toBe(true);
+        f.native.notify('item/completed', params);
+        expect(f.state().waitingForInput).toBe(false);
+        expect(f.state().steeringActive).toBe(true);
+    });
+    it('leaves ordinary followups queued during a running turn', async () => {
+        const f = await fixture(); await f.root.activate();
+        const request = vi.spyOn(f.root.client, 'request');
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'turn' } });
+        f.userMessage('Next task', 'queue');
+        await vi.waitFor(() => expect(request).toHaveBeenCalledWith('thread/queue/add', expect.anything()));
+        expect(request.mock.calls.some(call => call[0] === 'turn/steer')).toBe(false);
     });
 });

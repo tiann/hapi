@@ -29,6 +29,11 @@ function makeSummary(overrides: Partial<SessionSummary> & { id: string }): Sessi
 }
 
 describe('classifySessionAttention', () => {
+    it('shows async input requests while the model continues working', () => {
+        expect(classifySessionAttention(makeSummary({ id: 'a', thinking: true, pendingRequestKinds: ['input'] }),
+            { selected: false, lastSeenAt: 1000 })).toEqual({ kind: 'input' })
+    })
+
     it('returns null for the selected session', () => {
         const attention = classifySessionAttention(
             makeSummary({ id: 'a', pendingRequestKinds: ['permission'] }),

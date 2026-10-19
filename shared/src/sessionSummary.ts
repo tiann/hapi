@@ -82,11 +82,9 @@ export type SessionSummary = {
 // full Session in hand.
 export function computePendingRequestKinds(agentState: AgentState | null | undefined): PendingRequestKind[] {
     const requests = agentState?.requests
-    if (!requests) {
-        return []
-    }
-
     const kinds = new Set<PendingRequestKind>()
+    if (agentState?.waitingForInput) kinds.add('input')
+    if (!requests) return Array.from(kinds)
     for (const request of Object.values(requests)) {
         kinds.add(classifyKind(request.tool))
     }
