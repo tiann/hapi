@@ -47,13 +47,44 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         })
 
         await backend.initialize()
-        const acpSessionId = await backend.newSession({
-            cwd: this.session.path,
-            // The official DSH ACP composition rejects non-empty MCP servers;
-            // its tools are configured by the DSH server itself.
-            mcpServers: []
-        })
-        this.session.sessionId = acpSessionId
+        const resumeSessionId = this.session.sessionId
+        let acpSessionId: string
+        if (resumeSessionId) {
+            try {
+                // DSH's current ACP profile exposes the non-standard
+                // `session/resume` method rather than ACP's `session/load`.
+                // It restores model context but intentionally emits no history;
+                // HAPI's Hub remains the transcript source for the UI.
+                if (!backend.supportsSessionResume()) {
+                    throw new Error('DSH ACP server does not advertise session/resume')
+                }
+                acpSessionId = await backend.resumeSession({
+                    sessionId: resumeSessionId,
+                    cwd: this.session.path,
+                    mcpServers: []
+                })
+            } catch (error) {
+                logger.warn('[dsh-acp] resume failed, starting a new session', error)
+                this.session.sendSessionEvent({
+                    type: 'message',
+                    message: 'DSH resume failed; starting a new session.'
+                })
+                acpSessionId = await backend.newSession({
+                    cwd: this.session.path,
+                    // The official DSH ACP composition rejects non-empty MCP
+                    // servers; its tools are configured by the DSH server.
+                    mcpServers: []
+                })
+            }
+        } else {
+            acpSessionId = await backend.newSession({
+                cwd: this.session.path,
+                // The official DSH ACP composition rejects non-empty MCP
+                // servers; its tools are configured by the DSH server.
+                mcpServers: []
+            })
+        }
+        this.session.onSessionFound(acpSessionId)
 
         this.permissionHandler = new AcpPermissionHandler(
             this.session.client,

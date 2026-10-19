@@ -85,6 +85,9 @@ export const MetadataSchema = z.object({
     kimiSessionId: z.string().optional(),
     copilotSessionId: z.string().optional(),
     piSessionId: z.string().optional(),
+    // Native DeepSeek Harness ACP session id. Current DSH ACP profiles
+    // resume persisted sessions through the non-standard `session/resume`.
+    dshSessionId: z.string().optional(),
     piResumeAttempt: z.object({
         state: z.enum(['resuming', 'terminating', 'quarantined']),
         machineId: z.string(),

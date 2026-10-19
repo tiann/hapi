@@ -3,7 +3,7 @@ import { MessageQueue2 } from '@/utils/MessageQueue2'
 import { AgentSessionBase } from '@/agent/sessionBase'
 import type { DshMode } from './types'
 
-/** Remote-only HAPI session wrapper for the fresh-session DSH ACP server. */
+/** Remote-only HAPI session wrapper for the DSH ACP server. */
 export class DshSession extends AgentSessionBase<DshMode> {
     readonly startedBy: 'runner' | 'terminal'
 
@@ -12,6 +12,7 @@ export class DshSession extends AgentSessionBase<DshMode> {
         client: ApiSessionClient
         path: string
         logPath: string
+        sessionId?: string | null
         messageQueue: MessageQueue2<DshMode>
         onModeChange: (mode: 'local' | 'remote') => void
         startedBy: 'runner' | 'terminal'
@@ -21,16 +22,18 @@ export class DshSession extends AgentSessionBase<DshMode> {
             client: opts.client,
             path: opts.path,
             logPath: opts.logPath,
-            sessionId: null,
+            sessionId: opts.sessionId ?? null,
             messageQueue: opts.messageQueue,
             onModeChange: opts.onModeChange,
             mode: 'remote',
             sessionLabel: 'DshSession',
             sessionIdLabel: 'DeepSeek Harness ACP',
-            // The official ACP server supports fresh sessions only. Keep its
-            // process-local id out of HAPI metadata so inactive rows cannot
-            // advertise a resume path the server does not implement.
-            applySessionIdToMetadata: (metadata) => metadata
+            // Current DSH ACP profiles persist sessions and resume them through
+            // `session/resume`. Keep the native id separate from the HAPI row id.
+            applySessionIdToMetadata: (metadata, sessionId) => ({
+                ...metadata,
+                dshSessionId: sessionId
+            })
         })
         this.startedBy = opts.startedBy
     }
