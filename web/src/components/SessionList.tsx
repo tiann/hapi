@@ -155,6 +155,8 @@ type SessionGroup = {
     hasPinnedSession: boolean
 }
 
+export type SessionSearchMode = 'default' | 'exclude'
+
 const RUNNING_BUCKETS = [
     { key: 'working', labelKey: 'session.item.running', colorClass: 'text-[var(--app-badge-success-text)]', pulse: true },
     { key: 'pending', labelKey: 'session.item.pending', colorClass: 'text-[var(--app-badge-warning-text)]', pulse: true },
@@ -565,6 +567,26 @@ function SearchIcon(props: { className?: string }) {
     )
 }
 
+function ChevronDownIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+            aria-hidden="true"
+        >
+            <path d="m6 9 6 6 6-6" />
+        </svg>
+    )
+}
+
 function XIcon(props: { className?: string }) {
     return (
         <svg
@@ -653,6 +675,16 @@ export function normalizeSearch(value: string | null | undefined): string {
     return (value ?? '').trim().toLowerCase()
 }
 
+export function sessionMatchesSearchMode(
+    session: SessionSummary,
+    query: string,
+    machineLabel: string,
+    mode: SessionSearchMode = 'default'
+): boolean {
+    if (!query) return true
+    const matches = sessionMatchesQuery(session, query, machineLabel)
+    return mode === 'exclude' ? !matches : matches
+}
 
 export function getVisibleSessionPreview(
     sessions: SessionSummary[],
@@ -833,9 +865,12 @@ export function SessionListSearch(props: {
      * The 9rem chip is a ceiling, not a reservation (#2040).
      */
     maxWidthPx?: number
+    searchMode?: SessionSearchMode
+    onSearchModeChange?: (mode: SessionSearchMode) => void
 }) {
     const { t } = useTranslation()
     const [datePickerOpen, setDatePickerOpen] = useState(false)
+    const [searchModeOpen, setSearchModeOpen] = useState(false)
     const inputRef = useRef<HTMLInputElement>(null)
     const collapsedButtonRef = useRef<HTMLButtonElement>(null)
     const dateButtonRef = useRef<HTMLButtonElement>(null)
@@ -846,6 +881,7 @@ export function SessionListSearch(props: {
             inputRef.current?.focus()
         } else {
             setDatePickerOpen(false)
+            setSearchModeOpen(false)
         }
     }, [props.expanded])
 
@@ -871,7 +907,10 @@ export function SessionListSearch(props: {
                     ? 'session-list-search-date-embedded'
                     : 'session-list-search-date-standalone'}
                 data-toolbar-chrome=""
-                onClick={() => setDatePickerOpen(open => !open)}
+                onClick={() => {
+                    setSearchModeOpen(false)
+                    setDatePickerOpen(open => !open)
+                }}
                 className={cn(
                     'relative flex shrink-0 items-center justify-center transition-colors',
                     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] focus-visible:ring-inset',
@@ -940,7 +979,56 @@ export function SessionListSearch(props: {
         </>
     ) : null
 
+    const searchMode = props.searchMode ?? 'default'
+    const canChangeSearchMode = Boolean(props.onSearchModeChange)
     const searchLabel = t('sessions.search.open')
+
+    const renderSearchMode = () => canChangeSearchMode ? (
+        <div className="relative shrink-0">
+            <button
+                type="button"
+                aria-label={t('sessions.search.scope.toggle')}
+                aria-expanded={searchModeOpen}
+                onClick={() => {
+                    setDatePickerOpen(false)
+                    setSearchModeOpen(open => !open)
+                }}
+                className="flex h-full w-auto items-center gap-0.5 border-r border-[var(--app-border)] px-1.5 text-xs leading-none text-[var(--app-hint)] transition-colors hover:text-[var(--app-fg)]"
+            >
+                <span className="shrink-0 whitespace-nowrap leading-none">
+                    {t(`sessions.search.scope.${searchMode}`)}
+                </span>
+                <ChevronDownIcon className={cn(
+                    'h-3.5 w-3.5 shrink-0 transition-transform duration-200',
+                    searchModeOpen && 'rotate-180'
+                )} />
+            </button>
+            {searchModeOpen ? (
+                <div className="absolute left-0 top-full z-30 mt-1 flex w-max min-w-full flex-col gap-0.5 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-0.5 shadow-lg">
+                    {(['default', 'exclude'] as const).map(mode => (
+                        <button
+                            key={mode}
+                            type="button"
+                            aria-pressed={searchMode === mode}
+                            onClick={() => {
+                                props.onSearchModeChange?.(mode)
+                                setSearchModeOpen(false)
+                                inputRef.current?.focus()
+                            }}
+                            className={cn(
+                                'flex min-h-8 w-full items-center justify-center whitespace-nowrap rounded-md px-2 py-0.5 text-center text-sm leading-none transition-colors',
+                                searchMode === mode
+                                    ? 'bg-[var(--app-subtle-bg)] text-[var(--app-fg)]'
+                                    : 'text-[var(--app-hint)] hover:text-[var(--app-fg)]'
+                            )}
+                        >
+                            {t(`sessions.search.scope.${mode}`)}
+                        </button>
+                    ))}
+                </div>
+            ) : null}
+        </div>
+    ) : null
 
     if (!props.expanded) {
         const hasTextQuery = props.value.length > 0
@@ -1038,6 +1126,7 @@ export function SessionListSearch(props: {
                 <div className="pointer-events-none flex shrink-0 items-center pl-2.5 text-[var(--app-hint)]">
                     <SearchIcon className="h-3.5 w-3.5" />
                 </div>
+                {renderSearchMode()}
                 <input
                     ref={inputRef}
                     type="search"
@@ -1385,6 +1474,7 @@ export function SessionList(props: {
     const { machineFilter, setMachineFilter } = useSessionListMachineFilter()
     const showDetailedStatus = sessionListStatusMode === 'detailed'
     const [searchQuery, setSearchQuery] = useState('')
+    const [searchMode, setSearchMode] = useState<SessionSearchMode>('default')
     const [searchExpanded, setSearchExpanded] = useState(false)
     const [customStart, setCustomStart] = useState('')
     const [customEnd, setCustomEnd] = useState('')
@@ -1495,29 +1585,35 @@ export function SessionList(props: {
         [allSessions, timeRange?.start, timeRange?.end] // eslint-disable-line react-hooks/exhaustive-deps
     )
     const searchScoreIndex = useMemo(
-        () => hasTextQuery
+        () => searchMode === 'default' && hasTextQuery
             ? buildSessionSearchScoreIndex(timeScopedSessions, normalizedQuery, resolveMachineLabel)
             : null,
-        [hasTextQuery, timeScopedSessions, normalizedQuery, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
+        [hasTextQuery, searchMode, timeScopedSessions, normalizedQuery, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
     )
     const visibleSessions = useMemo(
         () => {
             if (!isFiltering) return allSessions
-            const matched = hasTextQuery && searchScoreIndex
-                ? timeScopedSessions.filter(session => searchScoreIndex.matchedIds.has(session.id))
-                : timeScopedSessions.filter(session => (
-                    sessionMatchesQuery(
+            const matched = !hasTextQuery
+                ? timeScopedSessions
+                : searchMode === 'exclude'
+                    ? timeScopedSessions.filter(session => !sessionMatchesQuery(
                         session,
                         normalizedQuery,
                         resolveMachineLabel(session.metadata?.machineId ?? null)
-                    )
-                ))
+                    ))
+                    : searchScoreIndex
+                        ? timeScopedSessions.filter(session => searchScoreIndex.matchedIds.has(session.id))
+                        : timeScopedSessions.filter(session => sessionMatchesQuery(
+                            session,
+                            normalizedQuery,
+                            resolveMachineLabel(session.metadata?.machineId ?? null)
+                        ))
             if (hasTextQuery && searchScoreIndex) {
                 return sortSessionsBySearchRelevance(matched, searchScoreIndex)
             }
             return matched
         },
-        [allSessions, hasTextQuery, isFiltering, normalizedQuery, searchScoreIndex, timeScopedSessions, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
+        [allSessions, hasTextQuery, isFiltering, normalizedQuery, searchMode, searchScoreIndex, timeScopedSessions, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
     )
     const allGroups = useMemo(
         () => groupSessionsByDirectory(allSessions),
@@ -2192,6 +2288,8 @@ export function SessionList(props: {
                             onExpandedChange={setSearchExpanded}
                             chromeMinPx={searchQuery.length > 0 ? searchChromePx : 0}
                             maxWidthPx={searchQuery.length > 0 ? searchMaxPx : 0}
+                            searchMode={searchMode}
+                            onSearchModeChange={setSearchMode}
                         />
                     ) : null}
                     {!(showSearch && searchExpanded) ? (
