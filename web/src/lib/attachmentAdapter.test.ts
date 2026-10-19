@@ -125,6 +125,31 @@ describe('attachmentAdapter image previews', () => {
         expect(emitted.every((attachment) => attachment.previewUrl === undefined)).toBe(true)
     })
 
+    it('does not instantiate the image decoder for large image uploads', async () => {
+        const imageConstructor = vi.fn()
+        vi.stubGlobal('Image', class {
+            constructor() {
+                imageConstructor()
+            }
+        })
+        try {
+            const file = new File([
+                new Uint8Array(5 * 1024 * 1024 + 1)
+            ], 'large.png', { type: 'image/png' })
+            const { uploadFile } = await collectAdditions(file)
+
+            expect(imageConstructor).not.toHaveBeenCalled()
+            expect(uploadFile).toHaveBeenCalledWith(
+                'session-1',
+                'large.png',
+                expect.any(String),
+                'image/png',
+            )
+        } finally {
+            vi.unstubAllGlobals()
+        }
+    })
+
     it('hands an inactive attachment to the resumed session before uploading', async () => {
         const { createAttachmentAdapter } = await import('./attachmentAdapter')
         const file = new File(['image'], 'ready.png', { type: 'image/png' })
@@ -249,5 +274,27 @@ describe('attachmentAdapter image previews', () => {
         expect(resumeCalls).toBe(1)
         expect(onSessionResolved).toHaveBeenCalled()
         expect(uploadFile).not.toHaveBeenCalled()
+    })
+})
+
+describe('attachmentAdapter durable uploads', () => {
+    it('persists only the durable attachment id in the sent message metadata', async () => {
+        const { createAttachmentAdapter } = await import('./attachmentAdapter')
+        const file = new File(['image'], 'photo.png', { type: 'image/png' })
+        const uploadFile = vi.fn().mockResolvedValue({ success: true, attachmentId: 'durable-1' })
+        const adapter = createAttachmentAdapter({ uploadFile } as never, 'session-1')
+        let pending: Record<string, unknown> | undefined
+        for await (const value of adapter.add({ file }) as AsyncIterable<Record<string, unknown>>) {
+            pending = value
+        }
+
+        expect(pending).toBeDefined()
+        const complete = await adapter.send(pending as never)
+        const firstPart = complete.content?.[0]
+        const text = firstPart && 'text' in firstPart ? firstPart.text : undefined
+        const metadata = JSON.parse(text ?? '{}').__attachmentMetadata as Record<string, unknown>
+        expect(metadata.attachmentId).toBe('durable-1')
+        expect(metadata.path).toBeUndefined()
+        expect(metadata.previewUrl).toBeUndefined()
     })
 })

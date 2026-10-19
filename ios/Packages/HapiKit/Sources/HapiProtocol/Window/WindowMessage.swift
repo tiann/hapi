@@ -269,8 +269,13 @@ public func buildOptimisticMessage(
                 "filename": .string(attachment.filename),
                 "mimeType": .string(attachment.mimeType),
                 "size": .number(Double(attachment.size)),
-                "path": .string(attachment.path),
             ]
+            if let path = attachment.path {
+                object["path"] = .string(path)
+            }
+            if let attachmentId = attachment.attachmentId {
+                object["attachmentId"] = .string(attachmentId)
+            }
             if let previewUrl = attachment.previewUrl {
                 object["previewUrl"] = .string(previewUrl)
             }
