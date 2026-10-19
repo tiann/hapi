@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
+import { getClaudeLaunchModelOptions, getModelOptionsForFlavor, getNextModelForFlavor } from './modelOptions'
 
 describe('getModelOptionsForFlavor', () => {
     it('never offers the unsupported default reset in an active AGY session', () => {
@@ -94,6 +94,35 @@ describe('getModelOptionsForFlavor', () => {
             { value: 'opus[1m]', label: 'Opus 1M' },
             { value: 'fable', label: 'Fable' },
             { value: 'fable[1m]', label: 'Fable 1M' }
+        ])
+    })
+
+    it('leads with the Claude catalog in its order and keeps presets it does not list', () => {
+        const options = getModelOptionsForFlavor('claude', null, [
+            { value: 'opus', label: 'Opus 5.5' },
+            { value: 'claude-opus-4-7', label: 'Opus 4.7' },
+            { value: 'sonnet', label: 'Sonnet 5' },
+        ])
+        expect(options).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'opus', label: 'Opus 5.5' },
+            { value: 'claude-opus-4-7', label: 'Opus 4.7' },
+            { value: 'sonnet', label: 'Sonnet 5' },
+            { value: 'sonnet[1m]', label: 'Sonnet 1M' },
+            { value: 'opus[1m]', label: 'Opus 1M' },
+            { value: 'fable', label: 'Fable' },
+            { value: 'fable[1m]', label: 'Fable 1M' }
+        ])
+    })
+
+    it('keeps a pinned Claude model the catalog no longer lists selected', () => {
+        const options = getModelOptionsForFlavor('claude', 'claude-opus-4-1', [
+            { value: 'opus', label: 'Opus 5.5' },
+        ])
+        expect(options.slice(0, 3)).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'claude-opus-4-1', label: 'claude-opus-4-1' },
+            { value: 'opus', label: 'Opus 5.5' },
         ])
     })
 
@@ -224,6 +253,43 @@ describe('getModelOptionsForFlavor', () => {
             { value: 'gpt-5.6', label: 'GPT-5.6' }
         ])
         expect(options.find((option) => option.value === null)?.label).toBe('Auto')
+    })
+})
+
+describe('getClaudeLaunchModelOptions', () => {
+    const catalog = [
+        { value: 'default', displayName: 'Default (recommended)' },
+        { value: 'opus', displayName: 'Opus 5.5' },
+        { value: 'claude-opus-4-7', displayName: 'Opus 4.7' },
+    ]
+
+    it('offers the catalog choices with Default as auto', () => {
+        expect(getClaudeLaunchModelOptions(catalog, 'auto', 'no longer listed').slice(0, 3)).toEqual([
+            { value: 'auto', label: 'Default' },
+            { value: 'opus', label: 'Opus 5.5' },
+            { value: 'claude-opus-4-7', label: 'Opus 4.7' },
+        ])
+    })
+
+    it('marks a saved model the catalog no longer lists instead of dropping it', () => {
+        const options = getClaudeLaunchModelOptions(catalog, 'claude-opus-4-1', 'no longer listed')
+        expect(options[1]).toEqual({ value: 'claude-opus-4-1', label: 'claude-opus-4-1 (no longer listed)' })
+    })
+
+    it('does not mark a legacy preset the catalog omits, since it stays offered', () => {
+        const options = getClaudeLaunchModelOptions(catalog, 'opus[1m]', 'no longer listed')
+        expect(options.filter((option) => option.value === 'opus[1m]')).toEqual([
+            { value: 'opus[1m]', label: 'Opus 1M' },
+        ])
+    })
+
+    it('keeps a saved model selectable before the catalog arrives, without claiming it is gone', () => {
+        const options = getClaudeLaunchModelOptions([], 'claude-opus-4-1', 'no longer listed')
+        expect(options.slice(0, 3)).toEqual([
+            { value: 'auto', label: 'Default' },
+            { value: 'claude-opus-4-1', label: 'claude-opus-4-1' },
+            { value: 'sonnet', label: 'Sonnet' },
+        ])
     })
 })
 
