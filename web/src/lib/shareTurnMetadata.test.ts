@@ -36,6 +36,44 @@ describe('selectShareTurnMetadata', () => {
         }).map((item) => item.key)).toEqual(['createdAt', 'updatedAt'])
     })
 
+    it('controls the shared Agent icon and text independently', () => {
+        const iconOnly = {
+            ...DEFAULT_SESSION_HEADER_METADATA,
+            agent: false,
+            agentIcon: true,
+            machine: false,
+            lastActive: false,
+            model: false,
+            reasoning: false,
+            fastMode: false,
+            createdAt: false,
+            updatedAt: false,
+            worktree: false,
+        }
+        expect(selectShareTurnMetadata(iconOnly, { agent: available.agent })).toEqual([{
+            key: 'agent',
+            text: 'codex',
+            flavor: 'codex',
+            showIcon: true,
+            showText: false,
+        }])
+
+        const textOnly = {
+            ...iconOnly,
+            agent: true,
+            agentIcon: false,
+        }
+        expect(selectShareTurnMetadata(textOnly, { agent: available.agent })).toEqual([{
+            key: 'agent',
+            text: 'codex',
+            flavor: 'codex',
+            showIcon: false,
+            showText: true,
+        }])
+
+        expect(selectShareTurnMetadata({ ...iconOnly, agent: false, agentIcon: false }, { agent: available.agent })).toEqual([])
+    })
+
     it('uses Pi effort for shared reasoning metadata', () => {
         expect(getShareTurnReasoningLabel('pi', null, 'max', true)).toBe('reasoning max')
         expect(getShareTurnReasoningLabel('pi', null, 'max', false)).toBe('max')
