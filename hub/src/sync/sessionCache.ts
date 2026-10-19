@@ -1,7 +1,7 @@
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
-import { AgentStateSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
+import { AgentStateSchema, AttachmentMetadataSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { CodexCollaborationMode, CopilotAgentMode, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
-import type { Store } from '../store'
+import type { Store, StoredMessage } from '../store'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
@@ -15,6 +15,26 @@ const QUEUED_MESSAGE_THINKING_GRACE_MS = 15_000
 // HTTP caller as 409 instead of spinning forever.
 const METADATA_RETRY_ATTEMPTS = 5
 type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'effort' | 'serviceTier' | 'collaborationMode' | 'copilotAgentMode'
+
+function collectDurableAttachmentIds(messages: StoredMessage[]): string[] {
+    const ids = new Set<string>()
+    for (const message of messages) {
+        if (!isRecord(message.content) || message.content.role !== 'user') continue
+        const content = message.content.content
+        if (!isRecord(content) || !Array.isArray(content.attachments)) continue
+        for (const attachment of content.attachments) {
+            const parsed = AttachmentMetadataSchema.safeParse(attachment)
+            if (parsed.success && parsed.data.attachmentId) {
+                ids.add(parsed.data.attachmentId)
+            }
+        }
+    }
+    return Array.from(ids)
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
 
 export class SessionCache {
     private readonly sessions: Map<string, Session> = new Map()
@@ -35,7 +55,11 @@ export class SessionCache {
 
     constructor(
         private readonly store: Store,
-        private readonly publisher: EventPublisher
+        private readonly publisher: EventPublisher,
+        private readonly lifecycleHooks: {
+            beforeDeleteSession?: (sessionId: string) => Promise<void> | undefined
+            afterDeleteSession?: (sessionId: string) => void
+        } = {}
     ) {
     }
 
@@ -1220,6 +1244,36 @@ export class SessionCache {
         if (!deleted) {
             throw new Error('Failed to delete session')
         }
+        // Delete durable bytes only after the session row is gone. If the row
+        // deletion fails, retaining the attachment keeps surviving messages
+        // from pointing at missing originals.
+        try {
+            await this.store.attachments.deleteAllForSession(session.namespace, sessionId)
+        } catch (error) {
+            // The session row is already gone, so still finalize the in-memory
+            // lifecycle. The leftover bytes/metadata are retained for the
+            // startup orphan sweep instead of leaving a ghost session in the
+            // running Hub.
+            console.warn('[attachments] Failed to clean up deleted session attachments', {
+                sessionId,
+                error
+            })
+        }
+
+        this.finalizeDeletedSession(sessionId, session.namespace, scratchlistAttachments)
+    }
+
+    /**
+     * Finish the in-memory half of a deletion whose database transaction has
+     * already removed the session row (for example, duplicate-session merge).
+     */
+    finalizeDeletedSession(
+        sessionId: string,
+        namespace: string,
+        scratchlistAttachments: import('@hapi/protocol').ScratchlistAttachmentMetadata[] = []
+    ): void {
+        const session = this.sessions.get(sessionId)
+        if (!session || session.namespace !== namespace) return
 
         this.sessions.delete(sessionId)
         this.lastBroadcastAtBySessionId.delete(sessionId)
@@ -1234,10 +1288,10 @@ export class SessionCache {
         }) => {
             const hapiHome = getHapiHomeDir()
             await deleteScratchlistAttachmentFiles(hapiHome, scratchlistAttachments)
-            await deleteScratchlistSessionAttachmentDir(hapiHome, session.namespace, sessionId)
+            await deleteScratchlistSessionAttachmentDir(hapiHome, namespace, sessionId)
         })
 
-        this.publisher.emit({ type: 'session-removed', sessionId, namespace: session.namespace })
+        this.publisher.emit({ type: 'session-removed', sessionId, namespace })
     }
 
     async mergeSessions(oldSessionId: string, newSessionId: string, namespace: string): Promise<void> {
@@ -1272,18 +1326,24 @@ export class SessionCache {
             throw new Error('Session not found for merge')
         }
 
-        const movedMessages = this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
-        // mergeSessions deletes the source. mergeSessionHistory keeps it alive
-        // with the original socket, so its notify chain must stay on that id.
-        if (options.deleteOldSession) {
-            this.store.workGraph.reassignNotifySession(namespace, oldSessionId, newSessionId)
-        }
-        if (movedMessages.moved > 0) {
-            this.store.usage.transferSession(oldSessionId, newSessionId)
-            if (!options.deleteOldSession) {
+        // Delete-old consolidation defers message/attachment ownership movement
+        // until the final preparation and activity check below. History-only
+        // merges keep the existing immediate transfer semantics.
+        if (!options.deleteOldSession) {
+            const referencedAttachmentIds = collectDurableAttachmentIds(
+                this.store.messages.getAllMessages(oldSessionId)
+            )
+            const movedMessages = this.store.mergeSessionMessagesAndAttachments(
+                namespace,
+                oldSessionId,
+                newSessionId,
+                referencedAttachmentIds
+            )
+            if (movedMessages.moved > 0) {
+                this.store.usage.transferSession(oldSessionId, newSessionId)
                 this.publisher.emit({ type: 'messages-invalidated', sessionId: oldSessionId, namespace })
+                this.publisher.emit({ type: 'messages-invalidated', sessionId: newSessionId, namespace })
             }
-            this.publisher.emit({ type: 'messages-invalidated', sessionId: newSessionId, namespace })
         }
 
         // tiann/hapi#920: transfer scratchlist rows BEFORE the
@@ -1293,8 +1353,27 @@ export class SessionCache {
         // path (`syncEngine.resumeSession` -> here) silently destroys
         // the operator's per-session notes, contradicting the v2.0
         // promise that scratchlist survives reloads.
-        const movedScratchlist = this.store.scratchlist.transfer(oldSessionId, newSessionId)
-        if (movedScratchlist.moved > 0) {
+        const preparedScratchlistAttachments = new Map<
+            string,
+            import('@hapi/protocol').ScratchlistAttachmentMetadata[]
+        >()
+        let preparedScratchlistFiles: import('@hapi/protocol').ScratchlistAttachmentMetadata[] = []
+        let scratchlistHome: string | undefined
+        let scratchlistSnapshot: {
+            source: ReadonlyMap<string, string>
+            target: ReadonlyMap<string, string>
+        } | undefined
+        const cleanupPreparedScratchlistFiles = async (): Promise<void> => {
+            if (preparedScratchlistFiles.length === 0) return
+            const { deleteScratchlistAttachmentFiles } = await import('../scratchlistAttachments/storage')
+            await deleteScratchlistAttachmentFiles(scratchlistHome ?? '', preparedScratchlistFiles)
+            preparedScratchlistFiles = []
+        }
+
+        const movedScratchlist = !options.deleteOldSession
+            ? this.store.scratchlist.transfer(oldSessionId, newSessionId)
+            : { moved: 0, collided: 0 }
+        if (!options.deleteOldSession && movedScratchlist.moved > 0) {
             // Attachment hub paths embed the old session id. Re-key files +
             // metadata so quota/resolve stay correct on the consolidated id.
             const {
@@ -1321,7 +1400,7 @@ export class SessionCache {
             // Rows landed on the consolidated session - invalidate so
             // any client on the new id refetches.
             this.emitScratchlistChanged(newSessionId)
-        } else if (movedScratchlist.collided > 0) {
+        } else if (!options.deleteOldSession && movedScratchlist.collided > 0) {
             // Every old entry lost the PK race — drop leftover hub blobs.
             const { getHapiHomeDir, deleteScratchlistSessionAttachmentDir } = await import(
                 '../scratchlistAttachments/storage'
@@ -1337,6 +1416,47 @@ export class SessionCache {
             this.emitScratchlistChanged(oldSessionId)
         }
 
+        if (options.deleteOldSession) {
+            const oldEntries = this.store.scratchlist.list(oldSessionId)
+            const newEntries = this.store.scratchlist.list(newSessionId)
+            const targetEntryIds = new Set(newEntries.map((entry) => entry.entryId))
+            const snapshotEntry = (entry: typeof oldEntries[number]): string => JSON.stringify({
+                text: entry.text,
+                createdAt: entry.createdAt,
+                updatedAt: entry.updatedAt,
+                attachments: entry.attachments,
+            })
+            scratchlistSnapshot = {
+                source: new Map(oldEntries.map((entry) => [entry.entryId, snapshotEntry(entry)])),
+                target: new Map(newEntries.map((entry) => [entry.entryId, snapshotEntry(entry)])),
+            }
+            if (oldEntries.some((entry) => entry.attachments.length > 0 && !targetEntryIds.has(entry.entryId))) {
+                const {
+                    copyScratchlistAttachmentFilesForSession,
+                    getHapiHomeDir,
+                } = await import('../scratchlistAttachments/storage')
+                scratchlistHome = getHapiHomeDir()
+                try {
+                    for (const entry of oldEntries) {
+                        if (entry.attachments.length === 0 || targetEntryIds.has(entry.entryId)) continue
+                        const prepared = await copyScratchlistAttachmentFilesForSession(
+                            scratchlistHome,
+                            namespace,
+                            oldSessionId,
+                            newSessionId,
+                            entry.attachments,
+                        )
+                        preparedScratchlistAttachments.set(entry.entryId, prepared.attachments)
+                        preparedScratchlistFiles.push(...prepared.createdPaths)
+                    }
+                } catch (error) {
+                    await cleanupPreparedScratchlistFiles()
+                    throw error
+                }
+            }
+        }
+
+        try {
         const mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, newStored.metadata)
         if (mergedMetadata !== null && mergedMetadata !== newStored.metadata) {
             for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -1464,24 +1584,62 @@ export class SessionCache {
         }
 
         if (options.deleteOldSession) {
-            const deleted = this.store.sessions.deleteSession(oldSessionId, namespace)
-            if (!deleted) {
-                throw new Error('Failed to delete old session during merge')
-            }
+            let committed = false
+            try {
+                // Wait for all shared-fork preservation and late uploads, then
+                // recheck activity before moving any source history or ownership.
+                const preparation = this.lifecycleHooks.beforeDeleteSession?.(oldSessionId)
+                if (preparation) {
+                    await preparation
+                }
+                if (this.sessions.get(oldSessionId)?.active) {
+                    throw new Error('Cannot merge a session that became active')
+                }
+                const moved = this.store.mergeSessionMessagesAndAttachmentsAndDeleteSession(
+                    namespace,
+                    oldSessionId,
+                    newSessionId,
+                    preparedScratchlistAttachments,
+                    scratchlistSnapshot
+                )
+                committed = true
+                if (moved.moved > 0) {
+                    this.store.usage.transferSession(oldSessionId, newSessionId)
+                    this.publisher.emit({ type: 'messages-invalidated', sessionId: newSessionId, namespace })
+                }
+                if (moved.scratchlistMoved > 0 || moved.scratchlistCollided > 0) {
+                    const { deleteScratchlistSessionAttachmentDir } = await import(
+                        '../scratchlistAttachments/storage'
+                    )
+                    await deleteScratchlistSessionAttachmentDir(
+                        scratchlistHome ?? (await import('../scratchlistAttachments/storage')).getHapiHomeDir(),
+                        namespace,
+                        oldSessionId
+                    )
+                    this.emitScratchlistChanged(newSessionId)
+                }
+                this.lifecycleHooks.afterDeleteSession?.(oldSessionId)
 
-            const existed = this.sessions.delete(oldSessionId)
-            if (existed) {
-                this.publisher.emit({ type: 'session-removed', sessionId: oldSessionId, namespace })
+                const existed = this.sessions.delete(oldSessionId)
+                if (existed) {
+                    this.publisher.emit({ type: 'session-removed', sessionId: oldSessionId, namespace })
+                }
+                this.lastBroadcastAtBySessionId.delete(oldSessionId)
+                this.todoBackfillAttemptedSessionIds.delete(oldSessionId)
+                // The merged history is the new row's progress too — carry the
+                // clock over so a resume-rotated id does not start out stale.
+                const oldProgressAt = this.agentProgressAtBySessionId.get(oldSessionId)
+                if (oldProgressAt !== undefined) {
+                    this.recordAgentProgress(newSessionId, oldProgressAt)
+                }
+                this.agentProgressAtBySessionId.delete(oldSessionId)
+            } finally {
+                if (!committed) {
+                    await cleanupPreparedScratchlistFiles()
+                } else {
+                    preparedScratchlistFiles = []
+                }
             }
-            this.lastBroadcastAtBySessionId.delete(oldSessionId)
-            this.todoBackfillAttemptedSessionIds.delete(oldSessionId)
-            // The merged history is the new row's progress too — carry the
-            // clock over so a resume-rotated id does not start out stale.
-            const oldProgressAt = this.agentProgressAtBySessionId.get(oldSessionId)
-            if (oldProgressAt !== undefined) {
-                this.recordAgentProgress(newSessionId, oldProgressAt)
-            }
-            this.agentProgressAtBySessionId.delete(oldSessionId)
         } else {
             this.refreshSession(oldSessionId)
         }
@@ -1489,6 +1647,10 @@ export class SessionCache {
         const refreshed = this.refreshSession(newSessionId)
         if (refreshed) {
             this.publisher.emit({ type: 'session-updated', sessionId: newSessionId, data: refreshed })
+        }
+        } catch (error) {
+            await cleanupPreparedScratchlistFiles()
+            throw error
         }
     }
 

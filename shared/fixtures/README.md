@@ -71,11 +71,11 @@ cases do not bump the version.
 Runs the real web pipeline (`normalizeDecryptedMessage` → `reduceChatBlocks`
 → `buildVisibleChatBlocks`) over wire messages, then projects.
 
-## Document schema (`fixtureVersion: 1`)
+## Document schema (`fixtureVersion: 2`)
 
 ```jsonc
 {
-    "fixtureVersion": 1,
+    "fixtureVersion": 2,
     "name": "claude-assistant-text",        // equals the file name
     "description": "…",
     "input": {
@@ -115,7 +115,7 @@ that carry it.
 
 | kind | normative fields |
 |------|------------------|
-| `user-text` | `localId`, `text`, `attachments?` — each `{ id, filename, mimeType, size, path }` |
+| `user-text` | `localId`, `text`, `attachments?` — each `{ id, filename, mimeType, size, path?, attachmentId? }` with at least one reference |
 | `agent-text` | `localId`, `text` |
 | `agent-reasoning` | `localId`, `text` |
 | `cli-output` | `localId`, `text`, `source` (`'user' \| 'assistant'`) |
@@ -163,11 +163,11 @@ Pins the versioned-patch algorithm for `session-updated` events carrying a
 algorithm"). Expectations are computed by the real web fold —
 `applySessionDetailPatch` in `web/src/lib/sessionPatch.ts`.
 
-## Document schema (`fixtureVersion: 1`)
+## Document schema (`fixtureVersion: 2`)
 
 ```jsonc
 {
-    "fixtureVersion": 1,
+    "fixtureVersion": 2,
     "name": "metadata-newer-version-applied",   // equals the file name
     "description": "…",
     "initialSession": { /* full Session as cached before the first patch */ },
@@ -231,11 +231,11 @@ trimming (contract: `docs/api/client-contract/pagination.md`). Expectations
 are recorded from the real web store (`web/src/lib/message-window-store.ts`)
 driven by a scripted ApiClient.
 
-## Document schema (`fixtureVersion: 1`)
+## Document schema (`fixtureVersion: 2`)
 
 ```jsonc
 {
-    "fixtureVersion": 1,
+    "fixtureVersion": 2,
     "name": "older-page-epoch-mismatch-resets",   // equals the file name
     "description": "…",
     "ops": [ /* operation script, in order; see below */ ],

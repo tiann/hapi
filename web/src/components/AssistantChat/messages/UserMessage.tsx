@@ -105,7 +105,7 @@ export function HappyUserMessage() {
                 <div className="flex items-start gap-2">
                     <div className="min-w-0 flex-1">
                         {hasText ? <UserBubbleContent text={text} /> : null}
-                        {hasAttachments ? <MessageAttachments attachments={attachments} /> : null}
+                        {hasAttachments ? <MessageAttachments attachments={attachments} api={ctx.api} sessionId={ctx.sessionId} /> : null}
                     </div>
                     {showStatus && (
                         <div className="happy-message-actions-first-line flex shrink-0 items-center gap-1">

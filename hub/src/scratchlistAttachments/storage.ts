@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -165,6 +165,47 @@ export async function moveScratchlistAttachmentFilesForSession(
         })
     }
     return moved
+}
+
+/** Prepare a merge without destroying the source files before the DB commit. */
+export async function copyScratchlistAttachmentFilesForSession(
+    hapiHome: string,
+    namespace: string,
+    oldSessionId: string,
+    newSessionId: string,
+    attachments: ScratchlistAttachmentMetadata[]
+): Promise<{ attachments: ScratchlistAttachmentMetadata[]; createdPaths: ScratchlistAttachmentMetadata[] }> {
+    if (oldSessionId === newSessionId || attachments.length === 0) {
+        return { attachments, createdPaths: [] }
+    }
+    const oldPrefix = sessionStoragePrefix(namespace, oldSessionId)
+    const newPrefix = sessionStoragePrefix(namespace, newSessionId)
+    const prepared: ScratchlistAttachmentMetadata[] = []
+    const createdPaths: ScratchlistAttachmentMetadata[] = []
+    try {
+        for (const att of attachments) {
+            const storageKey = parseHubScratchlistAttachmentPath(att.path)
+            if (!storageKey || !storageKey.startsWith(oldPrefix)) {
+                prepared.push(att)
+                continue
+            }
+            const fileName = storageKey.slice(oldPrefix.length)
+            const newKey = `${newPrefix}${fileName}`
+            const oldPath = resolveScratchlistStoragePath(hapiHome, storageKey)
+            const newPath = resolveScratchlistStoragePath(hapiHome, newKey)
+            await mkdir(join(newPath, '..'), { recursive: true })
+            const destinationExists = await stat(newPath).then((info) => info.isFile()).catch(() => false)
+            if (!destinationExists) {
+                await copyFile(oldPath, newPath)
+                createdPaths.push({ ...att, path: toHubScratchlistAttachmentPath(newKey) })
+            }
+            prepared.push({ ...att, path: toHubScratchlistAttachmentPath(newKey) })
+        }
+    } catch (error) {
+        await deleteScratchlistAttachmentFiles(hapiHome, createdPaths)
+        throw error
+    }
+    return { attachments: prepared, createdPaths }
 }
 
 export async function deleteScratchlistSessionAttachmentDir(
