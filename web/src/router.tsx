@@ -20,6 +20,7 @@ import {
 import { App } from '@/App'
 import { SessionChat } from '@/components/SessionChat'
 import { SessionList } from '@/components/SessionList'
+import { SidebarResizeHandle, SidebarShowButton } from '@/components/SidebarToggle'
 import { NewSession } from '@/components/NewSession'
 import { WorkspaceBrowser } from '@/components/WorkspaceBrowser'
 import { LoadingState } from '@/components/LoadingState'
@@ -189,6 +190,15 @@ function SessionsPage() {
     }, [baseUrl, error, isLoading, sessions])
     useSelectedSessionSeen(selectedSessionId, selectedSession?.updatedAt)
     const isSessionsIndex = pathname === '/sessions' || pathname === '/sessions/'
+    const [isSidebarVisible, setIsSidebarVisible] = useState(true)
+    const showSidebar = useCallback(() => setIsSidebarVisible(true), [])
+    const hideSidebar = useCallback(() => setIsSidebarVisible(false), [])
+    useEffect(() => {
+        if (isSessionsIndex) {
+            showSidebar()
+        }
+    }, [isSessionsIndex, showSidebar])
+    const shouldShowSidebar = isSessionsIndex || isSidebarVisible
     const sidebar = useSidebarResize()
     const handleNewSessionInDirectory = useCallback((args: { machineId: string | null; directory: string }) => {
         navigate({
@@ -207,7 +217,7 @@ function SessionsPage() {
                 // min-w-0: without it, shrink-0 toolbar icons inflate the flex
                 // item's min-content past --sidebar-w and the shed never sees a
                 // tight budget (#2039 desktop overflow past the split).
-                className={`${isSessionsIndex ? 'flex' : 'hidden split:flex'} min-w-0 w-full shrink-0 flex-col bg-[var(--app-bg)]`}
+                className={`${shouldShowSidebar ? (isSessionsIndex ? 'flex' : 'hidden split:flex') : 'hidden'} min-w-0 w-full shrink-0 flex-col bg-[var(--app-bg)]`}
                 style={{ '--sidebar-w': `${sidebar.width}px` } as React.CSSProperties}
             >
                 <div className="flex min-h-0 flex-1 flex-col pt-[env(safe-area-inset-top)]">
@@ -270,14 +280,23 @@ function SessionsPage() {
                 </div>
             </div>
 
-            {/* Resize handle - desktop only */}
-            <div
-                className="sidebar-resize-handle hidden split:block shrink-0"
-                data-dragging={sidebar.isDragging || undefined}
-                onPointerDown={sidebar.onPointerDown}
-            />
+            {shouldShowSidebar ? (
+                <SidebarResizeHandle
+                    canHide={!isSessionsIndex}
+                    hideLabel={t('session.sidebar.hide')}
+                    isDragging={sidebar.isDragging}
+                    onHide={hideSidebar}
+                    onPointerDown={sidebar.onPointerDown}
+                />
+            ) : null}
 
-            <div className={`${isSessionsIndex ? 'hidden split:flex' : 'flex'} min-w-0 flex-1 flex-col bg-[var(--app-bg)]`}>
+            <div className={`${isSessionsIndex ? 'hidden split:flex' : 'flex'} relative min-w-0 flex-1 flex-col bg-[var(--app-bg)]`}>
+                {!shouldShowSidebar ? (
+                    <SidebarShowButton
+                        showLabel={t('session.sidebar.show')}
+                        onShow={showSidebar}
+                    />
+                ) : null}
                 <div className="flex-1 min-h-0">
                     <Outlet />
                 </div>
