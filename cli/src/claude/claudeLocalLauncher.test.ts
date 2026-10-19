@@ -135,6 +135,38 @@ describe('claudeLocalLauncher message filtering', () => {
         expect(getMetadata().summary?.text).toBe('Existing title')
     })
 
+    it('replaces a provisional Fork title with Claude Code ai-title metadata', async () => {
+        const { session, sentMessages, getMetadata, setMetadata } = createSessionStub()
+        setMetadata({
+            path: '/tmp/test',
+            host: 'localhost',
+            forkedFrom: 'parent-session',
+            summary: { text: 'Fork: Parent title', updatedAt: 1 }
+        })
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!({ type: 'ai-title', aiTitle: 'Native child title' })
+
+        expect(sentMessages).toHaveLength(0)
+        expect(getMetadata().summary?.text).toBe('Native child title')
+    })
+
+    it('replaces a provisional Fork title with Claude Code summary metadata', async () => {
+        const { session, sentMessages, getMetadata, setMetadata } = createSessionStub()
+        setMetadata({
+            path: '/tmp/test',
+            host: 'localhost',
+            forkedFrom: 'parent-session',
+            summary: { text: 'Fork: Parent title', updatedAt: 1 }
+        })
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!({ type: 'summary', summary: 'Native child summary', leafUuid: '1' })
+
+        expect(sentMessages).toHaveLength(0)
+        expect(getMetadata().summary?.text).toBe('Native child summary')
+    })
+
     it('filters out invisible system messages', async () => {
         const { session, sentMessages } = createSessionStub()
         await claudeLocalLauncher(session as never)
