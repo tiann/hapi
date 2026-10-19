@@ -14,17 +14,19 @@ export function getOpencodeModelsRefetchInterval(
     enabled: boolean,
     data: OpencodeModelsResponse | undefined,
     pollCount: number
-): 1000 | false {
-    if (!enabled || pollCount >= MAX_OPENCODE_MODEL_DISCOVERY_POLLS) {
+): 1000 | 15_000 | false {
+    if (!enabled) {
         return false
     }
-    if (!data) {
-        return 1000
+    // Discovered a non-empty catalog: track opencode.json changes at a slower
+    // cadence — staleTime alone never triggers a refetch while mounted.
+    if (data?.success && (data.availableModels?.length ?? 0) > 0) {
+        return 15_000
     }
-    if (data.success === false) {
-        return 1000
-    }
-    return (data.availableModels?.length ?? 0) > 0 ? false : 1000
+    // Missing/error/empty responses are "still discovering": poll fast until
+    // the discovery cap, then settle on the slow tracking cadence instead of
+    // hammering the RPC forever (a catalog may legitimately stay empty).
+    return pollCount >= MAX_OPENCODE_MODEL_DISCOVERY_POLLS ? 15_000 : 1000
 }
 
 export function useOpencodeModels(args: {
@@ -54,7 +56,8 @@ export function useOpencodeModels(args: {
             return await api.getSessionOpencodeModels(sessionId)
         },
         enabled,
-        staleTime: 30_000,
+        // Track opencode.json changes quickly (same rationale as usePiModels).
+        staleTime: 15_000,
         retry: (failureCount) => shouldRetryOpencodeModelsQuery(failureCount),
         refetchInterval: (query) => getOpencodeModelsRefetchInterval(
             enabled,

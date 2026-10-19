@@ -2,6 +2,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import type { OpencodeMode, PermissionMode } from './types';
 
+const listOpencodeModelsMock = vi.hoisted(() => vi.fn().mockResolvedValue({ success: false, error: 'probe unavailable' }));
+vi.mock('@/modules/common/opencodeModels', () => ({
+    listOpencodeModelsForCwd: listOpencodeModelsMock,
+}));
+
 const harness = vi.hoisted(() => ({
     setModelArgs: [] as Array<{ sessionId: string; modelId: string; flavor?: string }>,
     setConfigOptionArgs: [] as Array<{ sessionId: string; configId: string; value: string }>,
@@ -2043,6 +2048,86 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             success: false,
             error: 'OpenCode model metadata is not available'
         });
+    });
+
+    it('listOpencodeModels handler returns live probe models when probe succeeds', async () => {
+        listOpencodeModelsMock.mockResolvedValueOnce({
+            success: true,
+            availableModels: [{ modelId: 'provider/live-model', name: 'Live Model' }],
+            currentModelId: 'provider/live-model'
+        });
+        const { session, rpcHandlers } = createSessionStub([
+            { message: 'first', mode: createMode() }
+        ]);
+        await opencodeRemoteLauncher(session as never);
+
+        const handler = rpcHandlers.get('listOpencodeModels');
+        expect(handler).toBeDefined();
+        const result = await handler!(undefined) as Record<string, unknown>;
+        expect(result).toEqual({
+            success: true,
+            availableModels: [{ modelId: 'provider/live-model', name: 'Live Model' }],
+            currentModelId: 'provider/live-model'
+        });
+    });
+
+    it('listOpencodeModels handler treats successful empty probe as authoritative', async () => {
+        listOpencodeModelsMock.mockResolvedValueOnce({
+            success: true,
+            availableModels: [],
+            currentModelId: null
+        });
+        const { session, rpcHandlers } = createSessionStub([
+            { message: 'first', mode: createMode() }
+        ]);
+        await opencodeRemoteLauncher(session as never);
+
+        const handler = rpcHandlers.get('listOpencodeModels');
+        expect(handler).toBeDefined();
+        const result = await handler!(undefined) as Record<string, unknown>;
+        expect(result).toEqual({
+            success: true,
+            availableModels: [],
+            currentModelId: null
+        });
+    });
+
+    it('listOpencodeModels handler bounds a stalled live probe to 5s and falls back to the snapshot', async () => {
+        // Stall the probe forever: the handler may only answer through the
+        // 5s Promise.race timeout and the snapshot fallback below it.
+        listOpencodeModelsMock.mockImplementationOnce(() => new Promise(() => {}));
+        harness.sessionModelsMetadata = {
+            currentModelId: 'ollama/stalled',
+            availableModels: [{ modelId: 'ollama/stalled', name: 'Stalled Fallback' }]
+        };
+        const { session, rpcHandlers } = createSessionStub([
+            { message: 'first', mode: createMode() }
+        ]);
+        await opencodeRemoteLauncher(session as never);
+
+        const handler = rpcHandlers.get('listOpencodeModels');
+        expect(handler).toBeDefined();
+        // Fake timers only around the handler call: the launcher above ran on
+        // real timers, and the probe timer is created inside the handler.
+        vi.useFakeTimers();
+        try {
+            const pending = handler!(undefined) as Promise<Record<string, unknown>>;
+            let settled = false;
+            void pending.then(() => { settled = true; });
+            // Just before the bound the handler must still be waiting...
+            await vi.advanceTimersByTimeAsync(4_900);
+            expect(settled).toBe(false);
+            // ...and right after it the fallback must fire.
+            await vi.advanceTimersByTimeAsync(200);
+            const result = await pending;
+            expect(result).toEqual({
+                success: true,
+                availableModels: [{ modelId: 'ollama/stalled', name: 'Stalled Fallback' }],
+                currentModelId: 'ollama/stalled'
+            });
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('registers a listOpencodeReasoningEffortOptions RPC handler that returns ACP options', async () => {
