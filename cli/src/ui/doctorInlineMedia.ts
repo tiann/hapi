@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path'
 import { configuration } from '@/configuration'
 import { buildHubRequestHeaders } from '@/api/hubExtraHeaders'
 import { readSettings } from '@/persistence'
-import { projectPath } from '@/projectPath'
+import { isBunCompiled, projectPath } from '@/projectPath'
 import { cursorHapiMcpServerId } from '@/cursor/utils/cursorMcpOverlay'
 
 export type InlineMediaDoctorCheck = {
@@ -27,18 +27,36 @@ export type InlineMediaSessionBridge = {
     name: string | null
 }
 
-function repoRootFromCli(): string {
+/**
+ * Repo root used to locate the shell-fallback helper script.
+ *
+ * A Bun-compiled (packaged) install has no repo checkout: `projectPath()` resolves inside
+ * Bun's virtual filesystem (`B:/~BUN/root` on Windows, `/$bunfs/root` elsewhere) and
+ * `resolve()` clamps at that virtual drive root, so deriving any path from it yields
+ * something like `B:\scripts\tooling\...`, which exists on no real volume. Report the
+ * absence of a checkout instead of inventing an element of one.
+ */
+function repoRootFromCli(): string | null {
+    if (isBunCompiled()) {
+        return null
+    }
     return resolve(projectPath(), '..')
 }
 
-export function inlineMediaHelperScriptPath(): string {
-    return join(repoRootFromCli(), 'scripts/tooling/hapi-display-image.mjs')
+/** Absolute path to the shell-fallback helper script, or null when this install has no repo checkout. */
+export function inlineMediaHelperScriptPath(): string | null {
+    const repoRoot = repoRootFromCli()
+    return repoRoot === null ? null : join(repoRoot, 'scripts/tooling/hapi-display-image.mjs')
 }
 
 function mcpSdkResolvable(): boolean {
+    const repoRoot = repoRootFromCli()
+    if (repoRoot === null) {
+        return false
+    }
     const candidates = [
         join(projectPath(), 'node_modules/@modelcontextprotocol/sdk/package.json'),
-        join(repoRootFromCli(), 'node_modules/@modelcontextprotocol/sdk/package.json'),
+        join(repoRoot, 'node_modules/@modelcontextprotocol/sdk/package.json'),
     ]
     return candidates.some((p) => existsSync(p))
 }
@@ -133,19 +151,30 @@ export async function runDoctorInlineMedia(): Promise<number> {
     console.log(chalk.bold.cyan('\n🖼️  hapi inline media doctor\n'))
 
     const checks: InlineMediaDoctorCheck[] = []
-    const scriptPath = inlineMediaHelperScriptPath()
-    const scriptExists = existsSync(scriptPath)
+    const helperScriptPath = inlineMediaHelperScriptPath()
+    const helperScriptExists = helperScriptPath !== null && existsSync(helperScriptPath)
+
+    let helperScriptDetail: string
+    if (helperScriptPath === null) {
+        helperScriptDetail = 'not applicable (packaged install — use the MCP tools)'
+    } else if (helperScriptExists) {
+        helperScriptDetail = helperScriptPath
+    } else {
+        helperScriptDetail = `missing: ${helperScriptPath} (optional outside source checkout)`
+    }
     checks.push({
-        ok: scriptExists,
+        ok: helperScriptExists,
         label: 'Helper script (repo shell fallback)',
-        detail: scriptExists ? scriptPath : `missing: ${scriptPath} (optional outside source checkout)`,
+        detail: helperScriptDetail,
     })
 
     const sdkOk = mcpSdkResolvable()
     checks.push({
         ok: sdkOk,
         label: '@modelcontextprotocol/sdk (repo shell fallback)',
-        detail: sdkOk ? 'resolvable from cli or repo root' : 'not found — optional outside source checkout',
+        detail: helperScriptPath === null
+            ? 'not applicable (packaged install)'
+            : (sdkOk ? 'resolvable from cli or repo root' : 'not found — optional outside source checkout'),
     })
 
     const envSessionId = process.env.HAPI_SESSION_ID
@@ -192,7 +221,8 @@ export async function runDoctorInlineMedia(): Promise<number> {
 
     const withBridge = bridges.filter((b) => b.hapiMcpUrl)
     const listOmitsMcp = bridges.some((b) => b.hapiMcpUrl && !b.listShowsMcpUrl)
-    const shellFallbackAvailable = scriptExists && sdkOk
+    // The repo shell fallback needs an actual checkout: helper script present and its MCP SDK resolvable.
+    const shellFallbackScriptPath = helperScriptExists && sdkOk ? helperScriptPath : null
 
     console.log(chalk.bold('\nActive sessions'))
     if (bridges.length === 0) {
@@ -207,8 +237,8 @@ export async function runDoctorInlineMedia(): Promise<number> {
             )
             if (b.hapiMcpUrl) {
                 console.log(chalk.gray(`    mcp: ${b.hapiMcpUrl}`))
-                if (shellFallbackAvailable) {
-                    console.log(chalk.gray(`    ${formatInlineMediaCommand(scriptPath, b.prefix)}`))
+                if (shellFallbackScriptPath) {
+                    console.log(chalk.gray(`    ${formatInlineMediaCommand(shellFallbackScriptPath, b.prefix)}`))
                 }
             }
         }
@@ -233,14 +263,14 @@ export async function runDoctorInlineMedia(): Promise<number> {
 
     console.log(chalk.bold('\nAgent inline path'))
     console.log(chalk.gray('  1. MCP tool display_image / display_video / display_media in the running session (ACP flavors via hapi bridge)'))
-    if (shellFallbackAvailable) {
+    if (shellFallbackScriptPath) {
         console.log(chalk.gray('  2. Shell fallback (HAPI session id prefix, not cursorSessionId):'))
         if (withBridge.length > 0) {
-            console.log(chalk.green(`    ${formatInlineMediaCommand(scriptPath, withBridge[0].prefix)}`))
+            console.log(chalk.green(`    ${formatInlineMediaCommand(shellFallbackScriptPath, withBridge[0].prefix)}`))
         } else if (envSessionId) {
-            console.log(chalk.green(`    ${formatInlineMediaCommand(scriptPath, envSessionId.slice(0, 8))}`))
+            console.log(chalk.green(`    ${formatInlineMediaCommand(shellFallbackScriptPath, envSessionId.slice(0, 8))}`))
         } else {
-            console.log(chalk.gray(`    ${formatInlineMediaCommand(scriptPath, '<hapi-session-prefix>')}`))
+            console.log(chalk.gray(`    ${formatInlineMediaCommand(shellFallbackScriptPath, '<hapi-session-prefix>')}`))
         }
     } else {
         console.log(chalk.gray('  2. Shell fallback unavailable (packaged install / no repo checkout) — use MCP tools only'))
