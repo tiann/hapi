@@ -25,9 +25,10 @@ import { useMachineLabels } from '@/hooks/useMachineLabels'
 import { formatAbsoluteDateTime, formatRelativeTime } from '@/lib/relativeTime'
 import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
 import { formatSessionHeaderTimestamp } from '@/lib/sessionHeaderTimestamp'
-import { selectMobileSessionHeaderSecondary } from '@/lib/sessionHeaderMobileMetadata'
+import { getMobileSessionHeaderMetadata } from '@/lib/sessionHeaderMobileMetadata'
 import { useMinuteTick } from '@/hooks/useMinuteTick'
 import { markSessionUnread } from '@/lib/sessionLastSeen'
+import { ScrollableSurface, ScrollableTitle } from '@/components/ScrollableTitle'
 
 /** Same preference order as session-list chips: display label → host → short id. */
 export function resolveSessionHeaderMachineLabel(
@@ -201,7 +202,7 @@ export function SessionHeader(props: {
         [headerMetadata.lastActive, lastActiveAt, t, relativeTimeTick]
     )
     const ageAbsolute = ageLabel ? formatAbsoluteDateTime(lastActiveAt) : null
-    const mobileSecondary = selectMobileSessionHeaderSecondary({
+    const mobileMetadata = getMobileSessionHeaderMetadata({
         model: headerMetadata.model && modelLabel !== null,
         reasoning: headerMetadata.reasoning && reasoningLabel !== null,
         machine: headerMetadata.machine && machineLabel !== null,
@@ -211,7 +212,12 @@ export function SessionHeader(props: {
         worktree: headerMetadata.worktree && Boolean(worktreeBranch),
         fastMode: headerMetadata.fastMode && showFastBadge,
     })
-    const showMobileMetadata = (headerMetadata.agent && agentLabel !== null) || mobileSecondary !== null
+    const showMobileMetadata = (headerMetadata.agent && agentLabel !== null) || mobileMetadata.length > 0
+    const mobileMetadataResetKey = [
+        session.id,
+        agentLabel ? 'agent' : '',
+        ...mobileMetadata,
+    ].join('|')
 
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -394,26 +400,57 @@ export function SessionHeader(props: {
 
                     {/* Session info - two lines: title and path */}
                     <div className="min-w-0 flex-1">
-                        <div className="truncate font-semibold">
-                            {title}
-                        </div>
+                        <ScrollableTitle
+                            text={title}
+                            className="font-semibold"
+                            testId="session-header-title"
+                        />
                         {showMobileMetadata ? (
-                            <div className="flex min-w-0 flex-nowrap items-center gap-2 overflow-hidden text-xs text-[var(--app-hint)] sm:hidden">
+                            <ScrollableSurface
+                                ariaLabel={t('session.header.metadata')}
+                                className="text-xs text-[var(--app-hint)] sm:hidden"
+                                contentClassName="flex items-center gap-2"
+                                resetKey={mobileMetadataResetKey}
+                                testId="session-header-metadata"
+                            >
                                 {headerMetadata.agent && agentLabel ? (
                                     <span className="inline-flex shrink-0 items-center gap-1">
                                         <AgentFlavorIcon flavor={session.metadata?.flavor} className="h-3.5 w-3.5 shrink-0 -translate-y-px" />
                                         {agentLabel}
                                     </span>
                                 ) : null}
-                                {mobileSecondary === 'model' && modelLabel ? <span className="inline-flex truncate items-center gap-1.5">{headerMetadata.showLabels ? `${t(modelLabel.key)}: ` : ''}{modelLabel.value}{isModelChanging ? <ModelChangingStatus /> : null}</span> : null}
-                                {mobileSecondary === 'reasoning' && reasoningLabel ? <span className="truncate">{reasoningLabel}</span> : null}
-                                {mobileSecondary === 'machine' && machineLabel ? <span className="truncate">{headerMetadata.showLabels ? `${t('session.item.machine')}: ` : ''}{machineLabel}</span> : null}
-                                {mobileSecondary === 'lastActive' && ageLabel ? <span className="truncate" title={ageAbsolute ?? undefined}>{ageLabel}</span> : null}
-                                {mobileSecondary === 'updatedAt' && updatedAtLabel ? <span className="truncate">{headerMetadata.showLabels ? `${t('session.header.updatedAt')}: ` : ''}{updatedAtLabel}</span> : null}
-                                {mobileSecondary === 'createdAt' && createdAtLabel ? <span className="truncate">{headerMetadata.showLabels ? `${t('session.header.createdAt')}: ` : ''}{createdAtLabel}</span> : null}
-                                {mobileSecondary === 'worktree' && worktreeBranch ? <span className="truncate">{headerMetadata.showLabels ? `${t('session.item.worktree')}: ` : ''}{worktreeBranch}</span> : null}
-                                {mobileSecondary === 'fastMode' ? <span className="truncate text-[#34C759]">fast</span> : null}
-                            </div>
+                                {mobileMetadata.map((key) => {
+                                    if (key === 'model' && modelLabel) {
+                                        return (
+                                            <span key={key} className="inline-flex shrink-0 items-center gap-1.5">
+                                                {headerMetadata.showLabels ? `${t(modelLabel.key)}: ` : ''}{modelLabel.value}{isModelChanging ? <ModelChangingStatus /> : null}
+                                            </span>
+                                        )
+                                    }
+                                    if (key === 'reasoning' && reasoningLabel) {
+                                        return <span key={key} className="shrink-0">{reasoningLabel}</span>
+                                    }
+                                    if (key === 'machine' && machineLabel) {
+                                        return <span key={key} className="shrink-0">{headerMetadata.showLabels ? `${t('session.item.machine')}: ` : ''}{machineLabel}</span>
+                                    }
+                                    if (key === 'lastActive' && ageLabel) {
+                                        return <span key={key} className="shrink-0" title={ageAbsolute ?? undefined}>{ageLabel}</span>
+                                    }
+                                    if (key === 'updatedAt' && updatedAtLabel) {
+                                        return <span key={key} className="shrink-0">{headerMetadata.showLabels ? `${t('session.header.updatedAt')}: ` : ''}{updatedAtLabel}</span>
+                                    }
+                                    if (key === 'createdAt' && createdAtLabel) {
+                                        return <span key={key} className="shrink-0">{headerMetadata.showLabels ? `${t('session.header.createdAt')}: ` : ''}{createdAtLabel}</span>
+                                    }
+                                    if (key === 'worktree' && worktreeBranch) {
+                                        return <span key={key} className="shrink-0">{headerMetadata.showLabels ? `${t('session.item.worktree')}: ` : ''}{worktreeBranch}</span>
+                                    }
+                                    if (key === 'fastMode') {
+                                        return <span key={key} className="shrink-0 text-[#34C759]">fast</span>
+                                    }
+                                    return null
+                                })}
+                            </ScrollableSurface>
                         ) : null}
                         <div className="hidden flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-[var(--app-hint)] sm:flex">
                             {headerMetadata.agent && agentLabel ? (

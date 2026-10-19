@@ -88,6 +88,8 @@ describe('FilePage markdown preview', () => {
         await waitFor(() => {
             expect(screen.getByTestId('markdown-preview')).toHaveTextContent('# Heading')
         })
+        expect(screen.getByTestId('file-page-title')).toHaveTextContent('README.md')
+        expect(screen.getByTestId('file-page-path')).toHaveTextContent(filePath)
         expect(screen.getByText(formatFileMetadata(fileSize, fileModified, 'en')!)).toBeInTheDocument()
         expect(screen.getAllByText(filePath)).toHaveLength(1)
         const previewCopyButton = screen.getByRole('button', { name: 'Copy file content' })
