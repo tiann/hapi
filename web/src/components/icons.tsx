@@ -28,6 +28,38 @@ export function CloseIcon(props: IconProps) {
     )
 }
 
+export function ArrowLeftIcon(props: IconProps) {
+    return createIcon(
+        <path d="M19 12H5m7-7-7 7 7 7" />,
+        props,
+        2
+    )
+}
+
+export function ArrowRightIcon(props: IconProps) {
+    return createIcon(
+        <path d="M5 12h14m-7-7 7 7-7 7" />,
+        props,
+        2
+    )
+}
+
+export function MinusIcon(props: IconProps) {
+    return createIcon(
+        <path d="M5 12h14" />,
+        props,
+        2
+    )
+}
+
+export function PlusIcon(props: IconProps) {
+    return createIcon(
+        <path d="M12 5v14M5 12h14" />,
+        props,
+        2
+    )
+}
+
 export function ShareIcon(props: IconProps) {
     return createIcon(
         <path d="M9 8.25H7.5a2.25 2.25 0 0 0-2.25 2.25v9a2.25 2.25 0 0 0 2.25 2.25h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25H15m0-3-3-3m0 0-3 3m3-3v12" />,
