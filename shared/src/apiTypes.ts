@@ -5,6 +5,7 @@ import {
     CopilotAgentModeSchema,
     DecryptedMessageSchema,
     MachineSchema,
+    OpencodeAgentSchema,
     PermissionModeSchema,
     SessionSchema
 } from './schemas'
@@ -298,6 +299,12 @@ export const SessionCopilotAgentModeRequestSchema = z.object({
 })
 
 export type SessionCopilotAgentModeRequest = z.infer<typeof SessionCopilotAgentModeRequestSchema>
+
+export const SessionOpencodeAgentRequestSchema = z.object({
+    agent: OpencodeAgentSchema
+})
+
+export type SessionOpencodeAgentRequest = z.infer<typeof SessionOpencodeAgentRequestSchema>
 
 export const SessionModelRequestSchema = z.object({
     model: z.union([
@@ -652,6 +659,7 @@ export const SpawnSessionRequestSchema = z.object({
     serviceTier: z.enum(['fast', 'standard']).optional(),
     collaborationMode: CodexCollaborationModeSchema.optional(),
     copilotAgentMode: CopilotAgentModeSchema.optional(),
+    opencodeAgent: OpencodeAgentSchema.optional(),
     startingMode: z.enum(['remote', 'pty']).optional()
 })
 
@@ -798,12 +806,20 @@ export type OpencodeModelSummary = {
     name?: string
 }
 
+export type OpencodeAgentSummary = {
+    agentId: string
+    name?: string
+}
+
 export type OpencodeModelsResponse = {
     success: boolean
     availableModels?: OpencodeModelSummary[]
     /** CLI `agent --list-models` skus grouped under ACP wire bases for variant pickers. */
     cliModelSkus?: OpencodeModelSummary[]
     currentModelId?: string | null
+    /** Primary agents advertised by the OpenCode server (`configOptions[category=mode]`). */
+    availableAgents?: OpencodeAgentSummary[]
+    currentAgentId?: string | null
     error?: string
 }
 

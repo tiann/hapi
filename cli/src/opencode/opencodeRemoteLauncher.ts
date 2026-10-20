@@ -129,6 +129,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private defaultBackendModel: string | null = null;
     private currentBackendEffort: string | null = null;
     private defaultBackendEffort: string | null = null;
+    private currentBackendAgent: string | null = null;
     private setModelSupported: boolean | undefined = undefined;
     private setEffortSupported: boolean | undefined = undefined;
     private activeAcpSessionId: string | null = null;
@@ -251,6 +252,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         const thoughtLevelOption = backend.getThoughtLevelConfigOption?.(acpSessionId);
         this.currentBackendEffort = thoughtLevelOption?.currentValue ?? null;
         this.defaultBackendEffort = this.currentBackendEffort;
+        const modeOption = backend.getConfigOptionByCategory?.(acpSessionId, 'mode');
+        this.currentBackendAgent = modeOption?.currentValue ?? null;
 
         // The CLI may have been launched with an explicit --model that differs
         // from the ACP session's own default. Apply it eagerly right here so
@@ -277,6 +280,20 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 this.defaultBackendEffort = this.currentBackendEffort;
             } catch (error) {
                 logger.warn('[opencode-remote] Eager startup model application failed; first batch will retry inline', error);
+            }
+        }
+
+        const requestedStartupAgent = this.session.getOpencodeAgent();
+        if (
+            !this.shouldExit
+            && typeof requestedStartupAgent === 'string'
+            && requestedStartupAgent.length > 0
+            && requestedStartupAgent !== this.currentBackendAgent
+        ) {
+            try {
+                await this.applyOpencodeAgent(backend, acpSessionId, requestedStartupAgent);
+            } catch (error) {
+                logger.warn('[opencode-remote] Eager startup agent application failed; first batch will retry inline', error);
             }
         }
 
@@ -315,10 +332,16 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             if (!metadata) {
                 return { success: false, error: 'OpenCode model metadata is not available' };
             }
+            const modeOption = backend.getConfigOptionByCategory?.(acpSessionId, 'mode');
+            const availableAgents = (modeOption?.options ?? []).map((option) => (
+                option.name ? { agentId: option.value, name: option.name } : { agentId: option.value }
+            ));
             return {
                 success: true,
                 availableModels: metadata.availableModels,
-                currentModelId: metadata.currentModelId
+                currentModelId: metadata.currentModelId,
+                availableAgents,
+                currentAgentId: this.currentBackendAgent ?? modeOption?.currentValue ?? null
             };
         });
 
@@ -524,6 +547,23 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 }
             }
 
+            const requestedBatchAgent = batch.mode.opencodeAgent;
+            if (
+                typeof requestedBatchAgent === 'string'
+                && requestedBatchAgent.length > 0
+                && requestedBatchAgent !== this.currentBackendAgent
+            ) {
+                try {
+                    await this.applyOpencodeAgent(backend, acpSessionId, requestedBatchAgent);
+                } catch (error) {
+                    logger.warn('[opencode-remote] Inline agent switch failed', error);
+                    session.sendSessionEvent({
+                        type: 'message',
+                        message: `Failed to switch OpenCode agent to ${requestedBatchAgent}. Continuing with ${this.currentBackendAgent ?? '(default)'}.`
+                    });
+                }
+            }
+
             this.applyDisplayMode(batch.mode.permissionMode);
             messageBuffer.addMessage(batch.message, 'user');
 
@@ -646,7 +686,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
 
             // Inject title instructions on first prompt
             let messageText = batch.message;
-            if (batch.mode.permissionMode === 'plan') {
+            if (batch.mode.permissionMode === 'plan' && this.currentBackendAgent !== 'plan') {
                 messageText = `${PLAN_MODE_INSTRUCTION}\n\n${messageText}`;
             }
             if (!this.instructionsSent) {
@@ -1084,6 +1124,19 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 return _exhaustive;
             }
         }
+    }
+
+    private async applyOpencodeAgent(
+        backend: ReturnType<typeof createOpencodeBackend>,
+        acpSessionId: string,
+        agent: string
+    ): Promise<void> {
+        const modeOption = backend.getConfigOptionByCategory?.(acpSessionId, 'mode');
+        if (!modeOption || typeof backend.setConfigOption !== 'function') {
+            throw new Error('OpenCode build does not expose a session mode config option for agent switching');
+        }
+        await backend.setConfigOption(acpSessionId, modeOption.id, agent);
+        this.currentBackendAgent = agent;
     }
 
     private applyDisplayMode(permissionMode: PermissionMode | undefined): void {

@@ -19,6 +19,7 @@ type SpawnInput = {
     collaborationMode?: CodexCollaborationMode
     copilotAgentMode?: CopilotAgentMode
     startingMode?: 'remote' | 'pty'
+    opencodeAgent?: string
 }
 
 export function useSpawnSession(api: ApiClient | null): {
@@ -47,7 +48,8 @@ export function useSpawnSession(api: ApiClient | null): {
                 input.serviceTier,
                 input.collaborationMode,
                 input.copilotAgentMode,
-                input.startingMode
+                input.startingMode,
+                input.opencodeAgent
             )
         },
         onSuccess: () => {

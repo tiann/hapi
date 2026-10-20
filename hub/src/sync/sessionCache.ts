@@ -14,7 +14,7 @@ const QUEUED_MESSAGE_THINKING_GRACE_MS = 15_000
 // snapshot. Cap retries so genuine concurrent contention still surfaces to the
 // HTTP caller as 409 instead of spinning forever.
 const METADATA_RETRY_ATTEMPTS = 5
-type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'effort' | 'serviceTier' | 'collaborationMode' | 'copilotAgentMode'
+type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'effort' | 'serviceTier' | 'collaborationMode' | 'copilotAgentMode' | 'opencodeAgent'
 
 export class SessionCache {
     private readonly sessions: Map<string, Session> = new Map()
@@ -244,7 +244,8 @@ export class SessionCache {
             serviceTier: stored.serviceTier,
             permissionMode: existing?.permissionMode ?? metadata?.preferredPermissionMode,
             collaborationMode: existing?.collaborationMode,
-            copilotAgentMode: existing?.copilotAgentMode ?? metadata?.preferredCopilotAgentMode
+            copilotAgentMode: existing?.copilotAgentMode ?? metadata?.preferredCopilotAgentMode,
+            opencodeAgent: existing?.opencodeAgent ?? metadata?.preferredOpencodeAgent
         }
 
         this.sessions.set(sessionId, session)
@@ -397,6 +398,7 @@ export class SessionCache {
         serviceTier?: string | null
         collaborationMode?: CodexCollaborationMode
         copilotAgentMode?: CopilotAgentMode
+        opencodeAgent?: string | null
     }): void {
         const t = clampAliveTime(payload.time)
         if (!t) return
@@ -414,6 +416,7 @@ export class SessionCache {
         const previousServiceTier = session.serviceTier
         const previousCollaborationMode = session.collaborationMode
         const previousCopilotAgentMode = session.copilotAgentMode
+        const previousOpencodeAgent = session.opencodeAgent
         const pendingThinkingUntil = this.pendingThinkingUntilBySessionId.get(session.id) ?? 0
         const requestedThinking = Boolean(payload.thinking)
         const hubNow = Date.now()
@@ -476,6 +479,12 @@ export class SessionCache {
             session.copilotAgentMode = payload.copilotAgentMode
             this.persistPreferredCopilotAgentMode(session, payload.copilotAgentMode)
         }
+        if (payload.opencodeAgent !== undefined && !this.isStaleRuntimeKeepAlive(session.id, 'opencodeAgent', t)) {
+            session.opencodeAgent = payload.opencodeAgent ?? undefined
+            if (payload.opencodeAgent !== null) {
+                this.persistPreferredOpencodeAgent(session, payload.opencodeAgent)
+            }
+        }
 
         const now = Date.now()
         const lastBroadcastAt = this.lastBroadcastAtBySessionId.get(session.id) ?? 0
@@ -486,6 +495,7 @@ export class SessionCache {
             || previousServiceTier !== session.serviceTier
             || previousCollaborationMode !== session.collaborationMode
             || previousCopilotAgentMode !== session.copilotAgentMode
+            || previousOpencodeAgent !== session.opencodeAgent
         const turnBoundaryChanged = previousActiveTurnStartedAt !== session.activeTurnStartedAt
         const shouldBroadcast = (!wasActive && session.active)
             || (wasThinking !== session.thinking)
@@ -509,7 +519,8 @@ export class SessionCache {
                     effort: session.effort,
                     serviceTier: session.serviceTier,
                     collaborationMode: session.collaborationMode,
-                    copilotAgentMode: session.copilotAgentMode
+                    copilotAgentMode: session.copilotAgentMode,
+                    opencodeAgent: session.opencodeAgent
                 } satisfies SessionPatch
             })
         }
@@ -809,6 +820,7 @@ export class SessionCache {
             serviceTier?: string | null
             collaborationMode?: CodexCollaborationMode
             copilotAgentMode?: CopilotAgentMode
+            opencodeAgent?: string | null
         }
     ): void {
         const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
@@ -890,6 +902,13 @@ export class SessionCache {
             session.copilotAgentMode = config.copilotAgentMode
             this.persistPreferredCopilotAgentMode(session, config.copilotAgentMode)
             this.markRuntimeConfigUpdated(sessionId, 'copilotAgentMode', appliedAt)
+        }
+        if (config.opencodeAgent !== undefined) {
+            session.opencodeAgent = config.opencodeAgent ?? undefined
+            if (config.opencodeAgent !== null) {
+                this.persistPreferredOpencodeAgent(session, config.opencodeAgent)
+            }
+            this.markRuntimeConfigUpdated(sessionId, 'opencodeAgent', appliedAt)
         }
 
         this.publisher.emit({ type: 'session-updated', sessionId, data: session })
@@ -1579,6 +1598,34 @@ export class SessionCache {
         }
 
         const nextMetadata = { ...currentMetadata, preferredCopilotAgentMode: copilotAgentMode }
+        const result = this.store.sessions.updateSessionMetadata(
+            session.id,
+            nextMetadata,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false }
+        )
+
+        if (result.result === 'error') {
+            return
+        }
+
+        const parsed = MetadataSchema.safeParse(result.value)
+        if (!parsed.success) {
+            return
+        }
+
+        session.metadata = parsed.data
+        session.metadataVersion = result.version
+    }
+
+    private persistPreferredOpencodeAgent(session: Session, opencodeAgent: string): void {
+        const currentMetadata = session.metadata
+        if (!currentMetadata || currentMetadata.preferredOpencodeAgent === opencodeAgent) {
+            return
+        }
+
+        const nextMetadata = { ...currentMetadata, preferredOpencodeAgent: opencodeAgent }
         const result = this.store.sessions.updateSessionMetadata(
             session.id,
             nextMetadata,

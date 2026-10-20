@@ -855,7 +855,8 @@ export class ApiClient {
         serviceTier?: 'fast' | 'standard',
         collaborationMode?: CodexCollaborationMode,
         copilotAgentMode?: CopilotAgentMode,
-        startingMode?: 'remote' | 'pty'
+        startingMode?: 'remote' | 'pty',
+        opencodeAgent?: string
     ): Promise<SpawnResponse> {
         return await this.request<SpawnResponse>(`/api/machines/${encodeURIComponent(machineId)}/spawn`, {
             method: 'POST',
@@ -872,7 +873,8 @@ export class ApiClient {
                 serviceTier,
                 collaborationMode,
                 copilotAgentMode,
-                startingMode
+                startingMode,
+                opencodeAgent
             })
         })
     }
@@ -990,6 +992,13 @@ export class ApiClient {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/copilot-agent-mode`, {
             method: 'POST',
             body: JSON.stringify({ mode })
+        })
+    }
+
+    async setOpencodeAgent(sessionId: string, agent: string): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/opencode-agent`, {
+            method: 'POST',
+            body: JSON.stringify({ agent })
         })
     }
 

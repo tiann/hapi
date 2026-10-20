@@ -180,6 +180,7 @@ export class RpcGateway {
             effort?: string | null
             collaborationMode?: CodexCollaborationMode
             copilotAgentMode?: CopilotAgentMode
+            opencodeAgent?: string | null
         }
     ): Promise<unknown> {
         return await this.sessionRpc(sessionId, RPC_METHODS.SetSessionConfig, config)
@@ -236,7 +237,8 @@ export class RpcGateway {
         // latter is adopt-stub (create/getOrCreate with id), not reopen.
         forkSession?: boolean,
         /** Fresh machine-spawn stub — distinct from reopen existingSessionId. */
-        reservedSessionId?: string
+        reservedSessionId?: string,
+        opencodeAgent?: string
     ): Promise<
         | { type: 'success'; sessionId: string }
         | {
@@ -272,6 +274,7 @@ export class RpcGateway {
                     sessionId: reservedSessionId ?? existingSessionId,
                     collaborationMode,
                     copilotAgentMode,
+                    opencodeAgent,
                     startingMode,
                     forkSession: forkSession === true
                 }
