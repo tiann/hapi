@@ -211,9 +211,19 @@ On first run, HAPI:
 
 The session rename dialog's **Generate** action is unavailable until all three
 `HAPI_TITLE_PROVIDER_*` variables are configured on the Hub. The provider is
-called only on demand; the existing manual rename flow does not require these
-variables. Each request sends recent visible user/assistant conversation text
+used by the automatic fallback below and the manual **Generate** action. The
+existing manual rename flow does not require these variables. Each request
+sends recent visible user/assistant conversation text
 (up to 200 stored messages and a bounded prompt) to that configured provider.
+
+When a provider is configured, the Hub also makes one best-effort automatic
+request after the first completed turn if the session has no manual name or
+existing summary. Automatic failures are ignored and do not affect the primary
+conversation. The manual **Generate** action remains available for retrying
+after an automatic failure. An attempt is remembered across Hub restarts, so
+later turns do not silently retry it. A manual or Agent title arriving during
+generation takes precedence. Without a configured provider, existing title
+behavior is unchanged.
 
 <details>
 <summary>settings.json example</summary>

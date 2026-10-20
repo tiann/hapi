@@ -67,6 +67,13 @@ const SIMPLE_RESUME_TOKENS = [
     'piSessionId'
 ] as const
 
+// Hub-owned metadata that must survive sparse CLI metadata replacements.
+// `null` remains the explicit-clear sentinel handled by carryForwardIfMissing.
+const HUB_OWNED_METADATA_FIELDS = [
+    'titleSuggestionAutoAttemptedAt',
+    'titleSuggestionTurn'
+] as const
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -130,6 +137,7 @@ export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     merged = carryForwardIfMissing(prior, next, merged, PARSE_IDENTITY_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, ROUTING_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, SIMPLE_RESUME_TOKENS)
+    merged = carryForwardIfMissing(prior, next, merged, HUB_OWNED_METADATA_FIELDS)
     merged = preserveCursorProtocolPair(prior, next, merged)
     return merged ?? next
 }

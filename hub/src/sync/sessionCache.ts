@@ -1057,6 +1057,101 @@ export class SessionCache {
         throw new Error('Session was modified concurrently. Please try again.')
     }
 
+    /** Preserve the observed turn identity across a Hub restart. */
+    updateAutomaticTitleTurn(sessionId: string, turn: { first: boolean; completed: boolean }): boolean {
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+            if (!session) return false
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                { ...(session.metadata ?? { path: '', host: '' }), titleSuggestionTurn: turn },
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'error') return false
+            if (result.result === 'success') {
+                this.refreshSession(sessionId)
+                return true
+            }
+            this.refreshSession(sessionId)
+        }
+        return false
+    }
+
+    /**
+     * Atomically reserve the one automatic first-turn title attempt.
+     * The Hub-owned marker survives sparse CLI updates and provider failure.
+     */
+    claimAutomaticTitleAttempt(sessionId: string, attemptedAt: number = Date.now()): boolean {
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+            if (!session) return false
+
+            const metadata = session.metadata
+            if (metadata?.name?.trim() || metadata?.summary?.text?.trim() || metadata?.titleSuggestionAutoAttemptedAt !== undefined) {
+                return false
+            }
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                { ...(metadata ?? { path: '', host: '' }), titleSuggestionAutoAttemptedAt: attemptedAt },
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false }
+            )
+
+            if (result.result === 'error') return false
+            if (result.result === 'success') {
+                this.refreshSession(sessionId)
+                return true
+            }
+
+            this.refreshSession(sessionId)
+        }
+
+        return false
+    }
+
+    /**
+     * Persist an automatic title only while the session is still untitled.
+     * A manual/native title that arrives while the provider is in flight wins.
+     */
+    async updateAutomaticSessionSummary(sessionId: string, text: string): Promise<boolean> {
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+            if (!session) return false
+
+            const metadata = session.metadata
+            if (metadata?.name?.trim() || metadata?.summary?.text?.trim()) {
+                return false
+            }
+
+            const nextMetadata = { ...(metadata ?? { path: '', host: '' }) }
+            if (typeof nextMetadata.name === 'string' && !nextMetadata.name.trim()) {
+                delete nextMetadata.name
+            }
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                { ...nextMetadata, summary: { text, updatedAt: Date.now() } },
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false }
+            )
+
+            if (result.result === 'error') return false
+            if (result.result === 'success') {
+                this.refreshSession(sessionId)
+                return true
+            }
+
+            this.refreshSession(sessionId)
+        }
+
+        return false
+    }
+
     /**
      * Clear archive-related metadata on an archived session so it can be resumed.
      * - Removes `lifecycleState`, `archivedBy`, `archiveReason`, and stamps
@@ -1507,6 +1602,17 @@ export class SessionCache {
 
         if (typeof oldObj.name === 'string' && typeof newObj.name !== 'string') {
             merged.name = oldObj.name
+            changed = true
+        }
+
+        if (typeof oldObj.titleSuggestionAutoAttemptedAt === 'number'
+            && typeof newObj.titleSuggestionAutoAttemptedAt !== 'number') {
+            merged.titleSuggestionAutoAttemptedAt = oldObj.titleSuggestionAutoAttemptedAt
+            changed = true
+        }
+
+        if (oldObj.titleSuggestionTurn && !newObj.titleSuggestionTurn) {
+            merged.titleSuggestionTurn = oldObj.titleSuggestionTurn
             changed = true
         }
 

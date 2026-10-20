@@ -39,6 +39,19 @@ Dictation and voice-assistant provider keys can also be added from **Settings â†
 - `TRANSCRIPTION_BASE_URL` and `TRANSCRIPTION_MODEL` - OpenAI-compatible/local transcription endpoint and model.
 - `TRANSCRIPTION_API_KEY` - Optional bearer token for the OpenAI-compatible endpoint.
 
+### Optional (automatic session titles)
+
+When the configured OpenAI-compatible title provider is available, the Hub
+performs one best-effort automatic title suggestion after the first completed
+turn when the session has no manual name or existing summary. Automatic
+failures are silent and never block the agent conversation. The manual
+**Generate** action remains available.
+
+Configure `HAPI_TITLE_PROVIDER_BASE_URL`, `HAPI_TITLE_PROVIDER_API_KEY`, and
+`HAPI_TITLE_PROVIDER_MODEL` on the Hub. The attempt is persisted across restarts;
+manual or Agent titles arriving during generation are preserved. No automatic
+request is made without a configured provider.
+
 ### Optional
 
 - `HAPI_LISTEN_HOST` - HTTP bind address (default: 127.0.0.1).
