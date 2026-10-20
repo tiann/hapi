@@ -178,6 +178,23 @@ describe('cancelQueuedMessage', () => {
 })
 
 describe('recordMessagesConsumed', () => {
+    it('dates a repeated acknowledgement by the invocation it repeats, not the row clock', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'consumed-repeat')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'hello' } }, 'local-repeat')
+
+        expect(store.recordMessagesConsumed(session.id, ['local-repeat'], 2_000, 'default')).toBe(2_000)
+        // A rename moves the row clock; the duplicate still dates back to the
+        // invocation it repeats, and ids the hub never stored have no date.
+        const stored = store.sessions.getSession(session.id)!
+        expect(store.sessions.updateSessionMetadata(session.id, { ...(stored.metadata as Record<string, unknown>), name: 'renamed' }, stored.metadataVersion, 'default').result).toBe('success')
+        expect(store.sessions.getSession(session.id)!.updatedAt).toBeGreaterThan(2_000)
+        expect(store.recordMessagesConsumed(session.id, ['local-repeat', 'never-seen'], 3_000, 'default')).toBe(2_000)
+        expect(store.recordMessagesConsumed(session.id, ['never-seen'], 3_000, 'default')).toBeNull()
+        expect(store.messages.getLocalMessageStates(session.id, ['local-repeat']))
+            .toEqual([{ localId: 'local-repeat', invokedAt: 2_000 }])
+    })
+
     it('rolls back the invocation transition when the session namespace cannot be verified', () => {
         const store = makeStore()
         const session = makeSession(store, 'consumed-rollback-wrong-namespace')

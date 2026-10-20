@@ -2,6 +2,7 @@ import type { Database } from 'bun:sqlite'
 import { prepareCached } from './statementCache'
 import { bumpSessionDeletionEpoch } from './sessionInvalidation'
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 
 import type { StoredSession, VersionedUpdateResult } from './types'
 import { safeJsonParse } from './json'
@@ -407,6 +408,17 @@ export function adoptPreallocatedSession(
     })()
 }
 
+/**
+ * Same stored value after the write? Compared on the JSON the row would hold,
+ * so key order and `undefined` members (which `JSON.stringify` drops) do not
+ * make an echo look like a change.
+ */
+function isMetadataUnchanged(prior: unknown, merged: unknown): boolean {
+    if (prior === null || prior === undefined) return false
+    const encoded = JSON.stringify(merged)
+    return encoded !== undefined && isDeepStrictEqual(prior, safeJsonParse(encoded))
+}
+
 export function updateSessionMetadata(
     db: Database,
     id: string,
@@ -416,7 +428,6 @@ export function updateSessionMetadata(
     options?: { touchUpdatedAt?: boolean; allowUnarchive?: boolean }
 ): VersionedUpdateResult<unknown | null> {
     const now = Date.now()
-    const touchUpdatedAt = options?.touchUpdatedAt !== false
     const allowUnarchive = options?.allowUnarchive === true
 
     try {
@@ -442,6 +453,12 @@ export function updateSessionMetadata(
             ) {
                 merged = preserveHubArchiveOnMerged(prior, merged)
             }
+
+            // A write that changes nothing — a CLI echoing the row back after
+            // a version mismatch, a reconnect replaying its local copy — is
+            // not activity. Keep `updated_at` where it was so list order and
+            // the unread watermark stay honest; the version still advances.
+            const touchUpdatedAt = options?.touchUpdatedAt !== false && !isMetadataUnchanged(prior, merged)
 
             const result = updateVersionedField({
                 db,
