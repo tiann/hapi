@@ -1,3 +1,5 @@
+import { SpawnPeerInputSchema, SPAWN_PEER_DESCRIPTION, type SpawnPeerInput } from '@/modules/common/spawnPeerTool'
+import { spawnPeer } from '@/modules/pingPeer/pingPeer'
 /**
  * HAPI MCP server
  * Provides HAPI CLI specific tools including chat session title management
@@ -48,7 +50,8 @@ const CLAUDE_MANUAL_APPROVAL_HAPI_TOOLS = new Set([
     'display_media',
     'display_video',
     'ping_peer',
-    'inspect_peer'
+    'inspect_peer',
+    'spawn_peer'
 ]);
 
 /**
@@ -298,6 +301,19 @@ function createHapiMcpServer(
         }
     });
 
+    mcp.registerTool<any, any>('spawn_peer', {
+        description: SPAWN_PEER_DESCRIPTION,
+        title: 'Create Peer Chat',
+        inputSchema: SpawnPeerInputSchema,
+    }, async (args: SpawnPeerInput) => {
+        try {
+            const result = await spawnPeer(args, { currentSessionId: client.sessionId });
+            return { content: [{ type: 'text' as const, text: JSON.stringify(result) }], isError: false };
+        } catch (error) {
+            return { content: [{ type: 'text' as const, text: error instanceof Error ? error.message : String(error) }], isError: true };
+        }
+    });
+
     mcp.registerTool<any, any>('ping_peer', {
         description: PING_PEER_TOOL_DESCRIPTION,
         title: 'Ping Peer Session',
@@ -541,8 +557,8 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
     }));
 
     const toolNames = enableChangeTitle
-        ? ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer']
-        : ['display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer'];
+        ? ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer']
+        : ['display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'];
     if (options.skillLookup) {
         toolNames.push('skill_lookup');
     }

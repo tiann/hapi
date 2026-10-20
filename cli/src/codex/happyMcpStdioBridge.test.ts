@@ -123,6 +123,15 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
         })
     })
 
+    it('forwards explicit spawn options unchanged', async () => {
+        await runHappyMcpStdioBridge(['--url', 'http://127.0.0.1:43006', '--tools', 'spawn_peer'])
+        const handler = harness.tools.get('spawn_peer')!
+        expect(handler).toBeDefined()
+        const args = { message: 'Review', agent: 'claude', model: null, yolo: false }
+        await handler(args)
+        expect(harness.callTool).toHaveBeenCalledWith({ name: 'spawn_peer', arguments: args })
+    })
+
     it('registers ping_peer when included in --tools', async () => {
         await runHappyMcpStdioBridge([
             '--url',

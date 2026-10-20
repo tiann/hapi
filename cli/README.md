@@ -300,3 +300,23 @@ Android's `-PhapiVersionName` override is preserved.
 
 - `../hub/README.md`
 - `../web/README.md`
+
+### Create an independent chat
+
+Use MCP `spawn_peer` or pass one JSON object to the CLI:
+
+```bash
+hapi spawn-peer '{"message":"Review the authentication changes","agent":"codex","permissionMode":"read-only"}'
+```
+
+The new chat uses the normal machine/runner lifecycle and appears in the session list. Claude can create Codex chats, and Codex can create Claude chats. Other launchable providers use the same path. The result includes `sessionId` and a `/sessions/<id>` link for `inspect_peer` and `ping_peer`.
+
+All New Chat launch options are available: `machineId`, `directory`, `agent`, `model`, `effort`, `modelReasoningEffort`, `permissionMode`, `yolo`, `sessionType`, `worktreeName`, `serviceTier`, `collaborationMode`, `copilotAgentMode`, and `startingMode`. `message` is required; `waitActiveSecs` optionally changes the readiness timeout (maximum 300 seconds).
+
+Omitted options inherit shared New Chat preferences. The hub stores the last machine and agent per namespace, the directory per machine, and launch settings per machine and agent. An explicit value wins; `false` stays false and `null` clears a saved option to its native default. A different agent uses its own settings, so Claude permission modes never carry into Codex. Codex `safe-yolo` is unavailable for new launches, matching the UI; it is never converted to `yolo`.
+
+Successful web and agent creations update these preferences, even if the initial work message later cannot be verified. Failed creations do not. Opening New Chat imports missing browser preferences without replacing shared settings. Changing a form field without creating a chat does not update the shared defaults. Native clients that still use the raw machine-spawn endpoint keep their existing behavior.
+
+The MCP server binds launch provenance to its hosting HAPI session. The tool accepts no parent override. In-session CLI use reads `HAPI_SESSION_ID`; outside a chat, CLI creation has no agent parent. The hub validates parent and machine access in the authenticated namespace. These credentials retain the existing namespace-wide peer authority; parent relationships grant no additional access. `metadata.launchOrigin` records the parent ID and launch time before the runner starts and survives bootstrap and later metadata updates.
+
+Creation is not automatically retried. A lost response can mean a chat was created, and a failed message receipt can mean work was accepted. Errors report a known child ID when available. Inspect that child or list peers before retrying. An uncertain child is left running, never archived or deleted. Normal tool approval policy still applies.

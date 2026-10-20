@@ -1,3 +1,4 @@
+import { SpawnPeerInputSchema, SPAWN_PEER_DESCRIPTION } from '@/modules/common/spawnPeerTool';
 /**
  * HAPI MCP STDIO Bridge
  *
@@ -23,7 +24,7 @@ import {
   SESSION_ID_PREFIX_PARAM_DESCRIPTION,
 } from '@hapi/protocol/sessionCitation';
 
-const DEFAULT_TOOL_NAMES = ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer'];
+const DEFAULT_TOOL_NAMES = ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'];
 
 function parseArgs(argv: string[]): { url: string | null; toolNames: Set<string> } {
   let url: string | null = null;
@@ -237,6 +238,21 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
         'Recent message page size (default 30, max 100). Text snippets only.'
       ),
     });
+
+    if (toolNames.has('spawn_peer')) {
+      server.registerTool<any, any>('spawn_peer', {
+        description: SPAWN_PEER_DESCRIPTION,
+        title: 'Create Peer Chat',
+        inputSchema: SpawnPeerInputSchema,
+      }, async (args: Record<string, unknown>) => {
+        try {
+          const client = await ensureHttpClient();
+          return await client.callTool({ name: 'spawn_peer', arguments: args }) as any;
+        } catch (error) {
+          return { content: [{ type: 'text' as const, text: String(error) }], isError: true };
+        }
+      });
+    }
 
     if (toolNames.has('inspect_peer')) {
       server.registerTool<any, any>(

@@ -143,6 +143,23 @@ The configuration routes in the table above respond `{ok: true}`; apply-failures
 | `GET /api/machines/:id/agy-models`, `/pi-models`, `/codex-models`, `/cursor-models` | Machine-level (pre-spawn pickers). `agy-models` takes `?refresh=true` to skip the machine's cached catalog, and may answer `success: true` with an advisory `error` (see [Errors](./errors.md#rpc-wrapped-endpoints)) |
 | `GET /api/machines/:id/opencode-models?cwd=`, `/grok-models?cwd=`, `/copilot-models?cwd=`, `/kimi-models?cwd=` | `cwd` query required (400 without) |
 
+### Shared New Chat creation
+
+Source: `hub/src/web/routes/chatCreation.ts`, `shared/src/sessionCreation.ts`.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/new-chat-preferences` | None | Namespace-scoped `{lastMachineId?, lastAgent?, machines}` |
+| `POST /api/new-chat-preferences/import` | `ChatCreationPreferences` | Shared preferences after filling missing browser scopes; existing values win |
+| `POST /api/sessions/create` | `ChatCreationOverrides` | `SpawnResponse` |
+| `POST /api/sessions/:id/create-peer` | `ChatCreationOverrides` | `SpawnResponse`; records launch origin from the namespace-checked parent route |
+
+These creation routes use the existing runner spawn lifecycle. All creation options are optional: omitted values inherit shared preferences, explicit values override them, and nullable launch options accept `null` for the native default. Machine and directory must resolve before spawning. Machine-specific settings and agent-specific settings never cross their scopes. The web form sends explicit native-default choices for cleared controls.
+
+Preferences are persisted on the hub per namespace. Only successful creation updates the last machine, agent, directory, and resolved launch settings. A success can include `preferencesWarning` if saving defaults failed; the chat still exists and must not be recreated. An ambiguous runner error can include `sessionId` for inspection. Neither creation nor initial-message delivery should be retried blindly.
+
+The peer route records `metadata.launchOrigin = {kind: 'agent', parentSessionId, createdAt}` before dispatch. MCP binds the route parent to its hosting session and does not accept a parent argument. The same namespace-wide authority as existing peer tools applies. The HTTP creation routes return the child identity; the agent tool waits for readiness, sends its required first message using the existing messages endpoint, and verifies the exact local ID with queued-state.
+
 ### Machines & spawning
 
 Source: `hub/src/web/routes/machines.ts`; schemas `SpawnSessionRequestSchema`, `MachineListDirectoryRequestSchema`, `MachinePathsExistsRequestSchema`, `RenameMachineRequestSchema` (`shared/src/apiTypes.ts`), `MachineSchema` (`shared/src/schemas.ts`).
