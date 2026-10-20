@@ -15,6 +15,7 @@ export class CopilotSession extends AgentSessionBase<CopilotMode> {
     readonly startingMode: 'local' | 'remote';
     localLaunchFailure: LocalLaunchFailure | null = null;
     private remoteAgentModeApplier: ((mode: CopilotAgentMode) => Promise<void>) | null = null;
+    private remoteEffortApplier: ((effort: string | null) => Promise<string | null>) | null = null;
 
     constructor(opts: {
         api: ApiClient;
@@ -28,6 +29,7 @@ export class CopilotSession extends AgentSessionBase<CopilotMode> {
         startedBy: 'runner' | 'terminal';
         startingMode: 'local' | 'remote';
         permissionMode?: PermissionMode;
+        effort?: string | null;
         agentMode?: CopilotAgentMode;
     }) {
         super({
@@ -45,12 +47,14 @@ export class CopilotSession extends AgentSessionBase<CopilotMode> {
                 ...metadata,
                 copilotSessionId: sessionId
             }),
-            permissionMode: opts.permissionMode
+            permissionMode: opts.permissionMode,
+            effort: opts.effort
         });
 
         this.startedBy = opts.startedBy;
         this.startingMode = opts.startingMode;
         this.permissionMode = opts.permissionMode;
+        this.effort = opts.effort;
         this.agentMode = opts.agentMode ?? 'interactive';
     }
 
@@ -64,6 +68,10 @@ export class CopilotSession extends AgentSessionBase<CopilotMode> {
         this.model = model;
     };
 
+    setEffort = (effort: string | null | undefined): void => {
+        this.effort = effort;
+    };
+
     setAgentMode = (mode: CopilotAgentMode): void => {
         this.agentMode = mode;
     };
@@ -74,6 +82,10 @@ export class CopilotSession extends AgentSessionBase<CopilotMode> {
         this.remoteAgentModeApplier = applier;
     };
 
+    setRemoteEffortApplier = (applier: ((effort: string | null) => Promise<string | null>) | null): void => {
+        this.remoteEffortApplier = applier;
+    };
+
     applyRemoteAgentMode = async (mode: CopilotAgentMode): Promise<void> => {
         if (this.thinking) {
             throw new Error('Wait for the current Copilot turn to finish before changing agent mode');
@@ -82,6 +94,16 @@ export class CopilotSession extends AgentSessionBase<CopilotMode> {
             throw new Error('Copilot agent mode switching is unavailable for this session');
         }
         await this.remoteAgentModeApplier(mode);
+    };
+
+    applyRemoteEffort = async (effort: string | null): Promise<string | null> => {
+        if (this.thinking) {
+            throw new Error('Wait for the current Copilot turn to finish before changing effort');
+        }
+        if (!this.remoteEffortApplier) {
+            throw new Error('Copilot effort switching is unavailable for this session');
+        }
+        return await this.remoteEffortApplier(effort);
     };
 
     protected override getKeepAliveRuntime() {
@@ -95,6 +117,7 @@ export class CopilotSession extends AgentSessionBase<CopilotMode> {
         this.client.keepAlive(this.thinking, this.mode, {
             permissionMode: this.permissionMode,
             model: this.model,
+            effort: this.effort,
             copilotAgentMode: this.agentMode
         });
     };

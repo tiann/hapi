@@ -246,6 +246,7 @@ function ComposerHarness(props: {
                         : current
                 )}
                 agentFlavor="pi"
+                allowConfigChangesWhileThinking
                 thinking={props.piRunning}
                 model="pi-model"
                 piModels={[{ provider: 'pi', modelId: 'pi-model', name: 'Pi model' }]}
