@@ -35,6 +35,7 @@ import { loadScratchlistAttachmentLimitsFromEnv } from '../../config/scratchlist
 import { validateScratchlistAttachmentsForWrite, scratchlistSessionBytesBeforeForPut } from '../../scratchlistAttachments/validate'
 import { TitleSuggestionError } from '../../sync/titleSuggestion'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
+import { normalizeSessionSearchQuery, scoreSessionSearchMatch } from './sessionSearchMatch'
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
@@ -128,6 +129,59 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         })
 
         return c.json({ sessions })
+    })
+
+    // Keyword inventory search — not recency-bounded like list_peers / GET ?limit=.
+    // Must be registered before /sessions/:id so "search" is not treated as an id.
+    app.get('/sessions/search', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const qRaw = c.req.query('q') ?? ''
+        const normalizedQuery = normalizeSessionSearchQuery(qRaw)
+        if (!normalizedQuery) {
+            return c.json({ error: 'query parameter q is required', code: 'bad_args' }, 400)
+        }
+
+        const limitRaw = c.req.query('limit')
+        const parsedLimit = limitRaw === undefined ? 30 : Number(limitRaw)
+        // Cap matches GET /sessions (500). MCP/CLI public page stays ≤100; clients
+        // request peerListFetchLimit (= page + caller/overflow pad, e.g. 102) so
+        // hasMore stays honest after excluding the caller.
+        const limit = Number.isFinite(parsedLimit)
+            ? Math.min(500, Math.max(1, Math.floor(parsedLimit)))
+            : 30
+
+        const namespace = c.get('namespace')
+        const ranked = engine.getSessionsByNamespace(namespace)
+            .map((session) => ({
+                session,
+                score: scoreSessionSearchMatch(session, normalizedQuery)
+            }))
+            .filter((row) => row.score > 0)
+            .sort((a, b) => {
+                if (b.score !== a.score) {
+                    return b.score - a.score
+                }
+                return b.session.updatedAt - a.session.updatedAt
+            })
+            .slice(0, limit)
+            .map((row) => row.session)
+
+        const scheduledCounts = engine.getFutureScheduledMessageCounts(ranked.map((session) => session.id))
+        const nextScheduledAt = engine.getNextScheduledAtBySessionIds(ranked.map((session) => session.id))
+        const sessions = ranked.map((session) => {
+            const summary = toSessionSummary(session)
+            return {
+                ...summary,
+                futureScheduledMessageCount: scheduledCounts.get(session.id) ?? 0,
+                nextScheduledAt: nextScheduledAt.get(session.id) ?? null
+            }
+        })
+
+        return c.json({ sessions, q: normalizedQuery })
     })
 
     app.get('/sessions/:id/export', (c) => {

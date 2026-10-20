@@ -31,19 +31,24 @@ const AUTO_APPROVE_EXACT_TOOL_NAMES = new Set([
     'hapi_skill_lookup',
     'happy__skill_lookup',
     'mcp__hapi__skill_lookup',
-    // Discovery shortlist only (id/active/flavor/name) - same as ping-peer --list.
+    // Discovery shortlist / keyword inventory — same as ping-peer --list / search-peers.
     'list_peers',
     'hapi_list_peers',
     'happy__list_peers',
     'mcp__hapi__list_peers',
+    'search_peers',
+    'hapi_search_peers',
+    'happy__search_peers',
+    'mcp__hapi__search_peers',
     // ACP permission requests often surface MCP tool title, not the snake_case name.
-    'list peer sessions'
+    'list peer sessions',
+    'search peer sessions'
 ]);
 // ping_peer / inspect_peer intentionally omitted from always-approve: they can
 // resume+inject into another session or read peer histories, so permission
 // modes must still gate them. Treat both as write-like in read-only so ACP
 // titles such as "Ping Peer Session" / "Inspect Peer Session" also require
-// approval. list_peers is discovery-only and is auto-approved above.
+// approval. list_peers / search_peers are discovery-only and are auto-approved above.
 const AUTO_APPROVE_TOOL_ID_HINTS = ['change_title', 'save_memory'];
 const SENSITIVE_TOOL_NAME_HINTS = [
     'ping_peer',

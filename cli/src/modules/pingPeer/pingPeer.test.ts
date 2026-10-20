@@ -538,6 +538,46 @@ describe('formatPeerSessionsList', () => {
         expect(peerListFetchLimit(100)).toBe(101)
         expect(peerListFetchLimit(499, { excludeCaller: true })).toBe(500)
     })
+
+    it('dense layout uses a legend and compact a|i rows for MCP context', async () => {
+        const { formatPeerSessionsList } = await import('./pingPeer')
+        const longTitle = `ExcuseMe ${'x'.repeat(120)}`
+        const text = formatPeerSessionsList([
+            {
+                id: '3df6f984-44f4-4885-8a87-86fc4fedf833',
+                active: false,
+                updatedAt: 1,
+                metadata: { name: longTitle, flavor: 'cursor' }
+            },
+            {
+                id: 'aaaaaaaa-1111-1111-1111-111111111111',
+                active: true,
+                updatedAt: 2,
+                metadata: { name: 'Hot', flavor: 'claude' }
+            }
+        ], { dense: true, preserveOrder: true, maxRows: 2 })
+        const lines = text.split('\n')
+        expect(lines[0]).toBe('# id a|i flavor title')
+        expect(lines[1]).toBe(
+            `3df6f984-44f4-4885-8a87-86fc4fedf833 i cursor ${longTitle.slice(0, 72)}`
+        )
+        expect(lines[2]).toBe('aaaaaaaa-1111-1111-1111-111111111111 a claude Hot')
+        expect(text).not.toContain('active=')
+        expect(text).not.toContain('flavor=')
+    })
+
+    it('dense overflow footer stays short', async () => {
+        const { formatPeerSessionsList } = await import('./pingPeer')
+        const text = formatPeerSessionsList([
+            {
+                id: 'aaaaaaaa-1111-1111-1111-111111111111',
+                active: true,
+                updatedAt: 1,
+                metadata: { name: 'Only', flavor: 'claude' }
+            }
+        ], { dense: true, maxRows: 1, hasMore: true })
+        expect(text.split('\n').at(-1)).toBe('…+')
+    })
 })
 
 describe('listPeerSessions auth failures', () => {
@@ -670,5 +710,58 @@ describe('listSessions query params', () => {
         })
         expect(result.sessionId).toBe(sessionId)
         expect(pingParams[0]).toBeUndefined()
+    })
+})
+
+describe('searchPeerSessions', () => {
+    it('GETs /api/sessions/search with q + limit', async () => {
+        const { searchPeerSessions } = await import('./pingPeer')
+        let captured: { url?: string; params?: Record<string, unknown> } = {}
+        const http = createHttpMock({
+            post: (url) => {
+                if (url.endsWith('/api/auth')) {
+                    return { status: 200, data: { token: 'jwt' } }
+                }
+                throw new Error(`unexpected POST ${url}`)
+            },
+            get: (url, config) => {
+                captured = { url, params: config?.params }
+                if (url.endsWith('/api/sessions/search')) {
+                    return {
+                        status: 200,
+                        data: {
+                            sessions: [{
+                                id: '08461427-9b0e-48c2-82cc-cbb5fad1c148',
+                                active: false,
+                                updatedAt: 10,
+                                metadata: { name: 'Arthur Scout deploy (hetzner)', path: '/tmp', flavor: 'cursor' }
+                            }],
+                            q: 'hetzner'
+                        }
+                    }
+                }
+                throw new Error(`unexpected GET ${url}`)
+            }
+        })
+        const sessions = await searchPeerSessions({
+            query: 'hetzner',
+            limit: 15,
+            apiUrl: 'http://hub.test',
+            accessToken: 'tok',
+            http: http as never
+        })
+        expect(captured.url).toBe('http://hub.test/api/sessions/search')
+        expect(captured.params).toEqual({ q: 'hetzner', limit: 15 })
+        expect(sessions).toHaveLength(1)
+        expect(sessions[0]!.id).toMatch(/^08461427/)
+    })
+
+    it('rejects empty query', async () => {
+        const { searchPeerSessions, PingPeerError } = await import('./pingPeer')
+        await expect(searchPeerSessions({
+            query: '   ',
+            apiUrl: 'http://hub.test',
+            accessToken: 'tok'
+        })).rejects.toBeInstanceOf(PingPeerError)
     })
 })
