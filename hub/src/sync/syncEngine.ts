@@ -99,13 +99,27 @@ export type {
     RpcUploadFileResponse
 } from './rpcGateway'
 
+/**
+ * The engine-side session process could not be stopped (or confirmed dead):
+ * the runner still reports it alive, or its fate stays unknown after every
+ * confirm path. This is a deliberate archive refusal — the session's state
+ * conflicts with the requested operation — not an RPC delivery failure, so
+ * routes surface it as HTTP 409 `engine_still_running` instead of a 500.
+ */
+export class EngineStillRunningError extends Error {
+    constructor() {
+        super('Session process is still running and could not be stopped')
+        this.name = 'EngineStillRunningError'
+    }
+}
+
 export type ResumeSessionResult =
     | { type: 'success'; sessionId: string }
-    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed'; rollbackSafe?: boolean }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed' | 'engine_unreachable' | 'engine_unresponsive'; rollbackSafe?: boolean }
 
 export type ReopenSessionResult =
     | { type: 'success'; sessionId: string; resumed: boolean; cursorSessionProtocol?: 'acp' | 'stream-json' }
-    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed' | 'metadata_conflict' }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed' | 'metadata_conflict' | 'engine_unreachable' | 'engine_unresponsive' }
     | { type: 'incomplete'; message: string; missing: [string, ...string[]] }
 
 export type LocalResumeTargetResult =
@@ -1822,7 +1836,7 @@ export class SyncEngine {
                 }
             }
             if (status === 'still_alive' || status === 'unknown') {
-                throw new Error('Session process is still running and could not be stopped')
+                throw new EngineStillRunningError()
             }
         } else if (machineId && !runnerSpawned) {
             // Terminal / non-runner sessions: KillSession is the primary stop.
@@ -3344,6 +3358,12 @@ export class SyncEngine {
             )
 
             if (spawnResult.type !== 'success') {
+                // Delivery failures (engine socket gone / ack deadline blown) are
+                // reported as their own codes so callers can distinguish them
+                // from genuine resume failures.
+                const spawnErrorCode = spawnResult.code === 'engine_unreachable' || spawnResult.code === 'engine_unresponsive'
+                    ? spawnResult.code
+                    : 'resume_failed'
                 if (requiresPiNativeReady) {
                     const stopped = await this.terminateInPlacePiResume(
                         targetMachine.id,
@@ -3355,12 +3375,12 @@ export class SyncEngine {
                         return {
                             type: 'error',
                             message: spawnResult.message,
-                            code: 'resume_failed',
+                            code: spawnErrorCode,
                             rollbackSafe: false,
                         }
                     }
                 }
-                return { type: 'error', message: spawnResult.message, code: 'resume_failed' }
+                return { type: 'error', message: spawnResult.message, code: spawnErrorCode }
             }
 
             if (requiresPiNativeReady && spawnResult.sessionId !== access.sessionId) {
