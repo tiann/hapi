@@ -990,7 +990,10 @@ export class SessionCache {
             }
 
             const currentMetadata = session.metadata ?? { path: '', host: '' }
-            const newMetadata = { ...currentMetadata, name }
+            // Web-side renames pin the name: nameLocked tells the CLI socket
+            // path (preserveHubOwnedMetadata) to keep this name over agent
+            // snapshots until the owner re-enables per-turn rewrites.
+            const newMetadata = { ...currentMetadata, name, nameLocked: true }
 
             const result = this.store.sessions.updateSessionMetadata(
                 sessionId,

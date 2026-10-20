@@ -24,8 +24,8 @@ const { context, navigate, setAppearance, setColorTheme, setFontScale, setTermin
     setAppBadgeEnabled: vi.fn(),
 }))
 
-const getHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
-const updateHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false })
+const getHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false, autoTitlePerTurn: false })
+const updateHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false, autoTitlePerTurn: false })
 
 vi.mock('@/hooks/useColorTheme', () => ({
     useColorTheme: () => ({ colorTheme: 'default', setColorTheme }),
@@ -221,8 +221,8 @@ describe('responsive settings pages', () => {
     beforeEach(() => {
         vi.clearAllMocks()
         localStorage.clear()
-        getHubSettings.mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
-        updateHubSettings.mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false })
+        getHubSettings.mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false, autoTitlePerTurn: false })
+        updateHubSettings.mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false, autoTitlePerTurn: false })
         context.token = `x.${btoa(JSON.stringify({ ns: 'default' }))}.x`
     })
 
@@ -258,9 +258,10 @@ describe('responsive settings pages', () => {
     })
 
     it('explains and keeps summary generation separate from chat display', async () => {
-        updateHubSettings.mockImplementation(async (patch: { sessionSummaryContract?: boolean; sessionSummaryInChat?: boolean }) => ({
+        updateHubSettings.mockImplementation(async (patch: { sessionSummaryContract?: boolean; sessionSummaryInChat?: boolean; autoTitlePerTurn?: boolean }) => ({
             sessionSummaryContract: patch.sessionSummaryContract ?? false,
             sessionSummaryInChat: patch.sessionSummaryInChat ?? false,
+            autoTitlePerTurn: patch.autoTitlePerTurn ?? false,
         }))
 
         renderPage(<SettingsGeneralPage />)
@@ -280,6 +281,20 @@ describe('responsive settings pages', () => {
         fireEvent.click(screen.getByRole('checkbox', { name: 'Show status summaries in chat' }))
         await waitFor(() => {
             expect(updateHubSettings).toHaveBeenCalledWith({ sessionSummaryInChat: true })
+        })
+    })
+
+    it('renders and toggles the per-turn title switch for owners', async () => {
+        renderPage(<SettingsGeneralPage />)
+
+        expect(await screen.findByRole('heading', { name: 'Session titles' })).toBeInTheDocument()
+        const toggle = screen.getByRole('checkbox', { name: 'Rewrite title every turn' })
+        expect(toggle).toBeInTheDocument()
+        expect(screen.getByText(/turning this setting on again clears all locks/i)).toBeInTheDocument()
+
+        fireEvent.click(toggle)
+        await waitFor(() => {
+            expect(updateHubSettings).toHaveBeenCalledWith({ autoTitlePerTurn: true })
         })
     })
 
