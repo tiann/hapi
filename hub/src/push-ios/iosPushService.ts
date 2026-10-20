@@ -19,6 +19,8 @@ export type IosPushNotificationPayload = {
     contractVersion: string
     requestId?: string
     notifySummary?: string
+    /** Coalescing identity; when set, used as APNs collapse-id. */
+    tag?: string
 }
 
 export type IosPushSendResult = {
@@ -33,8 +35,8 @@ const APNS_COLLAPSE_ID_MAX_BYTES = 64
  * APNs collapse id: `<type>-<sessionId>`, truncated to 64 bytes on a UTF-8
  * character boundary (APNs rejects oversized collapse ids outright).
  */
-export function buildCollapseId(type: string, sessionId: string): string {
-    const raw = `${type}-${sessionId}`
+export function buildCollapseId(type: string, sessionId: string, tag?: string): string {
+    const raw = tag && tag.length > 0 ? tag : `${type}-${sessionId}`
     if (Buffer.byteLength(raw, 'utf8') <= APNS_COLLAPSE_ID_MAX_BYTES) {
         return raw
     }
@@ -91,7 +93,7 @@ export class IosPushService {
         }
 
         const plaintext = canonicalJson(payload)
-        const collapseId = buildCollapseId(payload.type, payload.sessionId)
+        const collapseId = buildCollapseId(payload.type, payload.sessionId, payload.tag)
 
         const invalidTokens: string[] = []
         let sent = 0

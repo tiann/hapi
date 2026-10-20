@@ -13,7 +13,8 @@ enum class PushType(val wire: String) {
     READY("ready"),
     PERMISSION_REQUEST("permission-request"),
     INPUT_REQUEST("input-request"),
-    TASK_NOTIFICATION("task-notification");
+    TASK_NOTIFICATION("task-notification"),
+    MODEL_ERROR("model-error");
 
     companion object {
         fun fromWire(value: String): PushType? = entries.firstOrNull { it.wire == value }
@@ -76,6 +77,8 @@ data class PushPayload(
     val severity: PushSeverity?,
     val contractVersion: String?,
     val notifySummary: PushNotifySummary?,
+    /** Hub coalescing tag (`FcmSendPayload.tag`), when present on the data map. */
+    val tag: String?,
 ) {
 
     /**
@@ -97,31 +100,32 @@ data class PushPayload(
             PushType.PERMISSION_REQUEST -> requestId != null
             PushType.INPUT_REQUEST -> false // Answer in the session, not via approval or message Reply.
             PushType.READY, PushType.TASK_NOTIFICATION -> true
-            null -> false
+            PushType.MODEL_ERROR, null -> false
         }
 
     /**
-     * Notification channel routing: `permission_requests` / `input_requests` (HIGH) /
-     * `ready` (DEFAULT) / `task_notifications` (DEFAULT). Unknown types and
-     * unknown contract versions land in the default-importance
-     * `task_notifications` bucket — never in the heads-up channel.
+     * Notification channel routing: `permission_requests` / `input_requests` /
+     * `model_errors` (HIGH) / `ready` (DEFAULT) / `task_notifications`
+     * (DEFAULT). Unknown types and unknown contract versions land in the
+     * default-importance `task_notifications` bucket — never heads-up.
      */
     val channelId: String
         get() = when {
             !isKnownContractVersion -> CHANNEL_TASK_NOTIFICATIONS
             type == PushType.PERMISSION_REQUEST -> CHANNEL_PERMISSION_REQUESTS
             type == PushType.INPUT_REQUEST -> CHANNEL_INPUT_REQUESTS
+            type == PushType.MODEL_ERROR -> CHANNEL_MODEL_ERROR
             type == PushType.READY -> CHANNEL_READY
             else -> CHANNEL_TASK_NOTIFICATIONS
         }
 
     /**
-     * Coalescing tag `type-<sessionId>`: a newer push of the same type for
-     * the same session replaces the previous notification instead of
-     * stacking (mirrors the hub-side `tag` scheme it uses for Web Push).
+     * Coalescing tag: prefer the hub-supplied `data.tag` (event-specific
+     * for `model-error`) before falling back to `type-<sessionId>`.
      */
     val notificationTag: String
-        get() = "${rawType.ifBlank { "unknown" }}-$sessionId"
+        get() = tag?.takeIf { it.isNotBlank() }
+            ?: "${rawType.ifBlank { "unknown" }}-$sessionId"
 
     /** Title to render; falls back to the session name, then a constant. */
     val displayTitle: String
@@ -156,6 +160,7 @@ data class PushPayload(
         const val CHANNEL_INPUT_REQUESTS = "input_requests"
         const val CHANNEL_READY = "ready"
         const val CHANNEL_TASK_NOTIFICATIONS = "task_notifications"
+        const val CHANNEL_MODEL_ERROR = "model_errors"
 
         private const val DEFAULT_TITLE = "HAPI"
 
@@ -179,6 +184,7 @@ data class PushPayload(
                 severity = PushSeverity.fromWire(data["severity"]),
                 contractVersion = data["contractVersion"]?.takeIf { it.isNotBlank() },
                 notifySummary = data["notifySummary"]?.let(::parseNotifySummary),
+                tag = data["tag"]?.takeIf { it.isNotBlank() },
             )
         }
 
