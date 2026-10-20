@@ -1489,14 +1489,14 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           logger.debug(`[RUNNER RUN] Reaped argv-orphan PID(s) for session ${sessionId}`);
           return 'stopped';
         }
-        // No killable orphans: siblings may protect the wrapper, but that is
-        // not proof this root ended. Only an inactive registry binding (Codex
-        // KillSession ack) may claim stopped; otherwise stay unknown on retry.
-        if (sessionRuntimeHasActiveSiblings(liveRuntimes, sessionId) || protectedTrackedPids.size > 0) {
-          const binding = sessionRegistryBindingState(liveRuntimes, sessionId);
+        // An inactive binding confirms KillSession even for the last root,
+        // whose wrapper may still be finishing cleanup after tracking loss.
+        // Sibling protection alone remains insufficient proof of archival.
+        const binding = sessionRegistryBindingState(liveRuntimes, sessionId);
+        if (binding !== 'absent' || sessionRuntimeHasActiveSiblings(liveRuntimes, sessionId) || protectedTrackedPids.size > 0) {
           const decision = decideKeepWrapperArchive(binding);
           logger.debug(
-            `[RUNNER RUN] Session ${sessionId}; shared siblings remain; archive=${decision}`
+            `[RUNNER RUN] Session ${sessionId}; shared binding=${binding}; archive=${decision}`
           );
           return decision === 'still_alive' ? 'still_alive' : decision;
         }
