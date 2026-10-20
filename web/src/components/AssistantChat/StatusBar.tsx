@@ -8,6 +8,8 @@ import {
 import type { PermissionModeTone } from '@hapi/protocol'
 import * as Popover from '@radix-ui/react-popover'
 import { useMemo } from 'react'
+import type { CodexAccountUsage } from '@hapi/protocol/apiTypes'
+import { CodexUsage } from './CodexUsage'
 import type { AgentState, CodexCollaborationMode, PermissionMode } from '@/types/api'
 import type { ConversationStatus } from '@/realtime/types'
 import { getContextBudgetTokens } from '@/chat/modelConfig'
@@ -192,6 +194,7 @@ export function shouldShowCodexFastBadge(
 }
 
 export function StatusBar(props: {
+    codexUsage?: CodexAccountUsage | null
     active: boolean
     thinking: boolean
     agentState: AgentState | null | undefined
@@ -302,6 +305,7 @@ export function StatusBar(props: {
                         {connectionStatus.text}
                     </span>
                 </div>
+                {props.agentFlavor === 'codex' ? <CodexUsage usage={props.codexUsage} model={props.model} /> : null}
                 {contextUsageLabel ? (
                     <Popover.Root>
                         <Popover.Trigger asChild>
