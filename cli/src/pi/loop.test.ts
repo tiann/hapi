@@ -25,7 +25,7 @@ vi.mock('./piEventConverter', async (importOriginal) => {
     const actual = await importOriginal<typeof import('./piEventConverter')>();
     return {
         ...actual,
-        convertPiEvent: vi.fn(() => []),
+        convertPiEvent: vi.fn(async () => []),
     };
 });
 
@@ -1050,7 +1050,7 @@ describe('sendPiRpcAndWait', () => {
 });
 
 describe('Pi lifecycle timeline', () => {
-    it('synchronizes authoritative get_state streaming and deduplicates compaction/retry timeline events', () => {
+    it('synchronizes authoritative get_state streaming and deduplicates compaction/retry timeline events', async () => {
         let listener: ((event: Record<string, unknown>) => void) | null = null;
         const transport = {
             onEvent: vi.fn((handler: (event: Record<string, unknown>) => void) => { listener = handler; }),
@@ -1075,6 +1075,9 @@ describe('Pi lifecycle timeline', () => {
         emit({ type: 'compaction_end', reason: 'threshold', aborted: false, willRetry: false });
         emit({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 10, errorMessage: '429' });
         emit({ type: 'auto_retry_end', attempt: 1, success: true });
+        // Lifecycle notices publish through the serialized chat queue; flush the
+        // microtask chain before asserting what the session emitted.
+        await new Promise((resolve) => setTimeout(resolve, 0));
         expect(stateSession.client.sendSessionEvent).toHaveBeenCalledWith({ type: 'message', message: '📦 Compaction started' });
         expect(stateSession.client.sendSessionEvent).toHaveBeenCalledWith({ type: 'message', message: '📦 Compaction completed' });
         expect(stateSession.client.sendSessionEvent).toHaveBeenCalledTimes(8);
