@@ -88,8 +88,12 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
     const cwdOverride = parseCodexCliOverrides(session.codexArgs).cwd;
     const effectiveCodexCwd = cwdOverride ? resolve(session.path, cwdOverride) : session.path;
 
-    // Start hapi hub for MCP bridge (same as remote mode)
-    const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client);
+    // Start hapi hub for MCP bridge (same as remote mode). Pass effective cwd so
+    // spawn_peer "." resolves under Codex --cd, not the HAPI process cwd.
+    const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
+        workingDirectory: effectiveCodexCwd,
+        skillLookup: { workingDirectory: effectiveCodexCwd, flavor: 'codex' },
+    });
     logger.debug(`[codex-local]: Started hapi MCP bridge server at ${happyServer.url}`);
 
     const reportTranscriptSyncFailure = (transcriptPath: string, error: unknown): void => {
