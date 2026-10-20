@@ -2,14 +2,14 @@ import chalk from 'chalk'
 import { initializeToken } from '@/ui/tokenInit'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import { authAndSetupMachineIfNeeded } from '@/ui/auth'
+import { DSH_PERMISSION_MODES } from '@hapi/protocol/modes'
 import { parseRemoteAgentCommandOptions } from './agentCommandOptions'
 import type { CommandDefinition } from './types'
 
 export function parseDshCommandOptions(commandArgs: string[]) {
-    const options = parseRemoteAgentCommandOptions(commandArgs, [], ['remote'])
-    if (commandArgs.includes('--yolo')) {
-        throw new Error('DeepSeek Harness permission policy is configured by the ACP server')
-    }
+    // Permission modes apply through the shared ACP permission bridge
+    // (auto-approval decisions), including `--yolo`.
+    const options = parseRemoteAgentCommandOptions(commandArgs, DSH_PERMISSION_MODES, ['remote'])
     if (options.resumeSessionId) {
         throw new Error('DeepSeek Harness ACP only supports fresh sessions; resume is unavailable')
     }

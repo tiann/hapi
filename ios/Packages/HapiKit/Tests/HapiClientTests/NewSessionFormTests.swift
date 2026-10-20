@@ -89,13 +89,13 @@ struct NewSessionSpawnBodyTests {
         """)
     }
 
-    @Test func dshUsesManagedPermissionPolicyAndOmitsYolo() throws {
+    @Test func dshForwardsChosenPermissionModeAndOmitsYolo() throws {
         let body = try canonicalBody(
-            NewSessionForm(directory: "/repo", agent: .dsh, yolo: true),
+            NewSessionForm(directory: "/repo", agent: .dsh, permissionMode: .yolo, yolo: true),
             codexFastTierVisible: false
         )
         #expect(body == """
-        {"agent":"dsh","directory":"/repo","sessionType":"simple"}
+        {"agent":"dsh","directory":"/repo","permissionMode":"yolo","sessionType":"simple"}
         """)
     }
 

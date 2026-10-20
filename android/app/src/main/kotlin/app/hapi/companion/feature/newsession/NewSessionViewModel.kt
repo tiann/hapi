@@ -803,7 +803,7 @@ class NewSessionViewModel(
         }
 
         val permission: PermissionUi = when {
-            agent == "pi" || agent == "dsh" -> PermissionUi.Managed
+            agent == "pi" -> PermissionUi.Managed
             usesNativePermissionSelect(agent) -> PermissionUi.NativeSelect(
                 PermissionModes.forLaunch(agent).map { OptionItem(it.wireId, it.label) },
             )
@@ -871,7 +871,7 @@ class NewSessionViewModel(
         fun hapiYoloNativeMode(flavor: String?): PermissionMode? = when (flavor) {
             "claude", "grok" -> PermissionMode.BypassPermissions
             "agy" -> PermissionMode.AlwaysProceed
-            "codex", "copilot", "cursor", "gemini", "kimi", "opencode" -> PermissionMode.Yolo
+            "codex", "copilot", "cursor", "dsh", "gemini", "kimi", "opencode" -> PermissionMode.Yolo
             else -> null
         }
 
