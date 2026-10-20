@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { CursorModelsResponse } from '@hapi/protocol/apiTypes';
 import { resolveHapiHomeDir } from '@/configuration';
@@ -44,6 +44,16 @@ export function readSharedCursorModelsCache(): CursorModelsResponse | null {
         }
         const response = parsed.response ?? null;
         return isUsableModelsResponse(response) ? response : null;
+    } catch {
+        return null;
+    }
+}
+
+/** Age of the on-disk catalog in ms, or null when there is no cache file. */
+export function getSharedCursorModelsCacheAgeMs(): number | null {
+    const path = getSharedCachePath();
+    try {
+        return Math.max(0, Date.now() - statSync(path).mtimeMs);
     } catch {
         return null;
     }
