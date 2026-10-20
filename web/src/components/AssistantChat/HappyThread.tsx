@@ -880,6 +880,26 @@ export function HappyThread(props: {
                 void requestOlderRef.current(explicitUpwardIntent ? 'user' : 'coverage')
             }
 
+            // Content growth and viewport resizes (mobile keyboard) move the
+            // tail without any user gesture. While tail-follow is active, treat
+            // a non-upward scroll as layout churn and re-pin to the newest
+            // message instead of silently dropping out of tail mode.
+            if (
+                autoScrollEnabledRef.current
+                && !intent.isScrollingUp
+                && !tailScrollInProgressRef.current
+                && !pendingScrollRef.current
+            ) {
+                setShowScrollToBottom(false)
+                setAutoScrollMode(true)
+                setAtBottomMode(true)
+                if (!intent.isNearBottom) {
+                    viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'instant' })
+                    lastScrollTopRef.current = viewport.scrollTop
+                }
+                return
+            }
+
             if (intent.isScrollingUp && intent.distanceFromBottom > MANUAL_SCROLL_EPSILON_PX) {
                 tailScrollInProgressRef.current = false
                 setShowScrollToBottom(false)
