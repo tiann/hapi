@@ -26,8 +26,10 @@ import {
     PING_PEER_TOOL_DESCRIPTION,
     SESSION_ID_PREFIX_PARAM_DESCRIPTION,
 } from '@hapi/protocol/sessionCitation'
-import { PingPeerError, formatInspectPeerReport, formatPeerSessionsList, inspectPeer, listPeerSessions, peerListFetchLimit, pingPeer } from "@/modules/pingPeer/pingPeer";
+import { PingPeerError, archivePeer, formatInspectPeerReport, formatPeerSessionsList, inspectPeer, listPeerSessions, peerListFetchLimit, pingPeer } from "@/modules/pingPeer/pingPeer";
 import { applySessionDisplayRename, normalizeSessionDisplayTitle } from "@/agent/sessionDisplayRename";
+
+import { ARCHIVE_PEER_TOOL_DESCRIPTION, archivePeerInputSchema } from '@/modules/common/archivePeerTool';
 
 type StartHappyServerOptions = {
     /**
@@ -421,6 +423,28 @@ function createHapiMcpServer(
     });
 
 
+    mcp.registerTool<any, any>('archive_peer', {
+        description: ARCHIVE_PEER_TOOL_DESCRIPTION,
+        title: 'Archive Peer Session',
+        inputSchema: archivePeerInputSchema,
+    }, async (args: { sessionIdPrefix?: string }) => {
+        try {
+            const result = await archivePeer({
+                sessionIdPrefix: args.sessionIdPrefix,
+                currentSessionId: client.sessionId,
+            });
+            return {
+                content: [{ type: 'text' as const, text: `${result.alreadyArchived ? 'Already archived' : 'Archived'} ${result.sessionId} (${result.name}). History is retained; use Reopen to continue.` }],
+                isError: false,
+            };
+        } catch (error) {
+            return {
+                content: [{ type: 'text' as const, text: `Failed to archive session: ${error instanceof Error ? error.message : String(error)}` }],
+                isError: true,
+            };
+        }
+    });
+
     if (skillLookup) {
         mcp.registerTool<any, any>('skill_lookup', {
             description: 'Load a HAPI skill by exact name. When a user message starts with $name, call this tool with that name before acting.',
@@ -541,8 +565,8 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
     }));
 
     const toolNames = enableChangeTitle
-        ? ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer']
-        : ['display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer'];
+        ? ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'archive_peer']
+        : ['display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'archive_peer'];
     if (options.skillLookup) {
         toolNames.push('skill_lookup');
     }
