@@ -126,6 +126,35 @@ runner's home directory.
 
 See `src/runner/run.ts`.
 
+### Session capacity
+
+HAPI allows **20 live session roots per `HAPI_HOME`** by default. Set
+`HAPI_MAX_LIVE_SESSIONS` to a non-negative integer in both your terminal and
+runner service environment to change it (`0` disables the limit):
+
+```bash
+HAPI_MAX_LIVE_SESSIONS=40 hapi runner start
+HAPI_MAX_LIVE_SESSIONS=40 hapi codex
+```
+
+Use the same setting for all CLI processes sharing that home. Changes apply to
+new launches; existing sessions are never evicted. At capacity, starting a new
+session or cold-resuming an old one fails with an actionable error. Stop a live
+session to free a slot. Attaching another client to an already running Codex
+root does not consume another slot; `/new` and `/fork` each do.
+
+The counter includes terminal, runner, lazy/offline sessions, and sessions still
+starting, across agents and hub namespaces in the same home. Temporary network
+disconnections do not free slots. Closing a session releases its slot; after a
+crash, the next launch reclaims leases whose owning process exited (with PID
+reuse checks). Unknown process identity or unreadable leases fail closed.
+
+This limits HAPI roots, not native subagents, OS processes, or total memory.
+A Codex engine can briefly start before session admission fails and shuts it
+down. Sessions from older HAPI versions do not have leases: stop and relaunch
+those sessions with the updated CLI before relying on the cap. Separate
+`HAPI_HOME` directories have independent limits.
+
 ### Diagnostics
 
 - `hapi doctor` - Show full diagnostics (version, runner status, logs, processes).

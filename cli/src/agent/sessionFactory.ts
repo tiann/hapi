@@ -16,6 +16,7 @@ import { readWorktreeEnv } from '@/utils/worktreeEnv'
 import { CURRENT_MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
 import { exportHapiSessionEnv } from '@/agent/hapiSessionEnv'
 import packageJson from '../../package.json'
+import { withSessionCapacity } from './sessionCapacity'
 
 export { HAPI_SESSION_ID_ENV, exportHapiSessionEnv, exportHapiHubAuthEnv } from '@/agent/hapiSessionEnv'
 
@@ -226,7 +227,7 @@ async function reportSessionStarted(sessionId: string, metadata: Metadata): Prom
     }
 }
 
-export async function bootstrapSession(options: SessionBootstrapOptions): Promise<SessionBootstrapResult> {
+export const bootstrapSession = withSessionCapacity(async (options: SessionBootstrapOptions, releaseSlot: () => void): Promise<SessionBootstrapResult> => {
     const workingDirectory = options.workingDirectory ?? getInvokedCwd()
     const startedBy = options.startedBy ?? 'terminal'
     const sessionTag = options.tag ?? randomUUID()
@@ -267,7 +268,7 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
         )
     }
 
-    const session = api.sessionSyncClient(sessionInfo)
+    const session = api.sessionSyncClient(sessionInfo, { onClose: releaseSlot })
 
     if (options.exportSessionEnv !== false) exportHapiSessionEnv(sessionInfo.id)
 
@@ -282,9 +283,9 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
         startedBy,
         workingDirectory
     }
-}
+})
 
-export async function bootstrapLazySession(options: SessionBootstrapOptions): Promise<SessionBootstrapResult> {
+export const bootstrapLazySession = withSessionCapacity(async (options: SessionBootstrapOptions, releaseSlot: () => void): Promise<SessionBootstrapResult> => {
     const workingDirectory = options.workingDirectory ?? getInvokedCwd()
     const startedBy = options.startedBy ?? 'terminal'
     if (startedBy !== 'terminal') {
@@ -329,6 +330,7 @@ export async function bootstrapLazySession(options: SessionBootstrapOptions): Pr
     }
 
     const session = api.sessionSyncClient(sessionInfo, {
+        onClose: releaseSlot,
         materialize: async (snapshot, signal) => {
             const materialized = await api.getOrCreateSession({
                 id: requestedId,
@@ -368,9 +370,9 @@ export async function bootstrapLazySession(options: SessionBootstrapOptions): Pr
         startedBy,
         workingDirectory
     }
-}
+})
 
-export async function bootstrapExistingSession(options: {
+export const bootstrapExistingSession = withSessionCapacity(async (options: {
     reportStarted?: boolean
     exportSessionEnv?: boolean
     sessionId: string
@@ -378,7 +380,7 @@ export async function bootstrapExistingSession(options: {
     startedBy?: SessionStartedBy
     workingDirectory: string
     metadataOverrides?: Partial<Metadata>
-}): Promise<SessionBootstrapResult> {
+}, releaseSlot: () => void): Promise<SessionBootstrapResult> => {
     const startedBy = options.startedBy ?? 'terminal'
     const api = await ApiClient.create()
     const machineId = await getMachineIdOrExit()
@@ -422,7 +424,7 @@ export async function bootstrapExistingSession(options: {
     }
     const metadata = buildUpdatedMetadata(sessionInfo.metadata)
 
-    const session = api.sessionSyncClient(sessionInfo)
+    const session = api.sessionSyncClient(sessionInfo, { onClose: releaseSlot })
     session.updateMetadata(buildUpdatedMetadata)
 
     if (options.exportSessionEnv !== false) exportHapiSessionEnv(sessionInfo.id)
@@ -438,4 +440,4 @@ export async function bootstrapExistingSession(options: {
         startedBy,
         workingDirectory: options.workingDirectory
     }
-}
+})
