@@ -120,6 +120,26 @@
             android:name=".fcm.NotificationActionReceiver"
             android:exported="false" />
 
+        <!-- Wear OS companion bridge: the watch has no hub credentials of
+             its own, so every :wear screen is really a remote view onto
+             this service (session list / transcript / approve / deny /
+             reply), over the Wearable Data Layer. exported=true is required
+             here, not a loosening: GMS (a different uid) must bind to
+             deliver DATA_CHANGED, and the data payload itself is only ever
+             relayed through GMS's local Data Layer storage, never a public
+             surface another app can call directly. -->
+        <service
+            android:name=".wear.PhoneWearListenerService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.google.android.gms.wearable.DATA_CHANGED" />
+                <data
+                    android:scheme="wear"
+                    android:host="*"
+                    android:pathPrefix="/hapi/wear/req" />
+            </intent-filter>
+        </service>
+
         <!-- WorkManager on-demand initialization: the default initializer is
              removed so HapiApp's Configuration.Provider (custom WorkerFactory
              feeding AppGraph into the push workers) is authoritative even when

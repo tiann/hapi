@@ -23,5 +23,6 @@ dependencyResolutionManagement {
 rootProject.name = "hapi-android"
 
 include(":app")
+include(":wear")
 include(":core:protocol")
 include(":core:data")
