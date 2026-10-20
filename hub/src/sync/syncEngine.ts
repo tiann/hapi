@@ -3269,6 +3269,34 @@ export class SyncEngine {
             }
         }
 
+        if (flavor === 'claude' && resumeToken) {
+            try {
+                const transcriptStatus = await this.rpcGateway.getClaudeTranscriptStatus(
+                    targetMachine.id,
+                    directory,
+                    resumeToken,
+                    metadata.homeDir
+                )
+                if (!transcriptStatus.onDisk) {
+                    return {
+                        type: 'error',
+                        message: 'Claude session transcript is no longer available on the recorded machine',
+                        code: 'resume_unavailable'
+                    }
+                }
+            } catch (error) {
+                // Soft-fail on probe skew / missing handler (same spirit as #1084).
+                // CLI-side hard-fail + resume-mismatch guard still protect the
+                // durable claudeSessionId if an older runner lacks the RPC.
+                const message = error instanceof Error ? error.message : 'Failed to inspect Claude transcript'
+                console.warn('[resume] Claude transcript probe failed; proceeding with reopen attempt', {
+                    sessionId: access.sessionId,
+                    machineId: targetMachine.id,
+                    message
+                })
+            }
+        }
+
         const metadataPermissionMode = session.metadata?.preferredPermissionMode
         const preferredPermissionMode = metadataPermissionMode === 'yolo' && opts?.permissionMode === 'default'
             ? metadataPermissionMode

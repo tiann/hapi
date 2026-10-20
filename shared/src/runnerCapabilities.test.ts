@@ -14,7 +14,11 @@ describe('runnerCapabilities', () => {
         expect(REQUIRED_MACHINE_CAPABILITIES).toContain(MACHINE_CAPABILITIES.CursorChatStoreStatus)
         expect(CURRENT_MACHINE_CAPABILITIES).toEqual(expect.arrayContaining([
             ...REQUIRED_MACHINE_CAPABILITIES,
+            MACHINE_CAPABILITIES.ClaudeTranscriptStatus,
         ]))
+        // Optional probe (#1933): advertised by current runners, not required
+        // (soft-fail on skew like Cursor #1084), so older runners still reopen.
+        expect(REQUIRED_MACHINE_CAPABILITIES).not.toContain(MACHINE_CAPABILITIES.ClaudeTranscriptStatus)
     })
 
     it('treats missing/empty advertised capabilities as skewed', () => {
