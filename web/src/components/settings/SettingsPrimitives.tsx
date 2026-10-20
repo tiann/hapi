@@ -63,15 +63,49 @@ export function SettingsRow(props: { label: string; description?: string; traili
     )
 }
 
-export function SettingsSwitch(props: { label: string; description?: string; checked: boolean; onChange: (checked: boolean) => void }) {
+export function SettingsSwitch(props: {
+    label: string
+    description?: string
+    checked: boolean
+    onChange: (checked: boolean) => void
+    leftLabel?: string
+    rightLabel?: string
+}) {
+    const leftLabel = props.leftLabel ?? 'Off'
+    const rightLabel = props.rightLabel ?? 'On'
     return (
-        <SettingsRow label={props.label} description={props.description} trailing={
-            <label className="relative inline-flex h-6 w-11 items-center">
-                <input type="checkbox" checked={props.checked} onChange={(event) => props.onChange(event.target.checked)} className="peer sr-only" aria-label={props.label} />
-                <span className="absolute inset-0 rounded-full bg-[var(--app-border)] transition-colors peer-checked:bg-[var(--app-link)]" />
-                <span className="absolute left-0.5 h-5 w-5 rounded-full bg-[var(--app-bg)] shadow-sm transition-transform peer-checked:translate-x-5" />
-            </label>
-        } />
+        <div className="px-3 py-3">
+            <SettingsFieldLabel description={props.description}>{props.label}</SettingsFieldLabel>
+            <div className="relative grid h-11 grid-cols-2 overflow-hidden rounded-full border border-[var(--app-border)] bg-[var(--app-subtle-bg)]">
+                <span
+                    aria-hidden="true"
+                    className={`pointer-events-none absolute inset-y-0.5 left-0.5 w-[calc(50%-4px)] rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] shadow-sm transition-transform duration-150 ${props.checked ? 'translate-x-[calc(100%+4px)]' : 'translate-x-0'}`}
+                />
+                <input
+                    type="checkbox"
+                    checked={props.checked}
+                    onChange={(event) => props.onChange(event.target.checked)}
+                    className="sr-only"
+                    aria-label={props.label}
+                />
+                <button
+                    type="button"
+                    aria-pressed={!props.checked}
+                    onClick={() => { if (props.checked) props.onChange(false) }}
+                    className={`relative z-10 truncate px-2 text-sm font-medium transition-colors ${props.checked ? 'text-[var(--app-hint)]' : 'text-[var(--app-fg)]'}`}
+                >
+                    {leftLabel}
+                </button>
+                <button
+                    type="button"
+                    aria-pressed={props.checked}
+                    onClick={() => { if (!props.checked) props.onChange(true) }}
+                    className={`relative z-10 truncate px-2 text-sm font-medium transition-colors ${props.checked ? 'text-[var(--app-fg)]' : 'text-[var(--app-hint)]'}`}
+                >
+                    {rightLabel}
+                </button>
+            </div>
+        </div>
     )
 }
 

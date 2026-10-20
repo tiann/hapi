@@ -31,8 +31,11 @@ test.describe('settings responsive layout', () => {
         await expect(page.getByText('Choose a category to adjust HAPI to your workflow.')).toBeHidden()
 
         const appBadgeToggle = page.getByRole('checkbox', { name: 'Taskbar unread badge' })
+        const appBadgePoles = appBadgeToggle.locator('..')
+        await expect(appBadgePoles.getByRole('button', { name: 'Hidden' })).toBeVisible()
+        await expect(appBadgePoles.getByRole('button', { name: 'Badge' })).toBeVisible()
         await expect(appBadgeToggle).not.toBeChecked()
-        await appBadgeToggle.locator('xpath=..').click()
+        await appBadgePoles.getByRole('button', { name: 'Badge' }).click()
         await expect(appBadgeToggle).toBeChecked()
         await page.reload()
         await expect(page.getByRole('checkbox', { name: 'Taskbar unread badge' })).toBeChecked()

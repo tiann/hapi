@@ -21,6 +21,7 @@ import {
 } from '@hapi/protocol/voice-personality'
 import { readVoiceContextNotice } from '@/lib/voiceContextStream'
 import { useVoicePersonality } from '@/hooks/useVoicePersonality'
+import { SettingsSwitch } from '@/components/settings/SettingsPrimitives'
 import { useMemo } from 'react'
 
 type Translate = (key: string) => string
@@ -269,12 +270,13 @@ export function VoiceSoundsControls(props: {
                             <VoiceSlider label={props.t('settings.voice.tuning.similarity')} hint={props.t('settings.voice.tuning.similarityHint')}
                                 value={prefs.elevenLabs.similarity_boost} min={0} max={1} step={0.05}
                                 onChange={(similarity_boost) => setElevenLabs({ similarity_boost })} />
-                            <label className="flex items-center justify-between px-3 py-2">
-                                <span className="text-sm text-[var(--app-fg)]">{props.t('settings.voice.tuning.speakerBoost')}</span>
-                                <input type="checkbox" checked={prefs.elevenLabs.use_speaker_boost}
-                                    onChange={(e) => setElevenLabs({ use_speaker_boost: e.target.checked })}
-                                    className="h-4 w-4 accent-[var(--app-link)]" />
-                            </label>
+                            <SettingsSwitch
+                                label={props.t('settings.voice.tuning.speakerBoost')}
+                                leftLabel={props.t('settings.switch.off')}
+                                rightLabel={props.t('settings.switch.on')}
+                                checked={prefs.elevenLabs.use_speaker_boost}
+                                onChange={(checked) => setElevenLabs({ use_speaker_boost: checked })}
+                            />
                         </div>
                     )}
                     {showGeminiOptions && (
@@ -282,12 +284,13 @@ export function VoiceSoundsControls(props: {
                             <p className="px-3 pt-2 text-xs font-medium uppercase tracking-wide text-[var(--app-hint)]">
                                 {props.t('settings.voice.tuning.gemini')}
                             </p>
-                            <label className="flex items-center justify-between px-3 py-2">
-                                <span className="text-sm text-[var(--app-fg)]">{props.t('settings.voice.tuning.affectiveDialog')}</span>
-                                <input type="checkbox" checked={prefs.gemini.affective_dialog}
-                                    onChange={(e) => setGeminiAffectiveDialog(e.target.checked)}
-                                    className="h-4 w-4 accent-[var(--app-link)]" />
-                            </label>
+                            <SettingsSwitch
+                                label={props.t('settings.voice.tuning.affectiveDialog')}
+                                leftLabel={props.t('settings.switch.off')}
+                                rightLabel={props.t('settings.switch.on')}
+                                checked={prefs.gemini.affective_dialog}
+                                onChange={setGeminiAffectiveDialog}
+                            />
                             <p className="px-3 pb-2 text-xs text-[var(--app-hint)]">{props.t('settings.voice.tuning.affectiveDialogHint')}</p>
                         </div>
                     )}
