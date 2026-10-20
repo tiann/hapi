@@ -6,6 +6,8 @@ import type { SessionBootstrapResult } from '@/agent/sessionFactory';
 import { SharedCodexRoot, type RootHost } from './root';
 import { codexPlanProposalId } from './plan';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
+import type { Socket } from 'socket.io-client';
 
 type NativeTurn = { id: string; status: string; items: unknown[] };
 
@@ -53,13 +55,19 @@ afterEach(async () => {
     finally { vi.useRealTimers(); }
 });
 
-async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) {
+async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; rpcManager?: RpcHandlerManager }) {
     const directory = await mkdtemp('/tmp/hapi-shared-root-');
     let state: AgentState = { steeringActive: true };
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
     let reconnect: (() => void) | null = null;
     const updateState = vi.fn((fn: (value: AgentState) => AgentState) => { state = fn(state); });
     const rpc = new Map<string, (raw: unknown) => Promise<unknown>>();
+    if (opts?.rpcManager) {
+        const register = opts.rpcManager.registerHandler.bind(opts.rpcManager);
+        vi.spyOn(opts.rpcManager, 'registerHandler').mockImplementation((name, handler) => {
+            rpc.set(name, async raw => handler(raw)); register(name, handler);
+        });
+    }
     const send = vi.fn();
     const hubArchivedListeners: Array<() => void> = [];
     const session = {
@@ -72,8 +80,8 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
         on(event: string, listener: () => void) {
             if (event === 'hub-archived') hubArchivedListeners.push(listener);
         },
-        rpcHandlerManager: { registerHandler: (name: string, handler: (raw: unknown) => Promise<unknown>) => rpc.set(name, handler) },
-        sendSessionEvent() {}, sendAgentMessage: send, emitSessionReady() {},
+        rpcHandlerManager: opts?.rpcManager ?? { registerHandler: (name: string, handler: (raw: unknown) => Promise<unknown>) => rpc.set(name, handler), waitForRegistration: vi.fn(async () => {}) },
+        sendSessionEvent() {}, sendAgentMessage: send, emitSessionReady: vi.fn(),
         sendUserMessage() {}, emitMessagesConsumed() {}, emitSteerIndeterminate() {}, syncNativeQueuedMessage() {},
         sendSessionDeath() {}, async flush() {}, close() {}
     } as unknown as ApiSessionClient;
@@ -94,7 +102,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
         abandoned(): void;
     };
     return {
-        root, native, rpc, send, metadata: () => metadata, state: () => state, updateState,
+        root, native, rpc, send, session, metadata: () => metadata, state: () => state, updateState,
         reconnect: () => reconnect?.(),
         emitHubArchived: () => { for (const listener of hubArchivedListeners) listener(); },
         hubArchivedListenerCount: () => hubArchivedListeners.length,
@@ -103,6 +111,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
 }
 
 async function completePlan(f: Awaited<ReturnType<typeof fixture>>, status = 'completed') {
+    await f.root.activate();
     await f.root.applySettings({ collaborationMode: 'plan' });
     const turn = { id: 'plan-turn', status: 'inProgress', items: [{ id: 'plan-item', type: 'plan', text: '# Implement me' }] };
     f.native.thread.turns.push(turn);
@@ -111,13 +120,119 @@ async function completePlan(f: Awaited<ReturnType<typeof fixture>>, status = 'co
     expect(f.state().codexPlanProposalId).toBeNull();
     turn.status = status;
     f.native.notify('turn/completed', { threadId: 'thread', turn: { id: turn.id, status } });
-    await vi.waitFor(() => expect(f.send).toHaveBeenCalledWith(expect.objectContaining({ name: 'ExitPlanMode' }), expect.any(String)));
+    await vi.waitFor(() => expect(f.send).toHaveBeenCalledWith(expect.objectContaining({ name: 'ExitPlanMode' }), expect.any(String), { acknowledgeConsumption: false }));
     return codexPlanProposalId('thread', turn.id, 'plan-item');
 }
 
+describe('shared activation registration', () => {
+    it('binds successfully when the initial Hub socket connects after native startup', async () => {
+        const manager = new RpcHandlerManager({ scopePrefix: 'sid', logger() {} });
+        const result = fixture({ rpcManager: manager }).then(value => ({ value, error: undefined }), error => ({ value: undefined, error }));
+        await vi.waitFor(() => expect(manager.hasHandler(RPC_METHODS.SetSessionConfig)).toBe(true));
+        const emitWithAck = vi.fn(async () => ({ ok: true }));
+        manager.onSocketConnect({ connected: true, emit() {}, timeout: () => ({ emitWithAck }) } as unknown as Socket);
+        const { value, error } = await result;
+        expect(error).toBeUndefined();
+        expect(value).toBeDefined();
+        await value!.root.activate();
+        expect(value!.session.emitSessionReady).toHaveBeenCalledOnce();
+        expect(emitWithAck).toHaveBeenCalledOnce();
+    });
+    it('can cancel startup before the ready barrier releases configuration RPCs', async () => {
+        const end = vi.fn<RootHost['end']>(async root => { root.stopAccepting(); });
+        const f = await fixture({ end });
+        await expect(f.rpc.get(RPC_METHODS.KillSession)!({})).resolves.toEqual({ success: true });
+        expect(end).toHaveBeenCalledWith(f.root);
+        await expect(f.root.activate()).rejects.toThrow('Codex execution is stopping');
+    });
+    it('acknowledges control registration before projecting the initial history', async () => {
+        const f = await fixture();
+        const order: string[] = [];
+        vi.spyOn(f.session.rpcHandlerManager, 'waitForRegistration').mockImplementation(async () => { order.push('registered'); });
+        f.send.mockImplementation(() => { order.push('history'); });
+        await f.root.bind('thread', { thread: { turns: [{ id: 'old', status: 'completed', items: [
+            { id: 'old-reply', type: 'agentMessage', text: 'Historical reply' }
+        ] }] } }, false);
+        expect(order).toEqual(['registered', 'history']);
+    });
+    it('holds early configuration RPCs until native startup is ready', async () => {
+        const f = await fixture();
+        const request = vi.spyOn(f.root.client, 'request');
+        const changing = f.rpc.get(RPC_METHODS.SetSessionConfig)!({ model: 'next-model' });
+        await Promise.resolve();
+        expect(request).not.toHaveBeenCalled();
+        await f.root.activate();await changing;
+        expect(request).toHaveBeenCalledWith('thread/settings/update', expect.objectContaining({ model: 'next-model' }));
+    });
+    it('holds native replay notifications until startup registration completes', async () => {
+        const f = await fixture();
+        let release!: () => void;
+        const barrier = new Promise<void>(resolve => { release = resolve; });
+        const beforeReady = vi.fn(() => barrier);
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 'turn', item: {
+            id: 'restored', type: 'agentMessage', text: 'Restored notification'
+        } });
+        const activating = f.root.activate({}, beforeReady);
+        await vi.waitFor(() => expect(beforeReady).toHaveBeenCalledOnce());
+        expect(f.send).not.toHaveBeenCalled();
+        release();await activating;
+        await vi.waitFor(() => expect(f.send).toHaveBeenCalledWith(expect.objectContaining({ message: 'Restored notification' }), expect.any(String), { acknowledgeConsumption: false }));
+    });
+    it('registers controls before runner confirmation and releases ready afterwards', async () => {
+        const f = await fixture();
+        let registered!: () => void;
+        const barrier = new Promise<void>(resolve => { registered = resolve; });
+        const beforeReady = vi.fn(() => barrier);
+        const activating = f.root.activate({}, beforeReady);
+        await vi.waitFor(() => expect(beforeReady).toHaveBeenCalledOnce());
+        expect(f.rpc.has(RPC_METHODS.KillSession)).toBe(true);
+        expect(f.session.emitSessionReady).not.toHaveBeenCalled();
+        registered(); await activating;
+        expect(f.session.emitSessionReady).toHaveBeenCalledOnce();
+    });
+
+    it('does not report registration when initial native settings fail', async () => {
+        const f = await fixture();
+        const beforeReady = vi.fn(async () => {});
+        vi.spyOn(f.root.client, 'request').mockRejectedValue(new Error('Native settings rejected'));
+        await expect(f.root.activate({ collaborationMode: 'plan' }, beforeReady)).rejects.toThrow('Native settings rejected');
+        expect(beforeReady).not.toHaveBeenCalled();
+        expect(f.session.emitSessionReady).not.toHaveBeenCalled();
+    });
+});
+
 describe('shared plan actions', () => {
+    it('accepts unmaterialized history only for a proven fresh thread before its first turn', async () => {
+        const f = await fixture();
+        const original = f.root.client.request.bind(f.root.client);
+        vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'thread/read') throw new Error('invalid paginated history lineage: missing source rollout');
+            return original(method, params);
+        });
+        await expect(f.root.readThread()).rejects.toThrow('missing source rollout');
+        await f.root.bind('thread', { model: 'mock' }, false, true);
+        await expect(f.root.readThread()).resolves.toMatchObject({ turns: [] });
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'first' } });
+        await expect(f.root.readThread()).rejects.toThrow('missing source rollout');
+    });
+    it('subscribes without hydrating turns and still restores paged history', async () => {
+        const f = await fixture();
+        const original = f.root.client.request.bind(f.root.client);
+        const spy = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'thread/read') return { thread: { id: 'thread', historyMode: 'paginated' } };
+            if (method === 'thread/turns/list') return { data: [{ id: 'history-turn', status: 'completed', items: [
+                { id: 'history-message', type: 'agentMessage', text: 'Recovered paged reply' }
+            ] }], nextCursor: null };
+            return original(method, params);
+        });
+        await f.root.bind('thread', {}, true);
+        expect(spy).toHaveBeenCalledWith('thread/resume', { threadId: 'thread', excludeTurns: true });
+        expect(spy).toHaveBeenCalledWith('thread/turns/list', expect.objectContaining({ threadId: 'thread' }));
+        expect(f.send).toHaveBeenCalledWith(expect.objectContaining({ message: 'Recovered paged reply' }), expect.any(String), { acknowledgeConsumption: false });
+    });
     it('applies remote change_title as metadata.name then lets native terminal rename win', async () => {
         const f = await fixture();
+        await f.root.activate();
         const item = { id: 'title', type: 'mcpToolCall', server: 'hapi', tool: 'change_title',
             arguments: { title: 'Remote title' }, status: 'completed', result: { content: [], isError: false } };
         f.native.notify('item/completed', { threadId: 'thread', turnId: 'turn', item });
@@ -168,7 +283,6 @@ describe('shared plan actions', () => {
 
     it('switches mode and submits once across repeated Web actions and lost replies', async () => {
         const f = await fixture();
-        await f.root.activate();
         const id = await completePlan(f);
         const action = () => f.rpc.get(RPC_METHODS.ImplementCodexPlan)!({ planId: id });
         const request = vi.spyOn(f.root.client, 'request');
@@ -208,7 +322,6 @@ describe('shared plan actions', () => {
 
     it('does not change mode when native input appears during the action preflight', async () => {
         const f = await fixture();
-        await f.root.activate();
         const id = await completePlan(f);
         const request = f.root.client.request.bind(f.root.client);
         const spy = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
@@ -223,7 +336,6 @@ describe('shared plan actions', () => {
 
     it('rejects stale proposals and native activity arriving during the mode switch', async () => {
         const f = await fixture();
-        await f.root.activate();
         const id = await completePlan(f);
         const action = (planId = id) => f.rpc.get(RPC_METHODS.ImplementCodexPlan)!({ planId });
         expect(await action('old')).toMatchObject({ ok: false, code: 'stale_plan' });
@@ -239,7 +351,6 @@ describe('shared plan actions', () => {
 
     it('does not resend an implementation with an unknown queue outcome', async () => {
         const f = await fixture();
-        await f.root.activate();
         const id = await completePlan(f);
         const request = f.root.client.request.bind(f.root.client);
         const spy = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {

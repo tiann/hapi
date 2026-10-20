@@ -53,6 +53,32 @@ function reasoningTextOf(message: { content: unknown }): string {
 }
 
 describe('cli session handlers', () => {
+    it('does not repeat message side effects when native history replays a stored localId', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('history-replay', { flavor: 'codex' }, null, 'default')
+        const socket = new FakeSocket()
+        const progress = mock(), activity = mock(), publish = mock()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
+            onAgentProgress: progress, onSessionActivity: activity, onWebappEvent: publish
+        })
+        const message = { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE,
+            data: { type: 'message', message: 'Done.\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"finished"}' } } }
+        const frame = { sid: session.id, localId: 'codex:thread:historical-item', message }
+        socket.trigger('message', frame)
+        const stored = store.messages.getAllMessages(session.id)
+        expect(stored).toHaveLength(1)
+        const counts = [progress.mock.calls.length, activity.mock.calls.length, publish.mock.calls.length, socket.roomEvents.length]
+        expect(counts[0]).toBe(1)
+        expect(counts[2]).toBe(1)
+        socket.trigger('message', frame)
+        expect([progress.mock.calls.length, activity.mock.calls.length, publish.mock.calls.length, socket.roomEvents.length]).toEqual(counts)
+        expect(store.messages.getAllMessages(session.id)).toEqual(stored)
+        socket.trigger('message', { ...frame, localId: 'codex:thread:next-item' })
+        expect(store.messages.getAllMessages(session.id)).toHaveLength(2)
+        expect(publish.mock.calls.length).toBe(2)
+        store.close()
+    })
     it.each([undefined, 'terminated', 'error'] as const)('preserves shared Codex pending input on execution exit (%s)', reason => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('shared-end', { flavor: 'codex', capabilities: { concurrentClients: true } }, null, 'default')

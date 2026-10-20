@@ -120,6 +120,14 @@ export function classifyRecoveredProcessGeneration(
   return currentMarker === persistedMarker ? 'verified' : 'exited';
 }
 
+export function sessionWebhookTimeout(agent: string | undefined, resumeSessionId: string | undefined, configured?: string): number {
+  const explicit = Number(configured);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  // Cold shared Codex must rebuild native history and confirm Hub RPCs.
+  // Do not kill an attached process at the ordinary 15s spawn deadline.
+  return agent === 'codex' && resumeSessionId ? 30_000 : 15_000;
+}
+
 export function releaseRecoveredSpawnDedupe(
   pid: number,
   existingSessionIdByChildPid: Map<number, string>,
@@ -405,12 +413,6 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // heavy session restore). Allow advanced users to raise this ceiling
     // so that slow starts no longer leave orphaned child processes which
     // later report back as ghost sessions.
-    const envWebhookTimeout = Number(process.env.HAPI_RUNNER_WEBHOOK_TIMEOUT_MS);
-    const webhookTimeoutMs =
-      Number.isFinite(envWebhookTimeout) && envWebhookTimeout > 0
-        ? envWebhookTimeout
-        : 15_000;
-
     // Session spawning awaiter system
     const pidToAwaiter = new Map<number, (session: TrackedSession) => void>();
     const pidToErrorAwaiter = new Map<number, (errorMessage: string) => void>();
@@ -1022,7 +1024,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
                 errorMessage: buildWebhookFailureMessage('timeout')
               });
             })();
-          }, webhookTimeoutMs);
+          }, sessionWebhookTimeout(options.agent, options.resumeSessionId, process.env.HAPI_RUNNER_WEBHOOK_TIMEOUT_MS));
 
           // Register awaiter
           pidToAwaiter.set(pid, (completedSession) => {

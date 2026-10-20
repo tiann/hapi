@@ -159,7 +159,11 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
-        const msg = store.messages.addMessage(sid, content, localId, undefined, createdAt)
+        const { message: msg, inserted } = store.messages.addMessageWithStatus(sid, content, localId, undefined, createdAt)
+        // Native reconnect/cold-resume replays stable local IDs. The stored row
+        // already produced these effects; replay must not re-ingest summaries,
+        // broadcast the same message or count historical work as live progress.
+        if (!inserted) return
 
         // A reasoning stream arrives as a series of growing snapshots under one
         // stable id, so a stream should cost one row rather than one per

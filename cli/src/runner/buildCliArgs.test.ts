@@ -3,7 +3,20 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildCliArgs, classifyRecoveredProcessGeneration, createSpawnDeduplicator, releaseRecoveredSpawnDedupe } from './run'
+import { buildCliArgs, classifyRecoveredProcessGeneration, createSpawnDeduplicator, releaseRecoveredSpawnDedupe, sessionWebhookTimeout } from './run'
+
+describe('cold Codex startup deadline', () => {
+    it('allows history attachment before terminating a cold Codex process', () => {
+        expect(sessionWebhookTimeout('codex', 'native-thread')).toBe(30_000)
+        expect(sessionWebhookTimeout('codex', undefined)).toBe(15_000)
+        expect(sessionWebhookTimeout('claude', 'native-thread')).toBe(15_000)
+    })
+    it('honours an explicitly configured deadline', () => {
+        expect(sessionWebhookTimeout('codex', 'native-thread', '8000')).toBe(8_000)
+        expect(sessionWebhookTimeout('codex', 'native-thread', '120000')).toBe(120_000)
+        expect(sessionWebhookTimeout('codex', 'native-thread', 'invalid')).toBe(30_000)
+    })
+})
 
 describe('buildCliArgs', () => {
     it('adds --permission-mode for valid permission mode', () => {
