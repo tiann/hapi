@@ -118,6 +118,77 @@ describe('startHappyServer skill_lookup', () => {
         ])
     })
 
+    it('invokes onChangeTitle when change_title succeeds', async () => {
+        sendAgentMessage = vi.fn()
+        const sessionClient = {
+            updateMetadata: vi.fn(),
+            sendAgentMessage,
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+        const onChangeTitle = vi.fn()
+        const server = await startHappyServer(sessionClient, { onChangeTitle })
+        stopServer = server.stop
+        const mcp = new Client({ name: 'hapi-test', version: '1.0.0' })
+        client = mcp
+        await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+
+        await mcp.callTool({
+            name: 'change_title',
+            arguments: { title: '  Manual\n Title  ' }
+        })
+
+        expect(onChangeTitle).toHaveBeenCalledWith('Manual Title')
+    })
+
+    it('does not invoke onChangeTitle when the metadata update fails', async () => {
+        sendAgentMessage = vi.fn()
+        const updateMetadata = vi.fn()
+        const sessionClient = {
+            updateMetadata,
+            sendAgentMessage,
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+        const onChangeTitle = vi.fn()
+        const server = await startHappyServer(sessionClient, { onChangeTitle })
+        stopServer = server.stop
+        const mcp = new Client({ name: 'hapi-test', version: '1.0.0' })
+        client = mcp
+        await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+
+        updateMetadata.mockImplementation(() => { throw new Error('update failed') })
+        const result = await mcp.callTool({
+            name: 'change_title',
+            arguments: { title: 'Manual Title' }
+        }) as ToolResult
+
+        expect(result.isError).toBe(true)
+        expect(onChangeTitle).not.toHaveBeenCalled()
+    })
+
+    it.each([
+        { title: '   ', options: {}, isError: true },
+        { title: 'Child Title', options: { emitTitleSummary: false }, isError: false }
+    ])('does not rename or mark manual precedence for $title with $options', async ({ title, options, isError }) => {
+        const updateMetadata = vi.fn()
+        const sessionClient = {
+            updateMetadata,
+            sendAgentMessage: vi.fn(),
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+        const onChangeTitle = vi.fn()
+        const server = await startHappyServer(sessionClient, { ...options, onChangeTitle })
+        stopServer = server.stop
+        client = new Client({ name: 'hapi-title-test', version: '1.0.0' })
+        await client.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+
+        updateMetadata.mockClear()
+        const result = await client.callTool({ name: 'change_title', arguments: { title } }) as ToolResult
+
+        expect(result.isError).toBe(isError)
+        expect(updateMetadata).not.toHaveBeenCalled()
+        expect(onChangeTitle).not.toHaveBeenCalled()
+    })
+
     it('describes display_image as user output rather than image input', async () => {
         const mcp = await connect(false)
         const tools = await mcp.listTools()
