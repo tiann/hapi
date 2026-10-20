@@ -1,6 +1,7 @@
 import { EnhancedMode, PermissionMode } from "./loop";
-import { query, type QueryOptions as Options, type SDKMessage, type SDKSystemMessage, AbortError, SDKUserMessage } from '@/claude/sdk'
+import { query, type QueryOptions as Options, type SDKMessage, type SDKSystemMessage, type SDKCommandLifecycleMessage, AbortError, SDKUserMessage } from '@/claude/sdk'
 import { claudeCheckSession } from "./utils/claudeCheckSession";
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { parseSpecialCommand } from "@/parsers/specialCommands";
 import { logger } from "@/lib";
@@ -12,6 +13,16 @@ import { PermissionResult } from "./sdk/types";
 import { getHapiBlobsDir } from "@/constants/uploadPaths";
 import { getDefaultClaudeCodePath } from "./sdk/utils";
 import { filterCatalogAffectingClaudeArgs } from "./sdk/metadataExtractor";
+
+/** How a steered prompt ends up, reported once per steer. */
+export type SteerCallbacks = {
+    /** Claude took the prompt into a turn. Awaited before later output is handled. */
+    onStarted: () => void | Promise<void>,
+    /** The prompt never started and will not run in this Claude process. */
+    onDropped: () => void
+};
+
+export type SteerFunction = (message: string, callbacks: SteerCallbacks) => boolean;
 
 export async function claudeRemote(opts: {
 
@@ -39,7 +50,18 @@ export async function claudeRemote(opts: {
     onMessage: (message: SDKMessage) => void,
     onFirstResult?: (initialMessage: string) => void,
     onCompletionEvent?: (message: string) => void,
-    onSessionReset?: () => void
+    onSessionReset?: () => void,
+    /**
+     * Called for every result, including one that does not end the work
+     * because a steered prompt is still waiting to run.
+     */
+    onResult?: () => void,
+    /**
+     * Called with a steer function while a turn is running, and with null once
+     * it is not. The steer function writes a prompt into the running turn and
+     * returns false if that is no longer possible.
+     */
+    onSteerableChange?: (steer: SteerFunction | null) => void
 }) {
     const debugPrefix = '[claudeRemote][async-debug]';
 
@@ -106,6 +128,86 @@ export async function claudeRemote(opts: {
 
     const messages = new PushableAsyncIterable<SDKUserMessage>();
 
+    // Mid-turn steering. Every prompt carries a uuid so Claude reports its
+    // command_lifecycle. A prompt written while a turn runs is absorbed at the
+    // next tool boundary, or, if the turn ends first, Claude runs it as a
+    // follow-up turn on its own -- so a result that leaves a steer unstarted
+    // is not the end of the work. Claude may run several of them as separate
+    // follow-up turns, so each steer is tracked until it starts.
+    let turnActive = false;
+    let lifecycleReported = false;
+    type PendingSteer = SteerCallbacks & {
+        /** Claude reported the prompt as queued. */
+        queued: boolean;
+        /** Results seen before Claude reported the prompt at all. */
+        unreportedResults: number;
+    };
+    const pendingSteers = new Map<string, PendingSteer>();
+
+    const startSteer = async (uuid: string) => {
+        const pending = pendingSteers.get(uuid);
+        if (!pending) {
+            return;
+        }
+        pendingSteers.delete(uuid);
+        try {
+            await pending.onStarted();
+        } catch (e) {
+            logger.debug(`${debugPrefix} steer start handler failed`, e);
+        }
+    };
+
+    const dropSteer = (uuid: string) => {
+        const pending = pendingSteers.get(uuid);
+        if (!pending) {
+            return;
+        }
+        pendingSteers.delete(uuid);
+        try {
+            pending.onDropped();
+        } catch (e) {
+            logger.debug(`${debugPrefix} steer drop handler failed`, e);
+        }
+    };
+
+    const pushUserMessage = (content: string): string => {
+        const uuid = randomUUID();
+        messages.push({ type: 'user', uuid, message: { role: 'user', content } });
+        return uuid;
+    };
+
+    const steer: SteerFunction = (content, callbacks) => {
+        if (!turnActive || opts.signal?.aborted) {
+            return false;
+        }
+        let uuid: string;
+        try {
+            uuid = pushUserMessage(content);
+        } catch (e) {
+            logger.debug(`${debugPrefix} steer push failed`, e);
+            return false;
+        }
+        if (!lifecycleReported) {
+            // This CLI does not report when the prompt starts; treat it as
+            // taken, as before lifecycle tracking.
+            void Promise.resolve(callbacks.onStarted()).catch((e) => {
+                logger.debug(`${debugPrefix} steer start handler failed`, e);
+            });
+            return true;
+        }
+        pendingSteers.set(uuid, { ...callbacks, queued: false, unreportedResults: 0 });
+        logger.debug(`${debugPrefix} steer pushed (pending=${pendingSteers.size})`);
+        return true;
+    };
+
+    const setTurnActive = (active: boolean) => {
+        if (turnActive === active) {
+            return;
+        }
+        turnActive = active;
+        opts.onSteerableChange?.(active ? steer : null);
+    };
+
     const applyInitialTurn = async (): Promise<{ message: string; mode: EnhancedMode } | null> => {
         let next: { message: string; mode: EnhancedMode } | null;
         try {
@@ -145,13 +247,9 @@ export async function claudeRemote(opts: {
         }
 
         mode = next.mode;
-        messages.push({
-            type: 'user',
-            message: {
-                role: 'user',
-                content: next.message,
-            },
-        });
+        pushUserMessage(next.message);
+        // A prompt cannot join a compaction.
+        setTurnActive(!isCompactCommand);
         return next;
     };
 
@@ -256,7 +354,8 @@ export async function claudeRemote(opts: {
                     return;
                 }
                 mode = next.mode;
-                messages.push({ type: 'user', message: { role: 'user', content: next.message } });
+                pushUserMessage(next.message);
+                setTurnActive(true);
                 logger.debug(
                     `${debugPrefix} nextMessage resolved fetchId=${fetchId} elapsedMs=${Date.now() - startedAt} ` +
                     `messageLength=${next.message.length} permissionMode=${next.mode.permissionMode}`
@@ -356,18 +455,57 @@ export async function claudeRemote(opts: {
                 }
             }
 
+            if (message.type === 'command_lifecycle') {
+                const lifecycle = message as SDKCommandLifecycleMessage;
+                lifecycleReported = true;
+                const pending = pendingSteers.get(lifecycle.command_uuid);
+                if (pending) {
+                    if (lifecycle.state === 'queued') {
+                        pending.queued = true;
+                    } else if (lifecycle.state === 'started' || lifecycle.state === 'completed') {
+                        await startSteer(lifecycle.command_uuid);
+                    } else if (
+                        lifecycle.state === 'cancelled'
+                        || lifecycle.state === 'discarded'
+                        || lifecycle.state === 'refused'
+                    ) {
+                        dropSteer(lifecycle.command_uuid);
+                    }
+                }
+            }
+
             // Handle result messages
             if (message.type === 'result') {
                 resultSeq += 1;
+                opts.onResult?.();
+
+                if (resultSeq === 1 && specialCommand.type === null && initial) {
+                    opts.onFirstResult?.(initial.message);
+                }
+
+                // A steer Claude reported as queued runs in a later turn. One
+                // it never reported may have arrived just before this result;
+                // if it is still unreported at the next one, the report went
+                // missing, so stop waiting and treat it as taken.
+                for (const [uuid, pending] of [...pendingSteers]) {
+                    if (!pending.queued && ++pending.unreportedResults > 1) {
+                        await startSteer(uuid);
+                    }
+                }
+                if (pendingSteers.size > 0) {
+                    logger.debug(
+                        `${debugPrefix} result #${resultSeq} received; waiting for a follow-up turn ` +
+                        `(pendingSteers=${pendingSteers.size})`
+                    );
+                    continue;
+                }
+
+                setTurnActive(false);
                 updateThinking(false);
                 logger.debug(
                     `${debugPrefix} result #${resultSeq} received; scheduling next user message ` +
                     `(nextInFlight=${nextMessageFetchInFlight}, inputEnded=${inputEnded})`
                 );
-
-                if (resultSeq === 1 && specialCommand.type === null && initial) {
-                    opts.onFirstResult?.(initial.message);
-                }
 
                 let completionEvent: string | undefined;
                 if (isCompactCommand) {
@@ -417,6 +555,12 @@ export async function claudeRemote(opts: {
             `${debugPrefix} finally ` +
             `(streamMessages=${streamMessageSeq}, results=${resultSeq}, nextFetches=${nextMessageFetchSeq}, inputEnded=${inputEnded})`
         );
+        setTurnActive(false);
+        // The process is gone or abandoned: prompts it never started are lost
+        // with it.
+        for (const uuid of [...pendingSteers.keys()]) {
+            dropSteer(uuid);
+        }
         updateThinking(false);
     }
 }

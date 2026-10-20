@@ -13,6 +13,7 @@ export type {
     SDKAssistantMessage,
     SDKSystemMessage,
     SDKResultMessage,
+    SDKCommandLifecycleMessage,
     SDKControlResponse,
     ControlRequest,
     InterruptRequest,

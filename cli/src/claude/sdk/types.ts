@@ -18,6 +18,11 @@ export interface SDKUserMessage extends SDKMessage {
     type: 'user'
     parent_tool_use_id?: string
     /**
+     * Prompt id. When set on an input message, Claude Code reports that
+     * prompt's progress as `command_lifecycle` messages keyed by this id.
+     */
+    uuid?: string
+    /**
      * Set by Claude Code on user-role messages it injects itself (skill bodies,
      * compact continuation summaries) rather than relaying from the human. The
      * on-disk transcript spells the same thing `isMeta`.
@@ -68,6 +73,17 @@ export interface SDKSystemMessage extends SDKMessage {
      */
     compact_result?: string
     compact_error?: string
+}
+
+/**
+ * Progress of an input prompt that carried a `uuid`. A prompt written while a
+ * turn is running stays `queued` until Claude absorbs it at the next tool
+ * boundary or starts a follow-up turn for it; either way it then goes `started`.
+ */
+export interface SDKCommandLifecycleMessage extends SDKMessage {
+    type: 'command_lifecycle'
+    command_uuid: string
+    state: 'queued' | 'started' | 'completed' | (string & {})
 }
 
 export interface SDKResultMessage extends SDKMessage {
