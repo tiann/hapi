@@ -102,6 +102,13 @@ export type CopyStoredMessageInput = Pick<
     'content' | 'createdAt' | 'localId' | 'invokedAt' | 'scheduledAt' | 'deliveryState'
 >
 
+/** Check the indexed stable ID without decoding an already-persisted payload. */
+export function hasLocalMessage(db: Database, sessionId: string, localId: string): boolean {
+    return Boolean(prepareCached(db,
+        'SELECT 1 FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1'
+    ).get(sessionId, localId))
+}
+
 export function addMessage(
     db: Database,
     sessionId: string,
