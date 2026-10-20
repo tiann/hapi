@@ -3,6 +3,7 @@ import {
     formatDiffError,
     formatDirectoryError,
     formatFileSearchError,
+    formatFileSessionOfflineError,
     formatGitStatusError,
     formatReadFileError,
     getDetachedBranchLabel,
@@ -24,6 +25,7 @@ const translations: Record<string, string> = {
     'file.error.readFailedWithDetail': '读取文件失败：{error}',
     'file.error.diffUnavailable': 'Diff 不可用',
     'file.error.diffUnavailableWithDetail': 'Diff 不可用：{error}',
+    'file.error.sessionOffline': '会话离线',
 }
 
 function t(key: string, params?: Record<string, string | number>): string {
@@ -63,7 +65,10 @@ describe('files i18n helpers', () => {
     it('formats file read and diff errors', () => {
         expect(formatReadFileError('Failed to read file', t)).toBe('读取文件失败')
         expect(formatReadFileError('EACCES', t)).toBe('读取文件失败：EACCES')
+        expect(formatReadFileError('RPC handler not registered: readFile', t)).toBe('会话离线')
         expect(formatDiffError('Failed to load diff', t)).toBe('Diff 不可用')
         expect(formatDiffError('fatal: bad revision', t)).toBe('Diff 不可用：fatal: bad revision')
+        expect(formatDiffError('RPC socket disconnected: git-diff-file', t)).toBe('会话离线')
+        expect(formatFileSessionOfflineError(t)).toBe('会话离线')
     })
 })
