@@ -866,6 +866,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
         switch (message.type) {
             case 'text':
+                // Interim idle snapshots; the settled text arrives at the
+                // segment boundary, which is what belongs in the local log.
+                if (message.live) {
+                    break;
+                }
                 this.messageBuffer.addMessage(message.text, 'assistant');
                 break;
             case 'reasoning':
