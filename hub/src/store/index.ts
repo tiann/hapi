@@ -42,7 +42,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 26
+const SCHEMA_VERSION: number = 27
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -348,6 +348,7 @@ export class Store {
             23: () => this.migrateFromV23ToV24(),
             24: () => this.migrateFromV24ToV25(),
             25: () => this.migrateFromV25ToV26(),
+            26: () => this.migrateFromV26ToV27(),
         })
 
         if (currentVersion === 0) {
@@ -462,6 +463,12 @@ export class Store {
                 WHERE invoked_at IS NULL
                   AND local_id IS NOT NULL
                   AND scheduled_at IS NULL
+                  AND delivery_state = 'queued';
+            CREATE INDEX IF NOT EXISTS idx_messages_future_scheduled_queued
+                ON messages(session_id, scheduled_at)
+                WHERE invoked_at IS NULL
+                  AND local_id IS NOT NULL
+                  AND scheduled_at IS NOT NULL
                   AND delivery_state = 'queued';
 
             CREATE TABLE IF NOT EXISTS message_epochs (
@@ -992,6 +999,29 @@ export class Store {
                 WHERE invoked_at IS NULL
                   AND local_id IS NOT NULL
                   AND scheduled_at IS NULL
+                  AND delivery_state = 'queued';
+        `)
+    }
+
+    /**
+     * v26→v27: make the session-list future-scheduled lookups indexed.
+     * GET /api/sessions runs countFutureScheduledBySessionIds and
+     * minFutureScheduledAtBySessionIds over every session id in the namespace.
+     * Neither the (session_id, seq) indexes nor idx_messages_scheduled_pending
+     * match the full predicate set, so SQLite falls back to probing
+     * idx_messages_local_id — one pass over every local message per call
+     * (O(all local messages), twice per session-list refresh) even though the
+     * matching set is almost always empty. This partial index covers every
+     * constant predicate and exposes (session_id, scheduled_at), so both
+     * queries become a near-empty index range scan.
+     */
+    private migrateFromV26ToV27(): void {
+        this.db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_messages_future_scheduled_queued
+                ON messages(session_id, scheduled_at)
+                WHERE invoked_at IS NULL
+                  AND local_id IS NOT NULL
+                  AND scheduled_at IS NOT NULL
                   AND delivery_state = 'queued';
         `)
     }
