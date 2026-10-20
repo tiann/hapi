@@ -35,6 +35,8 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
         nextScheduledAt: null,
         model: null,
         effort: null,
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
         ...overrides,
     }
 }

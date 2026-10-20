@@ -42,6 +42,8 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
         backgroundTaskCount: 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
         model: null,
         effort: null,
         ...overrides
@@ -133,6 +135,33 @@ describe('deduplicateSessionsByAgentId', () => {
         const result = deduplicateSessionsByAgentId(sessions)
         expect(result).toHaveLength(1)
         expect(result[0].id).toBe('a') // active wins despite older updatedAt
+    })
+
+    it('keeps a job-bearing duplicate when the winner has no attached job', () => {
+        const sessions = [
+            makeSession({
+                id: 'winner-active',
+                active: true,
+                metadata: { path: '/p', agentSessionId: 'thread-1', flavor: 'codex' },
+                updatedAt: 300,
+            }),
+            makeSession({
+                id: 'job-loser',
+                active: false,
+                metadata: { path: '/p', agentSessionId: 'thread-1', flavor: 'codex' },
+                updatedAt: 100,
+                attachedJob: {
+                    key: 'beets',
+                    label: 'beets',
+                    status: 'running',
+                    heartbeatAt: 1,
+                    startedAt: 1,
+                    updatedAt: 1,
+                },
+            }),
+        ]
+        const result = deduplicateSessionsByAgentId(sessions)
+        expect(result.map((s) => s.id).sort()).toEqual(['job-loser', 'winner-active'])
     })
 
     it('prefers selected session among inactive duplicates', () => {
@@ -366,6 +395,26 @@ describe('shouldShowSessionInSidebar', () => {
         expect(shouldShowSessionInSidebar(stub, 'stub')).toBe(true)
         expect(shouldShowSessionInSidebar({ ...stub, active: true })).toBe(true)
         expect(shouldShowSessionInSidebar({ ...stub, pinned: true })).toBe(true)
+    })
+
+    it('keeps idle empty stubs with a running attached job (pre-title register)', () => {
+        const stub = makeSession({
+            id: 'job-stub',
+            active: false,
+            metadata: { path: '/work/hapi' },
+            attachedJob: {
+                key: 'beets',
+                label: 'beets import',
+                status: 'running',
+                heartbeatAt: 1_000,
+                startedAt: 1_000,
+                updatedAt: 1_000,
+                remaining: 10,
+            },
+        })
+        expect(isSidebarEmptySessionStub(stub)).toBe(true)
+        expect(shouldShowSessionInSidebar(stub)).toBe(true)
+        expect(prepareSidebarSessions([stub]).map((s) => s.id)).toEqual(['job-stub'])
     })
 })
 
@@ -656,52 +705,66 @@ describe('getPullRefreshIndicatorRotation', () => {
 })
 
 describe('bucketRunningSessions', () => {
-    // tiann/hapi#1820: a keepalive-only session stays `active` (its socket is
-    // genuinely up) but must not read as a ready session in the list.
-    const idle = makeSession({
-        id: 'idle-1',
-        active: true,
-        updatedAt: 10,
-        metadata: { path: '/p', host: 'h', lifecycleState: 'idle' } as SessionSummary['metadata']
-    })
+    // Quiet connected / keepalive-idle never float (#1404). Under mode `all`,
+    // only working / pending / running attachedJob reach the In progress section.
     const quiet = makeSession({
         id: 'quiet-1',
         active: true,
         updatedAt: 20,
         metadata: { path: '/p', host: 'h', lifecycleState: 'running' } as SessionSummary['metadata']
     })
+    const withJob = makeSession({
+        id: 'job-1',
+        active: false,
+        updatedAt: 30,
+        attachedJob: {
+            key: 'batch',
+            label: 'batch',
+            status: 'running',
+            heartbeatAt: 1,
+            startedAt: 1,
+            updatedAt: 1,
+        },
+        attachedJobUpdatedAt: 1,
+    })
 
-    it('separates keepalive-only sessions from quiet-but-ready ones', () => {
-        const buckets = bucketRunningSessions([idle, quiet], true)
-
-        expect(buckets.idle.map((s) => s.id)).toEqual(['idle-1'])
-        expect(buckets.active.map((s) => s.id)).toEqual(['quiet-1'])
-        // Exactly one bucket each — the row must not be duplicated.
+    it('leaves quiet connected out of every pin bucket', () => {
+        const buckets = bucketRunningSessions([quiet], 'all')
+        expect(buckets.jobs).toHaveLength(0)
         expect(buckets.working).toHaveLength(0)
         expect(buckets.pending).toHaveLength(0)
     })
 
-    it('moves a session out of idle once it is working again', () => {
-        const woken = { ...idle, thinking: true }
-        const buckets = bucketRunningSessions([woken, quiet], true)
-
-        expect(buckets.idle).toHaveLength(0)
-        expect(buckets.working.map((s) => s.id)).toEqual(['idle-1'])
+    it('puts running attachedJob into jobs under mode jobs', () => {
+        const buckets = bucketRunningSessions([withJob, quiet], 'jobs')
+        expect(buckets.jobs.map((s) => s.id)).toEqual(['job-1'])
+        expect(buckets.working).toHaveLength(0)
+        expect(buckets.pending).toHaveLength(0)
     })
 
-    it('keeps real work ahead of the idle mark', () => {
-        // An idle-marked session that picked up a background task or a pending
-        // request belongs in its work bucket, not in idle.
-        expect(bucketRunningSessions([{ ...idle, backgroundTaskCount: 1 }], true).working).toHaveLength(1)
-        expect(bucketRunningSessions([{ ...idle, pendingRequestsCount: 1 }], true).pending).toHaveLength(1)
+    it('buckets working and pending under mode all', () => {
+        expect(bucketRunningSessions([{ ...quiet, backgroundTaskCount: 1 }], 'all').working).toHaveLength(1)
+        expect(bucketRunningSessions([{ ...quiet, pendingRequestsCount: 1 }], 'all').pending).toHaveLength(1)
     })
 
-    it('ignores disconnected and pinned sessions', () => {
+    it('lets pending outrank jobs when both apply', () => {
+        const both = {
+            ...withJob,
+            active: true,
+            pendingRequestsCount: 1,
+        }
+        const buckets = bucketRunningSessions([both], 'all')
+        expect(buckets.pending.map((s) => s.id)).toEqual(['job-1'])
+        expect(buckets.jobs).toHaveLength(0)
+    })
+
+    it('ignores disconnected (no job) and pinned sessions', () => {
         const buckets = bucketRunningSessions([
-            { ...idle, active: false },
-            { ...idle, id: 'idle-pinned', pinned: true }
-        ], true)
-
-        expect(buckets.idle).toHaveLength(0)
+            { ...quiet, active: false },
+            { ...withJob, id: 'job-pinned', pinned: true },
+        ], 'all')
+        expect(buckets.jobs).toHaveLength(0)
+        expect(buckets.working).toHaveLength(0)
+        expect(buckets.pending).toHaveLength(0)
     })
 })
