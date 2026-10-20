@@ -31,6 +31,10 @@ import {
     formatSessionMentionTooltip,
     type SessionMentionTooltipModel,
 } from '@/lib/sessionReference'
+import {
+    SESSION_MENTION_CHIP_CLASSNAME,
+    formatSessionMentionChipLabel,
+} from '@/lib/sessionMentionChip'
 import { SessionRowSummary } from '@/components/SessionRowSummary'
 import type { SessionSummary } from '@/types/api'
 
@@ -96,9 +100,8 @@ function createMentionSpan(
     span.dataset.sessionId = id
     span.dataset.sessionTitle = title
     span.dataset.composerMention = 'session'
-    span.className =
-        'mx-0.5 inline-flex max-w-[12rem] items-center truncate rounded-md bg-[var(--app-subtle-bg)] px-1.5 py-0.5 align-baseline text-[0.95em] font-medium text-[var(--app-link)]'
-    span.textContent = `@${title || id.slice(0, 8)}`
+    span.className = SESSION_MENTION_CHIP_CLASSNAME
+    span.textContent = formatSessionMentionChipLabel(title, id)
     const tip = resolveTooltip?.(id, title)?.model
         ?? formatSessionMentionTooltip(null, title, id)
     span.setAttribute('aria-label', tip.ariaLabel)
