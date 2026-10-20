@@ -191,6 +191,8 @@ export type PushSubscriptionKeys = {
 export type PushSubscriptionPayload = {
     endpoint: string
     keys: PushSubscriptionKeys
+    /** UI language (BCP-47 tag) used for localized push notification text. */
+    language?: string
 }
 
 export type PushUnsubscribePayload = {

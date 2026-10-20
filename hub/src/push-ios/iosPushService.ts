@@ -84,20 +84,27 @@ export class IosPushService {
         }
     }
 
-    async sendToNamespace(namespace: string, payload: IosPushNotificationPayload): Promise<IosPushSendResult> {
+    /**
+     * `payload` may be a per-device builder: notification text is rendered in
+     * the language each device registered with.
+     */
+    async sendToNamespace(
+        namespace: string,
+        payload: IosPushNotificationPayload | ((language: string | null) => IosPushNotificationPayload)
+    ): Promise<IosPushSendResult> {
         const devices = this.store.fcm.getDevicesByNamespace(namespace, ['ios'])
         if (devices.length === 0) {
             return { sent: 0, failed: 0, invalidTokens: [] }
         }
-
-        const plaintext = canonicalJson(payload)
-        const collapseId = buildCollapseId(payload.type, payload.sessionId)
 
         const invalidTokens: string[] = []
         let sent = 0
         let failed = 0
 
         await Promise.all(devices.map(async (device) => {
+            const resolved = typeof payload === 'function' ? payload(device.language) : payload
+            const plaintext = canonicalJson(resolved)
+            const collapseId = buildCollapseId(resolved.type, resolved.sessionId)
             const outcome = await this.sendToDevice(device.token, device.pushKey, plaintext, collapseId)
             // `invalid` is a per-device fact - exclude it from the health
             // buffer (see field doc above).

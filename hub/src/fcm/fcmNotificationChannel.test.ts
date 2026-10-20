@@ -20,8 +20,11 @@ describe('FcmNotificationChannel', () => {
         const toasts: unknown[] = []
         const channel = new FcmNotificationChannel(
             {
-                sendToNamespace: async (_namespace: string, payload: FcmSendPayload) => {
-                    sent.push(payload)
+                sendToNamespace: async (
+                    _namespace: string,
+                    payload: FcmSendPayload | ((language: string | null) => FcmSendPayload)
+                ) => {
+                    sent.push(typeof payload === 'function' ? payload(null) : payload)
                 }
             } as never,
             {
@@ -50,8 +53,11 @@ describe('FcmNotificationChannel', () => {
         const sent: FcmSendPayload[] = []
         const channel = new FcmNotificationChannel(
             {
-                sendToNamespace: async (_namespace: string, payload: FcmSendPayload) => {
-                    sent.push(payload)
+                sendToNamespace: async (
+                    _namespace: string,
+                    payload: FcmSendPayload | ((language: string | null) => FcmSendPayload)
+                ) => {
+                    sent.push(typeof payload === 'function' ? payload(null) : payload)
                 }
             } as never,
             {
@@ -80,8 +86,11 @@ describe('FcmNotificationChannel', () => {
         const sent: FcmSendPayload[] = []
         const channel = new FcmNotificationChannel(
             {
-                sendToNamespace: async (_namespace: string, payload: FcmSendPayload) => {
-                    sent.push(payload)
+                sendToNamespace: async (
+                    _namespace: string,
+                    payload: FcmSendPayload | ((language: string | null) => FcmSendPayload)
+                ) => {
+                    sent.push(typeof payload === 'function' ? payload(null) : payload)
                 }
             } as never,
             {
@@ -127,8 +136,11 @@ describe('FcmNotificationChannel', () => {
         const sent: FcmSendPayload[] = []
         const channel = new FcmNotificationChannel(
             {
-                sendToNamespace: async (_namespace: string, payload: FcmSendPayload) => {
-                    sent.push(payload)
+                sendToNamespace: async (
+                    _namespace: string,
+                    payload: FcmSendPayload | ((language: string | null) => FcmSendPayload)
+                ) => {
+                    sent.push(typeof payload === 'function' ? payload(null) : payload)
                 }
             } as never,
             { sendToast: async () => 0 } as never,
@@ -155,8 +167,11 @@ describe('FcmNotificationChannel', () => {
         const sent: FcmSendPayload[] = []
         const channel = new FcmNotificationChannel(
             {
-                sendToNamespace: async (_namespace: string, payload: FcmSendPayload) => {
-                    sent.push(payload)
+                sendToNamespace: async (
+                    _namespace: string,
+                    payload: FcmSendPayload | ((language: string | null) => FcmSendPayload)
+                ) => {
+                    sent.push(typeof payload === 'function' ? payload(null) : payload)
                 }
             } as never,
             {
@@ -222,8 +237,11 @@ describe('FcmNotificationChannel', () => {
         ])
         const channel = new FcmNotificationChannel(
             {
-                sendToNamespace: async (_namespace: string, payload: FcmSendPayload) => {
-                    sent.push(payload)
+                sendToNamespace: async (
+                    _namespace: string,
+                    payload: FcmSendPayload | ((language: string | null) => FcmSendPayload)
+                ) => {
+                    sent.push(typeof payload === 'function' ? payload(null) : payload)
                 }
             } as never,
             { sendToast: async () => 0 } as never,
@@ -263,8 +281,11 @@ describe('FcmNotificationChannel', () => {
         ])
         const channel = new FcmNotificationChannel(
             {
-                sendToNamespace: async (_namespace: string, payload: FcmSendPayload) => {
-                    sent.push(payload)
+                sendToNamespace: async (
+                    _namespace: string,
+                    payload: FcmSendPayload | ((language: string | null) => FcmSendPayload)
+                ) => {
+                    sent.push(typeof payload === 'function' ? payload(null) : payload)
                 }
             } as never,
             { sendToast: async () => 0 } as never,
@@ -300,8 +321,11 @@ describe('FcmNotificationChannel', () => {
         ])
         const channel = new FcmNotificationChannel(
             {
-                sendToNamespace: async (_namespace: string, payload: FcmSendPayload) => {
-                    sent.push(payload)
+                sendToNamespace: async (
+                    _namespace: string,
+                    payload: FcmSendPayload | ((language: string | null) => FcmSendPayload)
+                ) => {
+                    sent.push(typeof payload === 'function' ? payload(null) : payload)
                 }
             } as never,
             { sendToast: async () => 0 } as never,
@@ -335,8 +359,11 @@ describe('FcmNotificationChannel', () => {
         ])
         const channel = new FcmNotificationChannel(
             {
-                sendToNamespace: async (_namespace: string, payload: FcmSendPayload) => {
-                    sent.push(payload)
+                sendToNamespace: async (
+                    _namespace: string,
+                    payload: FcmSendPayload | ((language: string | null) => FcmSendPayload)
+                ) => {
+                    sent.push(typeof payload === 'function' ? payload(null) : payload)
                 }
             } as never,
             { sendToast: async () => 0 } as never,
@@ -365,8 +392,11 @@ describe('FcmNotificationChannel', () => {
         ])
         const channel = new FcmNotificationChannel(
             {
-                sendToNamespace: async (_namespace: string, payload: FcmSendPayload) => {
-                    sent.push(payload)
+                sendToNamespace: async (
+                    _namespace: string,
+                    payload: FcmSendPayload | ((language: string | null) => FcmSendPayload)
+                ) => {
+                    sent.push(typeof payload === 'function' ? payload(null) : payload)
                 }
             } as never,
             { sendToast: async () => 0 } as never,
@@ -409,8 +439,11 @@ describe('FcmNotificationChannel', () => {
         ])
         const channel = new FcmNotificationChannel(
             {
-                sendToNamespace: async (_namespace: string, payload: FcmSendPayload) => {
-                    sent.push(payload)
+                sendToNamespace: async (
+                    _namespace: string,
+                    payload: FcmSendPayload | ((language: string | null) => FcmSendPayload)
+                ) => {
+                    sent.push(typeof payload === 'function' ? payload(null) : payload)
                 }
             } as never,
             { sendToast: async () => 0 } as never,
@@ -445,8 +478,11 @@ describe('FcmNotificationChannel', () => {
         ])
         const channel = new FcmNotificationChannel(
             {
-                sendToNamespace: async (_namespace: string, payload: FcmSendPayload) => {
-                    sent.push(payload)
+                sendToNamespace: async (
+                    _namespace: string,
+                    payload: FcmSendPayload | ((language: string | null) => FcmSendPayload)
+                ) => {
+                    sent.push(typeof payload === 'function' ? payload(null) : payload)
                 }
             } as never,
             { sendToast: async () => 0 } as never,
@@ -464,8 +500,11 @@ describe('FcmNotificationChannel', () => {
         const store = makeStoreWithMessages([])
         const channel = new FcmNotificationChannel(
             {
-                sendToNamespace: async (_namespace: string, payload: FcmSendPayload) => {
-                    sent.push(payload)
+                sendToNamespace: async (
+                    _namespace: string,
+                    payload: FcmSendPayload | ((language: string | null) => FcmSendPayload)
+                ) => {
+                    sent.push(typeof payload === 'function' ? payload(null) : payload)
                 }
             } as never,
             { sendToast: async () => 0 } as never,
@@ -483,8 +522,11 @@ describe('FcmNotificationChannel', () => {
         const sent: FcmSendPayload[] = []
         const channel = new FcmNotificationChannel(
             {
-                sendToNamespace: async (_namespace: string, payload: FcmSendPayload) => {
-                    sent.push(payload)
+                sendToNamespace: async (
+                    _namespace: string,
+                    payload: FcmSendPayload | ((language: string | null) => FcmSendPayload)
+                ) => {
+                    sent.push(typeof payload === 'function' ? payload(null) : payload)
                 }
             } as never,
             { sendToast: async () => 0 } as never,
@@ -501,7 +543,7 @@ describe('FcmNotificationChannel', () => {
     it('sets severity=info on ready notifications', async () => {
         const sent: FcmSendPayload[] = []
         const channel = new FcmNotificationChannel(
-            { sendToNamespace: async (_n: string, p: FcmSendPayload) => { sent.push(p) } } as never,
+            { sendToNamespace: async (_n: string, p: FcmSendPayload | ((language: string | null) => FcmSendPayload)) => { sent.push(typeof p === 'function' ? p(null) : p) } } as never,
             { sendToast: async () => 0 } as never,
             { hasVisibleConnection: () => false } as never
         )
@@ -542,7 +584,7 @@ describe('FcmNotificationChannel', () => {
     it('sets severity=warning on permission-request notifications', async () => {
         const sent: FcmSendPayload[] = []
         const channel = new FcmNotificationChannel(
-            { sendToNamespace: async (_n: string, p: FcmSendPayload) => { sent.push(p) } } as never,
+            { sendToNamespace: async (_n: string, p: FcmSendPayload | ((language: string | null) => FcmSendPayload)) => { sent.push(typeof p === 'function' ? p(null) : p) } } as never,
             { sendToast: async () => 0 } as never,
             { hasVisibleConnection: () => false } as never
         )
@@ -555,7 +597,7 @@ describe('FcmNotificationChannel', () => {
     it('sets severity=success on completed task notifications', async () => {
         const sent: FcmSendPayload[] = []
         const channel = new FcmNotificationChannel(
-            { sendToNamespace: async (_n: string, p: FcmSendPayload) => { sent.push(p) } } as never,
+            { sendToNamespace: async (_n: string, p: FcmSendPayload | ((language: string | null) => FcmSendPayload)) => { sent.push(typeof p === 'function' ? p(null) : p) } } as never,
             { sendToast: async () => 0 } as never,
             { hasVisibleConnection: () => false } as never
         )
@@ -566,7 +608,7 @@ describe('FcmNotificationChannel', () => {
     it('sets severity=error on failed task notifications', async () => {
         const sent: FcmSendPayload[] = []
         const channel = new FcmNotificationChannel(
-            { sendToNamespace: async (_n: string, p: FcmSendPayload) => { sent.push(p) } } as never,
+            { sendToNamespace: async (_n: string, p: FcmSendPayload | ((language: string | null) => FcmSendPayload)) => { sent.push(typeof p === 'function' ? p(null) : p) } } as never,
             { sendToast: async () => 0 } as never,
             { hasVisibleConnection: () => false } as never
         )
@@ -581,7 +623,7 @@ describe('FcmNotificationChannel', () => {
     it('sendTaskNotification caps long task summaries for FCM data limits', async () => {
         const sent: FcmSendPayload[] = []
         const channel = new FcmNotificationChannel(
-            { sendToNamespace: async (_n: string, p: FcmSendPayload) => { sent.push(p) } } as never,
+            { sendToNamespace: async (_n: string, p: FcmSendPayload | ((language: string | null) => FcmSendPayload)) => { sent.push(typeof p === 'function' ? p(null) : p) } } as never,
             { sendToast: async () => 0 } as never,
             { hasVisibleConnection: () => false } as never
         )
@@ -591,5 +633,27 @@ describe('FcmNotificationChannel', () => {
         })
         expect(sent[0].body).toContain('...')
         expect(sent[0].body.length).toBeLessThan(350)
+    })
+
+    it('renders the payload in the device language', async () => {
+        const sent: FcmSendPayload[] = []
+        const channel = new FcmNotificationChannel(
+            {
+                sendToNamespace: async (
+                    _namespace: string,
+                    payload: FcmSendPayload | ((language: string | null) => FcmSendPayload)
+                ) => {
+                    sent.push(typeof payload === 'function' ? payload('ru') : payload)
+                    return { sent: 1, failed: 0, invalidTokens: [] }
+                }
+            } as never,
+            { sendToast: async () => 0 } as never,
+            { hasVisibleConnection: () => false } as never
+        )
+
+        await channel.sendReady(createSession())
+
+        expect(sent[0]?.title).toBe('Готов к вводу')
+        expect(sent[0]?.body).toContain('ждёт в сессии')
     })
 })

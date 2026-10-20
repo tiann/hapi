@@ -44,6 +44,50 @@ describe('devices routes', () => {
         expect(devices[0]).toMatchObject({ deviceId: 'new-id', token: 'rotated-token', pushKey })
         store.close()
     })
+    it('stores the device language and refreshes it on re-register', async () => {
+        const store = new Store(':memory:')
+        const app = createApp(store)
+        const headers = { ...await authHeaders(), 'content-type': 'application/json' }
+
+        const register = (language?: string) => app.request('/api/devices/register', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+                token: 'fcm-lang',
+                platform: 'phone',
+                deviceId: 'phone-lang',
+                pushKey: Buffer.alloc(32, 5).toString('base64'),
+                ...(language === undefined ? {} : { language })
+            })
+        })
+
+        expect((await register('ru')).status).toBe(200)
+        expect(store.fcm.getDevicesByNamespace('default', ['phone'])[0]?.language).toBe('ru')
+
+        expect((await register('en-US')).status).toBe(200)
+        expect(store.fcm.getDevicesByNamespace('default', ['phone'])[0]?.language).toBe('en-US')
+
+        // An explicit null (clients that serialise optional fields) is fine too.
+        expect((await app.request('/api/devices/register', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+                token: 'fcm-lang',
+                platform: 'phone',
+                deviceId: 'phone-lang',
+                pushKey: Buffer.alloc(32, 5).toString('base64'),
+                language: null
+            })
+        })).status).toBe(200)
+        expect(store.fcm.getDevicesByNamespace('default', ['phone'])[0]?.language).toBeNull()
+
+        // Omitting the field on a later registration keeps the row valid.
+        expect((await register()).status).toBe(200)
+        expect(store.fcm.getDevicesByNamespace('default', ['phone'])[0]?.language).toBeNull()
+
+        store.close()
+    })
+
     it('registers and unregisters FCM devices for namespace', async () => {
         const store = new Store(':memory:')
         const app = createApp(store)

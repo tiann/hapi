@@ -9,6 +9,7 @@ type DbFcmDeviceRow = {
     platform: string
     device_id: string
     push_key: string | null
+    language: string | null
     created_at: number
     updated_at: number
 }
@@ -21,6 +22,7 @@ function toStoredFcmDevice(row: DbFcmDeviceRow): StoredFcmDevice {
         platform: row.platform as StoredFcmDevice['platform'],
         deviceId: row.device_id,
         pushKey: row.push_key,
+        language: row.language ?? null,
         createdAt: row.created_at,
         updatedAt: row.updated_at
     }
@@ -29,7 +31,7 @@ function toStoredFcmDevice(row: DbFcmDeviceRow): StoredFcmDevice {
 export function upsertFcmDevice(
     db: Database,
     namespace: string,
-    device: { token: string; platform: NativeDevicePlatform; deviceId: string; pushKey?: string }
+    device: { token: string; platform: NativeDevicePlatform; deviceId: string; pushKey?: string; language?: string | null }
 ): void {
     const now = Date.now()
     const params = {
@@ -38,6 +40,7 @@ export function upsertFcmDevice(
         platform: device.platform,
         device_id: device.deviceId,
         push_key: device.pushKey ?? null,
+        language: device.language ?? null,
         created_at: now,
         updated_at: now
     }
@@ -54,14 +57,15 @@ export function upsertFcmDevice(
 
         db.prepare(`
             INSERT INTO fcm_devices (
-                namespace, token, platform, device_id, push_key, created_at, updated_at
+                namespace, token, platform, device_id, push_key, language, created_at, updated_at
             ) VALUES (
-                @namespace, @token, @platform, @device_id, @push_key, @created_at, @updated_at
+                @namespace, @token, @platform, @device_id, @push_key, @language, @created_at, @updated_at
             )
             ON CONFLICT(namespace, device_id, platform)
             DO UPDATE SET
                 token = excluded.token,
                 push_key = excluded.push_key,
+                language = excluded.language,
                 updated_at = excluded.updated_at
         `).run(params)
     })()

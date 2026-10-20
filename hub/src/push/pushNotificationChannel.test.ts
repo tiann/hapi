@@ -20,8 +20,11 @@ describe('PushNotificationChannel', () => {
         const toasts: unknown[] = []
         const channel = new PushNotificationChannel(
             {
-                sendToNamespace: async (namespace: string, payload: PushPayload) => {
-                    pushed.push({ namespace, payload })
+                sendToNamespace: async (
+                    namespace: string,
+                    payload: PushPayload | ((language: string | null) => PushPayload)
+                ) => {
+                    pushed.push({ namespace, payload: typeof payload === 'function' ? payload(null) : payload })
                 }
             } as never,
             {
@@ -49,8 +52,11 @@ describe('PushNotificationChannel', () => {
         const pushed: Array<{ namespace: string; payload: PushPayload }> = []
         const channel = new PushNotificationChannel(
             {
-                sendToNamespace: async (namespace: string, payload: PushPayload) => {
-                    pushed.push({ namespace, payload })
+                sendToNamespace: async (
+                    namespace: string,
+                    payload: PushPayload | ((language: string | null) => PushPayload)
+                ) => {
+                    pushed.push({ namespace, payload: typeof payload === 'function' ? payload(null) : payload })
                 }
             } as never,
             {
@@ -80,8 +86,11 @@ describe('PushNotificationChannel', () => {
         const pushed: Array<{ namespace: string; payload: PushPayload }> = []
         const channel = new PushNotificationChannel(
             {
-                sendToNamespace: async (namespace: string, payload: PushPayload) => {
-                    pushed.push({ namespace, payload })
+                sendToNamespace: async (
+                    namespace: string,
+                    payload: PushPayload | ((language: string | null) => PushPayload)
+                ) => {
+                    pushed.push({ namespace, payload: typeof payload === 'function' ? payload(null) : payload })
                 }
             } as never,
             {
@@ -113,8 +122,11 @@ describe('PushNotificationChannel', () => {
         const pushed: Array<{ namespace: string; payload: PushPayload }> = []
         const channel = new PushNotificationChannel(
             {
-                sendToNamespace: async (namespace: string, payload: PushPayload) => {
-                    pushed.push({ namespace, payload })
+                sendToNamespace: async (
+                    namespace: string,
+                    payload: PushPayload | ((language: string | null) => PushPayload)
+                ) => {
+                    pushed.push({ namespace, payload: typeof payload === 'function' ? payload(null) : payload })
                 }
             } as never,
             {
@@ -135,8 +147,11 @@ describe('PushNotificationChannel', () => {
         const pushed: Array<{ namespace: string; payload: PushPayload }> = []
         const channel = new PushNotificationChannel(
             {
-                sendToNamespace: async (namespace: string, payload: PushPayload) => {
-                    pushed.push({ namespace, payload })
+                sendToNamespace: async (
+                    namespace: string,
+                    payload: PushPayload | ((language: string | null) => PushPayload)
+                ) => {
+                    pushed.push({ namespace, payload: typeof payload === 'function' ? payload(null) : payload })
                 }
             } as never,
             {
@@ -158,8 +173,11 @@ describe('PushNotificationChannel', () => {
         const toasts: unknown[] = []
         const channel = new PushNotificationChannel(
             {
-                sendToNamespace: async (namespace: string, payload: PushPayload) => {
-                    pushed.push({ namespace, payload })
+                sendToNamespace: async (
+                    namespace: string,
+                    payload: PushPayload | ((language: string | null) => PushPayload)
+                ) => {
+                    pushed.push({ namespace, payload: typeof payload === 'function' ? payload(null) : payload })
                 }
             } as never,
             {
@@ -190,5 +208,57 @@ describe('PushNotificationChannel', () => {
         // when an FCM companion is on the wrist.
         expect(toasts).toHaveLength(0)
         expect(pushed).toHaveLength(0)
+    })
+
+    it('renders the web-push payload in the subscription language', async () => {
+        const resolved: PushPayload[] = []
+        const channel = new PushNotificationChannel(
+            {
+                sendToNamespace: async (
+                    _namespace: string,
+                    payload: PushPayload | ((language: string | null) => PushPayload)
+                ) => {
+                    resolved.push(typeof payload === 'function' ? payload('ru') : payload)
+                }
+            } as never,
+            {
+                sendToast: async () => 0
+            } as never,
+            {
+                hasVisibleConnection: () => false
+            } as never,
+            ''
+        )
+
+        await channel.sendReady(createSession())
+
+        expect(resolved[0]?.title).toBe('Готов к вводу')
+        expect(resolved[0]?.body).toContain('Codex ждёт в сессии')
+    })
+
+    it('falls back to English for an unknown or missing subscription language', async () => {
+        const resolved: PushPayload[] = []
+        const channel = new PushNotificationChannel(
+            {
+                sendToNamespace: async (
+                    _namespace: string,
+                    payload: PushPayload | ((language: string | null) => PushPayload)
+                ) => {
+                    resolved.push(typeof payload === 'function' ? payload('de') : payload)
+                }
+            } as never,
+            {
+                sendToast: async () => 0
+            } as never,
+            {
+                hasVisibleConnection: () => false
+            } as never,
+            ''
+        )
+
+        await channel.sendReady(createSession())
+
+        expect(resolved[0]?.title).toBe('Ready for input')
+        expect(resolved[0]?.body).toContain('Codex is waiting in')
     })
 })

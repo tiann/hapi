@@ -99,3 +99,49 @@ describe('Telegram session notifications', () => {
         ].join('\n'))
     })
 })
+
+describe('Telegram session notifications (ru)', () => {
+    it('localizes ready notifications', () => {
+        expect(formatReadyNotification(createSession(), createMachine(), 'ru')).toBe([
+            'Готово: rotate HAPI secrets на Work Laptop',
+            '',
+            'Codex ждёт вашей команды',
+            'Сессия: rotate HAPI secrets',
+            'Путь: ~/infra'
+        ].join('\n'))
+    })
+
+    it('localizes ready notifications without context', () => {
+        const session = createSession({ metadata: null })
+
+        expect(formatReadyNotification(session, undefined, 'ru')).toBe([
+            'Готово!',
+            '',
+            'Agent ждёт вашей команды'
+        ].join('\n'))
+    })
+
+    it('localizes permission notifications', () => {
+        const session = createSession({
+            agentState: {
+                requests: {
+                    req1: {
+                        tool: 'Bash',
+                        arguments: { command: 'bun test' },
+                        createdAt: 1
+                    }
+                }
+            }
+        })
+
+        expect(formatSessionNotification(session, createMachine(), 'ru')).toBe([
+            'Требуется действие: rotate HAPI secrets на Work Laptop',
+            '',
+            'Codex запрашивает разрешение',
+            'Сессия: rotate HAPI secrets',
+            'Путь: ~/infra',
+            'Инструмент: Bash',
+            'Команда: bun test'
+        ].join('\n'))
+    })
+})

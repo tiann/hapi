@@ -29,11 +29,17 @@ support for `wear` registrations; the repository does not include a Wear OS app.
   "token": "<fcm-registration-token>",
   "platform": "phone",
   "deviceId": "<stable-install-id>",
-  "pushKey": "<base64 of 32 device-generated random bytes>"
+  "pushKey": "<base64 of 32 device-generated random bytes>",
+  "language": "ru-RU"
 }
 ```
 
 `platform`: `"phone"` | `"wear"` | `"ios"`.
+
+`language`: optional BCP-47 tag (max 35 chars) for the device's UI language. The
+hub renders this device's notification title/body in that language; without it
+(or for an unsupported value) it falls back to English. Sending an updated tag
+on a later registration refreshes it.
 
 `pushKey`: required for iOS and for Android relay delivery. New Android phone
 clients always provide it. Phone registrations without it remain valid for

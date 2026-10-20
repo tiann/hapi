@@ -12,6 +12,7 @@ import { createCallbackData, getSessionName } from './renderer'
 import { getAgentName } from '../notifications/sessionInfo'
 import { formatToolArgumentsDetailed } from '../notifications/toolArgs'
 import { composeInputRequestNotification, getFirstPendingRequest, isInputRequestTool } from '../notifications/inputRequest'
+import { hubT, type HubLocale } from '../i18n/hubI18n'
 
 type NotificationContext = {
     hasContext: boolean
@@ -22,18 +23,22 @@ type NotificationContext = {
 /**
  * Format a compact notification when the agent is ready for input.
  */
-export function formatReadyNotification(session: Session, machine?: Machine): string {
+export function formatReadyNotification(
+    session: Session,
+    machine?: Machine,
+    locale: HubLocale = 'en'
+): string {
     const agentName = getAgentName(session)
-    const context = buildNotificationContext(session, machine)
+    const context = buildNotificationContext(session, machine, locale)
 
     if (!context.hasContext) {
-        return `It's ready!\n\n${agentName} is waiting for your command`
+        return hubT(locale, 'telegram.ready.noContext', { agent: agentName })
     }
 
     return [
-        `Ready: ${context.heading}`,
+        hubT(locale, 'telegram.ready.heading', { heading: context.heading }),
         '',
-        `${agentName} is waiting for your command`,
+        hubT(locale, 'telegram.ready.waiting', { agent: agentName }),
         ...context.details
     ].join('\n')
 }
@@ -41,27 +46,35 @@ export function formatReadyNotification(session: Session, machine?: Machine): st
 /**
  * Format a compact session notification for permission requests
  */
-export function formatSessionNotification(session: Session, machine?: Machine): string {
+export function formatSessionNotification(
+    session: Session,
+    machine?: Machine,
+    locale: HubLocale = 'en'
+): string {
     const pending = getFirstPendingRequest(session)
-    const inputNotification = composeInputRequestNotification(session, pending)
+    const inputNotification = composeInputRequestNotification(session, pending, locale)
     if (inputNotification) {
         return `${inputNotification.title}\n\n${inputNotification.body}`
     }
 
-    const context = buildNotificationContext(session, machine)
+    const context = buildNotificationContext(session, machine, locale)
     const lines: string[] = context.hasContext
         ? [
-            `Action required: ${context.heading}`,
+            hubT(locale, 'telegram.permission.actionRequired', { heading: context.heading }),
             '',
-            `${getAgentName(session)} requests permission`,
+            hubT(locale, 'telegram.permission.requests', { agent: getAgentName(session) }),
             ...context.details
         ]
-        : ['Permission Request', '', `Session: ${getSessionName(session)}`]
+        : [
+            hubT(locale, 'telegram.permission.title'),
+            '',
+            hubT(locale, 'telegram.session', { name: getSessionName(session) })
+        ]
 
     const req = pending?.request
     if (req) {
-        lines.push(`Tool: ${req.tool}`)
-        const args = formatToolArgumentsDetailed(req.tool, req.arguments)
+        lines.push(hubT(locale, 'telegram.tool', { tool: req.tool }))
+        const args = formatToolArgumentsDetailed(req.tool, req.arguments, { locale })
         if (args) {
             lines.push(args)
         }
@@ -70,18 +83,22 @@ export function formatSessionNotification(session: Session, machine?: Machine): 
     return lines.join('\n')
 }
 
-function buildNotificationContext(session: Session, machine?: Machine): NotificationContext {
+function buildNotificationContext(
+    session: Session,
+    machine?: Machine,
+    locale: HubLocale = 'en'
+): NotificationContext {
     const sessionName = getContextSessionName(session)
     const machineName = getMachineName(session, machine)
     const path = formatSessionPath(session)
-    const heading = formatHeading(sessionName, machineName)
+    const heading = formatHeading(sessionName, machineName, locale)
     const details: string[] = []
 
     if (sessionName) {
-        details.push(`Session: ${sessionName}`)
+        details.push(hubT(locale, 'telegram.session', { name: sessionName }))
     }
     if (path) {
-        details.push(`Path: ${path}`)
+        details.push(hubT(locale, 'telegram.path', { path }))
     }
 
     return {
@@ -107,8 +124,14 @@ function getMachineName(session: Session, machine?: Machine): string | null {
     return trimmed ? trimmed : null
 }
 
-function formatHeading(sessionName: string | null, machineName: string | null): string {
-    if (sessionName && machineName) return `${sessionName} on ${machineName}`
+function formatHeading(
+    sessionName: string | null,
+    machineName: string | null,
+    locale: HubLocale = 'en'
+): string {
+    if (sessionName && machineName) {
+        return hubT(locale, 'telegram.heading.on', { session: sessionName, machine: machineName })
+    }
     if (sessionName) return sessionName
     if (machineName) return machineName
     return ''
@@ -130,7 +153,11 @@ function formatSessionPath(session: Session): string | null {
 /**
  * Create notification keyboard for quick actions
  */
-export function createNotificationKeyboard(session: Session, publicUrl: string): InlineKeyboard {
+export function createNotificationKeyboard(
+    session: Session,
+    publicUrl: string,
+    locale: HubLocale = 'en'
+): InlineKeyboard {
     const keyboard = new InlineKeyboard()
     const pending = getFirstPendingRequest(session)
     const canControl = session.active
@@ -140,19 +167,19 @@ export function createNotificationKeyboard(session: Session, publicUrl: string):
         const reqPrefix = requestId.slice(0, 8)
 
         keyboard
-            .text('Allow', createCallbackData(ACTIONS.APPROVE, session.id, reqPrefix))
-            .text('Deny', createCallbackData(ACTIONS.DENY, session.id, reqPrefix))
+            .text(hubT(locale, 'telegram.allow'), createCallbackData(ACTIONS.APPROVE, session.id, reqPrefix))
+            .text(hubT(locale, 'telegram.deny'), createCallbackData(ACTIONS.DENY, session.id, reqPrefix))
         keyboard.row()
 
         keyboard.webApp(
-            'Details',
+            hubT(locale, 'telegram.details'),
             buildMiniAppDeepLink(publicUrl, `session_${session.id}`)
         )
         return keyboard
     }
 
     keyboard.webApp(
-        'Open Session',
+        hubT(locale, 'telegram.openSession'),
         buildMiniAppDeepLink(publicUrl, `session_${session.id}`)
     )
     return keyboard
