@@ -29,12 +29,15 @@
  *   direct-APNs credentials (settings: apnsKeyP8Path, apnsKeyId, apnsTeamId, apnsBundleId, apnsEnv)
  * - HAPI_HOME: Data directory (default: ~/.hapi)
  * - DB_PATH: SQLite database path (default: {HAPI_HOME}/hapi.db)
+ * - HAPI_CLOUDFLARE_ACCESS_TEAM_DOMAIN, HAPI_CLOUDFLARE_ACCESS_AUD, HAPI_CLOUDFLARE_ACCESS_USERS:
+ *   optional Cloudflare Access web login (env-only, never persisted; all three required)
  */
 
 import { existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { getOrCreateCliApiToken } from './config/cliApiToken'
+import { parseCloudflareAccessConfig, type CloudflareAccessConfig } from './config/cloudflareAccess'
 import { applyProviderCredentialsFromSettings } from './config/providerCredentials'
 import { getSettingsFile } from './config/settings'
 import { loadServerSettings, type ServerSettings, type ServerSettingsResult } from './config/serverSettings'
@@ -124,6 +127,9 @@ class Configuration {
     public readonly apnsBundleId: string | null
     public readonly apnsEnv: string | null
 
+    /** Optional Cloudflare Access web login configuration (env-only, null when disabled) */
+    public readonly cloudflareAccess: CloudflareAccessConfig | null
+
     /** Sources of each configuration value */
     public readonly sources: ConfigSources
 
@@ -158,6 +164,9 @@ class Configuration {
         this.apnsTeamId = serverSettings.apnsTeamId
         this.apnsBundleId = serverSettings.apnsBundleId
         this.apnsEnv = serverSettings.apnsEnv
+
+        // Cloudflare Access (env-only, never persisted to settings.json)
+        this.cloudflareAccess = parseCloudflareAccessConfig(process.env)
 
         // CLI API token - will be set by _setCliApiToken() before create() returns
         this.cliApiToken = ''

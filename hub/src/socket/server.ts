@@ -1,11 +1,11 @@
 import { Server as Engine } from '@socket.io/bun-engine'
 import { Server, type DefaultEventsMap } from 'socket.io'
-import { jwtVerify } from 'jose'
-import { z } from 'zod'
 import type { Store } from '../store'
 import { getConfiguration } from '../configuration'
 import { constantTimeEquals } from '../utils/crypto'
 import { parseAccessToken } from '../utils/accessToken'
+import { verifyWebAuthToken, type WebAuthTokenVerification } from '../web/authToken'
+import type { CloudflareAccessVerifier } from '../web/cloudflareAccess'
 import { registerCliHandlers } from './handlers/cli'
 import { registerTerminalHandlers } from './handlers/terminal'
 import { RpcRegistry } from './rpcRegistry'
@@ -14,11 +14,6 @@ import type { SyncEvent } from '../sync/syncEngine'
 import { TerminalRegistry } from './terminalRegistry'
 import { clearUserTerminalBuffer } from './userTerminalBuffer'
 import type { CliSocketWithData, SocketData, SocketServer } from './socketTypes'
-
-const jwtPayloadSchema = z.object({
-    uid: z.number(),
-    ns: z.string()
-})
 
 const DEFAULT_IDLE_TIMEOUT_MS = 15 * 60_000
 const DEFAULT_MAX_TERMINALS = 4
@@ -30,6 +25,35 @@ function resolveEnvNumber(name: string, fallback: number): number {
     }
     const parsed = Number.parseInt(raw, 10)
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+}
+
+export interface VerifyTerminalSocketAuthOptions {
+    /**
+     * Cloudflare Access verifier override (tests only). When omitted, the
+     * verifier for the configured bundle is used; an explicitly null value
+     * models a disabled Cloudflare configuration.
+     */
+    cloudflareAccessVerifier?: CloudflareAccessVerifier | null
+}
+
+/**
+ * Authenticate a /terminal namespace handshake. Cloudflare-derived HAPI JWTs
+ * must present a current Cf-Access-Jwt-Assertion forwarded in the handshake
+ * headers; legacy JWTs keep their existing behaviour.
+ */
+export async function verifyTerminalSocketAuth(
+    token: string | null,
+    assertionHeader: string | string[] | undefined,
+    jwtSecret: Uint8Array,
+    options: VerifyTerminalSocketAuthOptions = {}
+): Promise<WebAuthTokenVerification> {
+    if (!token) {
+        return { ok: false, status: 401, error: 'Missing token' }
+    }
+    const assertion = Array.isArray(assertionHeader) ? assertionHeader[0] : assertionHeader
+    return await verifyWebAuthToken(token, jwtSecret, assertion, {
+        cloudflareAccessVerifier: options.cloudflareAccessVerifier
+    })
 }
 
 export type SocketServerDeps = {
@@ -141,23 +165,17 @@ export function createSocketServer(deps: SocketServerDeps): {
     terminalNs.use(async (socket, next) => {
         const auth = socket.handshake.auth as Record<string, unknown> | undefined
         const token = typeof auth?.token === 'string' ? auth.token : null
-        if (!token) {
-            return next(new Error('Missing token'))
+        const result = await verifyTerminalSocketAuth(
+            token,
+            socket.handshake.headers['cf-access-jwt-assertion'],
+            deps.jwtSecret
+        )
+        if (!result.ok) {
+            return next(new Error(result.error))
         }
-
-        try {
-            const verified = await jwtVerify(token, deps.jwtSecret, { algorithms: ['HS256'] })
-            const parsed = jwtPayloadSchema.safeParse(verified.payload)
-            if (!parsed.success) {
-                return next(new Error('Invalid token payload'))
-            }
-            socket.data.userId = parsed.data.uid
-            socket.data.namespace = parsed.data.ns
-            next()
-            return
-        } catch {
-            return next(new Error('Invalid token'))
-        }
+        socket.data.userId = result.userId
+        socket.data.namespace = result.namespace
+        next()
     })
     terminalNs.on('connection', (socket) => registerTerminalHandlers(socket, {
         io,

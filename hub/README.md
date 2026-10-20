@@ -57,6 +57,25 @@ Dictation and voice-assistant provider keys can also be added from **Settings �
 - `HAPI_PUSH_RELAY_URL` - Shared Android/iOS push relay (default: `https://push.hapi.run`; persisted as `iosPushRelayUrl`). Independent of the `--relay` network tunnel.
 - `HAPI_SESSION_IDLE_TIMEOUT_MS` - Keep-alive-idle window in ms (default: 43200000 / 12 h; `0` disables). See "Session liveness" below.
 
+### Optional (Cloudflare Access)
+
+Optional automatic web login for hubs fronted by [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/). A verified, allowlisted Access user can enter the web app without typing the long-lived HAPI access token. Telegram login, URL-token login, and manual token login keep working unchanged, and no native SSO pairing is added.
+
+All three variables are env-only (never persisted to `settings.json`); the feature is disabled unless all three are set, and a partial or malformed bundle fails startup:
+
+- `HAPI_CLOUDFLARE_ACCESS_TEAM_DOMAIN` - `<team>.cloudflareaccess.com` hostname of your Cloudflare Access team (e.g. `myteam.cloudflareaccess.com`).
+- `HAPI_CLOUDFLARE_ACCESS_AUD` - Application audience (AUD) configured in the Cloudflare Access application.
+- `HAPI_CLOUDFLARE_ACCESS_USERS` - JSON object mapping exact email addresses to namespaces, e.g. `{"alice@example.com":"default","bob@example.com":"work"}`. Emails are matched case-insensitively after normalization; duplicates that differ only by case are rejected.
+
+Set these variables in the Hub process environment before running `hapi hub` (or in its systemd/Docker service environment), then restart the Hub when changing them. Browsers and runners do not need them. One team and one application audience are supported per Hub; multiple identity providers may be enabled in that application. See the [deployment setup](../docs/guide/deployment.md#cloudflare-access-optional-web-login) for a startup example and where to find the AUD tag.
+
+Access policy notes:
+
+- The allowlist is exact-email: an assertion whose email is not listed is rejected with 403. Identity-provider selection (e.g. Google) happens in the Cloudflare Access policy, not in HAPI — HAPI is provider-independent and only consumes the verified `sub`/`email` claims.
+- Assertions are verified at the origin against `https://<team>/cdn-cgi/access/certs` (RS256, fixed issuer/audience, expiry). The issuer and JWKS URL are always derived from the configured team domain — never from JWT claims or incoming `Host`/`Forwarded` headers — and the email-only forwarded header is treated as untrusted.
+- The issued HAPI JWT is bound to the Access identity (`authMethod: 'cloudflareAccess'`, plus `cfAccessSub`/`cfAccessEmail`) and expires at the earlier of 4 hours and the verified Access assertion expiry. Every protected request, terminal handshake, and voice WebSocket upgrade re-verifies the current Access assertion, so the bound JWT alone is not sufficient.
+- The web app discovers the capability via `GET /api/auth/methods` (same-origin hub requests only, bounded to 5 s) and falls back to the existing manual login when the hub is older, the capability is disabled, or discovery fails.
+
 Official native apps register their encryption keys automatically; no push
 provider setup is needed on a fresh hub. See the [native companion push
 contract](../docs/api/native-companion-contract.md).
@@ -95,6 +114,8 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 
 - `POST /api/auth` - Get JWT token (Telegram initData or `CLI_API_TOKEN[:namespace]`).
 - `POST /api/bind` - Bind a Telegram account using initData + `CLI_API_TOKEN:<namespace>`.
+- `GET /api/auth/methods` - Report login capabilities (`{cloudflareAccess: boolean}`); no identities or secrets.
+- `GET /api/auth/cloudflare` - Exchange a Cloudflare Access assertion (`Cf-Access-Jwt-Assertion` header) for a bound HAPI JWT. 404 when unconfigured, 401 invalid/missing assertion, 403 unlisted email, 503 key service unavailable.
 
 ### Sessions (`src/web/routes/sessions.ts`)
 
