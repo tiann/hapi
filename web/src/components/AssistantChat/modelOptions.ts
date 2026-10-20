@@ -143,6 +143,14 @@ export function getModelOptionsForFlavor(
     if (flavor === 'opencode') {
         return []
     }
+    // DSH is the same shape: its catalog arrives via the session's ACP model
+    // metadata (SessionChat's dshModelOptions). While discovery is pending,
+    // failed, or returned nothing, an empty list must win over the Claude
+    // fallback — surfacing Claude presets in a DeepSeek session would let the
+    // picker enqueue `sonnet`-style ids the ACP server rejects.
+    if (flavor === 'dsh') {
+        return []
+    }
     if (flavor === 'cursor') {
         return withCurrentModelOption([{ value: 'auto', label: CURSOR_AUTO_MODEL_LABEL }], currentModel)
     }
@@ -208,6 +216,11 @@ export function getNextModelForFlavor(
     // OpenCode session and the next turn would attempt `session/set_model` with a
     // Claude id. Keep the current model unchanged instead.
     if (flavor === 'opencode') {
+        return normalizeCurrentModel(currentModel)
+    }
+    // DSH: same guard for the Ctrl/Cmd+M cycler — without the catalog the
+    // shortcut must keep the current model, never cycle into Claude presets.
+    if (flavor === 'dsh') {
         return normalizeCurrentModel(currentModel)
     }
     if (flavor === 'cursor') {

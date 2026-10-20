@@ -822,6 +822,24 @@ export type GrokModelSummary = {
     reasoningEfforts?: GrokReasoningEffortOption[]
 }
 
+export type DshModelSummary = {
+    modelId: string
+    name?: string
+}
+
+/**
+ * DeepSeek Harness model discovery. Model ids are opaque ACP config-option
+ * values — for dsh 0.2.x they are JSON-encoded `["provider","model"]` tuples —
+ * and must be sent back verbatim when switching.
+ */
+export type DshModelsResponse = {
+    success: boolean
+    availableModels?: DshModelSummary[]
+    currentModelId?: string | null
+    error?: string
+}
+export type ListDshModelsResponse = DshModelsResponse
+
 export type GrokReasoningEffortOption = {
     value: string
     name?: string

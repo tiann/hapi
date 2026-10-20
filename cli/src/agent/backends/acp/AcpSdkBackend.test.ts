@@ -453,6 +453,71 @@ describe('AcpSdkBackend', () => {
         });
     });
 
+    it('flattens Zed-style grouped configOptions into model metadata (dsh shape)', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method) => {
+                if (method === 'session/new') {
+                    return {
+                        sessionId: 'dsh-session-grouped',
+                        configOptions: [
+                            {
+                                id: 'model',
+                                name: 'Model',
+                                category: 'model',
+                                type: 'select',
+                                currentValue: '["deepseek-official","deepseek-flash"]',
+                                options: [
+                                    {
+                                        group: 'deepseek-official',
+                                        name: 'DeepSeek',
+                                        options: [
+                                            { value: '["deepseek-official","deepseek-flash"]', name: 'DeepSeek-V41-Flash' },
+                                            { value: '["deepseek-official","deepseek-v4-pro"]', name: 'DeepSeek-V4-Pro' }
+                                        ]
+                                    }
+                                ]
+                            },
+                            {
+                                id: 'reasoning_effort',
+                                category: 'thought_level',
+                                currentValue: 'high',
+                                options: [
+                                    { value: 'off', name: 'Off' },
+                                    { value: 'high', name: 'High' }
+                                ]
+                            }
+                        ]
+                    };
+                }
+                return null;
+            },
+            close: async () => {}
+        };
+
+        const sessionId = await backend.newSession({ cwd: '/tmp/x', mcpServers: [] });
+
+        expect(backend.getSessionModelsMetadata(sessionId)).toEqual({
+            availableModels: [
+                { modelId: '["deepseek-official","deepseek-flash"]', name: 'DeepSeek-V41-Flash' },
+                { modelId: '["deepseek-official","deepseek-v4-pro"]', name: 'DeepSeek-V4-Pro' }
+            ],
+            currentModelId: '["deepseek-official","deepseek-flash"]'
+        });
+        expect(backend.getConfigOptionByCategory(sessionId, 'model')?.options).toEqual([
+            { value: '["deepseek-official","deepseek-flash"]', name: 'DeepSeek-V41-Flash' },
+            { value: '["deepseek-official","deepseek-v4-pro"]', name: 'DeepSeek-V4-Pro' }
+        ]);
+        // Flat options (thought_level) keep parsing unchanged.
+        expect(backend.getThoughtLevelConfigOption(sessionId)).toMatchObject({
+            id: 'reasoning_effort',
+            currentValue: 'high'
+        });
+    });
+
     it('returns undefined session metadata when session/new omits models', async () => {
         const backend = new AcpSdkBackend({ command: 'gemini' });
         const backendInternal = backend as unknown as {

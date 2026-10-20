@@ -134,6 +134,24 @@ describe('getModelOptionsForFlavor', () => {
         expect(options).toEqual([])
     })
 
+    it('returns an empty list for dsh flavor before the ACP catalog arrives (no claude fallback)', () => {
+        // Covers pending, failed, and empty discovery — all three leave
+        // customOptions undefined/empty and must not surface Claude presets.
+        expect(getModelOptionsForFlavor('dsh', null)).toEqual([])
+        expect(getModelOptionsForFlavor('dsh', '["deepseek-official","deepseek-flash"]', [])).toEqual([])
+    })
+
+    it('keeps the supplied dsh catalog options including the Default reset entry', () => {
+        const options = getModelOptionsForFlavor('dsh', null, [
+            { value: null, label: 'Default' },
+            { value: '["deepseek-official","deepseek-flash"]', label: 'DeepSeek-V41-Flash' }
+        ])
+        expect(options).toEqual([
+            { value: null, label: 'Default' },
+            { value: '["deepseek-official","deepseek-flash"]', label: 'DeepSeek-V41-Flash' }
+        ])
+    })
+
     it('returns only default/current for cursor before models are discovered (no claude fallback)', () => {
         const options = getModelOptionsForFlavor('cursor', 'composer-2.5')
         expect(options).toEqual([
@@ -294,6 +312,12 @@ describe('getNextModelForFlavor', () => {
     it('returns null for opencode without a current model and without dynamic options (no Claude fallback)', () => {
         const next = getNextModelForFlavor('opencode', null, [])
         expect(next).toBeNull()
+    })
+
+    it('keeps the current dsh model when the ACP catalog has not loaded (no Claude fallback)', () => {
+        const flash = '["deepseek-official","deepseek-flash"]'
+        expect(getNextModelForFlavor('dsh', flash)).toBe(flash)
+        expect(getNextModelForFlavor('dsh', flash, [])).toBe(flash)
     })
 
     it('keeps the current cursor model when the dynamic list has not loaded', () => {

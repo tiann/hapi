@@ -28,8 +28,8 @@ describe('hasCapability', () => {
         expect(hasCapability('gemini', Capabilities.Effort)).toBe(false)
     })
 
-    test('dsh has no runtime model or effort switching', () => {
-        expect(hasCapability('dsh', Capabilities.ModelChange)).toBe(false)
+    test('dsh supports model-change but not effort (ACP config options)', () => {
+        expect(hasCapability('dsh', Capabilities.ModelChange)).toBe(true)
         expect(hasCapability('dsh', Capabilities.Effort)).toBe(false)
     })
 
