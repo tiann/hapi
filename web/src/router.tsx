@@ -10,6 +10,7 @@ import {
     useMatchRoute,
     useNavigate,
     useParams,
+    useRouter,
     useSearch,
 } from '@tanstack/react-router'
 import { getScrollRestorationKey } from '@/lib/scrollRestorationKey'
@@ -51,6 +52,7 @@ import { transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer
 import { getDraftAttachments } from '@/lib/composer-attachment-drafts'
 import { refreshSessionDetailPreservingActive } from '@/lib/session-detail-optimistic'
 import { inactiveSessionCanResume, resolveCursorReopenGate } from '@/lib/sessionResume'
+import { isOnSessionPage, resolveVoiceSession } from '@/lib/dictationSend'
 import { initializeSessionLastSeen } from '@/lib/sessionLastSeen'
 import { useSelectedSessionSeen } from '@/hooks/useSelectedSessionSeen'
 import { useSessionBrowserTitle } from '@/hooks/useSessionBrowserTitle'
@@ -559,6 +561,25 @@ function SessionPage() {
         }
     }, [api, navigate, queryClient, session])
 
+    const resolveVoiceSessionId = useCallback(async (currentSessionId: string) => {
+        if (!api) throw new Error('API unavailable')
+        return resolveVoiceSession(api, currentSessionId)
+    }, [api])
+
+    // Voice dictation direct-sends finish asynchronously after transcription
+    // and may complete long after the operator navigated away (stopAndSend is
+    // designed to survive unmount, #1435). Only navigate to the resumed
+    // session when the operator is still on the source session's page;
+    // otherwise the completed background send would yank them away from where
+    // they moved. The router instance is stable and its state is read live at
+    // callback time — a render-time pathname would be stale once the source
+    // SessionPage unmounts.
+    const router = useRouter()
+    const handleVoiceSessionResolved = useCallback((resolvedSessionId: string) => {
+        if (!isOnSessionPage(router.state.location.pathname, sessionId)) return
+        handleSessionResolved(resolvedSessionId)
+    }, [handleSessionResolved, router, sessionId])
+
     const {
         sendMessage,
         retryMessage,
@@ -791,6 +812,8 @@ function SessionPage() {
             onSend={sendMessage}
             resolveSessionIdForUpload={async (id) => (await resolveSessionId(id)).sessionId}
             onUploadSessionResolved={handleSessionResolved}
+            resolveSessionIdForVoice={resolveVoiceSessionId}
+            onVoiceSessionResolved={handleVoiceSessionResolved}
             onViewModeChange={setViewMode}
             onRetryMessage={retryMessage}
             autocompleteSuggestions={getAutocompleteSuggestions}
