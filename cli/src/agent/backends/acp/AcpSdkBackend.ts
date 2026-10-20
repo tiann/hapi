@@ -136,6 +136,8 @@ export class AcpSdkBackend implements AgentBackend {
         command: string;
         args?: string[];
         env?: Record<string, string>;
+        /** ACP child process cwd (Cursor MCP resolves project mcp.json from PWD). */
+        cwd?: string;
         textChunkMode?: AcpTextChunkMode;
         flavor?: AgentFlavor;
     }) {}
@@ -161,7 +163,8 @@ export class AcpSdkBackend implements AgentBackend {
         const transport = await AcpStdioTransport.create({
             command: this.options.command,
             args: this.options.args,
-            env: this.options.env
+            env: this.options.env,
+            cwd: this.options.cwd,
         });
 
         if (this.transport) {

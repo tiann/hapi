@@ -1,9 +1,13 @@
 /**
- * Cursor ACP does not connect MCP servers passed on session/new (upstream limitation).
- * The working path is user-level `~/.cursor/mcp.json` + `agent mcp enable <id>` (spawned
- * with the session cwd). Project `.cursor/mcp.json` is intentionally avoided so ephemeral
- * `hapi-<sessionId>` bridges cannot be `git add`ed from the checked-out tree.
- * See https://forum.cursor.com/t/acp-agent-silently-ignores-mcpservers-in-session-new/153623
+ * Cursor ACP historically ignored mcpServers on session/new, so HAPI overlays
+ * native mcp.json. Cursor **merges** user `~/.cursor/mcp.json` with project
+ * `<cwd>/.cursor/mcp.json`. Unique `hapi-<uuid>` keys in the user file therefore
+ * union-load every live session's ping_peer into every agent (wrong sender +
+ * N copies of the tool schema).
+ *
+ * Isolation: write one stable `hapi` mailbox into the **project** file, and strip
+ * PID-stamped `hapi` / `hapi-*` keys from the user file. Same-cwd second live
+ * mailbox fails closed rather than multiplexing.
  */
 
 import {
@@ -12,6 +16,7 @@ import {
     lstatSync,
     mkdirSync,
     readFileSync,
+    realpathSync,
     renameSync,
     rmSync,
     statSync,
@@ -19,18 +24,18 @@ import {
     writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { logger } from '@/ui/logger';
 
-/** Historical fixed id — prefer {@link cursorHapiMcpServerId} so concurrent sessions do not share one key. */
+/** Stable project mcp.json key — one mailbox per Cursor cwd. */
 export const CURSOR_HAPI_MCP_SERVER_ID = 'hapi';
 
 /**
- * Per-session MCP server id for user-level `~/.cursor/mcp.json`.
- * Concurrent sessions must not share a single `hapi` key — cleanup of an
- * older session would otherwise restore a dead loopback URL over a newer live bridge.
+ * Historical unique id shape (`hapi-<session>`). Production install uses
+ * {@link CURSOR_HAPI_MCP_SERVER_ID} only; keep this helper for tests / crash
+ * recovery of older overlays still present on disk.
  */
 export function cursorHapiMcpServerId(sessionId: string): string {
     const trimmed = sessionId.trim();
@@ -40,11 +45,11 @@ export function cursorHapiMcpServerId(sessionId: string): string {
     return `hapi-${trimmed}`;
 }
 
-/** Resolve the Cursor MCP config directory (override for tests; default `~/.cursor`). */
-export function resolveCursorMcpConfigDir(override?: string): string {
-    const trimmed = override?.trim();
-    return trimmed && trimmed.length > 0 ? trimmed : join(homedir(), '.cursor');
-}
+/** Marks HAPI-owned overlay entries so a later launch can prune dead PIDs. */
+export const HAPI_MCP_OVERLAY_PID_ENV = 'HAPI_MCP_OVERLAY_PID';
+
+/** Session that owns this mailbox — used to refuse a second live overlay in one cwd. */
+export const HAPI_MCP_OVERLAY_SESSION_ENV = 'HAPI_MCP_OVERLAY_SESSION';
 
 type McpServerEntry = {
     command: string;
@@ -52,8 +57,109 @@ type McpServerEntry = {
     env?: Record<string, string>;
 };
 
-/** Marks HAPI-owned overlay entries so a later launch can prune dead PIDs. */
-export const HAPI_MCP_OVERLAY_PID_ENV = 'HAPI_MCP_OVERLAY_PID';
+/** Resolve the Cursor MCP config directory (override for tests; default `~/.cursor`). */
+export function resolveCursorMcpConfigDir(override?: string): string {
+    const trimmed = override?.trim();
+    return trimmed && trimmed.length > 0 ? trimmed : join(homedir(), '.cursor');
+}
+
+function resolveExistingPath(path: string): string {
+    try {
+        return realpathSync(path);
+    } catch {
+        return path;
+    }
+}
+
+/**
+ * Project `.cursor` is untrusted (repo can ship a symlink to ~/.cursor).
+ * Refuse links / realpaths that escape the session cwd. Operator user-dir
+ * may follow estate-disk symlinks via {@link resolveExistingPath}.
+ *
+ * Canonicalize via the parent of `.cursor` before the containment check so
+ * estate layouts like `~/coding -> /work/coding` do not false-positive when
+ * `session.path` is already realpath'd but `mcpConfigDir` still uses the
+ * symlink prefix (common on first install when `.cursor` does not exist yet).
+ */
+export function resolveProjectCursorConfigDir(cwd: string, mcpConfigDir: string): string {
+    const lexical = resolvePath(resolveCursorMcpConfigDir(mcpConfigDir));
+    const entry = lstatSync(lexical, { throwIfNoEntry: false });
+    if (entry?.isSymbolicLink()) {
+        throw new Error(
+            `Refusing a symlinked project Cursor config dir: ${lexical}`,
+        );
+    }
+    const realCwd = resolveExistingPath(resolvePath(cwd));
+    const realParent = resolveExistingPath(resolvePath(lexical, '..'));
+    const candidate = join(realParent, basename(lexical));
+    const candidateRel = relative(realCwd, candidate);
+    if (candidateRel.startsWith('..') || isAbsolute(candidateRel)) {
+        throw new Error(
+            `Project Cursor config dir escapes session cwd: ${lexical}`,
+        );
+    }
+    if (!existsSync(candidate)) {
+        return candidate;
+    }
+    let resolved: string;
+    try {
+        resolved = realpathSync(candidate);
+    } catch {
+        return candidate;
+    }
+    const rel = relative(realCwd, resolved);
+    if (rel.startsWith('..') || isAbsolute(rel)) {
+        throw new Error(
+            `Project Cursor config dir escapes session cwd: ${resolved}`,
+        );
+    }
+    return resolved;
+}
+
+function isHapiOverlayKey(id: string): boolean {
+    return id === CURSOR_HAPI_MCP_SERVER_ID || id.startsWith('hapi-');
+}
+
+function overlayPid(entry: McpServerEntry | undefined): number | null {
+    const pidRaw = entry?.env?.[HAPI_MCP_OVERLAY_PID_ENV];
+    if (typeof pidRaw !== 'string' || pidRaw.trim() === '') {
+        return null;
+    }
+    const pid = Number(pidRaw);
+    if (!Number.isSafeInteger(pid) || pid <= 0) {
+        return null;
+    }
+    return pid;
+}
+
+function isDeadPidStampedOverlay(entry: McpServerEntry | undefined): boolean {
+    const pid = overlayPid(entry);
+    return pid !== null && !isProcessAlive(pid);
+}
+
+/**
+ * Drop PID-stamped HAPI overlay keys whose owner PID is confirmed dead.
+ * Live stamped entries stay (driver-soup: a new CLI must not sever still-running
+ * old-binary Cursor sessions sharing the user mcp.json). `keepId` is exempt.
+ * User-owned keys without the PID stamp stay.
+ */
+export function stripPidStampedHapiOverlays(
+    servers: Record<string, McpServerEntry>,
+    keepId?: string,
+): void {
+    for (const [id, entry] of Object.entries(servers)) {
+        if (keepId && id === keepId) {
+            continue;
+        }
+        if (!isHapiOverlayKey(id)) {
+            continue;
+        }
+        if (!isDeadPidStampedOverlay(entry)) {
+            continue;
+        }
+        delete servers[id];
+    }
+}
 
 type CursorMcpJson = {
     mcpServers?: Record<string, McpServerEntry>;
@@ -67,6 +173,273 @@ type LockOwner = {
 export type CursorMcpOverlayHandle = {
     cleanup: () => void;
 };
+
+/** Prefix for `.git/info/exclude` lease markers (do not commit session mailbox). */
+export const HAPI_MCP_GIT_EXCLUDE_MARKER_PREFIX = '# hapi-cursor-mcp-overlay';
+
+/** @deprecated Prefer {@link hapiMcpGitExcludeMarker} with a lease id. */
+export const HAPI_MCP_GIT_EXCLUDE_MARKER = `${HAPI_MCP_GIT_EXCLUDE_MARKER_PREFIX} (do not commit session mailbox)`;
+
+export function hapiMcpGitExcludeMarker(leaseId: string): string {
+    return `${HAPI_MCP_GIT_EXCLUDE_MARKER_PREFIX} ${leaseId}`;
+}
+
+/** Lease id embeds owner PID so crash recovery can prune dead markers. */
+export function makeExcludeLeaseId(pid: number = process.pid): string {
+    return `${pid}:${randomUUID()}`;
+}
+
+export function parseExcludeLeasePid(leaseId: string): number | null {
+    const match = /^(\d+):/.exec(leaseId);
+    if (!match) {
+        return null;
+    }
+    const pid = Number(match[1]);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+/** Normalize a repo-relative path for gitignore / exclude (always `/`). */
+export function toGitExcludePattern(relPath: string): string {
+    return relPath.replaceAll('\\', '/');
+}
+
+function resolveGitExcludePath(root: string): string | null {
+    const excludeProc = spawnSync('git', ['rev-parse', '--git-path', 'info/exclude'], {
+        cwd: root,
+        encoding: 'utf-8',
+    });
+    if (excludeProc.status !== 0) {
+        return null;
+    }
+    const raw = excludeProc.stdout.trim();
+    if (!raw) {
+        return null;
+    }
+    return isAbsolute(raw) ? raw : resolvePath(root, raw);
+}
+
+/**
+ * Append a per-install lease block (marker + pattern). Multiple live overlays
+ * may share the same pattern across linked worktrees; each keeps its own lease
+ * line so cleanup is reference-counted by presence of remaining leases.
+ * Serialized via {@link withMcpJsonLock} on `${excludePath}.hapi.lock`.
+ */
+export function appendExcludeLease(
+    excludePath: string,
+    pattern: string,
+    leaseId: string,
+): boolean {
+    let added = false;
+    withMcpJsonLock(`${excludePath}.hapi.lock`, () => {
+        pruneDeadExcludeLeasesUnlocked(excludePath);
+        added = appendExcludeLeaseUnlocked(excludePath, pattern, leaseId);
+    });
+    return added;
+}
+
+/** Unlocked RMW — callers must hold `${excludePath}.hapi.lock`. */
+export function appendExcludeLeaseUnlocked(
+    excludePath: string,
+    pattern: string,
+    leaseId: string,
+): boolean {
+    const marker = hapiMcpGitExcludeMarker(leaseId);
+    const existing = existsSync(excludePath) ? readFileSync(excludePath, 'utf-8') : '';
+    const lines = existing.split(/\r?\n/);
+    if (lines.includes(marker)) {
+        return false;
+    }
+    mkdirSync(dirname(excludePath), { recursive: true });
+    const prefix = existing.length === 0 || existing.endsWith('\n') ? '' : '\n';
+    writeFileSync(
+        excludePath,
+        `${existing}${prefix}${marker}\n${pattern}\n`,
+        { encoding: 'utf-8', mode: 0o644 },
+    );
+    return true;
+}
+
+/** @deprecated Use {@link appendExcludeLease}. */
+export function appendExcludeIfMissing(excludePath: string, pattern: string): boolean {
+    return appendExcludeLease(excludePath, pattern, randomUUID());
+}
+
+/** Remove one lease block (exact marker + pattern lines only). */
+export function removeExcludeLease(
+    excludePath: string,
+    pattern: string,
+    leaseId: string,
+): void {
+    withMcpJsonLock(`${excludePath}.hapi.lock`, () => {
+        removeExcludeLeaseUnlocked(excludePath, pattern, leaseId);
+    });
+}
+
+/** Unlocked RMW — callers must hold `${excludePath}.hapi.lock`. */
+export function removeExcludeLeaseUnlocked(
+    excludePath: string,
+    pattern: string,
+    leaseId: string,
+): void {
+    if (!existsSync(excludePath)) {
+        return;
+    }
+    const marker = hapiMcpGitExcludeMarker(leaseId);
+    const lines = readFileSync(excludePath, 'utf-8').split(/\r?\n/);
+    const out: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+        if (lines[i] === marker && lines[i + 1] === pattern) {
+            i += 1;
+            continue;
+        }
+        out.push(lines[i]!);
+    }
+    while (out.length > 0 && out[out.length - 1] === '') {
+        out.pop();
+    }
+    const body = out.length === 0 ? '' : `${out.join('\n')}\n`;
+    writeFileSync(excludePath, body, { encoding: 'utf-8', mode: 0o644 });
+}
+
+/**
+ * Drop lease blocks whose owner PID is confirmed dead (SIGKILL / power-loss recovery).
+ * Callers must hold `${excludePath}.hapi.lock`.
+ */
+export function pruneDeadExcludeLeasesUnlocked(excludePath: string): void {
+    if (!existsSync(excludePath)) {
+        return;
+    }
+    const lines = readFileSync(excludePath, 'utf-8').split(/\r?\n/);
+    const out: string[] = [];
+    let removed = false;
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]!;
+        if (line.startsWith(`${HAPI_MCP_GIT_EXCLUDE_MARKER_PREFIX} `)) {
+            const leaseId = line.slice(HAPI_MCP_GIT_EXCLUDE_MARKER_PREFIX.length + 1).trim();
+            const pid = parseExcludeLeasePid(leaseId);
+            if (pid !== null && !isProcessAlive(pid)) {
+                removed = true;
+                if (lines[i + 1] !== undefined) {
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        out.push(line);
+    }
+    if (!removed) {
+        return;
+    }
+    while (out.length > 0 && out[out.length - 1] === '') {
+        out.pop();
+    }
+    const body = out.length === 0 ? '' : `${out.join('\n')}\n`;
+    writeFileSync(excludePath, body, { encoding: 'utf-8', mode: 0o644 });
+}
+
+/** @deprecated Use {@link removeExcludeLease}. */
+export function removeExactExcludeBlock(excludePath: string, pattern: string): void {
+    withMcpJsonLock(`${excludePath}.hapi.lock`, () => {
+        if (!existsSync(excludePath)) {
+            return;
+        }
+        const lines = readFileSync(excludePath, 'utf-8').split(/\r?\n/);
+        const out: string[] = [];
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i]!;
+            if (
+                line.startsWith(`${HAPI_MCP_GIT_EXCLUDE_MARKER_PREFIX} `)
+                && lines[i + 1] === pattern
+            ) {
+                i += 1;
+                continue;
+            }
+            out.push(line);
+        }
+        while (out.length > 0 && out[out.length - 1] === '') {
+            out.pop();
+        }
+        const body = out.length === 0 ? '' : `${out.join('\n')}\n`;
+        writeFileSync(excludePath, body, { encoding: 'utf-8', mode: 0o644 });
+    });
+}
+
+/**
+ * Keep the session mailbox out of accidental commits: local exclude for
+ * untracked `.cursor/mcp.json`, and `skip-worktree` when the file is already tracked
+ * and was not already skipped. Undo reverses only what this call introduced.
+ * Throws when Git shielding cannot be installed so callers can roll back the mailbox write.
+ */
+export function shieldProjectMcpJsonFromGit(cwd: string, mcpJsonPath: string): () => void {
+    const top = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+        cwd,
+        encoding: 'utf-8',
+    });
+    if (top.status !== 0) {
+        return () => {};
+    }
+    const root = top.stdout.trim();
+    if (!root) {
+        return () => {};
+    }
+    const relRaw = relative(root, mcpJsonPath);
+    if (!relRaw || relRaw.startsWith('..') || isAbsolute(relRaw)) {
+        return () => {};
+    }
+    const gitRelativePath = toGitExcludePattern(relRaw);
+    const leaseId = makeExcludeLeaseId();
+
+    const excludePath = resolveGitExcludePath(root);
+    if (!excludePath) {
+        throw new Error(`Cannot resolve Git exclude path for ${gitRelativePath}`);
+    }
+
+    let addedExclude = false;
+    try {
+        addedExclude = appendExcludeLease(excludePath, gitRelativePath, leaseId);
+    } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`Failed to exclude ${gitRelativePath}: ${detail}`);
+    }
+    if (!addedExclude) {
+        throw new Error(`Failed to exclude ${gitRelativePath}`);
+    }
+
+    const tracked = spawnSync('git', ['ls-files', '--error-unmatch', '--', gitRelativePath], {
+        cwd: root,
+        encoding: 'utf-8',
+    });
+    // Skip-worktree is not crash-safe (bit lives only in-process). Refuse tracked
+    // mailboxes; untracked + exclude lease is the supported path.
+    if (tracked.status === 0) {
+        try {
+            removeExcludeLease(excludePath, gitRelativePath, leaseId);
+        } catch {
+            // best-effort undo
+        }
+        throw new Error(
+            `Refusing runtime overlay for tracked ${gitRelativePath} `
+            + '(untrack it or gitignore project .cursor/mcp.json)',
+        );
+    }
+    if (tracked.status !== 1) {
+        try {
+            removeExcludeLease(excludePath, gitRelativePath, leaseId);
+        } catch {
+            // best-effort undo
+        }
+        const detail = (tracked.stderr || tracked.stdout || '').trim();
+        throw new Error(`git ls-files failed${detail ? `: ${detail}` : ''}`);
+    }
+
+    return () => {
+        try {
+            removeExcludeLease(excludePath, gitRelativePath, leaseId);
+        } catch (error) {
+            logger.debug('[cursor-acp] failed to remove mcp.json from git exclude', error);
+        }
+    };
+}
 
 type EnableCursorMcpResult = {
     status: number | null;
@@ -260,24 +633,21 @@ function sameMcpEntry(a: McpServerEntry | undefined, b: McpServerEntry | undefin
 }
 
 /**
- * Merge the per-session HAPI stdio bridge into `~/.cursor/mcp.json` (or
- * `options.mcpConfigDir`) and approve it for Cursor's native MCP loader.
- *
- * Cleanup undoes only the exact entry this session installed under `serverId` (or restores a
- * pre-existing value for that same id). Concurrent edits to other mcpServers keys — and to
- * this id when it no longer matches the installed overlay — survive the session.
- *
- * Install and cleanup serialize via a lockfile and write mcp.json atomically so concurrent
- * CLI processes cannot clobber each other's `hapi-*` entries.
+ * Write one HAPI stdio bridge into the **project** `.cursor/mcp.json` and approve it.
+ * When `userMcpConfigDir` is set, strip PID-stamped `hapi` / `hapi-*` keys from that
+ * user-level file so Cursor cannot merge sibling session mailboxes into this agent.
  */
 export function installCursorMcpOverlay(
     cwd: string,
     bridge: { command: string; args: string[] },
     options: {
         serverId: string;
+        overlaySessionId?: string;
         enableCursorMcp?: EnableCursorMcp;
-        /** Override config dir (tests). Production uses `~/.cursor`. */
+        /** Project Cursor config dir. Default `<cwd>/.cursor`. */
         mcpConfigDir?: string;
+        /** User-level Cursor config dir to strip multiplex `hapi-*` keys from. */
+        userMcpConfigDir?: string;
     },
 ): CursorMcpOverlayHandle {
     const serverId = options.serverId.trim();
@@ -285,66 +655,120 @@ export function installCursorMcpOverlay(
         throw new Error('serverId is required for Cursor HAPI MCP overlay');
     }
 
-    const cursorDir = resolveCursorMcpConfigDir(options.mcpConfigDir);
+    const cursorDir = resolveProjectCursorConfigDir(
+        cwd,
+        options.mcpConfigDir ?? join(cwd, '.cursor'),
+    );
     const mcpJsonPath = join(cursorDir, 'mcp.json');
     const lockPath = `${mcpJsonPath}.hapi.lock`;
-    const cursorDirEntry = lstatSync(cursorDir, { throwIfNoEntry: false });
-    if (cursorDirEntry?.isSymbolicLink()) {
-        throw new Error(`Refusing to use a symlinked Cursor config directory: ${cursorDir}`);
-    }
     mkdirSync(cursorDir, { recursive: true });
 
+    const overlaySessionId = options.overlaySessionId?.trim() || undefined;
     const installedHapi: McpServerEntry = {
         command: bridge.command,
         args: [...bridge.args],
-        env: { [HAPI_MCP_OVERLAY_PID_ENV]: String(process.pid) },
+        env: {
+            [HAPI_MCP_OVERLAY_PID_ENV]: String(process.pid),
+            ...(overlaySessionId ? { [HAPI_MCP_OVERLAY_SESSION_ENV]: overlaySessionId } : {}),
+        },
     };
+
+    const userDirRaw = options.userMcpConfigDir?.trim();
+    if (userDirRaw) {
+        // User dir is operator-trusted — follow estate-disk symlinks.
+        const userDir = resolveExistingPath(resolveCursorMcpConfigDir(userDirRaw));
+        if (userDir !== cursorDir) {
+            const userJsonPath = join(userDir, 'mcp.json');
+            if (existsSync(userJsonPath) && !lstatSync(userJsonPath).isSymbolicLink()) {
+                withMcpJsonLock(`${userJsonPath}.hapi.lock`, () => {
+                    const userConfig = readMcpJson(userJsonPath);
+                    userConfig.mcpServers ??= {};
+                    stripPidStampedHapiOverlays(userConfig.mcpServers);
+                    writeMcpJsonAtomic(userJsonPath, userConfig);
+                });
+            }
+        }
+    }
 
     let hadFile = false;
     let hadServer = false;
     let previousServer: McpServerEntry | undefined;
 
-    withMcpJsonLock(lockPath, () => {
+    const prepareOverlayMutation = (): CursorMcpJson => {
         hadFile = existsSync(mcpJsonPath);
-        const previous = hadFile ? readMcpJson(mcpJsonPath) : { mcpServers: {} as Record<string, McpServerEntry> };
+        const previous = hadFile
+            ? readMcpJson(mcpJsonPath)
+            : { mcpServers: {} as Record<string, McpServerEntry> };
         previous.mcpServers ??= {};
 
-        // Crash recovery: drop prior hapi-* overlays whose owner PID is gone.
-        // Only prune entries we stamped with HAPI_MCP_OVERLAY_PID — never user-owned keys.
-        for (const [id, entry] of Object.entries(previous.mcpServers)) {
-            if (!id.startsWith('hapi-')) {
-                continue;
-            }
-            const pidRaw = entry.env?.[HAPI_MCP_OVERLAY_PID_ENV];
-            if (typeof pidRaw !== 'string' || pidRaw.trim() === '') {
-                continue;
-            }
-            const pid = Number(pidRaw);
-            if (!Number.isSafeInteger(pid) || pid <= 0) {
-                continue;
-            }
-            if (!isProcessAlive(pid)) {
-                delete previous.mcpServers[id];
-            }
+        stripPidStampedHapiOverlays(previous.mcpServers, serverId);
+
+        const existing = previous.mcpServers[serverId];
+        const existingPid = overlayPid(existing);
+        if (existing && existingPid === null) {
+            throw new Error(
+                `Project MCP server "${serverId}" already exists (refusing to overwrite a non-HAPI entry)`,
+            );
+        }
+        const existingSession = existing?.env?.[HAPI_MCP_OVERLAY_SESSION_ENV];
+        if (
+            overlaySessionId
+            && existingPid !== null
+            && isProcessAlive(existingPid)
+            && typeof existingSession === 'string'
+            && existingSession.length > 0
+            && existingSession !== overlaySessionId
+        ) {
+            throw new Error(
+                `Cannot install a second live HAPI MCP mailbox in this workspace (held by session ${existingSession}).`,
+            );
         }
 
         hadServer = Object.prototype.hasOwnProperty.call(previous.mcpServers, serverId);
         previousServer = hadServer ? previous.mcpServers[serverId] : undefined;
+        // Crash left a dead PID-stamped slot — do not restore it on cleanup.
+        if (hadServer && isDeadPidStampedOverlay(previousServer)) {
+            hadServer = false;
+            previousServer = undefined;
+        }
+        return previous;
+    };
 
-        const config: CursorMcpJson = {
-            ...previous,
-            mcpServers: {
-                ...previous.mcpServers,
-                [serverId]: installedHapi,
-            },
-        };
-        writeMcpJsonAtomic(mcpJsonPath, config);
+    // Validate under lock without writing — Git shield must land before the mailbox mutate.
+    withMcpJsonLock(lockPath, () => {
+        prepareOverlayMutation();
     });
 
+    // Exclude lease before any mcp.json write so a crash cannot leave an unignored mailbox.
+    const unshieldGit = shieldProjectMcpJsonFromGit(cwd, mcpJsonPath);
+
+    try {
+        withMcpJsonLock(lockPath, () => {
+            const previous = prepareOverlayMutation();
+            const config: CursorMcpJson = {
+                ...previous,
+                mcpServers: {
+                    ...previous.mcpServers,
+                    [serverId]: installedHapi,
+                },
+            };
+            writeMcpJsonAtomic(mcpJsonPath, config);
+        });
+    } catch (error) {
+        try {
+            unshieldGit();
+        } catch (unshieldError) {
+            logger.debug('[cursor-acp] unshield after mcp.json write failure failed', unshieldError);
+        }
+        throw error;
+    }
+
     const cleanup = (): void => {
+        let safeToUnshield = false;
         try {
             withMcpJsonLock(lockPath, () => {
                 if (!existsSync(mcpJsonPath)) {
+                    safeToUnshield = true;
                     return;
                 }
 
@@ -353,7 +777,7 @@ export function installCursorMcpOverlay(
 
                 const currentServer = current.mcpServers[serverId];
                 if (!sameMcpEntry(currentServer, installedHapi)) {
-                    // User/Cursor replaced or removed our overlay entry — leave alone.
+                    safeToUnshield = true;
                     return;
                 }
 
@@ -371,13 +795,22 @@ export function installCursorMcpOverlay(
                     && Object.keys(otherTopLevel).length === 0
                 ) {
                     rmSync(mcpJsonPath, { force: true });
+                    safeToUnshield = true;
                     return;
                 }
 
                 writeMcpJsonAtomic(mcpJsonPath, current);
+                safeToUnshield = true;
             });
         } catch (error) {
             logger.debug('[cursor-acp] cursor MCP overlay cleanup failed', error);
+        }
+        if (safeToUnshield) {
+            try {
+                unshieldGit();
+            } catch (error) {
+                logger.debug('[cursor-acp] cursor MCP overlay git unshield failed', error);
+            }
         }
     };
 
