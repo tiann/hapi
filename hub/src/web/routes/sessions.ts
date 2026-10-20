@@ -462,8 +462,19 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Session is inactive' }, 409)
         }
 
-        await engine.archiveSession(sessionResult.sessionId)
-        return c.json({ ok: true })
+        try {
+            await engine.archiveSession(sessionResult.sessionId)
+            return c.json({ ok: true })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            // #1910 / #2020: WORKING peers still refuse stop confirmation with
+            // this message — surface as 409 so archive_peer / CLI map cleanly
+            // (not an opaque 500).
+            if (message.includes('still running and could not be stopped')) {
+                return c.json({ error: message }, 409)
+            }
+            throw error
+        }
     })
 
     app.post('/sessions/:id/migrate-to-acp', async (c) => {

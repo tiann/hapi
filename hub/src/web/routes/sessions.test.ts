@@ -1543,6 +1543,21 @@ describe('sessions routes', () => {
             expect(response.status).toBe(500)
         })
 
+        it('maps still-running refuse to 409 for archive_peer / CLI (#2020)', async () => {
+            const session = createSession({ active: true })
+            const { app } = createApp(session, {
+                archiveSession: async () => {
+                    throw new Error('Session process is still running and could not be stopped')
+                }
+            })
+
+            const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
+            expect(response.status).toBe(409)
+            expect(await response.json()).toEqual({
+                error: 'Session process is still running and could not be stopped'
+            })
+        })
+
         it('returns 404 when the session id is unknown', async () => {
             const session = createSession()
             const { app } = createApp(session, { sessionExists: false })

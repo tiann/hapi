@@ -64,6 +64,7 @@ import {
     type RpcUploadFileResponse
 } from './rpcGateway'
 import { SessionCache } from './sessionCache'
+import { canSoftStandDownUnconfirmedStop } from './sessionIdle'
 import { ingestNotifySummaryFromMessage } from './workGraphNotifyIngest'
 
 type PiResumeAttempt = NonNullable<NonNullable<Session['metadata']>['piResumeAttempt']>
@@ -1822,7 +1823,16 @@ export class SyncEngine {
                 }
             }
             if (status === 'still_alive' || status === 'unknown') {
-                throw new Error('Session process is still running and could not be stopped')
+                // tiann/hapi#2020: Peer Done workers may still report
+                // still_alive after KillSession+StopSession (ghost keepalive).
+                // Soft stand-down only while still connected with no live work
+                // - never trust cleared thinking or stale lifecycle=idle after
+                // transport expiry (#2021 Majors).
+                const live = this.sessionCache.getSession(sessionId)
+                if (!live || !canSoftStandDownUnconfirmedStop(live)) {
+                    throw new Error('Session process is still running and could not be stopped')
+                }
+                // Fall through: hub-author archive metadata below.
             }
         } else if (machineId && !runnerSpawned) {
             // Terminal / non-runner sessions: KillSession is the primary stop.
