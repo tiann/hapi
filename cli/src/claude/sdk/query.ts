@@ -24,7 +24,7 @@ import {
 } from './types'
 import { getDefaultClaudeCodePath, logDebug, streamToStdin } from './utils'
 import { withBunRuntimeEnv } from '@/utils/bunRuntime'
-import { killProcessByChildProcess } from '@/utils/process'
+import { killProcessByChildProcess, killProcessByChildProcessSync } from '@/utils/process'
 import { stripNewlinesForWindowsShellArg } from '@/utils/shellEscape'
 import type { Writable } from 'node:stream'
 import { logger } from '@/ui/logger'
@@ -439,7 +439,12 @@ export function query(config: {
         void cleanup()
     }
     const handleProcessExit = () => {
-        void cleanup()
+        // process.on('exit') cannot resume asynchronous tree verification.
+        // Even if abort cleanup is already pending, issue the exit signal now.
+        killProcessByChildProcessSync(child)
+        child.stdin.destroy()
+        child.stdout.destroy()
+        child.stderr.destroy()
     }
     config.options?.abort?.addEventListener('abort', handleAbort)
     process.on('exit', handleProcessExit)

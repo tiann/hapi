@@ -3,6 +3,7 @@ import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const spawnMock = vi.fn()
+const killProcessSyncMock = vi.fn()
 const killProcessMock = vi.fn(async (child: any) => {
     child.killed = true
     child.stdout.end()
@@ -18,7 +19,8 @@ vi.mock('@/utils/process', () => ({
     isProcessAlive: () => false,
     isWindows: () => false,
     killProcess: async () => true,
-    killProcessByChildProcess: killProcessMock
+    killProcessByChildProcess: killProcessMock,
+    killProcessByChildProcessSync: killProcessSyncMock
 }))
 
 vi.mock('@/utils/bunRuntime', () => ({
@@ -50,6 +52,27 @@ afterEach(() => {
 })
 
 describe('Query', () => {
+    it('signals the child synchronously from its process-exit hook before returning', async () => {
+        const existing = new Set(process.listeners('exit'))
+        const child = createFakeChild()
+        spawnMock.mockReturnValueOnce(child)
+        process.env.HAPI_CLAUDE_PATH = 'claude'
+        const { query } = await import('./query')
+        query({ prompt: 'hello' })
+        const handler = process.listeners('exit').find(listener => !existing.has(listener))!
+        try {
+            expect(handler).toBeTypeOf('function')
+            handler(0)
+            expect(killProcessSyncMock).toHaveBeenCalledWith(child)
+            expect(killProcessMock).not.toHaveBeenCalled()
+            expect(child.stdin.destroyed).toBe(true)
+            expect(child.stdout.destroyed).toBe(true)
+        } finally {
+            process.removeListener('exit', handler)
+            child.emit('close', 0)
+        }
+    })
+
     it('preserves externally set errors even if the process exits cleanly', async () => {
         const { Query } = await import('./query')
         const stdout = new PassThrough()
