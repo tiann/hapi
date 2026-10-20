@@ -57,6 +57,7 @@ export type SpawnDeduplicator = ((options: SpawnSessionOptions) => Promise<Spawn
   markChildAlive: (existingSessionId: string) => void
   markChildStopping: (existingSessionId: string) => void
   onChildExited: (existingSessionId: string) => void
+  isChildStopping: (existingSessionId: string) => boolean
 }
 
 export function createSpawnDeduplicator(
@@ -107,6 +108,9 @@ export function createSpawnDeduplicator(
     childState.delete(existingSessionId);
     completedOrInFlight.delete(existingSessionId);
   };
+  dedupe.isChildStopping = (existingSessionId: string) => {
+    return childState.get(existingSessionId) === 'stopping';
+  };
   return dedupe;
 }
 
@@ -129,6 +133,47 @@ export function releaseRecoveredSpawnDedupe(
   if (!existingSessionId) return;
   spawnSession.onChildExited(existingSessionId);
   existingSessionIdByChildPid.delete(pid);
+}
+
+export type AliveSessionSources = {
+  /** PID -> runner-tracked session (primary id plus shared concurrent sessions). */
+  trackedByPid: Map<number, TrackedSession>;
+  /** PID -> HAPI row id this child generation was spawned for. */
+  sessionIdByChildPid: Map<number, string>;
+  /** PID -> webhook-confirmed HAPI session id. */
+  confirmedSessionIdByPid: Map<number, string>;
+  isChildStopping: (sessionId: string) => boolean;
+  /** OS-level liveness check; injectable for tests. */
+  isProcessAlive?: (pid: number) => boolean;
+};
+
+/**
+ * Session ids whose agent processes the runner can currently vouch for.
+ * Unioned across the three PID maps (a session moves between them as it
+ * starts up: requested -> spawn-acked -> webhook-confirmed), re-verified
+ * against the OS so a stale map entry never vouches for a dead PID, and
+ * filtered for sessions being stopped. Carried on the machine heartbeat so
+ * the hub can keep such sessions online while their own socket is down.
+ */
+export function collectAliveSessionIds(sources: AliveSessionSources): string[] {
+  const isAlive = sources.isProcessAlive ?? isProcessAlive;
+  const ids = new Set<string>();
+  const add = (sessionId: string | undefined): void => {
+    if (!sessionId || sources.isChildStopping(sessionId)) return;
+    ids.add(sessionId);
+  };
+  for (const [pid, session] of sources.trackedByPid) {
+    if (!isAlive(pid)) continue;
+    add(session.happySessionId);
+    for (const id of Object.keys(session.sharedSessions ?? {})) add(id);
+  }
+  for (const [pid, id] of sources.sessionIdByChildPid) {
+    if (isAlive(pid)) add(id);
+  }
+  for (const [pid, id] of sources.confirmedSessionIdByPid) {
+    if (isAlive(pid)) add(id);
+  }
+  return Array.from(ids);
 }
 
 export async function startRunner(options: { workspaceRoots?: string[] } = {}): Promise<void> {
@@ -1643,7 +1688,15 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     logger.debug(`[RUNNER RUN] Machine registered: ${machine.id}`);
 
     // Create realtime machine session
-    const apiMachine = api.machineSyncClient(machine, { workspaceRoots });
+    const apiMachine = api.machineSyncClient(machine, {
+      workspaceRoots,
+      getAliveSessionIds: () => collectAliveSessionIds({
+        trackedByPid: pidToTrackedSession,
+        sessionIdByChildPid: existingSessionIdByChildPid,
+        confirmedSessionIdByPid: pidToConfirmedSessionId,
+        isChildStopping: (sessionId) => spawnSession.isChildStopping(sessionId)
+      })
+    });
 
     // Set RPC handlers
     apiMachine.setRPCHandlers({
