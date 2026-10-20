@@ -72,6 +72,13 @@ function createHapiMcpServer(
     const handler = async (title: string) => {
         logger.debug('[hapiMCP] Changing title to:', title);
         try {
+            if (!normalizeSessionDisplayTitle(title)) return { success: false, error: 'Title must not be empty' };
+            if (!await client.refreshMetadata()) {
+                return { success: false, error: 'Could not read the current title lock from the Hub.' };
+            }
+            if (client.getMetadata()?.titleLocked) {
+                return { success: false, error: 'Session title is locked by the user. Only the user can unlock it.' };
+            }
             if (!emitTitleSummary) {
                 // Codex collab: acknowledge the tool call without writing.
                 // Parent-thread mcp_tool_call_end applies the rename later.
@@ -79,6 +86,14 @@ function createHapiMcpServer(
             }
             if (!applySessionDisplayRename(client, title)) {
                 return { success: false, error: 'Title must not be empty' };
+            }
+            if (!await client.flushMetadata()) {
+                return { success: false, error: 'Title update could not be confirmed by the Hub.' };
+            }
+            // The user may lock the title while this write is in flight.
+            // The ACK carries the Hub's preserved title and lock.
+            if (client.getMetadata()?.titleLocked) {
+                return { success: false, error: 'Session title is locked by the user. Only the user can unlock it.' };
             }
             return { success: true };
         } catch (error) {

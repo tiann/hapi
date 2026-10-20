@@ -552,6 +552,8 @@ export function SessionHeader(props: {
                 isOpen={renameOpen}
                 onClose={() => setRenameOpen(false)}
                 currentName={title}
+                currentTitleLocked={session.metadata?.titleLocked === true}
+                sessionId={session.id}
                 onRename={renameSession}
                 onSuggestTitle={api && props.titleSuggestionAvailable ? suggestSessionTitle : undefined}
                 onUpdateSummary={api && props.titleSuggestionAvailable ? updateSessionSummary : undefined}

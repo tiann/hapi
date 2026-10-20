@@ -977,7 +977,7 @@ export class SessionCache {
         throw new Error('Session was modified concurrently while archiving from hub')
     }
 
-    async renameSession(sessionId: string, name: string): Promise<void> {
+    async renameSession(sessionId: string, name: string | undefined, titleLocked?: boolean): Promise<void> {
         // tiann/hapi#919: retry-with-refresh on version-mismatch instead of
         // throwing on the first contention. Mirrors the good pattern in
         // mergeSessions (~L780) and in syncEngine's metadata helpers. Without
@@ -990,14 +990,14 @@ export class SessionCache {
             }
 
             const currentMetadata = session.metadata ?? { path: '', host: '' }
-            const newMetadata = { ...currentMetadata, name }
+            const newMetadata = name === undefined ? { ...currentMetadata } : { ...currentMetadata, name }
 
             const result = this.store.sessions.updateSessionMetadata(
                 sessionId,
                 newMetadata,
                 session.metadataVersion,
                 session.namespace,
-                { touchUpdatedAt: false }
+                { touchUpdatedAt: false, allowTitleUpdate: true, titleLocked }
             )
 
             if (result.result === 'error') {
@@ -1015,7 +1015,7 @@ export class SessionCache {
         throw new Error('Session was modified concurrently. Please try again.')
     }
 
-    async updateSessionSummary(sessionId: string, text: string): Promise<void> {
+    async updateSessionSummary(sessionId: string, text: string, titleLocked?: boolean): Promise<void> {
         // Keep the generated/native title separate from metadata.name. A
         // manually chosen name must continue to win in the Web title helper,
         // while the summary remains available as the agent-authored fallback.
@@ -1039,7 +1039,7 @@ export class SessionCache {
                 newMetadata,
                 session.metadataVersion,
                 session.namespace,
-                { touchUpdatedAt: false }
+                { touchUpdatedAt: false, allowTitleUpdate: true, titleLocked }
             )
 
             if (result.result === 'error') {
@@ -1272,6 +1272,25 @@ export class SessionCache {
             throw new Error('Session not found for merge')
         }
 
+        // A resume/dedup may replace the row. Transfer title ownership before
+        // moving data, preserving fresh source/destination metadata on retries.
+        let metadataTransferred = false
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const source = this.store.sessions.getSessionByNamespace(oldSessionId, namespace)
+            const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
+            if (!source || !latest) break
+            const result = this.store.sessions.updateSessionMetadata(
+                newSessionId,
+                this.mergeSessionMetadata(source.metadata, latest.metadata),
+                latest.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false, inheritTitleLockFrom: options.deleteOldSession ? oldSessionId : undefined }
+            )
+            if (result.result === 'success') { metadataTransferred = true; break }
+            if (result.result === 'error') break
+        }
+        if (!metadataTransferred) throw new Error('Failed to preserve session metadata during merge')
+
         const movedMessages = this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
         // mergeSessions deletes the source. mergeSessionHistory keeps it alive
         // with the original socket, so its notify chain must stay on that id.
@@ -1335,27 +1354,6 @@ export class SessionCache {
             // clients viewing the old id drop stale cache entries that
             // would 404 on edit/delete.
             this.emitScratchlistChanged(oldSessionId)
-        }
-
-        const mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, newStored.metadata)
-        if (mergedMetadata !== null && mergedMetadata !== newStored.metadata) {
-            for (let attempt = 0; attempt < 2; attempt += 1) {
-                const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
-                if (!latest) break
-                const result = this.store.sessions.updateSessionMetadata(
-                    newSessionId,
-                    mergedMetadata,
-                    latest.metadataVersion,
-                    namespace,
-                    { touchUpdatedAt: false }
-                )
-                if (result.result === 'success') {
-                    break
-                }
-                if (result.result === 'error') {
-                    break
-                }
-            }
         }
 
         if (newStored.model === null && oldStored.model !== null) {

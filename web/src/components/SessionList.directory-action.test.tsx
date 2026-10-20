@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import type { SessionSummary } from '@/types/api'
+import type { ApiClient } from '@/api/client'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider } from '@/lib/toast-context'
 import { SessionList } from './SessionList'
@@ -59,6 +60,28 @@ function renderWithProviders(children: ReactNode) {
 }
 
 describe('SessionList directory action', () => {
+    it('reopens a locked list session and preserves its lock through a user rename', async () => {
+        const renameSession = vi.fn(async () => {})
+        const session = makeSession({ id: 'list-locked', updatedAt: Date.now(), metadata: {
+            path: '/work/locked', name: 'Locked list title', titleLocked: true, flavor: 'codex'
+        } })
+        renderWithProviders(<SessionList sessions={[session]} selectedSessionId={session.id} onSelect={vi.fn()}
+            onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
+            api={{ renameSession } as unknown as ApiClient} />)
+        const open = () => {
+            fireEvent.contextMenu(screen.getByRole('button', { name: /Locked list title/ }))
+            fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }))
+        }
+        open()
+        expect(screen.getByRole('button', { name: 'Lock title against agent updates' })).toHaveAttribute('aria-pressed', 'true')
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+        open()
+        expect(screen.getByRole('button', { name: 'Lock title against agent updates' })).toHaveAttribute('aria-pressed', 'true')
+        fireEvent.change(screen.getByRole('textbox'), { target: { value: 'New human title' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+        await waitFor(() => expect(renameSession).toHaveBeenCalledWith('list-locked', 'New human title', true))
+    })
+
     it('starts a new session with the project machine and directory', () => {
         const onNewSessionInDirectory = vi.fn()
         const session = makeSession({

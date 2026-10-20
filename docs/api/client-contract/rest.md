@@ -47,8 +47,8 @@ Source: `hub/src/web/routes/sessions.ts`; request schemas in `shared/src/apiType
 | `POST /api/sessions/:id/abort` | `{}` | `{ok: true}` (active sessions only) |
 | `POST /api/sessions/:id/archive` | `{}` | `{ok: true}` or `{ok: true, alreadyArchived: true}`; 409 for a plain inactive session |
 | `DELETE /api/sessions/:id` | — | `{ok: true}`; 409 while active (archive first) |
-| `PATCH /api/sessions/:id` | `{name}` (1–255 chars) | `{ok: true}` (rename) |
-| `PATCH /api/sessions/:id/summary` | `{text}` (1–255 chars) | `{ok: true}` |
+| `PATCH /api/sessions/:id` | `{name?, titleLocked?}` (at least one; name: 1–255 chars; lock: boolean) | `{ok: true}` (rename) |
+| `PATCH /api/sessions/:id/summary` | `{text, titleLocked?}` (text: 1–255 chars; lock: boolean) | `{ok: true}` |
 | `PUT /api/sessions/:id/pin` | `{mode: 'none'\|'project'\|'global'}` | `{ok: true}` |
 | `POST /api/sessions/:id/switch` | `{}` | `{ok: true}` — hands terminal-controlled session over to remote control |
 | `POST /api/sessions/:id/clear` | `{}` | `{sessionId}` — shared sessions only; resume inactive sessions through the Runner first, then create a new root; navigate only the initiating view |
@@ -309,3 +309,14 @@ internal and must never be used by clients.
 | Cursor maintenance | `/api/sessions/:id/migrate-to-acp`, `/cursor-chat-store` | Desktop store migration |
 | Session export | `GET /api/sessions/:id/export` | Whole-session export through the web; separate from Android's full-text reader file export |
 | **CLI plane** | `/cli/*` (`hub/src/web/routes/cli.ts`) | **Forbidden for clients** — internal CLI↔hub surface; authenticates with the raw access token instead of a JWT and bypasses the client middleware. Never call it from a client, and never send the access token as a bearer anywhere except `POST /api/auth`'s JSON body |
+
+### Session title protection
+
+`metadata.titleLocked` is an optional, Hub-owned boolean exposed in session detail,
+list summaries and metadata events. Missing means unlocked. The two user title
+PATCH routes above accept `titleLocked` and save it atomically with the title;
+omitting it preserves the existing lock. A lock-only PATCH omits `name` and
+preserves the existing name/summary fields. A manual rename alone does not lock a
+session. Agent metadata writes cannot set or clear this flag. While locked, the
+Hub preserves both `name` and `summary` across agent writes; user title saves
+remain allowed. Unlocking preserves the current title until a future update.

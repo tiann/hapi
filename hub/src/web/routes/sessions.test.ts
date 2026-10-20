@@ -70,6 +70,7 @@ function createApp(session: Session, opts?: {
     implementCodexPlan?: SyncEngine['implementCodexPlan']
     rewindConversation?: SyncEngine['rewindConversation']
     suggestSessionTitle?: SyncEngine['suggestSessionTitle']
+    renameSession?: SyncEngine['renameSession']
     updateSessionSummary?: SyncEngine['updateSessionSummary']
     setSessionPinned?: (sessionId: string, pinned: boolean) => void
     setSessionPinMode?: (sessionId: string, mode: 'none' | 'project' | 'global') => void
@@ -180,6 +181,7 @@ function createApp(session: Session, opts?: {
         implementCodexPlan: opts?.implementCodexPlan,
         rewindConversation: opts?.rewindConversation ?? (async () => ({ type: 'success' })),
         suggestSessionTitle: opts?.suggestSessionTitle ?? (async () => 'Generated title'),
+        renameSession: opts?.renameSession ?? (async () => {}),
         updateSessionSummary: opts?.updateSessionSummary ?? (async () => {})
     } as Partial<SyncEngine>
 
@@ -272,6 +274,47 @@ describe('sessions routes', () => {
         expect(await response.json()).toEqual({ error: 'No Runner online', code: 'no_machine_online' })
         expect(clears).toBe(0)
     })
+    it('accepts a lock-only save without converting a generated title to a manual name', async () => {
+        const calls: unknown[] = []
+        const { app } = createApp(createSession(), { renameSession: async (...args) => { calls.push(args) } })
+        const response = await app.request('/api/sessions/session-1', {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ titleLocked: true })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([['session-1', undefined, true]])
+    })
+
+    it.each([true, false])('passes explicit title lock %s atomically through both user title routes', async (titleLocked) => {
+        const calls: unknown[] = []
+        const { app } = createApp(createSession(), {
+            renameSession: async (...args) => { calls.push(args) },
+            updateSessionSummary: async (...args) => { calls.push(args) }
+        })
+        for (const [suffix, field] of [['', 'name'], ['/summary', 'text']]) {
+            const response = await app.request(`/api/sessions/session-1${suffix}`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ [field]: 'Chosen', titleLocked })
+            })
+            expect(response.status).toBe(200)
+        }
+        expect(calls).toEqual([['session-1', 'Chosen', titleLocked], ['session-1', 'Chosen', titleLocked]])
+    })
+
+    it('rejects invalid lock values and missing-session title saves', async () => {
+        const { app } = createApp(createSession())
+        for (const suffix of ['', '/summary']) {
+            expect((await app.request(`/api/sessions/session-1${suffix}`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: 'Title', text: 'Title', titleLocked: 'true' })
+            })).status).toBe(400)
+        }
+        const other = createApp(createSession(), { sessionExists: false }).app
+        expect((await other.request('/api/sessions/session-1', {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: 'Title', titleLocked: false })
+        })).status).toBe(404)
+    })
+
     it('generates a title suggestion without changing session metadata', async () => {
         const suggest = async (sessionId: string) => {
             expect(sessionId).toBe('session-1')

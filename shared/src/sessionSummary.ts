@@ -34,6 +34,7 @@ function classifyKind(tool: string): PendingRequestKind {
 
 export type SessionSummaryMetadata = {
     name?: string
+    titleLocked?: boolean
     path: string
     machineId?: string
     summary?: { text: string }
@@ -192,6 +193,7 @@ export function toSessionSummaryMetadata(metadata: Metadata | null | undefined):
     }
     return {
         name: metadata.name,
+        titleLocked: metadata.titleLocked,
         path: metadata.path,
         machineId: metadata.machineId ?? undefined,
         summary: metadata.summary ? { text: metadata.summary.text } : undefined,

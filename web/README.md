@@ -60,6 +60,16 @@ See `src/router.tsx` for route definitions.
 - Pending permission request count.
 - Agent name and model display.
 
+### Session title lock
+
+The rename dialog has a per-session lock beside the title input. New and existing
+sessions are unlocked by default. Saving a manual name does not automatically lock
+it: agents may still rename an unlocked session. Locking prevents agent title
+updates; users can still edit or generate a title and save it while locked.
+Save applies the title and lock together; Cancel discards both changes. Unlocking
+allows future agent title updates without immediately changing the current title.
+The Hub persists and enforces the lock across clients, restarts, and resume.
+
 ### Chat interface (`src/components/SessionChat.tsx`)
 
 - Message thread with infinite scroll.

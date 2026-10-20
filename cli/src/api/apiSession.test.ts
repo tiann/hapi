@@ -956,3 +956,33 @@ describe('IncomingMessageFilter (HAPI Bot R3 finding #1)', () => {
         expect(filter.accept({ id: 'b', seq: 9 })).toBe(true)
     })
 })
+
+describe('explicit title action metadata refresh', () => {
+    it('observes user lock changes without rolling back a newer socket metadata version', async () => {
+        const client = new ApiSessionClient('test-token', createSession({
+            metadataVersion: 10, metadata: { path: '/tmp', host: 'test', name: 'Pinned', titleLocked: true }
+        }))
+        try {
+            axiosHarness.get.mockResolvedValue({ data: { session: {
+                metadataVersion: 11, metadata: { path: '/tmp', host: 'test', name: 'Pinned', titleLocked: false }
+            } } })
+            expect(await client.refreshMetadata()).toBe(true)
+            expect(client.getMetadata()?.titleLocked).toBe(false)
+            axiosHarness.get.mockResolvedValue({ data: { session: {
+                metadataVersion: 9, metadata: { path: '/tmp', host: 'test', name: 'Old', titleLocked: true }
+            } } })
+            expect(await client.refreshMetadata()).toBe(true)
+            expect(client.getMetadata()).toMatchObject({ name: 'Pinned', titleLocked: false })
+        } finally { client.close() }
+    })
+
+    it('reports an unavailable or malformed Hub response instead of trusting cached lock state', async () => {
+        const client = new ApiSessionClient('test-token', createSession())
+        try {
+            axiosHarness.get.mockRejectedValue(new Error('Offline'))
+            expect(await client.refreshMetadata()).toBe(false)
+            axiosHarness.get.mockResolvedValue({ data: { session: { metadataVersion: 99, metadata: { titleLocked: true } } } })
+            expect(await client.refreshMetadata()).toBe(false)
+        } finally { client.close() }
+    })
+})

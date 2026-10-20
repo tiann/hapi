@@ -1011,10 +1011,10 @@ export class ApiClient {
         )
     }
 
-    async renameSession(sessionId: string, name: string): Promise<void> {
+    async renameSession(sessionId: string, name: string | undefined, titleLocked?: boolean): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`, {
             method: 'PATCH',
-            body: JSON.stringify({ name })
+            body: JSON.stringify({ name, titleLocked })
         })
     }
 
@@ -1025,10 +1025,10 @@ export class ApiClient {
         )
     }
 
-    async updateSessionSummary(sessionId: string, text: string): Promise<void> {
+    async updateSessionSummary(sessionId: string, text: string, titleLocked?: boolean): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/summary`, {
             method: 'PATCH',
-            body: JSON.stringify({ text })
+            body: JSON.stringify({ text, titleLocked })
         })
     }
 
