@@ -40,24 +40,21 @@ export function getRestoredComposerSendIntent(
     return getRetryDeliveryMode(deliveryMode)
 }
 
-/**
- * Resolve the web composer intent into the durable message delivery mode.
- *
- * Every composer submission queues by default — for every flavor. The Pi
- * automatic steer (deliveryMode 'steer' while the main session is thinking)
- * was removed in favor of the explicit per-queued-message Steer action
- * (issue #1466), matching Codex/Claude behavior: a mid-turn message waits,
- * and the operator presses Steer to deliver it into the running turn.
- * Scheduled messages, scratchlist additions, and retries always queued
- * already.
- */
+/** Resolve ordinary sends against the session preference; explicit queue always wins. */
 export function resolveMessageDeliveryMode(input: {
+    codexPromptMode?: MessageDeliveryMode
     agentFlavor: string | null | undefined
     isSessionThinking: boolean
     intent: ComposerSendIntent
     scheduledAt?: number | null
     routesToScratchlist?: boolean
 }): MessageDeliveryMode {
-    void input
-    return 'queue'
+    return input.agentFlavor === 'codex'
+        && input.codexPromptMode === 'steer'
+        && input.isSessionThinking
+        && input.intent === 'default'
+        && input.scheduledAt == null
+        && !input.routesToScratchlist
+        ? 'steer'
+        : 'queue'
 }

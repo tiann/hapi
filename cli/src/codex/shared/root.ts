@@ -112,6 +112,8 @@ export class SharedCodexRoot {
         });
         this.client.setTransportAbandonedHandler(() => { void this.reconnect(); });
         this.session.onUserMessage((message, localId) => {
+            // Capture before waiting: a delayed follow-up must never steer a later turn.
+            const expectedTurnId = message.meta?.deliveryMode === 'steer' ? this.currentTurn : undefined;
             this.work = this.work.catch(() => {}).then(async () => {
                 await this.bound;
                 if (this.closed || this.stopping) return;
@@ -119,7 +121,12 @@ export class SharedCodexRoot {
                 const text = formatMessageWithAttachments(message.content.text, message.content.attachments);
                 const resolved = text.trim().startsWith('/') ? await this.queue.command(id, () => this.command(text)) : text;
                 if (resolved === null) { this.session.emitMessagesConsumed([id], { clearQueuedThinkingGrace: true }); return; }
-                await this.queue.enqueue(id, buildUserInputFromMessage(resolved), this.interrupted);
+                const input = buildUserInputFromMessage(resolved);
+                if (expectedTurnId && expectedTurnId === this.currentTurn && !this.queue.owns(id) && !text.trim().startsWith('/')) {
+                    const result = await this.queue.steer(id, expectedTurnId, input);
+                    if (result.steered || result.indeterminate) return;
+                }
+                await this.queue.enqueue(id, input, this.interrupted);
             }).catch(error => this.notice(`Message not confirmed: ${error instanceof Error ? error.message : error}. Inspect the queue before retrying.`));
         });
         this.session.onCancelQueuedMessage(async id => { await this.bound; return this.stopping ? 'indeterminate' : this.queue.cancel(id); });
