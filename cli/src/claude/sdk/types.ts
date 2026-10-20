@@ -200,6 +200,13 @@ export interface QueryOptions {
      * existing Claude session id.
      */
     forkSession?: boolean
+    /**
+     * Resume the session truncated to the entry with this uuid (everything at
+     * and after the dropped turns is discarded). Requires Claude Code v2.1.223+.
+     */
+    resumeSessionAt?: string
+    /** Prompt uuids of the turns dropped by `resumeSessionAt` (repeatable flag). */
+    resumeDropsTurn?: string[]
     model?: string
     effort?: string
     fallbackModel?: string
