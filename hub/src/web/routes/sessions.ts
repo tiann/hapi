@@ -34,6 +34,7 @@ import type { WebAppEnv } from '../middleware/auth'
 import { loadScratchlistAttachmentLimitsFromEnv } from '../../config/scratchlistAttachmentLimits'
 import { validateScratchlistAttachmentsForWrite, scratchlistSessionBytesBeforeForPut } from '../../scratchlistAttachments/validate'
 import { TitleSuggestionError } from '../../sync/titleSuggestion'
+import { RpcTargetMissingError, RpcTimeoutError } from '../../sync/rpcGateway'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
@@ -361,7 +362,25 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return sessionResult
         }
 
-        await engine.abortSession(sessionResult.sessionId)
+        try {
+            await engine.abortSession(sessionResult.sessionId)
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                // The engine socket is gone: the abort can never be delivered.
+                // Fail in milliseconds instead of hanging into a 500.
+                return c.json({
+                    error: 'Session is not connected to the hub, so the abort cannot be delivered.',
+                    code: 'engine_unreachable'
+                }, 409)
+            }
+            if (error instanceof RpcTimeoutError) {
+                return c.json({
+                    error: `Session did not acknowledge the abort within ${Math.round(error.timeoutMs / 1000)}s; it may be unresponsive.`,
+                    code: 'engine_unresponsive'
+                }, 504)
+            }
+            throw error
+        }
         return c.json({ ok: true })
     })
 

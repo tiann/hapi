@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import { Hono } from 'hono'
 import type { Session, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
-import { PermissionRequestNotFoundError } from '../../sync/rpcGateway'
+import { PermissionRequestNotFoundError, RpcTargetMissingError, RpcTimeoutError } from '../../sync/rpcGateway'
 import { createPermissionsRoutes } from './permissions'
 
 function createSession(): Session {
@@ -119,5 +119,76 @@ describe('permissions routes (tiann/hapi#1735)', () => {
         // Hono's default error handling turns an unhandled throw into a 500,
         // not a 409 — the route only special-cases PermissionRequestNotFoundError.
         expect(res.status).toBe(500)
+    })
+
+    // Answering a permission on a session whose engine socket is gone used to
+    // surface as a bare 500 (RpcTargetMissingError was never mapped). It must
+    // fail fast with 409 + engine_unreachable instead.
+    it('returns 409 engine_unreachable when the engine socket is gone (approve)', async () => {
+        const app = createApp({
+            approvePermission: async () => { throw new RpcTargetMissingError('session-1:Permission', 'handler-not-registered') }
+        })
+        const res = await app.request('/api/sessions/session-1/permissions/request-1/approve', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({})
+        })
+        expect(res.status).toBe(409)
+        expect(await res.json()).toEqual({
+            error: expect.stringContaining('not connected to the hub'),
+            code: 'engine_unreachable'
+        })
+    })
+
+    it('returns 409 engine_unreachable when the engine socket is gone (deny)', async () => {
+        const app = createApp({
+            denyPermission: async () => { throw new RpcTargetMissingError('session-1:Permission', 'socket-disconnected') }
+        })
+        const res = await app.request('/api/sessions/session-1/permissions/request-1/deny', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({})
+        })
+        expect(res.status).toBe(409)
+        expect(await res.json()).toEqual({
+            error: expect.stringContaining('not connected to the hub'),
+            code: 'engine_unreachable'
+        })
+    })
+
+    // A socket that stays registered while the engine wedges never acks, so
+    // socket.io rejects after the full RPC deadline — that used to escape as a
+    // generic 500 ("operation has timed out"). It must surface as 504 +
+    // engine_unresponsive so the client knows the deadline was missed.
+    it('returns 504 engine_unresponsive when the engine never acks the approve', async () => {
+        const app = createApp({
+            approvePermission: async () => { throw new RpcTimeoutError('session-1:Permission', 30_000) }
+        })
+        const res = await app.request('/api/sessions/session-1/permissions/request-1/approve', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({})
+        })
+        expect(res.status).toBe(504)
+        expect(await res.json()).toEqual({
+            error: expect.stringContaining('did not acknowledge'),
+            code: 'engine_unresponsive'
+        })
+    })
+
+    it('returns 504 engine_unresponsive when the engine never acks the deny', async () => {
+        const app = createApp({
+            denyPermission: async () => { throw new RpcTimeoutError('session-1:Permission', 30_000) }
+        })
+        const res = await app.request('/api/sessions/session-1/permissions/request-1/deny', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({})
+        })
+        expect(res.status).toBe(504)
+        expect(await res.json()).toEqual({
+            error: expect.stringContaining('did not acknowledge'),
+            code: 'engine_unresponsive'
+        })
     })
 })

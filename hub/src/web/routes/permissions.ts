@@ -2,7 +2,7 @@ import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
 import { PermissionModeSchema } from '@hapi/protocol/schemas'
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { PermissionRequestNotFoundError } from '../../sync/rpcGateway'
+import { PermissionRequestNotFoundError, RpcTargetMissingError, RpcTimeoutError } from '../../sync/rpcGateway'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
@@ -71,6 +71,23 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
             if (error instanceof PermissionRequestNotFoundError) {
                 return c.json({ error: error.message }, 409)
             }
+            if (error instanceof RpcTargetMissingError) {
+                // The engine socket is gone (handler unregistered or socket
+                // disconnected): the answer can never be delivered. Fail in
+                // milliseconds instead of hanging the request into a 500.
+                return c.json({
+                    error: 'Session is not connected to the hub, so the answer cannot be delivered.',
+                    code: 'engine_unreachable'
+                }, 409)
+            }
+            if (error instanceof RpcTimeoutError) {
+                // The socket is still registered but the engine never acked:
+                // report the missed deadline honestly instead of a generic 500.
+                return c.json({
+                    error: `Session did not acknowledge the answer within ${Math.round(error.timeoutMs / 1000)}s; it may be unresponsive.`,
+                    code: 'engine_unresponsive'
+                }, 504)
+            }
             throw error
         }
         return c.json({ ok: true })
@@ -106,6 +123,18 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
         } catch (error) {
             if (error instanceof PermissionRequestNotFoundError) {
                 return c.json({ error: error.message }, 409)
+            }
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({
+                    error: 'Session is not connected to the hub, so the answer cannot be delivered.',
+                    code: 'engine_unreachable'
+                }, 409)
+            }
+            if (error instanceof RpcTimeoutError) {
+                return c.json({
+                    error: `Session did not acknowledge the answer within ${Math.round(error.timeoutMs / 1000)}s; it may be unresponsive.`,
+                    code: 'engine_unresponsive'
+                }, 504)
             }
             throw error
         }

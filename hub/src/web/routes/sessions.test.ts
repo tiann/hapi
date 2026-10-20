@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import { Hono } from 'hono'
 import type { Session, SyncEngine } from '../../sync/syncEngine'
+import { RpcTargetMissingError, RpcTimeoutError } from '../../sync/rpcGateway'
 import type { WebAppEnv } from '../middleware/auth'
 import { createSessionsRoutes } from './sessions'
 
@@ -59,6 +60,7 @@ type ReopenResultMock =
 function createApp(session: Session, opts?: {
     resumeSession?: (sessionId: string, namespace: string, resumeOpts?: { permissionMode?: string }) => Promise<{ type: string; sessionId?: string; message?: string; code?: string }>
     reopenSession?: (sessionId: string, namespace: string) => Promise<ReopenResultMock>
+    abortSession?: SyncEngine['abortSession']
     listSlashCommands?: SyncEngine['listSlashCommands']
     getSessionExport?: (sessionId: string, session: Session, options?: { force?: boolean }) => unknown
     sessionExists?: boolean
@@ -154,6 +156,7 @@ function createApp(session: Session, opts?: {
         listKimiModelsForSession,
         resumeSession,
         reopenSession,
+        abortSession: opts?.abortSession ?? (async () => {}),
         getCursorChatStoreStatus: opts?.getCursorChatStoreStatus ?? (async () => ({
             type: 'success' as const,
             status: { onDisk: true, store: 'acp' as const }
@@ -1749,4 +1752,44 @@ describe('sessions routes', () => {
         expect(body.sessions.map((s) => s.id)).toEqual(['new-inactive'])
     })
 
+})
+
+// Aborting a session whose engine socket is gone or wedged used to escape as a
+// bare 500 (RpcTargetMissingError / the socket.io ack deadline were never
+// mapped). It must fail fast with typed delivery semantics instead.
+describe('session abort delivery errors', () => {
+    it('returns 409 engine_unreachable when the engine socket is gone', async () => {
+        const { app } = createApp(createSession(), {
+            abortSession: async () => { throw new RpcTargetMissingError('session-1:abort', 'handler-not-registered') }
+        })
+        const res = await app.request('/api/sessions/session-1/abort', { method: 'POST' })
+        expect(res.status).toBe(409)
+        expect(await res.json()).toEqual({
+            error: expect.stringContaining('not connected to the hub'),
+            code: 'engine_unreachable'
+        })
+    })
+
+    it('returns 504 engine_unresponsive when the engine never acks the abort', async () => {
+        const { app } = createApp(createSession(), {
+            abortSession: async () => { throw new RpcTimeoutError('session-1:abort', 30_000) }
+        })
+        const res = await app.request('/api/sessions/session-1/abort', { method: 'POST' })
+        expect(res.status).toBe(504)
+        expect(await res.json()).toEqual({
+            error: expect.stringContaining('did not acknowledge'),
+            code: 'engine_unresponsive'
+        })
+    })
+
+    it('returns ok when the abort is delivered', async () => {
+        let aborted: string | undefined
+        const { app } = createApp(createSession(), {
+            abortSession: async (sessionId: string) => { aborted = sessionId }
+        })
+        const res = await app.request('/api/sessions/session-1/abort', { method: 'POST' })
+        expect(res.status).toBe(200)
+        expect(await res.json()).toEqual({ ok: true })
+        expect(aborted).toBe('session-1')
+    })
 })
