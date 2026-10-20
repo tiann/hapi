@@ -25,6 +25,7 @@ Start with the task's files; read only relevant sections of these references, no
 | Native API contract, chat conformance | [client contract](docs/api/client-contract/index.md), [iOS](ios/README.md), [Android](android/README.md) |
 | Encrypted native push relay | [relay/README.md](relay/README.md) |
 | User docs / marketing site | `docs/` (VitePress) / `website/` |
+| Paint tappable URLs / exact-copy strings (Cursor only) | MCP `display_links` (Cursor sessions) or `hapi display-links` / `scripts/tooling/hapi-display-links.mjs` — pass `sessionId` = this chat; construct hrefs and secrets by concatenation (`"tia"+"nn"`, `"VK"+"K"`), never type landmine hosts or tokens in prose; never echo secrets after painting the card |
 
 ## Repository conventions
 

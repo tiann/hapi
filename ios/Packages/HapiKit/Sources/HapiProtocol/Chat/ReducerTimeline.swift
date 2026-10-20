@@ -841,6 +841,18 @@ func reduceTimeline(_ messages: [NormalizedMessage], context: ReducerContext) ->
                     ))))
                     continue
 
+                case .displayLinks(let links):
+                    blocks.append(BlockBox(.displayLinks(DisplayLinksBlock(
+                        id: "\(msg.id):\(idx)",
+                        localId: msg.localId,
+                        createdAt: msg.createdAt,
+                        invokedAt: msg.invokedAt,
+                        urls: links.urls,
+                        texts: links.texts,
+                        meta: msg.meta
+                    ))))
+                    continue
+
                 case .reasoning(let reasoningContent):
                     let streamId = nonBlankStreamId(reasoningContent.streamId)
                     if let streamId, let existingBox = reasoningBlocksByStreamId[streamId] {
