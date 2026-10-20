@@ -46,6 +46,8 @@ import { scheduleCursorModelsPrewarm } from '@/modules/common/cursorModelsPrewar
 import { isLinkedGitWorktree } from '@/utils/isLinkedGitWorktree';
 import { agentUnavailableMessage, getAgentAvailability } from '@/agent/agentAvailability';
 import { copyCodexConfigFile, resolveCodexHome } from '@/codex/utils/codexHome';
+import { reconnectRunnerSession, reconnectSharedRunnerSession } from './reconnectSession';
+import { SessionReboundDuringStop, SessionStopGuard, SessionStopGuards } from './sessionStopGuard';
 
 /**
  * Deduplicates a preallocated HAPI-row spawn only while its child is alive.
@@ -57,12 +59,15 @@ export type SpawnDeduplicator = ((options: SpawnSessionOptions) => Promise<Spawn
   markChildAlive: (existingSessionId: string) => void
   markChildStopping: (existingSessionId: string) => void
   onChildExited: (existingSessionId: string) => void
+  captureChildExit: (existingSessionId: string) => () => void
 }
 
 export function createSpawnDeduplicator(
-  spawnOnce: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>
+  spawnOnce: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>,
+  reuseCompleted?: (options: SpawnSessionOptions, result: Extract<SpawnSessionResult, { type: 'success' }>) => Promise<SpawnSessionResult>
 ): SpawnDeduplicator {
-  const completedOrInFlight = new Map<string, Promise<SpawnSessionResult>>();
+  type Entry = { task: Promise<SpawnSessionResult>; result?: SpawnSessionResult; reconnect?: Promise<SpawnSessionResult> };
+  const completedOrInFlight = new Map<string, Entry>();
   const childState = new Map<string, 'alive' | 'stopping'>();
 
   const dedupe = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
@@ -72,20 +77,37 @@ export function createSpawnDeduplicator(
     }
     const existing = completedOrInFlight.get(key);
     if (existing) {
-      return await existing;
+      if (existing.result?.type === 'success' && reuseCompleted) {
+        if (childState.get(key) === 'stopping') {
+          return { type: 'error', errorMessage: 'The existing session is still stopping; retry after it exits' };
+        }
+        const result = existing.result;
+        const reconnect = existing.reconnect ??= Promise.resolve().then(async (): Promise<SpawnSessionResult> => {
+          const reconnected = await reuseCompleted(options, result);
+          if (completedOrInFlight.get(key) !== existing || childState.get(key) === 'stopping') {
+            return { type: 'error', errorMessage: 'The existing session changed while reconnecting; retry resume' };
+          }
+          return reconnected;
+        }).finally(() => { existing.reconnect = undefined; });
+        return await reconnect;
+      }
+      return await existing.task;
     }
 
     const task = spawnOnce(options);
-    completedOrInFlight.set(key, task);
+    const entry: Entry = { task };
+    completedOrInFlight.set(key, entry);
     task.then((result) => {
-      // A failure before a PID exists can retry immediately. Once startRunner
-      // has registered a child PID, keep its result until exit/stale detection
+      entry.result = result;
+      // A result without an owned PID must be checked again on the next call
+      // (including reconnecting a shared root that this runner did not spawn).
+      // Once startRunner has registered a child PID, keep its result until exit/stale detection
       // confirms that the child is gone.
-      if (result.type !== 'success' && !childState.has(key) && completedOrInFlight.get(key) === task) {
+      if (!childState.has(key) && completedOrInFlight.get(key) === entry) {
         completedOrInFlight.delete(key);
       }
     }, () => {
-      if (!childState.has(key) && completedOrInFlight.get(key) === task) {
+      if (!childState.has(key) && completedOrInFlight.get(key) === entry) {
         completedOrInFlight.delete(key);
       }
     });
@@ -93,7 +115,7 @@ export function createSpawnDeduplicator(
   };
   dedupe.recoverChild = (existingSessionId: string, result: SpawnSessionResult) => {
     childState.set(existingSessionId, 'alive');
-    completedOrInFlight.set(existingSessionId, Promise.resolve(result));
+    completedOrInFlight.set(existingSessionId, { task: Promise.resolve(result), result });
   };
   dedupe.markChildAlive = (existingSessionId: string) => {
     childState.set(existingSessionId, 'alive');
@@ -106,6 +128,14 @@ export function createSpawnDeduplicator(
   dedupe.onChildExited = (existingSessionId: string) => {
     childState.delete(existingSessionId);
     completedOrInFlight.delete(existingSessionId);
+  };
+  dedupe.captureChildExit = (existingSessionId: string) => {
+    const generation = completedOrInFlight.get(existingSessionId);
+    return () => {
+      if (generation && completedOrInFlight.get(existingSessionId) === generation) {
+        dedupe.onChildExited(existingSessionId);
+      }
+    };
   };
   return dedupe;
 }
@@ -417,6 +447,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // existingSessionId identifies the HAPI row, not a permanent spawn request.
     // Keep the dedupe entry only while this runner still owns the child PID.
     const existingSessionIdByChildPid = new Map<number, string>();
+    const stopGuards = new SessionStopGuards();
     type SpawnFailureDetails = {
       message: string
       pid?: number
@@ -452,12 +483,16 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       // Check if we already have this PID (runner-spawned)
       const existingSession = pidToTrackedSession.get(pid);
 
+      // An archive notification can arrive after stop cleanup, including after
+      // Runner restart when this wrapper has not been adopted yet. It is never
+      // evidence of a live root and must not recreate its durable PID ownership.
+      if (sessionMetadata.capabilities?.concurrentClients && sessionMetadata.lifecycleState === 'archived') {
+        if (existingSession?.sharedSessions) delete existingSession.sharedSessions[sessionId];
+        return;
+      }
+      stopGuards.registered(sessionId);
       if (existingSession && sessionMetadata.capabilities?.concurrentClients) {
         existingSession.sharedSessions ??= {};
-        if (sessionMetadata.lifecycleState === 'archived') {
-          delete existingSession.sharedSessions[sessionId];
-          return;
-        }
         existingSession.sharedSessions[sessionId] = sessionMetadata;
         invalidateVerifiedExit(sessionId);
         // Native /new or /fork cannot replace the primary spawn confirmation.
@@ -590,6 +625,20 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
       const { directory, sessionId, machineId, approvedNewDirectoryCreation = true } = options;
       const agent = options.agent ?? 'claude';
+      if (options.validateDirectory && !(await options.validateDirectory(directory))) {
+        return {
+          type: 'error',
+          errorMessage: 'Directory is outside this machine\'s workspace roots',
+          code: 'outside_workspace_roots',
+          childStarted: false,
+        };
+      }
+      // Reconnecting a verified live runtime does not launch Codex. A changed
+      // PATH or temporarily missing binary must not strand an existing root.
+      if (agent === 'codex' && options.existingSessionId) {
+        const existing = await reconnectSharedRunnerSession(options.existingSessionId);
+        if (existing) return existing;
+      }
       const availability = getAgentAvailability(agent);
       if (!availability.available) {
         const errorMessage = agentUnavailableMessage(availability);
@@ -603,14 +652,6 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           errorMessage,
           code: 'agent_unavailable',
           agent,
-          childStarted: false,
-        };
-      }
-      if (options.validateDirectory && !(await options.validateDirectory(directory))) {
-        return {
-          type: 'error',
-          errorMessage: 'Directory is outside this machine\'s workspace roots',
-          code: 'outside_workspace_roots',
           childStarted: false,
         };
       }
@@ -1075,7 +1116,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       }
     };
 
-    spawnSession = createSpawnDeduplicator(spawnSessionOnce);
+    spawnSession = createSpawnDeduplicator(spawnSessionOnce, reconnectRunnerSession);
     for (const [pid, record] of persistedResumeProcesses) {
       const verified = pidToRequestedSessionId.get(pid) === record.requestedSessionId;
       existingSessionIdByChildPid.set(pid, record.requestedSessionId);
@@ -1088,9 +1129,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     }
 
     // Stop a session by sessionId or PID fallback
-    const stopSession = async (
+    const stopSessionOnce = async (
       sessionId: string,
-      opts?: { processStartMarker?: string }
+      opts: { processStartMarker?: string } | undefined,
+      guard: SessionStopGuard
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
       logger.debug(`[RUNNER RUN] Attempting to stop session ${sessionId}`);
 
@@ -1123,7 +1165,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
       const readLiveRuntimesForStop = async () => {
         try {
-          return (await readRuntimes({ strict: true })).filter(runtime =>
+          return (await guard.run(() => readRuntimes({ strict: true }))).filter(runtime =>
             runtime.hub === configuration.apiUrl
             && runtime.authHash === runtimeAuthHash()
             && runtimeMayBeAlive(runtime)
@@ -1142,8 +1184,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           // refuse the orphan sweep. Non-Codex stops proceed with [] so archive
           // is not machine-wide blocked by schema drift.
           try {
-            const { findRuntime } = await import('@/codex/shared/registry');
-            if (await findRuntime(sessionId) || isCodexStopContext()) return null;
+            const { findRuntime } = await guard.run(() => import('@/codex/shared/registry'));
+            if (await guard.run(() => findRuntime(sessionId)) || isCodexStopContext()) return null;
           } catch {
             if (isCodexStopContext()) return null;
           }
@@ -1154,18 +1196,19 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       const finishWithOrphanSweep = async (
         base: 'stopped' | 'already_gone' | 'unknown'
       ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
-        const liveRuntimes = await readLiveRuntimesForStop();
+        const liveRuntimes = await guard.run(readLiveRuntimesForStop);
         if (liveRuntimes === null) return 'still_alive';
         const protectedTrackedPids = trackedSharedWrapperPidsWithSiblings(
           pidToTrackedSession.entries(),
           sessionId
         );
-        const orphanStatus = await reapRunnerSpawnedOrphans(sessionId, {
+        const orphanStatus = await guard.run(() => reapRunnerSpawnedOrphans(sessionId, {
           findTargets: (id) => findStopSessionOrphanTargets(
             id,
             (sid, pid) => shouldSkipOrphanPid(liveRuntimes, protectedTrackedPids, sid, pid)
           ),
-        });
+          killTree: pid => guard.run(() => killProcessTreeByPid(pid)),
+        }));
         if (orphanStatus === 'still_alive') {
           logger.debug(`[RUNNER RUN] Orphan argv sweep left live PIDs for session ${sessionId}`);
           return 'still_alive';
@@ -1177,12 +1220,12 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         return base;
       };
 
-      const { findRuntime } = await import('@/codex/shared/registry');
-      const sharedRuntime = await findRuntime(sessionId);
+      const { findRuntime } = await guard.run(() => import('@/codex/shared/registry'));
+      const sharedRuntime = await guard.run(() => findRuntime(sessionId));
       if (sharedRuntime) {
         try {
-          const { runtimeControl } = await import('@/codex/shared/frontend');
-          await runtimeControl(sharedRuntime, 'hapi/stopSession', sessionId);
+          const { runtimeControl } = await guard.run(() => import('@/codex/shared/frontend'));
+          await guard.run(() => runtimeControl(sharedRuntime, 'hapi/stopSession', sessionId));
           const tracked = pidToTrackedSession.get(sharedRuntime.pid);
           if (tracked) {
             const detach = detachSharedRootFromWrapper(tracked, sessionId);
@@ -1192,23 +1235,23 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
               logger.debug(
                 `[RUNNER RUN] Shared runtime stopped root ${sessionId}; wrapper PID ${sharedRuntime.pid} kept`
               );
-              return await finishWithOrphanSweep('stopped');
+              return await guard.run(() => finishWithOrphanSweep('stopped'));
             }
           }
           // Post-restart: TrackedSession may be gone; registry still lists siblings.
-          const liveAfterStop = await readLiveRuntimesForStop();
+          const liveAfterStop = await guard.run(readLiveRuntimesForStop);
           if (liveAfterStop === null) return 'still_alive';
           if (wrapperHasActiveSiblingRoots(liveAfterStop, sessionId, sharedRuntime.pid)) {
             logger.debug(
               `[RUNNER RUN] Shared runtime stopped root ${sessionId}; registry siblings keep PID ${sharedRuntime.pid}`
             );
-            return await finishWithOrphanSweep('stopped');
+            return await guard.run(() => finishWithOrphanSweep('stopped'));
           }
-          return await finishWithOrphanSweep('stopped');
+          return await guard.run(() => finishWithOrphanSweep('stopped'));
         } catch { return 'still_alive'; }
       }
       {
-        const probeRuntimes = await readLiveRuntimesForStop();
+        const probeRuntimes = await guard.run(readLiveRuntimesForStop);
         if (probeRuntimes === null) return 'still_alive';
         if (probeRuntimes.some(runtime => runtime.sessions[sessionId]?.active)) return 'still_alive';
       }
@@ -1218,7 +1261,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       // while older roots remain active only in the durable registry).
       const liveRegistryRuntimes = async () => readLiveRuntimesForStop();
       const registrySiblingsKeepPid = async (pid: number): Promise<boolean | 'unreadable'> => {
-        const live = await liveRegistryRuntimes();
+        const live = await guard.run(liveRegistryRuntimes);
         if (live === null) return 'unreadable';
         return wrapperHasActiveSiblingRoots(live, sessionId, pid);
       };
@@ -1228,7 +1271,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       if (sessionId.startsWith('PID-')) {
         const pid = parseInt(sessionId.slice(4), 10);
         if (Number.isFinite(pid) && pid > 0) {
-          const liveForPid = await liveRegistryRuntimes();
+          const liveForPid = await guard.run(liveRegistryRuntimes);
           if (liveForPid === null) return 'still_alive';
           const decision = decideRawPidStop({
             alive: isProcessAlive(pid),
@@ -1250,11 +1293,11 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             logger.debug(
               `[RUNNER RUN] PID ${pid} still hosts active shared roots; not tree-killing`
             );
-            return await finishWithOrphanSweep('stopped');
+            return await guard.run(() => finishWithOrphanSweep('stopped'));
           }
-          if (!(await killProcessTreeByPid(pid))) return 'still_alive';
+          if (!(await guard.run(() => killProcessTreeByPid(pid)))) return 'still_alive';
           rememberVerifiedExit(sessionId);
-          return await finishWithOrphanSweep('stopped');
+          return await guard.run(() => finishWithOrphanSweep('stopped'));
         }
         return 'unknown';
       }
@@ -1264,13 +1307,13 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       // registry binding is stop evidence (Codex KillSession already archived
       // the root); absent evidence stays unknown across retries.
       const finishKeepWrapperDetach = async (pid: number): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
-        const live = await liveRegistryRuntimes();
+        const live = await guard.run(liveRegistryRuntimes);
         if (live === null) return 'still_alive';
         const binding = sessionRegistryBindingState(live, sessionId, pid);
         if (binding === 'active') return 'still_alive';
         // Base unknown so an argv orphan reap returning stopped is distinguishable
         // from "no orphans" (which would otherwise echo a stopped base).
-        const orphan = await finishWithOrphanSweep('unknown');
+        const orphan = await guard.run(() => finishWithOrphanSweep('unknown'));
         if (orphan === 'still_alive') return 'still_alive';
         if (orphan === 'stopped') return 'stopped';
         const decision = decideKeepWrapperArchive(binding);
@@ -1289,12 +1332,12 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       for (const [pid, session] of pidToTrackedSession.entries()) {
         if (!session.sharedSessions?.[sessionId]) continue;
         if (detachSharedRootFromWrapper(session, sessionId).kind === 'keep_wrapper') {
-          return await finishKeepWrapperDetach(pid);
+          return await guard.run(() => finishKeepWrapperDetach(pid));
         }
         // In-memory map had only this root (typical after restart adoption of a
         // newly reported root). Registry may still list older active siblings.
-        if (await registrySiblingsKeepPid(pid) !== false) {
-          return await finishKeepWrapperDetach(pid);
+        if (await guard.run(() => registrySiblingsKeepPid(pid)) !== false) {
+          return await guard.run(() => finishKeepWrapperDetach(pid));
         }
         // Last shared entry removed — fall through so the wrapper can be stopped.
         break;
@@ -1308,15 +1351,15 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           // Primary match, but live shared siblings still use this wrapper
           // (KillSession may already have cleared this id from sharedSessions).
           if (keepWrapperForSharedSiblings(session, sessionId)) {
-            return await finishKeepWrapperDetach(pid);
+            return await guard.run(() => finishKeepWrapperDetach(pid));
           }
 
           // Post-restart: TrackedSession may only list the newly reported root
           // while older roots remain active in the durable registry on this PID.
           // Archiving the new root must not tree-kill those siblings.
-          if (await registrySiblingsKeepPid(pid) !== false) {
+          if (await guard.run(() => registrySiblingsKeepPid(pid)) !== false) {
             detachSharedRootFromWrapper(session, sessionId);
-            return await finishKeepWrapperDetach(pid);
+            return await guard.run(() => finishKeepWrapperDetach(pid));
           }
 
           if (session.startedBy === 'runner') {
@@ -1330,7 +1373,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
                 logger.debug(
                   `[RUNNER RUN] Adopted PID ${pid} has no start marker; refusing tracked kill for ${sessionId}`
                 );
-                const orphan = await finishWithOrphanSweep('unknown');
+                const orphan = await guard.run(() => finishWithOrphanSweep('unknown'));
                 if (orphan === 'still_alive') return 'still_alive';
                 if (orphan === 'stopped') return 'stopped';
                 return 'unknown';
@@ -1349,9 +1392,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
               }
             }
             try {
-              const treeStopped = session.childProcess
-                ? await killProcessByChildProcess(session.childProcess)
-                : await killProcessTreeByPid(pid);
+              const child = session.childProcess;
+              const treeStopped = await guard.run(() => child
+                ? killProcessByChildProcess(child)
+                : killProcessTreeByPid(pid));
               if (!treeStopped) {
                 logger.debug(`[RUNNER RUN] Process tree for session ${sessionId} is still alive after stop request`);
                 return 'still_alive';
@@ -1364,7 +1408,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           } else {
             // For externally started sessions, try to kill by PID
             try {
-              if (!(await killProcess(pid))) return 'still_alive';
+              if (!(await guard.run(() => killProcess(pid)))) return 'still_alive';
               logger.debug(`[RUNNER RUN] Requested termination for external session PID ${pid}`);
             } catch (error) {
               logger.debug(`[RUNNER RUN] Failed to kill external session PID ${pid}:`, error);
@@ -1380,7 +1424,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           }
           const deadline = Date.now() + 5_000;
           while (isProcessAlive(pid) && Date.now() < deadline) {
-            await new Promise(resolve => setTimeout(resolve, 50));
+            await guard.run(() => new Promise(resolve => setTimeout(resolve, 50)));
           }
           if (isProcessAlive(pid)) {
             logger.debug(`[RUNNER RUN] Session ${sessionId} process ${pid} is still alive after stop request`);
@@ -1393,8 +1437,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           pidToRequestedSessionId.delete(pid);
           pidToConfirmedSessionId.delete(pid);
           if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
+          releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
           logger.debug(`[RUNNER RUN] Removed terminated session ${sessionId} from tracking`);
-          return await finishWithOrphanSweep('stopped');
+          return await guard.run(() => finishWithOrphanSweep('stopped'));
         }
       }
 
@@ -1427,14 +1472,14 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
             continue;
           }
-          const liveForPid = await liveRegistryRuntimes();
+          const liveForPid = await guard.run(liveRegistryRuntimes);
           if (liveForPid === null) return 'still_alive';
           if (wrapperHasActiveSiblingRoots(liveForPid, sessionId, pid)) {
             // Keep this shared wrapper; siblings alone are not stop proof for
             // this root — require an inactive registry binding (KillSession ack).
             const binding = sessionRegistryBindingState(liveForPid, sessionId, pid);
             if (binding === 'active') return 'still_alive';
-            const orphan = await finishWithOrphanSweep('unknown');
+            const orphan = await guard.run(() => finishWithOrphanSweep('unknown'));
             if (orphan === 'still_alive') return 'still_alive';
             if (orphan === 'stopped') return 'stopped';
             const decision = decideKeepWrapperArchive(binding);
@@ -1443,7 +1488,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             );
             return decision;
           }
-          if (!(await killProcessTreeByPid(pid))) return 'still_alive';
+          if (!(await guard.run(() => killProcessTreeByPid(pid)))) return 'still_alive';
           if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
           if (confirmedSessionId) rememberVerifiedExit(confirmedSessionId);
           rememberVerifiedExit(`PID-${pid}`);
@@ -1451,7 +1496,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           pidToConfirmedSessionId.delete(pid);
           if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
           releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
-          return await finishWithOrphanSweep('stopped');
+          return await guard.run(() => finishWithOrphanSweep('stopped'));
         }
         if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
         if (confirmedSessionId) rememberVerifiedExit(confirmedSessionId);
@@ -1460,7 +1505,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         pidToConfirmedSessionId.delete(pid);
         if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
         releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
-        return await finishWithOrphanSweep('already_gone');
+        return await guard.run(() => finishWithOrphanSweep('already_gone'));
       }
 
       // Maps missed (or marker-mismatch cleared a stale row). Scan live argv for
@@ -1468,18 +1513,19 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       // excluding PIDs that still host active shared sibling roots (registry
       // and/or in-memory tracked wrappers).
       {
-        const liveRuntimes = await readLiveRuntimesForStop();
+        const liveRuntimes = await guard.run(readLiveRuntimesForStop);
         if (liveRuntimes === null) return 'still_alive';
         const protectedTrackedPids = trackedSharedWrapperPidsWithSiblings(
           pidToTrackedSession.entries(),
           sessionId
         );
-        const orphanStatus = await reapRunnerSpawnedOrphans(sessionId, {
+        const orphanStatus = await guard.run(() => reapRunnerSpawnedOrphans(sessionId, {
           findTargets: (id) => findStopSessionOrphanTargets(
             id,
             (sid, pid) => shouldSkipOrphanPid(liveRuntimes, protectedTrackedPids, sid, pid)
           ),
-        });
+          killTree: pid => guard.run(() => killProcessTreeByPid(pid)),
+        }));
         if (orphanStatus === 'still_alive') {
           logger.debug(`[RUNNER RUN] Orphan argv reap still_alive for session ${sessionId} (scan_failed or kill left live PIDs)`);
           return 'still_alive';
@@ -1515,6 +1561,74 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       // while callers that just spawned this id can treat unknown defensively.
       logger.debug(`[RUNNER RUN] Session ${sessionId} not found without verified exit`);
       return 'unknown';
+    };
+
+    const stopSession = async (sessionId: string, opts?: { processStartMarker?: string }): ReturnType<typeof stopSessionOnce> => {
+      try {
+        return await stopGuards.during(sessionId, async guard => {
+          if (sessionId.startsWith('PID-')) return await stopSessionOnce(sessionId, opts, guard);
+          // Root exit is different from wrapper exit. Snapshot the ownership being
+          // stopped so late cleanup cannot erase a newly spawned same-row child.
+          const pids = new Set([
+            ...pidToTrackedSession.keys(), ...persistedResumeProcesses.keys(),
+            ...existingSessionIdByChildPid.keys(), ...pidToRequestedSessionId.keys(), ...pidToConfirmedSessionId.keys(),
+          ]);
+          const snapshots = [...pids].map(pid => ({
+            pid,
+            tracked: pidToTrackedSession.get(pid),
+            persisted: persistedResumeProcesses.get(pid),
+            requested: pidToRequestedSessionId.get(pid),
+            confirmed: pidToConfirmedSessionId.get(pid),
+            dedupeId: existingSessionIdByChildPid.get(pid),
+          })).filter(snapshot => [
+            snapshot.requested, snapshot.confirmed, snapshot.dedupeId,
+            snapshot.persisted?.requestedSessionId, snapshot.persisted?.confirmedSessionId,
+            snapshot.tracked?.happySessionId, snapshot.tracked?.requestedHappySessionId,
+          ].includes(sessionId) || snapshot.tracked?.sharedSessions?.[sessionId]);
+          const ids = new Set([sessionId]);
+          for (const snapshot of snapshots) {
+            if (snapshot.confirmed === sessionId || snapshot.persisted?.confirmedSessionId === sessionId) {
+              for (const id of [snapshot.requested, snapshot.dedupeId, snapshot.persisted?.requestedSessionId]) {
+                if (id) ids.add(id);
+              }
+            }
+          }
+          const releases = [...ids].map(id => spawnSession.captureChildExit(id));
+          const status = await guard.run(() => stopSessionOnce(sessionId, opts, guard));
+          if (status !== 'stopped' && status !== 'already_gone') return status;
+          let changed = false;
+          for (const snapshot of snapshots) {
+            const { pid, tracked, persisted } = snapshot;
+            // Replacement tracking for a reused PID belongs to the new generation.
+            if (pidToTrackedSession.get(pid) !== tracked || persistedResumeProcesses.get(pid) !== persisted) continue;
+            for (const [map, value] of [
+              [existingSessionIdByChildPid, snapshot.dedupeId],
+              [pidToRequestedSessionId, snapshot.requested],
+              [pidToConfirmedSessionId, snapshot.confirmed],
+            ] as const) {
+              if (value && ids.has(value) && map.get(pid) === value) map.delete(pid);
+            }
+            if (persisted && (ids.has(persisted.requestedSessionId) || (persisted.confirmedSessionId && ids.has(persisted.confirmedSessionId)))) {
+              persistedResumeProcesses.delete(pid);
+              changed = true;
+            }
+            if (tracked) {
+              if (tracked.happySessionId && ids.has(tracked.happySessionId)) {
+                delete tracked.happySessionId;
+                delete tracked.happySessionMetadataFromLocalWebhook;
+              }
+              if (tracked.requestedHappySessionId && ids.has(tracked.requestedHappySessionId)) delete tracked.requestedHappySessionId;
+              if (tracked.sharedSessions) delete tracked.sharedSessions[sessionId];
+            }
+          }
+          for (const release of releases) release();
+          if (changed) persistResumeProcesses();
+          return status;
+        });
+      } catch (error) {
+        if (error instanceof SessionReboundDuringStop) return 'still_alive';
+        throw error;
+      }
     };
 
     // Handle child process exit
