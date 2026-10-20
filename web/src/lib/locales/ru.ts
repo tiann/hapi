@@ -464,6 +464,10 @@ export default {
   'terminal.paste.fallbackTitle': 'Вставить ввод',
   'terminal.paste.fallbackDescription': 'Чтение из буфера обмена недоступно. Вставьте текст ниже.',
   'terminal.paste.placeholder': 'Вставьте ввод терминала сюда…',
+  'terminal.toAgent.buffer': 'Агенту',
+  'terminal.toAgent.selection': 'Выделение агенту',
+  'terminal.toAgent.fueTitle': 'Отправить терминал агенту',
+  'terminal.toAgent.fueBody': 'Откройте терминал сессии и нажмите «Агенту», чтобы положить весь scrollback в поле ввода — или сначала выделите текст, и кнопка станет «Выделение агенту». При желании добавьте заметку и отправьте.',
 
   // Блок кода
   'code.copy': 'Копировать',
