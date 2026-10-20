@@ -50,6 +50,8 @@ export default {
   'login.error.loginUnavailable': 'Вход недоступен.',
   'login.error.bindFailed': 'Не удалось привязать',
   'login.error.authFailed': 'Ошибка аутентификации',
+  'login.error.redirected': 'Запрос был перенаправлен',
+  'login.redirect.open': 'Открыть {host}',
   'login.help': 'Нужна помощь?',
   'login.server.default': '(По умолчанию)',
   'login.server.custom': '(Свой)',

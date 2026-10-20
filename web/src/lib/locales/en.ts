@@ -50,6 +50,8 @@ export default {
   'login.error.loginUnavailable': 'Login is unavailable.',
   'login.error.bindFailed': 'Binding failed',
   'login.error.authFailed': 'Authentication failed',
+  'login.error.redirected': 'Request was redirected',
+  'login.redirect.open': 'Open {host}',
   'login.help': 'Needs help?',
   'login.server.default': '(Default)',
   'login.server.custom': '(Custom)',

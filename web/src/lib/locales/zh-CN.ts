@@ -50,6 +50,8 @@ export default {
   'login.error.loginUnavailable': '登录服务不可用。',
   'login.error.bindFailed': '绑定失败',
   'login.error.authFailed': '认证失败',
+  'login.error.redirected': '请求已被重定向',
+  'login.redirect.open': '打开 {host}',
   'login.help': '需要帮助？',
   'login.server.default': '(默认)',
   'login.server.custom': '(自定义)',
