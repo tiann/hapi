@@ -27,6 +27,7 @@ import { createGitRoutes } from './routes/git'
 import { createCliRoutes } from './routes/cli'
 import { createCodexDesktopRoutes } from './routes/codexDesktop'
 import { createPiSessionRoutes } from './routes/piSessions'
+import { createOpencodeSessionRoutes } from './routes/opencodeSessions'
 import { createPushRoutes } from './routes/push'
 import { createDevicesRoutes } from './routes/devices'
 import { createVoiceRoutes } from './routes/voice'
@@ -300,6 +301,10 @@ function createWebApp(options: {
         getSyncEngine: options.getSyncEngine
     }))
     app.route('/api', createPiSessionRoutes({
+        store: options.store,
+        getSyncEngine: options.getSyncEngine
+    }))
+    app.route('/api', createOpencodeSessionRoutes({
         store: options.store,
         getSyncEngine: options.getSyncEngine
     }))
