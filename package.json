@@ -35,6 +35,7 @@
         "test:relay": "cd relay && bun run test",
         "test:web": "cd web && bun run test",
         "test:shared": "cd shared && bun run test",
+        "test:proxy-smoke": "bun run --cwd cli scripts/proxy-smoke.ts",
         "test:e2e": "playwright test",
         "test:e2e:ui": "playwright test --ui",
         "test:mermaid-lightbox:playwright": "timeout 600 node scripts/dev/mermaid-lightbox-playwright.mjs",
