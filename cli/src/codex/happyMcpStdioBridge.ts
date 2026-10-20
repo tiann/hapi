@@ -22,6 +22,7 @@ import {
   PING_PEER_TOOL_DESCRIPTION,
   SESSION_ID_PREFIX_PARAM_DESCRIPTION,
 } from '@hapi/protocol/sessionCitation';
+import { isPeerToolsDisabled, PEER_TOOL_NAMES } from '@/modules/common/peerTools';
 
 const DEFAULT_TOOL_NAMES = ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer'];
 
@@ -50,6 +51,13 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
   try {
     // Resolve target HTTP MCP URL
     const { url: urlFromArgs, toolNames } = parseArgs(argv);
+
+    // HAPI_DISABLE_PEER_TOOLS=1: drop peer tools even when explicitly listed,
+    // so a wrapped agent cannot re-enable them via a stale --tools value.
+    if (isPeerToolsDisabled()) {
+      for (const name of PEER_TOOL_NAMES) toolNames.delete(name);
+    }
+
     const baseUrl = urlFromArgs || process.env.HAPI_HTTP_MCP_URL || '';
 
     if (!baseUrl) {

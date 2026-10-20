@@ -134,6 +134,20 @@ export type SessionCitationSteerTools = {
 }
 
 /**
+ * System-prompt citation block used when peer tools are hidden by
+ * `HAPI_DISABLE_PEER_TOOLS`. Keeps the hub-path-is-not-a-file guard (pasted
+ * citations still arrive) but points the agent at the user instead of the
+ * disabled peer tools.
+ */
+export const SESSION_CITATION_DISABLED_STEER =
+    'When the user cites another HAPI session as [title](/sessions/<id>), ' +
+    'Copy-reference prose See session "…" (/sessions/<id>) for context, ' +
+    'or a bare /sessions/<id>, extract that <id>. ' +
+    '/sessions/<id> is a HAPI hub path, not a local filesystem path - do not Grep, Glob, or Read it as a file. ' +
+    'Peer session tools (inspect_peer / ping_peer / list_peers) are disabled on this machine; ' +
+    'ask the user to paste the relevant context from that session instead.'
+
+/**
  * Always-on system-prompt line: both citation forms + hub-not-FS + tool names.
  */
 export function buildSessionCitationSteerInstruction(tools: SessionCitationSteerTools): string {
