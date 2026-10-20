@@ -33,6 +33,18 @@ export type AcpModelDescriptor = {
     reasoningEfforts?: Array<{ value: string; name?: string; isDefault?: boolean }>;
 };
 
+/**
+ * How {@link AcpSdkBackend.cancelPrompt} cancels an in-flight prompt.
+ *
+ * - `standard` (default): send the `session/cancel` notification. ACP v1
+ *   defines no capability field for cancel — it is unconditional baseline
+ *   behavior, so standard adapters never gate on advertised capabilities.
+ * - `close-fallback`: for agents known to mishandle `session/cancel`
+ *   (dsh 0.2.x exits its whole process on it). Cancel by closing the session
+ *   when the agent advertises `close`; otherwise fall back to the baseline.
+ */
+export type AcpCancelMode = 'standard' | 'close-fallback';
+
 export type AcpSessionModelsMetadata = {
     availableModels: AcpModelDescriptor[];
     currentModelId: string | null;
@@ -64,6 +76,7 @@ export class AcpSdkBackend implements AgentBackend {
     private transport: AcpStdioTransport | null = null;
     private permissionHandler: ((request: PermissionRequest) => void) | null = null;
     private stderrErrorHandler: ((error: AcpStderrError) => void) | null = null;
+    private sessionClosedByCancelHandler: (() => void) | null = null;
     private readonly pendingPermissions = new Map<string, PendingPermission>();
     private readonly sessionModelsMetadata = new Map<string, AcpSessionModelsMetadata>();
     private readonly sessionConfigOptions = new Map<string, AcpConfigOptionDescriptor[]>();
@@ -138,6 +151,7 @@ export class AcpSdkBackend implements AgentBackend {
         env?: Record<string, string>;
         textChunkMode?: AcpTextChunkMode;
         flavor?: AgentFlavor;
+        cancelMode?: AcpCancelMode;
     }) {}
 
     async initialize(): Promise<void> {
@@ -697,12 +711,46 @@ export class AcpSdkBackend implements AgentBackend {
         }
     }
 
+    /**
+     * Whether this backend will send the standard `session/cancel`
+     * notification from {@link cancelPrompt}.
+     *
+     * Always true for standard adapters (ACP v1 requires `session/cancel`
+     * baseline behavior unconditionally — there is no capability field to
+     * gate it on). For `close-fallback` adapters (dsh), false when the agent
+     * advertises `close`: the notification would exit its process, so
+     * cancellation goes through `session/close` instead.
+     */
+    supportsCancelNotification(): boolean {
+        if (this.options.cancelMode !== 'close-fallback') {
+            return true;
+        }
+        const sessionCapabilities = this.initializeResult?.agentCapabilities?.sessionCapabilities;
+        return !(isObject(sessionCapabilities) && 'close' in sessionCapabilities);
+    }
+
     async cancelPrompt(sessionId: string): Promise<void> {
         if (!this.transport) {
             return;
         }
 
-        this.transport.sendNotification('session/cancel', { sessionId });
+        if (this.supportsCancelNotification()) {
+            this.transport.sendNotification('session/cancel', { sessionId });
+            return;
+        }
+
+        // close-fallback (dsh): verified against dsh 0.2.0-rc.2, session/close
+        // returns immediately, resolves the in-flight session/prompt with
+        // end_turn, cancels the underlying work, and leaves the process alive
+        // for future sessions — unlike session/cancel, which kills the process.
+        try {
+            await this.transport.sendRequest('session/close', { sessionId }, { timeoutMs: 5000 });
+        } catch (error) {
+            logger.debug('[ACP] session/close cancel failed', error);
+        }
+        // Fire even on close failure: callers must treat the session as ended
+        // rather than reusing one whose close outcome is unknown.
+        this.sessionClosedByCancelHandler?.();
     }
 
     /**
@@ -814,6 +862,17 @@ export class AcpSdkBackend implements AgentBackend {
 
     onStderrError(handler: (error: AcpStderrError) => void): void {
         this.stderrErrorHandler = handler;
+    }
+
+    /**
+     * Registers a listener fired whenever {@link cancelPrompt} takes the
+     * `session/close` path — i.e. every close-path cancellation ends the ACP
+     * session, no matter which caller initiated it (user abort, permission
+     * `abort` decision, ...). Listeners run even when the close request fails:
+     * the session must then be treated as ended rather than reusable.
+     */
+    onSessionClosedByCancel(handler: () => void): void {
+        this.sessionClosedByCancelHandler = handler;
     }
 
     /**
