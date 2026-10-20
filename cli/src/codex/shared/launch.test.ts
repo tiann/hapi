@@ -47,6 +47,14 @@ describe('shared launch configuration', () => {
         expect(sharedLaunchConfig({ codexArgs: ['--', '-C', 'literal'] }, '/tmp').tuiArgs).toEqual(['--', '-C', 'literal']);
         expect(() => sharedLaunchConfig({ permissionMode: 'safe-yolo' }, '/tmp')).toThrow('not a native shared');
     });
+
+    it('does not freeze developer instructions into threadParams (#2056)', () => {
+        // sharedLaunchConfig runs before the hub bootstrap delivers the
+        // peer-tools preference; each root resolves its prompt post-bootstrap
+        // in SharedCodexRoot.config() instead of carrying a frozen string.
+        const result = sharedLaunchConfig({}, '/tmp');
+        expect(result.threadParams).not.toHaveProperty('developerInstructions');
+    });
     it('preserves launch-time provider and automatic-review policy', () => {
         const result = sharedLaunchConfig({ codexArgs: ['--oss', '--local-provider', 'ollama', '--approve-for-me'] }, '/tmp');
         expect(result.threadParams).toMatchObject({ modelProvider: 'ollama', approvalsReviewer: 'auto_review', sandbox: 'workspace-write' });

@@ -23,6 +23,7 @@ import {
 } from './utils/opencodeEventStream';
 import { OpencodePermissionHandler } from './utils/permissionHandler';
 import { getOpencodeNativeToolInstruction, PLAN_MODE_INSTRUCTION } from './utils/systemPrompt';
+import { isPeerToolsDisabled, withPeerToolsPreference } from '@/modules/common/peerTools';
 import { resolveThoughtLevelEffort } from './thoughtLevelEffort';
 
 type OpencodeRemoteLauncherOptions = {
@@ -179,7 +180,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         const backend = createOpencodeBackend({
             cwd: session.path,
             port,
-            hostname
+            hostname,
+            peerToolsDisabled: session.client.peerToolsDisabled
         });
         this.backend = backend;
         registerAcpSessionTitleSync(backend, session.client);
@@ -650,7 +652,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 messageText = `${PLAN_MODE_INSTRUCTION}\n\n${messageText}`;
             }
             if (!this.instructionsSent) {
-                messageText = `${getOpencodeNativeToolInstruction()}\n\n${messageText}`;
+                messageText = `${getOpencodeNativeToolInstruction(withPeerToolsPreference(session.client.peerToolsDisabled ?? isPeerToolsDisabled()))}\n\n${messageText}`;
                 this.instructionsSent = true;
             }
 

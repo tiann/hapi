@@ -5,7 +5,15 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ApiSessionClient } from '@/api/apiSession'
+import { applyHubPeerToolsDisabled, resetPeerToolsForTests } from '@/modules/common/peerTools'
 import { startHappyServer, toClaudeAllowedHapiMcpTools } from './startHappyServer'
+
+// The ping_peer core is stubbed so the cross-flip regression can observe the
+// snapshot handed to the handler without network access.
+vi.mock('@/modules/pingPeer/pingPeer', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/modules/pingPeer/pingPeer')>()
+    return { ...actual, pingPeer: vi.fn(actual.pingPeer) }
+})
 
 type ToolResult = {
     content?: Array<{ type: string; text?: string }>
@@ -326,5 +334,109 @@ describe('toClaudeAllowedHapiMcpTools', () => {
         ])
         expect(toClaudeAllowedHapiMcpTools(['display_video'])).not.toContain('mcp__hapi__display_video')
         expect(toClaudeAllowedHapiMcpTools(['display_media'])).not.toContain('mcp__hapi__display_media')
+    })
+})
+
+describe('startHappyServer peer tools kill switch', () => {
+    const originalFlag = process.env.HAPI_DISABLE_PEER_TOOLS
+    let client: Client | null
+    let stopServer: (() => void) | null
+
+    afterEach(async () => {
+        await client?.close()
+        stopServer?.()
+        if (originalFlag === undefined) {
+            delete process.env.HAPI_DISABLE_PEER_TOOLS
+        } else {
+            process.env.HAPI_DISABLE_PEER_TOOLS = originalFlag
+        }
+        resetPeerToolsForTests()
+    })
+
+    async function startServer(): Promise<{ url: string; toolNames: string[] }> {
+        const sessionClient = {
+            updateMetadata: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+        const server = await startHappyServer(sessionClient, {})
+        stopServer = server.stop
+        client = new Client(
+            { name: 'hapi-peer-tools-test', version: '1.0.0' },
+            { capabilities: {} }
+        )
+        await client.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+        return { url: server.url, toolNames: server.toolNames }
+    }
+
+    it('registers peer tools by default', async () => {
+        delete process.env.HAPI_DISABLE_PEER_TOOLS
+        const { toolNames } = await startServer()
+        expect(toolNames).toEqual(expect.arrayContaining(['list_peers', 'ping_peer', 'inspect_peer']))
+        const tools = await client!.listTools()
+        const names = tools.tools.map((tool) => tool.name)
+        expect(names).toEqual(expect.arrayContaining(['list_peers', 'ping_peer', 'inspect_peer']))
+    })
+
+    it('omits peer tools from registration and toolNames when HAPI_DISABLE_PEER_TOOLS is set', async () => {
+        process.env.HAPI_DISABLE_PEER_TOOLS = '1'
+        const { toolNames } = await startServer()
+        expect(toolNames).toEqual(['change_title', 'display_image', 'display_video', 'display_media'])
+        const tools = await client!.listTools()
+        const names = tools.tools.map((tool) => tool.name)
+        expect(names).not.toContain('list_peers')
+        expect(names).not.toContain('ping_peer')
+        expect(names).not.toContain('inspect_peer')
+        expect(names).toEqual(expect.arrayContaining(['display_image', 'display_video', 'display_media']))
+    })
+
+    it('omits peer tools from registration and toolNames when the hub preference disables them', async () => {
+        delete process.env.HAPI_DISABLE_PEER_TOOLS
+        applyHubPeerToolsDisabled(true)
+        const { toolNames } = await startServer()
+        expect(toolNames).toEqual(['change_title', 'display_image', 'display_video', 'display_media'])
+        const tools = await client!.listTools()
+        const names = tools.tools.map((tool) => tool.name)
+        expect(names).not.toContain('list_peers')
+        expect(names).not.toContain('ping_peer')
+        expect(names).not.toContain('inspect_peer')
+    })
+
+    it('keeps handlers registered by an enabled session working after a later session flips the global switch (#2056)', async () => {
+        delete process.env.HAPI_DISABLE_PEER_TOOLS
+        const { pingPeer } = await import('@/modules/pingPeer/pingPeer')
+        vi.mocked(pingPeer).mockRejectedValueOnce(new Error('offline in test'))
+
+        // Session A bootstraps with peer tools enabled (create-time snapshot).
+        const sessionClient = {
+            peerToolsDisabled: false,
+            updateMetadata: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+        const server = await startHappyServer(sessionClient, {})
+        stopServer = server.stop
+        client = new Client(
+            { name: 'hapi-peer-flip-test', version: '1.0.0' },
+            { capabilities: {} }
+        )
+        await client.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+
+        // Session B bootstraps elsewhere in the same process and flips the
+        // module-wide preference. A's registered handlers must keep working.
+        applyHubPeerToolsDisabled(true)
+
+        const result = await client.callTool({
+            name: 'ping_peer',
+            arguments: { sessionIdPrefix: 'abc123', message: 'hello' }
+        }) as ToolResult
+        expect(result.isError).toBe(true)
+        expect(JSON.stringify(result.content)).not.toContain('peer session tools are disabled')
+        // The handler resolved the guard from A's captured snapshot, not the
+        // flipped module state.
+        expect(pingPeer).toHaveBeenCalledWith(expect.objectContaining({
+            sessionIdPrefix: 'abc123',
+            peerToolsDisabled: false
+        }))
     })
 })

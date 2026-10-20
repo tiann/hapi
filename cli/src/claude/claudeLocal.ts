@@ -4,6 +4,7 @@ import { claudeCheckSession } from "./utils/claudeCheckSession";
 import { getProjectPath } from "./utils/path";
 import { appendMcpConfigArg } from "./utils/mcpConfig";
 import { getSystemPrompt } from "./utils/systemPrompt";
+import { isPeerToolsDisabled, peerToolsEnvOverlay, withPeerToolsPreference } from '@/modules/common/peerTools';
 import { withBunRuntimeEnv } from "@/utils/bunRuntime";
 import { spawnWithTerminalGuard } from "@/utils/spawnWithTerminalGuard";
 import { getHapiBlobsDir } from "@/constants/uploadPaths";
@@ -37,6 +38,7 @@ export async function claudeLocal(opts: {
     mcpServers?: Record<string, any>,
     path: string,
     claudeEnvVars?: Record<string, string>,
+    peerToolsDisabled?: boolean
     claudeArgs?: string[]
     model?: SessionModel
     allowedTools?: string[]
@@ -73,7 +75,10 @@ export async function claudeLocal(opts: {
         args.push('--resume', startFrom);
     }
 
-    args.push('--append-system-prompt', stripNewlinesForWindowsShellArg(getSystemPrompt()));
+    // Snapshot (env > this session's bootstrap) instead of the module-wide
+    // preference: a later session in this process must not rewrite our prompt.
+    const peerToolsDisabled = opts.peerToolsDisabled ?? isPeerToolsDisabled();
+    args.push('--append-system-prompt', stripNewlinesForWindowsShellArg(getSystemPrompt(withPeerToolsPreference(peerToolsDisabled))));
 
     const cleanupMcpConfig = appendMcpConfigArg(args, opts.mcpServers, {
         baseDir: projectDir
@@ -114,6 +119,12 @@ export async function claudeLocal(opts: {
     const env = {
         ...cleanEnv,
         DISABLE_AUTOUPDATER: '1',
+        // Propagate the resolved peer-tools switch into the wrapped-agent env:
+        // shells spawning `hapi ping-peer` lose the wrapper's module memory,
+        // so the preference must travel as an explicit env value. Explicit
+        // claudeEnvVars still win; machine-level HAPI_DISABLE_PEER_TOOLS stays
+        // authoritative inside peerToolsEnvOverlay.
+        ...peerToolsEnvOverlay(peerToolsDisabled),
         ...opts.claudeEnvVars
     }
 

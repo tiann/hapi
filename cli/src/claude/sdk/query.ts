@@ -299,6 +299,7 @@ export function query(config: {
         options: {
             additionalArgs = [],
             additionalDirectories = [],
+            env,
             allowedTools = [],
             appendSystemPrompt,
             customSystemPrompt,
@@ -382,7 +383,7 @@ export function query(config: {
     cleanupMcpConfig = appendMcpConfigArg(spawnArgs, mcpServers)
 
     // Spawn Claude Code process
-    const spawnEnv = withBunRuntimeEnv(process.env, { allowBunBeBun: false })
+    const spawnEnv = withBunRuntimeEnv(env ?? process.env, { allowBunBeBun: false })
     logDebug(`Spawning Claude Code process: ${spawnCommand} ${spawnArgs.join(' ')}`)
 
     const child = spawn(spawnCommand, spawnArgs, {

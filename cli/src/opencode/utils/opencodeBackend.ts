@@ -1,6 +1,7 @@
 import { createServer } from 'node:net';
 import { AcpSdkBackend } from '@/agent/backends/acp';
 import { buildOpencodeEnv } from './config';
+import { isPeerToolsDisabled, peerToolsEnvOverlay } from '@/modules/common/peerTools';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 
@@ -51,8 +52,15 @@ export function createOpencodeBackend(opts: {
     cwd?: string;
     port?: number;
     hostname?: string;
+    /** Peer-tools switch captured from this session's bootstrap (env > hub). */
+    peerToolsDisabled?: boolean;
 }): AcpSdkBackend {
     const env = buildOpencodeEnv();
+    // Propagate the resolved peer-tools switch onto the wrapped agent so its
+    // shells (`hapi ping-peer` / `inspect-peer`) resolve the captured value
+    // instead of the wrapper's module memory. Machine-level env overrides stay
+    // authoritative inside peerToolsEnvOverlay.
+    Object.assign(env, peerToolsEnvOverlay(opts.peerToolsDisabled ?? isPeerToolsDisabled()));
     const args = ['acp', '--cwd', opts.cwd ?? getInvokedCwd()];
     if (opts.port !== undefined) {
         args.push('--port', String(opts.port));

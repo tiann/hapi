@@ -19,6 +19,7 @@ import { SharedCodexPermissions } from './permissions';
 import { SharedCodexQueue } from './queue';
 import { SharedCodexProjection, inputText } from './projection';
 import { getCodexSystemPrompt } from '../utils/systemPrompt';
+import { isPeerToolsDisabled, peerToolsEnvOverlay, withPeerToolsPreference } from '@/modules/common/peerTools';
 import { record, string } from './gateway';
 import { initializeSharedClient, type SharedLaunchOptions } from './launch';
 import { inheritedSandbox, settingsMatch } from './settings';
@@ -67,6 +68,8 @@ export class SharedCodexRoot {
     private closing?: Promise<void>;
     private readonly controls = new Set<Promise<unknown>>();
     private reconnecting = false;
+    /** Peer-tools switch captured from this root's own bootstrap (env > hub). */
+    private readonly peerToolsDisabled: boolean;
     private settings: RuntimeSettings = {};
     private settingsNative: Record<string, unknown> = {};
     private settingsNotification?: Record<string, unknown>;
@@ -76,6 +79,9 @@ export class SharedCodexRoot {
 
     constructor(readonly bootstrap: SessionBootstrapResult, private readonly host: RootHost) {
         this.session = bootstrap.session;
+        // Frozen at construction (right after this root's bootstrap): later
+        // roots in the same process must not flip this root's tools or prompt.
+        this.peerToolsDisabled = bootstrap.session.peerToolsDisabled ?? isPeerToolsDisabled();
         this.client = new CodexAppServerClient({ endpoint: host.endpoint, token: host.token, cwd: bootstrap.workingDirectory });
         this.client.setNotificationHandler((method, params) => {
             if (method === 'serverRequest/resolved') {
@@ -176,10 +182,18 @@ export class SharedCodexRoot {
         return false;
     }
     config(params: Record<string, unknown>): Record<string, unknown> {
+        // Propagate the resolved peer-tools switch into this root's shell env:
+        // `hapi ping-peer` spawned by the agent resolves the captured value
+        // instead of the wrapper process's module memory. Machine-level env
+        // overrides stay authoritative (peerToolsEnvOverlay yields none), and
+        // the operator terminal never runs through a shared root.
+        const peerShellEnv = Object.fromEntries(Object.entries(peerToolsEnvOverlay(this.peerToolsDisabled))
+            .map(([name, value]) => [`shell_environment_policy.set.${name}`, value]));
         return { ...params, cwd: params.cwd ?? this.bootstrap.workingDirectory,
-            developerInstructions: params.developerInstructions ?? getCodexSystemPrompt(), config: {
+            developerInstructions: params.developerInstructions ?? getCodexSystemPrompt(withPeerToolsPreference(this.peerToolsDisabled)), config: {
             ...record(params.config), 'mcp_servers.hapi': this.bridge.mcpServers.hapi,
-            'shell_environment_policy.set.HAPI_SESSION_ID': this.session.sessionId
+            'shell_environment_policy.set.HAPI_SESSION_ID': this.session.sessionId,
+            ...peerShellEnv
         } };
     }
     async bind(threadId: string, response: Record<string, unknown>, subscribe: boolean): Promise<void> {
@@ -520,7 +534,6 @@ export class SharedCodexRoot {
         return { ...sandbox, cwd: this.settingsNative.cwd ?? this.bootstrap.workingDirectory, model: this.settingsNative.model, modelProvider: this.settingsNative.modelProvider,
             approvalPolicy: this.settingsNative.approvalPolicy, serviceTier: this.settingsNative.serviceTier,
             approvalsReviewer: this.settingsNative.approvalsReviewer, personality: this.settingsNative.personality,
-            developerInstructions: getCodexSystemPrompt(),
             config: { ...record(sandbox.config), model_reasoning_effort: this.settings.modelReasoningEffort ?? undefined } };
     }
     private notice(message: string): void { this.session.sendSessionEvent({ type: 'message', message }); }

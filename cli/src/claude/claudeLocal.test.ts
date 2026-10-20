@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const harness = vi.hoisted(() => ({
     spawn: vi.fn(async (_opts: unknown) => {})
@@ -49,6 +49,7 @@ vi.mock('./sdk/utils', () => ({
 }))
 
 import { claudeLocal } from './claudeLocal'
+import { resetPeerToolsForTests } from '@/modules/common/peerTools'
 
 function getSpawnArgs(): string[] {
     const call = harness.spawn.mock.calls[0]
@@ -111,5 +112,48 @@ describe('claudeLocal model arguments', () => {
         expect(args).not.toContain('--model=claude-haiku-4-5')
         expect(args).not.toContain('--model')
         expect(args).toContain('--verbose')
+    })
+})
+
+describe('claudeLocal peer-tools child env (#2056)', () => {
+    const original = process.env.HAPI_DISABLE_PEER_TOOLS
+
+    beforeEach(() => {
+        harness.spawn.mockClear()
+    })
+
+    afterEach(() => {
+        if (original === undefined) delete process.env.HAPI_DISABLE_PEER_TOOLS
+        else process.env.HAPI_DISABLE_PEER_TOOLS = original
+        resetPeerToolsForTests()
+    })
+
+    async function spawnEnv(peerToolsDisabled?: boolean): Promise<Record<string, string | undefined>> {
+        await claudeLocal({
+            abort: new AbortController().signal,
+            sessionId: null,
+            path: '/workspace',
+            hookSettingsPath: '/tmp/hooks.json',
+            ...(peerToolsDisabled === undefined ? {} : { peerToolsDisabled })
+        })
+        const call = harness.spawn.mock.calls[0]
+        expect(call).toBeDefined()
+        return (call[0] as { env: Record<string, string | undefined> }).env
+    }
+
+    it('pins a disabled session snapshot as an explicit env value', async () => {
+        delete process.env.HAPI_DISABLE_PEER_TOOLS
+        expect((await spawnEnv(true)).HAPI_DISABLE_PEER_TOOLS).toBe('1')
+    })
+
+    it('pins an enabled session explicitly so a later hub flip cannot rewrite the child', async () => {
+        delete process.env.HAPI_DISABLE_PEER_TOOLS
+        expect((await spawnEnv(false)).HAPI_DISABLE_PEER_TOOLS).toBe('0')
+    })
+
+    it('keeps a machine-level override authoritative (no session overlay)', async () => {
+        process.env.HAPI_DISABLE_PEER_TOOLS = '1'
+        const env = await spawnEnv(false)
+        expect(env.HAPI_DISABLE_PEER_TOOLS).toBe('1')
     })
 })

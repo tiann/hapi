@@ -126,6 +126,61 @@ describe('cursorLegacyRemoteLauncher', () => {
         expect(args).not.toContain('acp');
     });
 
+    it('pins the session peer-tools preference into the legacy agent env (#2056)', async () => {
+        const original = process.env.HAPI_DISABLE_PEER_TOOLS;
+        try {
+            delete process.env.HAPI_DISABLE_PEER_TOOLS;
+            const child = makeChild();
+            spawnMock.mockReturnValue(child);
+
+            const queue = new MessageQueue2<EnhancedMode>(() => 'm');
+            queue.push('hello', { permissionMode: 'default' });
+            queue.close();
+
+            const client = { ...makeClient(), peerToolsDisabled: true };
+            const session = makeSession(queue, client);
+
+            const { cursorLegacyRemoteLauncher } = await import('./cursorLegacyRemoteLauncher');
+            await cursorLegacyRemoteLauncher(session);
+
+            expect(spawnMock).toHaveBeenCalledTimes(1);
+            expect((spawnMock.mock.calls[0]?.[2] as { env: NodeJS.ProcessEnv }).env.HAPI_DISABLE_PEER_TOOLS).toBe('1');
+        } finally {
+            if (original === undefined) {
+                delete process.env.HAPI_DISABLE_PEER_TOOLS;
+            } else {
+                process.env.HAPI_DISABLE_PEER_TOOLS = original;
+            }
+        }
+    });
+
+    it('keeps a machine-level deploy override authoritative over the snapshot (#2056)', async () => {
+        const original = process.env.HAPI_DISABLE_PEER_TOOLS;
+        try {
+            process.env.HAPI_DISABLE_PEER_TOOLS = '1';
+            const child = makeChild();
+            spawnMock.mockReturnValue(child);
+
+            const queue = new MessageQueue2<EnhancedMode>(() => 'm');
+            queue.push('hello', { permissionMode: 'default' });
+            queue.close();
+
+            const client = { ...makeClient(), peerToolsDisabled: false };
+            const session = makeSession(queue, client);
+
+            const { cursorLegacyRemoteLauncher } = await import('./cursorLegacyRemoteLauncher');
+            await cursorLegacyRemoteLauncher(session);
+
+            expect((spawnMock.mock.calls[0]?.[2] as { env: NodeJS.ProcessEnv }).env.HAPI_DISABLE_PEER_TOOLS).toBe('1');
+        } finally {
+            if (original === undefined) {
+                delete process.env.HAPI_DISABLE_PEER_TOOLS;
+            } else {
+                process.env.HAPI_DISABLE_PEER_TOOLS = original;
+            }
+        }
+    });
+
     it('requeues the user message and surfaces an auth banner when agent exits with auth-required stderr', async () => {
         const queue = new MessageQueue2<EnhancedMode>(() => 'm');
         queue.push('do thing', { permissionMode: 'default' });

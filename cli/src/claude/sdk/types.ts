@@ -183,6 +183,13 @@ export interface CanCallToolCallback {
 export interface QueryOptions {
     abort?: AbortSignal
     additionalArgs?: string[]
+    /**
+     * Base environment for the spawned Claude process (defaults to
+     * process.env). Lets a wrapped session pin env values — e.g. the resolved
+     * peer-tools switch — onto its own child without mutating the runner's
+     * process-wide env.
+     */
+    env?: Record<string, string | undefined>
     additionalDirectories?: string[]
     allowedTools?: string[]
     appendSystemPrompt?: string

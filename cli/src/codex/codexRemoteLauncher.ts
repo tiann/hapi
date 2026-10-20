@@ -16,6 +16,7 @@ import type { QueueReservation } from '@/utils/MessageQueue2';
 import { hasCodexCliOverrides } from './utils/codexCliOverrides';
 import { AppServerEventConverter } from './utils/appServerEventConverter';
 import { registerGeneratedImageFromPath } from '@/modules/common/generatedImages';
+import { isPeerToolsDisabled, withPeerToolsPreference } from '@/modules/common/peerTools';
 import { registerAppServerPermissionHandlers } from './utils/appServerPermissionAdapter';
 import {
     buildThreadStartParams,
@@ -252,7 +253,12 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
     constructor(session: CodexSession) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
-        this.appServerClient = new CodexAppServerClient();
+        this.appServerClient = new CodexAppServerClient({
+            // Session-pinned peer-tools overlay: the app-server child resolves
+            // the switch from this session's create-time snapshot, not the
+            // runner process's latest module state.
+            env: withPeerToolsPreference(session.client.peerToolsDisabled ?? isPeerToolsDisabled())
+        });
     }
 
     protected createDisplay(context: RemoteLauncherDisplayContext): React.ReactElement {
@@ -3792,7 +3798,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 mode,
                 mcpServers,
                 cliOverrides: session.codexCliOverrides,
-                contextManagementConfig
+                contextManagementConfig,
+                env: withPeerToolsPreference(session.client.peerToolsDisabled ?? isPeerToolsDisabled())
             });
 
             try {
@@ -3858,7 +3865,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     mode,
                     mcpServers,
                     cliOverrides: session.codexCliOverrides,
-                    contextManagementConfig
+                    contextManagementConfig,
+                    env: withPeerToolsPreference(session.client.peerToolsDisabled ?? isPeerToolsDisabled())
                 });
                 try {
                     const resumeResponse = await appServerClient.resumeThread({
@@ -3890,7 +3898,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     mode,
                     mcpServers,
                     cliOverrides: session.codexCliOverrides,
-                    contextManagementConfig
+                    contextManagementConfig,
+                    env: withPeerToolsPreference(session.client.peerToolsDisabled ?? isPeerToolsDisabled())
                 });
                 const threadResponse = await appServerClient.startThread({
                     ...threadParams,
@@ -4142,7 +4151,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                         mode: message.mode,
                         mcpServers,
                         cliOverrides: session.codexCliOverrides,
-                        contextManagementConfig
+                        contextManagementConfig,
+                        env: withPeerToolsPreference(session.client.peerToolsDisabled ?? isPeerToolsDisabled())
                     });
 
                     const resumeCandidate = session.sessionId ?? null;

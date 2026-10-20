@@ -487,6 +487,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         },
                         onThinkingChange: session.onThinkingChange,
                         claudeEnvVars: session.claudeEnvVars,
+                        peerToolsDisabled: session.peerToolsDisabled,
                         claudeArgs: session.claudeArgs,
                         onMessage,
                         onFirstResult: (initialMessage) => {

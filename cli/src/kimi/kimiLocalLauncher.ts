@@ -122,7 +122,8 @@ export async function kimiLocalLauncher(
                 abort: abortSignal,
                 model: opts.model,
                 yolo: approval.yolo,
-                plan: approval.plan
+                plan: approval.plan,
+                peerToolsDisabled: session.client.peerToolsDisabled
             });
         },
         sendFailureMessage: (message) => {

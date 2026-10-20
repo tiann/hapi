@@ -1,4 +1,5 @@
 import { LocalPermissionBridge } from './utils/localPermissionBridge';
+import { isPeerToolsDisabled } from '@/modules/common/peerTools';
 import { ApiClient, ApiSessionClient } from '@/lib';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { logger } from '@/ui/logger';
@@ -15,6 +16,8 @@ type LocalLaunchFailure = {
 
 export class Session extends AgentSessionBase<EnhancedMode> {
     readonly claudeEnvVars?: Record<string, string>;
+    /** Peer-tools switch captured from this session's bootstrap (env > hub). */
+    readonly peerToolsDisabled: boolean;
     claudeArgs?: string[];
     readonly mcpServers: Record<string, any>;
     readonly allowedTools?: string[];
@@ -69,6 +72,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         });
 
         this.claudeEnvVars = opts.claudeEnvVars;
+        this.peerToolsDisabled = opts.client.peerToolsDisabled ?? isPeerToolsDisabled();
         this.claudeArgs = opts.claudeArgs;
         this.mcpServers = opts.mcpServers;
         this.allowedTools = opts.allowedTools;

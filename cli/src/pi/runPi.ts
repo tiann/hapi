@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { logger } from '@/ui/logger';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory';
+import { isPeerToolsDisabled, withPeerToolsPreference } from '@/modules/common/peerTools';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
 import { registerLocalHandoffHandler } from '@/agent/localHandoff';
 import { createRunnerLifecycle, createModeChangeHandler, setControlledByUser } from '@/agent/runnerLifecycle';
@@ -252,7 +253,9 @@ export async function runPi(opts: {
         command: getAgentLaunchCommand('pi'),
         args: transportArgs,
         cwd: workingDirectory,
-        env: process.env,
+        // Pin the session's peer-tools preference so a Pi agent shelling
+        // `hapi ping-peer` resolves it in the fresh child process (#2056).
+        env: withPeerToolsPreference(apiSession.peerToolsDisabled ?? isPeerToolsDisabled()),
     });
     const conversationHistory = new PiConversationHistory(
         piSession,

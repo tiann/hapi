@@ -1,6 +1,7 @@
 import { logger } from '@/ui/logger';
 import { spawnWithTerminalGuard } from '@/utils/spawnWithTerminalGuard';
 import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
+import { isPeerToolsDisabled, withPeerToolsPreference } from '@/modules/common/peerTools';
 
 /**
  * Filter out 'resume' subcommand which is managed internally by hapi.
@@ -32,6 +33,8 @@ export async function cursorLocal(opts: {
     addDirs?: readonly string[];
     onChatFound?: (chatId: string) => void;
     cursorArgs?: string[];
+    /** Session peer-tools snapshot; resolved preference pins the child env. */
+    peerToolsDisabled?: boolean;
 }): Promise<void> {
     const args: string[] = [];
 
@@ -86,7 +89,9 @@ export async function cursorLocal(opts: {
         command: getAgentLaunchCommand('cursor'),
         args,
         cwd: opts.path,
-        env: process.env,
+        // Pin the session's peer-tools preference so a Cursor agent shelling
+        // `hapi ping-peer` resolves it in the fresh child process (#2056).
+        env: withPeerToolsPreference(opts.peerToolsDisabled ?? isPeerToolsDisabled()),
         signal: opts.abort,
         logLabel: 'CursorLocal',
         spawnName: 'agent',

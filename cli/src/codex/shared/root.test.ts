@@ -6,6 +6,8 @@ import type { SessionBootstrapResult } from '@/agent/sessionFactory';
 import { SharedCodexRoot, type RootHost } from './root';
 import { codexPlanProposalId } from './plan';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { SESSION_CITATION_DISABLED_STEER } from '@hapi/protocol/sessionCitation';
+import { applyHubPeerToolsDisabled, resetPeerToolsForTests } from '@/modules/common/peerTools';
 
 type NativeTurn = { id: string; status: string; items: unknown[] };
 
@@ -53,7 +55,7 @@ afterEach(async () => {
     finally { vi.useRealTimers(); }
 });
 
-async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) {
+async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; peerToolsDisabled?: boolean }) {
     const directory = await mkdtemp('/tmp/hapi-shared-root-');
     let state: AgentState = { steeringActive: true };
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
@@ -65,6 +67,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
     const session = {
         sessionId: 'sid', getMetadata: () => metadata,
         hubArchived: opts?.hubArchived ?? false,
+        peerToolsDisabled: opts?.peerToolsDisabled,
         updateMetadata: (fn: (value: Metadata) => Metadata) => { metadata = fn(metadata); },
         updateAgentState: updateState, keepAlive() {},
         onUserMessage() {}, onCancelQueuedMessage() {}, onRetryQueuedMessage() {},
@@ -320,5 +323,53 @@ describe('shared steering availability', () => {
         const f = await fixture({ hubArchived: true, end });
         await f.root.activate();
         await vi.waitFor(() => expect(end).toHaveBeenCalledTimes(1));
+    });
+});
+
+describe('shared root peer-tools snapshot (create-time capture wins)', () => {
+    const originalEnv = process.env.HAPI_DISABLE_PEER_TOOLS;
+
+    afterEach(() => {
+        if (originalEnv === undefined) delete process.env.HAPI_DISABLE_PEER_TOOLS;
+        else process.env.HAPI_DISABLE_PEER_TOOLS = originalEnv;
+        resetPeerToolsForTests();
+    });
+
+    it('keeps a root created before a toggle flip advertising peer tools', async () => {
+        const enabled = await fixture({ peerToolsDisabled: false });
+        const before = enabled.root.config({}) as Record<string, unknown>;
+        expect(before.developerInstructions).toContain('hapi__ping_peer');
+        expect((before.config as Record<string, unknown>)['shell_environment_policy.set.HAPI_DISABLE_PEER_TOOLS']).toBe('0');
+
+        // Another session bootstraps with the switch on: the module global
+        // flips, but this root's prompt and shell env stay pinned to its own
+        // create-time snapshot.
+        applyHubPeerToolsDisabled(true);
+        const after = enabled.root.config({}) as Record<string, unknown>;
+        expect(after.developerInstructions).toContain('hapi__ping_peer');
+        expect((after.config as Record<string, unknown>)['shell_environment_policy.set.HAPI_DISABLE_PEER_TOOLS']).toBe('0');
+    });
+
+    it('pins a root created after the flip to disabled even when the switch turns back off', async () => {
+        applyHubPeerToolsDisabled(true);
+        const disabled = await fixture();
+        const before = disabled.root.config({}) as Record<string, unknown>;
+        expect(before.developerInstructions).toContain(SESSION_CITATION_DISABLED_STEER);
+        expect(before.developerInstructions).not.toContain('hapi__ping_peer');
+        expect((before.config as Record<string, unknown>)['shell_environment_policy.set.HAPI_DISABLE_PEER_TOOLS']).toBe('1');
+
+        applyHubPeerToolsDisabled(false);
+        const after = disabled.root.config({}) as Record<string, unknown>;
+        expect(after.developerInstructions).toContain(SESSION_CITATION_DISABLED_STEER);
+        expect((after.config as Record<string, unknown>)['shell_environment_policy.set.HAPI_DISABLE_PEER_TOOLS']).toBe('1');
+    });
+
+    it('keeps a machine-level env override authoritative over the session snapshot', async () => {
+        process.env.HAPI_DISABLE_PEER_TOOLS = '1';
+        const enabled = await fixture({ peerToolsDisabled: false });
+        const config = enabled.root.config({}) as Record<string, unknown>;
+        // No overlay key: the deploy-time env inherits into children as-is.
+        expect((config.config as Record<string, unknown>)).not.toHaveProperty('shell_environment_policy.set.HAPI_DISABLE_PEER_TOOLS');
+        expect(config.developerInstructions).toContain(SESSION_CITATION_DISABLED_STEER);
     });
 });

@@ -22,6 +22,7 @@ import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import { getGrokTitleInstruction } from './utils/systemPrompt'
 import { GrokConversationHistory } from './conversationHistory'
 import { isObject } from '@hapi/protocol'
+import { isPeerToolsDisabled, withPeerToolsPreference } from '@/modules/common/peerTools'
 
 const PLAN_MODE_INSTRUCTION =
     'Work in plan-only mode. Analyze and propose a plan, but do not execute commands or modify files.'
@@ -77,6 +78,7 @@ class GrokRemoteLauncher extends RemoteLauncherBase {
 
         const backend = createGrokBackend({
             cwd: session.path,
+            env: withPeerToolsPreference(session.client.peerToolsDisabled ?? isPeerToolsDisabled()),
             ...this.opts
         })
         this.backend = backend

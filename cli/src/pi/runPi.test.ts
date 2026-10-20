@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-type TransportOptions = { command: string; args: string[]; cwd: string };
+type TransportOptions = { command: string; args: string[]; cwd: string; env?: NodeJS.ProcessEnv };
 type LifecycleOptions = { stopKeepAlive: () => void };
 
 const harness = vi.hoisted(() => ({
@@ -198,6 +198,31 @@ describe('runPi startup', () => {
             { type: 'get_available_models' },
             { type: 'get_commands' },
         ]);
+    });
+
+    it('pins the session peer-tools preference into the Pi transport env (#2056)', async () => {
+        const original = process.env.HAPI_DISABLE_PEER_TOOLS;
+        try {
+            delete process.env.HAPI_DISABLE_PEER_TOOLS;
+
+            await runPi({ workingDirectory: '/work' });
+            expect(harness.transportOptions?.env?.HAPI_DISABLE_PEER_TOOLS).toBe('0');
+
+            const session = harness.session as { peerToolsDisabled?: boolean };
+            session.peerToolsDisabled = true;
+            try {
+                await runPi({ workingDirectory: '/work' });
+                expect(harness.transportOptions?.env?.HAPI_DISABLE_PEER_TOOLS).toBe('1');
+            } finally {
+                delete session.peerToolsDisabled;
+            }
+        } finally {
+            if (original === undefined) {
+                delete process.env.HAPI_DISABLE_PEER_TOOLS;
+            } else {
+                process.env.HAPI_DISABLE_PEER_TOOLS = original;
+            }
+        }
     });
 
     it('resumes with --session and keeps the session selected by Pi', async () => {
