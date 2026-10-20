@@ -53,34 +53,39 @@ afterEach(async () => {
     finally { vi.useRealTimers(); }
 });
 
-async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) {
+async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'] }) {
     const directory = await mkdtemp('/tmp/hapi-shared-root-');
     let state: AgentState = { steeringActive: true };
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
     let reconnect: (() => void) | null = null;
+    let userMessage: Parameters<ApiSessionClient['onUserMessage']>[0] | undefined;
+    let retryMessage: Parameters<ApiSessionClient['onRetryQueuedMessage']>[0] | undefined;
     const updateState = vi.fn((fn: (value: AgentState) => AgentState) => { state = fn(state); });
     const rpc = new Map<string, (raw: unknown) => Promise<unknown>>();
     const send = vi.fn();
+    const events = vi.fn();
     const hubArchivedListeners: Array<() => void> = [];
     const session = {
         sessionId: 'sid', getMetadata: () => metadata,
         hubArchived: opts?.hubArchived ?? false,
         updateMetadata: (fn: (value: Metadata) => Metadata) => { metadata = fn(metadata); },
         updateAgentState: updateState, keepAlive() {},
-        onUserMessage() {}, onCancelQueuedMessage() {}, onRetryQueuedMessage() {},
+        onUserMessage: (callback: Parameters<ApiSessionClient['onUserMessage']>[0]) => { userMessage = callback; },
+        onCancelQueuedMessage() {},
+        onRetryQueuedMessage: (callback: Parameters<ApiSessionClient['onRetryQueuedMessage']>[0]) => { retryMessage = callback; },
         onReconnect: (fn: (() => void) | null) => { reconnect = fn; },
         on(event: string, listener: () => void) {
             if (event === 'hub-archived') hubArchivedListeners.push(listener);
         },
         rpcHandlerManager: { registerHandler: (name: string, handler: (raw: unknown) => Promise<unknown>) => rpc.set(name, handler) },
-        sendSessionEvent() {}, sendAgentMessage: send, emitSessionReady() {},
+        sendSessionEvent: events, sendAgentMessage: send, emitSessionReady() {},
         sendUserMessage() {}, emitMessagesConsumed() {}, emitSteerIndeterminate() {}, syncNativeQueuedMessage() {},
         sendSessionDeath() {}, async flush() {}, close() {}
     } as unknown as ApiSessionClient;
     const end = opts?.end ?? (async () => { throw new Error('Unexpected root archive'); });
     const root = new SharedCodexRoot({ session, workingDirectory: directory } as SessionBootstrapResult, {
         directory, generation: 'test', endpoint: 'mock', settingsFor: () => undefined,
-        create: async () => { throw new Error('Unexpected root creation'); },
+        create: opts?.create ?? (async () => { throw new Error('Unexpected root creation'); }),
         end
     } satisfies RootHost);
     cleanups.push(async () => { await root.close(false); await rm(directory, { recursive: true, force: true }); });
@@ -94,7 +99,9 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
         abandoned(): void;
     };
     return {
-        root, native, rpc, send, metadata: () => metadata, state: () => state, updateState,
+        root, native, rpc, send, events,
+        retry: (id: string) => retryMessage?.(id),
+        submit: (text: string, id: string) => userMessage?.({ role: 'user', content: { type: 'text', text } }, id), metadata: () => metadata, state: () => state, updateState,
         reconnect: () => reconnect?.(),
         emitHubArchived: () => { for (const listener of hubArchivedListeners) listener(); },
         hubArchivedListenerCount: () => hubArchivedListeners.length,
@@ -116,6 +123,29 @@ async function completePlan(f: Awaited<ReturnType<typeof fixture>>, status = 'co
 }
 
 describe('shared plan actions', () => {
+    it('allows the Hub retry callback to resubmit input after a failed preflight read', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const original = f.root.client.request.bind(f.root.client);
+        let failLookup = true;
+        vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'thread/queue/list' && failLookup) {
+                failLookup = false;
+                throw new Error('preflight read failed');
+            }
+            return original(method, params);
+        });
+        f.submit('retry me', 'retry-id');
+        await vi.waitFor(() => expect(f.events).toHaveBeenCalledWith({
+            type: 'message', message: expect.stringContaining('preflight read failed')
+        }));
+        expect(f.native.queue).toHaveLength(0);
+        await expect(f.retry('retry-id')).resolves.toBe(true);
+        f.submit('retry me', 'retry-id');
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+        await expect(f.retry('retry-id')).resolves.toBe(false);
+    });
+
     it('applies remote change_title as metadata.name then lets native terminal rename win', async () => {
         const f = await fixture();
         const item = { id: 'title', type: 'mcpToolCall', server: 'hapi', tool: 'change_title',
@@ -320,5 +350,97 @@ describe('shared steering availability', () => {
         const f = await fixture({ hubArchived: true, end });
         await f.root.activate();
         await vi.waitFor(() => expect(end).toHaveBeenCalledTimes(1));
+    });
+});
+
+describe('shared root Abort retains the native queue (control: no drain/resume policy change)', () => {
+    it('turn/interrupts only the active turn and leaves native queued entries intact', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const requests: Array<{ method: string; params: unknown }> = [];
+        const client = f.root.client as unknown as { request(method: string, params?: Record<string, unknown>): Promise<unknown> };
+        const origRequest = client.request.bind(client);
+        client.request = async (method: string, params: Record<string, unknown> = {}) => {
+            requests.push({ method, params });
+            if (method === 'turn/interrupt') return {};
+            return origRequest(method, params);
+        };
+
+        // Drive an active native turn.
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'turn-1' } });
+
+        // A native queued submission is pending.
+        await client.request('thread/queue/add', { clientUserMessageId: 'm1', input: [{ type: 'text', text: 'hi' }] });
+        expect(f.native.queue.length).toBe(1);
+        requests.length = 0;
+
+        const abort = f.rpc.get(RPC_METHODS.Abort)!;
+        await abort({});
+
+        // Abort must call exactly one method — turn/interrupt for the active
+        // turn — and must not drain, reset or replay the native queue.
+        expect(requests).toEqual([{ method: 'turn/interrupt', params: { threadId: 'thread', turnId: 'turn-1' } }]);
+        expect(f.native.queue.length).toBe(1);
+
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 'turn-1', status: 'interrupted' } });
+    });
+
+    it('does not call turn/interrupt when no turn is active, and leaves the queue untouched', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const requests: Array<{ method: string; params: unknown }> = [];
+        const client = f.root.client as unknown as { request(method: string, params?: Record<string, unknown>): Promise<unknown> };
+        const origRequest = client.request.bind(client);
+        client.request = async (method: string, params: Record<string, unknown> = {}) => {
+            requests.push({ method, params });
+            if (method === 'turn/interrupt') return {};
+            return origRequest(method, params);
+        };
+
+        const abort = f.rpc.get(RPC_METHODS.Abort)!;
+        await abort({});
+
+        expect(requests.filter((r) => r.method === 'turn/interrupt')).toEqual([]);
+        expect(f.native.queue.length).toBe(0);
+    });
+});
+
+
+describe('batch history fork boundaries', () => {
+    it.each([1, 2])('forks at the first original member of a %i-member accepted batch', async count => {
+        const create = vi.fn().mockResolvedValue({
+            threadId: 'child-thread', session: { sessionId: 'child-session' }, initialSettings: vi.fn()
+        });
+        const f = await fixture({ create });
+        await f.root.activate();
+        f.submit('A', 'original-A');
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+        if (count === 2) {
+            vi.spyOn(f.root.client, 'request').mockImplementation(async (method, raw) => {
+                const params = raw as Record<string, unknown>;
+                if (method === 'thread/queue/list') return { data: f.native.queue } as never;
+                if (method === 'thread/queue/update') {
+                    f.native.queue[0].input = params.input;
+                    return { queuedSubmission: f.native.queue[0] } as never;
+                }
+                if (method === 'thread/read') return { thread: structuredClone(f.native.thread) } as never;
+                throw new Error(`Unexpected ${method}`);
+            });
+            f.submit('B', 'original-B');
+            await vi.waitFor(() => expect(f.native.queue[0].input).toEqual([{ type: 'text', text: 'A' }, { type: 'text', text: 'B' }]));
+        }
+        const item = { id: 'user-batch', type: 'userMessage',
+            clientId: f.native.queue[0].clientUserMessageId, content: f.native.queue[0].input };
+        f.native.thread.turns.push({ id: 'batch-turn', status: 'completed', items: [item] });
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 'batch-turn', item });
+        await vi.waitFor(() => expect(f.metadata().conversationHistoryPoints?.['original-A']).toBe(true));
+        const fork = f.rpc.get(RPC_METHODS.ForkConversation)!;
+        expect(await fork({ messageLocalId: 'original-A' })).toEqual({ nativeSessionId: 'child-thread', sessionId: 'child-session' });
+        expect(create).toHaveBeenCalledWith('thread/fork', expect.objectContaining({ threadId: 'thread', beforeTurnId: 'batch-turn' }), f.root);
+        if (count === 2) {
+            await expect(fork({ messageLocalId: 'original-B' })).rejects.toThrow('Cannot cut inside');
+        }
+        item.content = [{ type: 'text', text: 'unmatched native content' }];
+        await expect(fork({ messageLocalId: 'original-A' })).rejects.toThrow('Cannot cut inside');
     });
 });
