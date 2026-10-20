@@ -79,6 +79,38 @@ describe('Query', () => {
         await expect(result.next()).rejects.toThrow('prompt failed')
     })
 
+    it('passes --resume and --fork-session to the spawned claude process', async () => {
+        const child = createFakeChild()
+        spawnMock.mockReturnValueOnce(child)
+        process.env.HAPI_CLAUDE_PATH = 'claude'
+
+        const { query } = await import('./query')
+        const sessionId = '6f0c4551-1111-4222-8333-444455556666'
+        query({ prompt: 'ping', options: { resume: sessionId, forkSession: true } })
+
+        expect(spawnMock).toHaveBeenCalledTimes(1)
+        const args = spawnMock.mock.calls[0][1] as string[]
+        expect(args).toContain('--resume')
+        expect(args[args.indexOf('--resume') + 1]).toBe(sessionId)
+        expect(args).toContain('--fork-session')
+        // --fork-session must come after --resume so claude treats it as a branch
+        expect(args.indexOf('--fork-session')).toBeGreaterThan(args.indexOf('--resume'))
+    })
+
+    it('omits --fork-session when forkSession is not set', async () => {
+        const child = createFakeChild()
+        spawnMock.mockReturnValueOnce(child)
+        process.env.HAPI_CLAUDE_PATH = 'claude'
+
+        const { query } = await import('./query')
+        query({ prompt: 'ping', options: { resume: 'some-session-id' } })
+
+        expect(spawnMock).toHaveBeenCalledTimes(1)
+        const args = spawnMock.mock.calls[0][1] as string[]
+        expect(args).toContain('--resume')
+        expect(args).not.toContain('--fork-session')
+    })
+
     it('fails fast after cleanup timeout when prompt cleanup hangs', async () => {
         const child = createFakeChild()
         spawnMock.mockReturnValueOnce(child)
