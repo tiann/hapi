@@ -615,6 +615,7 @@ export function HappyThread(props: {
         retry: false,
     })
     const showSessionSummaryInChat = hubSettingsQuery.data?.sessionSummaryInChat === true
+    const hasVisibleMessages = unstable_useThreadMessageIds().length > 0
     const runtimeExtras = useAuiState((s) => s.thread.extras) as HappyRuntimeExtras | undefined
     const appliedMessagesVersion = runtimeExtras?.messagesVersion ?? props.messagesVersion
     const appliedHistoryVersion = runtimeExtras?.historyVersion ?? props.historyVersion
@@ -1635,12 +1636,13 @@ export function HappyThread(props: {
                 phase: 'idle',
                 source: null,
                 failureCount: 0,
-                // A completed page always consumes automatic demand. The next
-                // page requires renewed wheel/touch/keyboard/scrollbar intent;
-                // render, resize, and scroll-restoration events cannot chain it.
-                autoPaused: true
+                // Hidden sidechain pages may precede the parent conversation.
+                // Keep seeking while empty; once content renders, another page
+                // requires renewed user intent.
+                autoPaused: hasVisibleMessages
             }
             settlePendingLoad('loaded')
+            if (!hasVisibleMessages) scheduleCoverageAfterSettling()
             return
         }
         if (atBottomRef.current && autoScrollEnabledRef.current) {
@@ -1649,6 +1651,8 @@ export function HappyThread(props: {
     }, [
         appliedMessagesVersion,
         appliedHistoryVersion,
+        hasVisibleMessages,
+        scheduleCoverageAfterSettling,
         scrollToBottomInstant,
         settlePendingLoad,
         clearFailureRetryTimer
