@@ -339,9 +339,33 @@ export function getMessagesAfterSeq(
     sessionId: string,
     afterSeq: number
 ): StoredMessage[] {
-    const rows = prepareCached(db, 
+    const rows = prepareCached(db,
         'SELECT * FROM messages WHERE session_id = ? AND seq > ? ORDER BY seq ASC'
     ).all(sessionId, afterSeq) as DbMessageRow[]
+
+    return rows.map(toStoredMessage)
+}
+
+/**
+ * Paged variant of {@link getMessagesAfterSeq} for scans that must not hold a
+ * whole session's history in memory. Content is zstd-compressed on disk and
+ * expands on read, so materializing every row of a large session can allocate
+ * far more than the database itself occupies — see collectUsageEvents.
+ *
+ * Callers advance `afterSeq` to the last returned `seq` until a page comes
+ * back short (or empty).
+ */
+export function getMessagesAfterSeqLimit(
+    db: Database,
+    sessionId: string,
+    afterSeq: number,
+    limit: number
+): StoredMessage[] {
+    const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 1000
+
+    const rows = prepareCached(db,
+        'SELECT * FROM messages WHERE session_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?'
+    ).all(sessionId, afterSeq, safeLimit) as DbMessageRow[]
 
     return rows.map(toStoredMessage)
 }
@@ -640,6 +664,21 @@ export function getImmediateQueuedLocalMessages(
  * outputs and zero invoked user turns still counts as non-trivial.
  * tiann/hapi#872.
  */
+/**
+ * Total stored content bytes for a session.
+ *
+ * Content is zstd-compressed on disk and expands on read, so this is a **lower
+ * bound** on what the session costs once decoded. It exists so a caller that
+ * only needs to know "is this session already too big to inline" can answer
+ * without decoding a single row — see `MessageService.getSessionExport`.
+ */
+export function getStoredContentBytes(db: Database, sessionId: string): number {
+    const row = prepareCached(db,
+        'SELECT COALESCE(SUM(LENGTH(content)), 0) AS bytes FROM messages WHERE session_id = ?'
+    ).get(sessionId) as { bytes: number } | undefined
+    return row?.bytes ?? 0
+}
+
 export function countMessages(db: Database, sessionId: string): number {
     const row = prepareCached(db, 
         'SELECT COUNT(*) AS count FROM messages WHERE session_id = ?'

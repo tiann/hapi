@@ -7,7 +7,7 @@ import { getUsageSummary } from '../sync/usageService'
 import { Store } from './index'
 
 describe('Store V20->V21 migration: usage semantics re-index', () => {
-    it('clears both derived tables, preserves messages, and lazily rebuilds idempotently', () => {
+    it('clears both derived tables, preserves messages, and lazily rebuilds idempotently', async () => {
         const directory = mkdtempSync(join(tmpdir(), 'hapi-migration-v20-to-v21-'))
         const dbPath = join(directory, 'test.db')
         let store: Store | undefined
@@ -32,7 +32,7 @@ describe('Store V20->V21 migration: usage semantics re-index', () => {
                     }
                 }
             })
-            expect(getUsageSummary(store, 'default', 'all').totals.inputTokens).toBe(90)
+            expect((await getUsageSummary(store, 'default', 'all')).totals.inputTokens).toBe(90)
             store.close()
             store = undefined
 
@@ -48,11 +48,11 @@ describe('Store V20->V21 migration: usage semantics re-index', () => {
             expect(count('usage_scan_state')).toBe(0)
             expect(store.messages.getMessages(session.id)).toHaveLength(1)
 
-            const first = getUsageSummary(store, 'default', 'all')
+            const first = await getUsageSummary(store, 'default', 'all')
             expect(first.totals.inputTokens).toBe(90)
             expect(count('usage_events')).toBe(1)
             expect(count('usage_scan_state')).toBe(1)
-            const second = getUsageSummary(store, 'default', 'all')
+            const second = await getUsageSummary(store, 'default', 'all')
             expect(second.totals).toEqual(first.totals)
             expect(count('usage_events')).toBe(1)
         } finally {
