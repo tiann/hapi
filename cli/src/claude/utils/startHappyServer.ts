@@ -313,7 +313,7 @@ function createHapiMcpServer(
                 content: [
                     {
                         type: 'text' as const,
-                        text: `Delivered to ${result.sessionId}${result.resumed ? ' (resumed)' : ''} (${result.name})`,
+                        text: `Accepted for ${result.sessionId}${result.resumed ? ' (resumed)' : ''} (${result.name}) localId=${result.localId} — delivery shows in the recipient chat when its runtime consumes it`,
                     },
                 ],
                 isError: false,

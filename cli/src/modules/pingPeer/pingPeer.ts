@@ -9,6 +9,7 @@
  */
 
 import axios, { type AxiosInstance } from 'axios'
+import { randomUUID } from 'node:crypto'
 import { extractAssistantPlainText, isObject } from '@hapi/protocol'
 import { normalizeSessionIdPrefix } from '@hapi/protocol/sessionCitation'
 import { configuration } from '@/configuration'
@@ -65,6 +66,23 @@ export type PingPeerResult = {
     sessionId: string
     name: string
     resumed: boolean
+    /**
+     * Known client submit identity for the peer row (`ping-peer-` prefix).
+     * The recipient runtime's consumption ACK is the only delivery proof;
+     * HTTP success below means hub-accepted, which may race that ACK.
+     */
+    localId: string
+}
+
+/**
+ * localId prefix for peer submissions. The recipient hub exempts these rows
+ * from the session-end synthetic sweep, preserving unconsumed peer messages
+ * for replay and keeping invocation timestamps tied to consumption ACKs.
+ */
+export const PEER_MESSAGE_LOCAL_ID_PREFIX = 'ping-peer-'
+
+export function createPeerMessageLocalId(): string {
+    return `${PEER_MESSAGE_LOCAL_ID_PREFIX}${randomUUID()}`
 }
 
 export type ListPeerSessionsOptions = {
@@ -345,11 +363,12 @@ async function sendMessage(
     jwt: string,
     sessionId: string,
     message: string,
+    localId: string,
     http: AxiosInstance
 ): Promise<void> {
     const response = await http.post(
         `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages`,
-        { text: message },
+        { text: message, localId },
         {
             headers: authHeaders(jwt),
             timeout: 30_000,
@@ -357,6 +376,10 @@ async function sendMessage(
         }
     )
     if (response.status >= 200 && response.status < 300 && response.data?.ok === true) {
+        // HTTP success means hub-accepted — NOT runtime delivery, and not even
+        // proof the row is still queued (the consumption ACK may race this
+        // response). Delivery is confirmed only by the recipient runtime's
+        // consumption ACK, shown in the recipient's chat queue/thread.
         return
     }
     const detail = typeof response.data?.error === 'string'
@@ -516,12 +539,14 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
     }
 
     onProgress?.(`sending message (${message.length} chars)...`)
-    await sendMessage(apiUrl, jwt, matched.id, message, http)
+    const localId = createPeerMessageLocalId()
+    await sendMessage(apiUrl, jwt, matched.id, message, localId, http)
 
     return {
         sessionId: matched.id,
         name,
-        resumed
+        resumed,
+        localId
     }
 }
 
