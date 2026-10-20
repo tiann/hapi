@@ -80,7 +80,8 @@ describe('pingPeer', () => {
                     return { status: 200, data: { token: 'jwt' } }
                 }
                 if (url.endsWith(`/api/sessions/${sessionId}/messages`)) {
-                    expect(body).toEqual({ text: 'hello peer' })
+                    expect(body).toMatchObject({ text: 'hello peer', deliveryMode: 'steer' })
+                    expect(typeof (body as { localId?: unknown }).localId).toBe('string')
                     return { status: 200, data: { ok: true } }
                 }
                 throw new Error(`unexpected POST ${url}`)
@@ -632,7 +633,11 @@ describe('listSessions query params', () => {
                     return { status: 200, data: { token: 'jwt' } }
                 }
                 if (url.endsWith(`/api/sessions/${sessionId}/messages`)) {
-                    expect(body).toMatchObject({ text: 'hi' })
+                    // Steer-tagged + queue-shaped: lets the peer CLI inject the
+                    // message into an active turn and the UI render the waiting row.
+                    expect(body).toMatchObject({ text: 'hi', deliveryMode: 'steer' })
+                    expect(typeof (body as { localId?: unknown }).localId).toBe('string')
+                    expect((body as { localId?: string }).localId?.startsWith('ping-peer-')).toBe(true)
                     return { status: 200, data: { ok: true } }
                 }
                 throw new Error(`unexpected POST ${url}`)
