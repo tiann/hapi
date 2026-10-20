@@ -9,6 +9,7 @@ import {
     getSessionByNamespace,
     getSessions,
     getSessionsByNamespace,
+    listStaleMachineSpawnStubs,
     setSessionEffort,
     setSessionModel,
     setSessionModelReasoningEffort,
@@ -138,6 +139,11 @@ export class SessionStore {
 
     getSessionByNamespace(id: string, namespace: string): StoredSession | null {
         return getSessionByNamespace(this.db, id, namespace)
+    }
+
+    /** Machine-spawn stubs older than `before` — see `listStaleMachineSpawnStubs`. */
+    listStaleMachineSpawnStubs(before: number): StoredSession[] {
+        return listStaleMachineSpawnStubs(this.db, before)
     }
 
     getSessions(): StoredSession[] {
