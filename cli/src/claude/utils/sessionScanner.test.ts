@@ -211,6 +211,41 @@ describe('sessionScanner', () => {
     expect(result.nextCursor).toBe(Buffer.byteLength(line1 + '\n' + line2))
   })
 
+  it('forwards a Claude API error record with null usage fields and keeps its error flags (#1857)', async () => {
+    const filePath = join(testDir, 'api-error.jsonl')
+    const line = JSON.stringify({
+      type: 'assistant',
+      uuid: 'a1',
+      isSidechain: false,
+      isApiErrorMessage: true,
+      error: 'invalid_request',
+      message: {
+        model: '<synthetic>',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Prompt is too long' }],
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+          service_tier: null,
+          inference_geo: null,
+          speed: null
+        }
+      }
+    })
+    await writeFile(filePath, line + '\n')
+
+    const result = await readSessionLog(filePath, 0)
+    expect(result.events).toHaveLength(1)
+    expect(result.events[0].event).toMatchObject({
+      type: 'assistant',
+      uuid: 'a1',
+      isApiErrorMessage: true,
+      error: 'invalid_request'
+    })
+  })
+
   it('forwards a single complete record with no newline at all', async () => {
     const filePath = join(testDir, 'single-no-newline.jsonl')
     const only = JSON.stringify({ type: 'user', uuid: 'u1', message: { content: 'only' } })
