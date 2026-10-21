@@ -223,4 +223,30 @@ describe('sessionScanner', () => {
     }
     expect(result.nextCursor).toBe(Buffer.byteLength(only))
   })
+  it('forwards Claude Code 2.x subagent transcripts tagged with the spawning tool_use id', async () => {
+    const sessionId = 'c0ffee00-0000-4000-8000-000000000001'
+    const subagentDir = join(projectDir, sessionId, 'subagents')
+    await mkdir(subagentDir, { recursive: true })
+    // Already on disk when the scanner starts → treated as seen, like the main log.
+    await writeFile(join(subagentDir, 'agent-old.jsonl'), JSON.stringify({ type: 'user', uuid: 'old', isSidechain: true, parentUuid: null, message: { content: 'old prompt' } }) + '\n')
+    await writeFile(join(projectDir, `${sessionId}.jsonl`), '')
+
+    scanner = await createSessionScanner({
+      sessionId,
+      workingDirectory: testDir,
+      onMessage: (msg) => collectedMessages.push(msg)
+    })
+
+    await writeFile(join(subagentDir, 'agent-a1.meta.json'), JSON.stringify({ agentType: 'general-purpose', toolUseId: 'toolu_parent' }))
+    await writeFile(join(subagentDir, 'agent-a1.jsonl'), [
+      { type: 'user', uuid: 's1', isSidechain: true, parentUuid: null, message: { role: 'user', content: 'sub prompt' } },
+      { type: 'assistant', uuid: 's2', isSidechain: true, parentUuid: 's1', message: { role: 'assistant', content: [{ type: 'text', text: 'sub reply' }] } }
+    ].map((line) => JSON.stringify(line)).join('\n') + '\n')
+    await new Promise(resolve => setTimeout(resolve, 3500))
+
+    expect(collectedMessages.map((m) => m.type === 'user' || m.type === 'assistant' ? [m.uuid, m.parentToolUseId] : null)).toEqual([
+      ['s1', 'toolu_parent'],
+      ['s2', 'toolu_parent']
+    ])
+  })
 })
