@@ -429,11 +429,15 @@ async function waitForProcessToDie(pid: number, force: boolean): Promise<void> {
   // Windows isProcessAlive shells out to tasklist; keep the poll coarse so a
   // stop cannot burn the runner event loop for seconds (#1911 Overseer).
   const pollInterval = isWindows() ? 100 : 20;
-  let waited = 0;
+  let deadline = Date.now() + maxWait;
 
-  while (isProcessAlive(pid) && waited < maxWait) {
-    await new Promise(r => setTimeout(r, pollInterval));
-    waited += pollInterval;
+  // OS probes are synchronous on Windows. Count their time against the
+  // grace period too, otherwise twenty slow tasklist calls can turn two
+  // seconds of graceful shutdown into a much longer archive request.
+  while (Date.now() < deadline && isProcessAlive(pid)) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await new Promise(r => setTimeout(r, Math.min(pollInterval, remaining)));
   }
 
   // Graceful kill didn't finish — escalate (same structure on both platforms).
@@ -447,10 +451,11 @@ async function waitForProcessToDie(pid: number, force: boolean): Promise<void> {
     } catch {
       return;
     }
-    waited = 0;
-    while (isProcessAlive(pid) && waited < 1000) {
-      await new Promise(r => setTimeout(r, pollInterval));
-      waited += pollInterval;
+    deadline = Date.now() + 1000;
+    while (Date.now() < deadline && isProcessAlive(pid)) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await new Promise(r => setTimeout(r, Math.min(pollInterval, remaining)));
     }
   }
 }

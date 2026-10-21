@@ -298,6 +298,10 @@ export default {
   'dialog.archive.description': '确定要归档 "{name}" 吗？这将断开活动会话。',
   'dialog.archive.confirm': '归档',
   'dialog.archive.confirming': '归档中…',
+  'dialog.archive.pendingDescription': '正在归档会话。关闭此窗口后，归档将在后台继续。',
+  'dialog.archive.cleaning': '正在确认清理…',
+  'dialog.archive.cleanupDescription': '会话已断开，正在确认归档和后台清理。关闭此窗口不会取消归档。',
+  'dialog.archive.error': '归档尚未确认完成',
 
   'dialog.reopen.errorTitle': '无法重新打开会话',
   'dialog.reopen.dismiss': '关闭',
@@ -308,6 +312,8 @@ export default {
   'dialog.delete.scratchlist.other': '这也将删除 {n} 条草稿清单条目。',
   'dialog.delete.confirm': '删除',
   'dialog.delete.confirming': '删除中…',
+  'dialog.delete.waitingForArchive': '等待归档完成…',
+  'dialog.delete.waitingForArchiveDescription': '归档尚未完成，暂时无法删除。请等待归档完成后再确认删除。',
 
   'dialog.error.default': '操作失败，请重试。',
 

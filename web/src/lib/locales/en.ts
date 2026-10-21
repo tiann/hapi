@@ -297,6 +297,10 @@ export default {
   'dialog.archive.description': 'Are you sure you want to archive "{name}"? This will disconnect active session.',
   'dialog.archive.confirm': 'Archive',
   'dialog.archive.confirming': 'Archiving…',
+  'dialog.archive.pendingDescription': 'Archiving this session. You can close this window; archiving will continue in the background.',
+  'dialog.archive.cleaning': 'Confirming cleanup…',
+  'dialog.archive.cleanupDescription': 'Session disconnected. Confirming archive and background cleanup. You can close this window; archiving will continue.',
+  'dialog.archive.error': 'Archive could not be confirmed',
   'dialog.reopen.errorTitle': 'Could not reopen session',
   'dialog.reopen.dismiss': 'Dismiss',
   'dialog.delete.title': 'Delete Session',
@@ -305,6 +309,8 @@ export default {
   'dialog.delete.scratchlist.other': 'This will also delete {n} scratchlist entries.',
   'dialog.delete.confirm': 'Delete',
   'dialog.delete.confirming': 'Deleting…',
+  'dialog.delete.waitingForArchive': 'Waiting for archive to finish…',
+  'dialog.delete.waitingForArchiveDescription': 'Archiving is still in progress. Wait for it to finish, then confirm deletion.',
   'dialog.error.default': 'Operation failed. Please try again.',
 
   // Session export

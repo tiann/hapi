@@ -26,6 +26,36 @@ afterEach(() => {
     vi.restoreAllMocks()
 })
 
+describe('useSessionActions - archive progress across views', () => {
+    it.each(['success', 'failure'])('tracks an unfinished archive after its initiating view unmounts (%s)', async outcome => {
+        let resolve!: () => void
+        let reject!: (error: Error) => void
+        const archivePromise = new Promise<void>((done, fail) => { resolve = done; reject = fail })
+        const api = { archiveSession: vi.fn(() => archivePromise) } as unknown as ApiClient
+        const wrapper = createWrapper()
+        const initiator = renderHook(() => useSessionActions(api, 'session-A'), { wrapper })
+        let pending!: Promise<unknown>
+        act(() => { pending = initiator.result.current.archiveSession().catch(error => error) })
+        await waitFor(() => expect(initiator.result.current.isArchiving).toBe(true))
+        initiator.unmount()
+        const observer = renderHook(() => useSessionActions(api, 'session-A'), { wrapper })
+        const otherSession = renderHook(() => useSessionActions(api, 'session-B'), { wrapper })
+        expect(observer.result.current.isArchiving).toBe(true)
+        expect(observer.result.current.isPending).toBe(true)
+        expect(otherSession.result.current.isArchiving).toBe(false)
+        expect(otherSession.result.current.isPending).toBe(false)
+        await act(async () => {
+            if (outcome === 'success') resolve()
+            else reject(new Error('Archive failed'))
+            await pending
+        })
+        await waitFor(() => expect(observer.result.current.isArchiving).toBe(false))
+        expect(observer.result.current.isPending).toBe(false)
+        observer.unmount()
+        otherSession.unmount()
+    })
+})
+
 describe('useSessionActions - reopenSession', () => {
     it('invokes api.reopenSession with the session id and forwards the response', async () => {
         const reopen = vi.fn(async (_sessionId: string) => ({

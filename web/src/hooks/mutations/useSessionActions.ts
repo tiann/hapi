@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useIsMutating, useMutation, useQueryClient } from '@tanstack/react-query'
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import type { CodexCollaborationMode, CopilotAgentMode, PermissionMode, SessionResponse, SessionsResponse } from '@/types/api'
@@ -8,6 +8,7 @@ import { clearMessageWindow } from '@/lib/message-window-store'
 import { isKnownFlavor } from '@hapi/protocol'
 
 export const sessionModelMutationKey = (sessionId: string) => ['session-model', sessionId] as const
+export const sessionArchiveMutationKey = (sessionId: string | null) => ['session-archive', sessionId] as const
 
 export function useSessionActions(
     api: ApiClient | null,
@@ -31,9 +32,13 @@ export function useSessionActions(
     updateSessionSummary: (text: string) => Promise<void>
     setPinMode: (mode: 'none' | 'project' | 'global') => Promise<void>
     deleteSession: () => Promise<void>
+    isArchiving: boolean
     isPending: boolean
 } {
     const queryClient = useQueryClient()
+    // Header and list can each observe the same session, and a list row can
+    // remount after the inactive event. Keep archive progress per session.
+    const isArchiving = useIsMutating({ mutationKey: sessionArchiveMutationKey(sessionId), exact: true }) > 0
 
     const markSessionActiveInCache = (targetSessionId: string) => {
         // 中文注释：恢复/重开接口成功后，session-alive SSE 可能已经先到或稍后才到。
@@ -88,6 +93,7 @@ export function useSessionActions(
     })
 
     const archiveMutation = useMutation({
+        mutationKey: sessionArchiveMutationKey(sessionId),
         mutationFn: async () => {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
@@ -297,7 +303,8 @@ export function useSessionActions(
         updateSessionSummary: summaryMutation.mutateAsync,
         setPinMode: pinMutation.mutateAsync,
         deleteSession: deleteMutation.mutateAsync,
-        isPending: abortMutation.isPending
+        isArchiving,
+        isPending: isArchiving || abortMutation.isPending
             || archiveMutation.isPending
             || reopenMutation.isPending
             || switchMutation.isPending

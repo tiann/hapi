@@ -179,6 +179,50 @@ describe('getHapiRunnerProcessIdentity on Windows', () => {
 })
 
 describe('killProcess on Windows (orphanReap / stopSession)', () => {
+    it('includes slow liveness probes in the graceful shutdown deadline', async () => {
+        let graceStarted: number | undefined
+        let alive = true
+        let forcedAt: number | undefined
+        spawnSyncMock.mockImplementation((command: string, args: string[] = []) => {
+            if (command === 'tasklist') {
+                // A synchronous OS query consumes real time even though it is
+                // not part of the timer used to yield between observations.
+                vi.setSystemTime(Date.now() + 400)
+                return completed(alive ? 'hapi.exe 7788 Console' : 'INFO: No tasks')
+            }
+            if (command === 'taskkill' && args.includes('/F')) {
+                forcedAt = Date.now()
+                alive = false
+            } else if (command === 'taskkill') {
+                graceStarted = Date.now()
+            }
+            return completed('')
+        })
+        const stopped = killProcess(7788)
+        await vi.runAllTimersAsync()
+        await expect(stopped).resolves.toBe(true)
+        expect(forcedAt).toBeDefined()
+        expect(graceStarted).toBeDefined()
+        // The two-second wait plus the final observation and taskkill's own
+        // liveness recheck, each taking 400ms in this scenario.
+        expect(forcedAt! - graceStarted!).toBeLessThanOrEqual(2_800)
+    })
+
+    it('bounds slow probes after forced shutdown without treating a live process as stopped', async () => {
+        const started = Date.now()
+        spawnSyncMock.mockImplementation((command: string) => {
+            if (command === 'tasklist') {
+                vi.setSystemTime(Date.now() + 400)
+                return completed('hapi.exe 7788 Console')
+            }
+            return completed('')
+        })
+        const stopped = killProcess(7788, true)
+        await vi.runAllTimersAsync()
+        await expect(stopped).resolves.toBe(false)
+        expect(Date.now() - started).toBeLessThanOrEqual(3_200)
+    })
+
     beforeAll(() => {
         if (!originalPlatformDescriptor?.configurable) {
             throw new Error('process.platform is not configurable in this runtime')
