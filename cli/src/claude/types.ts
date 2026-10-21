@@ -66,6 +66,8 @@ export const RawJSONLinesSchema = z.discriminatedUnion("type", [
   RawJSONLinesBaseSchema.extend({
     uuid: z.string(),
     type: z.literal("assistant"),
+    streamIds: z.array(z.string()).optional(),
+    live: z.boolean().optional(),
     message: RawMessageSchema.optional(),
     requestId: z.string().optional(),
   }),

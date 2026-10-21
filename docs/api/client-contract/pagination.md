@@ -129,6 +129,7 @@ Constants from the web reference (`web/src/lib/message-window-store.ts`):
 
 Rules:
 
+- Before trimming, collapse text and reasoning snapshots to the newest row for each stream. Generic agent text uses `data.id`; Claude entries use `data.streamIds` (one final entry can settle multiple text blocks). Keep rows without a stream ID. The hub likewise retires earlier `live: true` snapshots only after storing their replacement; completed rows remain durable.
 - **Tail mode** trims from the top (oldest dropped). Dropping rows ⇒ set `hasMore: true` and recompute the older-page cursor from the oldest kept row.
 - **History mode** trims from the bottom (newest dropped). Dropping newest rows means your window no longer reaches the tail ⇒ flag "latest reset required": on returning to tail mode, discard cursors and fetch a fresh latest page rather than trusting stale ones.
 - **Queued rows are never trimmed** (user messages with `invokedAt === null`, see below) — they are re-merged after every trim.

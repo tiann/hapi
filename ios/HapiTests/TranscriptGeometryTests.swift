@@ -4,6 +4,44 @@ import XCTest
 
 @MainActor
 final class TranscriptGeometryTests: XCTestCase {
+    func testWidthChangeMeasuresAnchorUsingCurrentGeometryNotStaleCellAttributes() throws {
+        let layout = TranscriptLayout()
+        let collection = UICollectionView(frame: CGRect(x: 0, y: 0, width: 390, height: 700), collectionViewLayout: layout)
+        let ids = (0..<80).map(String.init)
+        layout.followsTail = false
+        layout.setItems(ids, width: 390)
+        layout.prepare()
+        // UIKit can still hold these measured attributes when width invalidation
+        // replaces the preceding rows with estimates and moves the anchor down.
+        for index in 18...25 {
+            let original = try XCTUnwrap(layout.layoutAttributesForItem(at: IndexPath(item: index, section: 0)))
+            let preferred = original.copy() as! UICollectionViewLayoutAttributes
+            preferred.size.height = 85.5
+            _ = layout.invalidationContext(forPreferredLayoutAttributes: preferred, withOriginalAttributes: original)
+            layout.prepare()
+        }
+        let indexPath = IndexPath(item: 25, section: 0)
+        let stale = try XCTUnwrap(layout.layoutAttributesForItem(at: indexPath)).copy() as! UICollectionViewLayoutAttributes
+        layout.anchorForUpdate = ReadingAnchor(id: "25", offset: -31)
+        collection.bounds.size.width = 1024
+        layout.setItems(ids, width: 1024)
+        layout.prepare()
+        collection.contentOffset = layout.targetContentOffset(forProposedContentOffset: collection.contentOffset)
+        let current = try XCTUnwrap(layout.layoutAttributesForItem(at: indexPath)).frame
+        XCTAssertLessThan(stale.frame.maxY, collection.contentOffset.y)
+        XCTAssertGreaterThan(current.maxY, collection.contentOffset.y)
+        layout.anchorForUpdate = nil
+        let preferred = stale.copy() as! UICollectionViewLayoutAttributes
+        preferred.size = CGSize(width: 720, height: 41.5)
+        let context = layout.invalidationContext(forPreferredLayoutAttributes: preferred, withOriginalAttributes: stale)
+        XCTAssertEqual(context.contentOffsetAdjustment.y, 0, accuracy: 0.01,
+                       "The anchor itself must not be treated as a preceding offscreen row")
+        collection.contentOffset.y += context.contentOffsetAdjustment.y
+        layout.prepare()
+        let resized = try XCTUnwrap(layout.layoutAttributesForItem(at: indexPath)).frame
+        XCTAssertEqual(resized.minY - collection.contentOffset.y, -31, accuracy: 0.01)
+    }
+
     func testIndexedQueriesMatchLinearGeometryThroughWindowAndWidthChanges() throws {
         let layout = TranscriptLayout()
         let collection = UICollectionView(frame: CGRect(x: 0, y: 0, width: 390, height: 844), collectionViewLayout: layout)

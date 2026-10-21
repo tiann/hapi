@@ -9,7 +9,7 @@ import {
     syncNativeQueuedMessage,
     addImportedMessage,
     cancelQueuedMessage,
-    deleteLiveReasoningSnapshots,
+    deleteLiveMessageSnapshots,
     deleteQueuedMessageById,
     claimIndeterminateMessage,
     lookupQueuedMessage,
@@ -63,8 +63,8 @@ export class MessageStore {
         return syncNativeQueuedMessage(this.db, sessionId, localId, text)
     }
 
-    deleteLiveReasoningSnapshots(sessionId: string, streamId: string, keepMessageId?: string): number {
-        return deleteLiveReasoningSnapshots(this.db, sessionId, streamId, keepMessageId)
+    deleteLiveMessageSnapshots(sessionId: string, streamId: string, keepMessageId?: string): number {
+        return deleteLiveMessageSnapshots(this.db, sessionId, streamId, keepMessageId)
     }
 
     addImportedMessage(sessionId: string, content: unknown, localId: string, createdAt: number): { message: StoredMessage; inserted: boolean } {

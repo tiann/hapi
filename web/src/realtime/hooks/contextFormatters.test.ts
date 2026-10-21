@@ -4,6 +4,7 @@ import {
     extractLastAssistantSpeakable,
     formatMessage,
     formatNewMessages,
+    formatNewSingleMessage,
     formatReadyEvent,
     formatSessionFull
 } from './contextFormatters'
@@ -131,6 +132,29 @@ describe('formatReadyEvent', () => {
 })
 
 describe('formatMessage', () => {
+    it.each(['codex', 'output'])('forwards only the settled %s answer to voice context', (flavor) => {
+        const snapshot = (id: string, seq: number, text: string, live: boolean) => msg({
+            id, seq, content: { role: 'agent', content: { type: flavor, data: {
+                ...(flavor === 'codex'
+                    ? { type: 'message', message: text, id: 'text-stream' }
+                    : { type: 'assistant', message: { content: [{ type: 'text', text }] } }),
+                ...(live ? { live: true } : {})
+            } } }
+        })
+        const partials = [snapshot('first', 1, 'Hello', true), snapshot('second', 2, 'Hello world', true)]
+        for (const partial of partials) {
+            expect(formatNewSingleMessage('session-1', partial, 'Agent')).toBeNull()
+        }
+        expect(formatNewMessages('session-1', partials, 'Agent')).toBeNull()
+        expect(extractLastAssistantSpeakable(partials)).toBeNull()
+        const final = snapshot('final', 3, 'Hello world!', false)
+        const completed = [...partials, final]
+        expect(formatNewMessages('session-1', completed, 'Agent'))
+            .toBe('New messages in session: session-1\n\nAgent: \n<text>Hello world!</text>')
+        expect(extractLastAssistantSpeakable(completed)).toBe('Hello world!')
+        expect(formatNewSingleMessage('session-1', final, 'Agent')).toContain('<text>Hello world!</text>')
+    })
+
     it('uses the supplied agent label as the assistant prefix', () => {
         const formatted = formatMessage(msg({
             id: '1',

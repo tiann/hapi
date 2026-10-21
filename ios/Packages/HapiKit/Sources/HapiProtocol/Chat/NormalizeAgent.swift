@@ -290,7 +290,7 @@ func normalizeAssistantOutput(
         for block in items {
             guard let object = block.objectValue, let type = object["type"]?.stringValue else { continue }
             if type == "text", let text = object["text"]?.stringValue {
-                blocks.append(.text(.init(text: text, uuid: uuid, parentUUID: parentUUID)))
+                blocks.append(.text(.init(text: text, uuid: uuid, streamId: asString(object["streamId"]), parentUUID: parentUUID)))
                 continue
             }
             if type == "thinking", let thinking = object["thinking"]?.stringValue {

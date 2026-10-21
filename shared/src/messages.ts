@@ -110,6 +110,25 @@ export function getLiveReasoningStreamId(value: unknown): string | null {
     return readReasoningStreamId(value, true)
 }
 
+/** Stream keys shared by storage and client windows. Claude finals may settle several blocks. */
+export function getMessageStreamIds(value: unknown, liveOnly = false): string[] {
+    const reasoning = liveOnly ? getLiveReasoningStreamId(value) : getReasoningStreamId(value)
+    if (reasoning !== null) return [reasoning]
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isObject(record.content)) return []
+    const content = record.content
+    const data = isObject(content.data) ? content.data : null
+    if (!data || (liveOnly && data.live !== true)) return []
+    if (content.type === AGENT_MESSAGE_PAYLOAD_TYPE && data.type === 'message') {
+        return typeof data.id === 'string' && data.id.trim() ? [`text:${data.id}`] : []
+    }
+    if (content.type === 'output' && data.type === 'assistant' && Array.isArray(data.streamIds)) {
+        return data.streamIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+            .map(id => `text:${id}`)
+    }
+    return []
+}
+
 export function isRedundantGoalStatusEventContent(value: unknown): boolean {
     const record = unwrapRoleWrappedRecordEnvelope(value)
     if (record?.role !== 'agent') return false

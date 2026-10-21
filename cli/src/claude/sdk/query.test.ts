@@ -76,6 +76,8 @@ describe('Query', () => {
 
         const result = query({ prompt })
 
+        expect(spawnMock.mock.calls[0]?.[1]).toContain('--include-partial-messages')
+
         await expect(result.next()).rejects.toThrow('prompt failed')
     })
 

@@ -327,7 +327,7 @@ export function query(config: {
     }
 
     // Build command arguments
-    const args = ['--output-format', 'stream-json', '--verbose']
+    const args = ['--output-format', 'stream-json', '--verbose', '--include-partial-messages']
     let cleanupMcpConfig: (() => void) | null = null
 
     if (customSystemPrompt) args.push('--system-prompt', stripNewlinesForWindowsShellArg(customSystemPrompt))

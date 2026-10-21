@@ -490,6 +490,9 @@ function buildCollabAgentOutput(item: Record<string, unknown>, toolName: string)
 }
 
 export class AppServerEventConverter {
+    private readonly textSnapshots = new Map<string, { id: string; at: number }>();
+    private readonly textSources = new Map<string, boolean>();
+    constructor(private readonly options: { streamText?: boolean } = {}) {}
     private readonly agentMessageBuffers = new Map<string, string>();
     private readonly reasoningBuffers = new Map<string, string>();
     private readonly commandOutputBuffers = new Map<string, string>();
@@ -566,7 +569,7 @@ export class AppServerEventConverter {
             const itemId = asString(msg.item_id ?? msg.itemId ?? msg.id) ?? 'agent-message';
             const delta = asString(msg.delta ?? msg.text ?? msg.message);
             if (!delta) return [];
-            return this.handleNotification('item/agentMessage/delta', { itemId, delta, ...msgScope });
+            return this.handleNotification('item/agentMessage/delta', { itemId, delta, ...msgScope }, true);
         }
 
         if (msgType === 'reasoning_content_delta') {
@@ -649,7 +652,7 @@ export class AppServerEventConverter {
         return addEventScope([msg as ConvertedEvent], msgScope);
     }
 
-    handleNotification(method: string, params: unknown): ConvertedEvent[] {
+    handleNotification(method: string, params: unknown, wrappedText = false): ConvertedEvent[] {
         const events: ConvertedEvent[] = [];
         const paramsRecord = asRecord(params) ?? {};
         const eventScope = extractEventScope(paramsRecord);
@@ -903,14 +906,30 @@ export class AppServerEventConverter {
             const itemId = extractItemId(paramsRecord);
             const delta = asString(paramsRecord.delta ?? paramsRecord.text ?? paramsRecord.message);
             if (itemId && delta) {
+                if (this.completedAgentMessageItems.has(itemId)) return events;
                 const lastDelta = this.lastAgentMessageDeltaByItemId.get(itemId);
-                if (lastDelta === delta) {
+                if (this.options.streamText) {
+                    // A server can emit both V2 and legacy mirrors. Pick one source,
+                    // not one distinct token: consecutive equal deltas are valid text.
+                    const source = this.textSources.get(itemId);
+                    if (source !== undefined && source !== wrappedText) return events;
+                    this.textSources.set(itemId, wrappedText);
+                } else if (lastDelta === delta) {
                     return events;
                 }
                 this.lastAgentMessageDeltaByItemId.set(itemId, delta);
                 const prev = this.agentMessageBuffers.get(itemId) ?? '';
                 this.agentMessageBuffers.set(itemId, prev + delta);
                 events.push(scoped({ type: 'agent_message_delta' }));
+                if (this.options.streamText) {
+                    const snapshot = this.textSnapshots.get(itemId);
+                    const now = Date.now();
+                    if (!snapshot || now - snapshot.at >= 100) {
+                        const id = snapshot?.id ?? `codex:${eventScope.thread_id ?? ''}:${eventScope.turn_id ?? 'thread'}:${itemId}:agent_message`;
+                        this.textSnapshots.set(itemId, { id, at: now });
+                        events.push(scoped({ type: 'agent_message', message: prev + delta, stream_id: id, live: true }));
+                    }
+                }
             }
             return events;
         }
@@ -1005,11 +1024,15 @@ export class AppServerEventConverter {
                     const text = extractItemText(item) ?? this.agentMessageBuffers.get(itemId);
                     if (text) {
                         const message = codexAssistantText(text, item.phase);
-                        if (message) events.push(scoped({ type: 'agent_message', message }));
+                        const snapshot = this.textSnapshots.get(itemId);
+                        if (message || snapshot) events.push(scoped({ type: 'agent_message', message: message ?? '',
+                            ...(snapshot ? { stream_id: snapshot.id } : {}) }));
                         this.completedAgentMessageItems.add(itemId);
                         this.agentMessageBuffers.delete(itemId);
                     }
                     this.lastAgentMessageDeltaByItemId.delete(itemId);
+                    this.textSnapshots.delete(itemId);
+                    this.textSources.delete(itemId);
                 }
                 return events;
             }
@@ -1218,6 +1241,8 @@ export class AppServerEventConverter {
 
     reset(): void {
         this.agentMessageBuffers.clear();
+        this.textSnapshots.clear();
+        this.textSources.clear();
         this.reasoningBuffers.clear();
         this.commandOutputBuffers.clear();
         this.commandMeta.clear();

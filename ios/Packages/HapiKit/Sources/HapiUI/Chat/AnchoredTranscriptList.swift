@@ -194,6 +194,11 @@ final class TranscriptLayout: UICollectionViewLayout {
                                                withOriginalAttributes: originalAttributes)
         let index = originalAttributes.indexPath.item
         guard ids.indices.contains(index), let view = collectionView else { return context }
+        // UIKit can report attributes from before a width/metrics reflow.
+        // Compare the viewport with our current geometry, just as the height
+        // delta below is relative to our current estimate, not the stale cell.
+        prepare()
+        let currentFrame = frames[index]
         let height = max(1, preferredAttributes.size.height)
         let delta = height - estimatedHeight(for: ids[index])
         heights[ids[index]] = height
@@ -201,13 +206,13 @@ final class TranscriptLayout: UICollectionViewLayout {
         dirtyFromIndex = min(dirtyFromIndex ?? index, index)
         context.invalidateItems(at: [preferredAttributes.indexPath])
         let viewportTop = view.contentOffset.y + view.adjustedContentInset.top
-        if followsTail || originalAttributes.frame.maxY <= viewportTop {
+        if followsTail || currentFrame.maxY <= viewportTop {
             context.contentOffsetAdjustment.y += delta
-        } else if originalAttributes.frame.minY <= viewportTop,
-                  originalAttributes.frame.minY + height <= viewportTop {
+        } else if currentFrame.minY <= viewportTop,
+                  currentFrame.minY + height <= viewportTop {
             // A font reduction can make the first partial row shorter than
             // the reading offset. Keep its last point visible, not a later row.
-            context.contentOffsetAdjustment.y += originalAttributes.frame.minY + height - 1 - viewportTop
+            context.contentOffsetAdjustment.y += currentFrame.minY + height - 1 - viewportTop
         }
         return context
     }
@@ -301,6 +306,7 @@ public final class TranscriptCollectionController<Item: Identifiable & Equatable
         collection.register(UICollectionViewCell.self, forCellWithReuseIdentifier: "message")
         collection.accessibilityIntent = { [weak self] in
             self?.layout.followsTail = false
+            self?.layout.anchorForUpdate = nil
             self?.reportViewport(deferred: false)
         }
         source = UICollectionViewDiffableDataSource<Int, String>(collectionView: collection) { [weak self] view, index, id in
@@ -327,8 +333,11 @@ public final class TranscriptCollectionController<Item: Identifiable & Equatable
         if abs(configuredWidth - collection.bounds.width) > 0.5, !applying {
             if pending == nil { pending = configuration }
             drain()
-        } else if layout.followsTail, !applying, !collection.isDragging {
-            layout.correctOffset(to: layout.bottomOffset(collection))
+        } else if !applying, !collection.isDragging, !collection.isDecelerating {
+            // Hosting cells can finish self-sizing after the diffable snapshot
+            // completion. Preserve the same reading anchor through those passes.
+            let target = layout.targetContentOffset(forProposedContentOffset: collection.contentOffset)
+            layout.correctOffset(to: target.y)
         }
         reportViewport()
     }
@@ -395,8 +404,13 @@ public final class TranscriptCollectionController<Item: Identifiable & Equatable
         // Opening an inspector expresses reading intent, even at the tail.
         // Closing it does not silently opt back into following new messages.
         if next.isInspectionPresented { layout.followsTail = false }
-        // Capture at COMMIT, after any reader motion during the request.
-        layout.anchorForUpdate = layout.followsTail ? nil : captureAnchor()
+        // User scrolling clears the anchor. Otherwise retain it while late
+        // self-sizing and consecutive width updates settle the same reading row.
+        if layout.followsTail {
+            layout.anchorForUpdate = nil
+        } else if layout.anchorForUpdate.map({ nextValues[$0.id] == nil }) ?? true {
+            layout.anchorForUpdate = captureAnchor()
+        }
         configuration = next
         // Do not compare/whitelist EnvironmentValues: custom services and
         // closure captures must propagate too, even when every Item is equal.
@@ -408,7 +422,6 @@ public final class TranscriptCollectionController<Item: Identifiable & Equatable
         configuredSpacing = spacing
         guard structureChanged || widthChanged || metricsChanged || spacingChanged || !changed.isEmpty else {
             if jump { layout.correctOffset(to: layout.bottomOffset(collection)) }
-            layout.anchorForUpdate = nil
             acknowledgeLayout(version: next.historyVersion, madeProgress: false)
             reportViewport()
             return
@@ -425,7 +438,6 @@ public final class TranscriptCollectionController<Item: Identifiable & Equatable
             self.collection.layoutIfNeeded()
             let target = self.layout.targetContentOffset(forProposedContentOffset: self.collection.contentOffset)
             self.layout.correctOffset(to: target.y)
-            self.layout.anchorForUpdate = nil
             self.applying = false
             let addedRows = self.items.contains { $0.id != next.historyControlID && !oldIDs.contains($0.id) }
             let grew = self.layout.collectionViewContentSize.height > oldHeight + 1
@@ -479,6 +491,9 @@ public final class TranscriptCollectionController<Item: Identifiable & Equatable
     }
 
     public func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        if collection.isDragging || collection.isDecelerating {
+            layout.anchorForUpdate = nil
+        }
         if configuration?.isInspectionPresented != true, !applying, (collection.isDragging || collection.isDecelerating) {
             layout.followsTail = layout.bottomOffset(collection) - collection.contentOffset.y <= 1
         }

@@ -4,6 +4,7 @@ import {
     WORK_GRAPH_MAX_TAGS,
     extractAssistantPlainText,
     extractNotifySummary,
+    isObject,
     unwrapRoleWrappedRecordEnvelope,
     type NotifySummary,
     type WorkGraphEvent,
@@ -454,6 +455,12 @@ export function ingestNotifySummaryFromMessage(input: NotifyIngestInput): Notify
 
     const agentBody = unwrapRoleWrappedRecordEnvelope(input.content)
     const agentContent = agentBody?.role === 'agent' ? agentBody.content : input.content
+    // Each preview has its own transport ID and will be retired from chat.
+    // Only the final response may create a durable ledger event.
+    if (isObject(agentContent) && (agentContent.type === 'output' || agentContent.type === 'codex')
+        && isObject(agentContent.data) && agentContent.data.live === true) {
+        return null
+    }
     const plainText = extractAssistantPlainText(agentContent)
     if (!plainText) {
         return null

@@ -186,6 +186,13 @@ function isNonSpeakableAgentPayload(content: unknown): boolean {
         return false
     }
 
+    // Cumulative previews are replaced in chat; voice context is append-only.
+    // Forward only the authoritative final message, which has no live marker.
+    if ((content.type === 'codex' || content.type === 'output')
+        && isObject(content.data) && content.data.live === true) {
+        return true
+    }
+
     if (content.type === 'codex' && isObject(content.data)) {
         const eventType = content.data.type
         return eventType === 'ready'

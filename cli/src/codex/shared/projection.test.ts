@@ -5,6 +5,23 @@ import { codexPlanProposalId } from './plan';
 import { extractNotifySummary } from '@hapi/protocol/messages';
 
 describe('shared history projection', () => {
+    it('updates one text stream and persists the final under its replay identity', async () => {
+        const send = vi.fn();
+        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {});
+        await projection.notification('item/agentMessage/delta', { threadId: 'thread', turnId: 'turn', itemId: 'answer', delta: 'Hello' });
+        expect(send.mock.calls[0][0]).toMatchObject({ type: 'message', message: 'Hello', live: true });
+        const item = { id: 'answer', type: 'agentMessage', text: 'Hello world!' };
+        await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item });
+        expect(send.mock.calls[1][0].id).toBe(send.mock.calls[0][0].id);
+        expect(send.mock.calls[1][0]).toMatchObject({ message: 'Hello world!' });
+        expect(send.mock.calls[1][0].live).not.toBe(true);
+        const finalTransportId = send.mock.calls[1][1];
+        projection.reset(); send.mockClear();
+        await projection.history({ turns: [{ id: 'turn', status: 'completed', items: [item] }] });
+        expect(send.mock.calls[0][1]).toBe(finalTransportId);
+        expect(send.mock.calls[0][0].id).toBe(finalTransportId);
+    });
     it.each([undefined, 'root'])('publishes only final summaries in live output and history replay (parent: %s)', async parentThreadId => {
         const send = vi.fn();
         const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;

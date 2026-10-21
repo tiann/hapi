@@ -15,6 +15,7 @@ import type {
 import type { RawJSONLines } from '@/claude/types'
 import type { ClaudePermissionMode } from '@hapi/protocol/types'
 import { logger } from '@/lib'
+import { ClaudeTextStream } from './claudeTextStream'
 
 /**
  * SDK message types this converter knows how to turn into a transcript line.
@@ -83,6 +84,7 @@ function getGitBranch(cwd: string): string | undefined {
  * Maintains state for parent-child relationships between messages
  */
 export class SDKToLogConverter {
+    private readonly textStream = new ClaudeTextStream()
     private lastUuid: string | null = null
     private context: ConversionContext
     private responses?: Map<string, PermissionResponse>
@@ -220,6 +222,10 @@ export class SDKToLogConverter {
      * Convert SDK message to log format
      */
     convert(sdkMessage: SDKMessage): RawJSONLines | null {
+        const streamed = this.textStream.process(sdkMessage)
+        if (!streamed) return null
+        sdkMessage = streamed
+        const live = sdkMessage.live === true
         if (sdkMessage.type === 'rate_limit_event') {
             return this.convertRateLimitEvent(sdkMessage)
         }
@@ -245,7 +251,7 @@ export class SDKToLogConverter {
             isSidechain = true;
             parentToolUseId = (sdkMessage as any).parent_tool_use_id;
             parentUuid = this.sidechainLastUUID.get((sdkMessage as any).parent_tool_use_id) ?? null;
-            if (sdkMessage.type !== 'result') {
+            if (sdkMessage.type !== 'result' && !live) {
                 this.sidechainLastUUID.set((sdkMessage as any).parent_tool_use_id!, uuid);
             }
         }
@@ -326,6 +332,8 @@ export class SDKToLogConverter {
                     ...baseFields,
                     type: 'assistant',
                     message: assistantMsg.message,
+                    ...(Array.isArray(sdkMessage.streamIds) ? { streamIds: sdkMessage.streamIds as string[] } : {}),
+                    ...(live ? { live: true } : {}),
                     // Assistant messages often have additional fields
                     requestId: (assistantMsg as any).requestId
                 }
@@ -467,7 +475,7 @@ export class SDKToLogConverter {
         }
 
         // Update last UUID for parent tracking
-        if (logMessage && logMessage.type !== 'summary' && sdkMessage.type !== 'result') {
+        if (logMessage && logMessage.type !== 'summary' && sdkMessage.type !== 'result' && !live) {
             this.lastUuid = uuid
         }
 

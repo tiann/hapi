@@ -255,7 +255,7 @@ private fun normalizeAssistantOutput(
             val type = asString(record["type"]) ?: continue
             if (type == "text") {
                 val text = asString(record["text"]) ?: continue
-                blocks.add(NormalizedAgentContent.Text(text = text, uuid = uuid, parentUUID = parentUUID))
+                blocks.add(NormalizedAgentContent.Text(text = text, uuid = uuid, streamId = asString(record["streamId"]), parentUUID = parentUUID))
                 continue
             }
             if (type == "thinking") {

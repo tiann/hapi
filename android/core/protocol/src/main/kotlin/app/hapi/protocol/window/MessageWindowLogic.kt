@@ -4,6 +4,7 @@ import app.hapi.protocol.wire.MessagesPage
 import app.hapi.protocol.wire.hasExplicitNullInvokedAt
 import app.hapi.protocol.wire.stringOrNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonArray
 
 /**
  * Pure state transitions of the message window — a function-for-function port
@@ -106,53 +107,60 @@ object MessageWindowLogic {
     }
 
     /**
-     * Web `getReasoningStreamId`: the stream a reasoning row belongs to, or
-     * null for anything else. Unrecognised shapes read as null, which means
-     * "keep it".
+     * Web `getMessageStreamIds`: the streams a message row belongs to.
+     * An empty list leaves the row untouched.
      */
-    private fun reasoningStreamId(message: WindowMessage): String? {
-        val outer = message.wire.content as? JsonObject ?: return null
-        if (outer["role"].stringOrNull != "agent") return null
-        val content = outer["content"] as? JsonObject ?: return null
-        if (content["type"].stringOrNull != "codex") return null
-        val data = content["data"] as? JsonObject ?: return null
-        if (data["type"].stringOrNull != "reasoning") return null
-        val id = data["id"].stringOrNull ?: return null
-        return id.takeIf { it.isNotBlank() }
+    private fun messageStreamIds(message: WindowMessage): List<String> {
+        val outer = message.wire.content as? JsonObject ?: return emptyList()
+        if (outer["role"].stringOrNull != "agent") return emptyList()
+        val content = outer["content"] as? JsonObject ?: return emptyList()
+        val data = content["data"] as? JsonObject ?: return emptyList()
+        if (content["type"].stringOrNull == "codex") {
+            val id = data["id"].stringOrNull?.takeIf { it.isNotBlank() } ?: return emptyList()
+            if (data["type"].stringOrNull == "reasoning") return listOf(id)
+            if (data["type"].stringOrNull == "message") return listOf("text:$id")
+        }
+        if (content["type"].stringOrNull == "output" && data["type"].stringOrNull == "assistant") {
+            return (data["streamIds"] as? JsonArray)?.mapNotNull {
+                it.stringOrNull?.takeIf { id -> id.isNotBlank() }?.let { id -> "text:$id" }
+            } ?: emptyList()
+        }
+        return emptyList()
     }
 
     /**
-     * Web `dropSupersededReasoningSnapshots`: collapse a reasoning stream to
+     * Web `dropSupersededMessageSnapshots`: collapse a message stream to
      * the one snapshot that still says something. The CLI re-sends a growing
      * buffer under a stable stream id every few hundred milliseconds and the
      * timeline folds those rows into a single block, so spending window budget
      * on the older ones is what pushes the surrounding conversation out of
      * reach. Rows with no stream id are left alone.
      */
-    private fun dropSupersededReasoningSnapshots(messages: List<WindowMessage>): List<WindowMessage> {
+    private fun dropSupersededMessageSnapshots(messages: List<WindowMessage>): List<WindowMessage> {
         val newestByStream = LinkedHashMap<String, WindowMessage>()
         for (message in messages) {
-            val streamId = reasoningStreamId(message) ?: continue
-            val incumbent = newestByStream[streamId]
-            if (incumbent == null) {
-                newestByStream[streamId] = message
-                continue
+            for (streamId in messageStreamIds(message)) {
+                val incumbent = newestByStream[streamId]
+                if (incumbent == null) {
+                    newestByStream[streamId] = message
+                    continue
+                }
+                // Fall back to arrival order when either row predates seq
+                // numbering: `messages` is kept in display order, so later still
+                // means newer.
+                val challengerAt = messagePosition(message)
+                val incumbentAt = messagePosition(incumbent)
+                val newer = if (challengerAt != null && incumbentAt != null) {
+                    challengerAt >= incumbentAt
+                } else {
+                    true
+                }
+                if (newer) newestByStream[streamId] = message
             }
-            // Fall back to arrival order when either row predates seq
-            // numbering: `messages` is kept in display order, so later still
-            // means newer.
-            val challengerAt = messagePosition(message)
-            val incumbentAt = messagePosition(incumbent)
-            val newer = if (challengerAt != null && incumbentAt != null) {
-                challengerAt >= incumbentAt
-            } else {
-                true
-            }
-            if (newer) newestByStream[streamId] = message
         }
         if (newestByStream.isEmpty()) return messages
         val survivors = newestByStream.values.mapTo(HashSet()) { it.id }
-        return messages.filter { reasoningStreamId(it) == null || it.id in survivors }
+        return messages.filter { messageStreamIds(it).isEmpty() || it.id in survivors }
     }
 
     /**
@@ -163,7 +171,7 @@ object MessageWindowLogic {
      * (web `trimPreservingQueued`).
      */
     private fun trimPreservingQueued(incoming: List<WindowMessage>, regularLimit: Int, mode: TrimMode): Trim {
-        val messages = dropSupersededReasoningSnapshots(incoming)
+        val messages = dropSupersededMessageSnapshots(incoming)
         val queued = messages.filter { it.isQueuedForInvocation }
         val queuedIds = queued.mapTo(HashSet()) { it.id }
         val nonQueued = messages.filter { it.id !in queuedIds }

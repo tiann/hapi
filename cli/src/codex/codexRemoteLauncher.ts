@@ -364,7 +364,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         const session = this.session;
         const messageBuffer = this.messageBuffer;
         const appServerClient = this.appServerClient;
-        const appServerEventConverter = new AppServerEventConverter();
+        const appServerEventConverter = new AppServerEventConverter({ streamText: true });
 
         const normalizeCommand = (value: unknown): string | undefined => {
             if (typeof value === 'string') {
@@ -1484,6 +1484,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         const handleChildCodexEvent = (agentId: string, msg: Record<string, unknown>): void => {
             const msgType = asString(msg.type);
             if (!msgType) return;
+            if (msgType === 'agent_message' && msg.live === true) return;
             childAgentActivityInCurrentTurn = true;
             const runtime = getChildRuntime(agentId);
             const isChildTerminalEvent = msgType === 'task_complete' || msgType === 'turn_aborted' || msgType === 'task_failed';
@@ -3061,7 +3062,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
             if (msgType === 'agent_message') {
                 const message = asString(msg.message);
-                if (message) {
+                if (message && msg.live !== true) {
                     messageBuffer.addMessage(message, 'assistant');
                 }
             } else if (msgType === 'agent_reasoning') {
@@ -3176,11 +3177,12 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             }
             if (msgType === 'agent_message') {
                 const message = asString(msg.message);
-                if (message) {
+                if (message || msg.stream_id) {
                     session.sendAgentMessage({
                         type: 'message',
-                        message,
-                        id: randomUUID()
+                        message: message ?? '',
+                        id: asString(msg.stream_id) ?? randomUUID(),
+                        ...(msg.live === true ? { streamSnapshot: true, live: true } : {})
                     });
                 }
             }

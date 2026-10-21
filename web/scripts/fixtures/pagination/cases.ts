@@ -135,6 +135,26 @@ function paddedAgentRun(fromSeq: number, toSeq: number): DecryptedMessage[] {
 }
 
 export const paginationFixtureCases: PaginationFixtureCase[] = [
+    ...(['codex', 'output'] as const).map((flavor): PaginationFixtureCase => {
+        const snapshot = (seq: number, live: boolean): DecryptedMessage => ({
+            id: `text-${seq}`, seq, localId: null, createdAt: seq * 1000,
+            content: { role: 'agent', content: { type: flavor, data: flavor === 'codex'
+                ? { type: 'message', id: 'answer', message: `Text ${seq}`, live, streamSnapshot: true }
+                : { type: 'assistant', streamIds: ['answer'], live, message: { content: [{ type: 'text', text: `Text ${seq}`, streamId: 'answer' }] } }
+            } }
+        })
+        return {
+            name: `${flavor}-text-snapshots-collapse`,
+            description: 'Growing text occupies one window slot; a late old snapshot cannot replace the final.',
+            ops: [
+                { op: 'sync-tail', responses: [pageResponse([agentMessage({ id: 'before', seq: 1, at: 1000 }), snapshot(2, true)], {
+                    direction: 'latest', epoch: 0, hasMore: false, nextBefore: { at: 1000, seq: 1 }, snapshotHead: { at: 2000, seq: 2 }
+                })] },
+                { op: 'sse-messages', messages: [snapshot(3, true), snapshot(4, false)] },
+                { op: 'sse-messages', messages: [snapshot(2, true)] }
+            ]
+        }
+    }),
     {
         name: 'latest-page-then-sse-ingest',
         description: 'Cold start: a latest page seeds the window, epoch, older cursor (page.nextBefore) and newest cursor (page.snapshotHead); a live SSE message appends and advances the newest cursor to its position.',
