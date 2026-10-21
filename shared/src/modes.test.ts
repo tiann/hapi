@@ -3,6 +3,7 @@ import {
     AGENT_FLAVORS,
     AgentFlavorSchema,
     CREATABLE_AGENT_FLAVORS,
+    getLaunchPermissionModesForFlavor,
     getPermissionModeLabel,
     getPermissionModeOptionsForFlavor,
     getPermissionModeTone,
@@ -94,10 +95,16 @@ describe('isPermissionModeAllowedForFlavor', () => {
 
     test("cursor includes autoReview", () => {
         expect(getPermissionModesForFlavor('cursor')).toContain('autoReview')
-        expect(getPermissionModeLabel('autoReview')).toBe('Auto-review')
+        expect(getPermissionModeLabel('autoReview')).toBe('Auto')
         expect(getPermissionModeTone('autoReview')).toBe('warning')
         expect(isPermissionModeAllowedForFlavor('autoReview', 'cursor')).toBe(true)
         expect(isPermissionModeAllowedForFlavor('autoReview', 'claude')).toBe(false)
+    })
+
+    test("codex offers autoReview at launch and mid-session", () => {
+        expect(getLaunchPermissionModesForFlavor('codex')).toEqual(['default', 'read-only', 'autoReview', 'yolo'])
+        expect(isPermissionModeAllowedForFlavor('autoReview', 'codex')).toBe(true)
+        expect(isPermissionModeAllowedForFlavor('autoReview', 'gemini')).toBe(false)
     })
 })
 

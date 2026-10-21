@@ -32,7 +32,7 @@ export type RootHost = {
     end(root: SharedCodexRoot, nativeArchive?: boolean): Promise<void>;
 };
 const SettingsSchema = z.object({
-    permissionMode: z.enum(['default', 'read-only', 'safe-yolo', 'yolo']).optional(),
+    permissionMode: z.enum(['default', 'read-only', 'safe-yolo', 'autoReview', 'yolo']).optional(),
     model: z.string().min(1).optional(), modelReasoningEffort: z.string().nullable().optional(),
     collaborationMode: z.enum(['default', 'plan']).optional(),
     serviceTier: z.enum(['fast', 'standard']).nullable().optional(),
@@ -244,7 +244,8 @@ export class SharedCodexRoot {
         const sandbox = record(value.sandboxPolicy ?? value.sandbox).type;
         this.settings = { ...this.settings, model: value.model,
             modelReasoningEffort: string(value.effort ?? value.reasoningEffort) ?? null,
-            ...(sandbox ? { permissionMode: sandbox === 'dangerFullAccess' ? 'yolo' : sandbox === 'readOnly' ? 'read-only' : 'default' } : {}),
+            ...(sandbox ? { permissionMode: sandbox === 'dangerFullAccess' ? 'yolo' : sandbox === 'readOnly' ? 'read-only'
+                : this.settingsNative.approvalsReviewer === 'auto_review' ? 'autoReview' : 'default' } : {}),
             ...('serviceTier' in value ? { serviceTier: value.serviceTier === 'priority' ? 'fast' : 'standard' } : {}),
             ...('collaborationMode' in value ? { collaborationMode: record(value.collaborationMode).mode === 'plan' ? 'plan' as const : 'default' as const } : {})
         };
@@ -366,7 +367,7 @@ export class SharedCodexRoot {
     }
     async applySettings(raw: unknown): Promise<{ applied: RuntimeSettings }> {
         const config = SettingsSchema.parse(raw);
-        if (config.permissionMode === 'safe-yolo') throw new Error('safe-yolo is not a native shared permission mode; choose default, read-only, or yolo');
+        if (config.permissionMode === 'safe-yolo') throw new Error('safe-yolo is not a native shared permission mode; choose default, read-only, autoReview, or yolo');
         if (Object.keys(config).length === 0) return { applied: this.settings };
         if (typeof config.modelReasoningEffort === 'string') config.modelReasoningEffort = parseReasoningEffortValue(config.modelReasoningEffort);
         if (config.modelReasoningEffort === null) {
@@ -388,7 +389,8 @@ export class SharedCodexRoot {
             ...(config.personality ? { personality: config.personality } : {}),
             ...(config.modelReasoningEffort !== undefined ? { effort: config.modelReasoningEffort } : {}),
             ...(config.serviceTier !== undefined ? { serviceTier: config.serviceTier === 'fast' ? 'priority' : null } : {}),
-            ...(permission ? { approvalPolicy: permission.approvalPolicy, sandboxPolicy: permission.sandboxPolicy } : {}),
+            ...(permission ? { approvalPolicy: permission.approvalPolicy, sandboxPolicy: permission.sandboxPolicy,
+                approvalsReviewer: config.permissionMode === 'autoReview' ? 'auto_review' : 'user' } : {}),
             ...(config.collaborationMode ? { collaborationMode: { mode: config.collaborationMode, settings: {
                 model: config.model ?? this.settings.model, reasoning_effort: config.modelReasoningEffort ?? this.settings.modelReasoningEffort,
                 developer_instructions: null
@@ -537,7 +539,7 @@ export class SharedCodexRoot {
         if (command === '/exit') { this.notice('/exit closes a native terminal, not this Web view. Use End session to archive this conversation.'); return null; }
         if (!command.startsWith('/')) return text;
         const slash = resolveCodexSlashCommand(text, { commands: await listSlashCommands('codex', this.bootstrap.workingDirectory),
-            permissionMode: this.settings.permissionMode === 'yolo' ? 'yolo' : this.settings.permissionMode === 'read-only' ? 'read-only' : 'default',
+            permissionMode: this.settings.permissionMode === 'yolo' || this.settings.permissionMode === 'read-only' || this.settings.permissionMode === 'autoReview' ? this.settings.permissionMode : 'default',
             collaborationMode: this.settings.collaborationMode ?? 'default', model: this.settings.model ?? undefined,
             modelReasoningEffort: parseReasoningEffortValue(this.settings.modelReasoningEffort), serviceTier: this.settings.serviceTier });
         if (slash.kind === 'passthrough') return text;

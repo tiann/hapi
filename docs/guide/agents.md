@@ -13,7 +13,7 @@ agent's integration; their supported syntax varies by agent.
 | Agent | Command | Integration | Local | Remote | Permission modes | Resume |
 |-------|---------|-------------|:-----:|:------:|------------------|:------:|
 | Claude Code | `hapi claude` | Terminal wrapper (local) + Claude Agent SDK (remote) | ✓ | ✓ | `default` `acceptEdits` `auto` `bypassPermissions` `plan` | ✓ |
-| Codex | `hapi codex` | Native terminal + `codex app-server` (Codex 0.154.0+) | ✓ | ✓ | `default` `read-only` `yolo` (+ `plan` collaboration mode) | ✓ |
+| Codex | `hapi codex` | Native terminal + `codex app-server` (Codex 0.154.0+) | ✓ | ✓ | `default` `read-only` `autoReview` `yolo` (+ `plan` collaboration mode) | ✓ |
 | Cursor Agent | `hapi cursor` | ACP (`agent acp`); legacy stream-json resume | ✓ | ✓ | `default` `plan` `ask` `debug` `autoReview` `yolo` | ✓ |
 | Grok Build | `hapi grok` | ACP (`grok agent stdio`) | ✓ | ✓ | `default` `auto` `plan` `bypassPermissions` | ✓ |
 | GitHub Copilot | `hapi copilot` | ACP (`copilot --acp --stdio`) | ✓ | ✓ | `default` `read-only` `safe-yolo` `yolo` | ✓ |
@@ -96,7 +96,7 @@ hapi cursor --continue         # Resume the most recent chat
 hapi cursor --plan             # Start in Plan mode (shortcut)
 hapi cursor --mode plan        # Start in Plan mode
 hapi cursor --mode ask         # Start in Ask mode
-hapi cursor --auto-review      # Start with Auto-review (Smart Auto)
+hapi cursor --auto-review      # Start with Auto (Smart Auto)
 hapi cursor --yolo             # Bypass approval prompts (--force)
 hapi cursor --model <model>    # Specify model
 hapi cursor --cursor-worktree              # Cursor-native worktree (auto-named)
@@ -112,7 +112,7 @@ hapi cursor --cursor-add-dir ../shared     # Extra workspace root (repeatable)
 | `plan` | Plan mode - design approach before coding |
 | `ask` | Ask mode - explore code without edits |
 | `debug` | Debug mode - hypotheses + instrumentation |
-| `autoReview` | Auto-review (Smart Auto) - allowlist/sandbox/classifier instead of full YOLO |
+| `autoReview` | Auto (Smart Auto) - allowlist/sandbox/classifier instead of full YOLO |
 | `yolo` | Bypass approval prompts |
 
 Set mode via `--plan` / `--mode` / `--permission-mode` / `--auto-review`, or change from the web UI during a session.

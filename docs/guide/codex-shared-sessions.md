@@ -114,7 +114,9 @@ endpoints/tokens never go into HAPI session metadata or SSE.
   parent HAPI session; HAPI does not independently start a child execution.
 - HAPI's legacy `safe-yolo` auto-approval policy is not a native Codex mode;
   shared sessions reject it instead of silently weakening or misreporting it.
-  Use `default`, `read-only`, `yolo`, or native `--approve-for-me`.
+  Use `default`, `read-only`, `autoReview`, or `yolo`. `autoReview` keeps the
+  workspace-write sandbox and routes escalations to Codex's native auto-review
+  (`approvals_reviewer = "auto_review"`, same as `--approve-for-me`).
 - Web-created new/fork roots preserve the standard native sandbox restrictions.
   Named permission profiles and external sandboxes must be created in the
   native TUI; HAPI never converts them silently to workspace-write.

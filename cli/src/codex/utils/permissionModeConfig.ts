@@ -10,6 +10,7 @@ export type CodexPermissionModeConfig = {
 export function resolveCodexPermissionModeConfig(mode: CodexPermissionMode): CodexPermissionModeConfig {
     switch (mode) {
         case 'default':
+        case 'autoReview':
             return {
                 // Remote Codex sessions rely on HAPI's approval UI for sandbox escalation.
                 // `on-request` keeps workspace-write sandboxing while still surfacing a
