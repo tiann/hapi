@@ -44,6 +44,8 @@ import type { RpcRegistry } from '../socket/rpcRegistry'
 
 const DEFAULT_RPC_TIMEOUT_MS = 30_000
 const MODEL_LIST_RPC_TIMEOUT_MS = 120_000
+// Codex can spend 30s awaiting startup after preflight and process creation.
+const CODEX_SPAWN_RPC_TIMEOUT_MS = 60_000
 
 /**
  * tiann/hapi#916: thrown by {@link RpcGateway.rpcCall} when the target CLI is
@@ -274,7 +276,8 @@ export class RpcGateway {
                     copilotAgentMode,
                     startingMode,
                     forkSession: forkSession === true
-                }
+                },
+                agent === 'codex' ? CODEX_SPAWN_RPC_TIMEOUT_MS : DEFAULT_RPC_TIMEOUT_MS
             )
             if (result && typeof result === 'object') {
                 const obj = result as Record<string, unknown>

@@ -235,6 +235,13 @@ bun scripts/tooling/hapi-display-image.mjs /absolute/path/to/image.png "optional
 
 ## Session lifecycle invariants
 
+- Runner waits up to 30 seconds for Codex startup (15 seconds for other agents),
+  overridable with `HAPI_RUNNER_WEBHOOK_TIMEOUT_MS`. A Codex startup deadline
+  returns an unconfirmed result and keeps its process tracked; a late webhook
+  completes the same session. Wait for that row or explicitly stop it rather
+  than creating duplicates. Process exit and explicit stop still clean up the
+  child. The Hub gives Codex spawn RPCs 60 seconds for preflight plus startup.
+
 When changing agent bootstrap, handoff, or shared-session plumbing:
 
 - Handoff-capable integrations use `local` (terminal) and `remote` (web-controlled) ownership modes. Codex instead supports concurrent clients without ownership switching; see [Codex shared sessions](../docs/guide/codex-shared-sessions.md).
