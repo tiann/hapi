@@ -422,7 +422,7 @@ export class SessionCache {
             && this.store.messages.getImmediateQueuedLocalMessages(session.id).length > 0
 
         session.active = true
-        session.activeAt = Math.max(session.activeAt, t)
+        session.activeAt = Math.max(session.activeAt, hubNow)
         session.thinking = requestedThinking || preserveQueuedThinking
         session.thinkingAt = t
         if (!requestedThinking && preserveQueuedThinking && hasUnconsumedPrompt) {
