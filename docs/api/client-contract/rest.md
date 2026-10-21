@@ -36,6 +36,37 @@ Source: `hub/src/web/routes/sessions.ts`; shapes `SessionSchema` (`shared/src/sc
 
 Default list order: globalPinned → pinned → active → pending-request count → `updatedAt` desc; `order=updatedAt` gives pure recency. List badges come from `SessionSummary.pendingRequestsCount` (authoritative total) and `pendingRequests` (capped at 5, oldest-first) — do not derive counts from `pendingRequests.length`.
 
+### Sessions — shared read state
+
+Source: `hub/src/web/routes/sessionReads.ts`, `shared/src/sessionReadState.ts`.
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/session-read-state` | — | `{states: SessionReadState[]}` for the authenticated namespace |
+| `POST /api/session-read-state` | `{mutations: [{mutationId, sessionId, kind, activityAt, expectedVersion}]}`; 1–500 operations | `{states: SessionReadState[], acceptedSessionIds: string[]}` |
+
+`SessionReadState` is `{sessionId, lastSeenAt, manualUnreadAt: number | null,
+version}`. A missing record has last-seen `0`, no manual marker, and expected
+version `0`. `kind` is `seen`, `unread`, or `import-unread`. Numeric fields must
+be nonnegative safe integers; stored versions start at `1`. A read position
+cannot exceed the session's current `updatedAt`.
+
+Read state is shared within a namespace, persisted independently from activity,
+and cascades when a session is deleted. Reads advance the observed watermark;
+manual unread records the target activity and moves its watermark behind it.
+`import-unread` only initializes a missing record.
+
+Each action carries a unique `mutationId` (at most 200 characters). Retrying the
+latest accepted action returns it as accepted without another version increment.
+Other writes require an exact `expectedVersion` match. Conflicts return current
+state but omit that session from `acceptedSessionIds`; do not rebase a dependent
+offline action chain onto the peer's newer state. Missing/foreign targets return
+404 and invalid requests return 400, with no partial writes for those errors.
+
+Clients merge responses and `session-read-state-updated` SSE events by per-session
+version, subscribe globally with `all=true`, and refetch after reconnect. Web/PWA
+uses this contract; native clients must adopt it to share their local read state.
+
 ### Sessions — lifecycle
 
 Source: `hub/src/web/routes/sessions.ts`; request schemas in `shared/src/apiTypes.ts`.

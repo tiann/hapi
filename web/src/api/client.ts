@@ -61,6 +61,7 @@ import type {
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, MessageDeliveryMode } from '@hapi/protocol'
+import { SessionReadSnapshotSchema, SessionReadUpdateResponseSchema, type SessionReadMutation } from '@hapi/protocol'
 import type { CancelMessageResponse, SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { TranscriptionMode, TranscriptionProvider, TranscriptionProviderInfo } from '@hapi/protocol/voice'
 
@@ -265,6 +266,16 @@ export class ApiClient {
 
     async getSessions(): Promise<SessionsResponse> {
         return await this.request<SessionsResponse>('/api/sessions')
+    }
+
+    async getSessionReadState() {
+        return SessionReadSnapshotSchema.parse(await this.request('/api/session-read-state'))
+    }
+
+    async updateSessionReadState(mutations: SessionReadMutation[]) {
+        return SessionReadUpdateResponseSchema.parse(await this.request('/api/session-read-state', {
+            method: 'POST', body: JSON.stringify({ mutations })
+        }))
     }
 
     async getHealth(): Promise<HubHealthResponse> {

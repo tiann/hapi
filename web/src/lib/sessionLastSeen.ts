@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import type { SessionReadState } from '@hapi/protocol'
 
 const STORAGE_KEY = 'hapi.sessionLastSeen.v1'
 const MANUAL_UNREAD_KEY = 'hapi.sessionManualUnread.v1'
@@ -6,9 +7,67 @@ const BASELINE_KEY = 'hapi.sessionLastSeenBaseline.v1'
 const CHANGE_EVENT = 'hapi.sessionLastSeen.changed'
 
 let changeVersion = 0
+let syncScope: string | null = null
+let syncReady = false
+let onMutation: ((kind: 'seen' | 'unread', sessions: SessionReadStateInput[]) => void) | null = null
+
+function scopedKey(key: string): string {
+    return syncScope === null ? key : `${key}:${syncScope}`
+}
+
+export function configureSessionReadSync(scope: string, mutate: NonNullable<typeof onMutation>): void {
+    remoteSeen = {}
+    remoteUnread = {}
+    syncScope = scope
+    syncReady = false
+    onMutation = mutate
+    notifyStoreChanged()
+}
+
+export function disconnectSessionReadSync(): void {
+    syncScope = null
+    syncReady = false
+    onMutation = null
+    notifyStoreChanged()
+}
+
+export function applySessionReadStates(states: SessionReadState[], replace = false, ready = true): void {
+    const seen = replace ? {} : readStore()
+    const unread = replace ? {} : readManualUnreadStore()
+    for (const state of states) {
+        seen[state.sessionId] = state.lastSeenAt
+        if (state.manualUnreadAt === null) delete unread[state.sessionId]
+        else unread[state.sessionId] = state.manualUnreadAt
+    }
+    writeStore(seen)
+    writeManualUnreadStore(unread)
+    syncReady = ready
+    notifyStoreChanged()
+}
+
+export function useSessionReadReady(): boolean {
+    return useSyncExternalStore(subscribeToStoreChanges, () => syncScope === null || syncReady, () => false)
+}
+
+/** Only explicit legacy unread marks are safe to import; read receipts could clear another device. */
+export function getLegacyManualUnread(scope: string): Record<string, number> {
+    try {
+        const [hub, namespace] = JSON.parse(scope) as [string, string]
+        const storage = getLocalStorage()
+        // Legacy watermarks were not namespace-scoped. Only migrate the original
+        // default namespace, and only with evidence this browser used this Hub.
+        if (namespace !== 'default' || storage?.getItem(`${BASELINE_KEY}:${hub}`) !== '1') return {}
+        const value: unknown = JSON.parse(storage?.getItem(MANUAL_UNREAD_KEY) ?? '{}')
+        return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, number> : {}
+    } catch {
+        return {}
+    }
+}
 
 type LastSeenStore = Record<string, number>
 type ManualUnreadStore = Record<string, number>
+let remoteSeen: LastSeenStore = {}
+let remoteUnread: ManualUnreadStore = {}
 
 function getLocalStorage(): Storage | null {
     if (typeof window === 'undefined') {
@@ -22,13 +81,14 @@ function getLocalStorage(): Storage | null {
 }
 
 function readStore(): LastSeenStore {
+    if (syncScope !== null) return { ...remoteSeen }
     const storage = getLocalStorage()
     if (!storage) {
         return {}
     }
 
     try {
-        const raw = storage.getItem(STORAGE_KEY)
+        const raw = storage.getItem(scopedKey(STORAGE_KEY))
         if (!raw) {
             return {}
         }
@@ -43,13 +103,14 @@ function readStore(): LastSeenStore {
 }
 
 function readManualUnreadStore(): ManualUnreadStore {
+    if (syncScope !== null) return { ...remoteUnread }
     const storage = getLocalStorage()
     if (!storage) {
         return {}
     }
 
     try {
-        const raw = storage.getItem(MANUAL_UNREAD_KEY)
+        const raw = storage.getItem(scopedKey(MANUAL_UNREAD_KEY))
         if (!raw) {
             return {}
         }
@@ -64,12 +125,13 @@ function readManualUnreadStore(): ManualUnreadStore {
 }
 
 function writeStore(store: LastSeenStore): boolean {
+    if (syncScope !== null) remoteSeen = store
     const storage = getLocalStorage()
     if (!storage) {
         return false
     }
     try {
-        storage.setItem(STORAGE_KEY, JSON.stringify(store))
+        storage.setItem(scopedKey(STORAGE_KEY), JSON.stringify(store))
         return true
     } catch {
         // Ignore storage errors
@@ -78,12 +140,13 @@ function writeStore(store: LastSeenStore): boolean {
 }
 
 function writeManualUnreadStore(store: ManualUnreadStore): boolean {
+    if (syncScope !== null) remoteUnread = store
     const storage = getLocalStorage()
     if (!storage) {
         return false
     }
     try {
-        storage.setItem(MANUAL_UNREAD_KEY, JSON.stringify(store))
+        storage.setItem(scopedKey(MANUAL_UNREAD_KEY), JSON.stringify(store))
         return true
     } catch {
         // Ignore storage errors
@@ -104,7 +167,7 @@ function subscribeToStoreChanges(listener: () => void): () => void {
     }
 
     const handleStorage = (event: StorageEvent) => {
-        if (event.key !== STORAGE_KEY && event.key !== MANUAL_UNREAD_KEY) {
+        if (event.key !== scopedKey(STORAGE_KEY) && event.key !== scopedKey(MANUAL_UNREAD_KEY)) {
             return
         }
         changeVersion += 1
@@ -192,7 +255,7 @@ export function getUnreadSessionCount(sessions: Iterable<SessionReadStateInput>)
     return count
 }
 
-/** Mark all supplied unread sessions as seen on this device. Returns changed count. */
+/** Mark supplied unread sessions seen and publish the batch through the active sync. */
 export function markAllSessionsSeen(sessions: Iterable<SessionReadStateInput>): number {
     const latest = latestSessionUpdates(sessions)
     if (latest.size === 0) {
@@ -230,6 +293,8 @@ export function markAllSessionsSeen(sessions: Iterable<SessionReadStateInput>): 
         return 0
     }
 
+    onMutation?.('seen', [...latest].map(([id, updatedAt]) => ({ id, updatedAt })))
+
     const seenWritten = !seenChanged || writeStore(store)
     const manualUnreadWritten = !manualUnreadChanged || writeManualUnreadStore(manualUnreadStore)
     if (seenWritten || manualUnreadWritten) {
@@ -239,6 +304,7 @@ export function markAllSessionsSeen(sessions: Iterable<SessionReadStateInput>): 
 }
 
 export function initializeSessionLastSeen(scope: string, sessions: Iterable<{ id: string; updatedAt: number }>): void {
+    if (syncScope !== null) return
     const storage = getLocalStorage()
     if (!storage) {
         return
@@ -276,6 +342,8 @@ export function markSessionSeen(sessionId: string, seenAt: number): void {
         return
     }
 
+    onMutation?.('seen', [{ id: sessionId, updatedAt: seenAt }])
+
     if (seenChanged) {
         store[sessionId] = nextSeenAt
     }
@@ -305,6 +373,8 @@ export function markSessionUnread(sessionId: string, updatedAt: number): void {
     if (!seenChanged && !manualUnreadChanged) {
         return
     }
+
+    onMutation?.('unread', [{ id: sessionId, updatedAt }])
 
     if (seenChanged) {
         store[sessionId] = unreadBefore

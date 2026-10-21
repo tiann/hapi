@@ -10,6 +10,7 @@ import { PushStore } from './pushStore'
 import { FcmStore } from './fcmStore'
 import { ScratchlistStore } from './scratchlistStore'
 import { SessionStore } from './sessionStore'
+import { SessionReadStore } from './sessionReadStore'
 import { UserStore } from './userStore'
 import { UsageStore } from './usageStore'
 import { WorkGraphStore } from './workGraphStore'
@@ -42,9 +43,10 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 26
+const SCHEMA_VERSION: number = 27
 const REQUIRED_TABLES = [
     'sessions',
+    'session_read_states',
     'machines',
     'messages',
     'message_epochs',
@@ -64,6 +66,7 @@ export class Store {
     private closed: boolean = false
 
     readonly sessions: SessionStore
+    readonly sessionReads: SessionReadStore
     readonly machines: MachineStore
     readonly messages: MessageStore
     readonly users: UserStore
@@ -118,6 +121,7 @@ export class Store {
         }
 
         this.sessions = new SessionStore(this.db)
+        this.sessionReads = new SessionReadStore(this.db)
         this.machines = new MachineStore(this.db)
         this.messages = new MessageStore(this.db)
         this.users = new UserStore(this.db)
@@ -348,6 +352,7 @@ export class Store {
             23: () => this.migrateFromV23ToV24(),
             24: () => this.migrateFromV24ToV25(),
             25: () => this.migrateFromV25ToV26(),
+            26: () => this.createSessionReadSchema(),
         })
 
         if (currentVersion === 0) {
@@ -598,6 +603,19 @@ export class Store {
                 ON event_links(namespace, from_event_id);
             CREATE INDEX IF NOT EXISTS idx_event_links_namespace_to
                 ON event_links(namespace, to_event_id);
+        `)
+        this.createSessionReadSchema()
+    }
+
+    private createSessionReadSchema(): void {
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS session_read_states (
+                session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+                last_seen_at INTEGER NOT NULL DEFAULT 0,
+                manual_unread_at INTEGER,
+                last_mutation_id TEXT NOT NULL,
+                version INTEGER NOT NULL
+            );
         `)
     }
 

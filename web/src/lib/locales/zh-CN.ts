@@ -80,7 +80,7 @@ export default {
   'sessions.toolbar.more': '更多会话列表操作',
   'sessions.markAllRead.button': '全部标为已读（{count}）',
   'sessions.markAllRead.title': '全部标为已读？',
-  'sessions.markAllRead.description': '这会将当前设备上的 {count} 个未读会话标记为已读。',
+  'sessions.markAllRead.description': '这会在各设备上将 {count} 个未读会话标记为已读。',
   'sessions.markAllRead.confirm': '确定',
   'sessions.markAllRead.confirming': '标记中…',
   'sessions.timeFilter.label': '按最后活动时间筛选会话',

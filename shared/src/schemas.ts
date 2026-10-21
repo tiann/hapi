@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { SessionReadStateSchema } from './sessionReadState'
 import { COPILOT_AGENT_MODES, type CopilotAgentMode } from './copilotModes'
 import { CODEX_COLLABORATION_MODES, PERMISSION_MODES } from './modes'
 import { AgentConfigDescriptorSchema } from './agentConfig'
@@ -564,6 +565,10 @@ const MachineChangedSchema = SessionEventBaseSchema.extend({
 })
 
 export const SyncEventSchema = z.discriminatedUnion('type', [
+    SessionEventBaseSchema.extend({
+        type: z.literal('session-read-state-updated'),
+        states: z.array(SessionReadStateSchema)
+    }),
     SessionChangedSchema.extend({
         type: z.literal('session-added'),
         data: z.unknown().optional()

@@ -9,6 +9,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { useAuthSource } from '@/hooks/useAuthSource'
 import { useServerUrl } from '@/hooks/useServerUrl'
 import { useSSE } from '@/hooks/useSSE'
+import { useSessionReadSync } from '@/hooks/useSessionReadSync'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useReconnectingState } from '@/hooks/useReconnectingState'
 import { useSyncingState } from '@/hooks/useSyncingState'
@@ -70,6 +71,7 @@ function AppInner() {
     const { serverUrl, baseUrl, setServerUrl, clearServerUrl } = useServerUrl()
     const { authSource, isLoading: isAuthSourceLoading, setAccessToken } = useAuthSource(baseUrl)
     const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, bind } = useAuth(authSource, baseUrl)
+    const { refresh: refreshReadState, receive: receiveReadState } = useSessionReadSync(api, baseUrl, token)
     const [titleSuggestionAvailable, setTitleSuggestionAvailable] = useState(false)
     const goBack = useAppGoBack()
     const pathname = useLocation({ select: (location) => location.pathname })
@@ -249,6 +251,7 @@ function AppInner() {
     }, [api, isPushSupported, pushPermission, requestPermission, subscribe, token])
 
     const handleSseConnect = useCallback((info: { resumed: boolean }) => {
+        refreshReadState()
         // Clear disconnected state on successful connection
         reportSseConnect()
 
@@ -295,7 +298,7 @@ function AppInner() {
                     endSync()
                 }
             })
-    }, [api, queryClient, selectedSessionId, startSync, endSync, reportSseConnect])
+    }, [api, queryClient, selectedSessionId, startSync, endSync, reportSseConnect, refreshReadState])
 
     const handleSseDisconnect = useCallback((reason: string) => {
         // Only show reconnecting banner if we've already connected once
@@ -305,6 +308,10 @@ function AppInner() {
     }, [reportSseDisconnect])
 
     const handleSseEvent = useCallback((event: SyncEvent) => {
+        if (event.type === 'session-read-state-updated') {
+            receiveReadState(event.states)
+            return
+        }
         if (event.type !== 'messages-invalidated') {
             return
         }
@@ -317,7 +324,11 @@ function AppInner() {
             clearMessageWindow(event.sessionId)
         }
         void syncTailMessages(api, event.sessionId)
-    }, [api, selectedSessionId])
+    }, [api, selectedSessionId, receiveReadState])
+
+    const handleGlobalSseEvent = useCallback((event: SyncEvent) => {
+        if (event.type === 'session-read-state-updated') receiveReadState(event.states)
+    }, [receiveReadState])
 
     const handleSessionSseConnect = useCallback((info: { resumed: boolean }) => {
         if (!api || !selectedSessionId) {
@@ -407,7 +418,7 @@ function AppInner() {
         scope: 'global',
         onConnect: handleSseConnect,
         onDisconnect: handleSseDisconnect,
-        onEvent: () => {},
+        onEvent: handleGlobalSseEvent,
         onToast: handleToast
     })
 
