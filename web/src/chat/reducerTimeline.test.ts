@@ -446,7 +446,8 @@ describe('reduceTimeline', () => {
         expect(textBlocks).toHaveLength(2)
         expect(textBlocks[0]).toMatchObject({
             id: 'text-stream-1',
-            text: 'first second'
+            text: 'first second',
+            sourceMessageIds: ['text-row-1', 'text-row-2']
         })
         expect(textBlocks[1]).toMatchObject({
             id: 'text-row-3:0',
