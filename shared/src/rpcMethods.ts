@@ -51,6 +51,7 @@ export const RPC_METHODS = {
     SteerQueuedMessage: 'steer-queued-message',
     ForkConversation: 'fork-conversation',
     RewindConversation: 'rewind-conversation',
+    CompleteConversationRewind: 'complete-conversation-rewind',
     ClearConversation: 'clear-conversation',
     ImplementCodexPlan: 'implement-codex-plan',
 } as const

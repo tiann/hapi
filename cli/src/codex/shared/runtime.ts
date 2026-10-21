@@ -14,6 +14,7 @@ import { codexHome, saveRuntime, runtimeDirectory, runtimeAuthHash, findColdBind
 import { startCodexGateway, record, string, type Envelope } from './gateway';
 import { resolveSharedCodex, sharedLaunchConfig, initializeSharedClient, checkSharedCapabilities, takeReservedSessionId, type SharedLaunchOptions } from './launch';
 import { SharedCodexRoot } from './root';
+import { isNativeHistoryRead } from './rewind';
 
 export type RuntimeReady = { sessionId: string; runtime: CodexRuntimeRecord };
 type Reservation = { root: SharedCodexRoot; resumeId?: string };
@@ -237,6 +238,19 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         }
     });
     const key = (connection: string, request: Envelope) => `${connection}:${typeof request.id}:${request.id}`;
+    const admit = async (request: Envelope): Promise<() => void> => {
+        const threadId = string(record(request.params).threadId);
+        if (!threadId || !request.method) return () => {};
+        if (request.id === undefined && !isNativeHistoryRead(request.method)) throw new Error('Native mutations require a request ID');
+        // No await between resolving an already-bound root and taking its
+        // lease: rewind admission must not slip between those two steps.
+        const direct = roots.get(threadId);
+        if (direct) return direct.nativeAdmission(request.method);
+        for (const root of roots.values()) {
+            if (await root.containsThread(threadId)) return root.nativeAdmission(request.method);
+        }
+        return () => {};
+    };
     const before = (request: Envelope, connection: string): Promise<Envelope> => operation(async () => {
         const params = record(request.params);
         if (['thread/revert', 'thread/rollback'].includes(request.method ?? '')) {
@@ -328,7 +342,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         await checkSharedCapabilities(control);
         assertRunning();
         gateway = await startCodexGateway({ upstream, upstreamToken, path: process.platform === 'win32' ? undefined : join(sockets, 'clients.sock'), token,
-            hooks: { before, after, disconnected: connection => {
+            hooks: { before, after, admit, disconnected: connection => {
                 for (const [key, reservation] of reservations) {
                     if (!key.startsWith(`${connection}:`)) continue;
                     reservation.root.session.sendSessionEvent({ type: 'message', message: 'Native lifecycle outcome is unknown after transport loss. Do not retry blindly; inspect the shared runtime log.' });

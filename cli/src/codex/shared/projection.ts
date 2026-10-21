@@ -43,8 +43,9 @@ export class SharedCodexProjection {
     private readonly completedTitles = new Set<string>();
     private titleRevision = 0;
     constructor(private readonly session: ApiSessionClient, readonly threadId: string,
-        private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string) {
-        if (!parentThreadId) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
+        private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string, restoreLocators = true) {
+        if (!parentThreadId && restoreLocators) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
+        if (!restoreLocators) session.updateMetadata(metadata => ({ ...metadata, conversationHistoryTurns: {}, conversationHistoryPoints: {} }));
     }
 
     turnFor(id: string): string | undefined { return this.turns.get(id); }

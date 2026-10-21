@@ -1718,6 +1718,9 @@ export class SyncEngine {
                 truncateFromLocalId: rpcResult.truncateFromLocalId ?? messageLocalId
             })
             this.sessionCache.refreshSession(sessionId)
+            if (rpcResult.rewindToken) {
+                await this.rpcGateway.completeConversationRewind(sessionId, rpcResult.rewindToken)
+            }
             return { type: 'success' }
         } catch (error) {
             // Native history already changed; refuse further history actions until repaired.

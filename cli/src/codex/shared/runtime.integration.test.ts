@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer } from 'node:http';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { AgentState, Metadata } from '@/api/types';
@@ -24,6 +24,7 @@ class MockSession {
     updateAgentState(fn: (s: AgentState) => AgentState) { this.state = fn(this.state); }
     onUserMessage(fn: MockSession['user']) { this.user = fn; }
     onCancelQueuedMessage() {} onRetryQueuedMessage() {} onReconnect() {}
+    on() {}
     sendUserMessage(text: string) { this.messages.push({ user: text }); }
     sendAgentMessage(body: unknown) { this.messages.push(body); }
     sendSessionEvent(body: unknown) { this.messages.push(body); }
@@ -70,7 +71,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             expect(ready).not.toHaveBeenCalled(); expect(state.sessions.size).toBe(0);
             expect(requests.mock.calls.some(([method]) => method === 'thread/resume')).toBe(false);
         } finally { requests.mockRestore(); await rm(home, { recursive: true, force: true }); }
-    }, 30_000);
+    }, 90_000);
     it.each(['abort', 'failure'])('cleans up the native engine and partial roots on startup %s', async outcome => {
         const home = await mkdtemp('/tmp/hapi-shared-startup-'); state.home = home;
         const ch = join(home, 'codex'); await mkdir(ch);
@@ -96,7 +97,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 expect(session.dead).toBe(true); expect(session.metadata.lifecycleState).not.toBe('archived');
             }
         } finally { release(); abort.abort(); await running.catch(() => {}); await rm(home, { recursive: true, force: true }); }
-    }, 30_000);
+    }, 90_000);
     it('binds empty roots, exchanges messages, isolates /new, and archives only the selected root', async () => {
         const home = await mkdtemp('/tmp/hapi-shared-test-'); state.home = home;
         const ch = join(home, 'codex'); const cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
@@ -117,7 +118,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
         });
         await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
         const port = (http.address() as { port: number }).port;
-        await writeFile(join(ch, 'config.toml'), `model = "mock-model"\nmodel_provider = "mock_provider"\napproval_policy = "never"\nsandbox_mode = "read-only"\ncheck_for_update_on_startup = false\n[model_providers.mock_provider]\nname = "Isolated mock"\nbase_url = "http://127.0.0.1:${port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[projects."${cwd}"]\ntrust_level = "trusted"\n`);
+        await writeFile(join(ch, 'config.toml'), `model = "mock-model"\nmodel_provider = "mock_provider"\napproval_policy = "never"\nsandbox_mode = "read-only"\ncheck_for_update_on_startup = false\n[model_providers.mock_provider]\nname = "Isolated mock"\nbase_url = "http://127.0.0.1:${port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[projects."${cwd.split(String.fromCharCode(92)).join('/')}"]\ntrust_level = "trusted"\n`);
         vi.stubEnv('CODEX_HOME', ch); vi.stubEnv('HOME', home); vi.stubEnv('HAPI_SESSION_ID', 'parent-must-not-leak');
         const { runSharedRuntime } = await import('./runtime');
         let ready!: (value: import('./runtime').RuntimeReady) => void;
@@ -157,6 +158,26 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 expect(usageModels).toContain('mock-model');
                 expect(usageModels).toContain('second-mock');
             }, { timeout: 15_000 });
+            // Real app-server and native gateway: Web rewind must fence both
+            // terminals until the hub's transcript transaction acknowledges it.
+            await vi.waitFor(async () => {
+                const snapshot = record(await second.request('thread/read', { threadId: initial, includeTurns: false }));
+                expect(record(snapshot.thread).status).not.toMatchObject({ type: 'active' });
+            }, { timeout: 15_000 });
+            const changedFile = join(cwd, 'kept-after-rewind.txt');
+            await writeFile(changedFile, 'Existing edits must survive\n');
+            const rewind = record(await web.rpc.get('rewind-conversation')!({ messageLocalId: 'native-1' }));
+            expect(rewind).toMatchObject({ success: true, rewindToken: expect.any(String) });
+            await expect(second.request('thread/queue/add', { threadId: initial, input: [{ type: 'text', text: 'RACING INPUT', text_elements: [] }],
+                clientUserMessageId: 'race' })).rejects.toThrow(/rewind/);
+            await expect(first.request('turn/start', { threadId: initial, input: [{ type: 'text', text: 'RACING TURN', text_elements: [] }] })).rejects.toThrow(/rewind/);
+            await web.rpc.get('complete-conversation-rewind')!({ rewindToken: rewind.rewindToken });
+            expect(await readFile(changedFile, 'utf8')).toBe('Existing edits must survive\n');
+            web.user?.({ content: { text: 'AFTER REWIND' } }, 'after-rewind');
+            await vi.waitFor(() => expect(web.consumed).toContain('after-rewind'), { timeout: 15_000 });
+            await vi.waitFor(() => expect(JSON.stringify(modelRequests.at(-1))).toContain('AFTER REWIND'), { timeout: 15_000 });
+            expect(JSON.stringify(modelRequests.at(-1))).toContain('HELLO FROM WEB');
+            expect(JSON.stringify(modelRequests.at(-1))).not.toContain('HELLO FROM TERMINAL');
             await first.disconnect(); expect(web.dead).toBe(false);
             await second.request('thread/archive', { threadId: initial }); roots = [];
             await running;
@@ -169,5 +190,5 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             await new Promise<void>(resolve => http.close(() => resolve()));
             await rm(home, { recursive: true, force: true, maxRetries: 3 });
         }
-    }, 60_000);
+    }, 120_000);
 });

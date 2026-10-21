@@ -44,6 +44,7 @@ export class SharedCodexQueue {
     }
     owns(id: string): boolean { return id in this.entries; }
     state(id: string): Entry['state'] | undefined { return this.entries[id]?.state; }
+    hasUncertainInput(): boolean { return Object.values(this.entries).some(entry => ['unknown', 'queued', 'released'].includes(entry.state)); }
     /** Slash commands can mutate native state too. Crash/redelivery must not
      * repeat /new, /compact, or a settings change whose outcome was lost. */
     command(id: string, work: () => Promise<string | null>): Promise<string | null> {

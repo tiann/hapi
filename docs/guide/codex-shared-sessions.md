@@ -121,10 +121,18 @@ endpoints/tokens never go into HAPI session metadata or SSE.
 - `--profile` / `-p`: rejected. Standalone app-server 0.154 cannot select the
   native profile-v2 loader; flattening it into `-c` changes configuration
   precedence. Use a dedicated `CODEX_HOME` or explicit `-c` overrides.
-- Native in-place rewind/rollback and Web Rewind are unavailable for concurrent
-  sessions: a native mutation plus hub transcript truncation needs a commit
-  barrier across every sender. Use **Fork at message** instead. Cuts inside a
-  steered turn are rejected; select its first user message.
+- Web Rewind is available for paginated histories when the installed Codex
+  supports `thread/revert`. Select the first user message of a completed turn;
+  the selected turn and everything after it are removed from the conversation.
+  Files, Git commits, the index and the working tree remain unchanged.
+  Rewind requires an idle session, no active goal, no queued or uncertain input, and no
+  child-agent history. Legacy histories and cuts inside a steered turn remain
+  unsupported; use **Fork at message** instead.
+  All terminal and Web writes are blocked until native history is verified and
+  the Hub durably truncates its transcript. An uncertain mutation or interrupted
+  commit stays blocked across process restarts and requires reconciliation;
+  HAPI does not automatically retry it. Native terminal rewind/rollback stays
+  disabled: initiate the coordinated operation from Web.
 - `--worktree` and unsupported launch flags fail explicitly; create/select the
   working directory before launch. `--oss` requires an explicit
   `--local-provider`. Bare resume pickers use `hapi resume` or the attached TUI.
@@ -158,3 +166,15 @@ not a fake Codex executable. Coverage includes keyboard/Web answers, sibling
 question isolation, native queue editing/deletion, fork, primary-terminal exit,
 secondary attachment/detachment, Web→Runner resume with the same HAPI/native
 identity, and safe pending-message recovery.
+
+The opt-in `web/e2e/codex-rewind-session.spec.ts` additionally exercises Web
+Rewind at desktop and mobile widths against a real Hub, Runner and Codex.
+Use a separate `HAPI_HOME`, `CODEX_HOME`, test database and project directory.
+Run `scripts/dev/codex-rewind-model-fixture.ts` with an explicit
+`HAPI_REWIND_MODEL_PORT`, then configure that isolated Codex home's Responses
+provider to use `http://127.0.0.1:<port>/v1` without authentication or WebSockets.
+Set `HAPI_REWIND_PROJECT_ROOT` to the disposable project directory, `HAPI_URL`
+to the test Hub and `HAPI_ACCESS_TOKEN` to its token before running the Live
+Playwright suite with `HAPI_LIVE=1`. The fixture makes Codex execute a shell
+tool that modifies and creates files. Assertions verify transcript truncation,
+the subsequent model request, file bytes, Git HEAD, index and working tree.

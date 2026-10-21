@@ -19,6 +19,7 @@ export class SharedCodexPermissions {
     private readonly pending = new Map<string, Pending>();
     private readonly retired = new Set<string>();
     private closed = false;
+    hasPending(): boolean { return this.pending.size > 0; }
     private questionEvent(request: Pending, status?: 'resolved' | 'canceled'): void {
         const id = `codex:${request.threadId}:question:${request.toolCallId}:${status ?? 'start'}`;
         const message = status

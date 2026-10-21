@@ -589,6 +589,10 @@ export class RpcGateway {
         ) as import('@hapi/protocol/apiTypes').RewindConversationRpcResult
     }
 
+    async completeConversationRewind(sessionId: string, rewindToken: string): Promise<void> {
+        await this.sessionRpc(sessionId, RPC_METHODS.CompleteConversationRewind, { rewindToken }, 120_000)
+    }
+
     async listOpencodeReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListOpencodeReasoningEffortOptionsResponse> {
         return await this.sessionRpc(sessionId, RPC_METHODS.ListOpencodeReasoningEffortOptions, {}) as RpcListOpencodeReasoningEffortOptionsResponse
     }

@@ -22,6 +22,8 @@ export type GatewayHooks = {
     before(request: Envelope, connectionId: string): Promise<Envelope>;
     after(request: Envelope, response: Envelope, connectionId: string): Promise<void | Envelope[]>;
     disconnected?(connectionId: string): void;
+    /** Admit before dispatch and release only after the native response. */
+    admit?(request: Envelope, connectionId: string): Promise<() => void>;
     control(method: string, params: unknown): Promise<unknown>;
 };
 
@@ -51,6 +53,7 @@ export async function startCodexGateway(options: {
         });
         connections.set(downstream, upstream);
         const pending = new Map<string | number, Envelope>();
+        const admissions = new Map<string | number, () => void>();
         const ready = new Promise<void>((resolve, reject) => { upstream.once('open', resolve); upstream.once('error', reject); });
         void ready.catch(() => downstream.close(1011, 'Codex unavailable'));
         let detached = false;
@@ -64,6 +67,8 @@ export async function startCodexGateway(options: {
             finished = true; clearTimeout(drainTimer);
             connections.delete(downstream); upstream.close();
             options.hooks.disconnected?.(connectionId);
+            // Unanswered writes remain uncertain. Do not release their barriers
+            // on disconnect: a native engine may still be executing them.
         };
         const drained = () => { if (detached && processing === 0 && pending.size === 0) finish(); };
         const send = (target: WebSocket, value: Envelope) => {
@@ -78,17 +83,22 @@ export async function startCodexGateway(options: {
             processing++;
             incoming = incoming.then(async () => {
                 await ready;
+                let release: (() => void) | undefined;
                 try {
                     if (message.method?.startsWith('hapi/')) {
                         send(downstream, { id: message.id, result: await options.hooks.control(message.method, message.params) });
                         return;
                     }
+                    release = await options.hooks.admit?.(message, connectionId);
                     const transformed = await options.hooks.before(message, connectionId);
+                    if (release && transformed.id !== undefined) admissions.set(transformed.id, release);
                     if (transformed.id !== undefined && ['thread/start', 'thread/resume', 'thread/fork', 'thread/archive', 'thread/revert', 'thread/rollback', 'thread/queue/delete'].includes(transformed.method ?? '')) {
                         pending.set(transformed.id, transformed);
                     }
                     send(upstream, transformed);
+                    if (transformed.id === undefined) release?.();
                 } catch (error) {
+                    release?.();
                     send(downstream, { id: message.id, error: { code: -32600, message: error instanceof Error ? error.message : String(error) } });
                 }
             }).catch(() => downstream.close(1011, 'Codex connection failed')).finally(() => { processing--; drained(); });
@@ -97,6 +107,7 @@ export async function startCodexGateway(options: {
             outgoing = outgoing.then(async () => {
                 const message = EnvelopeSchema.parse(JSON.parse(raw.toString()));
                 const request = message.method === undefined && message.id !== undefined ? pending.get(message.id) : undefined;
+                const release = message.method === undefined && message.id !== undefined ? admissions.get(message.id) : undefined;
                 let replay: void | Envelope[] = undefined;
                 if (request) {
                     try { replay = await options.hooks.after(request, message, connectionId); }
@@ -105,6 +116,8 @@ export async function startCodexGateway(options: {
                         return;
                     } finally { pending.delete(message.id!); drained(); }
                 }
+                release?.();
+                if (message.id !== undefined && message.method === undefined) admissions.delete(message.id);
                 send(downstream, message);
                 for (const notification of replay ?? []) send(downstream, notification);
             }).catch(() => downstream.close(1011, 'Invalid Codex response'));
