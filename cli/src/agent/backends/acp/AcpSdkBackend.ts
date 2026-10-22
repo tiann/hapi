@@ -3,7 +3,7 @@ import type { AgentBackend, AgentMessage, AgentSessionConfig, PermissionRequest,
 import { asString, isObject } from '@hapi/protocol';
 import { AcpStdioTransport, type AcpStderrError } from './AcpStdioTransport';
 import { AcpMessageHandler, type AcpTextChunkMode } from './AcpMessageHandler';
-import { ACP_SESSION_UPDATE_TYPES } from './constants';
+import { ACP_SESSION_UPDATE_TYPES, OPENCODE_CHILD_SESSION_UPDATES, OPENCODE_CHILD_UPDATE_METHOD } from './constants';
 import { thinkingHintFromSessionUpdate } from './shouldBumpThinkingFromSessionUpdate';
 import { logger } from '@/ui/logger';
 import { withRetry } from '@/utils/time';
@@ -98,6 +98,17 @@ export class AcpSdkBackend implements AgentBackend {
     private runningThinkingTimer: ReturnType<typeof setTimeout> | null = null;
     private lastForwardedUsageUpdate: AcpUsageUpdate | null = null;
     private sessionUpdateQueue: Promise<void> = Promise.resolve();
+    /**
+     * Most recent prompt()'s onUpdate. Child handlers emit through it, and
+     * keep using it after the prompt ends so background subagent output is
+     * not dropped between turns.
+     */
+    private childEmitSink: ((msg: AgentMessage) => void) | null = null;
+    /** Per-child message handlers, created on first update and kept across parent prompt changes. */
+    private readonly childHandlers = new Map<string, {
+        handler: AcpMessageHandler;
+        timer: ReturnType<typeof setTimeout> | null;
+    }>();
 
     /** Retry configuration for ACP initialization */
     private static readonly INIT_RETRY_OPTIONS = {
@@ -136,6 +147,17 @@ export class AcpSdkBackend implements AgentBackend {
         command: string;
         args?: string[];
         env?: Record<string, string>;
+        /** Working directory passed to the spawned process (v2 `opencode acp` ignores `--cwd`). */
+        spawnCwd?: string;
+        /** v2 model switching: use `session/set_config_option('model')` instead of `session/set_model` (removed in v2). */
+        acpModelSwitchViaConfigOption?: boolean;
+        /**
+         * OpenCode v2: opt in to `opencode/session/child_update`. Without it a
+         * background subagent's output is never sent once the parent turn has
+         * ended (OpenCode suppresses ordinary updates while it follows the
+         * child in the background).
+         */
+        childSessionUpdates?: boolean;
         textChunkMode?: AcpTextChunkMode;
         flavor?: AgentFlavor;
     }) {}
@@ -161,7 +183,8 @@ export class AcpSdkBackend implements AgentBackend {
         const transport = await AcpStdioTransport.create({
             command: this.options.command,
             args: this.options.args,
-            env: this.options.env
+            env: this.options.env,
+            cwd: this.options.spawnCwd
         });
 
         if (this.transport) {
@@ -172,15 +195,7 @@ export class AcpSdkBackend implements AgentBackend {
         this.transport = transport;
 
         this.transport.onNotification((method, params) => {
-            if (method === 'session/update') {
-                this.handleSessionUpdate(params);
-            } else if (
-                method === '_x.ai/settings/update'
-                && isObject(params)
-                && 'auto_permission_mode_enabled' in params
-            ) {
-                this.autoPermissionModeEnabled = params.auto_permission_mode_enabled === true;
-            }
+            this.handleNotification(method, params);
         });
 
         this.transport.onStderrError((error) => {
@@ -201,7 +216,8 @@ export class AcpSdkBackend implements AgentBackend {
                         // Cursor ACP exposes Composer's non-fast/fast choice as separate
                         // `model` + `fast` config options only when the client advertises
                         // this capability. Agents that do not know this metadata ignore it.
-                        parameterizedModelPicker: true
+                        parameterizedModelPicker: true,
+                        ...(this.options.childSessionUpdates ? { [OPENCODE_CHILD_SESSION_UPDATES]: true } : {})
                     }
                 },
                 clientInfo: {
@@ -386,6 +402,23 @@ export class AcpSdkBackend implements AgentBackend {
         // The launcher serializes setModel between turns, but defensively wait for any
         // in-flight prompt to drain so we never interleave a switch with a session/prompt.
         await this.waitForResponseComplete();
+
+        // opencode v2 removed `session/set_model` from the wire (verified
+        // 2026-10-15: "Method not found"); the replacement is
+        // `session/set_config_option` with the fixed configId "model". Only
+        // taken when the launcher opted in via `acpModelSwitchViaConfigOption`
+        // AND the session actually advertises a model config option —
+        // otherwise fall through to the legacy path below unchanged.
+        if (this.options.acpModelSwitchViaConfigOption === true) {
+            const modelOption = this.sessionConfigOptions.get(sessionId)?.find((option) => option.id === 'model');
+            if (modelOption) {
+                await this.setConfigOption(sessionId, 'model', modelId);
+                if (opts?.flavor === 'opencode' || opts?.flavor === 'grok') {
+                    this.updateCurrentModelOptimistic(sessionId, modelId);
+                }
+                return;
+            }
+        }
 
         // ACP defines `session/set_model` ({ sessionId, modelId }) for inline model
         // switching — see ACP SDK schema `x-method: session/set_model`. OpenCode
@@ -612,6 +645,7 @@ export class AcpSdkBackend implements AgentBackend {
         this.latestUsageUpdate = null;
         this.lastForwardedUsageUpdate = null;
         this.promptUsageCallback = onUpdate;
+        this.childEmitSink = onUpdate;
         let stopReason: string | null = null;
         let promptUsage: AcpPromptUsage | null = null;
 
@@ -894,6 +928,11 @@ export class AcpSdkBackend implements AgentBackend {
         return this.promptGeneration;
     }
 
+    /** PID of the spawned ACP agent process, when known (used by the opencode v2 REST discovery). */
+    getProcessPid(): number | null {
+        return this.transport ? this.transport.getProcessPid() : null;
+    }
+
     getLastSessionUpdateAt(): number {
         return this.lastSessionUpdateAt;
     }
@@ -921,6 +960,12 @@ export class AcpSdkBackend implements AgentBackend {
         this.sessionInfoRefreshTimers.clear();
         this.clearRunningThinkingTimer();
         await this.sessionUpdateQueue;
+        for (const entry of this.childHandlers.values()) {
+            this.clearChildQuietTimer(entry);
+            entry.handler.drainBuffers();
+        }
+        this.childHandlers.clear();
+        this.childEmitSink = null;
         this.messageHandler?.drainBuffers();
         this.messageHandler = null;
         this.activeSessionId = null;
@@ -934,6 +979,124 @@ export class AcpSdkBackend implements AgentBackend {
         this.notifyResponseComplete();
         await this.transport.close();
         this.transport = null;
+    }
+
+    private handleNotification(method: string, params: unknown): void {
+        if (method === 'session/update') {
+            this.handleSessionUpdate(params);
+        } else if (method === OPENCODE_CHILD_UPDATE_METHOD && this.options.childSessionUpdates) {
+            this.handleChildSessionUpdate(params);
+        } else if (
+            method === '_x.ai/settings/update'
+            && isObject(params)
+            && 'auto_permission_mode_enabled' in params
+        ) {
+            this.autoPermissionModeEnabled = params.auto_permission_mode_enabled === true;
+        }
+    }
+
+    /**
+     * OpenCode v2 child (background subagent) updates. Unlike ordinary
+     * session/update traffic, these never touch the parent's prompt-scoped
+     * `messageHandler`: OpenCode namespaces child tool call ids but not
+     * child text, so routing child text through the parent handler would
+     * merge it into the parent's (or another child's) text buffer, and the
+     * compact window's handler suppression would drop it. Each child gets
+     * its own handler keyed by `childSessionId`, kept across parent prompt
+     * changes, unaffected by `suppressUpdatesDuring` and by abort (OpenCode
+     * keeps children running after a cancelled turn). Emission goes through
+     * the most recent prompt()'s onUpdate; before any prompt has run there
+     * is no sink, so updates are dropped.
+     */
+    private handleChildSessionUpdate(params: unknown): void {
+        if (!isObject(params)) return;
+        // Same root-session guard handleSessionUpdate applies.
+        const rootSessionId = asString(params.rootSessionId);
+        if (this.activeSessionId && rootSessionId && rootSessionId !== this.activeSessionId) {
+            return;
+        }
+        const childSessionId = asString(params.childSessionId);
+        if (!childSessionId) return;
+
+        if (params.type === 'status') {
+            const status = asString(params.status);
+            if (status === 'completed' || status === 'failed' || status === 'interrupted') {
+                this.finishChildHandler(childSessionId);
+            }
+            // created/running have no handler to manage yet.
+            return;
+        }
+        if (params.type !== 'update' || !isObject(params.update)) return;
+
+        const entry = this.childHandlers.get(childSessionId) ?? this.createChildHandler(childSessionId);
+        if (!entry) return;
+        const update = params.update;
+        this.sessionUpdateQueue = this.sessionUpdateQueue
+            .then(async () => {
+                await entry.handler.handleUpdate(update);
+            })
+            .catch((error) => {
+                logger.debug(
+                    '[AcpSdkBackend] child session update failed:',
+                    error instanceof Error ? error.message : String(error)
+                );
+            });
+        this.armChildQuietTimer(childSessionId, entry);
+    }
+
+    private createChildHandler(childSessionId: string): { handler: AcpMessageHandler; timer: ReturnType<typeof setTimeout> | null } | null {
+        if (!this.childEmitSink) {
+            logger.debug('[AcpSdkBackend] dropping child update: no prompt has run yet');
+            return null;
+        }
+        const handler = new AcpMessageHandler((message) => {
+            this.childEmitSink?.(message);
+        }, {
+            textChunkMode: this.options.textChunkMode,
+            flavor: this.options.flavor,
+        });
+        const entry = { handler, timer: null };
+        this.childHandlers.set(childSessionId, entry);
+        return entry;
+    }
+
+    /** Per-child quiet timer: drains that child's buffers once its stream goes quiet. */
+    private armChildQuietTimer(
+        childSessionId: string,
+        entry: { handler: AcpMessageHandler; timer: ReturnType<typeof setTimeout> | null }
+    ): void {
+        if (entry.timer) {
+            clearTimeout(entry.timer);
+        }
+        entry.timer = setTimeout(() => {
+            entry.timer = null;
+            void this.sessionUpdateQueue.then(() => entry.handler.drainBuffers());
+        }, AcpSdkBackend.LATE_FLUSH_QUIET_PERIOD_MS);
+    }
+
+    private clearChildQuietTimer(entry: { handler: AcpMessageHandler; timer: ReturnType<typeof setTimeout> | null }): void {
+        if (entry.timer) {
+            clearTimeout(entry.timer);
+            entry.timer = null;
+        }
+    }
+
+    /** Child turn ended: flush its buffers now and retire its handler and timer. */
+    private finishChildHandler(childSessionId: string): void {
+        const entry = this.childHandlers.get(childSessionId);
+        if (!entry) return;
+        this.childHandlers.delete(childSessionId);
+        this.clearChildQuietTimer(entry);
+        this.sessionUpdateQueue = this.sessionUpdateQueue
+            .then(() => {
+                entry.handler.drainBuffers();
+            })
+            .catch((error) => {
+                logger.debug(
+                    '[AcpSdkBackend] child flush failed:',
+                    error instanceof Error ? error.message : String(error)
+                );
+            });
     }
 
     private handleSessionUpdate(params: unknown): void {
