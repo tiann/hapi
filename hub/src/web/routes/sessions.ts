@@ -600,6 +600,9 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (!isPermissionModeAllowedForFlavor(mode, flavor)) {
             return c.json({ error: 'Invalid permission mode for session flavor' }, 400)
         }
+        if (mode === 'safe-yolo' && sessionResult.session.metadata?.capabilities?.concurrentClients) {
+            return c.json({ error: 'Safe Yolo is not available for shared sessions' }, 400)
+        }
         if (flavor === 'opencode' && mode === 'plan' && sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
             return c.json({ error: 'OpenCode plan mode is only supported for remote sessions' }, 409)
         }

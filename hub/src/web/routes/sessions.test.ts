@@ -1150,6 +1150,24 @@ describe('sessions routes', () => {
         ])
     })
 
+    it('rejects Safe Yolo for shared sessions', async () => {
+        const session = createSession({
+            active: false,
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex', capabilities: { concurrentClients: true } }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/permission-mode', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ mode: 'safe-yolo' })
+        })
+
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({ error: 'Safe Yolo is not available for shared sessions' })
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
     it('applies permission mode changes for inactive sessions', async () => {
         const session = createSession({
             active: false,
