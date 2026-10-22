@@ -278,7 +278,7 @@ export function SessionRowSummary(props: {
                             {todoProgress.completed}/{todoProgress.total}
                         </span>
                     ) : null}
-                    {!attention && s.pendingRequestsCount > 0 ? (
+                    {!attention && s.active && s.pendingRequestsCount > 0 ? (
                         <span className="shrink-0 text-[var(--app-badge-warning-text)]">
                             {t('session.item.pending')} {s.pendingRequestsCount}
                         </span>

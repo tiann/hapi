@@ -444,6 +444,7 @@ describe('getVisibleSessionPreview', () => {
     it('keeps selected and pending sessions inside the collapsed preview without promoting them', () => {
         const sessions = Array.from({ length: 6 }, (_, index) => makeSession({
             id: `s-${index + 1}`,
+            active: index === 4,
             pendingRequestsCount: index === 4 ? 1 : 0,
             metadata: { path: '/work/hapi' },
             updatedAt: 100 - index
@@ -455,6 +456,20 @@ describe('getVisibleSessionPreview', () => {
         })
 
         expect(preview.map(session => session.id)).toEqual(['s-1', 's-5', 's-6'])
+    })
+
+    it('does not let archived pending sessions displace active ones', () => {
+        const sessions = Array.from({ length: 6 }, (_, index) => makeSession({
+            id: `s-${index + 1}`,
+            active: index < 3,
+            pendingRequestsCount: index >= 4 ? 1 : 0,
+            metadata: { path: '/work/hapi' },
+            updatedAt: 100 - index
+        }))
+
+        const preview = getVisibleSessionPreview(sessions, { limit: 3 })
+
+        expect(preview.map(session => session.id)).toEqual(['s-1', 's-2', 's-3'])
     })
 
     it('does not exceed the limit just because many sessions are active', () => {

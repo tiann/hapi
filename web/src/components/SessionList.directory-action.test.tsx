@@ -911,6 +911,7 @@ describe('SessionList collapse behavior', () => {
         const sessions = Array.from({ length: 4 }, (_, index) => makeSession({
             id: `session-${index + 1}`,
             updatedAt: 100 - index,
+            active: index > 0,
             pendingRequestsCount: index > 0 ? 1 : 0,
             metadata: {
                 path: '/work/hapi',
@@ -941,6 +942,7 @@ describe('SessionList collapse behavior', () => {
         const sessions = Array.from({ length: 8 }, (_, index) => makeSession({
             id: `session-${index + 1}`,
             updatedAt: 100 - index,
+            active: index < 5,
             pendingRequestsCount: index < 5 ? 1 : 0,
             metadata: {
                 path: '/work/hapi',
