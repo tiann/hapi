@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync 
 import { randomUUID } from 'node:crypto'
 import { basename, dirname, join, relative } from 'node:path'
 import { homedir } from 'node:os'
+import { zstdDecompressSync } from 'node:zlib'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { isCodexSubagentSource } from '@/codex/utils/codexSessionMetadata'
 
@@ -83,7 +84,7 @@ function inferSessionIdFromFileName(filePath: string): string | null {
     return /([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/.exec(filePath)?.[1] ?? null
 }
 
-function collectJsonlFiles(root: string, files: string[]): void {
+function collectJsonlFiles(root: string, files: string[], pattern = /\.jsonl$/i): void {
     let entries: import('node:fs').Dirent[]
     try {
         entries = readdirSync(root, { withFileTypes: true })
@@ -92,8 +93,8 @@ function collectJsonlFiles(root: string, files: string[]): void {
     }
     for (const entry of entries) {
         const fullPath = join(root, entry.name)
-        if (entry.isDirectory()) collectJsonlFiles(fullPath, files)
-        else if (entry.isFile() && fullPath.toLowerCase().endsWith('.jsonl')) files.push(fullPath)
+        if (entry.isDirectory()) collectJsonlFiles(fullPath, files, pattern)
+        else if (entry.isFile() && pattern.test(entry.name)) files.push(fullPath)
     }
 }
 
@@ -299,6 +300,54 @@ function deduplicateAdjacentImportedMessages(messages: CodexImportedMessageConte
     return deduped
 }
 
+function parseCodexRecords(lines: string[]): Record<string, unknown>[] {
+    const records: Record<string, unknown>[] = []
+    for (const line of lines) {
+        try {
+            const record = asRecord(JSON.parse(line))
+            if (record) records.push(record)
+        } catch { continue }
+    }
+    return records
+}
+
+function findCodexRolloutFile(rolloutId: string): string | null {
+    const files: string[] = []
+    for (const root of [join(getCodexHome(), 'sessions'), join(getCodexHome(), 'archived_sessions')]) {
+        collectJsonlFiles(root, files, /\.jsonl(\.zst)?$/i)
+    }
+    return files.find((file) => basename(file).replace(/\.jsonl(\.zst)?$/i, '').endsWith(rolloutId)) ?? null
+}
+
+function readCodexRolloutLines(filePath: string): string[] {
+    const raw = readFileSync(filePath)
+    const content = filePath.toLowerCase().endsWith('.zst') ? zstdDecompressSync(raw).toString('utf-8') : raw.toString('utf-8')
+    return content.split(/\r?\n/).filter(Boolean)
+}
+
+// Paginated Codex forks persist only their own records; inherited history stays in the
+// history_base rollout, bounded by end_ordinal_exclusive (recursively for nested forks).
+function resolveCodexForkRecords(records: Record<string, unknown>[], seen = new Set<string>()): Record<string, unknown>[] {
+    const meta = records[0]?.type === 'session_meta' ? asRecord(records[0].payload) : null
+    const base = asRecord(meta?.history_base)
+    if (!base) return records
+    const rolloutId = asString(base.thread_id)
+    const end = base.end_ordinal_exclusive
+    if (!rolloutId || typeof end !== 'number' || seen.has(rolloutId)) {
+        throw new Error('Codex fork history is incomplete: invalid history_base')
+    }
+    seen.add(rolloutId)
+    const parentFile = findCodexRolloutFile(rolloutId)
+    if (!parentFile) throw new Error(`Codex fork history is incomplete: parent rollout ${rolloutId} not found`)
+    const inherited = resolveCodexForkRecords(parseCodexRecords(readCodexRolloutLines(parentFile)), seen)
+        .filter((record) => typeof record.ordinal === 'number' && record.ordinal < end)
+    // Ordinals are contiguous across the lineage, so a complete prefix is exactly 0..end-1.
+    if (inherited.length !== end || inherited.some((record, index) => record.ordinal !== index)) {
+        throw new Error(`Codex fork history is incomplete: parent rollout ${rolloutId} is missing records before the fork point`)
+    }
+    return [...inherited, ...records]
+}
+
 function parseCodexLocalSession(
     filePath: string,
     includeMessages: boolean,
@@ -319,10 +368,7 @@ function parseCodexLocalSession(
     const messages: CodexImportedMessageContent[] = []
 
     if (includeMessages) {
-        for (const line of lines) {
-            let record: Record<string, unknown> | null = null
-            try { record = asRecord(JSON.parse(line)) } catch { continue }
-            if (!record) continue
+        for (const record of resolveCodexForkRecords(parseCodexRecords(lines))) {
             const message = convertCodexRecordToImportedMessage(record)
             if (message) messages.push(message)
         }

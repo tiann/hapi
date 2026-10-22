@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { zstdCompressSync } from 'node:zlib'
 import { tmpdir } from 'node:os'
 import { archiveLocalCodexSession, listLocalCodexSessionSummaries, listLocalCodexSessionsWithMessagesByIds } from './codexSessions'
 
@@ -178,6 +179,84 @@ describe('listLocalCodexSessionSummaries', () => {
 
         expect(sessions.map((session) => session.id)).toEqual(['wanted-session-id'])
         expect(sessions[0]?.messages).toHaveLength(1)
+        rmSync(root, { recursive: true, force: true })
+    })
+
+    it('includes inherited history from nested paginated fork ancestors', () => {
+        const root = mkdtempSync(join(tmpdir(), 'codex-home-'))
+        process.env.CODEX_HOME = root
+        const sessionsDir = join(root, 'sessions', '2026', '06', '27')
+        const archivedDir = join(root, 'archived_sessions', '2026', '06', '26')
+        mkdirSync(sessionsDir, { recursive: true })
+        mkdirSync(archivedDir, { recursive: true })
+        const rootId = '11111111-1111-1111-1111-111111111111'
+        const parentId = '22222222-2222-2222-2222-222222222222'
+        const childId = '33333333-3333-3333-3333-333333333333'
+        const user = (ordinal: number, text: string) => JSON.stringify({
+            ordinal,
+            type: 'response_item',
+            payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] }
+        })
+        const meta = (ordinal: number, id: string, base?: { thread_id: string; end_ordinal_exclusive: number }) => JSON.stringify({
+            ordinal,
+            type: 'session_meta',
+            payload: { id, cwd: '/tmp/project', history_mode: 'paginated', ...(base ? { forked_from_id: base.thread_id, forked_from_ordinal_exclusive: base.end_ordinal_exclusive, history_base: base } : {}) }
+        })
+
+        writeFileSync(join(archivedDir, `rollout-2026-06-26T10-00-00-${rootId}.jsonl.zst`), zstdCompressSync([
+            meta(0, rootId), user(1, 'root one'), user(2, 'root two'), user(3, 'root after fork')
+        ].join('\n')))
+        writeFileSync(join(archivedDir, `rollout-2026-06-26T11-00-00-${parentId}.jsonl`), [
+            meta(3, parentId, { thread_id: rootId, end_ordinal_exclusive: 3 }), user(4, 'parent one'), user(5, 'parent after fork')
+        ].join('\n'))
+        writeFileSync(join(sessionsDir, `rollout-2026-06-27T12-00-00-${childId}.jsonl`), [
+            meta(5, childId, { thread_id: parentId, end_ordinal_exclusive: 5 }), user(6, 'child one')
+        ].join('\n'))
+
+        const sessions = listLocalCodexSessionsWithMessagesByIds(new Set([childId]))
+
+        expect(sessions[0]?.messages.map((message) => (message.content as { text?: string }).text)).toEqual([
+            'root one', 'root two', 'parent one', 'child one'
+        ])
+        rmSync(root, { recursive: true, force: true })
+    })
+
+    it('refuses to load a fork whose ancestor rollout is missing', () => {
+        const root = mkdtempSync(join(tmpdir(), 'codex-home-'))
+        process.env.CODEX_HOME = root
+        const sessionsDir = join(root, 'sessions', '2026', '06', '27')
+        mkdirSync(sessionsDir, { recursive: true })
+        const missingId = '44444444-4444-4444-4444-444444444444'
+        writeFileSync(join(sessionsDir, 'fork.jsonl'), [
+            JSON.stringify({ ordinal: 2, type: 'session_meta', payload: { id: 'fork-session-id', cwd: '/tmp/project', history_base: { thread_id: missingId, end_ordinal_exclusive: 2 } } }),
+            JSON.stringify({ ordinal: 3, type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'later' }] } })
+        ].join('\n'))
+
+        expect(() => listLocalCodexSessionsWithMessagesByIds(new Set(['fork-session-id']))).toThrow(missingId)
+        rmSync(root, { recursive: true, force: true })
+    })
+
+    it('refuses to load a fork whose ancestor rollout is truncated or has gaps', () => {
+        const root = mkdtempSync(join(tmpdir(), 'codex-home-'))
+        process.env.CODEX_HOME = root
+        const sessionsDir = join(root, 'sessions', '2026', '06', '27')
+        mkdirSync(sessionsDir, { recursive: true })
+        const parentId = '55555555-5555-5555-5555-555555555555'
+        writeFileSync(join(sessionsDir, `rollout-2026-06-27T11-00-00-${parentId}.jsonl`), [
+            JSON.stringify({ ordinal: 0, type: 'session_meta', payload: { id: parentId, cwd: '/tmp/project' } })
+        ].join('\n'))
+        writeFileSync(join(sessionsDir, 'fork.jsonl'), [
+            JSON.stringify({ ordinal: 3, type: 'session_meta', payload: { id: 'fork-session-id', cwd: '/tmp/project', history_base: { thread_id: parentId, end_ordinal_exclusive: 3 } } }),
+            JSON.stringify({ ordinal: 4, type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'later' }] } })
+        ].join('\n'))
+
+        expect(() => listLocalCodexSessionsWithMessagesByIds(new Set(['fork-session-id']))).toThrow('missing records before the fork point')
+
+        writeFileSync(join(sessionsDir, `rollout-2026-06-27T11-00-00-${parentId}.jsonl`), [
+            JSON.stringify({ ordinal: 0, type: 'session_meta', payload: { id: parentId, cwd: '/tmp/project' } }),
+            JSON.stringify({ ordinal: 2, type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'gap before me' }] } })
+        ].join('\n'))
+        expect(() => listLocalCodexSessionsWithMessagesByIds(new Set(['fork-session-id']))).toThrow('missing records before the fork point')
         rmSync(root, { recursive: true, force: true })
     })
 })
