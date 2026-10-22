@@ -2113,7 +2113,6 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        
                     </FloatingOverlay>
                 </div>
             )

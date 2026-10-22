@@ -25,6 +25,17 @@ export function createUnseenWatermark(blocks: readonly VisibleChatBlock[]): Unse
     const localIds = new Set<string>()
     for (const block of blocks) {
         ids.add(block.id)
+        if (isToolGroupBlock(block)) {
+            // A display-mode switch can replace a group with its member
+            // tool-call blocks. Keep those ids in the watermark so the same
+            // historical tools are not reported as new content.
+            for (const tool of block.tools) {
+                ids.add(tool.id)
+                if (tool.localId) {
+                    localIds.add(tool.localId)
+                }
+            }
+        }
         const localId = getLocalId(block)
         if (localId) {
             localIds.add(localId)
