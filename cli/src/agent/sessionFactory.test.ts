@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Session } from '@/api/types'
+import type { Metadata, Session } from '@/api/types'
 
 const {
     getSessionMock,
@@ -289,6 +289,27 @@ describe('bootstrapExistingSession', () => {
                 conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' }
             })
         )
+    })
+
+    it('derives metadata from the persisted row before overrides replace it', async () => {
+        const session = createSession()
+        session.metadata = { ...session.metadata!, codexSessionId: 'codex-thread-1' }
+        const sessionClient = { updateMetadata: vi.fn() }
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue(sessionClient)
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+        const baseline = { turns: [], before: 1, pending: [], capture: true }
+        const deriveMetadata = vi.fn((current: Metadata | null | undefined) =>
+            current?.capabilities?.concurrentClients ? {} : { codexHistoryBaseline: baseline })
+
+        const result = await bootstrapExistingSession({
+            sessionId: 'hapi-session-1', flavor: 'codex', workingDirectory: '/tmp/project', deriveMetadata,
+            metadataOverrides: { capabilities: { concurrentClients: true } }
+        })
+
+        expect(result.metadata).toMatchObject({ codexHistoryBaseline: baseline, capabilities: { concurrentClients: true } })
+        expect(sessionClient.updateMetadata.mock.calls[0][0](session.metadata)).toMatchObject({ codexHistoryBaseline: baseline })
     })
 
     it('advertises remote terminal capability in session metadata', () => {
