@@ -560,30 +560,17 @@ function getMirrorSelection(root: HTMLElement): ComposerSelection {
     )
 }
 
-function setMirrorSelection(root: HTMLElement, selection: ComposerSelection) {
-    const target = Math.max(0, selection.start)
-    let remaining = target
-    const sel = window.getSelection()
-    if (!sel) return
+type DomPoint = { node: Node; offset: number }
 
-    const place = (node: Node, offset: number) => {
-        const range = document.createRange()
-        range.setStart(node, offset)
-        range.collapse(true)
-        sel.removeAllRanges()
-        sel.addRange(range)
-    }
+function domPointFromMirrorOffset(root: HTMLElement, offset: number): DomPoint {
+    let remaining = Math.max(0, offset)
 
-    const walk = (n: Node): boolean => {
+    const walk = (n: Node): DomPoint | null => {
         if (n.nodeType === Node.TEXT_NODE) {
             const raw = n.textContent ?? ''
             // Caret-pad ZWSP is not part of the mirror; still a valid caret target.
             if (raw === CARET_PAD) {
-                if (remaining === 0) {
-                    place(n, raw.length)
-                    return true
-                }
-                return false
+                return remaining === 0 ? { node: n, offset: raw.length } : null
             }
             const cleaned = stripCaretPad(raw)
             if (remaining <= cleaned.length) {
@@ -594,55 +581,67 @@ function setMirrorSelection(root: HTMLElement, selection: ComposerSelection) {
                     if (raw[rawOffset] !== CARET_PAD) cleanedSeen += 1
                     rawOffset += 1
                 }
-                place(n, rawOffset)
-                return true
+                return { node: n, offset: rawOffset }
             }
             remaining -= cleaned.length
-            return false
+            return null
         }
-        if (n.nodeType !== Node.ELEMENT_NODE) return false
+        if (n.nodeType !== Node.ELEMENT_NODE) return null
         const el = n as HTMLElement
         if (el.dataset.composerMention === 'session') {
             const parent = el.parentNode
-            if (!parent) return true
+            if (!parent) return { node: root, offset: root.childNodes.length }
             const index = Array.from(parent.childNodes).indexOf(el)
-            if (remaining === 0) {
-                place(parent, index)
-                return true
-            }
-            if (remaining === 1) {
-                place(parent, index + 1)
-                return true
-            }
+            if (remaining === 0) return { node: parent, offset: index }
+            if (remaining === 1) return { node: parent, offset: index + 1 }
             remaining -= 1
-            return false
+            return null
         }
         if (el.tagName === 'BR') {
             const parent = el.parentNode
-            if (!parent) return true
+            if (!parent) return { node: root, offset: root.childNodes.length }
             // Mirror mapping gives a filler br zero width; consuming one here
             // would shift every later offset by one.
-            if (isFillerLineBreak(root, el)) return false
-            if (remaining === 0) {
-                place(parent, Array.from(parent.childNodes).indexOf(el))
-                return true
-            }
+            if (isFillerLineBreak(root, el)) return null
+            if (remaining === 0) return { node: parent, offset: Array.from(parent.childNodes).indexOf(el) }
             remaining -= 1
-            return false
+            return null
         }
         for (const child of Array.from(n.childNodes)) {
-            if (walk(child)) return true
+            const point = walk(child)
+            if (point) return point
         }
-        return false
+        return null
     }
 
     for (const child of Array.from(root.childNodes)) {
-        if (walk(child)) return
+        const point = walk(child)
+        if (point) return point
     }
-    place(root, root.childNodes.length)
+    return { node: root, offset: root.childNodes.length }
+}
+
+function setMirrorSelection(root: HTMLElement, selection: ComposerSelection) {
+    const sel = window.getSelection()
+    if (!sel) return
+    const start = domPointFromMirrorOffset(root, selection.start)
+    const end = selection.end > selection.start
+        ? domPointFromMirrorOffset(root, selection.end)
+        : start
+    const range = document.createRange()
+    range.setStart(start.node, start.offset)
+    range.setEnd(end.node, end.offset)
+    sel.removeAllRanges()
+    sel.addRange(range)
 }
 
 const MENTION_TOOLTIP_DELAY_MS = 300
+const HISTORY_LIMIT = 200
+
+// Segments, not serialized text: reparsing would turn literal
+// `[title](/sessions/<id>)` text into a mention chip.
+type HistoryEntry = { segments: readonly ComposerSegment[]; selection: ComposerSelection }
+type TypingRun = { kind: string; value: string; caret: number }
 
 /** Lazily probed once — Firefox <136 treats unknown values as inherit (not editable). */
 let supportsPlaintextOnlyCached: boolean | null = null
@@ -708,6 +707,40 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         setDomIsEmpty(editorDomIsEmpty(root))
     }, [resolveSessionMentionTooltip])
 
+    // Programmatic edits rebuild the DOM, which the browser's native undo
+    // stack cannot follow, so the editor owns undo/redo for every edit.
+    const undoStackRef = useRef<HistoryEntry[]>([])
+    const redoStackRef = useRef<HistoryEntry[]>([])
+    // Consecutive native edits of one kind form a single undo step while the
+    // editor still holds what the previous edit left.
+    const typingRunRef = useRef<TypingRun | null>(null)
+
+    const pushUndo = useCallback((entry: HistoryEntry) => {
+        const stack = undoStackRef.current
+        stack.push(entry)
+        if (stack.length > HISTORY_LIMIT) stack.shift()
+        redoStackRef.current = []
+    }, [])
+
+    const recordUndo = useCallback((segments: readonly ComposerSegment[], selection: ComposerSelection) => {
+        typingRunRef.current = null
+        pushUndo({ segments, selection })
+    }, [pushUndo])
+
+    const commitSegments = useCallback((
+        root: HTMLElement,
+        segments: readonly ComposerSegment[],
+        selection: ComposerSelection
+    ): string => {
+        const serialized = serializeComposerSegments(segments)
+        renderEditorSegments(root, segments)
+        lastEmittedRef.current = serialized
+        setMirrorSelection(root, selection)
+        onValueChange(serialized)
+        onMirrorChange({ text: mirrorComposerSegments(segments), selection })
+        return serialized
+    }, [onMirrorChange, onValueChange, renderEditorSegments])
+
     const emitFromDom = useCallback(() => {
         const root = rootRef.current
         if (!root) return
@@ -719,7 +752,49 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         lastEmittedRef.current = serialized
         onValueChange(serialized)
         onMirrorChange({ text: mirror, selection })
+        const run = typingRunRef.current
+        if (run) {
+            run.value = serialized
+            run.caret = selection.start === selection.end ? selection.start : -1
+        }
     }, [onMirrorChange, onValueChange])
+
+    const recordNativeEdit = useCallback((root: HTMLElement, inputType: string) => {
+        const kind = inputType.startsWith('insert')
+            ? 'insert'
+            : inputType.startsWith('delete') ? 'delete' : inputType
+        const segments = segmentsFromEditor(root)
+        const value = serializeComposerSegments(segments)
+        const selection = getMirrorSelection(root)
+        const run = typingRunRef.current
+        if (
+            run
+            && run.kind === kind
+            && run.value === value
+            && selection.start === selection.end
+            && selection.start === run.caret
+        ) return
+        pushUndo({ segments, selection })
+        typingRunRef.current = { kind, value, caret: -1 }
+    }, [pushUndo])
+
+    const applyHistory = useCallback((redo: boolean) => {
+        const root = rootRef.current
+        if (!root || composingRef.current) return
+        const from = redo ? redoStackRef.current : undoStackRef.current
+        const to = redo ? undoStackRef.current : redoStackRef.current
+        const current = segmentsFromEditor(root)
+        const currentKey = JSON.stringify(current)
+        // Skip snapshots of edits that changed nothing (e.g. a cancelled IME).
+        let entry = from.pop()
+        while (entry && JSON.stringify(entry.segments) === currentKey) entry = from.pop()
+        if (!entry) return
+        to.push({ segments: current, selection: getMirrorSelection(root) })
+        typingRunRef.current = null
+        clearMentionTooltip()
+        commitSegments(root, entry.segments, entry.selection)
+        onEdit?.()
+    }, [clearMentionTooltip, commitSegments, onEdit])
 
     const syncFromValue = useCallback((next: string, selection?: ComposerSelection) => {
         const root = rootRef.current
@@ -741,6 +816,10 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
 
     useLayoutEffect(() => {
         if (value === lastEmittedRef.current) return
+        // An external value (draft restore, send, queue edit) starts a new history.
+        undoStackRef.current = []
+        redoStackRef.current = []
+        typingRunRef.current = null
         syncFromValue(value)
     }, [value, syncFromValue])
 
@@ -795,15 +874,8 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
             const segments = segmentsFromEditor(root)
             const selection = getMirrorSelection(root)
             const result = insertSessionMentionInComposerSegments(segments, selection, mention, prefixes)
-            const serialized = serializeComposerSegments(result.segments)
-            renderEditorSegments(root, result.segments)
-            lastEmittedRef.current = serialized
-            setMirrorSelection(root, result.selection)
-            onValueChange(serialized)
-            onMirrorChange({
-                text: mirrorComposerSegments(result.segments),
-                selection: result.selection,
-            })
+            recordUndo(segments, selection)
+            const serialized = commitSegments(root, result.segments, result.selection)
             return { text: serialized, selection: result.selection }
         },
         applyPlainSuggestion: (suggestionText, prefixes = ['@', '/', '$']) => {
@@ -814,18 +886,11 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
             const segments = segmentsFromEditor(root)
             const selection = getMirrorSelection(root)
             const result = insertPlainTextInComposerSegments(segments, selection, suggestionText, prefixes)
-            const serialized = serializeComposerSegments(result.segments)
-            renderEditorSegments(root, result.segments)
-            lastEmittedRef.current = serialized
-            setMirrorSelection(root, result.selection)
-            onValueChange(serialized)
-            onMirrorChange({
-                text: mirrorComposerSegments(result.segments),
-                selection: result.selection,
-            })
+            recordUndo(segments, selection)
+            const serialized = commitSegments(root, result.segments, result.selection)
             return { text: serialized, selection: result.selection }
         },
-    }), [onMirrorChange, onValueChange, renderEditorSegments, value])
+    }), [commitSegments, onMirrorChange, onValueChange, recordUndo, value])
 
     useEffect(() => () => {
         if (tooltipTimerRef.current) clearTimeout(tooltipTimerRef.current)
@@ -922,17 +987,10 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
             selection,
             parseComposerSegments(text),
         )
-        const serialized = serializeComposerSegments(result.segments)
-        renderEditorSegments(root, result.segments)
-        lastEmittedRef.current = serialized
-        setMirrorSelection(root, result.selection)
-        onValueChange(serialized)
-        onMirrorChange({
-            text: mirrorComposerSegments(result.segments),
-            selection: result.selection,
-        })
+        recordUndo(segments, selection)
+        commitSegments(root, result.segments, result.selection)
         onEdit?.()
-    }, [onEdit, onMirrorChange, onValueChange, renderEditorSegments])
+    }, [commitSegments, onEdit, recordUndo])
 
     const handleCopyOrCut = useCallback((e: ReactClipboardEvent<HTMLDivElement>, cut: boolean) => {
         const root = rootRef.current
@@ -946,23 +1004,10 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         if (!cut) return
         clearMentionTooltip()
         const result = deleteBackwardInComposerSegments(segments, selection)
-        const serialized = serializeComposerSegments(result.segments)
-        renderEditorSegments(root, result.segments)
-        lastEmittedRef.current = serialized
-        setMirrorSelection(root, result.selection)
-        onValueChange(serialized)
-        onMirrorChange({
-            text: mirrorComposerSegments(result.segments),
-            selection: result.selection,
-        })
+        recordUndo(segments, selection)
+        commitSegments(root, result.segments, result.selection)
         onEdit?.()
-    }, [
-        clearMentionTooltip,
-        onEdit,
-        onMirrorChange,
-        onValueChange,
-        renderEditorSegments,
-    ])
+    }, [clearMentionTooltip, commitSegments, onEdit, recordUndo])
 
     const handlePaste = useCallback((e: ReactClipboardEvent<HTMLDivElement>) => {
         const files = Array.from(e.clipboardData?.files ?? [])
@@ -983,40 +1028,38 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
     ) => {
         clearMentionTooltip()
         const result = deleteBackwardInComposerSegments(segments, selection)
-        const serialized = serializeComposerSegments(result.segments)
-        renderEditorSegments(root, result.segments)
-        lastEmittedRef.current = serialized
-        setMirrorSelection(root, result.selection)
-        onValueChange(serialized)
-        onMirrorChange({
-            text: mirrorComposerSegments(result.segments),
-            selection: result.selection,
-        })
+        recordUndo(segments, selection)
+        commitSegments(root, result.segments, result.selection)
         onEdit?.()
-    }, [clearMentionTooltip, onEdit, onMirrorChange, onValueChange, renderEditorSegments])
+    }, [clearMentionTooltip, commitSegments, onEdit, recordUndo])
 
     useEffect(() => {
         const root = rootRef.current
         if (!root) return
         const handleBeforeInput = (event: InputEvent) => {
-            if (
-                event.inputType !== 'deleteContentBackward'
-                || event.isComposing
-                || composingRef.current
-                || !event.cancelable
-            ) return
+            if (event.isComposing || composingRef.current) return
+            // Edit-menu / gesture undo, or a shortcut the keydown path missed.
+            if (event.inputType === 'historyUndo' || event.inputType === 'historyRedo') {
+                event.preventDefault()
+                applyHistory(event.inputType === 'historyRedo')
+                return
+            }
 
-            const segments = segmentsFromEditor(root)
-            const selection = getMirrorSelection(root)
-            const mirror = mirrorComposerSegments(segments)
-            if (!selectionIsAfterCaretPad(root, mirror, selection)) return
-
-            event.preventDefault()
-            applyBackwardDelete(root, segments, selection)
+            if (event.inputType === 'deleteContentBackward' && event.cancelable) {
+                const segments = segmentsFromEditor(root)
+                const selection = getMirrorSelection(root)
+                const mirror = mirrorComposerSegments(segments)
+                if (selectionIsAfterCaretPad(root, mirror, selection)) {
+                    event.preventDefault()
+                    applyBackwardDelete(root, segments, selection)
+                    return
+                }
+            }
+            recordNativeEdit(root, event.inputType)
         }
         root.addEventListener('beforeinput', handleBeforeInput)
         return () => root.removeEventListener('beforeinput', handleBeforeInput)
-    }, [applyBackwardDelete])
+    }, [applyBackwardDelete, applyHistory, recordNativeEdit])
 
     // No onDrop: intercepting without caretRangeFromPoint appends at EOF / no-ops
     // in-editor moves. Native CE drop + plaintext-only / paste path is enough for #1215.
@@ -1067,6 +1110,14 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         if (e.nativeEvent.isComposing || composingRef.current) {
             return
         }
+        if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+            const key = e.key.toLowerCase()
+            if (key === 'z' || key === 'y') {
+                e.preventDefault()
+                applyHistory(key === 'y' || e.shiftKey)
+                return
+            }
+        }
         if (e.key === 'Backspace' && !e.metaKey && !e.ctrlKey && !e.altKey) {
             const root = rootRef.current
             if (root) {
@@ -1096,15 +1147,18 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
             const root = rootRef.current
             if (!root) return
             e.preventDefault()
+            recordUndo(segmentsFromEditor(root), getMirrorSelection(root))
             insertLineBreakAtCaret(root)
             onEdit?.()
             emitFromDom()
         }
     }, [
         applyBackwardDelete,
+        applyHistory,
         emitFromDom,
         onEdit,
         onKeyDown,
+        recordUndo,
     ])
 
     return (
@@ -1140,6 +1194,8 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
                 onCut={(e) => handleCopyOrCut(e, true)}
                 onPaste={handlePaste}
                 onCompositionStart={() => {
+                    const root = rootRef.current
+                    if (root) recordUndo(segmentsFromEditor(root), getMirrorSelection(root))
                     composingRef.current = true
                 }}
                 onCompositionEnd={() => {
