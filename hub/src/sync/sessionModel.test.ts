@@ -919,6 +919,68 @@ describe('session model', () => {
         expect(activity[0].updatedAt).toBe(messages[0]?.createdAt)
     })
 
+    it('sets backgroundTaskCount from Claude background_tasks_changed snapshots', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+        const session = cache.getOrCreateSession(
+            'session-cli-background-tasks',
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            null,
+            'default'
+        )
+        const handlers = new Map<string, (payload: unknown) => void>()
+
+        registerSessionHandlers({
+            on: (event: string, handler: (payload: unknown) => void) => {
+                handlers.set(event, handler)
+            },
+            to: () => ({ emit: () => {} })
+        } as never, {
+            store,
+            resolveSessionAccess: (sessionId) => {
+                const stored = store.sessions.getSessionByNamespace(sessionId, 'default')
+                return stored ? { ok: true, value: stored } : { ok: false, reason: 'not-found' }
+            },
+            emitAccessError: () => {},
+            onBackgroundTaskCount: (sessionId, count) => cache.setBackgroundTaskCount(sessionId, count)
+        })
+        const send = (data: unknown) => handlers.get('message')?.({
+            sid: session.id,
+            message: JSON.stringify({ role: 'agent', content: { type: 'output', data } })
+        })
+        const snapshot = (taskIds: string[]) => send({
+            type: 'system',
+            subtype: 'background_tasks_changed',
+            uuid: `snapshot-${taskIds.length}`,
+            tasks: taskIds.map((task_id) => ({ task_id, task_type: 'local_bash' }))
+        })
+
+        snapshot(['b1', 'b2'])
+        expect(cache.getSession(session.id)?.backgroundTaskCount).toBe(2)
+
+        // The Bash tool result that announces a background task is not a count signal.
+        send({
+            type: 'user',
+            uuid: 'tool-result',
+            message: {
+                role: 'user',
+                content: [{ type: 'tool_result', tool_use_id: 't1', content: 'Command running in background with ID: b3.' }]
+            }
+        })
+        expect(cache.getSession(session.id)?.backgroundTaskCount).toBe(2)
+
+        snapshot([])
+        expect(cache.getSession(session.id)?.backgroundTaskCount).toBe(0)
+        // Snapshots are session state, not chat rows; only the tool result is stored.
+        expect(store.messages.getMessages(session.id)).toHaveLength(1)
+        expect(events
+            .filter((event) => event.type === 'session-updated' && event.sessionId === session.id)
+            .map((event) => (event as { data?: { backgroundTaskCount?: number } }).data?.backgroundTaskCount)
+            .filter((count) => count !== undefined)
+        ).toEqual([2, 0])
+    })
+
     it('records activity only for the first messages-consumed transition while retaining duplicate acknowledgements', () => {
         const originalDateNow = Date.now
         let now = 1_000

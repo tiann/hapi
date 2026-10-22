@@ -5,7 +5,6 @@ import type { Store } from '../store'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
-import { extractBackgroundTaskDelta } from './backgroundTasks'
 import { resolveSessionIdleTimeoutMs, shouldClearKeepaliveIdle, shouldMarkKeepaliveIdle } from './sessionIdle'
 
 const QUEUED_MESSAGE_THINKING_GRACE_MS = 15_000
@@ -565,13 +564,10 @@ export class SessionCache {
         }
     }
 
-    applyBackgroundTaskDelta(sessionId: string, delta: { started: number; completed: number }): void {
+    setBackgroundTaskCount(sessionId: string, next: number): void {
         const session = this.sessions.get(sessionId)
         if (!session) return
-
-        const prev = session.backgroundTaskCount ?? 0
-        const next = Math.max(0, prev + delta.started - delta.completed)
-        if (next === prev) return
+        if (next === (session.backgroundTaskCount ?? 0)) return
 
         session.backgroundTaskCount = next
         this.recordAgentProgress(sessionId)

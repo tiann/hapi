@@ -1,9 +1,9 @@
 import { useMemo } from 'react'
 import type { SessionSummary } from '@/types/api'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
-import { ScheduleIcon } from '@/components/icons'
+import { LoaderIcon, ScheduleIcon } from '@/components/icons'
 import { HoverTooltip, SESSION_ROW_TOOLTIP_FOCUS_CLASS, useSessionRowTooltipIds } from '@/components/HoverTooltip'
-import { getAttentionLabel, SessionAttentionIndicator } from '@/components/SessionAttentionIndicator'
+import { BACKGROUND_SPINNER_CLASS, getAttentionLabel, SessionAttentionIndicator } from '@/components/SessionAttentionIndicator'
 import { classifySessionAttention } from '@/lib/sessionAttention'
 import { getSessionLastSeenAt, getSessionManualUnreadAt } from '@/lib/sessionLastSeen'
 import { formatRelativeTime } from '@/lib/relativeTime'
@@ -12,21 +12,6 @@ import { getCodexImportedAt } from '@/lib/codexImportedSessions'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { useTranslation } from '@/lib/use-translation'
 import { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
-
-function LoaderIcon(props: { className?: string }) {
-    return (
-        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={props.className}>
-            <line x1="12" y1="2" x2="12" y2="6" />
-            <line x1="12" y1="18" x2="12" y2="22" />
-            <line x1="4.93" y1="4.93" x2="7.76" y2="7.76" />
-            <line x1="16.24" y1="16.24" x2="19.07" y2="19.07" />
-            <line x1="2" y1="12" x2="6" y2="12" />
-            <line x1="18" y1="12" x2="22" y2="12" />
-            <line x1="4.93" y1="19.07" x2="7.76" y2="16.24" />
-            <line x1="16.24" y1="7.76" x2="19.07" y2="4.93" />
-        </svg>
-    )
-}
 
 function BulbIcon(props: { className?: string }) {
     return (
@@ -210,17 +195,15 @@ export function SessionRowSummary(props: {
                             tooltipId={attentionId}
                         />
                     ) : showDetailedStatus && attention?.kind === 'background' ? (
-                        <span
-                            className={`inline-flex h-2 w-2 shrink-0 rounded-full ${ATTENTION_DOT_CLASS.background}`}
-                            title={attentionLabel ?? undefined}
-                            aria-label={attentionLabel ?? undefined}
-                        />
+                        <span className="shrink-0" title={attentionLabel ?? undefined} aria-label={attentionLabel ?? undefined}>
+                            <LoaderIcon className={BACKGROUND_SPINNER_CLASS} />
+                        </span>
                     ) : s.active && (s.backgroundTaskCount ?? 0) > 0 ? (
                         <span
-                            className="inline-flex shrink-0 items-center gap-1 text-[var(--app-badge-success-text)]"
-                            title={t('session.item.running')}
+                            className="inline-flex shrink-0 items-center gap-1 text-blue-400"
+                            title={t('session.item.background')}
                         >
-                            <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" aria-hidden="true" />
+                            <LoaderIcon className={BACKGROUND_SPINNER_CLASS} />
                             {!inRunningSection ? (
                                 <span className="text-[11px] font-medium leading-none">{t('session.item.running')}</span>
                             ) : null}

@@ -202,6 +202,17 @@ describe('SDKToLogConverter', () => {
             const logMessage = converter.convert(userMessage)
             expect(logMessage?.sessionId).toBe('updated-session-789')
         })
+
+        it('keeps the task list on background_tasks_changed snapshots', () => {
+            const tasks = [{ task_id: 'b1', task_type: 'local_bash' }]
+            const logMessage = converter.convert({
+                type: 'system',
+                subtype: 'background_tasks_changed',
+                tasks
+            } as SDKSystemMessage)
+
+            expect(logMessage).toMatchObject({ type: 'system', subtype: 'background_tasks_changed', tasks })
+        })
     })
 
     describe('Result messages', () => {

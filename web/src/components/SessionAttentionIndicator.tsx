@@ -3,13 +3,16 @@ import type { SessionAttention } from '@/lib/sessionAttention'
 import { getSessionAttentionLabelKey } from '@/lib/sessionAttention'
 import { useTranslation } from '@/lib/use-translation'
 import { HoverTooltip, SESSION_ROW_TOOLTIP_FOCUS_CLASS } from '@/components/HoverTooltip'
+import { LoaderIcon } from '@/components/icons'
 
-const ATTENTION_DOT_CLASS: Record<SessionAttention['kind'], string> = {
+const ATTENTION_DOT_CLASS: Record<Exclude<SessionAttention['kind'], 'background'>, string> = {
     permission: 'bg-amber-500 animate-pulse',
     input: 'bg-blue-500',
-    background: 'bg-blue-400',
     unread: 'bg-[var(--app-link)]'
 }
+
+/** Waiting on background work: spins like a running turn, in blue instead of green. */
+export const BACKGROUND_SPINNER_CLASS = 'h-3.5 w-3.5 shrink-0 animate-spin-slow text-blue-400'
 
 /**
  * Visible attention dot + hover tooltip explaining the indicator.
@@ -25,7 +28,9 @@ export function SessionAttentionIndicator(props: {
     tooltipId: string
 }) {
     const { t } = useTranslation()
-    const dot = (
+    const dot = props.attention.kind === 'background' ? (
+        <LoaderIcon className={BACKGROUND_SPINNER_CLASS} />
+    ) : (
         <span
             className={`inline-flex h-2 w-2 shrink-0 rounded-full ${ATTENTION_DOT_CLASS[props.attention.kind]}`}
         />

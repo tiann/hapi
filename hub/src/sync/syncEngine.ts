@@ -615,8 +615,8 @@ export class SyncEngine {
         clearAgentTerminalBuffer(payload.sid)
     }
 
-    handleBackgroundTaskDelta(sessionId: string, delta: { started: number; completed: number }): void {
-        this.sessionCache.applyBackgroundTaskDelta(sessionId, delta)
+    handleBackgroundTaskCount(sessionId: string, count: number): void {
+        this.sessionCache.setBackgroundTaskCount(sessionId, count)
     }
 
     recordSessionActivity(sessionId: string, updatedAt: number): void {
