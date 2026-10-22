@@ -34,7 +34,17 @@ Source: `hub/src/web/routes/sessions.ts`; shapes `SessionSchema` (`shared/src/sc
 | `GET /api/sessions` | Query: `limit?` (1–500), `order?=updatedAt` | `{sessions: (SessionSummary & {futureScheduledMessageCount, nextScheduledAt})[]}` |
 | `GET /api/sessions/:id` | — | `{session: Session}` (full record incl. `metadata`, `agentState`, `todos`, versions) |
 
-Default list order: globalPinned → pinned → active → pending-request count → `updatedAt` desc; `order=updatedAt` gives pure recency. List badges come from `SessionSummary.pendingRequestsCount` (authoritative total) and `pendingRequests` (capped at 5, oldest-first) — do not derive counts from `pendingRequests.length`.
+Default list order is `globalPinned` → `pinned` → `active` →
+`pendingRequestsCount` (only among active sessions) → `updatedAt` descending.
+`order=updatedAt` bypasses those priority buckets and returns pure `updatedAt`
+recency, which is useful for clients that need a flat newest-first list. The
+Hub's `updatedAt` is the session activity clock; `activeAt` is transport
+keep-alive state and is not the list recency key. The Web session list may
+apply client-side grouping and search ranking after receiving this response;
+`GET /api/sessions` itself has no text-search parameter. List badges come from
+`SessionSummary.pendingRequestsCount` (authoritative total) and
+`pendingRequests` (capped at 5, oldest-first) — do not derive counts from
+`pendingRequests.length`.
 
 ### Sessions — lifecycle
 

@@ -87,6 +87,17 @@ directory browsing and session creation.
 | Usage and storage | Available only to the hub owner (`default` namespace). |
 | Display | English/Simplified Chinese, theme preferences, system text scaling and machine filtering on the session list. |
 
+### Session-list parity
+
+Android and iOS use the shared base session-list order: global-pinned sessions,
+project-pinned sessions, active sessions, pending-request priority among active
+sessions, then `updatedAt` descending. Ties preserve their incoming order. The
+Web sidebar may apply additional directory grouping and client-side search
+ranking; it also exposes text, date-range and unread-only session-list filters.
+The native apps currently provide machine filtering but do not expose those
+Web-only filters. Android and iOS README files describe their platform-specific
+filter presentation and session-row differences.
+
 Selecting an attachment starts its upload after preparation, before you send
 the message or save the Scratchlist entry. Removing it requests cleanup of
 unused uploads on a best-effort basis. See the [Privacy Policy](../privacy.md)
