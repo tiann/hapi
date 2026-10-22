@@ -1,18 +1,10 @@
 import type { Session } from '../sync/syncEngine'
 import type { SessionEndReason } from '@hapi/protocol'
 import type { NotificationChannel, TaskNotification } from '../notifications/notificationTypes'
-import { getAgentName, getSessionName } from '../notifications/sessionInfo'
+import { buildSessionUrl, getAgentName, getSessionName } from '../notifications/sessionInfo'
+import { shouldSuppressBackgroundNotification } from '../notifications/backgroundOnly'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
 import { composeInputRequestNotification, getFirstPendingRequest } from '../notifications/inputRequest'
-
-function buildSessionUrl(baseUrl: string, sessionId: string): string {
-    try {
-        return new URL(`/sessions/${sessionId}`, baseUrl).toString()
-    } catch {
-        const normalized = baseUrl.replace(/\/+$/, '')
-        return `${normalized}/sessions/${sessionId}`
-    }
-}
 
 export class ServerChanChannel implements NotificationChannel {
     constructor(
@@ -77,6 +69,17 @@ export class ServerChanChannel implements NotificationChannel {
         await this.send('HAPI Session completed', `${agentName} · ${name}\n\n会话已结束。\n\n${url}`)
     }
 
+    async sendSessionError(session: Session, _reason: SessionEndReason): Promise<void> {
+        if (this.shouldSuppress(session)) {
+            return
+        }
+
+        const agentName = getAgentName(session)
+        const name = getSessionName(session)
+        const url = buildSessionUrl(this.publicUrl, session.id)
+        await this.send('HAPI Session error', `${agentName} · ${name}\n\n会话异常结束。\n\n${url}`)
+    }
+
     private async send(title: string, desp: string): Promise<void> {
         const url = `https://sctapi.ftqq.com/${this.sendKey}.send`
         const body = new URLSearchParams({
@@ -99,8 +102,6 @@ export class ServerChanChannel implements NotificationChannel {
     }
 
     private shouldSuppress(session: Session): boolean {
-        return this.backgroundOnly
-            && this.visibilityTracker !== null
-            && this.visibilityTracker.hasVisibleConnection(session.namespace)
+        return shouldSuppressBackgroundNotification(session, this.visibilityTracker, this.backgroundOnly)
     }
 }
