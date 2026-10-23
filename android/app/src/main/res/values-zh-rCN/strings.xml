@@ -561,6 +561,16 @@
     <string name="files_menu_copy_absolute_path">复制绝对路径</string>
     <string name="files_menu_add_to_composer">添加到对话框</string>
 
+    <!-- Shared zoomable image viewer (web ImagePreview) -->
+    <string name="files_image_zoom_hint">点按可缩放</string>
+    <string name="files_image_viewer_previous">上一张图片</string>
+    <string name="files_image_viewer_next">下一张图片</string>
+    <string name="files_image_viewer_counter">%1$d / %2$d</string>
+    <string name="files_image_viewer_zoom_out">缩小</string>
+    <string name="files_image_viewer_reset">重置缩放</string>
+    <string name="files_image_viewer_zoom_in">放大</string>
+    <string name="files_image_viewer_close">关闭</string>
+
     <!-- Scratchlist workbench (B-M4d) -->
     <string name="scratchlist_back">返回</string>
     <string name="scratchlist_title">草稿夹</string>

@@ -54,7 +54,7 @@ sealed interface FileContentUiState {
         val isMarkdown: Boolean,
     ) : FileContentUiState
 
-    /** Raw image bytes for `BitmapFactory` (identity equality is fine here). */
+    /** Raw image bytes for the Coil pipeline (identity equality is fine here). */
     class Image(val bytes: ByteArray, val mimeType: String) : FileContentUiState
 }
 

@@ -554,6 +554,16 @@
     <string name="files_menu_copy_absolute_path">Копировать абсолютный путь</string>
     <string name="files_menu_add_to_composer">Добавить в редактор</string>
 
+    <!-- Shared zoomable image viewer (web ImagePreview) -->
+    <string name="files_image_zoom_hint">Коснитесь, чтобы масштабировать</string>
+    <string name="files_image_viewer_previous">Предыдущее изображение</string>
+    <string name="files_image_viewer_next">Следующее изображение</string>
+    <string name="files_image_viewer_counter">%1$d / %2$d</string>
+    <string name="files_image_viewer_zoom_out">Уменьшить</string>
+    <string name="files_image_viewer_reset">Сбросить масштаб</string>
+    <string name="files_image_viewer_zoom_in">Увеличить</string>
+    <string name="files_image_viewer_close">Закрыть</string>
+
     <!-- Scratchlist workbench (B-M4d) -->
     <string name="scratchlist_back">Назад</string>
     <string name="scratchlist_title">Заметки</string>

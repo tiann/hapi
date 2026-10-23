@@ -554,6 +554,16 @@
     <string name="files_menu_copy_absolute_path">Copy absolute path</string>
     <string name="files_menu_add_to_composer">Add to composer</string>
 
+    <!-- Shared zoomable image viewer (web ImagePreview) -->
+    <string name="files_image_zoom_hint">Tap to zoom</string>
+    <string name="files_image_viewer_previous">Previous image</string>
+    <string name="files_image_viewer_next">Next image</string>
+    <string name="files_image_viewer_counter">%1$d / %2$d</string>
+    <string name="files_image_viewer_zoom_out">Zoom out</string>
+    <string name="files_image_viewer_reset">Reset zoom</string>
+    <string name="files_image_viewer_zoom_in">Zoom in</string>
+    <string name="files_image_viewer_close">Close</string>
+
     <!-- Scratchlist workbench (B-M4d) -->
     <string name="scratchlist_back">Back</string>
     <string name="scratchlist_title">Scratchlist</string>

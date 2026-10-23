@@ -1,8 +1,6 @@
 package app.hapi.companion.feature.files
 
-import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -40,7 +38,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -52,9 +49,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.hapi.companion.R
 import app.hapi.companion.ui.components.DiffView
+import app.hapi.companion.ui.components.ZoomableImage
+import app.hapi.companion.ui.components.ZoomableImageContent
+import app.hapi.companion.ui.components.ZoomableImageViewerDialog
 import app.hapi.companion.ui.markdown.CodeBlock
 import app.hapi.companion.ui.markdown.Markdown
 import app.hapi.companion.ui.theme.hapi
+import coil.ImageLoader
+import coil.compose.AsyncImage
+import coil.compose.AsyncImagePainter
+import coil.decode.SvgDecoder
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -63,11 +67,12 @@ import kotlinx.coroutines.launch
  * `file.tsx`: diff mode (parsed unified diff in [DiffView], staged/unstaged
  * toggle) ⇄ full mode ([CodeBlock] with its 400-line highlight cap and copy
  * button; markdown gets a Source/Preview toggle over the shared [Markdown]
- * renderer; images decode to a bitmap). Top bar shows the file name with the
- * middle-ellipsized path, a copy-path action, and — once the read carries
- * content — a download action that re-fetches the bytes and saves them via the
- * SAF `CreateDocument` picker (image mimes keep theirs; everything else is
- * octet-stream).
+ * renderer; images render through Coil — SVG included — and open the shared
+ * zoomable viewer on tap, the web `ImagePreview` wiring). Top bar shows the
+ * file name with the middle-ellipsized path, a copy-path action, and — once
+ * the read carries content — a download action that re-fetches the bytes and
+ * saves them via the SAF `CreateDocument` picker (image mimes keep theirs;
+ * everything else is octet-stream).
  *
  * Chat citations may carry a line number; per-line highlighting inside the
  * single-`Text` [CodeBlock] isn't cheap, so the viewer shows a "Line N" hint
@@ -332,18 +337,39 @@ private fun FileContent(state: FileViewerUiState) {
 
 @Composable
 private fun ImageContent(content: FileContentUiState.Image, fileName: String) {
-    val bitmap = remember(content) {
-        BitmapFactory.decodeByteArray(content.bytes, 0, content.bytes.size)?.asImageBitmap()
+    // Coil instead of raw BitmapFactory: one path for bitmaps and SVG — the
+    // loader registers SvgDecoder (web feeds the same bytes to <img> via a
+    // data URI, so svg is just another IMAGE_MIME_BY_EXTENSION entry).
+    val context = LocalContext.current
+    val imageLoader = remember(content.mimeType) {
+        ImageLoader.Builder(context)
+            .components { add(SvgDecoder.Factory()) }
+            .build()
     }
-    if (bitmap == null) {
-        // SVG and other formats BitmapFactory can't decode.
-        HintBlock(stringResource(R.string.files_viewer_image_unsupported))
-    } else {
-        Image(
-            bitmap = bitmap,
+    DisposableEffect(imageLoader) {
+        onDispose { imageLoader.shutdown() }
+    }
+    var viewerOpen by remember(content) { mutableStateOf(false) }
+    var failed by remember(content) { mutableStateOf(false) }
+    val zoomHint = stringResource(R.string.files_image_zoom_hint)
+    if (!failed) {
+        AsyncImage(
+            model = content.bytes,
+            imageLoader = imageLoader,
             contentDescription = fileName,
+            onState = { state -> failed = state is AsyncImagePainter.State.Error },
             contentScale = ContentScale.Fit,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClickLabel = zoomHint) { viewerOpen = true },
+        )
+    } else {
+        HintBlock(stringResource(R.string.files_viewer_image_unsupported))
+    }
+    if (viewerOpen) {
+        ZoomableImageViewerDialog(
+            images = listOf(ZoomableImage(ZoomableImageContent.Loaded(content.bytes, imageLoader), fileName)),
+            onDismiss = { viewerOpen = false },
         )
     }
 }
