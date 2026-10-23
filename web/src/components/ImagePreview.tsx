@@ -282,7 +282,10 @@ export function ImagePreview(props: {
                 data-image-preview-file-name={props.fileName}
                 data-image-preview-label={props.label}
                 data-image-preview-gallery={props.galleryId ?? ''}
-                className={props.buttonClassName ?? 'group flex min-h-[18rem] w-full items-center justify-center overflow-auto rounded-md border border-[var(--app-border)] bg-[var(--app-code-bg)] p-3 text-left'}
+                // Contain the absolute sr-only filename inside this trigger.
+                // Otherwise it can escape the chat viewport and make the app
+                // root scroll when history navigation calls scrollIntoView.
+                className={`relative ${props.buttonClassName ?? 'group flex min-h-[18rem] w-full items-center justify-center overflow-auto rounded-md border border-[var(--app-border)] bg-[var(--app-code-bg)] p-3 text-left'}`}
                 title="Click to zoom"
             >
                 <img
