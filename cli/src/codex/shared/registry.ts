@@ -6,6 +6,7 @@ import { realpathSync } from 'node:fs';
 import { z } from 'zod';
 import { configuration } from '@/configuration';
 import { getProcessStartMarker, isProcessAlive } from '@/utils/process';
+import { windowsGenerationMayBeAlive, type WindowsProcessTable } from '@/utils/windowsProcessStop';
 import { withSettingsFileLock } from '@hapi/protocol/settingsFileLock';
 
 const RuntimeSchema = z.object({
@@ -38,7 +39,11 @@ function generationMayBeAlive(pid: number, marker?: string): boolean {
     // A failed OS probe is not evidence that the engine exited.
     return !actual || !marker || actual === marker;
 }
-export function runtimeMayBeAlive(owner: CodexRuntimeRecord): boolean {
+export function runtimeMayBeAlive(owner: CodexRuntimeRecord, table?: WindowsProcessTable | null): boolean {
+    if (table !== undefined) {
+        return windowsGenerationMayBeAlive(table, owner.pid, owner.marker)
+            || Boolean(owner.serverPid && windowsGenerationMayBeAlive(table, owner.serverPid, owner.serverMarker));
+    }
     return generationMayBeAlive(owner.pid, owner.marker)
         || Boolean(owner.serverPid && generationMayBeAlive(owner.serverPid, owner.serverMarker));
 }

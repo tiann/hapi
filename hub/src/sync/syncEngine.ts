@@ -36,6 +36,7 @@ import { isMachineSpawnPreallocatedStub } from '../store/sessions'
 import {
     RpcGateway,
     RpcTargetMissingError,
+    RunnerStopRpcError,
     type FileSearchOptions,
     type RpcCodexModel,
     type RpcCommandResponse,
@@ -64,6 +65,7 @@ import {
     type RpcUploadFileResponse
 } from './rpcGateway'
 import { SessionCache } from './sessionCache'
+import { ArchiveCleanupError } from './archiveCleanupError'
 import { ingestNotifySummaryFromMessage } from './workGraphNotifyIngest'
 
 type PiResumeAttempt = NonNullable<NonNullable<Session['metadata']>['piResumeAttempt']>
@@ -178,6 +180,7 @@ function extractClaudeUserMessageTextFromAgentOutput(content: unknown): string |
 }
 
 export class SyncEngine {
+    private readonly archiveRequests = new Map<string, Promise<void>>()
     private readonly eventPublisher: EventPublisher
     private readonly sessionCache: SessionCache
     private readonly machineCache: MachineCache
@@ -1731,6 +1734,31 @@ export class SyncEngine {
     }
 
     async archiveSession(sessionId: string): Promise<void> {
+        const existing = this.archiveRequests.get(sessionId)
+        if (existing) return existing
+        const operation = this.archiveSessionOnce(sessionId)
+        this.archiveRequests.set(sessionId, operation)
+        try { await operation } finally {
+            if (this.archiveRequests.get(sessionId) === operation) this.archiveRequests.delete(sessionId)
+        }
+    }
+
+    private async archiveSessionOnce(sessionId: string): Promise<void> {
+        // Windows may need longer than the ordinary 30s RPC timeout to prove a
+        // complete tree exited. All PID fallbacks share this bounded operation
+        // budget; an acknowledgement timeout must never become archive success.
+        const deadline = performance.now() + 90_000
+        const stopRunner = async (machineId: string, id: string, processStartMarker?: string) => {
+            const timeoutMs = Math.ceil(deadline - performance.now())
+            if (timeoutMs <= 0) throw new ArchiveCleanupError('timeout')
+            try {
+                return await this.rpcGateway.stopRunnerSession(machineId, id, {
+                    timeoutMs, ...(processStartMarker ? { processStartMarker } : {}),
+                })
+            } catch (error) {
+                throw new ArchiveCleanupError(error instanceof RunnerStopRpcError && error.timedOut ? 'timeout' : 'unavailable', error)
+            }
+        }
         // tiann/hapi#916 / #1910: KillSession is a session-socket RPC. A missing
         // target does not prove the runner child is dead (stale registration,
         // mid-reconnect, id rotation on resume). Always fall through to the
@@ -1756,19 +1784,8 @@ export class SyncEngine {
         const runnerSpawned = sessionMeta?.startedBy === 'runner'
             || sessionMeta?.startedFromRunner === true
         if (machineId && runnerSpawned) {
-            let status: 'stopped' | 'already_gone' | 'still_alive' | 'unknown'
-            try {
-                status = await this.rpcGateway.stopRunnerSession(machineId, sessionId)
-            } catch (stopError) {
-                // Machine RPC missing is NOT proof the detached CLI is gone
-                // (KillMode=process children survive runner death). Refuse to
-                // archive on any StopSession failure — including when KillSession
-                // was also unreachable. Both targets missing still leaves a
-                // possible live orphan; retry StopSession when the runner
-                // reconnects (#1911 bot Major).
-                void stopError
-                status = 'still_alive'
-            }
+            // Missing Runner acknowledgement leaves cleanup unconfirmed.
+            let status = await stopRunner(machineId, sessionId)
             // KillSession acknowledges before cleanupAndExit finishes, and socket
             // loss is not exit proof. When the runner cannot find the HAPI id,
             // confirm the KillSession-reported OS pid + start marker.
@@ -1779,14 +1796,7 @@ export class SyncEngine {
                 && killProcessStartMarker.length > 0
             )
             if (status === 'unknown' && killPidConfirmable) {
-                try {
-                    status = await this.rpcGateway.stopRunnerSession(machineId, `PID-${killPid}`, {
-                        processStartMarker: killProcessStartMarker,
-                    })
-                } catch (pidStopError) {
-                    void pidStopError
-                    status = 'still_alive'
-                }
+                status = await stopRunner(machineId, `PID-${killPid}`, killProcessStartMarker)
             }
             // Estate dogfood (#1911 / Peer #1820): KillSession often supplies no
             // pid+marker when the CLI socket is already gone. If session-id stop
@@ -1797,12 +1807,7 @@ export class SyncEngine {
             if (status === 'unknown' && !killPidConfirmable) {
                 const hostPid = sessionMeta?.hostPid
                 if (typeof hostPid === 'number' && hostPid > 0) {
-                    try {
-                        status = await this.rpcGateway.stopRunnerSession(machineId, `PID-${hostPid}`)
-                    } catch (hostPidStopError) {
-                        void hostPidStopError
-                        status = 'still_alive'
-                    }
+                    status = await stopRunner(machineId, `PID-${hostPid}`)
                 }
             }
             // Ambiguous machine-spawn keep-stub: startedBy=runner, no hostPid, still
@@ -1822,7 +1827,7 @@ export class SyncEngine {
                 }
             }
             if (status === 'still_alive' || status === 'unknown') {
-                throw new Error('Session process is still running and could not be stopped')
+                throw new ArchiveCleanupError('unconfirmed')
             }
         } else if (machineId && !runnerSpawned) {
             // Terminal / non-runner sessions: KillSession is the primary stop.

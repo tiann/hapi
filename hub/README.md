@@ -108,6 +108,12 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 - `POST /api/sessions/:id/upload` - Upload file (base64, max 50MB).
 - `POST /api/sessions/:id/upload/delete` - Delete uploaded file.
 - `POST /api/sessions/:id/archive` - Archive active session.
+  Runner-owned sessions wait for verified cleanup, including retries after an
+  early inactive/archived update. Concurrent requests join the same operation.
+  Cleanup confirmation has a 90-second budget; failure returns a structured
+  `archive-cleanup-unconfirmed` (409), `archive-cleanup-unavailable` (503), or
+  `archive-cleanup-timeout` (504) error. A timeout does not cancel Runner cleanup
+  or prove the process is still alive; retry to verify the final result.
 - `PATCH /api/sessions/:id` - Rename session.
 - `DELETE /api/sessions/:id` - Delete inactive session.
 - `GET /api/sessions/:id/slash-commands` - List slash commands.

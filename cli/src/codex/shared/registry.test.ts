@@ -17,6 +17,16 @@ async function fixture(): Promise<CodexRuntimeRecord> {
         sessions: { sid: { threadId: 'thread', namespace: 'ns', active: true } } };
 }
 describe('shared runtime ownership', () => {
+    it('uses one supplied snapshot without weakening orphan-engine and unknown-marker protection', async () => {
+        const owner = await fixture();
+        const table: import('@/utils/windowsProcessStop').WindowsProcessTable = new Map([[1111, { parentPid: 1, marker: 'reused', name: '', commandLine: '' }],
+            [2222, { parentPid: 1, marker: 'server-start', name: '', commandLine: '' }]]);
+        expect(runtimeMayBeAlive(owner, table)).toBe(true);
+        table.delete(2222); expect(runtimeMayBeAlive(owner, table)).toBe(false);
+        table.set(1111, { parentPid: 1, marker: null, name: '', commandLine: '' });
+        expect(runtimeMayBeAlive(owner, table)).toBe(true);
+        expect(runtimeMayBeAlive(owner, null)).toBe(true);
+    });
     it('distinguishes PID reuse from an unknown generation and a live orphan engine', async () => {
         const owner = await fixture(); state.processes.set(1111, 'different-start');
         expect(runtimeAlive(owner)).toBe(false); expect(runtimeMayBeAlive(owner)).toBe(false);

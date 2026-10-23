@@ -13,6 +13,7 @@ function createGateway() {
             return {
                 async emitWithAck(_event: string, payload: { method: string; params: string }) {
                     calls.push(payload)
+                    if (payload.method.endsWith(':stop-session')) return JSON.stringify({ status: 'already_gone' })
                     if (payload.method.endsWith(':cursor-chat-store-status')) {
                         return JSON.stringify({ onDisk: false, store: null })
                     }
@@ -52,6 +53,18 @@ function createGateway() {
 }
 
 describe('RpcGateway RPC timeouts', () => {
+    it('uses the archive stop budget without putting timeout options on the wire', async () => {
+        const { gateway, timeouts, calls } = createGateway()
+        expect(await gateway.stopRunnerSession('machine-1', 'session-1', { timeoutMs: 75_000 })).toBe('already_gone')
+        expect(timeouts).toEqual([75_000])
+        expect(JSON.parse(calls[0].params)).toEqual({ sessionId: 'session-1' })
+    })
+
+    it('retains the normal stop timeout for unrelated callers', async () => {
+        const { gateway, timeouts } = createGateway()
+        await gateway.stopRunnerSession('machine-1', 'session-1')
+        expect(timeouts).toEqual([30_000])
+    })
     it('uses the default RPC timeout for regular machine RPCs', async () => {
         const { gateway, timeouts } = createGateway()
 

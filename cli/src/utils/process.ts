@@ -1,5 +1,6 @@
 import type { ChildProcess } from 'node:child_process';
 import spawn from 'cross-spawn';
+import { stopWindowsProcessTree, type WindowsStopReport } from './windowsProcessStop';
 
 export const isWindows = (): boolean => process.platform === 'win32';
 
@@ -386,36 +387,11 @@ async function killProcessTree(pid: number, force: boolean): Promise<boolean> {
 }
 
 /** Kill a PID and all descendants, verifying the complete tree is gone. */
-export async function killProcessTreeByPid(pid: number, force: boolean = false): Promise<boolean> {
+export async function killProcessTreeByPid(pid: number, force: boolean = false, report?: (result: WindowsStopReport) => void): Promise<boolean> {
   const n = typeof pid === 'number' ? pid : Number(pid)
   if (!Number.isFinite(n) || n <= 0) return false;
   if (isWindows()) {
-    // taskkill /T exit 0 means "signalled", not "every descendant is dead".
-    // Collect the tree + generation markers first, signal the root with /T,
-    // then individually signal any surviving pre-kill PIDs whose generation
-    // still matches (PID reuse must not be killed) (#1911 bot Major).
-    const treePids = collectWindowsProcessTree(n);
-    if (treePids === 'scan_failed') {
-      // Still signal the (known) root — scan failure must not mean zero kill —
-      // but never claim stopped without a full-tree verify (#1911 Opus Major).
-      await signalAndWaitWindowsRoot(n, force);
-      return false;
-    }
-    const markers = new Map<number, string | null>();
-    for (const candidate of treePids) {
-      markers.set(candidate, getProcessStartMarker(candidate));
-    }
-    await signalAndWaitWindowsRoot(n, force);
-    for (const survivor of treePids) {
-      if (survivor === n) continue;
-      if (!isProcessAlive(survivor)) continue;
-      const expected = markers.get(survivor);
-      const current = getProcessStartMarker(survivor);
-      // Unverifiable or reused PID — leave alone; final every() fails closed.
-      if (!expected || !current || current !== expected) continue;
-      await signalAndWaitWindowsRoot(survivor, true);
-    }
-    return treePids.every((candidate) => !isProcessAlive(candidate));
+    return stopWindowsProcessTree(n, force, report);
   }
   return killProcessTree(n, force);
 }
@@ -457,7 +433,8 @@ async function waitForProcessToDie(pid: number, force: boolean): Promise<void> {
 
 export async function killProcessByChildProcess(
   child: ChildProcess,
-  force: boolean = false
+  force: boolean = false,
+  report?: (result: WindowsStopReport) => void
 ): Promise<boolean> {
   const pid = child.pid;
   if (!pid) {
@@ -465,5 +442,5 @@ export async function killProcessByChildProcess(
   }
 
   // Both platforms: tree-kill + full-tree verify (win32 must not trust root-only).
-  return killProcessTreeByPid(pid, force);
+  return killProcessTreeByPid(pid, force, report);
 }

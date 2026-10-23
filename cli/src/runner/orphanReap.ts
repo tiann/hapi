@@ -16,6 +16,7 @@
 
 import spawn from 'cross-spawn'
 import { getProcessStartMarker, isProcessAlive, windowsProcessListCimCommand } from '@/utils/process'
+import { readWindowsProcessTable } from '@/utils/windowsProcessStop'
 
 export type ProcessSnapshot = {
     pid: number
@@ -216,7 +217,11 @@ export function listWindowsProcessesWithCommandLine(): ProcessSnapshot[] {
 
 export async function listProcessesForOrphanScan(): Promise<ProcessSnapshot[]> {
     if (process.platform === 'win32') {
-        return listWindowsProcessesWithCommandLine()
+        const table = await readWindowsProcessTable(15_000, undefined, true)
+        if (!table) throw new Error('Cannot verify Windows orphan process snapshot')
+        return [...table].map(([pid, entry]) => ({
+            pid, name: entry.name, cmd: entry.commandLine, startMarker: entry.marker,
+        }))
     }
     return listPosixProcessesWithStartMarker()
 }
@@ -277,16 +282,20 @@ export async function reapRunnerSpawnedOrphans(
         /** @deprecated Prefer findTargets (includes same-snapshot markers). */
         findOrphans?: (sessionId: string) => Promise<number[] | 'scan_failed'>
         killTree?: (pid: number) => Promise<boolean>
-        getStartMarker?: (pid: number) => string | null
-        isAlive?: (pid: number) => boolean
+        getStartMarker?: (pid: number) => string | null | Promise<string | null>
+        isAlive?: (pid: number) => boolean | Promise<boolean>
     } = {}
 ): Promise<'stopped' | 'still_alive' | null> {
     const killTree = deps.killTree ?? (async (pid: number) => {
         const { killProcessTreeByPid } = await import('@/utils/process')
         return killProcessTreeByPid(pid)
     })
-    const getStartMarker = deps.getStartMarker ?? getProcessStartMarker
-    const isAlive = deps.isAlive ?? isProcessAlive
+    const getStartMarker = deps.getStartMarker ?? (process.platform === 'win32'
+        ? async (pid: number) => (await readWindowsProcessTable(10_000, [pid]))?.get(pid)?.marker ?? null
+        : getProcessStartMarker)
+    const isAlive = deps.isAlive ?? (process.platform === 'win32'
+        ? async (pid: number) => { const table = await readWindowsProcessTable(10_000, [pid]); return table === null || table.has(pid) }
+        : isProcessAlive)
 
     let targets: OrphanTarget[]
     if (deps.findTargets) {
@@ -297,10 +306,10 @@ export async function reapRunnerSpawnedOrphans(
         // Legacy: pids only — capture markers in a separate probe (tests / older callers).
         const orphanPids = await deps.findOrphans(sessionId)
         if (orphanPids === 'scan_failed') return 'still_alive'
-        targets = orphanPids.map((pid) => ({
+        targets = await Promise.all(orphanPids.map(async (pid) => ({
             pid,
-            startMarker: getStartMarker(pid),
-        }))
+            startMarker: await getStartMarker(pid),
+        })))
     } else {
         const found = await findRunnerSpawnedOrphanTargets(sessionId)
         if (found === 'scan_failed') return 'still_alive'
@@ -319,7 +328,7 @@ export async function reapRunnerSpawnedOrphans(
             // No generation identity from the match snapshot. If the PID is
             // already dead the orphan is gone; if still alive, skip kill and
             // continue other targets (do not abort the whole sweep).
-            if (!isAlive(orphanPid)) {
+            if (!await isAlive(orphanPid)) {
                 resolved++
                 continue
             }
@@ -327,12 +336,12 @@ export async function reapRunnerSpawnedOrphans(
             continue
         }
 
-        const currentMarker = getStartMarker(orphanPid)
+        const currentMarker = await getStartMarker(orphanPid)
         if (currentMarker === null) {
             // Probe failed mid-flight. Null is not proof of PID reuse (psutil
             // lesson: unknown create_time ≠ recycled). Skip kill; if still
             // alive, mark unconfirmed and continue.
-            if (!isAlive(orphanPid)) {
+            if (!await isAlive(orphanPid)) {
                 resolved++
                 continue
             }

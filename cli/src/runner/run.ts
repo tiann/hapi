@@ -42,6 +42,8 @@ import { buildMachineMetadata } from '@/agent/sessionFactory';
 import { resolveWorkspaceRoots } from '@/utils/workspaceRoot';
 import { hashRunnerCliApiToken, hashRunnerExtraHeaders } from './runnerIdentity';
 import { readRuntimes, runtimeMayBeAlive, runtimeAuthHash } from '@/codex/shared/registry';
+import { readWindowsProcessTable } from '@/utils/windowsProcessStop';
+import { coalesceStopRequests } from './stopSessionRequests';
 import { scheduleCursorModelsPrewarm } from '@/modules/common/cursorModelsPrewarm';
 import { isLinkedGitWorktree } from '@/utils/isLinkedGitWorktree';
 import { agentUnavailableMessage, getAgentAvailability } from '@/agent/agentAvailability';
@@ -1088,7 +1090,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     }
 
     // Stop a session by sessionId or PID fallback
-    const stopSession = async (
+    const stopSession = coalesceStopRequests(async (
       sessionId: string,
       opts?: { processStartMarker?: string }
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
@@ -1121,13 +1123,30 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         return false
       }
 
+      // Cache only positive liveness evidence for this stop. Retaining a dead
+      // owner is conservative; caching a negative result could hide a new live
+      // owner after PID reuse. Binding files are reread on EVERY decision.
+      const possiblyLiveGenerations = new Set<string>();
+      const runtimeGenerationKey = (record: Awaited<ReturnType<typeof readRuntimes>>[number]) =>
+        JSON.stringify([record.pid, record.marker, record.serverPid, record.serverMarker]);
       const readLiveRuntimesForStop = async () => {
         try {
-          return (await readRuntimes({ strict: true })).filter(runtime =>
+          const records = (await readRuntimes({ strict: true })).filter(runtime =>
             runtime.hub === configuration.apiUrl
             && runtime.authHash === runtimeAuthHash()
-            && runtimeMayBeAlive(runtime)
           );
+          if (!records.length) return records;
+          const unchecked = records.filter(record => !possiblyLiveGenerations.has(runtimeGenerationKey(record)));
+          const table = isWindows() && unchecked.length ? await readWindowsProcessTable(10_000,
+            [...new Set(unchecked.flatMap(record => [record.pid, ...(record.serverPid ? [record.serverPid] : [])]))]) : undefined;
+          return records.filter(runtime => {
+            const key = runtimeGenerationKey(runtime);
+            if (possiblyLiveGenerations.has(key)) return true;
+            const alive = runtimeMayBeAlive(runtime, table);
+            // An unknown snapshot is safe to retain but not cache as evidence.
+            if (alive && table !== null) possiblyLiveGenerations.add(key);
+            return alive;
+          });
         } catch (error) {
           logger.warn(
             `[RUNNER RUN] Codex runtime registry unreadable during stop of ${sessionId}: ${
@@ -1304,6 +1323,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       for (const [pid, session] of pidToTrackedSession.entries()) {
         if (session.happySessionId === sessionId ||
           session.requestedHappySessionId === sessionId) {
+          let treeExitVerified = false;
 
           // Primary match, but live shared siblings still use this wrapper
           // (KillSession may already have cleared this id from sharedSessions).
@@ -1350,12 +1370,15 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             }
             try {
               const treeStopped = session.childProcess
-                ? await killProcessByChildProcess(session.childProcess)
-                : await killProcessTreeByPid(pid);
+                ? await killProcessByChildProcess(session.childProcess, false,
+                    report => logger.debug('[RUNNER RUN] Windows tree stop confirmation', { sessionId, pid, ...report }))
+                : await killProcessTreeByPid(pid, false,
+                    report => logger.debug('[RUNNER RUN] Windows tree stop confirmation', { sessionId, pid, ...report }));
               if (!treeStopped) {
                 logger.debug(`[RUNNER RUN] Process tree for session ${sessionId} is still alive after stop request`);
                 return 'still_alive';
               }
+              treeExitVerified = true;
               logger.debug(`[RUNNER RUN] Requested termination for runner-spawned session ${sessionId}`);
             } catch (error) {
               logger.debug(`[RUNNER RUN] Failed to kill session ${sessionId}:`, error);
@@ -1379,10 +1402,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             spawnSession.markChildStopping(existingSessionId);
           }
           const deadline = Date.now() + 5_000;
-          while (isProcessAlive(pid) && Date.now() < deadline) {
+          while (!treeExitVerified && isProcessAlive(pid) && Date.now() < deadline) {
             await new Promise(resolve => setTimeout(resolve, 50));
           }
-          if (isProcessAlive(pid)) {
+          if (!treeExitVerified && isProcessAlive(pid)) {
             logger.debug(`[RUNNER RUN] Session ${sessionId} process ${pid} is still alive after stop request`);
             return 'still_alive';
           }
@@ -1515,7 +1538,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       // while callers that just spawned this id can treat unknown defensively.
       logger.debug(`[RUNNER RUN] Session ${sessionId} not found without verified exit`);
       return 'unknown';
-    };
+    });
 
     // Handle child process exit
     const onChildExited = (pid: number) => {
@@ -1737,8 +1760,13 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         ...pidToTrackedSession.keys(),
         ...existingSessionIdByChildPid.keys()
       ]);
+      // The heartbeat runs during stop RPCs. Synchronous per-PID WMI probes
+      // can block their acknowledgements even after tree shutdown is async.
+      const heartbeatTable = isWindows() && pidsToCheck.size
+        ? await readWindowsProcessTable(10_000, [...pidsToCheck]) : undefined;
       for (const pid of pidsToCheck) {
-        if (!isProcessAlive(pid)) {
+        if (heartbeatTable === null) continue; // Failed query is not exit proof.
+        if (heartbeatTable ? !heartbeatTable.has(pid) : !isProcessAlive(pid)) {
           logger.debug(`[RUNNER RUN] Removing stale session with PID ${pid} (process no longer exists)`);
           onChildExited(pid);
           continue;
@@ -1747,7 +1775,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         if (persisted) {
           const generation = classifyRecoveredProcessGeneration(
             true,
-            getProcessStartMarker(pid),
+            heartbeatTable ? heartbeatTable.get(pid)?.marker ?? null : getProcessStartMarker(pid),
             persisted.processStartMarker
           );
           if (generation === 'exited') {
