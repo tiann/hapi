@@ -29,10 +29,21 @@ internal fun SessionFilterSheet(state: SessionListUiState, select: (String?) -> 
         Text(stringResource(R.string.sessions_filters), style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(16.dp))
         LazyColumn(Modifier.fillMaxWidth().heightIn(max = 480.dp).selectableGroup().testTag("session-filters")) {
             item("all") {
-                FilterOption(stringResource(R.string.sessions_filter_all), state.activeMachineFilter == null) { select(null) }
+                FilterOption(
+                    label = stringResource(R.string.sessions_filter_all),
+                    selected = state.activeMachineFilter == null,
+                    select = { select(null) },
+                )
             }
             items(state.machineFilters, key = { it.id }) { filter ->
-                FilterOption("${machineFilterLabel(filter)} · ${filter.sessionCount}", state.activeMachineFilter == filter.id) { select(filter.id) }
+                FilterOption(
+                    label = "${machineFilterLabel(filter)} · ${filter.sessionCount}",
+                    selected = state.activeMachineFilter == filter.id,
+                    select = { select(filter.id) },
+                    // Web keeps CPU/RAM in a desktop-only hover tooltip; the
+                    // sheet row carries it as a secondary line, tone-colored.
+                    health = filter.health,
+                )
             }
         }
         Spacer(Modifier.height(16.dp))
@@ -40,13 +51,27 @@ internal fun SessionFilterSheet(state: SessionListUiState, select: (String?) -> 
 }
 
 @Composable
-private fun FilterOption(label: String, selected: Boolean, select: () -> Unit) {
+private fun FilterOption(
+    label: String,
+    selected: Boolean,
+    select: () -> Unit,
+    health: MachineHealthUi.Presentation? = null,
+) {
     Row(
         Modifier.fillMaxWidth().selectable(selected, role = Role.RadioButton, onClick = select)
             .heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         RadioButton(selected = selected, onClick = null)
-        Text(label, modifier = Modifier.padding(start = 12.dp))
+        Column(Modifier.padding(start = 12.dp)) {
+            Text(label)
+            health?.let {
+                Text(
+                    text = it.label,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = healthToneColor(it.tone),
+                )
+            }
+        }
     }
 }

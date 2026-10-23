@@ -597,6 +597,7 @@ private class ChatViewModelHolder(
         scope = scope,
         drafts = hubGraph.chatDrafts,
         scratchlist = hubGraph.scratchlistStore,
+        recentSkills = hubGraph.recentSkills,
     )
 
     /**

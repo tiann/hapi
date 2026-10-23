@@ -41,6 +41,7 @@ import app.hapi.protocol.wire.SendMessageRequest
 import app.hapi.protocol.wire.SessionResponse
 import app.hapi.protocol.wire.SessionsResponse
 import app.hapi.protocol.wire.SetSessionPinRequest
+import app.hapi.protocol.wire.SessionTitleSuggestionResponse
 import app.hapi.protocol.wire.SkillsResponse
 import app.hapi.protocol.wire.SlashCommandsResponse
 import app.hapi.protocol.wire.SpawnResponse
@@ -342,6 +343,10 @@ class HapiApi internal constructor(
         )
     }
 
+    /** `POST /api/sessions/:id/title-suggestion` — hub capability `titleSuggestion`. */
+    suspend fun suggestSessionTitle(sessionId: String): SessionTitleSuggestionResponse =
+        request("POST", url("api", "sessions", sessionId, "title-suggestion").build(), EMPTY_JSON)
+
     /** `PUT /api/sessions/:id/pin` — mode `'none' | 'project' | 'global'`. */
     suspend fun setSessionPinMode(sessionId: String, mode: String) {
         request<Unit>("PUT", url("api", "sessions", sessionId, "pin").build(), SetSessionPinRequest(mode).toJsonBody())
@@ -476,7 +481,7 @@ class HapiApi internal constructor(
         request("GET", url("api", "sessions", sessionId, "slash-commands").build())
 
     /** `GET /api/sessions/:id/skills` (RPC-wrapped: check `success`). */
-    suspend fun getSkills(sessionId: String): SkillsResponse =
+    override suspend fun getSkills(sessionId: String): SkillsResponse =
         request("GET", url("api", "sessions", sessionId, "skills").build())
 
     // ------------------------------------------------------------ machines --
