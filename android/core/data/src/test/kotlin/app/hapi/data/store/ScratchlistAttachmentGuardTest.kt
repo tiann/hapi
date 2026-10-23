@@ -6,6 +6,7 @@ import app.hapi.protocol.wire.ScratchlistAttachment
 import app.hapi.protocol.wire.ScratchlistAttachmentLimits
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 class ScratchlistAttachmentGuardTest {
 
@@ -35,6 +36,20 @@ class ScratchlistAttachmentGuardTest {
     @Test
     fun `file within every budget fits as-is`() {
         assertEquals(Verdict.Fits, evaluate(sizeBytes = 5 * 1024 * 1024))
+    }
+
+    @Test
+    fun `every hub-whitelisted non-image mime fits as-is`() {
+        // Web picks attachments with accept: '*' (no client type filter), so
+        // the guard is the only client-side gate — it must mirror the hub
+        // whitelist exactly: pdf/text (and anything else the hub catalog
+        // allows) pass untouched, only non-whitelisted mimes reject.
+        val defaults = ScratchlistAttachmentLimits.DEFAULT
+        val nonImageMimes = defaults.allowedMimeTypes.filterNot { it.startsWith("image/") }
+        assertTrue(nonImageMimes.isNotEmpty())
+        nonImageMimes.forEach { mime ->
+            assertEquals(Verdict.Fits, ScratchlistAttachmentGuard.evaluate(1024, mime, emptyList(), defaults), mime)
+        }
     }
 
     @Test
