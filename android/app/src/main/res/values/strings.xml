@@ -396,6 +396,9 @@
     <string name="chat_reasoning_collapsed">💭 Reasoning ▸</string>
     <string name="chat_not_delivered_retry">Not delivered — tap to retry</string>
     <string name="chat_not_delivered">Not delivered</string>
+    <string name="chat_steered_badge">↳ Steered</string>
+    <string name="chat_steered_badge_hint">Steered into the active turn</string>
+    <string name="chat_send_error_session_inactive">This session is archived. Reopen it to send your message.</string>
     <string name="chat_review_title">Code review</string>
     <string name="chat_review_findings_one">1 finding</string>
     <string name="chat_review_findings_many">%1$d findings</string>

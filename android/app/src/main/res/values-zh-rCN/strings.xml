@@ -403,6 +403,9 @@
     <string name="chat_reasoning_collapsed">💭 思考 ▸</string>
     <string name="chat_not_delivered_retry">未送达 — 点按重试</string>
     <string name="chat_not_delivered">未送达</string>
+    <string name="chat_steered_badge">↳ 已介入</string>
+    <string name="chat_steered_badge_hint">已介入当前进行中的回合</string>
+    <string name="chat_send_error_session_inactive">此会话已归档。请先重新打开再发送消息。</string>
     <string name="chat_review_title">Code review</string>
     <string name="chat_review_findings_one">1 条发现</string>
     <string name="chat_review_findings_many">%1$d 条发现</string>

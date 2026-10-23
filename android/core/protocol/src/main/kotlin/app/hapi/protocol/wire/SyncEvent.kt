@@ -103,6 +103,12 @@ sealed interface SyncEvent {
         val sessionId: String,
         val localIds: List<String>,
         val invokedAt: Long,
+        /**
+         * Live-only: true when the messages were steered into an active turn
+         * (not a normal queue drain) — the hub omits the key unless true
+         * (`shared/src/schemas.ts:621-623`).
+         */
+        val steered: Boolean = false,
     ) : SyncEvent
 
     @Serializable

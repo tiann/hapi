@@ -60,6 +60,7 @@ import app.hapi.protocol.wire.SlashCommandsResponse
 import app.hapi.protocol.wire.SteerQueuedMessageResponse
 import app.hapi.protocol.wire.SyncEvent
 import app.hapi.protocol.wire.UploadFileResponse
+import app.hapi.protocol.chat.UserTextBlock
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -726,6 +727,94 @@ class ChatViewModelInteractionTest {
         }
         val oldRows = harness.window().state.value.messages.filter { it.localId == "local-1" }
         assertTrue(oldRows.isEmpty())
+    }
+
+    @Test
+    fun `resume failure after session_inactive raises the reopen card`() = runTest {
+        val harness = InteractionHarness(this, detail(active = false))
+        harness.api.sendFailures += ApiError(409, code = "session_inactive")
+        // resumeSession is deliberately NOT scripted: the resume throws.
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { "loadDetail:$IX_SESSION" in it }
+
+        harness.viewModel.setComposerText("wake up")
+        harness.viewModel.sendMessage()
+
+        harness.window().state.first { state ->
+            state.messages.any { it.localId == "local-1" && it.status == MessageStatus.Failed }
+        }
+        val card = harness.viewModel.reopenCard.first { it.visible }
+        assertFalse(card.reopenPending)
+    }
+
+    @Test
+    fun `reopen from the card clears it once the session reflects active`() = runTest {
+        val harness = InteractionHarness(this, detail(active = false))
+        harness.api.sendFailures += ApiError(409, code = "session_inactive")
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { "loadDetail:$IX_SESSION" in it }
+        harness.viewModel.setComposerText("wake up")
+        harness.viewModel.sendMessage()
+        harness.viewModel.reopenCard.first { it.visible }
+
+        harness.sessionStore.reopenResult = ReopenSessionResponse(sessionId = IX_SESSION, resumed = true)
+        harness.viewModel.reopenSession()
+        harness.sessionStore.calls.first { "reopen:$IX_SESSION" in it }
+        harness.viewModel.reopenCard.first { !it.visible }
+        // The session itself stays inactive in this fake — the explicit clear
+        // (not the derive-side active flip) hid the card.
+        assertFalse(harness.sessionStore.currentDetail(IX_SESSION)!!.active)
+    }
+
+    @Test
+    fun `a new send attempt resets the reopen card state`() = runTest {
+        val harness = InteractionHarness(this, detail(active = false))
+        harness.api.sendFailures += ApiError(409, code = "session_inactive")
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { "loadDetail:$IX_SESSION" in it }
+        harness.viewModel.setComposerText("wake up")
+        harness.viewModel.sendMessage()
+        harness.viewModel.reopenCard.first { it.visible }
+
+        // The failure queue is drained: the next attempt succeeds, and its
+        // entry clears the card even though the session is still inactive.
+        harness.viewModel.setComposerText("second try")
+        harness.viewModel.sendMessage()
+        harness.viewModel.reopenCard.first { !it.visible }
+        assertEquals(2, harness.api.sendCalls.value.size)
+    }
+
+    @Test
+    fun `steered messages-consumed projects the badge onto the user block`() = runTest {
+        val harness = InteractionHarness(this, detail(thinking = true))
+        harness.viewModel.start()
+        harness.viewModel.setComposerText("bend the turn")
+        harness.viewModel.sendMessage()
+        // Queue-by-default while thinking: the row sits uninvoked.
+        harness.window().state.first { state ->
+            state.messages.any { it.localId == "local-1" && it.status == MessageStatus.Queued }
+        }
+
+        // The steer verdict lands as messages-consumed{steered:true}.
+        harness.window().onMessageEvent(
+            SyncEvent.MessagesConsumed(
+                sessionId = IX_SESSION,
+                localIds = listOf("local-1"),
+                invokedAt = 2000,
+                steered = true,
+            ),
+        )
+
+        // End to end: SyncEvent → store → merge → normalize cache → reducer —
+        // the user bubble carries the badge flag and the sent status.
+        val state = harness.viewModel.uiState.first { s ->
+            s.blocks.filterIsInstance<UserTextBlock>().any { it.steered }
+        }
+        val block = state.blocks.filterIsInstance<UserTextBlock>().single()
+        assertEquals("sent", block.status)
+        assertEquals("bend the turn", block.text)
+        // And the row left the queued bar.
+        assertTrue(harness.viewModel.queuedRows.first { it.isEmpty() }.isEmpty())
     }
 
     // --------------------------------------------------------- attachments --

@@ -133,6 +133,7 @@ internal fun ChatScreen(
     val pendingSchedule by viewModel.pendingSchedule.collectAsState()
     val codexPlanActions by viewModel.codexPlanActions.collectAsState()
     val queuedRows by viewModel.queuedRows.collectAsState()
+    val reopenCard by viewModel.reopenCard.collectAsState()
     val configState by viewModel.config.collectAsState()
     val toolbarHeight = maxOf(64.dp, with(LocalDensity.current) { 24.sp.toDp() + 16.sp.toDp() } + 16.dp)
     var configSheetOpen by remember { mutableStateOf(false) }
@@ -383,7 +384,13 @@ internal fun ChatScreen(
                         .imePadding(),
                 ) {
                     if (!state.header.active && !state.isInitialLoading && !state.loadFailed) {
-                        InactiveSessionBar(onReopen = viewModel::reopenSession)
+                        // Mutually exclusive: the send-failure card replaces the
+                        // plain inactive bar (both offer Reopen — never both).
+                        if (reopenCard.visible) {
+                            SendFailureReopenCard(card = reopenCard, onReopen = viewModel::reopenSession)
+                        } else {
+                            InactiveSessionBar(onReopen = viewModel::reopenSession)
+                        }
                     }
                     QueuedMessagesBar(
                         rows = queuedRows,
@@ -635,6 +642,43 @@ private fun InactiveSessionBar(onReopen: () -> Unit) {
                     .padding(start = 16.dp, top = 4.dp, bottom = 4.dp),
             )
             TextButton(onClick = onReopen) { Text(stringResource(R.string.sessions_action_reopen)) }
+        }
+    }
+}
+
+/**
+ * Send-failure error card (slice 6d): a send failed because the session was
+ * inactive and the auto-resume failed — error-styled like the web's inline
+ * `chat.sendError.sessionInactive` card, offering Reopen (disabled + spinner
+ * while a reopen is in flight). Replaces [InactiveSessionBar] while visible.
+ */
+@Composable
+private fun SendFailureReopenCard(card: SendFailureReopenCard, onReopen: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = stringResource(R.string.chat_send_error_session_inactive),
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = 16.dp, top = 6.dp, bottom = 6.dp),
+            )
+            TextButton(onClick = onReopen, enabled = !card.reopenPending) {
+                if (card.reopenPending) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(modifier = Modifier.size(8.dp))
+                }
+                Text(stringResource(R.string.sessions_action_reopen))
+            }
         }
     }
 }
