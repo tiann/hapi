@@ -133,6 +133,21 @@
     <string name="settings_language">应用语言</string>
     <string name="settings_language_system">跟随系统</string>
 
+    <!-- Owner-only hub switches (web Settings → General parity; texts match
+         the web locales verbatim). -->
+    <string name="settings_section_summaries">会话状态摘要</string>
+    <string name="settings_summary_contract">输出状态摘要</string>
+    <string name="settings_summary_contract_desc">默认关闭。开启后会要求受支持的智能体在每轮结束时追加 AGENT_NOTIFY_SUMMARY 行，供通知和后台工作记录使用，对新开/恢复的会话生效。(已支持：Claude、Codex、OpenCode、远程 Grok；暂不支持：本地 Grok、Cursor)</string>
+    <string name="settings_summary_in_chat">在聊天中显示状态摘要</string>
+    <string name="settings_summary_in_chat_desc">只影响聊天和复制内容中的显示，不影响摘要生成、通知或后台工作记录。开启后显示状态行，关闭后隐藏；已存储消息保持不变。</string>
+    <string name="settings_section_titles">会话标题</string>
+    <string name="settings_auto_title_per_turn">每轮重写会话标题</string>
+    <string name="settings_auto_title_per_turn_desc">默认关闭。开启后受支持的智能体会改为在每轮对话结束时重写会话标题（而非仅任务变化时才改名），标题随焦点变化保持最新。手动改名的会话会被锁定保护、标题不再被覆盖；重新打开此开关会清除全部锁定。对新开/恢复的会话生效。</string>
+    <string name="settings_section_peer_tools">Peer 会话工具</string>
+    <string name="settings_disable_peer_tools">禁用 peer 会话工具</string>
+    <string name="settings_disable_peer_tools_desc">默认关闭。开启后新会话中的智能体将看不到 list_peers / inspect_peer / ping_peer 三个工具，提示词指引同步移除，防止跨会话上下文污染。终端 hapi ping-peer 不受影响。可用每台机器的 HAPI_DISABLE_PEER_TOOLS 环境变量覆盖此值。</string>
+    <string name="settings_hub_save_failed">无法保存：%1$s</string>
+
     <string name="settings_section_insights">洞察</string>
     <string name="settings_usage_summary">各代理与模型的 Token 用量</string>
     <string name="settings_storage_summary">Hub 数据库磁盘占用</string>
@@ -212,6 +227,26 @@
     <string name="sessions_filter_all">全部</string>
     <string name="sessions_filter_unknown_machine">未知机器</string>
     <string name="sessions_offline_banner">离线 — 显示缓存的会话</string>
+    <string name="sessions_search_hint">搜索会话</string>
+    <string name="sessions_search_clear">清除搜索</string>
+    <string name="sessions_search_no_results">没有匹配“%1$s”的会话</string>
+    <string name="sessions_search_no_results_hint">换个关键词，或清除搜索。</string>
+    <string name="sessions_grouped_layout">按目录分组</string>
+    <string name="sessions_unread_filter">仅未读</string>
+    <string name="sessions_unread_empty_title">没有未读会话</string>
+    <string name="sessions_unread_empty_hint">全部读完了，有新活动时会出现在这里。</string>
+    <string name="sessions_active_filter">仅活跃</string>
+    <string name="sessions_pin_in_progress">进行中</string>
+    <string name="sessions_active_empty_title">没有活跃会话</string>
+    <string name="sessions_active_empty_hint">连接到 runner 的会话会出现在这里。</string>
+    <string name="sessions_section_running">运行中</string>
+    <string name="sessions_section_pending">待处理</string>
+    <string name="sessions_section_active">活跃</string>
+    <string name="sessions_section_idle">空闲（仅心跳）</string>
+    <string name="sessions_mark_all_read">全部标为已读（%1$d）</string>
+    <string name="sessions_mark_all_read_title">全部标为已读？</string>
+    <string name="sessions_mark_all_read_description">将在这台设备上把 %1$d 个未读会话标为已读。</string>
+    <string name="sessions_mark_all_read_confirm">确认</string>
     <string name="sessions_empty_loading_title">正在加载会话…</string>
     <string name="sessions_empty_offline_title">无法连接 hub</string>
     <string name="sessions_empty_title">还没有会话</string>
@@ -225,11 +260,13 @@
     <string name="sessions_action_pin_project">项目置顶</string>
     <string name="sessions_action_pin_global">全局置顶</string>
     <string name="sessions_action_rename">重命名</string>
+    <string name="sessions_action_mark_unread">标为未读</string>
     <string name="sessions_action_reopen">重新打开</string>
     <string name="sessions_action_archive">归档</string>
     <string name="sessions_action_delete">删除</string>
     <string name="sessions_error_pin">置顶操作失败</string>
     <string name="sessions_error_archive">归档失败</string>
+    <string name="sessions_error_summary">保存生成的标题失败</string>
     <string name="sessions_error_rename">重命名失败</string>
     <string name="sessions_error_delete">删除失败</string>
     <string name="sessions_error_reopen">重新打开失败</string>
@@ -237,6 +274,12 @@
     <string name="sessions_error_delete_active">会话仍在运行 — 请先归档</string>
     <string name="sessions_reopen_failed_fallback">无法重新打开会话</string>
     <string name="sessions_rename_title">重命名会话</string>
+    <string name="sessions_action_rename_save">保存</string>
+    <string name="sessions_action_copy_reference">复制引用</string>
+    <string name="sessions_reference_copied">引用已复制</string>
+    <string name="sessions_rename_suggest">生成</string>
+    <string name="sessions_rename_suggesting">生成中…</string>
+    <string name="sessions_rename_suggest_error">标题生成失败，请重试。</string>
     <string name="sessions_rename_placeholder">会话名称</string>
     <string name="sessions_delete_title">删除会话？</string>
     <string name="sessions_delete_message">“%1$s”及其消息历史将从 hub 永久移除。运行中的会话必须先归档。</string>
