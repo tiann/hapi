@@ -193,4 +193,67 @@ class ComposerAttachmentsTest {
         // `items` is derived from the entries flow — await the propagation.
         assertTrue(tray.items.first { it.isEmpty() }.isEmpty())
     }
+
+    @Test
+    fun `move reorders chips and consume sends metadata in tray order`() = runTest {
+        val api = FakeUploadApi()
+        val tray = harness(backgroundScope, api)
+        tray.add(prepared(id = "att-a", filename = "a.jpg"))
+        tray.add(prepared(id = "att-b", filename = "b.jpg"))
+        tray.add(prepared(id = "att-c", filename = "c.jpg"))
+        tray.items.first { list -> list.size == 3 && list.all { it.status == ComposerAttachmentStatus.Ready } }
+
+        tray.move(2, 0)
+
+        val order = tray.items.first { list -> list.map { it.id } == listOf("att-c", "att-a", "att-b") }
+        assertEquals(listOf("att-c", "att-a", "att-b"), order.map { it.id })
+        // Tray order IS the wire order (assistant-runtime.ts orderedAttachments).
+        assertEquals(listOf("att-c", "att-a", "att-b"), tray.consume()!!.map { it.id })
+    }
+
+    @Test
+    fun `move with equal or out-of-bounds indices is a no-op`() = runTest {
+        val api = FakeUploadApi()
+        val tray = harness(backgroundScope, api)
+        tray.add(prepared(id = "att-a", filename = "a.jpg"))
+        tray.add(prepared(id = "att-b", filename = "b.jpg"))
+        tray.add(prepared(id = "att-c", filename = "c.jpg"))
+        tray.items.first { list -> list.size == 3 && list.all { it.status == ComposerAttachmentStatus.Ready } }
+
+        tray.move(1, 1)
+        tray.move(-1, 0)
+        tray.move(0, 3)
+
+        assertEquals(listOf("att-a", "att-b", "att-c"), tray.items.value.map { it.id })
+        assertEquals(listOf("att-a", "att-b", "att-c"), tray.consume()!!.map { it.id })
+    }
+
+    @Test
+    fun `move preserves upload state and paths across mixed-status chips`() = runTest {
+        val api = FakeUploadApi()
+        api.results += Result.failure(RuntimeException("boom"))
+        val tray = harness(backgroundScope, api)
+        tray.add(prepared(id = "bad", filename = "bad.bin", mimeType = "application/octet-stream", previewBytes = null))
+        tray.items.first { list -> list.any { it.id == "bad" && it.status == ComposerAttachmentStatus.Failed } }
+        tray.add(prepared(id = "good-a", filename = "ga.jpg"))
+        tray.add(prepared(id = "good-b", filename = "gb.jpg"))
+        tray.items.first { list -> list.size == 3 && list.count { it.status == ComposerAttachmentStatus.Ready } == 2 }
+
+        // Drag the last Ready chip ahead of the Failed one.
+        tray.move(2, 0)
+
+        // Await items propagation (stateIn pipeline), then check tray order.
+        val order = tray.items.first { list -> list.map { it.id } == listOf("good-b", "bad", "good-a") }
+        assertEquals(listOf("good-b", "bad", "good-a"), order.map { it.id })
+        // Consume takes only the Ready chips, in the new order; the uploaded
+        // paths rode along with the moved entry.
+        val metadata = tray.consume()!!
+        assertEquals(listOf("good-b", "good-a"), metadata.map { it.id })
+        assertEquals(listOf("/uploads/gb.jpg", "/uploads/ga.jpg"), metadata.map { it.path })
+        assertEquals(listOf("bad"), tray.items.first { list -> list.size == 1 }.map { it.id })
+        // Retry still works after the move (bytes rode along with the entry).
+        tray.retry("bad")
+        tray.items.first { list -> list.size == 1 && list[0].status == ComposerAttachmentStatus.Ready }
+        assertEquals(listOf("bad"), tray.consume()!!.map { it.id })
+    }
 }

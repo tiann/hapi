@@ -56,6 +56,7 @@ import app.hapi.companion.feature.scratchlist.ContentResolverAttachmentImporter
 import app.hapi.companion.feature.scratchlist.ScratchlistMedia
 import app.hapi.companion.feature.scratchlist.ScratchlistScreen
 import app.hapi.companion.feature.scratchlist.ScratchlistViewModel
+import app.hapi.companion.feature.sessions.SessionDisplayPrefs
 import app.hapi.companion.feature.sessions.SessionListViewModel
 import app.hapi.companion.feature.settings.SettingsScreen
 import app.hapi.companion.feature.settings.SettingsViewModel
@@ -226,7 +227,7 @@ fun HapiNavigation() {
             val scope = rememberCoroutineScope()
             val holder = viewModel<SessionListViewModelHolder>(
                 key = "sessions",
-                factory = viewModelFactory { SessionListViewModelHolder() },
+                factory = viewModelFactory { SessionListViewModelHolder(graph.sessionDisplayPrefs) },
             )
             HomeScreen(
                 viewModel = holder.forHub(hubGraph),
@@ -324,6 +325,12 @@ fun HapiNavigation() {
                     // Chat citations open full mode; the cited line renders as
                     // a hint chip (no per-line highlight — B-M4c trade-off).
                     navController.navigate(Routes.fileViewer(sessionId, path, mode = "file", line = line))
+                },
+                onOpenSession = { targetId ->
+                    // Session citations PUSH the cited chat: back returns to
+                    // the citing conversation (web SPA history parity), unlike
+                    // the supersede callback above which replaces this entry.
+                    navController.navigate(Routes.chat(targetId)) { launchSingleTop = true }
                 },
                 onOpenScratchlist = { navController.navigate(Routes.scratchlist(sessionId)) },
             )
@@ -550,7 +557,9 @@ fun HapiNavigation() {
  * to the same URL creates a new HubGraph and must not revive a closed store
  * or its old filter. The global SSE pipe still belongs to HubGraph.
  */
-private class SessionListViewModelHolder : ViewModel() {
+private class SessionListViewModelHolder(
+    private val displayPrefs: SessionDisplayPrefs? = null,
+) : ViewModel() {
     private var graph: HubGraph? = null
     private var scope: CoroutineScope? = null
     private var model: SessionListViewModel? = null
@@ -568,6 +577,7 @@ private class SessionListViewModelHolder : ViewModel() {
             lastSeenStore = hubGraph.lastSeenStore,
             scope = nextScope,
             hubKey = hubGraph.hubUrl,
+            displayPrefs = displayPrefs,
         ).also { model = it }
     }
 
@@ -597,6 +607,7 @@ private class ChatViewModelHolder(
         scope = scope,
         drafts = hubGraph.chatDrafts,
         scratchlist = hubGraph.scratchlistStore,
+        recentSkills = hubGraph.recentSkills,
     )
 
     /**
@@ -687,6 +698,8 @@ private class SettingsViewModelHolder(graph: AppGraph, hubGraph: HubGraph) : Vie
             }
         },
         fetchHealth = { hubGraph.session.api.health() },
+        fetchHubSettings = { hubGraph.session.api.getHubSettings() },
+        putHubSettings = { hubGraph.session.api.updateHubSettings(it) },
         scope = scope,
     )
 

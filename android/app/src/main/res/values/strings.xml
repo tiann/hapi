@@ -6,6 +6,8 @@
     <string name="code_copy">Copy</string>
     <string name="code_copied">Copied</string>
     <string name="code_plain_fallback">text</string>
+    <string name="code_wrap_enable">Enable word wrap</string>
+    <string name="code_wrap_disable">Disable word wrap</string>
     <string name="diff_binary_file">Binary file not shown</string>
     <string name="diff_show_more">Show %1$d more lines</string>
     <string name="diff_collapse">Collapse</string>
@@ -126,6 +128,21 @@
     <string name="settings_language">App language</string>
     <string name="settings_language_system">Follow system</string>
 
+    <!-- Owner-only hub switches (web Settings → General parity; texts match
+         the web locales verbatim). -->
+    <string name="settings_section_summaries">Session status summaries</string>
+    <string name="settings_summary_contract">Emit status summaries</string>
+    <string name="settings_summary_contract_desc">Off by default. When enabled, supported agents are asked to add a trailing AGENT_NOTIFY_SUMMARY line after each turn for notifications and background work records. Applies to new/resumed sessions. (Supported: Claude, Codex, OpenCode, remote Grok; not yet supported: local Grok, Cursor)</string>
+    <string name="settings_summary_in_chat">Show status summaries in chat</string>
+    <string name="settings_summary_in_chat_desc">Only affects display in chat and copied content; it does not affect summary generation, notifications, or background work records. When on, a status row is shown; when off, it is hidden. Stored messages remain unchanged.</string>
+    <string name="settings_section_titles">Session titles</string>
+    <string name="settings_auto_title_per_turn">Rewrite title every turn</string>
+    <string name="settings_auto_title_per_turn_desc">Off by default. When enabled, supported agents rewrite the session title at the end of every user turn instead of renaming sparingly, keeping titles current as the focus shifts. Titles you rename manually are locked and stay put; turning this setting on again clears all locks. Applies to new/resumed sessions.</string>
+    <string name="settings_section_peer_tools">Peer session tools</string>
+    <string name="settings_disable_peer_tools">Disable peer session tools</string>
+    <string name="settings_disable_peer_tools_desc">Off by default. When enabled, agents in new sessions no longer see the list_peers / inspect_peer / ping_peer tools and the prompt steer is removed, preventing cross-session context pollution. Terminal hapi ping-peer keeps working. The per-runner HAPI_DISABLE_PEER_TOOLS environment variable overrides this value.</string>
+    <string name="settings_hub_save_failed">Couldn\'t save: %1$s</string>
+
     <string name="settings_section_insights">Insights</string>
     <string name="settings_usage_summary">Token usage across agents and models</string>
     <string name="settings_storage_summary">Hub database size on disk</string>
@@ -205,6 +222,26 @@
     <string name="sessions_filter_all">All</string>
     <string name="sessions_filter_unknown_machine">Unknown machine</string>
     <string name="sessions_offline_banner">Offline — showing cached sessions</string>
+    <string name="sessions_search_hint">Search sessions</string>
+    <string name="sessions_search_clear">Clear search</string>
+    <string name="sessions_search_no_results">No sessions matching “%1$s”</string>
+    <string name="sessions_search_no_results_hint">Try another term, or clear the search.</string>
+    <string name="sessions_grouped_layout">Group by directory</string>
+    <string name="sessions_unread_filter">Unread only</string>
+    <string name="sessions_unread_empty_title">No unread sessions</string>
+    <string name="sessions_unread_empty_hint">You\'re all caught up. Sessions light up here when new activity arrives.</string>
+    <string name="sessions_active_filter">Active only</string>
+    <string name="sessions_pin_in_progress">In progress</string>
+    <string name="sessions_active_empty_title">No active sessions</string>
+    <string name="sessions_active_empty_hint">Sessions connected to a runner appear here.</string>
+    <string name="sessions_section_running">Running</string>
+    <string name="sessions_section_pending">Pending</string>
+    <string name="sessions_section_active">Active</string>
+    <string name="sessions_section_idle">Idle (keepalive only)</string>
+    <string name="sessions_mark_all_read">Mark all as read (%1$d)</string>
+    <string name="sessions_mark_all_read_title">Mark all as read?</string>
+    <string name="sessions_mark_all_read_description">This will mark %1$d unread sessions as read on this device.</string>
+    <string name="sessions_mark_all_read_confirm">Confirm</string>
     <string name="sessions_empty_loading_title">Loading sessions…</string>
     <string name="sessions_empty_offline_title">Hub unreachable</string>
     <string name="sessions_empty_title">No sessions yet</string>
@@ -218,11 +255,13 @@
     <string name="sessions_action_pin_project">Pin to project</string>
     <string name="sessions_action_pin_global">Pin globally</string>
     <string name="sessions_action_rename">Rename</string>
+    <string name="sessions_action_mark_unread">Mark unread</string>
     <string name="sessions_action_reopen">Reopen</string>
     <string name="sessions_action_archive">Archive</string>
     <string name="sessions_action_delete">Delete</string>
     <string name="sessions_error_pin">Pin failed</string>
     <string name="sessions_error_archive">Archive failed</string>
+    <string name="sessions_error_summary">Couldn\'t save the generated title</string>
     <string name="sessions_error_rename">Rename failed</string>
     <string name="sessions_error_delete">Delete failed</string>
     <string name="sessions_error_reopen">Reopen failed</string>
@@ -230,6 +269,12 @@
     <string name="sessions_error_delete_active">Session is still active — archive it first</string>
     <string name="sessions_reopen_failed_fallback">Failed to reopen session</string>
     <string name="sessions_rename_title">Rename session</string>
+    <string name="sessions_action_rename_save">Save</string>
+    <string name="sessions_action_copy_reference">Copy reference</string>
+    <string name="sessions_reference_copied">Reference copied</string>
+    <string name="sessions_rename_suggest">Generate</string>
+    <string name="sessions_rename_suggesting">Generating…</string>
+    <string name="sessions_rename_suggest_error">Failed to generate a title. Please try again.</string>
     <string name="sessions_rename_placeholder">Session name</string>
     <string name="sessions_delete_title">Delete session?</string>
     <string name="sessions_delete_message">“%1$s” and its message history will be removed from the hub permanently. Active sessions must be archived first.</string>
@@ -300,6 +345,7 @@
     <string name="chat_picker_photos">Photo library</string>
     <string name="chat_picker_camera">Camera</string>
     <string name="chat_picker_files">Files</string>
+    <string name="chat_picker_clipboard">Paste from clipboard</string>
 
     <!-- Dictation errors (B-M3ce) -->
     <string name="chat_dictation_start_failed">Could not start recording</string>
@@ -340,6 +386,9 @@
     <string name="chat_reasoning_collapsed">💭 Reasoning ▸</string>
     <string name="chat_not_delivered_retry">Not delivered — tap to retry</string>
     <string name="chat_not_delivered">Not delivered</string>
+    <string name="chat_steered_badge">↳ Steered</string>
+    <string name="chat_steered_badge_hint">Steered into the active turn</string>
+    <string name="chat_send_error_session_inactive">This session is archived. Reopen it to send your message.</string>
     <string name="chat_review_title">Code review</string>
     <string name="chat_review_findings_one">1 finding</string>
     <string name="chat_review_findings_many">%1$d findings</string>

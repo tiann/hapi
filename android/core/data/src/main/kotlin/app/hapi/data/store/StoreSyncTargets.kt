@@ -157,7 +157,8 @@ class StoreSyncTargets(
             is SseSubscriptionKey.Session -> store.onMessageEvent(event)
             is SseSubscriptionKey.Global -> when (event) {
                 // Global pipe: queued/optimistic bookkeeping only (see class doc).
-                is SyncEvent.MessagesConsumed -> store.markConsumed(event.localIds, event.invokedAt)
+                is SyncEvent.MessagesConsumed ->
+                    store.markConsumed(event.localIds, event.invokedAt, event.steered)
                 is SyncEvent.MessagesIndeterminate -> store.markIndeterminate(event.localIds)
                 is SyncEvent.MessagesRequeued -> store.markRequeued(event.localIds)
                 is SyncEvent.MessageCancelled -> store.removeMessage(event.messageId)

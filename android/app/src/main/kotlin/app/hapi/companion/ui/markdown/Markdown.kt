@@ -55,6 +55,7 @@ import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.markdown.HrefDecision
 import app.hapi.protocol.markdown.HrefPolicy
 import app.hapi.protocol.markdown.MarkdownTransforms
+import app.hapi.protocol.markdown.SessionPathLinks
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.commonmark.ext.gfm.strikethrough.Strikethrough
@@ -95,6 +96,12 @@ interface MarkdownLinkHandler {
     fun onFilePath(path: String, line: Int?)
 
     /**
+     * A session citation (`/sessions/<id>` in text or a link target) — open
+     * that session's chat (web `SessionPathAnchor` parity).
+     */
+    fun onSessionReference(sessionId: String)
+
+    /**
      * A URL whose [HrefPolicy] decision is [HrefDecision.Allowed] or
      * [HrefDecision.ConfirmFirst]; blocked destinations never reach here --
      * they render as inert text.
@@ -104,6 +111,7 @@ interface MarkdownLinkHandler {
 
 private object NoOpMarkdownLinkHandler : MarkdownLinkHandler {
     override fun onFilePath(path: String, line: Int?) = Unit
+    override fun onSessionReference(sessionId: String) = Unit
     override fun onUrl(url: String, decision: HrefDecision) = Unit
 }
 
@@ -514,18 +522,41 @@ private fun AnnotatedString.Builder.appendInlineNode(node: Node, ctx: InlineCont
     }
 }
 
-/** Plain prose: autolink workspace file citations found by the shared detector. */
+/**
+ * Plain prose: autolink workspace file citations and bare session citations
+ * (web plugin order: session links before file links — both detectors are
+ * disjoint by construction, session ids exclude dots while file paths require
+ * a dotted allowlisted extension).
+ */
 private fun AnnotatedString.Builder.appendTextWithFilePaths(literal: String, ctx: InlineContext) {
-    val links = MarkdownTransforms.detectFilePathLinks(literal)
-    if (links.isEmpty()) {
+    val fileLinks = MarkdownTransforms.detectFilePathLinks(literal)
+    val citations = SessionPathLinks.detectBareSessionCitations(literal)
+    if (fileLinks.isEmpty() && citations.isEmpty()) {
         append(literal)
         return
     }
+    var fileIdx = 0
+    var citationIdx = 0
     var cursor = 0
-    for (link in links) {
-        if (link.range.first > cursor) append(literal.substring(cursor, link.range.first))
-        appendFilePathLink(link.display, link.path, link.line, ctx, monospace = false)
-        cursor = link.range.last + 1
+    while (fileIdx < fileLinks.size || citationIdx < citations.size) {
+        val nextFile = fileLinks.getOrNull(fileIdx)
+        val nextCitation = citations.getOrNull(citationIdx)
+        // Merge by start index; a defensive overlap keeps every character
+        // (only the in-between text is skipped).
+        val useFile = nextCitation == null || (nextFile != null && nextFile.range.first < nextCitation.range.first)
+        if (useFile && nextFile != null) {
+            fileIdx += 1
+            if (nextFile.range.first > cursor) append(literal.substring(cursor, nextFile.range.first))
+            appendFilePathLink(nextFile.display, nextFile.path, nextFile.line, ctx, monospace = false)
+            cursor = nextFile.range.last + 1
+        } else if (nextCitation != null) {
+            citationIdx += 1
+            if (nextCitation.range.first > cursor) append(literal.substring(cursor, nextCitation.range.first))
+            appendSessionLink(nextCitation.sessionId, nextCitation.display, ctx)
+            cursor = nextCitation.range.last + 1
+        } else {
+            break
+        }
     }
     if (cursor < literal.length) append(literal.substring(cursor))
 }
@@ -544,6 +575,14 @@ private fun AnnotatedString.Builder.appendFilePathLink(
         } else {
             append(display)
         }
+    }
+}
+
+/** A `/sessions/<id>` citation: ordinary link text opening that session's chat. */
+private fun AnnotatedString.Builder.appendSessionLink(sessionId: String, display: String, ctx: InlineContext) {
+    val listener = LinkInteractionListener { ctx.handler.onSessionReference(sessionId) }
+    withLink(LinkAnnotation.Clickable("hapi-session:$sessionId", ctx.linkStyles, listener)) {
+        append(display)
     }
 }
 
@@ -576,6 +615,17 @@ private fun AnnotatedString.Builder.appendLink(node: Link, ctx: InlineContext) {
     if (filePath != null) {
         val listener = LinkInteractionListener { ctx.handler.onFilePath(filePath, null) }
         withLink(LinkAnnotation.Clickable("hapi-file:$filePath", ctx.linkStyles, listener)) {
+            appendInlineChildren(node, ctx, insideLink = true)
+        }
+        return
+    }
+
+    // Explicit [title](/sessions/<id>) → the cited session's chat (web A()
+    // order: file first, session second).
+    val citedSession = SessionPathLinks.parseSessionPathHref(destination)
+    if (citedSession != null) {
+        val listener = LinkInteractionListener { ctx.handler.onSessionReference(citedSession) }
+        withLink(LinkAnnotation.Clickable("hapi-session:$citedSession", ctx.linkStyles, listener)) {
             appendInlineChildren(node, ctx, insideLink = true)
         }
         return

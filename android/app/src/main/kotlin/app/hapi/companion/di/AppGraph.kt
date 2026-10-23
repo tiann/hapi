@@ -5,9 +5,11 @@ import androidx.datastore.preferences.preferencesDataStore
 import app.hapi.companion.fcm.RegisterDeviceWorker
 import app.hapi.companion.feature.newsession.DataStoreNewSessionPrefs
 import app.hapi.companion.feature.newsession.NewSessionPrefs
+import app.hapi.companion.feature.sessions.SessionDisplayPrefs
 import app.hapi.companion.feature.pairing.PairingClient
 import app.hapi.companion.feature.pairing.PairingClientFactory
 import app.hapi.companion.feature.settings.AppLanguage
+import app.hapi.companion.feature.settings.CodeWrapPrefs
 import app.hapi.companion.feature.settings.LanguagePrefs
 import app.hapi.companion.feature.settings.ThemePrefs
 import app.hapi.data.push.EncryptedPrefsPushIdentityStore
@@ -96,8 +98,14 @@ class AppGraph(context: Context) {
     /** Appearance choice (B-M4e); MainActivity reads it at setContent. */
     val themePrefs: ThemePrefs = ThemePrefs(appContext.hapiDataStore)
 
+    /** Code-block word-wrap toggle (web useCodeWrap / localStorage 'hapi-code-wrap' twin); default off. */
+    val codeWrapPrefs: CodeWrapPrefs = CodeWrapPrefs(appContext.hapiDataStore)
+
     /** Language choice (B-M5a: applied via per-app locales; Settings writes it). */
     val languagePrefs: LanguagePrefs = LanguagePrefs(appContext.hapiDataStore)
+
+    /** Session-list display prefs (directory grouping toggle; web localStorage twin). */
+    val sessionDisplayPrefs: SessionDisplayPrefs = DataStoreSessionDisplayPrefs(appContext.hapiDataStore)
 
     /**
      * Eagerly-cached language for non-composable surfaces (B-M5a): FCM

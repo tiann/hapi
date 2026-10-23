@@ -603,9 +603,15 @@ object MessageWindowLogic {
      * SSE `messages-consumed` (web `markMessagesConsumed`): stamp `invokedAt`
      * and flip status to `sent` on matching rows (skip `failed`), then
      * re-sort — the row moves from its enqueue position to its invocation
-     * position. Never advances the newest cursor.
+     * position. Never advances the newest cursor. [steered] additionally
+     * stamps the live-only marker (badge stays until the row leaves).
      */
-    fun markConsumed(previous: MessageWindowState, localIds: List<String>, invokedAt: Long): MessageWindowState {
+    fun markConsumed(
+        previous: MessageWindowState,
+        localIds: List<String>,
+        invokedAt: Long,
+        steered: Boolean = false,
+    ): MessageWindowState {
         if (localIds.isEmpty()) return previous
         val idSet = localIds.toSet()
         var changed = false
@@ -616,11 +622,13 @@ object MessageWindowLogic {
             }
             val needsStatus = message.status != MessageStatus.Sent
             val needsInvokedAt = message.wire.hasExplicitNullInvokedAt
-            if (!needsStatus && !needsInvokedAt) return@map message
+            val needsSteered = steered && !message.steered
+            if (!needsStatus && !needsInvokedAt && !needsSteered) return@map message
             changed = true
             var next = message
             if (needsStatus) next = next.copy(status = MessageStatus.Sent)
             if (needsInvokedAt) next = next.withInvokedAt(invokedAt)
+            if (needsSteered) next = next.copy(steered = true)
             next
         }
         if (!changed) return previous

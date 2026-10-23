@@ -18,6 +18,7 @@ import app.hapi.protocol.wire.MessagesPage
 import app.hapi.protocol.wire.MessagesResponse
 import app.hapi.protocol.wire.OptionalField
 import app.hapi.protocol.wire.QueuedStateResponse
+import app.hapi.protocol.wire.SyncEvent
 import java.io.File
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -423,6 +424,25 @@ class MessageWindowStoreTest {
         }
         val files = dir.listFiles { file: File -> file.name.endsWith(".window.json") }.orEmpty()
         assertEquals(10, files.size)
+    }
+
+    @Test
+    fun `SSE messages-consumed with steered marks the window row`() = runTest {
+        val api = GatedMessagesApi()
+        val store = MessageWindowStore("s", api, backgroundScope)
+        store.appendOptimistic(localId = "l1", text = "steer me", createdAt = 5)
+        store.updateStatus("l1", MessageStatus.Queued)
+
+        store.onMessageEvent(
+            SyncEvent.MessagesConsumed(sessionId = "s", localIds = listOf("l1"), invokedAt = 42, steered = true),
+        )
+
+        val row = store.state.value.messages.single()
+        assertTrue(row.steered)
+        assertEquals(MessageStatus.Sent, row.status)
+        assertEquals(42L, row.invokedAtOrNull)
+        // Stamped invokedAt takes the row out of the queued bar.
+        assertTrue(!row.isQueuedForInvocation)
     }
 
     // ----------------------------------------------------------------- seed --

@@ -60,6 +60,14 @@ class FakeSessionListStore : SessionListStore {
         calls += "reopen:$sessionId"
         return app.hapi.protocol.wire.ReopenSessionResponse(sessionId = sessionId, resumed = true)
     }
+
+    override suspend fun updateSessionSummary(sessionId: String, text: String) {
+        calls += "summary:$sessionId:$text"
+    }
+
+    override suspend fun suggestSessionTitle(sessionId: String): String = "Suggested title"
+
+    override suspend fun titleSuggestionAvailable(): Boolean = true
 }
 
 class FakeMachineListStore : MachineListStore {
@@ -222,6 +230,24 @@ class StoreSyncTargetsTest {
             sync("""{"type":"messages-consumed","sessionId":"s1","localIds":["l1"],"invokedAt":42}"""),
         )
         store.state.first { it.messages.singleOrNull()?.invokedAtOrNull == 42L }
+    }
+
+    @Test
+    fun `global messages-consumed forwards the steered flag`() = runTest {
+        val (windows, store) = openWindow(backgroundScope)
+        store.appendOptimistic(localId = "l1", text = "steered text", createdAt = 5)
+        store.updateStatus("l1", app.hapi.protocol.window.MessageStatus.Queued)
+        val router = SyncEventRouter(
+            StoreSyncTargets(FakeSessionListStore(), FakeMachineListStore(), backgroundScope, windows),
+        )
+
+        router.route(
+            global,
+            sync("""{"type":"messages-consumed","sessionId":"s1","localIds":["l1"],"invokedAt":42,"steered":true}"""),
+        )
+        val row = store.state.first { it.messages.singleOrNull()?.steered == true }.messages.single()
+        assertEquals(42L, row.invokedAtOrNull)
+        assertEquals(app.hapi.protocol.window.MessageStatus.Sent, row.status)
     }
 
     @Test

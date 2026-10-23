@@ -4,6 +4,8 @@ import androidx.annotation.MainThread
 import app.hapi.companion.feature.chat.attachments.ComposerAttachments
 import app.hapi.companion.feature.chat.blocks.planProposalMarkdown
 import app.hapi.companion.feature.chat.composer.ChatDrafts
+import app.hapi.companion.feature.chat.composer.RecentSkills
+import app.hapi.companion.feature.chat.composer.SkillSuggestions
 import app.hapi.companion.feature.chat.composer.SlashCommands
 import app.hapi.companion.feature.chat.composer.appendTranscript
 import app.hapi.companion.ui.markdown.MarkdownRenderCache
@@ -54,6 +56,7 @@ import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.SendMessageRequest
 import app.hapi.protocol.wire.Session
 import app.hapi.protocol.wire.SessionSummary
+import app.hapi.protocol.wire.SkillSummary
 import app.hapi.protocol.wire.SlashCommand
 import app.hapi.protocol.wire.arrayOrNull
 import app.hapi.protocol.wire.objOrNull
@@ -329,6 +332,8 @@ class ChatViewModel(
     private val drafts: ChatDrafts? = null,
     /** null ⇒ scratchlist UI hidden (badge, park) — tests/previews without a store. */
     private val scratchlist: SessionScratchlist? = null,
+    /** null ⇒ `$`-menu ranking falls back to name order — tests/previews. */
+    private val recentSkills: RecentSkills? = null,
     private val pipelineDispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val pipelineIntervalMs: Long = PIPELINE_INTERVAL_MS,
     private val draftSaveDebounceMs: Long = DRAFT_SAVE_DEBOUNCE_MS,
@@ -437,7 +442,26 @@ class ChatViewModel(
     }
 
     private val slashFetch = MutableStateFlow<SlashFetch>(SlashFetch.Idle)
+
+    private sealed interface SkillFetch {
+        data object Idle : SkillFetch
+        data object Loading : SkillFetch
+        data class Loaded(val skills: List<SkillSummary>) : SkillFetch
+        data object Failed : SkillFetch
+    }
+
+    private val skillFetch = MutableStateFlow<SkillFetch>(SkillFetch.Idle)
     private val sessionOpPending = MutableStateFlow(false)
+
+    /**
+     * Send-failure reopen card (slice 6d): a send failed because the session
+     * was inactive AND the auto-resume failed — the card offers Reopen until
+     * the session reflects active again (web `chat.sendError.sessionInactive`
+     * + action). [reopenPendingState] is dedicated (not [sessionOpPending])
+     * because rename/delete share that flag and would cross-talk.
+     */
+    private val sendReopenFailure = MutableStateFlow(false)
+    private val reopenPendingState = MutableStateFlow(false)
 
     private val _events = MutableSharedFlow<ChatEvent>(extraBufferCapacity = 16)
 
@@ -511,6 +535,23 @@ class ChatViewModel(
         }
         .stateIn(scope, SharingStarted.Eagerly, emptyList())
 
+    /**
+     * Send-failure reopen card above the composer: visible only while the last
+     * send failed inactive and the session is still inactive (web
+     * `router.tsx` gating); a hub reopen flipping `active` hides it on its own.
+     */
+    val reopenCard: StateFlow<SendFailureReopenCard> = combine(
+        sendReopenFailure,
+        sessionStore.sessionDetail(sessionId),
+        reopenPendingState,
+    ) { failedInactive, detail, pending ->
+        SendFailureReopenCardLogic.derive(
+            lastSendFailedInactive = failedInactive,
+            sessionActive = detail?.active == true,
+            reopenPending = pending,
+        )
+    }.stateIn(scope, SharingStarted.Eagerly, SendFailureReopenCard(visible = false, reopenPending = false))
+
     /** Plan availability updates independently of the transcript pipeline. */
     val codexPlanActions: StateFlow<CodexPlanActions> = combine(
         sessionStore.sessionDetail(sessionId), codexPlanOperations, sendInFlight, configOpPending,
@@ -542,6 +583,22 @@ class ChatViewModel(
         val query = SlashCommands.queryOf(text) ?: return@combine emptyList()
         val fetched = (fetch as? SlashFetch.Loaded)?.commands
         SlashCommands.filter(SlashCommands.merge(detail?.metadata?.slashCommands, fetched), query)
+    }.stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    /**
+     * Skills dropdown rows (web `getSkillSuggestions`): non-empty only while
+     * the composer text is a lone `$token`. Source: `GET /skills` (fetched
+     * lazily on the first `$`), ranked with the recency timestamps when a
+     * [RecentSkills] store is wired.
+     */
+    val skillSuggestions: StateFlow<List<SkillSummary>> = combine(
+        composerText,
+        skillFetch,
+        recentSkills?.timestamps ?: flowOf(emptyMap()),
+    ) { text, fetch, recent ->
+        val query = SkillSuggestions.queryOf(text) ?: return@combine emptyList()
+        val skills = (fetch as? SkillFetch.Loaded)?.skills ?: return@combine emptyList()
+        SkillSuggestions.filter(skills, query, recent)
     }.stateIn(scope, SharingStarted.Eagerly, emptyList())
 
     /**
@@ -830,11 +887,16 @@ class ChatViewModel(
     fun setComposerText(text: String) {
         // Fetch the RPC command list on the transition INTO slash mode (the
         // web refetches when the menu opens) — not on every keystroke, so a
-        // wedged CLI cannot be hammered while the user types a command.
+        // wedged CLI cannot be hammered while the user types a command. The
+        // `$` skills menu mirrors the same once-per-screen fetch.
+        val previousText = composerText.value
         val enteredSlashMode = SlashCommands.queryOf(text) != null &&
-            SlashCommands.queryOf(composerText.value) == null
+            SlashCommands.queryOf(previousText) == null
+        val enteredSkillMode = SkillSuggestions.queryOf(text) != null &&
+            SkillSuggestions.queryOf(previousText) == null
         composerText.value = text
         if (enteredSlashMode) loadSlashCommands()
+        if (enteredSkillMode) loadSkills()
         draftJob?.cancel()
         val store = drafts ?: return
         draftJob = scope.launch {
@@ -892,6 +954,19 @@ class ChatViewModel(
     }
 
     /**
+     * Skills dropdown tap: insert `$name ` and record the use for the
+     * recency ranking (web `markSkillUsed`). Persistence failures are
+     * silent — ranking quality degrades, nothing user-visible breaks.
+     */
+    fun selectSkill(skill: SkillSummary) {
+        setComposerText("$${skill.name} ")
+        val store = recentSkills ?: return
+        scope.launch {
+            runCatching { store.markUsed(skill.name, now()) }
+        }
+    }
+
+    /**
      * `GET /slash-commands` once per screen (near-static list; a failed fetch
      * retries on the next `/`). RPC failure is silent — the metadata names
      * still populate the menu, like the web's builtin fallback.
@@ -908,6 +983,27 @@ class ChatViewModel(
                 throw cancellation
             } catch (_: Exception) {
                 SlashFetch.Failed
+            }
+        }
+    }
+
+    /**
+     * `GET /skills` once per screen (near-static list; a failed fetch retries
+     * on the next `$`) — mirrors [loadSlashCommands]. RPC failure is silent:
+     * the menu stays empty, the `$` text still sends as-is.
+     */
+    private fun loadSkills() {
+        if (skillFetch.value is SkillFetch.Loading || skillFetch.value is SkillFetch.Loaded) return
+        skillFetch.value = SkillFetch.Loading
+        scope.launch {
+            skillFetch.value = try {
+                val response = api.getSkills(sessionId)
+                val skills = response.skills
+                if (response.success && skills != null) SkillFetch.Loaded(skills) else SkillFetch.Failed
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                SkillFetch.Failed
             }
         }
     }
@@ -1026,6 +1122,10 @@ class ChatViewModel(
         }
         sendInFlight.value = true
         try {
+            // A fresh attempt (first send or retry) retires the send-failure
+            // reopen card; a repeat inactive failure re-raises it in
+            // [resumeAndRetry].
+            sendReopenFailure.value = false
             val store = awaitWindowStore()
             if (isRetry) {
                 store.updateStatus(localId, MessageStatus.Sending)
@@ -1085,6 +1185,9 @@ class ChatViewModel(
             throw cancellation
         } catch (error: Exception) {
             store.updateStatus(localId, MessageStatus.Failed)
+            // Snackbar detail + the persistent reopen card (web surfaces both:
+            // the inline error and its session-inactive action).
+            sendReopenFailure.value = true
             _events.tryEmit(ChatEvent.Notice(ChatNotice.ResumeFailed))
             return
         }
@@ -1180,9 +1283,14 @@ class ChatViewModel(
      */
     fun reopenSession() {
         if (!sessionOpPending.compareAndSet(expect = false, update = true)) return
+        reopenPendingState.value = true
         scope.launch {
             try {
                 val response = sessionStore.reopenSession(sessionId)
+                // Belt-and-braces: the detail flip to active hides the card via
+                // derive() anyway; an explicit clear keeps stale flags from
+                // resurfacing the card if the session later goes inactive again.
+                sendReopenFailure.value = false
                 if (response.sessionId != sessionId) {
                     messageWindows.seed(sessionId, response.sessionId)
                     drafts?.let { runCatching { it.move(sessionId, response.sessionId) } }
@@ -1194,6 +1302,7 @@ class ChatViewModel(
                 _events.tryEmit(ChatEvent.Notice(ChatNotice.ReopenFailed(formatReopenError(error))))
             } finally {
                 sessionOpPending.value = false
+                reopenPendingState.value = false
             }
         }
     }
@@ -1759,13 +1868,15 @@ class ChatViewModel(
             }
             // Re-attach the window row's client-side status after normalizing
             // the bare wire (web parity: `normalize.ts` copies `message.status`
-            // onto the normalized row). Without this, failed sends never render
-            // as failed and tap-to-retry can't trigger. Memo-safe: status
-            // changes always allocate a new row instance (B-M2c contract).
+            // and the live-only `steered` marker onto the normalized user row).
+            // Without this, failed sends never render as failed and tap-to-retry
+            // can't trigger. Memo-safe: status and steered changes always
+            // allocate a new row instance (B-M2c contract).
             val bare = normalizeDecryptedMessage(message.wire)
             val rowStatus = message.status
-            val next = if (bare is NormalizedMessage.User && rowStatus != null) {
-                bare.copy(status = rowStatus.wire)
+            val rowSteered = message.steered
+            val next = if (bare is NormalizedMessage.User && (rowStatus != null || rowSteered)) {
+                bare.copy(status = rowStatus?.wire, steered = rowSteered)
             } else {
                 bare
             }

@@ -736,6 +736,7 @@ fun reduceTimeline(
                     status = msg.status,
                     originalText = msg.originalText,
                     meta = msg.meta,
+                    steered = msg.steered,
                 )
             )
             continue
