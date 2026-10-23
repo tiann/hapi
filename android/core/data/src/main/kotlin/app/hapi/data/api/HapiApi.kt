@@ -488,7 +488,7 @@ class HapiApi internal constructor(
         request("GET", url("api", "sessions", sessionId, "slash-commands").build())
 
     /** `GET /api/sessions/:id/skills` (RPC-wrapped: check `success`). */
-    suspend fun getSkills(sessionId: String): SkillsResponse =
+    override suspend fun getSkills(sessionId: String): SkillsResponse =
         request("GET", url("api", "sessions", sessionId, "skills").build())
 
     // ------------------------------------------------------------ machines --

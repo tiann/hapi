@@ -4,7 +4,9 @@ import app.hapi.companion.feature.chat.attachments.ComposerAttachmentStatus
 import app.hapi.companion.feature.chat.attachments.PreparedAttachment
 import app.hapi.companion.feature.chat.attachments.PrepareResult
 import app.hapi.companion.feature.chat.composer.ChatDrafts
+import app.hapi.companion.feature.chat.composer.InMemoryRecentSkills
 import app.hapi.companion.feature.chat.composer.PendingSchedule
+import app.hapi.companion.feature.chat.composer.RecentSkills
 import app.hapi.companion.feature.share.PendingShare
 import app.hapi.companion.feature.share.SharedFile
 import app.hapi.companion.feature.share.SharedFileStatus
@@ -56,6 +58,8 @@ import app.hapi.protocol.wire.SessionCapabilities
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SessionSummaryMetadata
 import app.hapi.protocol.wire.SlashCommand
+import app.hapi.protocol.wire.SkillSummary
+import app.hapi.protocol.wire.SkillsResponse
 import app.hapi.protocol.wire.SlashCommandsResponse
 import app.hapi.protocol.wire.SteerQueuedMessageResponse
 import app.hapi.protocol.wire.SyncEvent
@@ -303,6 +307,13 @@ private class RecordingChatApi : ChatSessionApi {
         return fileSearchResult
     }
 
+    var skillsResult: SkillsResponse = SkillsResponse(success = false, error = "not scripted")
+    val skillsCalls = MutableStateFlow(0)
+    override suspend fun getSkills(sessionId: String): SkillsResponse {
+        skillsCalls.value += 1
+        return skillsResult
+    }
+
     var uploadResult: UploadFileResponse = UploadFileResponse(success = true, path = "/uploads/ok")
 
     /** When set, uploads park here (in-flight chip tests). */
@@ -451,6 +462,7 @@ private class InteractionHarness(
     testScope: TestScope,
     detail: Session = detail(),
     val scratchlist: FakeScratchlist? = null,
+    val recentSkills: RecentSkills = InMemoryRecentSkills(),
 ) {
     val api = RecordingChatApi()
     val scope = testScope.backgroundScope
@@ -479,6 +491,7 @@ private class InteractionHarness(
         scope = scope,
         drafts = drafts,
         scratchlist = scratchlist,
+        recentSkills = recentSkills,
         pipelineDispatcher = StandardTestDispatcher(testScope.testScheduler),
         uiDispatcher = StandardTestDispatcher(testScope.testScheduler),
         draftSaveDebounceMs = 10,
@@ -1847,6 +1860,62 @@ class ChatViewModelInteractionTest {
         harness.viewModel.selectSlashCommand(SlashCommand(name = "compact", source = "builtin"))
 
         harness.viewModel.composer.first { it.text == "/compact " }
+    }
+
+    // ------------------------------------------------------------- skills --
+
+    @Test
+    fun `dollar mode fetches skills once ranks by name and filters while typing`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.api.skillsResult = SkillsResponse(
+            success = true,
+            skills = listOf(
+                SkillSummary(name = "deploy", description = "Ship it"),
+                SkillSummary(name = "code-review", description = null),
+                SkillSummary(name = "zeta", description = null),
+            ),
+        )
+        harness.viewModel.start()
+
+        harness.viewModel.setComposerText("$")
+        val all = harness.viewModel.skillSuggestions.first { it.size == 3 }
+        // No recency yet: pure name order.
+        assertEquals(listOf("code-review", "deploy", "zeta"), all.map { it.name })
+        assertEquals(1, harness.api.skillsCalls.value)
+
+        harness.viewModel.setComposerText("\$dep")
+        val filtered = harness.viewModel.skillSuggestions.first { it.size == 1 }
+        assertEquals(listOf("deploy"), filtered.map { it.name })
+        // Typing within `$` mode must not refetch.
+        assertEquals(1, harness.api.skillsCalls.value)
+
+        // Whitespace closes the menu.
+        harness.viewModel.setComposerText("\$deploy now")
+        harness.viewModel.skillSuggestions.first { it.isEmpty() }
+    }
+
+    @Test
+    fun `selecting a skill inserts the token and lifts it in the recency ranking`() = runTest {
+        val recent = InMemoryRecentSkills()
+        val harness = InteractionHarness(this, recentSkills = recent)
+        harness.api.skillsResult = SkillsResponse(
+            success = true,
+            skills = listOf(
+                SkillSummary(name = "alpha", description = null),
+                SkillSummary(name = "zeta", description = null),
+            ),
+        )
+        harness.viewModel.start()
+
+        harness.viewModel.selectSkill(SkillSummary(name = "zeta", description = null))
+
+        harness.viewModel.composer.first { it.text == "\$zeta " }
+        recent.timestamps.first { it.containsKey("zeta") }
+
+        // Empty-query ranking now leads with the recently used skill.
+        harness.viewModel.setComposerText("$")
+        val ranked = harness.viewModel.skillSuggestions.first { it.size == 2 }
+        assertEquals(listOf("zeta", "alpha"), ranked.map { it.name })
     }
 
     @Test

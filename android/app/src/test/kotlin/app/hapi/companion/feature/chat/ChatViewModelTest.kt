@@ -205,6 +205,16 @@ private open class FakeMessagesApi : ChatSessionApi {
         limit: Int?,
     ): app.hapi.protocol.wire.FileSearchResponse =
         app.hapi.protocol.wire.FileSearchResponse(success = false, error = "not scripted")
+
+
+    /** Scripted skills list; `null` skills ⇒ RPC-shaped failure. */
+    var skillsResult: app.hapi.protocol.wire.SkillsResponse =
+        app.hapi.protocol.wire.SkillsResponse(success = false, error = "not scripted")
+    val skillsCalls = MutableStateFlow(0)
+    override suspend fun getSkills(sessionId: String): app.hapi.protocol.wire.SkillsResponse {
+        skillsCalls.value += 1
+        return skillsResult
+    }
     override suspend fun uploadFile(
         sessionId: String,
         filename: String,
