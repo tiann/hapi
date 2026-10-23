@@ -6,6 +6,8 @@
     <string name="code_copy">Копировать</string>
     <string name="code_copied">Скопировано</string>
     <string name="code_plain_fallback">текст</string>
+    <string name="code_wrap_enable">Включить перенос строк</string>
+    <string name="code_wrap_disable">Отключить перенос строк</string>
     <string name="diff_binary_file">Двоичный файл не показан</string>
     <string name="diff_show_more">Показать ещё строк: %1$d</string>
     <string name="diff_collapse">Свернуть</string>
@@ -126,6 +128,22 @@
     <string name="settings_language">Язык приложения</string>
     <string name="settings_language_system">Как в системе</string>
 
+    <!-- Owner-only hub switches (web Settings → General parity; summary texts
+         match the web ru locale, titles/peerTools are our translations — the
+         web ru locale lacks them). -->
+    <string name="settings_section_summaries">Сводки статуса сессий</string>
+    <string name="settings_summary_contract">Формировать сводки статуса</string>
+    <string name="settings_summary_contract_desc">По умолчанию выключено. При включении поддерживаемых агентов просят добавлять после каждого хода завершающую строку AGENT_NOTIFY_SUMMARY для уведомлений и записей о фоновой работе. Применяется к новым/возобновлённым сессиям. (Поддерживаются: Claude, Codex, OpenCode, удалённый Grok; пока не поддерживаются: локальный Grok, Cursor)</string>
+    <string name="settings_summary_in_chat">Показывать сводки статуса в чате</string>
+    <string name="settings_summary_in_chat_desc">Влияет только на отображение в чате и скопированном содержимом; не влияет на формирование сводок, уведомления или записи о фоновой работе. При включении показывается строка статуса, при выключении она скрыта. Сохранённые сообщения не изменяются.</string>
+    <string name="settings_section_titles">Заголовки сессий</string>
+    <string name="settings_auto_title_per_turn">Переписывать заголовок каждый ход</string>
+    <string name="settings_auto_title_per_turn_desc">По умолчанию выключено. При включении поддерживаемые агенты переписывают заголовок сессии в конце каждого хода пользователя, а не лишь изредка, сохраняя его актуальным при смене фокуса. Сессии, переименованные вручную, блокируются и не переименовываются; повторное включение этого переключателя снимает все блокировки. Применяется к новым/возобновлённым сессиям.</string>
+    <string name="settings_section_peer_tools">Инструменты peer-сессий</string>
+    <string name="settings_disable_peer_tools">Отключить инструменты peer-сессий</string>
+    <string name="settings_disable_peer_tools_desc">По умолчанию выключено. При включении агенты в новых сессиях больше не видят инструменты list_peers / inspect_peer / ping_peer, а указание в системном приглашении удаляется, что предотвращает загрязнение контекста между сессиями. Терминальная команда hapi ping-peer продолжает работать. Переменная окружения HAPI_DISABLE_PEER_TOOLS на машине имеет приоритет над этим значением.</string>
+    <string name="settings_hub_save_failed">Не удалось сохранить: %1$s</string>
+
     <string name="settings_section_insights">Аналитика</string>
     <string name="settings_usage_summary">Использование токенов по агентам и моделям</string>
     <string name="settings_storage_summary">Размер базы данных хаба на диске</string>
@@ -205,6 +223,26 @@
     <string name="sessions_filter_all">Все</string>
     <string name="sessions_filter_unknown_machine">Неизвестная машина</string>
     <string name="sessions_offline_banner">Офлайн — показаны кешированные сессии</string>
+    <string name="sessions_search_hint">Поиск сессий</string>
+    <string name="sessions_search_clear">Очистить поиск</string>
+    <string name="sessions_search_no_results">Нет сессий, подходящих под запрос «%1$s»</string>
+    <string name="sessions_search_no_results_hint">Попробуйте другой запрос или очистите поиск.</string>
+    <string name="sessions_grouped_layout">Группировать по каталогам</string>
+    <string name="sessions_unread_filter">Только непрочитанные</string>
+    <string name="sessions_unread_empty_title">Непрочитанных сессий нет</string>
+    <string name="sessions_unread_empty_hint">Вы всё прочитали. Сессии появляются здесь, когда приходит новая активность.</string>
+    <string name="sessions_active_filter">Только активные</string>
+    <string name="sessions_pin_in_progress">В работе</string>
+    <string name="sessions_active_empty_title">Активных сессий нет</string>
+    <string name="sessions_active_empty_hint">Здесь появляются сессии, подключённые к раннеру.</string>
+    <string name="sessions_section_running">Выполняется</string>
+    <string name="sessions_section_pending">Ожидает</string>
+    <string name="sessions_section_active">Активна</string>
+    <string name="sessions_section_idle">Простаивает (только keepalive)</string>
+    <string name="sessions_mark_all_read">Отметить все прочитанными (%1$d)</string>
+    <string name="sessions_mark_all_read_title">Отметить все как прочитанные?</string>
+    <string name="sessions_mark_all_read_description">Это отметит %1$d непрочитанных сессий как прочитанные на этом устройстве.</string>
+    <string name="sessions_mark_all_read_confirm">Подтвердить</string>
     <string name="sessions_empty_loading_title">Загрузка сессий…</string>
     <string name="sessions_empty_offline_title">Хаб недоступен</string>
     <string name="sessions_empty_title">Сессий пока нет</string>
@@ -218,11 +256,13 @@
     <string name="sessions_action_pin_project">Закрепить за проектом</string>
     <string name="sessions_action_pin_global">Закрепить глобально</string>
     <string name="sessions_action_rename">Переименовать</string>
+    <string name="sessions_action_mark_unread">Отметить непрочитанной</string>
     <string name="sessions_action_reopen">Открыть заново</string>
     <string name="sessions_action_archive">Архивировать</string>
     <string name="sessions_action_delete">Удалить</string>
     <string name="sessions_error_pin">Не удалось закрепить</string>
     <string name="sessions_error_archive">Не удалось архивировать</string>
+    <string name="sessions_error_summary">Не удалось сохранить сгенерированное имя</string>
     <string name="sessions_error_rename">Не удалось переименовать</string>
     <string name="sessions_error_delete">Не удалось удалить</string>
     <string name="sessions_error_reopen">Не удалось открыть заново</string>
@@ -230,6 +270,12 @@
     <string name="sessions_error_delete_active">Сессия ещё активна — сначала архивируйте её</string>
     <string name="sessions_reopen_failed_fallback">Не удалось открыть сессию заново</string>
     <string name="sessions_rename_title">Переименовать сессию</string>
+    <string name="sessions_action_rename_save">Сохранить</string>
+    <string name="sessions_action_copy_reference">Копировать ссылку</string>
+    <string name="sessions_reference_copied">Ссылка скопирована</string>
+    <string name="sessions_rename_suggest">Сгенерировать</string>
+    <string name="sessions_rename_suggesting">Генерация…</string>
+    <string name="sessions_rename_suggest_error">Не удалось сгенерировать имя. Попробуйте ещё раз.</string>
     <string name="sessions_rename_placeholder">Имя сессии</string>
     <string name="sessions_delete_title">Удалить сессию?</string>
     <string name="sessions_delete_message">«%1$s» и история её сообщений будут навсегда удалены с хаба. Активные сессии сначала нужно архивировать.</string>
@@ -300,6 +346,7 @@
     <string name="chat_picker_photos">Галерея</string>
     <string name="chat_picker_camera">Камера</string>
     <string name="chat_picker_files">Файлы</string>
+    <string name="chat_picker_clipboard">Вставить из буфера обмена</string>
 
     <!-- Dictation errors (B-M3ce) -->
     <string name="chat_dictation_start_failed">Не удалось начать запись</string>

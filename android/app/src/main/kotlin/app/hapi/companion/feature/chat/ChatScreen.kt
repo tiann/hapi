@@ -51,6 +51,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,6 +68,8 @@ import app.hapi.companion.feature.chat.composer.DictationErrorKind
 import app.hapi.companion.feature.chat.attachments.AttachmentPickerSheet
 import app.hapi.companion.feature.chat.attachments.AttachmentPreparer
 import app.hapi.companion.feature.chat.attachments.CameraCapture
+import app.hapi.companion.feature.chat.attachments.ClipboardAttachments
+import app.hapi.companion.feature.chat.attachments.ClipboardClipItem
 import app.hapi.companion.feature.chat.attachments.PrepareResult
 import app.hapi.companion.feature.chat.composer.ChatComposer
 import app.hapi.companion.feature.chat.composer.DictationController
@@ -106,6 +110,8 @@ internal fun ChatScreen(
     onOpenFiles: () -> Unit = {},
     /** Markdown file citations → file viewer (full mode; optional line hint). */
     onOpenFile: (path: String, line: Int?) -> Unit = { _, _ -> },
+    /** Markdown session citations → push that session's chat (web SessionPathAnchor parity). */
+    onOpenSession: (String) -> Unit = {},
     /** null ⇒ no scratchlist top-bar entry (tests / previews). */
     onOpenScratchlist: (() -> Unit)? = null,
     transcriptList: androidx.compose.foundation.lazy.LazyListState = androidx.compose.foundation.lazy.rememberLazyListState(),
@@ -182,6 +188,7 @@ internal fun ChatScreen(
         }
     }
     val slashSuggestions by viewModel.slashSuggestions.collectAsState()
+    val skillSuggestions by viewModel.skillSuggestions.collectAsState()
 
     // --------------------------------------------------------- attachments --
     val attachmentItems by viewModel.attachments.items.collectAsState()
@@ -204,6 +211,46 @@ internal fun ChatScreen(
     fun ingestUris(uris: List<Uri>) {
         if (uris.isEmpty()) return
         scope.launch { uris.forEach { ingestUri(it) } }
+    }
+
+    // Paste-to-attach: the framework clipboard service, because another
+    // app's content-URI grants travel via ClipData and Compose's
+    // ClipboardManager is text-only.
+    val clipboardManager = remember { context.getSystemService(ClipboardManager::class.java) }
+
+    /** Attachable content URIs on [clip] (empty ⇒ fall through to text paste). */
+    fun clipboardAttachableUris(clip: ClipData?): List<Uri> {
+        if (clip == null) return emptyList()
+        val items = (0 until clip.itemCount).map { ClipboardClipItem(clip.getItemAt(it).uri?.toString()) }
+        return ClipboardAttachments.attachableUris(items).map(Uri::parse)
+    }
+
+    // Ctrl/Cmd+V in the composer: attach clipboard files when present, else
+    // report false so the default text paste runs (web handlePaste semantics).
+    val pasteFromClipboard: () -> Boolean = {
+        val uris = clipboardAttachableUris(clipboardManager.primaryClip)
+        if (uris.isEmpty()) false else {
+            ingestUris(uris)
+            true
+        }
+    }
+
+    // Clipboard row state for the "+" sheet — read when it opens (user tap,
+    // satisfying the Android 10+ focused-app clipboard rule).
+    var clipboardPick by remember { mutableStateOf<Pair<String?, List<Uri>>?>(null) }
+    LaunchedEffect(attachmentSheetOpen) {
+        if (attachmentSheetOpen) {
+            clipboardPick = clipboardManager.primaryClip?.let { clip ->
+                val uris = clipboardAttachableUris(clip)
+                if (uris.isEmpty()) {
+                    null
+                } else {
+                    val label = clip.description.label?.toString()
+                        ?: if (clip.description.mimeTypeCount > 0) clip.description.getMimeType(0) else null
+                    label to uris
+                }
+            }
+        }
     }
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
@@ -340,8 +387,12 @@ internal fun ChatScreen(
                         onAddAttachment = { attachmentSheetOpen = true },
                         onAttachmentRetry = viewModel.attachments::retry,
                         onAttachmentRemove = viewModel.attachments::remove,
+                        onAttachmentMove = viewModel.attachments::move,
+                        onPasteFromClipboard = pasteFromClipboard,
                         slashSuggestions = slashSuggestions,
                         onSlashCommandSelected = viewModel::selectSlashCommand,
+                        skillSuggestions = skillSuggestions,
+                        onSkillSelected = viewModel::selectSkill,
                         dictation = if (dictationAvailable) dictationState else null,
                         onDictationToggle = onDictationToggle,
                         onDictationCancel = { dictation?.cancel() },
@@ -353,7 +404,7 @@ internal fun ChatScreen(
         CompositionLocalProvider(
             LocalMarkdownRenderCache provides viewModel.markdownCache,
             LocalChatMedia provides media,
-            LocalMarkdownLinkHandler provides rememberChatLinkHandler(onOpenFile = onOpenFile),
+            LocalMarkdownLinkHandler provides rememberChatLinkHandler(onOpenFile = onOpenFile, onOpenSession = onOpenSession),
             LocalChatInteractions provides interactions,
         ) {
             Column(
@@ -396,6 +447,8 @@ internal fun ChatScreen(
             },
             onTakePhoto = onTakePhoto,
             onPickFiles = { documentPickerLauncher.launch(arrayOf("*/*")) },
+            clipboardLabel = clipboardPick?.first,
+            onPasteFromClipboard = { clipboardPick?.second?.let(::ingestUris) },
         )
     }
     if (configSheetOpen) {

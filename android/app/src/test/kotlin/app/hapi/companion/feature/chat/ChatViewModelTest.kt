@@ -128,6 +128,10 @@ private class FakeSessionStore : SessionDetailStore {
         record("reopen")
         return app.hapi.protocol.wire.ReopenSessionResponse(sessionId = sessionId, resumed = true)
     }
+
+    override suspend fun updateSessionSummary(sessionId: String, text: String) = record("summary")
+    override suspend fun suggestSessionTitle(sessionId: String): String = "Suggested title"
+    override suspend fun titleSuggestionAvailable(): Boolean = true
 }
 
 private class FakeMachineStore : MachineListStore {
@@ -195,6 +199,15 @@ private open class FakeMessagesApi : ChatSessionApi {
         CodexModelsResponse(success = false, error = "not scripted")
     override suspend fun getSlashCommands(sessionId: String): app.hapi.protocol.wire.SlashCommandsResponse =
         app.hapi.protocol.wire.SlashCommandsResponse(success = false, error = "not scripted")
+
+    /** Scripted skills list; `null` skills ⇒ RPC-shaped failure. */
+    var skillsResult: app.hapi.protocol.wire.SkillsResponse =
+        app.hapi.protocol.wire.SkillsResponse(success = false, error = "not scripted")
+    val skillsCalls = MutableStateFlow(0)
+    override suspend fun getSkills(sessionId: String): app.hapi.protocol.wire.SkillsResponse {
+        skillsCalls.value += 1
+        return skillsResult
+    }
     override suspend fun uploadFile(
         sessionId: String,
         filename: String,

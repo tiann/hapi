@@ -42,10 +42,13 @@ import androidx.core.os.LocaleListCompat
 import app.hapi.companion.BuildConfig
 import app.hapi.companion.R
 import app.hapi.protocol.wire.SUPPORTED_PROTOCOL_VERSION
+import app.hapi.protocol.wire.UpdateHubSettingsRequest
 
 /**
  * Settings home (B-M4e scaffold): Appearance (theme mode + Material You),
- * Language (persist-only until M5), the owner-only Usage/Storage entries, and
+ * Language, the owner-only hub switches (web Settings → General parity:
+ * session summaries, per-turn title rewrite and peer-session tools where the
+ * hub speaks the fork extension), the owner-only Usage/Storage entries, and
  * About (app/protocol versions + hub health).
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -60,6 +63,8 @@ fun SettingsScreen(
     val language by viewModel.language.collectAsState()
     val isOwner by viewModel.isOwner.collectAsState()
     val hubInfo by viewModel.hubInfo.collectAsState()
+    val hubSettings by viewModel.hubSettings.collectAsState()
+    val hubSettingsSaveError by viewModel.hubSettingsSaveError.collectAsState()
 
     var showThemeDialog by rememberSaveable { mutableStateOf(false) }
     var showLanguageDialog by rememberSaveable { mutableStateOf(false) }
@@ -114,6 +119,80 @@ fun SettingsScreen(
                     value = languageLabel(language),
                     onClick = { showLanguageDialog = true },
                 )
+            }
+
+            if (isOwner && hubSettings is HubSettingsState.Loaded) {
+                val settings = (hubSettings as HubSettingsState.Loaded).settings
+
+                // Web twin: settings/general.tsx — sections render only when
+                // the query has data; the fork's extra fields are absent on
+                // upstream hubs (null ⇒ hide, matching upstream web).
+                SettingsSection(title = stringResource(R.string.settings_section_summaries)) {
+                    SwitchRow(
+                        label = stringResource(R.string.settings_summary_contract),
+                        description = stringResource(R.string.settings_summary_contract_desc),
+                        checked = settings.sessionSummaryContract,
+                        enabled = true,
+                        onCheckedChange = { checked ->
+                            viewModel.updateHubSettings(
+                                UpdateHubSettingsRequest(sessionSummaryContract = checked),
+                            )
+                        },
+                    )
+                    SettingsDivider()
+                    SwitchRow(
+                        label = stringResource(R.string.settings_summary_in_chat),
+                        description = stringResource(R.string.settings_summary_in_chat_desc),
+                        checked = settings.sessionSummaryInChat,
+                        enabled = true,
+                        onCheckedChange = { checked ->
+                            viewModel.updateHubSettings(
+                                UpdateHubSettingsRequest(sessionSummaryInChat = checked),
+                            )
+                        },
+                    )
+                }
+
+                settings.autoTitlePerTurn?.let { autoTitle ->
+                    SettingsSection(title = stringResource(R.string.settings_section_titles)) {
+                        SwitchRow(
+                            label = stringResource(R.string.settings_auto_title_per_turn),
+                            description = stringResource(R.string.settings_auto_title_per_turn_desc),
+                            checked = autoTitle,
+                            enabled = true,
+                            onCheckedChange = { checked ->
+                                viewModel.updateHubSettings(
+                                    UpdateHubSettingsRequest(autoTitlePerTurn = checked),
+                                )
+                            },
+                        )
+                    }
+                }
+
+                settings.disablePeerTools?.let { disablePeerTools ->
+                    SettingsSection(title = stringResource(R.string.settings_section_peer_tools)) {
+                        SwitchRow(
+                            label = stringResource(R.string.settings_disable_peer_tools),
+                            description = stringResource(R.string.settings_disable_peer_tools_desc),
+                            checked = disablePeerTools,
+                            enabled = true,
+                            onCheckedChange = { checked ->
+                                viewModel.updateHubSettings(
+                                    UpdateHubSettingsRequest(disablePeerTools = checked),
+                                )
+                            },
+                        )
+                    }
+                }
+
+                if (hubSettingsSaveError != null) {
+                    Text(
+                        text = stringResource(R.string.settings_hub_save_failed, hubSettingsSaveError!!),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(start = 4.dp),
+                    )
+                }
             }
 
             if (isOwner) {

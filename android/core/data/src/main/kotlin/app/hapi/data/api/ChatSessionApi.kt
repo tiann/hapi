@@ -8,6 +8,7 @@ import app.hapi.protocol.wire.DeleteUploadResponse
 import app.hapi.protocol.wire.ResumeSessionResponse
 import app.hapi.protocol.wire.SendMessageRequest
 import app.hapi.protocol.wire.SlashCommandsResponse
+import app.hapi.protocol.wire.SkillsResponse
 import app.hapi.protocol.wire.SteerQueuedMessageResponse
 import app.hapi.protocol.wire.UploadFileResponse
 
@@ -97,4 +98,10 @@ interface ChatSessionApi : MessagesApi, AttachmentUploadApi {
      * session's `metadata.slashCommands` names.
      */
     suspend fun getSlashCommands(sessionId: String): SlashCommandsResponse
+
+    /**
+     * `GET /api/sessions/:id/skills` (RPC-wrapped: check `success`) — the
+     * composer's `$` skills autocomplete source.
+     */
+    suspend fun getSkills(sessionId: String): SkillsResponse
 }

@@ -157,6 +157,33 @@ class ComposerAttachments(
     }
 
     /**
+     * Reorder chips for drag-to-reorder: move the entry at [fromIndex] to
+     * [toIndex]. Equal or out-of-bounds indices are a no-op, so a mid-drag
+     * add/remove can at worst waste one guarded skip. Entries move whole
+     * (path + retained retry bytes ride along), so an in-flight upload
+     * settles at its new position; the id-keyed completion map in [upload]
+     * never disturbs the order.
+     *
+     * Twin of the web `moveAttachmentId` (web/src/lib/attachmentOrder.ts):
+     * [consume] emits metadata in tray order = the wire
+     * `SendMessageRequest.attachments` order (web reorders the same way at
+     * send time, assistant-runtime.ts `orderedAttachments`).
+     */
+    fun move(fromIndex: Int, toIndex: Int) {
+        entries.update { list ->
+            if (fromIndex == toIndex || fromIndex !in list.indices || toIndex !in list.indices) {
+                list
+            } else {
+                val entry = list[fromIndex]
+                val next = list.toMutableList()
+                next.removeAt(fromIndex)
+                next.add(toIndex, entry)
+                next
+            }
+        }
+    }
+
+    /**
      * Take every Ready chip as send metadata, clearing them from the tray
      * (unsettled chips stay put — the ViewModel guards against calling with
      * any pending, but a race can settle one to Failed in between).

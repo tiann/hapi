@@ -17,8 +17,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -36,12 +38,23 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.graphics.SolidColor
@@ -65,6 +78,7 @@ import app.hapi.companion.feature.chat.attachments.ComposerAttachmentUi
 import app.hapi.companion.feature.chat.attachments.rememberChipThumbnail
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.companion.ui.theme.hapi
+import app.hapi.protocol.wire.SkillSummary
 import app.hapi.protocol.wire.SlashCommand
 import kotlinx.coroutines.delay
 
@@ -89,8 +103,15 @@ fun ChatComposer(
     onAddAttachment: (() -> Unit)? = null,
     onAttachmentRetry: (String) -> Unit = {},
     onAttachmentRemove: (String) -> Unit = {},
+    /** Drag-to-reorder (web `SortableComposerAttachments`): from → to index. */
+    onAttachmentMove: (Int, Int) -> Unit = { _, _ -> },
+    /** null ⇒ no clipboard paste interception (previews); true ⇒ chips added. */
+    onPasteFromClipboard: (() -> Boolean)? = null,
     slashSuggestions: List<SlashCommand> = emptyList(),
     onSlashCommandSelected: (SlashCommand) -> Unit = {},
+    /** `$` skills menu (web `getSkillSuggestions`); empty hides it. */
+    skillSuggestions: List<SkillSummary> = emptyList(),
+    onSkillSelected: (SkillSummary) -> Unit = {},
     /** null ⇒ dictation unavailable (no controller wired) — mic button hidden. */
     dictation: DictationState? = null,
     onDictationToggle: () -> Unit = {},
@@ -109,10 +130,17 @@ fun ChatComposer(
     }
     Surface(color = MaterialTheme.colorScheme.surface, modifier = modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(vertical = 8.dp)) {
+            // One trigger at a time: the text cannot start with both `/` and `$`.
             if (slashSuggestions.isNotEmpty()) {
                 SlashCommandDropdown(
                     suggestions = slashSuggestions,
                     onSelect = onSlashCommandSelected,
+                    modifier = Modifier.padding(bottom = 6.dp),
+                )
+            } else if (skillSuggestions.isNotEmpty()) {
+                SkillSuggestionDropdown(
+                    suggestions = skillSuggestions,
+                    onSelect = onSkillSelected,
                     modifier = Modifier.padding(bottom = 6.dp),
                 )
             }
@@ -126,15 +154,62 @@ fun ChatComposer(
             ) {
                 Column {
                     if (attachments.isNotEmpty()) {
+                        // Long-press-drag reorders chips live (web twin:
+                        // SortableComposerAttachments.tsx). pointerInput sits
+                        // AFTER padding in the chain so pointer positions share
+                        // the content-origin coordinate space with
+                        // visibleItemsInfo offsets; keyed on Unit + updated
+                        // callbacks so upload-status list churn never cancels
+                        // a drag mid-gesture.
+                        val listState = rememberLazyListState()
+                        var draggingId by remember { mutableStateOf<String?>(null) }
+                        val currentOnMove by rememberUpdatedState(onAttachmentMove)
+                        val haptics = LocalHapticFeedback.current
+
+                        fun itemUnder(x: Float) =
+                            listState.layoutInfo.visibleItemsInfo.firstOrNull {
+                                x >= it.offset && x < it.offset + it.size
+                            }
+
                         LazyRow(
+                            state = listState,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 2.dp),
+                                .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 2.dp)
+                                .pointerInput(Unit) {
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart = { offset ->
+                                            val picked = itemUnder(offset.x)?.key as? String
+                                            if (picked != null) {
+                                                draggingId = picked
+                                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            }
+                                        },
+                                        onDrag = { change, _ ->
+                                            change.consume()
+                                            val active = draggingId
+                                                ?: return@detectDragGesturesAfterLongPress
+                                            val activeItem = listState.layoutInfo.visibleItemsInfo
+                                                .firstOrNull { it.key == active }
+                                                ?: return@detectDragGesturesAfterLongPress
+                                            val target = itemUnder(change.position.x)
+                                                ?: return@detectDragGesturesAfterLongPress
+                                            // Swap on crossing; keyed items keep
+                                            // identity across swaps (no animateItem).
+                                            if (target.index != activeItem.index) {
+                                                currentOnMove(activeItem.index, target.index)
+                                            }
+                                        },
+                                        onDragEnd = { draggingId = null },
+                                        onDragCancel = { draggingId = null },
+                                    )
+                                },
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
                             items(attachments, key = { it.id }) { attachment ->
                                 ComposerAttachmentChip(
                                     attachment = attachment,
+                                    dragging = attachment.id == draggingId,
                                     onRetry = { onAttachmentRetry(attachment.id) },
                                     onRemove = { onAttachmentRemove(attachment.id) },
                                 )
@@ -160,6 +235,20 @@ fun ChatComposer(
                         modifier = Modifier
                             .focusRequester(focusRequester)
                             .testTag("chat-composer-input")
+                            // Hardware-keyboard paste-to-attach (web
+                            // handlePaste): consume Ctrl/Cmd+V only when the
+                            // clipboard carried attachable files, otherwise
+                            // return false so the default text paste runs.
+                            .onPreviewKeyEvent { event ->
+                                val paste = onPasteFromClipboard
+                                    ?: return@onPreviewKeyEvent false
+                                if (event.type != KeyEventType.KeyDown) {
+                                    return@onPreviewKeyEvent false
+                                }
+                                val isPasteKey =
+                                    (event.isCtrlPressed || event.isMetaPressed) && event.key == Key.V
+                                if (isPasteKey) paste() else false
+                            }
                             .fillMaxWidth()
                             .padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 4.dp),
                         decorationBox = { inner ->
@@ -216,11 +305,13 @@ fun ChatComposer(
 /**
  * One tray chip: 36 dp thumb (image preview / MIME glyph, spinner while
  * uploading), filename + status line, ✕ to remove. A failed chip tints error
- * and taps to retry.
+ * and taps to retry. [dragging] lifts + dims the chip under a reorder drag
+ * (web dims the dragged chip, SortableComposerAttachments.tsx).
  */
 @Composable
 private fun ComposerAttachmentChip(
     attachment: ComposerAttachmentUi,
+    dragging: Boolean = false,
     onRetry: () -> Unit,
     onRemove: () -> Unit,
 ) {
@@ -237,12 +328,15 @@ private fun ComposerAttachmentChip(
             MaterialTheme.colorScheme.onSurface
         },
         shape = RoundedCornerShape(10.dp),
+        shadowElevation = if (dragging) 6.dp else 0.dp,
         onClick = { if (failed) onRetry() },
         enabled = failed,
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(start = 6.dp, top = 6.dp, bottom = 6.dp),
+            modifier = Modifier
+                .graphicsLayer { alpha = if (dragging) 0.65f else 1f }
+                .padding(start = 6.dp, top = 6.dp, bottom = 6.dp),
         ) {
             ChipThumb(attachment)
             Column(modifier = Modifier.padding(start = 8.dp).widthIn(max = 132.dp)) {
@@ -366,41 +460,89 @@ private fun SlashCommandDropdown(
     onSelect: (SlashCommand) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    AutocompleteSurface(modifier) {
+        LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
+            items(suggestions, key = { "${it.source}:${it.name}" }) { command ->
+                AutocompleteRow(
+                    leading = "/",
+                    name = command.name,
+                    description = command.description,
+                    onClick = { onSelect(command) },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Skills list above the input — same dropdown shell with the `$` glyph
+ * (web renders `$name` labels in `Autocomplete`).
+ */
+@Composable
+private fun SkillSuggestionDropdown(
+    suggestions: List<SkillSummary>,
+    onSelect: (SkillSummary) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    AutocompleteSurface(modifier) {
+        LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
+            items(suggestions, key = { it.name }) { skill ->
+                AutocompleteRow(
+                    leading = "$",
+                    name = skill.name,
+                    description = skill.description,
+                    onClick = { onSelect(skill) },
+                )
+            }
+        }
+    }
+}
+
+/** Shared dropdown chrome (web `Autocomplete` container). */
+@Composable
+private fun AutocompleteSurface(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         shape = RoundedCornerShape(12.dp),
         tonalElevation = 2.dp,
         modifier = modifier.fillMaxWidth(),
     ) {
-        LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
-            items(suggestions, key = { "${it.source}:${it.name}" }) { command ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .combinedClickable(onClick = { onSelect(command) })
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                ) {
-                    Text(
-                        text = "/${command.name}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    command.description?.takeIf { it.isNotBlank() }?.let { description ->
-                        Text(
-                            text = description,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.hapi.hint,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHighest)
-            }
+        content()
+    }
+}
+
+/** One suggestion row: `leading + name` and an optional 2-line description. */
+@Composable
+private fun AutocompleteRow(
+    leading: String,
+    name: String,
+    description: String?,
+    onClick: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Text(
+            text = "$leading$name",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        description?.takeIf { it.isNotBlank() }?.let { text ->
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.hapi.hint,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
+    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHighest)
 }
 
 // ------------------------------------------------------------- dictation --
