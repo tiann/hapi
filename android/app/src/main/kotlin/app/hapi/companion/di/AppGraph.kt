@@ -9,6 +9,7 @@ import app.hapi.companion.feature.newsession.NewSessionPrefs
 import app.hapi.companion.feature.pairing.PairingClient
 import app.hapi.companion.feature.pairing.PairingClientFactory
 import app.hapi.companion.feature.settings.AppLanguage
+import app.hapi.companion.feature.settings.CodeWrapPrefs
 import app.hapi.companion.feature.settings.LanguagePrefs
 import app.hapi.companion.feature.settings.ThemePrefs
 import app.hapi.companion.feature.share.ContentResolverShareReader
@@ -121,6 +122,9 @@ class AppGraph(context: Context) {
 
     /** Appearance choice (B-M4e); MainActivity reads it at setContent. */
     val themePrefs: ThemePrefs = ThemePrefs(appContext.hapiDataStore)
+
+    /** Code-block word-wrap toggle (web useCodeWrap / localStorage 'hapi-code-wrap' twin); default off. */
+    val codeWrapPrefs: CodeWrapPrefs = CodeWrapPrefs(appContext.hapiDataStore)
 
     /**
      * Files-screen sort choice (web localStorage `hapi-directory-sort` twin),
