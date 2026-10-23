@@ -157,6 +157,21 @@
     <string name="settings_language">应用语言</string>
     <string name="settings_language_system">跟随系统</string>
 
+    <!-- Owner-only hub switches (web Settings → General parity; texts match
+         the web locales verbatim). -->
+    <string name="settings_section_summaries">会话状态摘要</string>
+    <string name="settings_summary_contract">输出状态摘要</string>
+    <string name="settings_summary_contract_desc">默认关闭。开启后会要求受支持的智能体在每轮结束时追加 AGENT_NOTIFY_SUMMARY 行，供通知和后台工作记录使用，对新开/恢复的会话生效。(已支持：Claude、Codex、OpenCode、远程 Grok；暂不支持：本地 Grok、Cursor)</string>
+    <string name="settings_summary_in_chat">在聊天中显示状态摘要</string>
+    <string name="settings_summary_in_chat_desc">只影响聊天和复制内容中的显示，不影响摘要生成、通知或后台工作记录。开启后显示状态行，关闭后隐藏；已存储消息保持不变。</string>
+    <string name="settings_section_titles">会话标题</string>
+    <string name="settings_auto_title_per_turn">每轮重写会话标题</string>
+    <string name="settings_auto_title_per_turn_desc">默认关闭。开启后受支持的智能体会改为在每轮对话结束时重写会话标题（而非仅任务变化时才改名），标题随焦点变化保持最新。手动改名的会话会被锁定保护、标题不再被覆盖；重新打开此开关会清除全部锁定。对新开/恢复的会话生效。</string>
+    <string name="settings_section_peer_tools">Peer 会话工具</string>
+    <string name="settings_disable_peer_tools">禁用 peer 会话工具</string>
+    <string name="settings_disable_peer_tools_desc">默认关闭。开启后新会话中的智能体将看不到 list_peers / inspect_peer / ping_peer 三个工具，提示词指引同步移除，防止跨会话上下文污染。终端 hapi ping-peer 不受影响。可用每台机器的 HAPI_DISABLE_PEER_TOOLS 环境变量覆盖此值。</string>
+    <string name="settings_hub_save_failed">无法保存：%1$s</string>
+
     <string name="settings_section_insights">洞察</string>
     <string name="settings_usage_summary">各代理与模型的 Token 用量</string>
     <string name="settings_storage_summary">Hub 数据库磁盘占用</string>

@@ -150,6 +150,22 @@
     <string name="settings_language">Язык приложения</string>
     <string name="settings_language_system">Как в системе</string>
 
+    <!-- Owner-only hub switches (web Settings → General parity; summary texts
+         match the web ru locale, titles/peerTools are our translations — the
+         web ru locale lacks them). -->
+    <string name="settings_section_summaries">Сводки статуса сессий</string>
+    <string name="settings_summary_contract">Формировать сводки статуса</string>
+    <string name="settings_summary_contract_desc">По умолчанию выключено. При включении поддерживаемых агентов просят добавлять после каждого хода завершающую строку AGENT_NOTIFY_SUMMARY для уведомлений и записей о фоновой работе. Применяется к новым/возобновлённым сессиям. (Поддерживаются: Claude, Codex, OpenCode, удалённый Grok; пока не поддерживаются: локальный Grok, Cursor)</string>
+    <string name="settings_summary_in_chat">Показывать сводки статуса в чате</string>
+    <string name="settings_summary_in_chat_desc">Влияет только на отображение в чате и скопированном содержимом; не влияет на формирование сводок, уведомления или записи о фоновой работе. При включении показывается строка статуса, при выключении она скрыта. Сохранённые сообщения не изменяются.</string>
+    <string name="settings_section_titles">Заголовки сессий</string>
+    <string name="settings_auto_title_per_turn">Переписывать заголовок каждый ход</string>
+    <string name="settings_auto_title_per_turn_desc">По умолчанию выключено. При включении поддерживаемые агенты переписывают заголовок сессии в конце каждого хода пользователя, а не лишь изредка, сохраняя его актуальным при смене фокуса. Сессии, переименованные вручную, блокируются и не переименовываются; повторное включение этого переключателя снимает все блокировки. Применяется к новым/возобновлённым сессиям.</string>
+    <string name="settings_section_peer_tools">Инструменты peer-сессий</string>
+    <string name="settings_disable_peer_tools">Отключить инструменты peer-сессий</string>
+    <string name="settings_disable_peer_tools_desc">По умолчанию выключено. При включении агенты в новых сессиях больше не видят инструменты list_peers / inspect_peer / ping_peer, а указание в системном приглашении удаляется, что предотвращает загрязнение контекста между сессиями. Терминальная команда hapi ping-peer продолжает работать. Переменная окружения HAPI_DISABLE_PEER_TOOLS на машине имеет приоритет над этим значением.</string>
+    <string name="settings_hub_save_failed">Не удалось сохранить: %1$s</string>
+
     <string name="settings_section_insights">Аналитика</string>
     <string name="settings_usage_summary">Использование токенов по агентам и моделям</string>
     <string name="settings_storage_summary">Размер базы данных хаба на диске</string>
