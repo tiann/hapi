@@ -219,10 +219,12 @@ fun SessionListScreen(
                 showUnreadOnly = state.showUnreadOnly,
                 showActiveOnly = state.showActiveOnly,
                 pinInProgress = state.pinInProgress,
+                grouped = state.grouped,
                 unreadCount = state.unreadCount,
                 onToggleUnread = { viewModel.setUnreadOnly(!state.showUnreadOnly) },
                 onToggleActive = { viewModel.setActiveOnly(!state.showActiveOnly) },
                 onTogglePinInProgress = { viewModel.setPinInProgress(!state.pinInProgress) },
+                onToggleGrouped = { viewModel.setGrouped(!state.grouped) },
                 onMarkAllRead = { markAllReadOpen = true },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
             )
@@ -397,6 +399,12 @@ private fun SessionRows(
                         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                         SectionHeader(stringResource(R.string.sessions_section_sessions))
                     }
+                }
+                // Directory group (grouped layout): header = the group's
+                // display name (last two path segments, web
+                // `getPathDisplayName`); never rendered unlabeled.
+                SessionSectionKind.DIRECTORY -> item(key = "header-dir-${section.title}") {
+                    SectionHeader(section.title.orEmpty())
                 }
             }
             items(section.rows, key = { it.id }) { row ->
@@ -801,21 +809,24 @@ private fun SearchEmptyState(query: String) {
 }
 
 /**
- * Lens chips + mark-all-read (web toolbar parity): the transient unread-only
- * and active-only lenses, the pin-in-progress sections toggle, and — only
- * while something is unread — the mark-all-read button with the hub-wide
- * count. Horizontally scrollable: three chips + button overflows narrow
- * screens.
+ * Lens chips + mark-all-read (web toolbar parity): the directory-grouping
+ * layout toggle (Android-native; the web sidebar is always grouped), the
+ * transient unread-only and active-only lenses, the pin-in-progress sections
+ * toggle, and — only while something is unread — the mark-all-read button
+ * with the hub-wide count. Horizontally scrollable: four chips + button
+ * overflows narrow screens.
  */
 @Composable
 private fun SessionLensRow(
     showUnreadOnly: Boolean,
     showActiveOnly: Boolean,
     pinInProgress: Boolean,
+    grouped: Boolean,
     unreadCount: Int,
     onToggleUnread: () -> Unit,
     onToggleActive: () -> Unit,
     onTogglePinInProgress: () -> Unit,
+    onToggleGrouped: () -> Unit,
     onMarkAllRead: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -824,6 +835,13 @@ private fun SessionLensRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        item {
+            FilterChip(
+                selected = grouped,
+                onClick = onToggleGrouped,
+                label = { Text(stringResource(R.string.sessions_grouped_layout)) },
+            )
+        }
         item {
             FilterChip(
                 selected = showUnreadOnly,

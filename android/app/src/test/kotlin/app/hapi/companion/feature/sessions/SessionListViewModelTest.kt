@@ -133,6 +133,7 @@ private fun summary(
     flavor: String = "claude",
     agentSessionId: String? = null,
     pinned: Boolean? = null,
+    globalPinned: Boolean? = null,
     hasConversationContent: Boolean = true,
     thinking: Boolean = false,
     pending: Int = 0,
@@ -146,6 +147,7 @@ private fun summary(
     updatedAt = updatedAt,
     hasConversationContent = hasConversationContent,
     pinned = pinned,
+    globalPinned = globalPinned,
     backgroundTaskCount = backgroundTasks,
     pendingRequestsCount = pending,
     metadata = SessionSummaryMetadata(
@@ -197,6 +199,7 @@ private fun TestScope.buildViewModel(
     zoneProvider: () -> ZoneId = { ZoneId.of("UTC") },
     connection: MutableStateFlow<ConnectionState> = MutableStateFlow(ConnectionState(ConnectionState.Phase.Connected)),
     lastSeenStore: LastSeenStore = LastSeenStore(backgroundScope),
+    displayPrefs: SessionDisplayPrefs? = null,
 ): Triple<SessionListViewModel, FakeSessionStore, FakeMachineStore> {
     val viewModel = SessionListViewModel(
         sessionStore = sessions,
@@ -207,6 +210,7 @@ private fun TestScope.buildViewModel(
         zoneProvider = zoneProvider,
         connectionState = connection,
         nowMs = { currentTime },
+        displayPrefs = displayPrefs,
     )
     return Triple(viewModel, sessions, machines)
 }
@@ -1086,8 +1090,10 @@ class SessionListViewModelTest {
         }
         val (viewModel) = buildViewModel(sessions)
 
+        // Grouped is the default layout; this test pins the flat contract.
+        viewModel.setGrouped(false)
         // Default off: pinned prefix + one plain body section (old layout).
-        val plain = viewModel.uiState.first { it.rows.size == 6 }
+        val plain = viewModel.uiState.first { !it.grouped && it.rows.size == 6 }
         assertFalse(plain.pinInProgress)
         assertEquals(listOf(SessionSectionKind.PINNED, SessionSectionKind.RECENT), plain.sections.map { it.kind })
         assertEquals(listOf("pin"), plain.sections.first().rows.map { it.id })
@@ -1113,5 +1119,115 @@ class SessionListViewModelTest {
         assertEquals(listOf("gone"), grouped.sections[5].rows.map { it.id })
         // Same rows, regrouped — sections are a view over `rows`.
         assertEquals(grouped.rows.size, grouped.sections.sumOf { it.rows.size })
+    }
+
+    // ------------------------------------------------- directory grouping --
+
+    @Test
+    fun `grouped layout is the default with directory sections over the plain body`() = runTest {
+        val sessions = FakeSessionStore().apply {
+            set(
+                summary("app-a", updatedAt = 900, path = "/repo/app"),
+                summary("app-b", updatedAt = 500, path = "/repo/app"),
+                summary("lib-x", updatedAt = 700, path = "/repo/lib"),
+            )
+        }
+        val (viewModel) = buildViewModel(sessions)
+
+        val state = viewModel.uiState.first { it.rows.size == 3 }
+        assertTrue(state.grouped)
+        // No pins anywhere: groups order by latest updatedAt — app(900) then lib(700).
+        assertEquals(listOf(SessionSectionKind.DIRECTORY, SessionSectionKind.DIRECTORY), state.sections.map { it.kind })
+        assertEquals(listOf("repo/app", "repo/lib"), state.sections.map { it.title })
+        assertEquals(listOf("app-a", "app-b"), state.sections[0].rows.map { it.id })
+        assertEquals(listOf("lib-x"), state.sections[1].rows.map { it.id })
+    }
+
+    @Test
+    fun `global pins form the top section and local pins stay inside their directory`() = runTest {
+        val sessions = FakeSessionStore().apply {
+            set(
+                summary("global", updatedAt = 100, globalPinned = true, path = "/repo/old"),
+                summary("local-pin", updatedAt = 50, pinned = true, path = "/repo/app"),
+                summary("app-plain", updatedAt = 800, path = "/repo/app"),
+            )
+        }
+        val (viewModel) = buildViewModel(sessions)
+
+        val state = viewModel.uiState.first { it.rows.size == 3 }
+        assertEquals(listOf(SessionSectionKind.PINNED, SessionSectionKind.DIRECTORY), state.sections.map { it.kind })
+        assertEquals(listOf("global"), state.sections[0].rows.map { it.id })
+        // Local pin leads its directory group despite being the oldest row.
+        assertEquals(listOf("local-pin", "app-plain"), state.sections[1].rows.map { it.id })
+        assertEquals("repo/app", state.sections[1].title)
+    }
+
+    @Test
+    fun `pin in progress floats connected rows out of directory groups in grouped mode`() = runTest {
+        val sessions = FakeSessionStore().apply {
+            set(
+                summary("think", updatedAt = 700, active = true, thinking = true, path = "/repo/app"),
+                summary("quiet", updatedAt = 850, active = true, path = "/repo/lib"),
+                summary("gone", updatedAt = 900, path = "/repo/lib"),
+            )
+        }
+        val (viewModel) = buildViewModel(sessions)
+
+        viewModel.setPinInProgress(true)
+        val state = viewModel.uiState.first { it.pinInProgress && it.rows.size == 3 }
+        assertEquals(
+            listOf(SessionSectionKind.RUNNING, SessionSectionKind.ACTIVE, SessionSectionKind.DIRECTORY),
+            state.sections.map { it.kind },
+        )
+        assertEquals(listOf("think"), state.sections[0].rows.map { it.id })
+        assertEquals(listOf("quiet"), state.sections[1].rows.map { it.id })
+        // Floated rows leave their groups; lib keeps only its disconnected row.
+        assertEquals(listOf("gone"), state.sections[2].rows.map { it.id })
+        assertEquals("repo/lib", state.sections[2].title)
+        assertEquals(state.rows.size, state.sections.sumOf { it.rows.size })
+    }
+
+    @Test
+    fun `grouping toggle round-trips through display prefs and survives view-model rebuilds`() = runTest {
+        val prefs = InMemorySessionDisplayPrefs(initial = SessionDisplayPrefs.DEFAULT_GROUPED)
+        val sessions = FakeSessionStore().apply { set(summary("only", updatedAt = 10)) }
+        val (first) = buildViewModel(sessions, displayPrefs = prefs)
+
+        assertTrue(first.uiState.first { it.rows.size == 1 }.grouped)
+        first.setGrouped(false)
+        val flat = first.uiState.first { !it.grouped }
+        assertEquals(listOf(SessionSectionKind.RECENT), flat.sections.map { it.kind })
+        // The prefs store carries the choice to the next view model.
+        assertEquals(false, prefs.grouped.first())
+        val (second) = buildViewModel(sessions, displayPrefs = prefs)
+        assertFalse(second.uiState.first { it.rows.size == 1 }.grouped)
+    }
+
+    @Test
+    fun `searching keeps directory groups in relevance order instead of pinned first`() = runTest {
+        val sessions = FakeSessionStore().apply {
+            set(
+                // Title hit scores above a path hit even when much older —
+                // so relevance order is the REVERSE of the non-search group
+                // comparator (latest-updated first).
+                summary("old-title", updatedAt = 100, name = "deploy fix", path = "/a/first"),
+                summary("new-path", updatedAt = 900, name = "chore", path = "/z/deploy-work/x"),
+                // Global pin stays its own top section even while searching.
+                summary("glob", updatedAt = 50, name = "deploy global", globalPinned = true, path = "/g/pin"),
+            )
+        }
+        val (viewModel) = buildViewModel(sessions)
+
+        viewModel.setSearchQuery("deploy")
+        val state = viewModel.uiState.first { it.isSearching && it.rows.size == 3 }
+        assertEquals(
+            listOf(SessionSectionKind.PINNED, SessionSectionKind.DIRECTORY, SessionSectionKind.DIRECTORY),
+            state.sections.map { it.kind },
+        )
+        assertEquals(listOf("glob"), state.sections[0].rows.map { it.id })
+        // Relevance wins over recency: the older title hit's group comes first.
+        assertEquals(listOf("a/first", "deploy-work/x"), state.sections.drop(1).map { it.title })
+        assertEquals(listOf("old-title"), state.sections[1].rows.map { it.id })
+        assertEquals(listOf("new-path"), state.sections[2].rows.map { it.id })
     }
 }

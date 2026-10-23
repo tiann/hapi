@@ -245,6 +245,7 @@
     <string name="sessions_search_close">Close search</string>
     <string name="sessions_search_no_results">No sessions matching “%1$s”</string>
     <string name="sessions_search_no_results_hint">Try another term, or clear the search.</string>
+    <string name="sessions_grouped_layout">Group by directory</string>
     <string name="sessions_unread_filter">Unread only</string>
     <string name="sessions_unread_empty_title">No unread sessions</string>
     <string name="sessions_unread_empty_hint">You\'re all caught up. Sessions light up here when new activity arrives.</string>

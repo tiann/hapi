@@ -70,11 +70,13 @@ data class MachineFilterUi(
 )
 
 /** One rendered list section — pinned first, running buckets when the pin-in-progress view is on, rest last. */
-enum class SessionSectionKind { PINNED, RUNNING, PENDING, ACTIVE, IDLE, RECENT }
+enum class SessionSectionKind { PINNED, RUNNING, PENDING, ACTIVE, IDLE, RECENT, DIRECTORY }
 
 data class SessionSectionUi(
     val kind: SessionSectionKind,
     val rows: List<SessionRowUi>,
+    /** [SessionSectionKind.DIRECTORY] header — the group display name. */
+    val title: String? = null,
 )
 
 data class SessionListUiState(
@@ -114,6 +116,8 @@ data class SessionListUiState(
     val showActiveOnly: Boolean = false,
     /** Transient pin-in-progress sections toggle (web: persisted display pref, default off). */
     val pinInProgress: Boolean = false,
+    /** Directory-grouped layout (web is always grouped; Android keeps flat as the toggle-off state). */
+    val grouped: Boolean = SessionDisplayPrefs.DEFAULT_GROUPED,
     /** Unread sessions on this hub (drives the mark-all-read affordance). */
     val unreadCount: Int = 0,
     /** Hub advertises the AI title-suggestion endpoint (health capability). */
@@ -155,6 +159,8 @@ class SessionListViewModel(
     /** Global SSE transport state (`SseEngine.connectionState(Global)`); none in tests by default. */
     connectionState: Flow<ConnectionState> = emptyFlow(),
     private val nowMs: () -> Long = System::currentTimeMillis,
+    /** Display preferences; null keeps every toggle in-memory (tests). */
+    private val displayPrefs: SessionDisplayPrefs? = null,
 ) {
     private val machineFilter = MutableStateFlow<String?>(null)
     private val searchQuery = MutableStateFlow("")
@@ -162,6 +168,7 @@ class SessionListViewModel(
     private val showUnreadOnly = MutableStateFlow(false)
     private val showActiveOnly = MutableStateFlow(false)
     private val pinInProgress = MutableStateFlow(false)
+    private val grouped = MutableStateFlow(SessionDisplayPrefs.DEFAULT_GROUPED)
     private val isRefreshing = MutableStateFlow(false)
     private val isOffline = MutableStateFlow(false)
     private val hasRefreshedOnce = MutableStateFlow(false)
@@ -190,6 +197,11 @@ class SessionListViewModel(
     private var refreshJob: Job? = null
 
     init {
+        // Persisted display prefs drive the grouping toggle; local writes
+        // echo through the DataStore flow with the same value (no fight).
+        displayPrefs?.let { prefs ->
+            scope.launch { prefs.grouped.collect { grouped.value = it } }
+        }
         scope.launch {
             combine(sessionStore.sessions, machineFilter) { _, filter -> filter }.collect { selected ->
                 // Validate against the current snapshot, not an older combined
@@ -244,7 +256,8 @@ class SessionListViewModel(
                 titleSuggestionAvailable = titleSuggestion,
             )
         },
-    ) { (sessions, machines, lastSeen), (filter, query, selected), chrome ->
+        grouped,
+    ) { (sessions, machines, lastSeen), (filter, query, selected), chrome, grouped ->
         buildUiState(
             sessions = sessions,
             machines = machines,
@@ -259,6 +272,7 @@ class SessionListViewModel(
             showUnreadOnly = chrome.showUnreadOnly,
             showActiveOnly = chrome.showActiveOnly,
             pinInProgress = chrome.pinInProgress,
+            grouped = grouped,
             titleSuggestionAvailable = chrome.titleSuggestionAvailable,
         ).copy(lastRefreshedAt = chrome.lastRefreshedAt, connectionStatus = chrome.connectionStatus)
     }.stateIn(
@@ -386,8 +400,17 @@ class SessionListViewModel(
         pinInProgress.value = enabled
     }
 
-    /** Row action: queue an explicit-unread intent against the observed read state. */
+    /**
+     * Directory-grouped vs flat list. Persisted when [displayPrefs] is
+     * wired (production); tests drive it without a store.
+     */
+    fun setGrouped(enabled: Boolean) {
+        grouped.value = enabled
+        val prefs = displayPrefs ?: return
+        scope.launch { runCatching { prefs.setGrouped(enabled) } }
+    }
 
+    /** Row action: queue an explicit-unread intent against the observed read state. */
     fun markSessionUnread(sessionId: String) {
         val summary = sessionStore.sessions.value.firstOrNull { it.id == sessionId } ?: return
         scope.launch {
@@ -561,6 +584,7 @@ class SessionListViewModel(
         showUnreadOnly: Boolean,
         showActiveOnly: Boolean = false,
         pinInProgress: Boolean = false,
+        grouped: Boolean = SessionDisplayPrefs.DEFAULT_GROUPED,
         titleSuggestionAvailable: Boolean = false,
     ): SessionListUiState {
         // Use one current zone for both filtering and the calendar activity marks.
@@ -682,13 +706,14 @@ class SessionListViewModel(
 
         return SessionListUiState(
             rows = rows,
-            sections = buildSessionSections(rows, pinInProgress),
+            sections = buildSessionSections(rows, pinInProgress, grouped, isSearching = searchQuery.isNotBlank()),
             machineFilters = filters,
             activeMachineFilter = activeFilter,
             searchQuery = searchQuery,
             showUnreadOnly = showUnreadOnly,
             showActiveOnly = showActiveOnly,
             pinInProgress = pinInProgress,
+            grouped = grouped,
             unreadCount = LastSeenStore.unreadSessionCount(sessions, lastSeen),
             titleSuggestionAvailable = titleSuggestionAvailable,
             isRefreshing = isRefreshing,
@@ -753,8 +778,25 @@ class SessionListViewModel(
      * prefix + rest (the sort contract puts pins on top). On: the reference's
      * pin-in-progress view — connected unpinned rows float into the running
      * buckets, disconnected rows stay in the plain body.
+
+    /**
+     * Group the rendered rows into screen sections. Flat mode (grouped off):
+     * the plain pinned prefix + rest (the sort contract puts pins on top);
+     * pin-in-progress floats connected unpinned rows into running buckets.
+     *
+     * Grouped mode mirrors the web sidebar exactly: a global-pinned section
+     * on top (local pins stay inside their directory group, sorted first),
+     * running buckets when pin-in-progress is on, then directory groups —
+     * pinned-group → active-group → latest-updated, or search-relevance
+     * (first-encounter) order while searching.
      */
-    private fun buildSessionSections(rows: List<SessionRowUi>, pinInProgress: Boolean): List<SessionSectionUi> {
+    private fun buildSessionSections(
+        rows: List<SessionRowUi>,
+        pinInProgress: Boolean,
+        grouped: Boolean,
+        isSearching: Boolean,
+    ): List<SessionSectionUi> {
+        if (grouped) return buildGroupedSections(rows, pinInProgress, isSearching)
         if (!pinInProgress) {
             val pinnedCount = rows.takeWhile {
                 it.summary.globalPinned == true || it.summary.pinned == true
@@ -772,6 +814,47 @@ class SessionListViewModel(
             if (buckets.active.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.ACTIVE, buckets.active))
             if (buckets.idle.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.IDLE, buckets.idle))
             if (buckets.rest.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.RECENT, buckets.rest))
+        }
+    }
+
+    /**
+     * Web-sidebar layout: global-pinned rows first (local pins stay in their
+     * directory group), then the running buckets when pin-in-progress floats
+     * connected rows, then the directory groups over everything left.
+     */
+    private fun buildGroupedSections(
+        rows: List<SessionRowUi>,
+        pinInProgress: Boolean,
+        isSearching: Boolean,
+    ): List<SessionSectionUi> {
+        val globalPinned = rows.filter { it.summary.globalPinned == true }
+        val floated = if (pinInProgress) {
+            val buckets = SessionBuckets.bucketSessionRows(rows - globalPinned.toSet())
+            buckets
+        } else {
+            null
+        }
+        val floatedRows = floated?.let { buckets ->
+            buckets.working + buckets.pending + buckets.active + buckets.idle
+        }.orEmpty()
+        val remaining = rows - globalPinned.toSet() - floatedRows.toSet()
+
+        val groups = if (isSearching) {
+            // Rows carry relevance order; groups keep first-encounter order.
+            SessionDirectoryGroups.groupRowsInEncounterOrder(remaining)
+        } else {
+            SessionDirectoryGroups.groupRows(remaining)
+        }
+
+        return buildList {
+            if (globalPinned.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.PINNED, globalPinned))
+            if (floated != null) {
+                if (floated.working.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.RUNNING, floated.working))
+                if (floated.pending.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.PENDING, floated.pending))
+                if (floated.active.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.ACTIVE, floated.active))
+                if (floated.idle.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.IDLE, floated.idle))
+            }
+            groups.forEach { group -> add(SessionSectionUi(SessionSectionKind.DIRECTORY, group.rows, group.title)) }
         }
     }
 
