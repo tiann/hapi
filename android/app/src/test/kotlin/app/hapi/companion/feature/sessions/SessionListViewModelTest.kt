@@ -172,11 +172,12 @@ private fun TestScope.buildViewModel(
     machines: FakeMachineStore = FakeMachineStore(),
     zoneProvider: () -> ZoneId = { ZoneId.of("UTC") },
     connection: MutableStateFlow<ConnectionState> = MutableStateFlow(ConnectionState(ConnectionState.Phase.Connected)),
+    lastSeenStore: LastSeenStore = LastSeenStore(backgroundScope),
 ): Triple<SessionListViewModel, FakeSessionStore, FakeMachineStore> {
     val viewModel = SessionListViewModel(
         sessionStore = sessions,
         machineStore = machines,
-        lastSeenStore = LastSeenStore(backgroundScope),
+        lastSeenStore = lastSeenStore,
         scope = backgroundScope,
         hubKey = "hub-test",
         zoneProvider = zoneProvider,
@@ -847,5 +848,75 @@ class SessionListViewModelTest {
         )
         val state = viewModel.uiState.first { it.rows.size == 3 }
         assertEquals(setOf("named-stub", "content", "agent-stub"), state.rows.map { it.id }.toSet())
+    }
+
+    // ------------------------------------------------------- unread system --
+
+    @Test
+    fun `unread lens hides seen rows keeps the open session and mark-all-read empties it`() = runTest {
+        // Rows start unread deterministically: content ahead of every watermark.
+        val sessions = FakeSessionStore().apply {
+            set(
+                summary("a", updatedAt = 100).copy(contentRevision = 100),
+                summary("b", updatedAt = 100).copy(contentRevision = 100),
+            )
+        }
+        val (viewModel) = buildViewModel(sessions)
+        assertEquals(2, viewModel.uiState.first { it.rows.size == 2 }.unreadCount)
+
+        viewModel.setUnreadOnly(true)
+        assertEquals(setOf("a", "b"), viewModel.uiState.first { it.rows.size == 2 }.rows.map { it.id }.toSet())
+
+        // Swipe mark-read acknowledges a; the open session stays visible under the lens.
+        viewModel.markRead("a")
+        viewModel.onSessionOpened("a")
+        val lensed = viewModel.uiState.first { it.unreadCount == 1 }
+        assertEquals(setOf("a", "b"), lensed.rows.map { it.id }.toSet()) // a kept by selection, b by unread
+        assertTrue(lensed.rows.first { it.id == "b" }.unread)
+
+        viewModel.markAllSessionsRead()
+        val emptied = viewModel.uiState.first { it.unreadCount == 0 }
+        assertEquals(listOf("a"), emptied.rows.map { it.id }) // only the open session survives the lens
+    }
+
+    @Test
+    fun `mark unread brings a read row back into the lens`() = runTest {
+        val sessions = FakeSessionStore().apply {
+            set(
+                summary("a", updatedAt = 100).copy(contentRevision = 100),
+                summary("b", updatedAt = 100).copy(contentRevision = 100),
+            )
+        }
+        val lastSeen = LastSeenStore(backgroundScope).apply {
+            markSeen("a", 100)
+            markSeen("b", 100)
+        }
+        val (viewModel) = buildViewModel(sessions, lastSeenStore = lastSeen)
+        assertEquals(0, viewModel.uiState.first { it.rows.size == 2 }.unreadCount)
+
+        viewModel.setUnreadOnly(true)
+        // Nothing unread — the lens keeps the list empty until a row is marked.
+        viewModel.uiState.first { it.rows.size == 0 }
+        viewModel.markSessionUnread("a")
+        val relit = viewModel.uiState.first { it.unreadCount == 1 }
+        assertEquals(listOf("a"), relit.rows.map { it.id })
+        assertTrue(relit.rows.single().unread)
+    }
+
+    @Test
+    fun `unread count stays hub-wide under a machine filter`() = runTest {
+        val sessions = FakeSessionStore().apply {
+            set(
+                summary("a", updatedAt = 100, machineId = "m1").copy(contentRevision = 100),
+                summary("b", updatedAt = 100, machineId = "m2").copy(contentRevision = 100),
+            )
+        }
+        val (viewModel) = buildViewModel(sessions)
+        viewModel.uiState.first { it.rows.size == 2 }
+        viewModel.setMachineFilter("m1")
+        val state = viewModel.uiState.first { it.activeMachineFilter == "m1" }
+        assertEquals(listOf("a"), state.rows.map { it.id })
+        assertEquals(2, state.unreadCount) // count ignores the machine scope, like the toolbar action
+        assertFalse(state.showUnreadOnly) // transient default off
     }
 }

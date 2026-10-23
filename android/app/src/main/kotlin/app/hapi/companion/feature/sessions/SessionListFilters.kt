@@ -1,5 +1,7 @@
 package app.hapi.companion.feature.sessions
 
+import app.hapi.data.store.LastSeenState
+import app.hapi.data.store.LastSeenStore
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SessionSummaryMetadata
 
@@ -89,4 +91,19 @@ object SessionListFilters {
     ): List<SessionSummary> =
         deduplicateSessionsByAgentId(sessions, selectedSessionId)
             .filter { shouldShowSessionInSidebar(it, selectedSessionId) }
+
+    /**
+     * Transient unread lens (`filterUnreadSessionsOnly`): hide sessions the
+     * operator has already seen. The open session stays visible. Not "needs
+     * attention" — just unread. Read-state comparison, exactly like the
+     * reference: an explicit mark-unread queues a manual intent, so
+     * manually-marked rows pass this filter too.
+     */
+    fun filterUnreadSessionsOnly(
+        sessions: List<SessionSummary>,
+        selectedSessionId: String?,
+        lastSeen: LastSeenState,
+    ): List<SessionSummary> = sessions.filter { session ->
+        session.id == selectedSessionId || LastSeenStore.isUnread(session, lastSeen)
+    }
 }

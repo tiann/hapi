@@ -1,5 +1,9 @@
 package app.hapi.companion.feature.sessions
 
+import app.hapi.data.store.LastSeenState
+import app.hapi.data.store.PendingRead
+import app.hapi.protocol.wire.SessionReadState
+import app.hapi.protocol.wire.SessionReadStateRequest
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SessionSummaryMetadata
 import app.hapi.protocol.wire.SummaryText
@@ -146,5 +150,47 @@ class SessionListFiltersTest {
         // Keyless rows keep their input order ahead of the dedup winners; the
         // caller re-applies the canonical sort afterwards.
         assertEquals(listOf("plain", "fresh"), result.map { it.id })
+    }
+
+    // ------------------------------------------------------------ unread lens --
+
+    @Test
+    fun `unread lens drops seen rows and keeps the selected session`() {
+        val sessions = listOf(
+            summary("seen", updatedAt = 100).copy(contentRevision = 100),
+            summary("unread", updatedAt = 200).copy(contentRevision = 200),
+            summary("stale", updatedAt = 50).copy(contentRevision = 50),
+        )
+        val state = LastSeenState(lastSeen = mapOf("seen" to 100L, "unread" to 150L, "stale" to 900L))
+        // Order-preserving filter: the selected row keeps its input position.
+        assertEquals(
+            listOf("seen", "unread"),
+            SessionListFilters.filterUnreadSessionsOnly(sessions, "seen", state).map { it.id },
+        )
+    }
+
+    @Test
+    fun `unread lens shows a row with a queued manual-unread intent`() {
+        // The queued `unread` request is the operator's newest choice at the
+        // observed version, so the row reads unread before the server acks.
+        val sessions = listOf(summary("marked", updatedAt = 300).copy(contentRevision = 300))
+        val marked = LastSeenState(
+            lastSeen = mapOf("marked" to 300L),
+            server = mapOf("marked" to SessionReadState(readRevision = 300, version = 2)),
+            pending = mapOf("marked" to PendingRead("p1", SessionReadStateRequest(type = "unread", expectedVersion = 2))),
+        )
+        assertEquals(
+            listOf("marked"),
+            SessionListFilters.filterUnreadSessionsOnly(sessions, null, marked).map { it.id },
+        )
+        // No mark and the watermark caught up: the row is seen.
+        val cleared = LastSeenState(
+            lastSeen = mapOf("marked" to 300L),
+            server = mapOf("marked" to SessionReadState(readRevision = 300, version = 3)),
+        )
+        assertEquals(
+            emptyList(),
+            SessionListFilters.filterUnreadSessionsOnly(sessions, null, cleared).map { it.id },
+        )
     }
 }
