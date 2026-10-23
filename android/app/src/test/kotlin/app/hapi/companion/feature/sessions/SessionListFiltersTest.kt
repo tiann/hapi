@@ -193,4 +193,24 @@ class SessionListFiltersTest {
             SessionListFilters.filterUnreadSessionsOnly(sessions, null, cleared).map { it.id },
         )
     }
+
+    // ---------------------------------------------------------- active lens --
+
+    @Test
+    fun `active lens drops inactive rows and keeps the selected session`() {
+        val sessions = listOf(
+            summary("live", updatedAt = 900, active = true),
+            summary("cold", updatedAt = 800),
+            summary("open", updatedAt = 700),
+        )
+        // Order-preserving filter; the open (inactive) row keeps its position.
+        assertEquals(
+            listOf("live", "open"),
+            SessionListFilters.filterActiveSessionsOnly(sessions, "open").map { it.id },
+        )
+        assertEquals(
+            listOf("live"),
+            SessionListFilters.filterActiveSessionsOnly(sessions, null).map { it.id },
+        )
+    }
 }
