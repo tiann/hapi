@@ -22,14 +22,18 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -68,8 +72,12 @@ import app.hapi.protocol.wire.TodoProgress
  * outside; taps surface through [onOpenSession].
  *
  * Inventory (mirrors the web sidebar semantics):
- * - offline banner over snapshot data, machine filter chips (≥ 2 machines),
- *   pull-to-refresh, empty state;
+ * - offline banner over snapshot data, search box (relevance-ranked, port of
+ *   the web sidebar search), unread lens chip + mark-all-read (hub-wide
+ *   count, confirm dialog), machine filter chips (≥ 2 machines),
+ *   pull-to-refresh, empty state + no-search-results + no-unread states;
+ * - duplicate agent-session views are collapsed and fresh "new session"
+ *   stubs hidden (ViewModel pipeline, web sidebar parity);
  * - pinned section first (the sort already puts globalPinned/pinned rows on
  *   top; a header + divider make the boundary visible);
  * - per row: flavor brand icon + title, spinner while a turn is in flight,
@@ -78,6 +86,7 @@ import app.hapi.protocol.wire.TodoProgress
  *   todo-progress chip, unread dot; disconnected rows are dimmed —
  *   connected is the resting state, so no presence dot (web parity);
  * - long-press → actions sheet: pin (none/project/global), rename (dialog),
+ *   mark unread (watermark parked behind the activity),
  *   reopen (inactive rows; navigates into the possibly-superseding id),
  *   archive, delete (confirm; 409 while active) — optimistic store updates;
  *   failures land in a snackbar (B-M2b + B-M3ce).
@@ -101,6 +110,7 @@ fun SessionListScreen(
     var sheetRow by remember { mutableStateOf<SessionRowUi?>(null) }
     var renameRow by remember { mutableStateOf<SessionRowUi?>(null) }
     var deleteRow by remember { mutableStateOf<SessionRowUi?>(null) }
+    var markAllReadOpen by remember { mutableStateOf(false) }
 
     DisposableEffect(viewModel) {
         viewModel.start()
@@ -144,6 +154,18 @@ fun SessionListScreen(
             if (state.isOffline) {
                 OfflineBanner()
             }
+            SearchField(
+                query = state.searchQuery,
+                onQueryChange = viewModel::setSearchQuery,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+            UnreadFilterRow(
+                showUnreadOnly = state.showUnreadOnly,
+                unreadCount = state.unreadCount,
+                onToggle = { viewModel.setUnreadOnly(!state.showUnreadOnly) },
+                onMarkAllRead = { markAllReadOpen = true },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            )
             state.machineFilters.find { it.id == state.activeMachineFilter }?.let { filter ->
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(stringResource(R.string.sessions_filter_summary, machineFilterLabel(filter)),
@@ -159,7 +181,11 @@ fun SessionListScreen(
                     .weight(1f),
             ) {
                 if (state.rows.isEmpty()) {
-                    EmptyState(hasLoaded = state.hasLoaded, isOffline = state.isOffline)
+                    when {
+                        state.isSearching -> SearchEmptyState(query = state.searchQuery)
+                        state.showUnreadOnly -> UnreadEmptyState()
+                        else -> EmptyState(hasLoaded = state.hasLoaded, isOffline = state.isOffline)
+                    }
                 } else {
                     SessionRows(
                         rows = state.rows,
@@ -207,6 +233,10 @@ fun SessionListScreen(
                 renameRow = row
                 sheetRow = null
             },
+            onMarkUnread = {
+                viewModel.markSessionUnread(row.id)
+                sheetRow = null
+            },
             onReopen = {
                 viewModel.reopenSession(row.id)
                 sheetRow = null
@@ -235,6 +265,16 @@ fun SessionListScreen(
                 deleteRow = null
             },
             onDismiss = { deleteRow = null },
+        )
+    }
+    if (markAllReadOpen) {
+        MarkAllReadDialog(
+            count = state.unreadCount,
+            onConfirm = {
+                viewModel.markAllSessionsRead()
+                markAllReadOpen = false
+            },
+            onDismiss = { markAllReadOpen = false },
         )
     }
 }
@@ -463,6 +503,108 @@ private fun OfflineBanner() {
     }
 }
 
+/** Live search box — filters + relevance-ranks the list (web sidebar parity). */
+@Composable
+private fun SearchField(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = onQueryChange,
+        modifier = modifier,
+        singleLine = true,
+        placeholder = { Text(stringResource(R.string.sessions_search_hint)) },
+        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+        trailingIcon = {
+            if (query.isNotEmpty()) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = stringResource(R.string.sessions_search_clear),
+                    modifier = Modifier.clickable { onQueryChange("") },
+                )
+            }
+        },
+    )
+}
+
+/** Search active but nothing matched — distinct from the plain empty list. */
+@Composable
+private fun SearchEmptyState(query: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = stringResource(R.string.sessions_search_no_results, query),
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Spacer(modifier = Modifier.size(8.dp))
+        Text(
+            text = stringResource(R.string.sessions_search_no_results_hint),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * Unread affordances (web toolbar parity): the transient unread-only lens
+ * chip and — only while something is unread — the mark-all-read button with
+ * the hub-wide count.
+ */
+@Composable
+private fun UnreadFilterRow(
+    showUnreadOnly: Boolean,
+    unreadCount: Int,
+    onToggle: () -> Unit,
+    onMarkAllRead: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
+        FilterChip(
+            selected = showUnreadOnly,
+            onClick = onToggle,
+            label = { Text(stringResource(R.string.sessions_unread_filter)) },
+        )
+        if (unreadCount > 0) {
+            TextButton(
+                onClick = onMarkAllRead,
+                modifier = Modifier.padding(start = 8.dp),
+            ) { Text(stringResource(R.string.sessions_mark_all_read, unreadCount)) }
+        }
+    }
+}
+
+/** Lens on but everything is read — distinct from the plain empty list. */
+@Composable
+private fun UnreadEmptyState() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = stringResource(R.string.sessions_unread_empty_title),
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Spacer(modifier = Modifier.size(8.dp))
+        Text(
+            text = stringResource(R.string.sessions_unread_empty_hint),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
 @Composable
 private fun EmptyState(hasLoaded: Boolean, isOffline: Boolean) {
     // verticalScroll keeps the pull-to-refresh gesture available even though
@@ -508,6 +650,7 @@ private fun SessionActionsSheet(
     onSetPinMode: (PinMode) -> Unit,
     onArchive: () -> Unit,
     onRename: () -> Unit,
+    onMarkUnread: () -> Unit,
     onReopen: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -531,6 +674,7 @@ private fun SessionActionsSheet(
             SheetAction(stringResource(R.string.sessions_action_pin_global)) { onSetPinMode(PinMode.Global) }
         }
         SheetAction(stringResource(R.string.sessions_action_rename), onClick = onRename)
+        SheetAction(stringResource(R.string.sessions_action_mark_unread), onClick = onMarkUnread)
         if (!summary.active) {
             SheetAction(stringResource(R.string.sessions_action_reopen), onClick = onReopen)
         }

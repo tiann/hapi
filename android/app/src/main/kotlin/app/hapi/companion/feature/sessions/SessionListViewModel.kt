@@ -1,11 +1,13 @@
 package app.hapi.companion.feature.sessions
 
 import app.hapi.data.api.ApiError
+import app.hapi.data.store.LastSeenState
 import app.hapi.data.store.LastSeenStore
 import app.hapi.data.store.MachineListStore
 import app.hapi.data.store.SessionListStore
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.SessionSummary
+import app.hapi.protocol.wire.sortSessionSummaries
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -66,8 +68,15 @@ data class SessionListUiState(
     val hasLoaded: Boolean,
     /** Last refresh failed — show the offline banner over snapshot data. */
     val isOffline: Boolean,
+    /** Live search-box text; blank = no filtering/ranking. */
+    val searchQuery: String = "",
+    /** Transient unread lens (web parity: not a persisted preference). */
+    val showUnreadOnly: Boolean = false,
+    /** Unread sessions on this hub (drives the mark-all-read affordance). */
+    val unreadCount: Int = 0,
 ) {
     val hasMachineFilters: Boolean get() = machineFilters.size >= 2
+    val isSearching: Boolean get() = searchQuery.isNotBlank()
 }
 
 /**
@@ -92,6 +101,9 @@ class SessionListViewModel(
     private val hubKey: String = "default",
 ) {
     private val machineFilter = MutableStateFlow<String?>(null)
+    private val searchQuery = MutableStateFlow("")
+    private val selectedSessionId = MutableStateFlow<String?>(null)
+    private val showUnreadOnly = MutableStateFlow(false)
     private val isRefreshing = MutableStateFlow(false)
     private val isOffline = MutableStateFlow(false)
     private val hasRefreshedOnce = MutableStateFlow(false)
@@ -137,22 +149,28 @@ class SessionListViewModel(
     }
 
     val uiState: StateFlow<SessionListUiState> = combine(
-        sessionStore.sessions,
-        machineStore.machines,
-        lastSeenStore.state,
-        machineFilter,
+        combine(sessionStore.sessions, machineStore.machines, lastSeenStore.state) { sessions, machines, lastSeen ->
+            Triple(sessions, machines, lastSeen)
+        },
+        combine(machineFilter, searchQuery, selectedSessionId) { filter, query, selected ->
+            Triple(filter, query, selected)
+        },
         combine(isRefreshing, isOffline, hasRefreshedOnce) { refreshing, offline, loaded ->
             Triple(refreshing, offline, loaded)
         },
-    ) { sessions, machines, lastSeen, filter, (refreshing, offline, refreshedOnce) ->
+        showUnreadOnly,
+    ) { (sessions, machines, lastSeen), (filter, query, selected), (refreshing, offline, refreshedOnce), unreadOnly ->
         buildUiState(
             sessions = sessions,
             machines = machines,
-            lastSeen = lastSeen.lastSeen,
+            lastSeenState = lastSeen,
             filter = filter,
+            searchQuery = query,
+            selectedSessionId = selected,
             isRefreshing = refreshing,
             isOffline = offline,
             hasLoaded = refreshedOnce || sessions.isNotEmpty(),
+            showUnreadOnly = unreadOnly,
         )
     }.stateIn(
         scope = scope,
@@ -220,8 +238,30 @@ class SessionListViewModel(
         machineFilter.value = machineId
     }
 
+    /** Search-box input; blank disables filtering/ranking entirely. */
+    fun setSearchQuery(query: String) {
+        searchQuery.value = query
+    }
+
+    /** Unread-lens toggle; transient — resets with the process like the web's. */
+    fun setUnreadOnly(enabled: Boolean) {
+        showUnreadOnly.value = enabled
+    }
+
+    /** Row action: park the watermark behind the current activity and pin the mark. */
+    fun markSessionUnread(sessionId: String) {
+        val summary = sessionStore.sessions.value.firstOrNull { it.id == sessionId } ?: return
+        lastSeenStore.markUnread(sessionId, summary.updatedAt)
+    }
+
+    /** Toolbar action: stamp every session on this hub as seen. */
+    fun markAllSessionsRead() {
+        lastSeenStore.markAllSeen(sessionStore.sessions.value)
+    }
+
     /** Call when navigating into a session: stamps the last-seen watermark. */
     fun onSessionOpened(sessionId: String) {
+        selectedSessionId.value = sessionId
         val summary = sessionStore.sessions.value.firstOrNull { it.id == sessionId } ?: return
         lastSeenStore.markSeen(sessionId, summary.updatedAt)
     }
@@ -309,12 +349,17 @@ class SessionListViewModel(
     private fun buildUiState(
         sessions: List<SessionSummary>,
         machines: List<Machine>,
-        lastSeen: Map<String, Long>,
+        lastSeenState: LastSeenState,
         filter: String?,
+        searchQuery: String,
+        selectedSessionId: String?,
         isRefreshing: Boolean,
         isOffline: Boolean,
         hasLoaded: Boolean,
+        showUnreadOnly: Boolean,
     ): SessionListUiState {
+        val lastSeen = lastSeenState.lastSeen
+        val manualUnread = lastSeenState.manualUnread
         val names = machines.mapNotNull { machine ->
             val metadata = machine.metadata ?: return@mapNotNull null
             val name = metadata.displayName?.trim()?.takeIf { it.isNotEmpty() }
@@ -356,11 +401,43 @@ class SessionListViewModel(
             sessions.filter { (it.metadata?.machineId ?: UNKNOWN_MACHINE_ID) == activeFilter }
         }
 
+        // Sidebar list body, matching the web list: collapse duplicate
+        // agent-session views (resume/reopen chains) and hide fresh "new
+        // session" stubs, then re-apply the canonical order — dedup regroups
+        // rows and must not leave the store's pinned/active ordering behind.
+        val prepared = sortSessionSummaries(
+            SessionListFilters.prepareSidebarSessions(visible, selectedSessionId),
+        )
+
+        // Text search: relevance ranking over the already-prepared corpus,
+        // pins kept contiguous ahead of ordinary rows.
+        val searched = if (searchQuery.isBlank()) {
+            prepared
+        } else {
+            val machineLabels = filters.associate { it.id to it.label }
+            val index = SessionListSearch.buildSessionSearchScoreIndex(prepared, searchQuery) { machineId ->
+                machineLabels[machineId ?: UNKNOWN_MACHINE_ID] ?: ""
+            }
+            SessionListSearch.sortSessionsBySearchRelevancePreservingPins(
+                prepared.filter { it.id in index.matchedIds },
+                index,
+            )
+        }
+
+        // Unread lens, after search like the web list: drop already-seen rows,
+        // keep the open session. Not applied to the machine-filter choices or
+        // the unread count below — both stay derived from the full list.
+        val lensed = if (!showUnreadOnly) {
+            searched
+        } else {
+            SessionListFilters.filterUnreadSessionsOnly(searched, selectedSessionId, lastSeen)
+        }
+
         // With one machine — or a machine filter active — every visible row
         // shares the machine, so repeating it per row is noise.
         val showMachine = filters.size >= 2 && activeFilter == null
 
-        val rows = visible.map { summary ->
+        val rows = lensed.map { summary ->
             val title = sessionTitle(summary)
             val summaryText = summary.metadata?.summary?.text?.takeIf { it.isNotBlank() }
             SessionRowUi(
@@ -372,7 +449,11 @@ class SessionListViewModel(
                     summary.metadata?.worktree?.let { add(it.name.ifBlank { it.branch }) }
                 }.takeIf { it.isNotEmpty() }?.joinToString(" · "),
                 flavor = summary.metadata?.flavor,
-                unread = LastSeenStore.isUnread(summary, lastSeen[summary.id] ?: 0),
+                unread = LastSeenStore.hasUnreadActivity(
+                    summary.updatedAt,
+                    lastSeen[summary.id] ?: 0,
+                    manualUnread[summary.id],
+                ),
                 machine = if (showMachine) filters.find { it.id == (summary.metadata?.machineId ?: UNKNOWN_MACHINE_ID) } else null,
             )
         }
@@ -381,6 +462,9 @@ class SessionListViewModel(
             rows = rows,
             machineFilters = filters,
             activeMachineFilter = activeFilter,
+            searchQuery = searchQuery,
+            showUnreadOnly = showUnreadOnly,
+            unreadCount = LastSeenStore.unreadSessionCount(sessions, lastSeen, manualUnread),
             isRefreshing = isRefreshing,
             hasLoaded = hasLoaded,
             isOffline = isOffline,
