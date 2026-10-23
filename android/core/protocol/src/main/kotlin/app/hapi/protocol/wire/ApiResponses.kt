@@ -108,6 +108,16 @@ data class ReopenSessionResponse(
 )
 
 /**
+ * `POST /api/sessions/:id/title-suggestion`
+ * (`SessionTitleSuggestionResponseSchema`, 1–255 chars). Hub-side AI title —
+ * gated by the hub health capability `titleSuggestion`.
+ */
+@Serializable
+data class SessionTitleSuggestionResponse(
+    val title: String,
+)
+
+/**
  * `DELETE /api/sessions/:id/messages/:messageId`
  * (`CancelMessageResponseSchema` — discriminated on [status]):
  * `'cancelled'` carries [localId]; `'invoked'` (too late) carries [message].
