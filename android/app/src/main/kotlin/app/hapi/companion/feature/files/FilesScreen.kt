@@ -17,7 +17,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -107,6 +109,16 @@ fun FilesScreen(
     val workspacePath by viewModel.workspacePath.collectAsState()
     var tab by rememberSaveable { mutableIntStateOf(0) }
 
+    // Per-tab list positions — the web `hapi-dir-scroll-{sessionId}:{tab}`
+    // sessionStorage twin. Hoisted above the tab switch so switching tabs
+    // keeps each list's position, and saveable (rememberLazyListState keeps
+    // index+offset) so they also survive configuration changes and process
+    // death while the files entry lives; a fresh navigation starts at the top
+    // (web loses the same state when the tab closes).
+    val changesListState = rememberLazyListState()
+    val browseListState = rememberLazyListState()
+    val searchListState = rememberLazyListState()
+
     // One file-action menu at a time (web keeps a page-level menu singleton).
     var menuPath by remember { mutableStateOf<String?>(null) }
     val menuActions = FileMenuActions(
@@ -182,7 +194,7 @@ fun FilesScreen(
                 Tab(selected = tab == 2, onClick = { tab = 2 }, text = { Text(stringResource(R.string.files_tab_search)) })
             }
             when (tab) {
-                0 -> ChangesTab(changes, onOpenFile, menuActions)
+                0 -> ChangesTab(changes, onOpenFile, menuActions, changesListState)
                 1 -> BrowseTab(
                     browse,
                     downloads,
@@ -193,6 +205,7 @@ fun FilesScreen(
                     onOpenFile = { path -> onOpenFile(path, null) },
                     onDownloadFile = viewModel::downloadFile,
                     menuActions = menuActions,
+                    listState = browseListState,
                 )
                 else -> SearchTab(
                     search,
@@ -201,6 +214,7 @@ fun FilesScreen(
                     onQueryChange = viewModel::setSearchQuery,
                     onOpenFile = { path -> onOpenFile(path, null) },
                     menuActions = menuActions,
+                    listState = searchListState,
                 )
             }
         }
@@ -276,6 +290,7 @@ private fun ChangesTab(
     state: ChangesUiState,
     onOpenFile: (path: String, staged: Boolean?) -> Unit,
     menuActions: FileMenuActions,
+    listState: LazyListState,
 ) {
     val colors = MaterialTheme.hapi
 
@@ -322,7 +337,7 @@ private fun ChangesTab(
                 if (status.stagedFiles.isEmpty() && status.unstagedFiles.isEmpty()) {
                     CenteredHint(stringResource(R.string.files_no_changes))
                 } else {
-                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                         if (status.stagedFiles.isNotEmpty()) {
                             item(key = "staged-header") {
                                 SectionHeader(stringResource(R.string.files_staged_header, status.stagedFiles.size))
@@ -444,6 +459,7 @@ private fun BrowseTab(
     onOpenFile: (path: String) -> Unit,
     onDownloadFile: (path: String, fileName: String) -> Unit,
     menuActions: FileMenuActions,
+    listState: LazyListState,
 ) {
     val colors = MaterialTheme.hapi
 
@@ -461,7 +477,7 @@ private fun BrowseTab(
             DirectorySortMenuButton(sort, onSetSort)
         }
 
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
             items(state.rows.size) { index ->
                 when (val row = state.rows[index]) {
                     is BrowseRow.Dir -> DirectoryRow(row, onToggleDirectory)
@@ -650,6 +666,7 @@ private fun SearchTab(
     onQueryChange: (String) -> Unit,
     onOpenFile: (path: String) -> Unit,
     menuActions: FileMenuActions,
+    listState: LazyListState,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
@@ -678,7 +695,7 @@ private fun SearchTab(
             state.loading -> CenteredProgress()
             state.error != null -> ErrorBanner(state.error)
             state.searched && state.results.isEmpty() -> CenteredHint(stringResource(R.string.files_search_no_match))
-            else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
+            else -> LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                 items(state.results, key = { it.fullPath }) { item ->
                     SearchResultRow(item, menuActions) { onOpenFile(item.fullPath) }
                 }

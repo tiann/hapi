@@ -13,6 +13,9 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -26,6 +29,8 @@ class FileViewerViewModelTest {
         staged: Boolean? = null,
         mode: ViewerMode? = null,
         line: Int? = null,
+        markdownPreviewSource: Flow<Boolean> = emptyFlow(),
+        onMarkdownPreviewChanged: suspend (Boolean) -> Unit = {},
     ): FileViewerViewModel = FileViewerViewModel(
         sessionId = "s1",
         path = path,
@@ -34,6 +39,8 @@ class FileViewerViewModelTest {
         focusLine = line,
         gateway = gateway,
         scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler)),
+        markdownPreviewSource = markdownPreviewSource,
+        onMarkdownPreviewChanged = onMarkdownPreviewChanged,
     )
 
     private fun b64(text: String): String = Base64.getEncoder().encodeToString(text.toByteArray())
@@ -157,6 +164,61 @@ class FileViewerViewModelTest {
 
         viewModel.setMarkdownPreview(false)
         assertEquals(false, viewModel.state.value.markdownPreview)
+    }
+
+    @Test
+    fun `markdown source applies the persisted choice until the user toggles`() = runTest {
+        // The VM seam takes preview values; Navigation flips the Source pref.
+        val previewSource = MutableStateFlow(true)
+        val gateway = FakeFilesGateway().apply {
+            diffFileResult = GitCommandResponse(success = true, stdout = "")
+            readFileResult = FileReadResponse(success = true, content = b64("# Title"))
+        }
+        val viewModel = buildViewModel(gateway, path = "README.md", markdownPreviewSource = previewSource)
+        viewModel.start()
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value.markdownPreview)
+
+        // A persisted Source choice applies while the user hasn't toggled.
+        previewSource.value = false
+        advanceUntilIdle()
+        assertEquals(false, viewModel.state.value.markdownPreview)
+
+        // First user tap wins; later source emissions are ignored. Both steps
+        // must genuinely emit (MutableStateFlow conflates equal values).
+        viewModel.setMarkdownPreview(true)
+        advanceUntilIdle()
+        previewSource.value = true
+        advanceUntilIdle()
+        previewSource.value = false
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value.markdownPreview)
+    }
+
+    @Test
+    fun `setMarkdownPreview persists via the hook and skips redundant writes`() = runTest {
+        val persisted = mutableListOf<Boolean>()
+        val gateway = FakeFilesGateway().apply {
+            diffFileResult = GitCommandResponse(success = true, stdout = "")
+            readFileResult = FileReadResponse(success = true, content = b64("# Title"))
+        }
+        val viewModel = buildViewModel(gateway, path = "README.md", onMarkdownPreviewChanged = { persisted += it })
+        viewModel.start()
+        advanceUntilIdle()
+        assertTrue(persisted.isEmpty())
+
+        viewModel.setMarkdownPreview(false)
+        advanceUntilIdle()
+        assertEquals(listOf(false), persisted)
+
+        // Same-value tap changes nothing and writes nothing.
+        viewModel.setMarkdownPreview(false)
+        advanceUntilIdle()
+        assertEquals(listOf(false), persisted)
+
+        viewModel.setMarkdownPreview(true)
+        advanceUntilIdle()
+        assertEquals(listOf(false, true), persisted)
     }
 
     @Test

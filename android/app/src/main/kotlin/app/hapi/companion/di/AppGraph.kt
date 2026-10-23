@@ -3,7 +3,10 @@ package app.hapi.companion.di
 import android.content.Context
 import androidx.datastore.preferences.preferencesDataStore
 import app.hapi.companion.fcm.RegisterDeviceWorker
+import app.hapi.companion.feature.files.DirectoryExpandPrefs
 import app.hapi.companion.feature.files.DirectorySortPrefs
+import app.hapi.companion.feature.files.MarkdownPreviewPrefs
+import app.hapi.companion.feature.files.filesDirExpandDataStore
 import app.hapi.companion.feature.newsession.DataStoreNewSessionPrefs
 import app.hapi.companion.feature.newsession.NewSessionPrefs
 import app.hapi.companion.feature.pairing.PairingClient
@@ -131,6 +134,19 @@ class AppGraph(context: Context) {
      * app-wide: one sort preference across every session's files screen.
      */
     val directorySortPrefs: DirectorySortPrefs = DirectorySortPrefs(appContext.hapiDataStore)
+
+    /**
+     * Browse-tree expanded directories, per hub+session (web sessionStorage
+     * `hapi-dir-expanded` twin); own DataStore — expand toggles are bursty
+     * writes (chat-drafts precedent).
+     */
+    val directoryExpandPrefs: DirectoryExpandPrefs = DirectoryExpandPrefs(appContext.filesDirExpandDataStore)
+
+    /**
+     * Markdown preview/source choice for the file viewer (web localStorage
+     * `hapi.filePreview.markdownMode.v1` twin), app-wide like the web.
+     */
+    val markdownPreviewPrefs: MarkdownPreviewPrefs = MarkdownPreviewPrefs(appContext.hapiDataStore)
 
     /** Language choice (B-M5a: applied via per-app locales; Settings writes it). */
     val languagePrefs: LanguagePrefs = LanguagePrefs(appContext.hapiDataStore)

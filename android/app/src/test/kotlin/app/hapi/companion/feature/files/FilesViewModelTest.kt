@@ -14,6 +14,7 @@ import app.hapi.protocol.wire.SessionSummaryMetadata
 import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -85,6 +86,8 @@ class FilesViewModelTest {
         initialSort: DirectorySort = DirectorySort.DEFAULT,
         sortSource: Flow<DirectorySort> = MutableStateFlow(initialSort),
         onSortChanged: suspend (DirectorySort) -> Unit = {},
+        expandedSource: Flow<Set<String>> = MutableStateFlow(emptySet()),
+        onExpandedChanged: suspend (Set<String>) -> Unit = {},
         sessions: Flow<List<SessionSummary>> = MutableStateFlow(emptyList()),
     ): FilesViewModel =
         FilesViewModel(
@@ -94,6 +97,8 @@ class FilesViewModelTest {
             initialSort = initialSort,
             sortSource = sortSource,
             onSortChanged = onSortChanged,
+            expandedSource = expandedSource,
+            onExpandedChanged = onExpandedChanged,
             sessions = sessions,
         )
 
@@ -405,6 +410,75 @@ class FilesViewModelTest {
         advanceUntilIdle()
         // First user choice wins; later source emissions are ignored.
         assertEquals(DirectorySort(DirectorySortField.NAME, DirectorySortDirection.DESC), viewModel.sort.value)
+    }
+
+    // -------------------------------------------------- expand persistence --
+
+    @Test
+    fun `toggleDirectory persists the expand set on every change`() = runTest {
+        val persisted = mutableListOf<Set<String>>()
+        val gateway = FakeFilesGateway().apply {
+            directories[null] = ListDirectoryResponse(
+                success = true,
+                entries = listOf(dir("src"), file("a.txt")),
+            )
+            directories["src"] = ListDirectoryResponse(
+                success = true,
+                entries = listOf(file("nested.txt")),
+            )
+        }
+        val viewModel = buildViewModel(gateway, onExpandedChanged = { persisted += it })
+        viewModel.start()
+        advanceUntilIdle()
+        assertTrue(persisted.isEmpty())
+
+        viewModel.toggleDirectory("src")
+        advanceUntilIdle()
+        assertTrue(viewModel.browse.value.rows.map { rowName(it) }.contains("nested.txt"))
+        assertEquals(listOf<Set<String>>(setOf("src")), persisted)
+
+        viewModel.toggleDirectory("src")
+        advanceUntilIdle()
+        assertFalse(viewModel.browse.value.rows.map { rowName(it) }.contains("nested.txt"))
+        // Web writes on every expand AND collapse (`writeExpanded` both branches).
+        assertEquals(listOf<Set<String>>(setOf("src"), emptySet()), persisted)
+    }
+
+    @Test
+    fun `expanded source restores the tree until the user toggles`() = runTest {
+        val source = MutableStateFlow<Set<String>>(emptySet())
+        val gateway = FakeFilesGateway().apply {
+            directories[null] = ListDirectoryResponse(
+                success = true,
+                entries = listOf(dir("src"), dir("docs")),
+            )
+            directories["src"] = ListDirectoryResponse(
+                success = true,
+                entries = listOf(file("nested.txt")),
+            )
+            directories["docs"] = ListDirectoryResponse(
+                success = true,
+                entries = listOf(file("guide.md")),
+            )
+        }
+        val viewModel = buildViewModel(gateway, expandedSource = source)
+        viewModel.start()
+        advanceUntilIdle()
+        assertEquals(listOf("docs", "src"), viewModel.browse.value.rows.map { rowName(it) })
+
+        // A persisted set applies on arrival and loads the restored directory.
+        source.value = setOf("src")
+        advanceUntilIdle()
+        assertTrue(viewModel.browse.value.rows.map { rowName(it) }.contains("nested.txt"))
+        assertTrue(gateway.listDirectoryCalls.contains("src"))
+
+        // First user toggle stops the persisted set from re-applying.
+        viewModel.toggleDirectory("src")
+        advanceUntilIdle()
+        assertFalse(viewModel.browse.value.rows.map { rowName(it) }.contains("nested.txt"))
+        source.value = setOf("src", "docs")
+        advanceUntilIdle()
+        assertFalse(viewModel.browse.value.rows.map { rowName(it) }.contains("guide.md"))
     }
 
     @Test

@@ -7,9 +7,11 @@ import java.util.Base64
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -98,6 +100,10 @@ class FileViewerViewModel(
     private val gateway: FilesGateway,
     private val scope: CoroutineScope,
     private val strings: FileViewerStrings = FileViewerStrings(),
+    /** Persisted preview/source choice (web localStorage `hapi.filePreview.markdownMode.v1`); applied until the user toggles. */
+    private val markdownPreviewSource: Flow<Boolean> = emptyFlow(),
+    /** Persistence hook invoked on user-driven preview/source toggles. */
+    private val onMarkdownPreviewChanged: suspend (Boolean) -> Unit = {},
 ) {
     private val stateFlow = MutableStateFlow(
         FileViewerUiState(
@@ -115,6 +121,8 @@ class FileViewerViewModel(
 
     /** Explicit mode choice (initial `mode` arg or a chip tap) disables auto-fallback. */
     private var modeChosen = initialMode != null
+    /** Explicit preview/source tap stops the persisted choice from re-applying (sort-source twin). */
+    private var markdownPreviewOverridden = false
     private var started = false
     private var diffJob: Job? = null
 
@@ -123,6 +131,13 @@ class FileViewerViewModel(
         started = true
         loadDiff()
         loadContent()
+        scope.launch {
+            markdownPreviewSource.collect { preview ->
+                if (!markdownPreviewOverridden && preview != stateFlow.value.markdownPreview) {
+                    stateFlow.update { it.copy(markdownPreview = preview) }
+                }
+            }
+        }
     }
 
     fun refresh() {
@@ -209,8 +224,12 @@ class FileViewerViewModel(
         loadDiff()
     }
 
+    /** Preview/source toggle: applies and persists (web `setMarkdownPreviewMode`). */
     fun setMarkdownPreview(preview: Boolean) {
+        markdownPreviewOverridden = true
+        if (stateFlow.value.markdownPreview == preview) return
         stateFlow.update { it.copy(markdownPreview = preview) }
+        scope.launch { onMarkdownPreviewChanged(preview) }
     }
 
     // ---------------------------------------------------------------- diff --

@@ -121,6 +121,10 @@ class FilesViewModel(
     private val sortSource: Flow<DirectorySort> = emptyFlow(),
     /** Persistence hook invoked on user-driven sort changes. */
     private val onSortChanged: suspend (DirectorySort) -> Unit = {},
+    /** Persisted expanded-directory set (web sessionStorage `hapi-dir-expanded-{sessionId}`); applied on start until the user toggles. */
+    private val expandedSource: Flow<Set<String>> = emptyFlow(),
+    /** Persistence hook invoked on every user-driven expand/collapse (web writes on each change). */
+    private val onExpandedChanged: suspend (Set<String>) -> Unit = {},
     /** Session summaries for the workspace root (absolute-path copies). */
     private val sessions: Flow<List<SessionSummary>> = emptyFlow(),
 ) {
@@ -158,6 +162,8 @@ class FilesViewModel(
     /** Latest raw search results, re-sorted in place when the sort changes. */
     private var latestResults: List<FileSearchItem> = emptyList()
     private var sortOverridden = false
+    /** First user expand/collapse stops the persisted set from re-applying. */
+    private var expandedOverridden = false
     private var started = false
 
     fun start() {
@@ -180,6 +186,18 @@ class FilesViewModel(
             sortSource.collect { persisted ->
                 if (!sortOverridden && persisted != sortState.value) {
                     applySort(persisted)
+                }
+            }
+        }
+        scope.launch {
+            // Web reads the expand set once on tree mount (DirectoryTree
+            // useState initializer); the async read applies it here, then
+            // loads each restored directory's children.
+            expandedSource.collect { stored ->
+                if (!expandedOverridden && stored != expanded.value) {
+                    expanded.value = stored
+                    rebuildBrowse()
+                    for (path in stored) loadDirectory(path)
                 }
             }
         }
@@ -263,6 +281,9 @@ class FilesViewModel(
     fun toggleDirectory(path: String) {
         val wasExpanded = path in expanded.value
         expanded.update { if (wasExpanded) it - path else it + path }
+        expandedOverridden = true
+        val current = expanded.value
+        scope.launch { onExpandedChanged(current) }
         if (!wasExpanded && nodes.value[path] == null) {
             loadDirectory(path)
         } else {
