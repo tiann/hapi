@@ -677,6 +677,7 @@ export default {
   'queuedMessages.steer': 'Доставить в текущий ход сейчас',
   'queuedMessages.steerFailed': 'Не удалось направить — сообщение остаётся в очереди',
   'queuedMessages.steerOutcomeUnknown': 'Исход доставки неизвестен — повторите или явно отмените',
+  'queuedMessages.compactionPending': 'Сжатие контекста — ожидание подтверждения приёма сообщения',
   'queuedMessages.retryOutcome': 'Повторить неопределённую доставку',
   'queuedMessages.retryFailed': 'Повтор не удался',
   'queuedMessages.retryMissing': 'Сообщение больше недоступно',

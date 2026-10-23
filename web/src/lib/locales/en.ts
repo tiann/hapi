@@ -675,6 +675,7 @@ export default {
   'queuedMessages.steer': 'Deliver into the running turn now',
   'queuedMessages.steerFailed': 'Steer failed — message stays queued',
   'queuedMessages.steerOutcomeUnknown': 'Delivery outcome unknown — retry or cancel explicitly',
+  'queuedMessages.compactionPending': 'Compacting context — waiting for message acceptance',
   'queuedMessages.retryOutcome': 'Retry uncertain delivery',
   'queuedMessages.retryFailed': 'Retry failed',
   'queuedMessages.retryMissing': 'The message is no longer available',

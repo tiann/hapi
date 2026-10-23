@@ -673,6 +673,7 @@ export default {
   'queuedMessages.steer': '立即插入当前回合',
   'queuedMessages.steerFailed': '插入失败，消息仍在队列中',
   'queuedMessages.steerOutcomeUnknown': '发送结果未知，请明确重试或取消',
+  'queuedMessages.compactionPending': '正在压缩上下文，等待消息接收确认',
   'queuedMessages.retryOutcome': '重试不确定的消息发送',
   'queuedMessages.retryFailed': '重试失败',
   'queuedMessages.retryMissing': '消息已不存在',

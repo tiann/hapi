@@ -54,6 +54,11 @@ export class SharedCodexRoot {
     private work: Promise<unknown> = Promise.resolve();
     private notifications = Promise.resolve();
     private currentTurn: string | undefined;
+    // Ephemeral observations only: dequeue/compaction never prove acceptance.
+    private readonly dequeuedInputs = new Set<string>();
+    private deliveryTurn?: string;
+    private compactingTurn?: string;
+    private publishedCompactionIds?: string;
     private latestTurn?: { id: string; status: string; planId?: string };
     private publishedPlanId: string | null | undefined;
     private submittingPlan = false;
@@ -137,6 +142,7 @@ export class SharedCodexRoot {
             this.projection?.reset();
             this.steeringActive = undefined;
             this.publishedPlanId = undefined;
+            this.publishedCompactionIds = undefined;
             void this.refresh().then(() => this.refreshChildren(false)).then(() => this.queue.replay())
                 .catch(error => logger.debug('[Codex shared] hub resync', error));
         });
@@ -186,7 +192,11 @@ export class SharedCodexRoot {
         if (this.threadId && this.threadId !== threadId) throw new Error('Cannot retarget a shared HAPI session');
         this.threadId = threadId;
         this.queue = new SharedCodexQueue(this.client, threadId, join(this.host.directory, `${this.session.sessionId}.queue.json`),
-            (ids, steered) => this.session.emitMessagesConsumed(ids, { steered }), ids => this.session.emitSteerIndeterminate(ids),
+            (ids, steered) => {
+                this.session.emitMessagesConsumed(ids, { steered });
+                for (const id of ids) this.dequeuedInputs.delete(id);
+                this.publishCompaction();
+            }, ids => this.session.emitSteerIndeterminate(ids),
             (id, input) => this.session.syncNativeQueuedMessage(id, input === null ? null : inputText(input)),
             ids => this.session.setSteerDeliveryState(ids, 'queued'));
         await this.queue.load();
@@ -197,7 +207,7 @@ export class SharedCodexRoot {
             // advertise a destructive operation we cannot make atomic yet.
             conversationHistory: { forkCurrent: true, forkAtMessage: true, rewindToMessage: false }
         } }));
-        this.session.updateAgentState(state => ({ ...state, controlledByUser: false, startingMode: undefined, codexPlanProposalId: null, requests: {},
+        this.session.updateAgentState(state => ({ ...state, controlledByUser: false, startingMode: undefined, codexPlanProposalId: null, codexCompactionPendingMessageIds: [], requests: {},
             completedRequests: { ...state.completedRequests, ...Object.fromEntries(Object.entries(state.requests ?? {}).map(([id, request]) =>
                 [id, { ...request, completedAt: Date.now(), status: 'canceled' as const }])) }
         }));
@@ -213,10 +223,20 @@ export class SharedCodexRoot {
         this.heartbeat = setInterval(() => this.alive(), 2_000); this.alive(); this.session.emitSessionReady();
     }
     private publishSteering(): void {
+        this.publishCompaction();
         const active = Boolean(this.currentTurn) && !this.stopping && !this.closed && !this.reconnecting && this.client.isInitialized();
         if (this.steeringActive === active) return;
         this.steeringActive = active;
         this.session.updateAgentState(state => ({ ...state, steeringActive: active }));
+    }
+    private publishCompaction(): void {
+        const active = this.compactingTurn && this.compactingTurn === this.currentTurn
+            && !this.closed && !this.stopping && !this.reconnecting && this.client.isInitialized();
+        const ids = active ? [...this.dequeuedInputs].filter(id => this.queue?.state(id) === 'unknown').sort() : [];
+        const key = JSON.stringify(ids);
+        if (key === this.publishedCompactionIds) return;
+        this.publishedCompactionIds = key;
+        this.session.updateAgentState(state => ({ ...state, codexCompactionPendingMessageIds: ids }));
     }
     private alive(): void {
         this.publishSteering();
@@ -273,8 +293,25 @@ export class SharedCodexRoot {
             const name = p.threadName ?? undefined; this.session.updateMetadata(metadata => ({ ...metadata, name }));
         }
         if (method === 'thread/archived') { await this.host.end(this, false); return; }
-        if (method === 'thread/queue/changed') await this.queue.reconcile();
-        await this.projection.notification(method, params, modelAtReceipt); this.alive();
+        // Process these in notification order: queue removal can precede turn/started.
+        // Older unknown input must not acquire a later turn's compaction status.
+        if (method === 'turn/started') {
+            const id = string(record(p.turn).id);
+            if (this.deliveryTurn && this.deliveryTurn !== id) this.dequeuedInputs.clear();
+            this.deliveryTurn = id;
+            this.compactingTurn = undefined;
+        }
+        if (method === 'turn/completed' && record(p.turn).id === this.deliveryTurn) {
+            this.dequeuedInputs.clear(); this.deliveryTurn = undefined; this.compactingTurn = undefined;
+        }
+        if (p.turnId === this.currentTurn && record(p.item).type === 'contextCompaction') {
+            if (method === 'item/started') this.compactingTurn = string(p.turnId);
+            if (method === 'item/completed') { this.compactingTurn = undefined; this.dequeuedInputs.clear(); }
+        }
+        if (method === 'thread/queue/changed') {
+            for (const id of await this.queue.reconcile()) this.dequeuedInputs.add(id);
+        }
+        await this.projection.notification(method, params, modelAtReceipt); this.publishCompaction(); this.alive();
     }
     async readThread(threadId = this.threadId): Promise<Record<string, unknown>> {
         let thread = record(record(await this.client.request('thread/read', { threadId, includeTurns: false })).thread);
@@ -342,7 +379,9 @@ export class SharedCodexRoot {
     }
     private async reconnect(): Promise<void> {
         if (this.closed || this.stopping || this.reconnecting || !this.threadId) return;
-        this.reconnecting = true; this.publishSteering(); this.publishPlan(); this.permissions.close();
+        this.reconnecting = true;
+        this.dequeuedInputs.clear(); this.deliveryTurn = undefined; this.compactingTurn = undefined;
+        this.publishSteering(); this.publishPlan(); this.permissions.close();
         try {
             while (!this.closed && !this.stopping) {
                 try {

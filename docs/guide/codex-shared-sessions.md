@@ -70,6 +70,13 @@ Native pending queue text is mirrored to HAPI. Native edits and acknowledged
 removals update it. Losing a queue entry during transport recovery is not proof
 that it was canceled or executed.
 
+During live context compaction, Web may show **Compacting context — waiting for
+message acceptance** for input just removed from the native queue. This is not
+an acceptance acknowledgement: only the native user-message event or history
+confirms consumption. Compaction completion, turn completion/interruption or a
+native disconnect withdraws this temporary status. Unconfirmed input retains
+the existing unknown-delivery recovery controls and is never automatically replayed.
+
 Codex arbitrates terminal/Web answers. A submitted Web answer is only a
 candidate. Native `serverRequest/resolved` closes the prompt with neutral
 **Resolved in Codex** status; HAPI does not invent the winner or their answer.
