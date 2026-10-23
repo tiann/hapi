@@ -120,6 +120,9 @@ internal fun ChatScreen(
     val codexPlanActions by viewModel.codexPlanActions.collectAsState()
     val queuedRows by viewModel.queuedRows.collectAsState()
     val configState by viewModel.config.collectAsState()
+    // Feeds both the overflow-menu badge and the delete dialog's scratchlist
+    // count hint (web `useScratchlistCount`, shared by the same store state).
+    val scratchlistCount by viewModel.scratchlistCount.collectAsState()
     val toolbarHeight = maxOf(64.dp, with(LocalDensity.current) { 24.sp.toDp() + 16.sp.toDp() } + 16.dp)
     var configSheetOpen by remember { mutableStateOf(false) }
     var renameDialogOpen by remember { mutableStateOf(false) }
@@ -288,7 +291,6 @@ internal fun ChatScreen(
                     IconButton(onClick = { configSheetOpen = true }) {
                         Icon(Icons.Filled.Settings, contentDescription = stringResource(R.string.chat_open_settings))
                     }
-                    val scratchlistCount by viewModel.scratchlistCount.collectAsState()
                     SessionOverflowMenu(
                         active = state.header.active,
                         onOpenFiles = onOpenFiles,
@@ -421,6 +423,9 @@ internal fun ChatScreen(
     if (deleteDialogOpen) {
         DeleteSessionDialog(
             sessionTitle = state.header.title,
+            // Web SessionHeader: entries present ⇒ "This will also delete N
+            // scratchlist entries." appended to the base description.
+            scratchlistCount = scratchlistCount,
             onConfirm = {
                 deleteDialogOpen = false
                 viewModel.deleteSession()
