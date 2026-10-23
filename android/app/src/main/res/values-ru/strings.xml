@@ -482,6 +482,11 @@
     <string name="scratchlist_delete">Удалить</string>
     <string name="scratchlist_cancel">Отмена</string>
     <string name="scratchlist_save">Сохранить</string>
+    <string name="scratchlist_action_move_up">Переместить заметку выше</string>
+    <string name="scratchlist_action_move_down">Переместить заметку ниже</string>
+    <string name="scratchlist_action_copy">Скопировать текст в буфер обмена (без изображений)</string>
+    <string name="scratchlist_action_copied">Скопировано!</string>
+    <string name="scratchlist_confirm_delete">Удалить эту запись? Это действие нельзя отменить.</string>
     <string name="scratchlist_retry">Повторить</string>
     <string name="scratchlist_load_failed">Не удалось загрузить заметки</string>
     <string name="scratchlist_check_connection">Проверьте подключение к хабу и попробуйте снова.</string>

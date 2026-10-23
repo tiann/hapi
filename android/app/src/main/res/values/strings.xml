@@ -482,6 +482,11 @@
     <string name="scratchlist_delete">Delete</string>
     <string name="scratchlist_cancel">Cancel</string>
     <string name="scratchlist_save">Save</string>
+    <string name="scratchlist_action_move_up">Move note up</string>
+    <string name="scratchlist_action_move_down">Move note down</string>
+    <string name="scratchlist_action_copy">Copy text to clipboard (not images)</string>
+    <string name="scratchlist_action_copied">Copied!</string>
+    <string name="scratchlist_confirm_delete">Delete this scratchlist entry? This cannot be undone.</string>
     <string name="scratchlist_retry">Retry</string>
     <string name="scratchlist_load_failed">Couldn’t load the scratchlist</string>
     <string name="scratchlist_check_connection">Check the connection to your hub and try again.</string>

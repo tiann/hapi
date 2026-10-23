@@ -486,6 +486,11 @@
     <string name="scratchlist_delete">删除</string>
     <string name="scratchlist_cancel">取消</string>
     <string name="scratchlist_save">保存</string>
+    <string name="scratchlist_action_move_up">上移笔记</string>
+    <string name="scratchlist_action_move_down">下移笔记</string>
+    <string name="scratchlist_action_copy">复制文本到剪贴板（不含图片）</string>
+    <string name="scratchlist_action_copied">已复制！</string>
+    <string name="scratchlist_confirm_delete">删除这条草稿？此操作无法撤销。</string>
     <string name="scratchlist_retry">重试</string>
     <string name="scratchlist_load_failed">无法加载草稿夹</string>
     <string name="scratchlist_check_connection">请检查与 hub 的连接后重试。</string>

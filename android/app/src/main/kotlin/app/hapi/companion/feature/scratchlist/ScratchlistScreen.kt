@@ -19,13 +19,18 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -57,6 +62,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextOverflow
@@ -65,15 +71,20 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import app.hapi.companion.R
 import app.hapi.companion.feature.sessions.localizedRelativeAge
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.companion.ui.theme.hapi
+import app.hapi.data.store.ScratchlistEntryOps
+import app.hapi.data.store.ScratchlistMoveDirection
 import app.hapi.protocol.wire.ScratchlistAttachment
 import app.hapi.protocol.wire.ScratchlistEntry
 import coil.ImageLoader
 import coil.compose.AsyncImage
+import kotlinx.coroutines.delay
 
 /**
  * Hub-scoped media plumbing for scratchlist attachments: the authed Coil
@@ -86,6 +97,9 @@ data class ScratchlistMedia(
 )
 
 private fun isImageMime(mimeType: String): Boolean = mimeType.startsWith("image/")
+
+/** Web `COPIED_FEEDBACK_MS`: how long the copied checkmark stays up. */
+private const val COPIED_FEEDBACK_MS: Long = 1_500
 
 /**
  * Per-session scratchlist workbench (B-M4d): notes/drafts parked until the
@@ -108,6 +122,26 @@ fun ScratchlistScreen(
     val editorState by viewModel.editor.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     var viewerAttachment by remember { mutableStateOf<ScratchlistAttachment?>(null) }
+
+    // Web `useCopiedFeedback`: single per-list copied entry, latest wins,
+    // auto-cleared after 1500 ms.
+    var copiedEntryId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(copiedEntryId) {
+        if (copiedEntryId != null) {
+            delay(COPIED_FEEDBACK_MS)
+            copiedEntryId = null
+        }
+    }
+
+    // Web `shouldConfirmDelete`: long texts confirm before delete, short ones go.
+    var confirmDeleteEntryId by remember { mutableStateOf<String?>(null) }
+    val requestDelete: (String, String?) -> Unit = { entryId, text ->
+        if (ScratchlistEntryOps.shouldConfirmDelete(text)) {
+            confirmDeleteEntryId = entryId
+        } else {
+            viewModel.deleteEntry(entryId)
+        }
+    }
 
     DisposableEffect(viewModel) {
         viewModel.start()
@@ -174,13 +208,28 @@ fun ScratchlistScreen(
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    items(state.entries, key = { it.entryId }) { entry ->
+                    itemsIndexed(state.entries, key = { _, entry -> entry.entryId }) { index, entry ->
                         ScratchlistEntryCard(
                             entry = entry,
                             media = media,
+                            canMoveUp = index > 0,
+                            canMoveDown = index < state.entries.lastIndex,
+                            copied = copiedEntryId == entry.entryId,
                             onOpen = { viewModel.openEditor(entry) },
                             onSendToComposer = onSendToComposer?.let { send -> { send(entry) } },
                             onOpenAttachment = { viewerAttachment = it },
+                            onMoveUp = { viewModel.moveEntry(entry.entryId, ScratchlistMoveDirection.UP) },
+                            onMoveDown = { viewModel.moveEntry(entry.entryId, ScratchlistMoveDirection.DOWN) },
+                            onCopy = {
+                                // Web `safeCopyToClipboard(entry.text)`: text only,
+                                // never attachments; silent no-op on failure.
+                                val copied = runCatching {
+                                    context.getSystemService(ClipboardManager::class.java)
+                                        .setPrimaryClip(ClipData.newPlainText("HAPI", entry.text))
+                                }.isSuccess
+                                if (copied) copiedEntryId = entry.entryId
+                            },
+                            onDelete = { requestDelete(entry.entryId, entry.text) },
                         )
                     }
                 }
@@ -195,7 +244,7 @@ fun ScratchlistScreen(
             onDismiss = viewModel::dismissEditor,
             onTextChange = viewModel::setEditorText,
             onSave = viewModel::saveEditor,
-            onDelete = editor.entryId?.let { id -> { viewModel.deleteEntry(id) } },
+            onDelete = editor.entryId?.let { id -> { requestDelete(id, editor.text) } },
             onAddAttachment = viewModel::addAttachment,
             onRemoveAttachment = viewModel::removeAttachment,
             onOpenAttachment = { viewerAttachment = it },
@@ -209,6 +258,29 @@ fun ScratchlistScreen(
             onDismiss = { viewerAttachment = null },
         )
     }
+
+    confirmDeleteEntryId?.let { entryId ->
+        AlertDialog(
+            onDismissRequest = { confirmDeleteEntryId = null },
+            title = { Text(stringResource(R.string.scratchlist_delete)) },
+            text = { Text(stringResource(R.string.scratchlist_confirm_delete)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmDeleteEntryId = null
+                        viewModel.deleteEntry(entryId)
+                    },
+                ) {
+                    Text(stringResource(R.string.scratchlist_delete), color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDeleteEntryId = null }) {
+                    Text(stringResource(R.string.scratchlist_cancel))
+                }
+            },
+        )
+    }
 }
 
 // ------------------------------------------------------------------- card --
@@ -217,9 +289,16 @@ fun ScratchlistScreen(
 private fun ScratchlistEntryCard(
     entry: ScratchlistEntry,
     media: ScratchlistMedia,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    copied: Boolean,
     onOpen: () -> Unit,
     onSendToComposer: (() -> Unit)?,
     onOpenAttachment: (ScratchlistAttachment) -> Unit,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
+    onCopy: () -> Unit,
+    onDelete: () -> Unit,
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -252,6 +331,41 @@ private fun ScratchlistEntryCard(
                     fontStyle = FontStyle.Italic,
                     color = MaterialTheme.hapi.hint,
                 )
+            }
+            // Web row actions: ↑/↓ (adjacent swap, disabled at the edges),
+            // copy (icon swaps to a check while copied), delete.
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                IconButton(onClick = onMoveUp, enabled = canMoveUp) {
+                    Icon(
+                        Icons.Filled.KeyboardArrowUp,
+                        contentDescription = stringResource(R.string.scratchlist_action_move_up),
+                    )
+                }
+                IconButton(onClick = onMoveDown, enabled = canMoveDown) {
+                    Icon(
+                        Icons.Filled.KeyboardArrowDown,
+                        contentDescription = stringResource(R.string.scratchlist_action_move_down),
+                    )
+                }
+                IconButton(onClick = onCopy) {
+                    if (copied) {
+                        Icon(
+                            Icons.Filled.Check,
+                            contentDescription = stringResource(R.string.scratchlist_action_copied),
+                        )
+                    } else {
+                        Icon(
+                            painterResource(R.drawable.ic_content_copy),
+                            contentDescription = stringResource(R.string.scratchlist_action_copy),
+                        )
+                    }
+                }
+                IconButton(onClick = onDelete) {
+                    Icon(
+                        Icons.Filled.Delete,
+                        contentDescription = stringResource(R.string.scratchlist_delete),
+                    )
+                }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -585,16 +699,30 @@ private fun ScratchlistEntryCardPreview() {
                 ScratchlistEntryCard(
                     entry = previewEntry,
                     media = ScratchlistMedia(imageLoader = null) { null },
+                    canMoveUp = true,
+                    canMoveDown = false,
+                    copied = false,
                     onOpen = {},
                     onSendToComposer = {},
                     onOpenAttachment = {},
+                    onMoveUp = {},
+                    onMoveDown = {},
+                    onCopy = {},
+                    onDelete = {},
                 )
                 ScratchlistEntryCard(
                     entry = previewEntry.copy(entryId = "e2", text = "", attachments = emptyList()),
                     media = ScratchlistMedia(imageLoader = null) { null },
+                    canMoveUp = false,
+                    canMoveDown = true,
+                    copied = true,
                     onOpen = {},
                     onSendToComposer = null,
                     onOpenAttachment = {},
+                    onMoveUp = {},
+                    onMoveDown = {},
+                    onCopy = {},
+                    onDelete = {},
                 )
             }
         }

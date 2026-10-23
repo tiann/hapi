@@ -15,6 +15,8 @@ import app.hapi.data.store.MachineListStore
 import app.hapi.data.store.MessageWindowStores
 import app.hapi.data.store.ScratchlistAttachmentDeleteResult
 import app.hapi.data.store.ScratchlistCreateResult
+import app.hapi.data.store.ScratchlistEntryOps
+import app.hapi.data.store.ScratchlistMoveDirection
 import app.hapi.data.store.ScratchlistSessionState
 import app.hapi.data.store.ScratchlistUploadResult
 import app.hapi.data.store.SessionDetailStore
@@ -391,6 +393,11 @@ private class FakeScratchlist : SessionScratchlist {
         attachments: List<app.hapi.protocol.wire.ScratchlistAttachment>?,
     ): Boolean = true
     override suspend fun deleteEntry(sessionId: String, entryId: String): Boolean = true
+    override fun moveEntry(sessionId: String, entryId: String, direction: ScratchlistMoveDirection) {
+        sessionState.value = sessionState.value.copy(
+            entries = ScratchlistEntryOps.moveEntry(sessionState.value.entries, entryId, direction)
+        )
+    }
     override suspend fun uploadAttachment(
         sessionId: String,
         filename: String,
