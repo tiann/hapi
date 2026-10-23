@@ -286,6 +286,7 @@
     <string name="sessions_action_delete">删除</string>
     <string name="sessions_error_pin">置顶操作失败</string>
     <string name="sessions_error_archive">归档失败</string>
+    <string name="sessions_error_summary">保存生成的标题失败</string>
     <string name="sessions_error_rename">重命名失败</string>
     <string name="sessions_error_delete">删除失败</string>
     <string name="sessions_error_reopen">重新打开失败</string>
@@ -293,6 +294,12 @@
     <string name="sessions_error_delete_active">会话仍在运行 — 请先归档</string>
     <string name="sessions_reopen_failed_fallback">无法重新打开会话</string>
     <string name="sessions_rename_title">重命名会话</string>
+    <string name="sessions_action_rename_save">保存</string>
+    <string name="sessions_action_copy_reference">复制引用</string>
+    <string name="sessions_reference_copied">引用已复制</string>
+    <string name="sessions_rename_suggest">生成</string>
+    <string name="sessions_rename_suggesting">生成中…</string>
+    <string name="sessions_rename_suggest_error">标题生成失败，请重试。</string>
     <string name="sessions_rename_placeholder">会话名称</string>
     <string name="sessions_delete_title">删除会话？</string>
     <string name="sessions_delete_message">“%1$s”及其消息历史将从 hub 永久移除。运行中的会话必须先归档。</string>

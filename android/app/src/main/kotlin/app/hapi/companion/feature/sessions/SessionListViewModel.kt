@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
@@ -115,6 +116,8 @@ data class SessionListUiState(
     val pinInProgress: Boolean = false,
     /** Unread sessions on this hub (drives the mark-all-read affordance). */
     val unreadCount: Int = 0,
+    /** Hub advertises the AI title-suggestion endpoint (health capability). */
+    val titleSuggestionAvailable: Boolean = false,
 ) {
     val hasMachineFilters: Boolean get() = machineFilters.size >= 2
     val hasActiveFilters: Boolean get() = activeMachineFilter != null || dateRange != null
@@ -180,6 +183,10 @@ class SessionListViewModel(
     /** Reopen succeeded — navigate into this (possibly superseding) session id. */
     val reopened: SharedFlow<String> = _reopened.asSharedFlow()
 
+    /** Hub capability `titleSuggestion` (drives the rename dialog's Suggest button). */
+    private val _titleSuggestionAvailable = MutableStateFlow(false)
+    val titleSuggestionAvailable: StateFlow<Boolean> = _titleSuggestionAvailable.asStateFlow()
+
     private var refreshJob: Job? = null
 
     init {
@@ -202,6 +209,12 @@ class SessionListViewModel(
 
             }
         }
+        // Health capability once per scope (store caches across calls); the
+        // dialog hides Suggest when the hub lacks the endpoint (web parity:
+        // `App.tsx` gates on `capabilities.titleSuggestion`).
+        scope.launch {
+            runCatching { _titleSuggestionAvailable.value = sessionStore.titleSuggestionAvailable() }
+        }
     }
 
     val uiState: StateFlow<SessionListUiState> = combine(
@@ -220,13 +233,15 @@ class SessionListViewModel(
             combine(showUnreadOnly, showActiveOnly, pinInProgress) { unreadOnly, activeOnly, pinning ->
                 Triple(unreadOnly, activeOnly, pinning)
             },
-        ) { chrome, refreshedAt, status, lenses ->
+            _titleSuggestionAvailable,
+        ) { chrome, refreshedAt, status, lenses, titleSuggestion ->
             chrome.copy(
                 lastRefreshedAt = refreshedAt,
                 connectionStatus = status,
                 showUnreadOnly = lenses.first,
                 showActiveOnly = lenses.second,
                 pinInProgress = lenses.third,
+                titleSuggestionAvailable = titleSuggestion,
             )
         },
     ) { (sessions, machines, lastSeen), (filter, query, selected), chrome ->
@@ -244,6 +259,7 @@ class SessionListViewModel(
             showUnreadOnly = chrome.showUnreadOnly,
             showActiveOnly = chrome.showActiveOnly,
             pinInProgress = chrome.pinInProgress,
+            titleSuggestionAvailable = chrome.titleSuggestionAvailable,
         ).copy(lastRefreshedAt = chrome.lastRefreshedAt, connectionStatus = chrome.connectionStatus)
     }.stateIn(
         scope = scope,
@@ -458,6 +474,28 @@ class SessionListViewModel(
         }
     }
 
+    /** `PATCH /sessions/:id/summary` with optimistic `metadata.summary`; failures surface on [errors]. */
+    fun updateSessionSummary(sessionId: String, text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        scope.launch {
+            try {
+                sessionStore.updateSessionSummary(sessionId, trimmed)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                _errors.tryEmit(SessionListError.SummaryFailed(sessionId, error.message))
+            }
+        }
+    }
+
+    /**
+     * `POST /sessions/:id/title-suggestion` — suspending (the rename dialog
+     * awaits it inline); failures propagate to the caller's catch → dialog error.
+     */
+    suspend fun suggestSessionTitle(sessionId: String): String =
+        sessionStore.suggestSessionTitle(sessionId)
+
     /** `DELETE /sessions/:id` with optimistic removal; 409 while active gets explicit wording (in the UI). */
     fun deleteSession(sessionId: String) {
         scope.launch {
@@ -511,6 +549,7 @@ class SessionListViewModel(
         showUnreadOnly: Boolean,
         showActiveOnly: Boolean = false,
         pinInProgress: Boolean = false,
+        titleSuggestionAvailable: Boolean = false,
     ): SessionListUiState {
         // Use one current zone for both filtering and the calendar activity marks.
         val zone = zoneProvider()
@@ -639,6 +678,7 @@ class SessionListViewModel(
             showActiveOnly = showActiveOnly,
             pinInProgress = pinInProgress,
             unreadCount = LastSeenStore.unreadSessionCount(sessions, lastSeen),
+            titleSuggestionAvailable = titleSuggestionAvailable,
             isRefreshing = isRefreshing,
             hasLoaded = hasLoaded,
             isOffline = isOffline,
@@ -658,6 +698,7 @@ class SessionListViewModel(
         val showUnreadOnly: Boolean = false,
         val showActiveOnly: Boolean = false,
         val pinInProgress: Boolean = false,
+        val titleSuggestionAvailable: Boolean = false,
     )
 
     /**
@@ -767,6 +808,7 @@ sealed interface SessionListError {
     data class PinFailed(override val sessionId: String, override val message: String?) : SessionListError
     data class ArchiveFailed(override val sessionId: String, override val message: String?) : SessionListError
     data class RenameFailed(override val sessionId: String, override val message: String?) : SessionListError
+    data class SummaryFailed(override val sessionId: String, override val message: String?) : SessionListError
     data class DeleteFailed(
         override val sessionId: String,
         override val message: String?,

@@ -10,6 +10,9 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -177,6 +180,7 @@ fun SessionListScreen(
                     is SessionListError.PinFailed -> R.string.sessions_error_pin
                     is SessionListError.ArchiveFailed -> R.string.sessions_error_archive
                     is SessionListError.RenameFailed -> R.string.sessions_error_rename
+                    is SessionListError.SummaryFailed -> R.string.sessions_error_summary
                     is SessionListError.DeleteFailed -> R.string.sessions_error_delete
                     is SessionListError.ReopenFailed -> R.string.sessions_error_reopen
                     is SessionListError.MachinesRefreshFailed -> R.string.sessions_error_machines
@@ -271,11 +275,20 @@ fun SessionListScreen(
     }
 
     sheetRow?.let { row ->
+        val context = LocalContext.current
         SessionActionsSheet(
             row = row,
             onDismiss = { sheetRow = null },
             onSetPinMode = { mode ->
                 viewModel.setPinMode(row.id, mode)
+                sheetRow = null
+            },
+            onCopyReference = {
+                // Web's Copy-reference: hub-path prose + steer suffix, never a share link.
+                val text = SessionReference.buildSessionReferenceText(row.title, row.id)
+                context.getSystemService(ClipboardManager::class.java)
+                    .setPrimaryClip(ClipData.newPlainText("HAPI", text))
+                Toast.makeText(context, R.string.sessions_reference_copied, Toast.LENGTH_SHORT).show()
                 sheetRow = null
             },
             onArchive = {
@@ -312,6 +325,15 @@ fun SessionListScreen(
                 renameRow = null
             },
             onDismiss = { renameRow = null },
+            onSuggestTitle = if (state.titleSuggestionAvailable) {
+                { viewModel.suggestSessionTitle(row.id) }
+            } else {
+                null
+            },
+            onConfirmGenerated = { text ->
+                viewModel.updateSessionSummary(row.id, text)
+                renameRow = null
+            },
         )
     }
     deleteRow?.let { row ->
@@ -922,6 +944,7 @@ private fun SessionActionsSheet(
     row: SessionRowUi,
     onDismiss: () -> Unit,
     onSetPinMode: (PinMode) -> Unit,
+    onCopyReference: () -> Unit,
     onArchive: () -> Unit,
     onRename: () -> Unit,
     onMarkUnread: () -> Unit,
@@ -952,12 +975,16 @@ private fun SessionActionsSheet(
             SheetAction(stringResource(R.string.sessions_action_pin_global)) { onSetPinMode(PinMode.Global) }
         }
         SheetAction(stringResource(R.string.sessions_action_rename), onClick = onRename)
+        SheetAction(stringResource(R.string.sessions_action_copy_reference), onClick = onCopyReference)
         SheetAction(stringResource(R.string.sessions_action_mark_unread), onClick = onMarkUnread)
-        if (!summary.active) {
+        // Web's SessionActionMenu gating: a connected session offers Archive;
+        // a disconnected one offers Reopen + Delete (delete is 409 while active).
+        if (summary.active) {
+            SheetAction(stringResource(R.string.sessions_action_archive), destructive = true, onClick = onArchive)
+        } else {
             SheetAction(stringResource(R.string.sessions_action_reopen), onClick = onReopen)
+            SheetAction(stringResource(R.string.sessions_action_delete), destructive = true, onClick = onDelete)
         }
-        SheetAction(stringResource(R.string.sessions_action_archive), destructive = true, onClick = onArchive)
-        SheetAction(stringResource(R.string.sessions_action_delete), destructive = true, onClick = onDelete)
         Spacer(modifier = Modifier.size(16.dp))
     }
 }

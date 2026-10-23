@@ -75,6 +75,23 @@ private class FakeSessionStore : SessionListStore {
         renameFailure?.let { throw it }
     }
 
+    var summaryFailure: Exception? = null
+    override suspend fun updateSessionSummary(sessionId: String, text: String) {
+        record("summary:$sessionId:$text")
+        summaryFailure?.let { throw it }
+    }
+
+    var suggestedTitle: String = "Suggested title"
+    var suggestFailure: Exception? = null
+    override suspend fun suggestSessionTitle(sessionId: String): String {
+        record("suggest:$sessionId")
+        suggestFailure?.let { throw it }
+        return suggestedTitle
+    }
+
+    var titleSuggestion = true
+    override suspend fun titleSuggestionAvailable(): Boolean = titleSuggestion
+
     var deleteFailure: Exception? = null
     override suspend fun deleteSession(sessionId: String) {
         record("delete:$sessionId")
@@ -522,6 +539,39 @@ class SessionListViewModelTest {
         viewModel.renameSession("s1", "Another")
         collector.join()
         assertTrue(seen is SessionListError.RenameFailed)
+    }
+
+    @Test
+    fun `title suggestion availability reaches ui state from the hub capability`() = runTest {
+        val (on, _, _) = buildViewModel()
+        assertEquals(true, on.uiState.first { it.titleSuggestionAvailable }.titleSuggestionAvailable)
+
+        val sessions = FakeSessionStore()
+        sessions.titleSuggestion = false
+        val (off, _, _) = buildViewModel(sessions)
+        assertEquals(false, off.uiState.first { !it.titleSuggestionAvailable }.titleSuggestionAvailable)
+    }
+
+    @Test
+    fun `suggest title passes through and generated summaries route to the summary endpoint`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(summary("s1"))
+        sessions.suggestedTitle = "  AI title  "
+
+        // Raw passthrough — the dialog trims (web trims in RenameSessionDialog too).
+        assertEquals("  AI title  ", viewModel.suggestSessionTitle("s1"))
+        assertTrue("suggest:s1" in sessions.calls.value)
+
+        // The rename dialog's generated path: unedited suggestion → summary.
+        viewModel.updateSessionSummary("s1", " AI title ")
+        sessions.calls.first { "summary:s1:AI title" in it }
+
+        var seen: SessionListError? = null
+        val collector = launch { seen = viewModel.errors.first() }
+        sessions.summaryFailure = RuntimeException("boom")
+        viewModel.updateSessionSummary("s1", "Again")
+        collector.join()
+        assertTrue(seen is SessionListError.SummaryFailed)
     }
 
     @Test
