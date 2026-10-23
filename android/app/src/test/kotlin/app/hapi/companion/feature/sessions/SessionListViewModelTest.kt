@@ -5,6 +5,7 @@ import app.hapi.data.store.LastSeenStore
 import app.hapi.data.store.MachineListStore
 import app.hapi.data.store.SessionListStore
 import app.hapi.protocol.wire.Machine
+import app.hapi.protocol.wire.MachineHealth
 import app.hapi.protocol.wire.MachineMetadata
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SessionSummaryMetadata
@@ -153,7 +154,7 @@ private fun summary(
     effort = null,
 )
 
-private fun machine(id: String, host: String, displayName: String? = null): Machine = Machine(
+private fun machine(id: String, host: String, displayName: String? = null, health: MachineHealth? = null): Machine = Machine(
     id = id,
     namespace = "default",
     seq = 1,
@@ -170,6 +171,7 @@ private fun machine(id: String, host: String, displayName: String? = null): Mach
     metadataVersion = 1,
     runnerState = null,
     runnerStateVersion = 1,
+    health = health,
 )
 
 private fun TestScope.buildViewModel(
@@ -296,6 +298,28 @@ class SessionListViewModelTest {
         val updated = viewModel.uiState.first { it.rows.size == 7 }.machineFilters
         assertEquals(first.map { it.id }, updated.map { it.id })
         assertEquals(3, updated.first { it.id == "z" }.sessionCount)
+    }
+
+    @Test
+    fun `machine filters surface machine health with worst tone`() = runTest {
+        val (viewModel, sessions, machines) = buildViewModel()
+        machines.backing.value = listOf(
+            machine("hot", "hot", "Hotbox", health = MachineHealth(collectedAt = 1, cpuPercent = 12.4, memoryPercent = 95.2)),
+            machine("quiet", "quiet", "Quietbox", health = MachineHealth(collectedAt = 1, cpuPercent = 3.1, memoryPercent = 40.0)),
+        )
+        sessions.set(
+            summary("h1", machineId = "hot"),
+            summary("q1", machineId = "quiet"),
+            summary("ghost", machineId = "nobody"),
+        )
+        val filters = viewModel.uiState.first { it.rows.size == 3 }.machineFilters.associateBy { it.id }
+        // Health mirrors the web `presentMachineHealth` compact form: CPU · Mem
+        // with worst tone across the two percents.
+        assertEquals("CPU 12% · Mem 95%", filters.getValue("hot").health?.label)
+        assertEquals(MachineHealthUi.Tone.CRITICAL, filters.getValue("hot").health?.tone)
+        assertEquals(MachineHealthUi.Tone.OK, filters.getValue("quiet").health?.tone)
+        // No machine row / machine without a health snapshot → no label at all.
+        assertNull(filters.getValue("nobody").health)
     }
 
     @Test
