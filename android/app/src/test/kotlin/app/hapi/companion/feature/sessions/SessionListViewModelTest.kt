@@ -4,6 +4,7 @@ import app.hapi.data.store.LastSeenStore
 import app.hapi.data.store.MachineListStore
 import app.hapi.data.store.SessionListStore
 import app.hapi.protocol.wire.Machine
+import app.hapi.protocol.wire.MachineHealth
 import app.hapi.protocol.wire.MachineMetadata
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SessionSummaryMetadata
@@ -104,28 +105,40 @@ private fun summary(
     summaryText: String? = null,
     path: String = "/repo/app",
     worktree: WorktreeMetadata? = null,
+    flavor: String = "claude",
+    agentSessionId: String? = null,
+    pinned: Boolean? = null,
+    hasConversationContent: Boolean = true,
+    thinking: Boolean = false,
+    pending: Int = 0,
+    backgroundTasks: Int = 0,
+    lifecycleState: String? = null,
 ): SessionSummary = SessionSummary(
     id = id,
     active = active,
-    thinking = false,
+    thinking = thinking,
     activeAt = 0,
     updatedAt = updatedAt,
+    hasConversationContent = hasConversationContent,
+    pinned = pinned,
+    backgroundTaskCount = backgroundTasks,
+    pendingRequestsCount = pending,
     metadata = SessionSummaryMetadata(
         name = name,
         path = path,
         machineId = machineId,
         summary = summaryText?.let { SummaryText(it) },
-        flavor = "claude",
+        flavor = flavor,
         worktree = worktree,
+        agentSessionId = agentSessionId,
+        lifecycleState = lifecycleState,
     ),
     metadataVersion = 0,
     agentStateVersion = 0,
     todosUpdatedAt = 0,
     todoProgress = null,
-    pendingRequestsCount = 0,
     pendingRequestKinds = emptyList(),
     pendingRequests = emptyList(),
-    backgroundTaskCount = 0,
     futureScheduledMessageCount = 0,
     nextScheduledAt = null,
     model = null,
@@ -133,7 +146,7 @@ private fun summary(
     effort = null,
 )
 
-private fun machine(id: String, host: String, displayName: String? = null): Machine = Machine(
+private fun machine(id: String, host: String, displayName: String? = null, health: MachineHealth? = null): Machine = Machine(
     id = id,
     namespace = "default",
     seq = 1,
@@ -150,16 +163,18 @@ private fun machine(id: String, host: String, displayName: String? = null): Mach
     metadataVersion = 1,
     runnerState = null,
     runnerStateVersion = 1,
+    health = health,
 )
 
 private fun TestScope.buildViewModel(
     sessions: FakeSessionStore = FakeSessionStore(),
     machines: FakeMachineStore = FakeMachineStore(),
+    lastSeenStore: LastSeenStore = LastSeenStore(backgroundScope),
 ): Triple<SessionListViewModel, FakeSessionStore, FakeMachineStore> {
     val viewModel = SessionListViewModel(
         sessionStore = sessions,
         machineStore = machines,
-        lastSeenStore = LastSeenStore(backgroundScope),
+        lastSeenStore = lastSeenStore,
         scope = backgroundScope,
         hubKey = "hub-test",
     )
@@ -204,6 +219,28 @@ class SessionListViewModelTest {
         val updated = viewModel.uiState.first { it.rows.size == 7 }.machineFilters
         assertEquals(first.map { it.id }, updated.map { it.id })
         assertEquals(3, updated.first { it.id == "z" }.sessionCount)
+    }
+
+    @Test
+    fun `machine filters surface machine health with worst tone`() = runTest {
+        val (viewModel, sessions, machines) = buildViewModel()
+        machines.backing.value = listOf(
+            machine("hot", "hot", "Hotbox", health = MachineHealth(collectedAt = 1, cpuPercent = 12.4, memoryPercent = 95.2)),
+            machine("quiet", "quiet", "Quietbox", health = MachineHealth(collectedAt = 1, cpuPercent = 3.1, memoryPercent = 40.0)),
+        )
+        sessions.set(
+            summary("h1", machineId = "hot"),
+            summary("q1", machineId = "quiet"),
+            summary("ghost", machineId = "nobody"),
+        )
+        val filters = viewModel.uiState.first { it.rows.size == 3 }.machineFilters.associateBy { it.id }
+        // Health mirrors the web `presentMachineHealth` compact form: CPU · Mem
+        // with worst tone across the two percents.
+        assertEquals("CPU 12% · Mem 95%", filters.getValue("hot").health?.label)
+        assertEquals(MachineHealthUi.Tone.CRITICAL, filters.getValue("hot").health?.tone)
+        assertEquals(MachineHealthUi.Tone.OK, filters.getValue("quiet").health?.tone)
+        // No machine row / machine without a health snapshot → no label at all.
+        assertNull(filters.getValue("nobody").health)
     }
 
     @Test
@@ -440,5 +477,220 @@ class SessionListViewModelTest {
         val error = seen
         assertTrue(error is SessionListError.ReopenFailed)
         assertEquals("Cannot reopen (missing: cursorSessionId)", error.message)
+    }
+
+    // --------------------------------------------- search / dedup / stubs --
+
+    @Test
+    fun `search filters rows, reports no results, and clears back to the full list`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("s1", updatedAt = 900, name = "Home Assistant setup"),
+            summary("s2", updatedAt = 800, name = "Refactor parser"),
+        )
+        viewModel.uiState.first { it.rows.size == 2 }
+
+        viewModel.setSearchQuery("home ass")
+        var state = viewModel.uiState.first { it.isSearching }
+        assertEquals(listOf("s1"), state.rows.map { it.id })
+
+        viewModel.setSearchQuery("zzz")
+        state = viewModel.uiState.first { it.isSearching && it.rows.isEmpty() }
+
+        viewModel.setSearchQuery("")
+        state = viewModel.uiState.first { !it.isSearching }
+        assertEquals(2, state.rows.size)
+    }
+
+    @Test
+    fun `search ranks a title boundary hit above a newer path-only match`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("path-hit", updatedAt = 900, name = "Unrelated", path = "/repo/home-lab"),
+            summary("title-hit", updatedAt = 100, name = "Home Assistant setup"),
+        )
+        viewModel.setSearchQuery("home")
+        val state = viewModel.uiState.first { it.isSearching && it.rows.size == 2 }
+        // Recency alone would order [path-hit, title-hit]; the title weight +
+        // boundary bonus must outrank it.
+        assertEquals(listOf("title-hit", "path-hit"), state.rows.map { it.id })
+    }
+
+    @Test
+    fun `duplicate agent-session views collapse to the newest view`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("stale", updatedAt = 500, agentSessionId = "agent-1", name = "Old view"),
+            summary("fresh", updatedAt = 900, agentSessionId = "agent-1", name = "New view"),
+            summary("other", updatedAt = 700, agentSessionId = "agent-2", name = "Other"),
+        )
+        val state = viewModel.uiState.first { it.rows.size == 2 }
+        assertEquals(listOf("fresh", "other"), state.rows.map { it.id })
+    }
+
+    @Test
+    fun `the active view wins dedup even when older`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("old-active", updatedAt = 100, active = true, agentSessionId = "agent-1", name = "Old"),
+            summary("new-idle", updatedAt = 900, agentSessionId = "agent-1", name = "New"),
+        )
+        val state = viewModel.uiState.first { it.rows.size == 1 }
+        assertEquals("old-active", state.rows.single().id)
+    }
+
+    @Test
+    fun `same agent id across flavors stays two rows`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("claude-view", updatedAt = 900, flavor = "claude", agentSessionId = "shared-1", name = "Claude view"),
+            summary("codex-view", updatedAt = 800, flavor = "codex", agentSessionId = "shared-1", name = "Codex view"),
+        )
+        val state = viewModel.uiState.first { it.rows.size == 2 }
+        assertEquals(setOf("claude-view", "codex-view"), state.rows.map { it.id }.toSet())
+    }
+
+    @Test
+    fun `fresh empty-session stubs hide until they gain a title signal`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("stub", hasConversationContent = false),
+            summary("named-stub", hasConversationContent = false, name = "Named"),
+            summary("content", hasConversationContent = true),
+            summary("agent-stub", hasConversationContent = false, agentSessionId = "agent-9"),
+        )
+        val state = viewModel.uiState.first { it.rows.size == 3 }
+        assertEquals(setOf("named-stub", "content", "agent-stub"), state.rows.map { it.id }.toSet())
+    }
+
+    // ------------------------------------------------------- unread system --
+
+    @Test
+    fun `unread lens hides seen rows keeps the open session and mark-all-read empties it`() = runTest {
+        // Sessions preset BEFORE the ViewModel: the SSE collector's first
+        // emission is the preset list, drop(1) skips it — no baseline seeding,
+        // so every row starts unread deterministically.
+        val sessions = FakeSessionStore().apply { set(summary("a", updatedAt = 100), summary("b", updatedAt = 100)) }
+        val (viewModel) = buildViewModel(sessions)
+        assertEquals(2, viewModel.uiState.first { it.rows.size == 2 }.unreadCount)
+
+        viewModel.setUnreadOnly(true)
+        assertEquals(setOf("a", "b"), viewModel.uiState.first { it.rows.size == 2 }.rows.map { it.id }.toSet())
+
+        viewModel.onSessionOpened("a") // stamps a's watermark; stays visible as the open session
+        val lensed = viewModel.uiState.first { it.unreadCount == 1 }
+        assertEquals(setOf("a", "b"), lensed.rows.map { it.id }.toSet()) // a kept by selection, b by unread
+        assertTrue(lensed.rows.first { it.id == "b" }.unread)
+
+        viewModel.markAllSessionsRead()
+        val emptied = viewModel.uiState.first { it.unreadCount == 0 }
+        assertEquals(listOf("a"), emptied.rows.map { it.id }) // only the open session survives the lens
+    }
+
+    @Test
+    fun `mark unread brings a read row back into the lens`() = runTest {
+        val sessions = FakeSessionStore().apply { set(summary("a", updatedAt = 100), summary("b", updatedAt = 100)) }
+        val lastSeen = LastSeenStore(backgroundScope).apply {
+            markSeen("a", 100)
+            markSeen("b", 100)
+        }
+        val (viewModel) = buildViewModel(sessions, lastSeenStore = lastSeen)
+        assertEquals(0, viewModel.uiState.first { it.rows.size == 2 }.unreadCount)
+
+        viewModel.setUnreadOnly(true)
+        // Nothing unread — the lens keeps the list empty until a row is marked.
+        viewModel.uiState.first { it.unreadCount == 0 }
+        viewModel.markSessionUnread("a")
+        val relit = viewModel.uiState.first { it.unreadCount == 1 }
+        assertEquals(listOf("a"), relit.rows.map { it.id })
+        assertTrue(relit.rows.single().unread)
+    }
+
+    @Test
+    fun `unread count stays hub-wide under a machine filter`() = runTest {
+        val sessions = FakeSessionStore().apply {
+            set(summary("a", updatedAt = 100, machineId = "m1"), summary("b", updatedAt = 100, machineId = "m2"))
+        }
+        val (viewModel) = buildViewModel(sessions)
+        viewModel.uiState.first { it.rows.size == 2 }
+        viewModel.setMachineFilter("m1")
+        val state = viewModel.uiState.first { it.activeMachineFilter == "m1" }
+        assertEquals(listOf("a"), state.rows.map { it.id })
+        assertEquals(2, state.unreadCount) // count ignores the machine scope, like the toolbar action
+        assertFalse(state.showUnreadOnly) // transient default off
+    }
+
+    // ------------------------------------------------------ active / buckets --
+
+    @Test
+    fun `active lens hides inactive rows keeps the open session and blocks search resurrection`() = runTest {
+        val sessions = FakeSessionStore().apply {
+            set(
+                summary("live", updatedAt = 900, active = true, name = "Live build"),
+                summary("cold", updatedAt = 800, name = "Cold storage"),
+            )
+        }
+        val (viewModel) = buildViewModel(sessions)
+        viewModel.uiState.first { it.rows.size == 2 }
+
+        viewModel.setActiveOnly(true)
+        var state = viewModel.uiState.first { it.showActiveOnly }
+        assertEquals(listOf("live"), state.rows.map { it.id })
+        assertFalse(state.showUnreadOnly) // the lenses are independent
+
+        // Search narrows further — it never resurrects a hidden inactive row.
+        viewModel.setSearchQuery("cold")
+        state = viewModel.uiState.first { it.isSearching }
+        assertTrue(state.rows.isEmpty())
+
+        // The open session stays visible even though inactive (web desc: "The
+        // session you have open stays visible").
+        viewModel.setSearchQuery("")
+        viewModel.onSessionOpened("cold")
+        state = viewModel.uiState.first { it.rows.size == 2 }
+        assertEquals(setOf("live", "cold"), state.rows.map { it.id }.toSet())
+    }
+
+    @Test
+    fun `pin in progress regroups connected rows into running bucket sections`() = runTest {
+        val sessions = FakeSessionStore().apply {
+            set(
+                summary("gone", updatedAt = 900),
+                summary("quiet", updatedAt = 850, active = true),
+                summary("pin", updatedAt = 800, active = true, pinned = true),
+                summary("think", updatedAt = 700, active = true, thinking = true),
+                summary("wait", updatedAt = 600, active = true, pending = 2),
+                summary("zombie", updatedAt = 500, active = true, lifecycleState = SESSION_LIFECYCLE_IDLE),
+            )
+        }
+        val (viewModel) = buildViewModel(sessions)
+
+        // Default off: pinned prefix + one plain body section (old layout).
+        val plain = viewModel.uiState.first { it.rows.size == 6 }
+        assertFalse(plain.pinInProgress)
+        assertEquals(listOf(SessionSectionKind.PINNED, SessionSectionKind.RECENT), plain.sections.map { it.kind })
+        assertEquals(listOf("pin"), plain.sections.first().rows.map { it.id })
+
+        viewModel.setPinInProgress(true)
+        val grouped = viewModel.uiState.first { it.pinInProgress }
+        assertEquals(
+            listOf(
+                SessionSectionKind.PINNED,
+                SessionSectionKind.RUNNING,
+                SessionSectionKind.PENDING,
+                SessionSectionKind.ACTIVE,
+                SessionSectionKind.IDLE,
+                SessionSectionKind.RECENT,
+            ),
+            grouped.sections.map { it.kind },
+        )
+        assertEquals(listOf("pin"), grouped.sections[0].rows.map { it.id })
+        assertEquals(listOf("think"), grouped.sections[1].rows.map { it.id })
+        assertEquals(listOf("wait"), grouped.sections[2].rows.map { it.id })
+        assertEquals(listOf("quiet"), grouped.sections[3].rows.map { it.id })
+        assertEquals(listOf("zombie"), grouped.sections[4].rows.map { it.id })
+        assertEquals(listOf("gone"), grouped.sections[5].rows.map { it.id })
+        // Same rows, regrouped — sections are a view over `rows`.
+        assertEquals(grouped.rows.size, grouped.sections.sumOf { it.rows.size })
     }
 }
