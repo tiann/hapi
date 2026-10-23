@@ -39,6 +39,20 @@ Dictation and voice-assistant provider keys can also be added from **Settings â†
 - `TRANSCRIPTION_BASE_URL` and `TRANSCRIPTION_MODEL` - OpenAI-compatible/local transcription endpoint and model.
 - `TRANSCRIPTION_API_KEY` - Optional bearer token for the OpenAI-compatible endpoint.
 
+### Optional (session title generation)
+
+On-demand session title generation uses an OpenAI-compatible Chat Completions
+provider. Configure `titleProvider.baseUrl`, `titleProvider.apiKey`, and
+`titleProvider.model`, and optionally `titleProvider.timeoutMs` in
+`$HAPI_HOME/settings.json` (default `~/.hapi/settings.json`),
+or set the corresponding `HAPI_TITLE_PROVIDER_BASE_URL`,
+`HAPI_TITLE_PROVIDER_API_KEY`, `HAPI_TITLE_PROVIDER_MODEL`, and optionally
+`HAPI_TITLE_PROVIDER_TIMEOUT_MS` environment variables. For providers that use
+reasoning tokens, `HAPI_TITLE_PROVIDER_MAX_TOKENS` can raise or lower the
+completion-token budget (default: 256). The timeout defaults to 10 seconds and
+environment values override settings-file values per field. API keys remain
+Hub-side and are never sent to the browser.
+
 ### Optional
 
 - `HAPI_LISTEN_HOST` - HTTP bind address (default: 127.0.0.1).
