@@ -248,6 +248,14 @@
     <string name="sessions_unread_filter">Только непрочитанные</string>
     <string name="sessions_unread_empty_title">Непрочитанных сессий нет</string>
     <string name="sessions_unread_empty_hint">Вы всё прочитали. Сессии появляются здесь, когда приходит новая активность.</string>
+    <string name="sessions_active_filter">Только активные</string>
+    <string name="sessions_pin_in_progress">В работе</string>
+    <string name="sessions_active_empty_title">Активных сессий нет</string>
+    <string name="sessions_active_empty_hint">Здесь появляются сессии, подключённые к раннеру.</string>
+    <string name="sessions_section_running">Выполняется</string>
+    <string name="sessions_section_pending">Ожидает</string>
+    <string name="sessions_section_active">Активна</string>
+    <string name="sessions_section_idle">Простаивает (только keepalive)</string>
     <string name="sessions_mark_all_read">Отметить все прочитанными (%1$d)</string>
     <string name="sessions_mark_all_read_title">Отметить все как прочитанные?</string>
     <string name="sessions_mark_all_read_description">Это отметит %1$d непрочитанных сессий как прочитанные на этом устройстве.</string>
