@@ -34,6 +34,8 @@ import app.hapi.companion.feature.chat.composer.DictationController
 import app.hapi.companion.feature.chat.composer.HapiDictationApi
 import app.hapi.companion.feature.chat.composer.MediaRecorderDictation
 import app.hapi.companion.feature.files.ApiFilesGateway
+import app.hapi.companion.feature.files.DirectorySortPrefs
+import app.hapi.companion.feature.files.FilePaths
 import app.hapi.companion.feature.files.FileViewerScreen
 import app.hapi.companion.feature.files.FileViewerStrings
 import app.hapi.companion.feature.files.FileViewerViewModel
@@ -336,17 +338,39 @@ fun HapiNavigation() {
             val sessionId = entry.arguments?.getString("sessionId") ?: return@composable
             val hubGraph = activeHubGraph ?: return@composable
             val filesContext = LocalContext.current
+            val appContext = filesContext.applicationContext
             val holder = viewModel<FilesViewModelHolder>(
                 key = "files:${hubGraph.hubUrl}:$sessionId",
                 factory = viewModelFactory {
-                    FilesViewModelHolder(hubGraph, sessionId, filesStrings(filesContext))
+                    FilesViewModelHolder(hubGraph, sessionId, filesStrings(filesContext), graph.directorySortPrefs)
                 },
             )
+            // "Add to composer" reuses the chat ViewModel of the entry below
+            // this route (same holder key + the chat entry as owner), so the
+            // backticked reference lands in the live composer draft, not a
+            // stale one. Guarded: without a chat below, the menu item hides
+            // (web `canAddToComposer` twin).
+            val chatEntry = remember(entry) {
+                runCatching { navController.getBackStackEntry(Routes.CHAT) }.getOrNull()
+            }
+            val chatHolder = chatEntry?.let { owner ->
+                viewModel<ChatViewModelHolder>(
+                    viewModelStoreOwner = owner,
+                    key = "chat:${hubGraph.hubUrl}:$sessionId",
+                    factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext) },
+                )
+            }
             FilesScreen(
                 viewModel = holder.viewModel,
                 onBack = { navController.popBackStack() },
                 onOpenFile = { path, staged ->
                     navController.navigate(Routes.fileViewer(sessionId, path, staged = staged))
+                },
+                onAddFileToComposer = chatHolder?.let { chat ->
+                    { path ->
+                        chat.viewModel.insertComposerText(FilePaths.formatFileReference(path))
+                        navController.popBackStack()
+                    }
                 },
             )
         }
@@ -625,6 +649,7 @@ private class FilesViewModelHolder(
     hubGraph: HubGraph,
     sessionId: String,
     strings: FilesStrings,
+    sortPrefs: DirectorySortPrefs,
 ) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -633,6 +658,9 @@ private class FilesViewModelHolder(
         gateway = ApiFilesGateway(hubGraph.session.api),
         scope = scope,
         strings = strings,
+        sortSource = sortPrefs.sort,
+        onSortChanged = { sort -> sortPrefs.setSort(sort) },
+        sessions = hubGraph.sessionStore.sessions,
     )
 
     override fun onCleared() {
@@ -823,12 +851,15 @@ private fun filesStrings(context: Context) = FilesStrings(
     unknownError = context.getString(R.string.files_error_unknown),
     listDirectoryFailed = context.getString(R.string.files_error_list),
     searchFailed = context.getString(R.string.files_error_search),
+    downloadFailedTitle = context.getString(R.string.files_download_failed),
+    downloadFailedDefault = context.getString(R.string.files_download_failed_default),
 )
 
 /** Resource-resolved [FileViewerStrings] (B-M5a Strings seam). */
 private fun fileViewerStrings(context: Context) = FileViewerStrings(
     loadDiffFailed = context.getString(R.string.files_error_load_diff),
     readFileFailed = context.getString(R.string.files_error_read_file),
+    downloadFailedDefault = context.getString(R.string.files_download_failed_default),
 )
 
 /** Resource-resolved [NewSessionStrings] (B-M5a Strings seam). */

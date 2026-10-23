@@ -466,6 +466,25 @@
     <string name="files_viewer_empty">Этот файл пуст</string>
     <string name="files_viewer_binary">Двоичный файл — предпросмотр недоступен</string>
     <string name="files_viewer_image_unsupported">Предпросмотр для этого формата изображения недоступен</string>
+    <string name="files_download">Скачать файл</string>
+    <string name="files_download_named">Скачать %1$s</string>
+    <string name="files_download_failed">Скачивание не удалось</string>
+    <string name="files_download_failed_default">Не удалось скачать файл.</string>
+    <string name="files_sort">Сортировка файлов</string>
+    <string name="files_sort_by">Сортировать по</string>
+    <string name="files_sort_name">Имя</string>
+    <string name="files_sort_modified">Время изменения</string>
+    <string name="files_sort_size">Размер файла</string>
+    <string name="files_sort_name_asc">От А до Я</string>
+    <string name="files_sort_name_desc">От Я до А</string>
+    <string name="files_sort_oldest">Сначала старые</string>
+    <string name="files_sort_newest">Сначала новые</string>
+    <string name="files_sort_smallest">Сначала маленькие</string>
+    <string name="files_sort_largest">Сначала большие</string>
+    <string name="files_menu_title">Действия с файлом</string>
+    <string name="files_menu_copy_path">Копировать путь</string>
+    <string name="files_menu_copy_absolute_path">Копировать абсолютный путь</string>
+    <string name="files_menu_add_to_composer">Добавить в редактор</string>
 
     <!-- Scratchlist workbench (B-M4d) -->
     <string name="scratchlist_back">Назад</string>

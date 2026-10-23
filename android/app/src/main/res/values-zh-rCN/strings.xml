@@ -470,6 +470,25 @@
     <string name="files_viewer_empty">文件为空</string>
     <string name="files_viewer_binary">二进制文件 — 无法预览</string>
     <string name="files_viewer_image_unsupported">此图片格式无法预览</string>
+    <string name="files_download">下载文件</string>
+    <string name="files_download_named">下载 %1$s</string>
+    <string name="files_download_failed">下载失败</string>
+    <string name="files_download_failed_default">文件下载失败。</string>
+    <string name="files_sort">文件排序</string>
+    <string name="files_sort_by">排序依据</string>
+    <string name="files_sort_name">名称</string>
+    <string name="files_sort_modified">修改时间</string>
+    <string name="files_sort_size">文件大小</string>
+    <string name="files_sort_name_asc">A 到 Z</string>
+    <string name="files_sort_name_desc">Z 到 A</string>
+    <string name="files_sort_oldest">最早优先</string>
+    <string name="files_sort_newest">最新优先</string>
+    <string name="files_sort_smallest">最小优先</string>
+    <string name="files_sort_largest">最大优先</string>
+    <string name="files_menu_title">文件操作</string>
+    <string name="files_menu_copy_path">复制路径</string>
+    <string name="files_menu_copy_absolute_path">复制绝对路径</string>
+    <string name="files_menu_add_to_composer">添加到对话框</string>
 
     <!-- Scratchlist workbench (B-M4d) -->
     <string name="scratchlist_back">返回</string>
