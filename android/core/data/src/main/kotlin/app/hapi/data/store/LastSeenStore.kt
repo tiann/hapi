@@ -123,7 +123,13 @@ class LastSeenStore(
             val server = SessionReadState.merge(current.server[sessionId], serverState) ?: SessionReadState()
             val seen = maxOf(current.lastSeen[sessionId] ?: 0, server.readRevision)
             val pending = current.pending[sessionId]
-            val manualUnread = server.manualUnread && pending?.request?.expectedVersion != server.version
+            // `effective` (web): a pending intent at the observed version decides
+            // the manual state — a queued unread keeps the row unread until its
+            // own acknowledge replaces it, exactly like the reference.
+            val manualUnread = when {
+                pending != null && pending.request.expectedVersion == server.version -> pending.request.type == "unread"
+                else -> server.manualUnread
+            }
             if (seen >= revision && !manualUnread) return@commit current
             val request = SessionReadStateRequest(type = "read", readRevision = maxOf(seen, revision), expectedVersion = serverState?.version ?: server.version)
             current.copy(
@@ -133,6 +139,47 @@ class LastSeenStore(
             )
         }
         sync()
+    }
+
+    /**
+     * `markSessionUnread` (web `sessionLastSeen.ts`): park an explicit-unread
+     * request in the outbox against the observed server state. Optimistic —
+     * [isUnread] honors the pending intent at the observed version — and
+     * durable: the mark survives a restart until the hub acknowledges it,
+     * exactly like the reference's enqueue.
+     */
+    suspend fun markUnread(sessionId: String, serverState: SessionReadState? = null) {
+        if (closed || namespace == null || sessionId.isEmpty()) return
+        commit { current ->
+            val server = SessionReadState.merge(current.server[sessionId], serverState) ?: SessionReadState()
+            current.copy(
+                server = current.server + (sessionId to server),
+                pending = current.pending + (sessionId to PendingRead(
+                    UUID.randomUUID().toString(),
+                    SessionReadStateRequest(type = "unread", expectedVersion = server.version),
+                )),
+            )
+        }
+        sync()
+    }
+
+    /**
+     * `markAllSessionsSeen`: stamp every supplied session that still reads
+     * unread — an explicit mark or unseen content — as read at its content
+     * head. Returns how many were stamped, deduped by id like the
+     * reference's per-id unique map; each iteration consults the live state,
+     * so the count matches exactly the set it cleared.
+     */
+    suspend fun markAllSeen(sessions: Iterable<SessionSummary>): Int {
+        val unique = LinkedHashMap<String, SessionSummary>()
+        for (session in sessions) if (session.id.isNotEmpty()) unique[session.id] = session
+        var count = 0
+        for (session in unique.values) {
+            if (!isUnread(session, _state.value)) continue
+            markSeen(session.id, session.contentRevision ?: 0, session.readState)
+            count += 1
+        }
+        return count
     }
 
     private fun sync(): Unit = synchronized(syncLock) {
@@ -177,8 +224,25 @@ class LastSeenStore(
         fun isUnread(summary: SessionSummary, state: LastSeenState): Boolean {
             val server = SessionReadState.merge(state.server[summary.id], summary.readState) ?: SessionReadState()
             val pending = state.pending[summary.id]
-            val manual = server.manualUnread && pending?.request?.expectedVersion != server.version
+            // `effective`: a pending intent at the observed version wins — a
+            // queued read discounts a server manual mark, a queued unread
+            // marks the row even before the hub acknowledges.
+            val manual = when {
+                pending != null && pending.request.expectedVersion == server.version -> pending.request.type == "unread"
+                else -> server.manualUnread
+            }
             return manual || (summary.contentRevision ?: 0) > maxOf(server.readRevision, state.lastSeen[summary.id] ?: 0)
+        }
+
+        /**
+         * `getUnreadSessionCount`: unread sessions among [sessions] against
+         * one state snapshot (bulk toolbar counting). Repeated ids collapse
+         * to one row — the reference builds a per-id map first.
+         */
+        fun unreadSessionCount(sessions: Iterable<SessionSummary>, state: LastSeenState): Int {
+            val unique = LinkedHashMap<String, SessionSummary>()
+            for (session in sessions) if (session.id.isNotEmpty()) unique[session.id] = session
+            return unique.values.count { isUnread(it, state) }
         }
     }
 }
