@@ -22,6 +22,7 @@ import app.hapi.data.store.StoreSyncTargets
 import app.hapi.data.store.WindowSnapshots
 import app.hapi.protocol.wire.SyncEvent
 import coil.ImageLoader
+import coil.decode.SvgDecoder
 import java.io.Closeable
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
@@ -142,8 +143,11 @@ class HubGraph(
      * Loads `/api/sessions/:id/generated-images/:imageId` (and any other hub
      * URL) through the authed image client: JWT interceptor + silent 401
      * re-auth + the per-hub 256 MB disk cache (images are immutable + ETagged).
+     * `SvgDecoder` rides along so SVG documents (generated images, image-mime
+     * scratchlist attachments) render like the web's `<img>` treatment.
      */
     val imageLoader: ImageLoader = ImageLoader.Builder(context)
+        .components { add(SvgDecoder.Factory()) }
         .okHttpClient(session.imageClient)
         .build()
 

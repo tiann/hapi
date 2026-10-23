@@ -3,7 +3,6 @@ package app.hapi.companion.feature.scratchlist
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -54,7 +53,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -63,11 +61,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import android.content.Context
 import app.hapi.companion.R
 import app.hapi.companion.feature.sessions.localizedRelativeAge
+import app.hapi.companion.ui.components.ZoomableImage
+import app.hapi.companion.ui.components.ZoomableImageContent
+import app.hapi.companion.ui.components.ZoomableImageViewerDialog
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.wire.ScratchlistAttachment
@@ -464,7 +463,7 @@ private fun ScratchlistEditorSheet(
 
 // ----------------------------------------------------------------- viewer --
 
-/** Full-screen attachment viewer (the generated-image viewer pattern). */
+/** Full-screen attachment viewer (the shared zoomable image viewer). */
 @Composable
 private fun AttachmentViewerDialog(
     attachment: ScratchlistAttachment,
@@ -476,28 +475,10 @@ private fun AttachmentViewerDialog(
         onDismiss()
         return
     }
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black.copy(alpha = 0.92f))
-                .clickable { onDismiss() },
-            contentAlignment = Alignment.Center,
-        ) {
-            AsyncImage(
-                model = url,
-                imageLoader = media.imageLoader,
-                contentDescription = attachment.filename,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(8.dp),
-            )
-        }
-    }
+    ZoomableImageViewerDialog(
+        images = listOf(ZoomableImage(ZoomableImageContent.Loaded(url, media.imageLoader), attachment.filename)),
+        onDismiss = onDismiss,
+    )
 }
 
 // ----------------------------------------------------------------- states --
