@@ -4,11 +4,14 @@ package app.hapi.companion.feature.settings
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import app.hapi.protocol.wire.HubHealthResponse
+import app.hapi.protocol.wire.HubSettings
+import app.hapi.protocol.wire.UpdateHubSettingsRequest
 import java.io.File
 import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -62,6 +65,18 @@ class SettingsViewModelTest {
     private fun runWithViewModel(
         jwt: String?,
         health: suspend () -> HubHealthResponse,
+        hubSettings: suspend () -> HubSettings = {
+            HubSettings(sessionSummaryContract = false, sessionSummaryInChat = false)
+        },
+        putHubSettings: suspend (UpdateHubSettingsRequest) -> HubSettings = { patch ->
+            // Default fake echoes the patch over an all-off base.
+            HubSettings(
+                sessionSummaryContract = patch.sessionSummaryContract ?: false,
+                sessionSummaryInChat = patch.sessionSummaryInChat ?: false,
+                autoTitlePerTurn = patch.autoTitlePerTurn,
+                disablePeerTools = patch.disablePeerTools,
+            )
+        },
         assertions: suspend TestScope.(SettingsViewModel) -> Unit,
     ) = runTest {
         val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
@@ -75,6 +90,8 @@ class SettingsViewModelTest {
                 hubUrl = "https://hub.example",
                 currentJwt = { jwt },
                 fetchHealth = health,
+                fetchHubSettings = hubSettings,
+                putHubSettings = putHubSettings,
                 scope = scope,
             )
             advanceUntilIdle()
@@ -120,5 +137,150 @@ class SettingsViewModelTest {
         assertEquals(ThemeMode.OLED, viewModel.themeSettings.value.mode)
         assertFalse(viewModel.themeSettings.value.dynamicColor)
         assertEquals(AppLanguage.SIMPLIFIED_CHINESE, viewModel.language.value)
+    }
+
+    // --------------------------------------------------------- hub settings --
+
+    @Test
+    fun `owner loads hub settings once the gate resolves`() = runWithViewModel(
+        jwt = fakeJwt(ns = "default"),
+        health = { HubHealthResponse(status = "ok", protocolVersion = 1) },
+        hubSettings = {
+            HubSettings(
+                sessionSummaryContract = true,
+                sessionSummaryInChat = false,
+                autoTitlePerTurn = true,
+                disablePeerTools = true,
+            )
+        },
+    ) { viewModel ->
+        val state = viewModel.hubSettings.value
+        assertTrue(state is HubSettingsState.Loaded)
+        assertTrue(state.settings.sessionSummaryContract)
+        assertEquals(true, state.settings.autoTitlePerTurn)
+        assertEquals(true, state.settings.disablePeerTools)
+        assertNull(viewModel.hubSettingsSaveError.value)
+    }
+
+    @Test
+    fun `upstream hub without the fork extensions keeps them null`() = runWithViewModel(
+        jwt = fakeJwt(ns = "default"),
+        health = { HubHealthResponse(status = "ok", protocolVersion = 1) },
+        hubSettings = { HubSettings(sessionSummaryContract = false, sessionSummaryInChat = true) },
+    ) { viewModel ->
+        val state = viewModel.hubSettings.value
+        assertTrue(state is HubSettingsState.Loaded)
+        assertTrue(state.settings.sessionSummaryInChat)
+        assertNull(state.settings.autoTitlePerTurn)
+        assertNull(state.settings.disablePeerTools)
+    }
+
+    @Test
+    fun `non-owner never fetches hub settings`() = runWithViewModel(
+        jwt = fakeJwt(ns = "guest"),
+        health = { HubHealthResponse(status = "ok", protocolVersion = 1) },
+        hubSettings = { error("GET /api/hub-settings must not be called for non-owners") },
+    ) { viewModel ->
+        assertFalse(viewModel.isOwner.value)
+        // Sections render only on Loaded; null = hidden, like web with no data.
+        assertNull(viewModel.hubSettings.value)
+    }
+
+    @Test
+    fun `load failure surfaces as Failed and hides the sections`() = runWithViewModel(
+        jwt = fakeJwt(ns = "default"),
+        health = { HubHealthResponse(status = "ok", protocolVersion = 1) },
+        hubSettings = { throw RuntimeException("403 forbidden") },
+    ) { viewModel ->
+        val state = viewModel.hubSettings.value
+        assertTrue(state is HubSettingsState.Failed)
+        assertEquals("403 forbidden", state.message)
+    }
+
+    @Test
+    fun `update success replaces the loaded state and clears the error`() = runWithViewModel(
+        jwt = fakeJwt(ns = "default"),
+        health = { HubHealthResponse(status = "ok", protocolVersion = 1) },
+        putHubSettings = { patch ->
+            HubSettings(
+                sessionSummaryContract = patch.sessionSummaryContract ?: false,
+                sessionSummaryInChat = true,
+                autoTitlePerTurn = null,
+                disablePeerTools = null,
+            )
+        },
+    ) { viewModel ->
+        viewModel.updateHubSettings(UpdateHubSettingsRequest(sessionSummaryContract = true))
+        advanceUntilIdle()
+
+        val state = viewModel.hubSettings.value
+        assertTrue(state is HubSettingsState.Loaded)
+        assertTrue(state.settings.sessionSummaryContract)
+        assertTrue(state.settings.sessionSummaryInChat)
+        assertNull(viewModel.hubSettingsSaveError.value)
+    }
+
+    @Test
+    fun `update failure keeps the loaded values and surfaces the message`() = runWithViewModel(
+        jwt = fakeJwt(ns = "default"),
+        health = { HubHealthResponse(status = "ok", protocolVersion = 1) },
+        putHubSettings = { throw RuntimeException("network down") },
+    ) { viewModel ->
+        viewModel.updateHubSettings(UpdateHubSettingsRequest(disablePeerTools = true))
+        advanceUntilIdle()
+
+        assertEquals("network down", viewModel.hubSettingsSaveError.value)
+        // Last loaded state survives — the switches don't flip on a failed save.
+        val state = viewModel.hubSettings.value
+        assertTrue(state is HubSettingsState.Loaded)
+        assertFalse(state.settings.sessionSummaryContract)
+    }
+
+    @Test
+    fun `a second toggle while a save is in flight is dropped`() {
+        var puts = 0
+        runTest {
+            val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
+            try {
+                val dataStore = PreferenceDataStoreFactory.create(scope = scope) {
+                    File(tmp.root, "inflight-${System.nanoTime()}.preferences_pb")
+                }
+                val viewModel = SettingsViewModel(
+                    themePrefs = ThemePrefs(dataStore),
+                    languagePrefs = LanguagePrefs(dataStore),
+                    hubUrl = "https://hub.example",
+                    currentJwt = { fakeJwt(ns = "default") },
+                    fetchHealth = { HubHealthResponse(status = "ok", protocolVersion = 1) },
+                    fetchHubSettings = { HubSettings(false, false) },
+                    putHubSettings = { patch ->
+                        puts++
+                        HubSettings(
+                            sessionSummaryContract = patch.sessionSummaryContract ?: false,
+                            sessionSummaryInChat = false,
+                        )
+                    },
+                    scope = scope,
+                )
+                advanceUntilIdle()
+
+                // Both queued before the first PUT runs → the second is a no-op
+                // (web twin: `if (isPending) return`).
+                viewModel.updateHubSettings(UpdateHubSettingsRequest(sessionSummaryContract = true))
+                viewModel.updateHubSettings(UpdateHubSettingsRequest(sessionSummaryInChat = true))
+                advanceUntilIdle()
+
+                assertEquals(1, puts)
+                assertTrue(
+                    (viewModel.hubSettings.value as HubSettingsState.Loaded)
+                        .settings.sessionSummaryContract,
+                )
+                assertFalse(
+                    (viewModel.hubSettings.value as HubSettingsState.Loaded)
+                        .settings.sessionSummaryInChat,
+                )
+            } finally {
+                scope.coroutineContext[Job]?.cancelAndJoin()
+            }
+        }
     }
 }

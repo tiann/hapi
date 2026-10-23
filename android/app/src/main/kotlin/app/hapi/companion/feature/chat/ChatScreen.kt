@@ -106,6 +106,8 @@ internal fun ChatScreen(
     onOpenFiles: () -> Unit = {},
     /** Markdown file citations → file viewer (full mode; optional line hint). */
     onOpenFile: (path: String, line: Int?) -> Unit = { _, _ -> },
+    /** Markdown session citations → push that session's chat (web SessionPathAnchor parity). */
+    onOpenSession: (String) -> Unit = {},
     /** null ⇒ no scratchlist top-bar entry (tests / previews). */
     onOpenScratchlist: (() -> Unit)? = null,
     transcriptList: androidx.compose.foundation.lazy.LazyListState = androidx.compose.foundation.lazy.rememberLazyListState(),
@@ -182,6 +184,7 @@ internal fun ChatScreen(
         }
     }
     val slashSuggestions by viewModel.slashSuggestions.collectAsState()
+    val skillSuggestions by viewModel.skillSuggestions.collectAsState()
 
     // --------------------------------------------------------- attachments --
     val attachmentItems by viewModel.attachments.items.collectAsState()
@@ -342,6 +345,8 @@ internal fun ChatScreen(
                         onAttachmentRemove = viewModel.attachments::remove,
                         slashSuggestions = slashSuggestions,
                         onSlashCommandSelected = viewModel::selectSlashCommand,
+                        skillSuggestions = skillSuggestions,
+                        onSkillSelected = viewModel::selectSkill,
                         dictation = if (dictationAvailable) dictationState else null,
                         onDictationToggle = onDictationToggle,
                         onDictationCancel = { dictation?.cancel() },
@@ -353,7 +358,7 @@ internal fun ChatScreen(
         CompositionLocalProvider(
             LocalMarkdownRenderCache provides viewModel.markdownCache,
             LocalChatMedia provides media,
-            LocalMarkdownLinkHandler provides rememberChatLinkHandler(onOpenFile = onOpenFile),
+            LocalMarkdownLinkHandler provides rememberChatLinkHandler(onOpenFile = onOpenFile, onOpenSession = onOpenSession),
             LocalChatInteractions provides interactions,
         ) {
             Column(
