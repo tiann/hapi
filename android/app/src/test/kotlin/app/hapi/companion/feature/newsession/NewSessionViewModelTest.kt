@@ -9,6 +9,7 @@ import app.hapi.protocol.wire.AgentAvailabilityEntry
 import app.hapi.protocol.wire.AgentAvailabilityResponse
 import app.hapi.protocol.wire.CodexModelSummary
 import app.hapi.protocol.wire.CodexModelsResponse
+import app.hapi.protocol.wire.GrokModelsResponse
 import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.MachineDirectoryEntry
@@ -48,6 +49,7 @@ private class FakeGateway : NewSessionGateway {
     val spawnCalls = mutableListOf<Pair<String, SpawnSessionRequest>>()
     val codexCalls = mutableListOf<String>()
     val availabilityCalls = mutableListOf<String>()
+    val grokCalls = mutableListOf<Pair<String, String>>()
     val includeHiddenCalls = mutableListOf<Boolean>()
 
     var entries: List<MachineDirectoryEntry> = emptyList()
@@ -55,6 +57,8 @@ private class FakeGateway : NewSessionGateway {
     var spawnResult: SpawnResponse = SpawnResponse(type = "success", sessionId = "s-new")
     var codexResult: CodexModelsResponse = CodexModelsResponse(success = true, models = emptyList())
     var codexThrows: Exception? = null
+    var grokResult = GrokModelsResponse(success = true)
+    var grokThrows: Exception? = null
     var availabilityResult = AgentAvailabilityResponse(
         AgentFlavor.CREATABLE.map { AgentAvailabilityEntry(agent = it.id, available = true) },
     )
@@ -96,6 +100,12 @@ private class FakeGateway : NewSessionGateway {
         codexCalls.add(machineId)
         codexThrows?.let { throw it }
         return codexResult
+    }
+
+    override suspend fun grokModels(machineId: String, cwd: String): GrokModelsResponse {
+        grokCalls.add(machineId to cwd)
+        grokThrows?.let { throw it }
+        return grokResult
     }
 }
 
@@ -887,6 +897,98 @@ class NewSessionViewModelTest {
         advanceUntilIdle()
         assertNull(vm2.uiState.value.modelOptions)
         assertNull(vm2.uiState.value.reasoningEffortOptions)
+    }
+
+    @Test
+    fun `grok auto gate disables the option, resets selection and shows hint when unsupported`() = runTest {
+        val gateway = FakeGateway().apply {
+            grokResult = GrokModelsResponse(success = true, autoPermissionModeSupported = false)
+        }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1", homeDir = "/home/dev"))), FakePrefs())
+        advanceUntilIdle()
+        vm.setAgent("grok")
+        vm.setPermissionMode("auto")
+        advanceUntilIdle()
+
+        // Probe fires once for the seeded, existing directory.
+        assertEquals(listOf("m1" to "/home/dev"), gateway.grokCalls)
+        val state = vm.uiState.value
+        val options = (state.permission as PermissionUi.NativeSelect).options
+        assertEquals(listOf("default", "auto", "plan", "bypassPermissions"), options.map { it.value })
+        val auto = options.single { it.value == "auto" }
+        assertFalse(auto.enabled)
+        assertEquals("Auto (unavailable)", auto.label)
+        assertTrue(options.filter { it.value != "auto" }.all { it.enabled })
+        assertTrue(state.grokAutoUnavailable)
+        // The `auto` selection the user made before the probe landed is reset.
+        assertEquals("default", state.form.permissionMode)
+
+        // A new directory re-probes: the capability is cwd-scoped.
+        vm.setDirectory("/home/dev/proj")
+        advanceUntilIdle()
+        assertEquals(listOf("m1" to "/home/dev", "m1" to "/home/dev/proj"), gateway.grokCalls)
+    }
+
+    @Test
+    fun `grok auto stays available when supported, unknown, failed or falsy payload`() = runTest {
+        fun vmWith(result: GrokModelsResponse, failure: Exception? = null): Pair<NewSessionViewModel, FakeGateway> {
+            val gateway = FakeGateway().apply {
+                grokResult = result
+                grokThrows = failure
+            }
+            val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1", homeDir = "/home/dev"))), FakePrefs())
+            return vm to gateway
+        }
+
+        for ((label, result, failure) in listOf(
+            Triple("supported", GrokModelsResponse(success = true, autoPermissionModeSupported = true), null as Exception?),
+            // Field omitted: only a literal false gates (web `=== false`).
+            Triple("omitted", GrokModelsResponse(success = true), null),
+            Triple("falsy payload", GrokModelsResponse(success = false), null),
+            Triple("probe failure", GrokModelsResponse(success = true), RuntimeException("probe boom")),
+        )) {
+            val (vm, gateway) = vmWith(result, failure)
+            advanceUntilIdle()
+            vm.setAgent("grok")
+            vm.setPermissionMode("auto")
+            advanceUntilIdle()
+
+            assertEquals(listOf("m1" to "/home/dev"), gateway.grokCalls, label)
+            val state = vm.uiState.value
+            val auto = (state.permission as PermissionUi.NativeSelect).options.single { it.value == "auto" }
+            assertTrue(auto.enabled, label)
+            assertEquals("Auto", auto.label, label)
+            assertFalse(state.grokAutoUnavailable, label)
+            assertEquals("auto", state.form.permissionMode, label)
+        }
+    }
+
+    @Test
+    fun `grok probe is gated on agent and existing directory, claude auto never gates`() = runTest {
+        // Default claude agent with an existing directory: no probe, and the
+        // claude Auto option (same wire value) stays fully available.
+        val gateway = FakeGateway()
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1", homeDir = "/home/dev"))), FakePrefs())
+        advanceUntilIdle()
+        vm.setPermissionMode("auto")
+        advanceUntilIdle()
+        assertEquals(emptyList(), gateway.grokCalls)
+        val claudeState = vm.uiState.value
+        val claudeAuto = (claudeState.permission as PermissionUi.NativeSelect).options.single { it.value == "auto" }
+        assertTrue(claudeAuto.enabled)
+        assertFalse(claudeState.grokAutoUnavailable)
+        assertEquals("auto", claudeState.form.permissionMode)
+
+        // Grok on a non-existent directory: positive-existence gate blocks the probe.
+        val missing = FakeGateway().apply { existsAnswer = { false } }
+        val vm2 = buildViewModel(missing, FakeMachineStore(listOf(machine("m1", homeDir = "/gone"))), FakePrefs())
+        advanceUntilIdle()
+        vm2.setAgent("grok")
+        advanceUntilIdle()
+        assertEquals(emptyList(), missing.grokCalls)
+        val missingState = vm2.uiState.value
+        assertTrue((missingState.permission as PermissionUi.NativeSelect).options.single { it.value == "auto" }.enabled)
+        assertFalse(missingState.grokAutoUnavailable)
     }
 
     @Test

@@ -75,6 +75,8 @@ class NewSessionStrings(
     val runnerUpgradeRequired: String = "Upgrade and restart this machine's HAPI runner before creating sessions.",
     val noAvailableAgents: String = "No supported Agents are installed on this machine.",
     val selectedAgentUnavailable: String = "The selected Agent is not available on this machine.",
+    /** Appended to the grok `Auto` option label as `Auto (<value>)` when gated. */
+    val grokAutoUnavailable: String = "unavailable",
 )
 
 /** Which permission control the current flavor renders (web `PermissionField`). */
@@ -131,6 +133,8 @@ data class NewSessionUiState(
     /** Codex reasoning-effort options; null hides the field. */
     val reasoningEffortOptions: List<OptionItem>?,
     val permission: PermissionUi,
+    /** Grok create-form gate: `true` renders the Auto-unavailable hint (web `PermissionField`). */
+    val grokAutoUnavailable: Boolean,
     val showCollaborationMode: Boolean,
     val collaborationModeOptions: List<OptionItem>,
     val showFastMode: Boolean,
@@ -156,8 +160,9 @@ data class NewSessionUiState(
  *   discovery is TODO — spawn omits `model` so the agent default applies.
  * - effort: claude static levels; codex reasoning effort from the catalog.
  *   grok/pi effort ships with their model discovery.
- * - grok's `auto` availability probe (directory-scoped grok-models) is
- *   deferred; all catalog modes are offered.
+ * - grok's `auto` availability IS probed (directory-scoped grok-models,
+ *   `autoPermissionModeSupported`); the rest of that response (model/effort
+ *   catalogs) stays deferred with model discovery.
  * - `startingMode` stays unset → the runner spawns `'remote'` (pty deferred).
  */
 class NewSessionViewModel(
@@ -173,6 +178,8 @@ class NewSessionViewModel(
     private val prefsData = MutableStateFlow(NewSessionPrefsData())
     private val codexModels = MutableStateFlow<CodexModelsUi>(CodexModelsUi.Hidden)
     private val agentAvailability = MutableStateFlow<AgentAvailabilityUi>(AgentAvailabilityUi.Loading)
+    /** Grok Auto gate: `null` = unknown/loading (never disables), `false` = unsupported. */
+    private val grokAutoSupport = MutableStateFlow<Boolean?>(null)
     private val suggestions = MutableStateFlow<List<String>>(emptyList())
     private val pathExistence = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     private val outsideWorkspaceRoots = MutableStateFlow<Set<String>>(emptySet())
@@ -196,7 +203,11 @@ class NewSessionViewModel(
     private var codexJob: Job? = null
     private var availabilityJob: Job? = null
     private var defaultDirectoryJob: Job? = null
+    private var grokAutoJob: Job? = null
     private var codexFetchedForMachine: String? = null
+
+    /** `(machineId, cwd)` already probed — a failed probe never retries (web `retry: false`). */
+    private var grokAutoProbedFor: Pair<String, String>? = null
     private var suppressSuggestions = false
     private var spawnInFlight = false
     private var directoryRequestVersion = 0L
@@ -268,7 +279,9 @@ class NewSessionViewModel(
     val uiState: StateFlow<NewSessionUiState> = combine(
         form,
         machineStore.machines,
-        combine(codexModels, agentAvailability) { codex, availability -> CatalogState(codex, availability) },
+        combine(codexModels, agentAvailability, grokAutoSupport) { codex, availability, grokAuto ->
+            CatalogState(codex, availability, grokAuto)
+        },
         combine(suggestions, pathExistence, prefsData, outsideWorkspaceRoots, directoryLookupError) {
                 s, exists, stored, outside, lookupError ->
             DirectoryData(s, exists, stored, outside, lookupError)
@@ -285,7 +298,7 @@ class NewSessionViewModel(
         initialValue = buildUiState(
             form.value,
             machineStore.machines.value,
-            CatalogState(codexModels.value, agentAvailability.value),
+            CatalogState(codexModels.value, agentAvailability.value, grokAutoSupport.value),
             DirectoryData(emptyList(), emptyMap(), prefsData.value, emptySet(), null),
             SpawnFlags(isSpawning = false, spawnError = null, confirmed = false, machinesSettled = false),
         ),
@@ -301,6 +314,7 @@ class NewSessionViewModel(
     private data class CatalogState(
         val codex: CodexModelsUi,
         val availability: AgentAvailabilityUi,
+        val grokAutoSupported: Boolean?,
     )
 
     private data class DirectoryData(
@@ -321,6 +335,7 @@ class NewSessionViewModel(
     fun setDirectory(value: String) {
         suppressSuggestions = false
         confirmCreateDirectory.value = false
+        clearGrokAutoSupport()
         form.update { it.copy(directory = value) }
         scheduleDirectoryWork()
     }
@@ -360,6 +375,7 @@ class NewSessionViewModel(
             )
         }
         refreshCodexModelsIfNeeded()
+        refreshGrokAutoSupportIfNeeded()
     }
 
     fun setModel(model: String) {
@@ -487,6 +503,7 @@ class NewSessionViewModel(
         suppressSuggestions = true
         confirmCreateDirectory.value = false
         suggestions.value = emptyList()
+        clearGrokAutoSupport()
         form.update { it.copy(directory = path) }
         scheduleDirectoryWork()
     }
@@ -524,6 +541,7 @@ class NewSessionViewModel(
         suggestions.value = emptyList()
         cachedListing = null
         confirmCreateDirectory.value = false
+        clearGrokAutoSupport()
         // The seeded recent path is a pick, not typing — no dropdown.
         suppressSuggestions = true
         val machine = machineStore.machines.value.firstOrNull { it.id == machineId }
@@ -608,6 +626,14 @@ class NewSessionViewModel(
                     pathExistence.update { it + result.exists }
                     outsideWorkspaceRoots.update { currentOutside ->
                         (currentOutside - trimmed) + result.outsideWorkspaceRoots.orEmpty()
+                    }
+                    // Grok Auto gate rides the positive-existence probe (web
+                    // `shouldEnableGrokModelDiscovery`): unknown cwd → back to
+                    // unknown capability, existing cwd → probe once.
+                    if (result.exists[trimmed] == true) {
+                        refreshGrokAutoSupportIfNeeded()
+                    } else {
+                        clearGrokAutoSupport()
                     }
                 }
             }
@@ -695,6 +721,54 @@ class NewSessionViewModel(
                 form.update { reconcileCodexSelections(it) }
             }
         }
+    }
+
+    /**
+     * Grok Auto-mode capability probe (web `useGrokModelsForCwd` +
+     * `shouldEnableGrokModelDiscovery`): fires only for the grok agent with a
+     * machine selected and a directory that exists. `null` (unknown) or `true`
+     * never disables; a literal `false` gates the option and resets an `auto`
+     * selection back to `default` (web `NewSession` reset effect).
+     */
+    private fun refreshGrokAutoSupportIfNeeded() {
+        val current = form.value
+        if (current.agent != "grok") return
+        val machineId = current.machineId ?: return
+        val cwd = current.trimmedDirectory
+        if (cwd.isEmpty()) return
+        if (pathExistence.value[cwd] != true) return
+        val target = machineId to cwd
+        if (grokAutoProbedFor == target) return
+        grokAutoProbedFor = target
+        grokAutoJob?.cancel()
+        grokAutoJob = scope.launch {
+            val supported = try {
+                val response = gateway.grokModels(machineId, cwd)
+                if (response.success) response.autoPermissionModeSupported else null
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                null
+            }
+            if (form.value.machineId != machineId) return@launch
+            grokAutoSupport.value = supported
+            if (supported == false) {
+                form.update { formValue ->
+                    if (formValue.agent == "grok" && formValue.permissionMode == "auto") {
+                        formValue.copy(permissionMode = "default")
+                    } else {
+                        formValue
+                    }
+                }
+            }
+        }
+    }
+
+    /** Back to unknown capability — new cwd/machine, or the cwd stopped existing. */
+    private fun clearGrokAutoSupport() {
+        grokAutoJob?.cancel()
+        grokAutoProbedFor = null
+        grokAutoSupport.value = null
     }
 
     private fun reconcileCodexSelections(current: NewSessionForm): NewSessionForm {
@@ -802,10 +876,20 @@ class NewSessionViewModel(
             null
         }
 
+        // Grok Auto gate (web PermissionField): only a literal false disables —
+        // null (not probed/omitted/failed) keeps the option fully available.
+        val grokAutoUnavailable = agent == "grok" && catalogs.grokAutoSupported == false
         val permission: PermissionUi = when {
             agent == "pi" || agent == "dsh" -> PermissionUi.Managed
             usesNativePermissionSelect(agent) -> PermissionUi.NativeSelect(
-                PermissionModes.forLaunch(agent).map { OptionItem(it.wireId, it.label) },
+                PermissionModes.forLaunch(agent).map { mode ->
+                    val unavailable = grokAutoUnavailable && mode == PermissionMode.Auto
+                    OptionItem(
+                        value = mode.wireId,
+                        label = mode.label + if (unavailable) " (${strings.grokAutoUnavailable})" else "",
+                        enabled = !unavailable,
+                    )
+                },
             )
             else -> PermissionUi.YoloToggle(hapiYoloNativeMode(agent)?.label)
         }
@@ -841,6 +925,7 @@ class NewSessionViewModel(
             effortOptions = if (agent == "claude") NewSessionCatalogs.CLAUDE_EFFORTS else null,
             reasoningEffortOptions = reasoningEffortOptions,
             permission = permission,
+            grokAutoUnavailable = grokAutoUnavailable,
             showCollaborationMode = agent == "codex",
             collaborationModeOptions = CodexCollaborationMode.entries.map { OptionItem(it.wireId, it.label) },
             showFastMode = showFastMode,
