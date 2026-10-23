@@ -352,6 +352,7 @@
     <string name="chat_picker_photos">Photo library</string>
     <string name="chat_picker_camera">Camera</string>
     <string name="chat_picker_files">Files</string>
+    <string name="chat_picker_clipboard">Paste from clipboard</string>
 
     <!-- Dictation errors (B-M3ce) -->
     <string name="chat_dictation_start_failed">Could not start recording</string>

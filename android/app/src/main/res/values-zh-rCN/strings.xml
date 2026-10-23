@@ -359,6 +359,7 @@
     <string name="chat_picker_photos">相册</string>
     <string name="chat_picker_camera">相机</string>
     <string name="chat_picker_files">文件</string>
+    <string name="chat_picker_clipboard">从剪贴板粘贴</string>
 
     <!-- Dictation errors (B-M3ce) -->
     <string name="chat_dictation_start_failed">无法开始录音</string>

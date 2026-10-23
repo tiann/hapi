@@ -352,6 +352,7 @@
     <string name="chat_picker_photos">Галерея</string>
     <string name="chat_picker_camera">Камера</string>
     <string name="chat_picker_files">Файлы</string>
+    <string name="chat_picker_clipboard">Вставить из буфера обмена</string>
 
     <!-- Dictation errors (B-M3ce) -->
     <string name="chat_dictation_start_failed">Не удалось начать запись</string>
