@@ -88,6 +88,10 @@ data class SessionListUiState(
     val dateActivityEpochDays: Set<Long> = emptySet(),
     /** Live search-box text; blank = no filtering/ranking. */
     val searchQuery: String = "",
+    /** Transient unread lens (web parity: not a persisted preference). */
+    val showUnreadOnly: Boolean = false,
+    /** Unread sessions on this hub (drives the mark-all-read affordance). */
+    val unreadCount: Int = 0,
     /** Last successful sessions fetch (epoch ms), for "Offline · updated …". */
     val lastRefreshedAt: Long? = null,
     /**
@@ -136,6 +140,7 @@ class SessionListViewModel(
     private val machineFilter = MutableStateFlow<String?>(null)
     private val searchQuery = MutableStateFlow("")
     private val selectedSessionId = MutableStateFlow<String?>(null)
+    private val showUnreadOnly = MutableStateFlow(false)
     private val isRefreshing = MutableStateFlow(false)
     private val isOffline = MutableStateFlow(false)
     private val hasRefreshedOnce = MutableStateFlow(false)
@@ -182,8 +187,8 @@ class SessionListViewModel(
     }
 
     val uiState: StateFlow<SessionListUiState> = combine(
-        combine(sessionStore.sessions, machineStore.machines, lastSeenStore.state) { sessions, machines, lastSeen ->
-            Triple(sessions, machines, lastSeen)
+        combine(sessionStore.sessions, machineStore.machines, lastSeenStore.state, showUnreadOnly) { sessions, machines, lastSeen, unreadOnly ->
+            ListInputs(sessions, machines, lastSeen, unreadOnly)
         },
         combine(machineFilter, searchQuery, selectedSessionId) { filter, query, selected ->
             Triple(filter, query, selected)
@@ -195,7 +200,7 @@ class SessionListViewModel(
             lastRefreshedAt,
             connectionStatus,
         ) { chrome, refreshedAt, status -> chrome.copy(lastRefreshedAt = refreshedAt, connectionStatus = status) },
-    ) { (sessions, machines, lastSeen), (filter, query, selected), chrome ->
+    ) { (sessions, machines, lastSeen, unreadOnly), (filter, query, selected), chrome ->
         buildUiState(
             sessions = sessions,
             machines = machines,
@@ -207,6 +212,7 @@ class SessionListViewModel(
             isOffline = chrome.offline,
             hasLoaded = chrome.refreshedOnce || sessions.isNotEmpty(),
             dateRange = chrome.dateRange,
+            showUnreadOnly = unreadOnly,
         ).copy(lastRefreshedAt = chrome.lastRefreshedAt, connectionStatus = chrome.connectionStatus)
     }.stateIn(
         scope = scope,
@@ -316,6 +322,38 @@ class SessionListViewModel(
     /** Search-box input; blank disables filtering/ranking entirely. */
     fun setSearchQuery(query: String) {
         searchQuery.value = query
+    }
+
+    /** Unread-lens toggle; transient — resets with the process like the web's. */
+    fun setUnreadOnly(enabled: Boolean) {
+        showUnreadOnly.value = enabled
+    }
+
+    /** Row action: enqueue an explicit-unread mark in the server read-state outbox. */
+    fun markSessionUnread(sessionId: String) {
+        val summary = sessionStore.sessions.value.firstOrNull { it.id == sessionId } ?: return
+        scope.launch {
+            try {
+                lastSeenStore.markUnread(sessionId, summary.readState)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                _errors.tryEmit(SessionListError.MarkUnreadFailed(sessionId, error.message))
+            }
+        }
+    }
+
+    /** Toolbar action: stamp every session on this hub as seen. */
+    fun markAllSessionsRead() {
+        scope.launch {
+            try {
+                lastSeenStore.markAllSeen(sessionStore.sessions.value)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                _errors.tryEmit(SessionListError.MarkReadFailed("", error.message))
+            }
+        }
     }
 
     /** Keep the selected row visible under list filters; reading is acknowledged by the transcript. */
@@ -428,6 +466,7 @@ class SessionListViewModel(
         isOffline: Boolean,
         hasLoaded: Boolean,
         dateRange: SessionDateRange? = null,
+        showUnreadOnly: Boolean = false,
     ): SessionListUiState {
         // Use one current zone for both filtering and the calendar activity marks.
         val zone = zoneProvider()
@@ -506,11 +545,21 @@ class SessionListViewModel(
             )
         }
 
+        // Unread lens, after search like the web list: drop already-seen
+        // rows, keep the open session. Not applied to the machine-filter
+        // choices or the unread count below — both stay derived from the
+        // full list.
+        val lensed = if (!showUnreadOnly) {
+            searched
+        } else {
+            SessionListFilters.filterUnreadSessionsOnly(searched, selectedSessionId, lastSeen)
+        }
+
         // With one machine — or a machine filter active — every visible row
         // shares the machine, so repeating it per row is noise.
         val showMachine = filters.size >= 2 && activeFilter == null
 
-        val rows = searched.map { summary ->
+        val rows = lensed.map { summary ->
             val title = sessionTitle(summary)
             val summaryText = summary.metadata?.summary?.text?.takeIf { it.isNotBlank() }
             SessionRowUi(
@@ -532,6 +581,8 @@ class SessionListViewModel(
             machineFilters = filters,
             activeMachineFilter = activeFilter,
             searchQuery = searchQuery,
+            showUnreadOnly = showUnreadOnly,
+            unreadCount = LastSeenStore.unreadSessionCount(sessions, lastSeen),
             isRefreshing = isRefreshing,
             hasLoaded = hasLoaded,
             isOffline = isOffline,
@@ -539,6 +590,14 @@ class SessionListViewModel(
             dateActivityEpochDays = activityDays,
         )
     }
+
+    /** Aggregated list inputs so [combine] stays within its typed arity. */
+    private data class ListInputs(
+        val sessions: List<SessionSummary>,
+        val machines: List<Machine>,
+        val lastSeen: LastSeenState,
+        val showUnreadOnly: Boolean,
+    )
 
     /** Aggregated non-session inputs so [combine] stays within its typed arity. */
     private data class ChromeState(
@@ -639,6 +698,7 @@ sealed interface SessionListError {
     data class ReopenFailed(override val sessionId: String, override val message: String?) : SessionListError
 
     data class MarkReadFailed(override val sessionId: String, override val message: String?) : SessionListError
+    data class MarkUnreadFailed(override val sessionId: String, override val message: String?) : SessionListError
 
     /** Machines list refresh failed — advisory only, never the offline banner. */
     data class MachinesRefreshFailed(override val message: String?) : SessionListError {
