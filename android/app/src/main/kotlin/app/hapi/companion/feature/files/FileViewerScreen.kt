@@ -1,6 +1,7 @@
 package app.hapi.companion.feature.files
 
 import android.graphics.BitmapFactory
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -23,6 +25,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -32,6 +36,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,6 +44,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -50,6 +56,7 @@ import app.hapi.companion.ui.markdown.CodeBlock
 import app.hapi.companion.ui.markdown.Markdown
 import app.hapi.companion.ui.theme.hapi
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Single-file viewer (`chat/{sessionId}/file`), the Android take on web
@@ -57,7 +64,10 @@ import kotlinx.coroutines.delay
  * toggle) ⇄ full mode ([CodeBlock] with its 400-line highlight cap and copy
  * button; markdown gets a Source/Preview toggle over the shared [Markdown]
  * renderer; images decode to a bitmap). Top bar shows the file name with the
- * middle-ellipsized path and a copy-path action.
+ * middle-ellipsized path, a copy-path action, and — once the read carries
+ * content — a download action that re-fetches the bytes and saves them via the
+ * SAF `CreateDocument` picker (image mimes keep theirs; everything else is
+ * octet-stream).
  *
  * Chat citations may carry a line number; per-line highlighting inside the
  * single-`Text` [CodeBlock] isn't cheap, so the viewer shows a "Line N" hint
@@ -76,10 +86,39 @@ fun FileViewerScreen(
     }
 
     val state by viewModel.state.collectAsState()
+    val download by viewModel.download.collectAsState()
     val colors = MaterialTheme.hapi
+
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val downloadFailedTitle = stringResource(R.string.files_download_failed)
+    val downloadFailedDefault = stringResource(R.string.files_download_failed_default)
+    val downloadPicker = rememberLauncherForActivityResult(CreateDocumentNamed()) { uri ->
+        val pending = viewModel.download.value.ready
+        if (uri != null && pending != null) {
+            scope.launch {
+                if (!FileDownloads.writeTo(context, uri, pending.bytes)) {
+                    snackbarHostState.showSnackbar("$downloadFailedTitle: $downloadFailedDefault")
+                }
+            }
+        }
+        viewModel.consumeReadyDownload()
+    }
+    LaunchedEffect(download.ready) {
+        val pending = download.ready ?: return@LaunchedEffect
+        downloadPicker.launch(pending.mimeType to pending.fileName)
+    }
+    LaunchedEffect(download.error) {
+        download.error?.let { detail ->
+            snackbarHostState.showSnackbar("$downloadFailedTitle: $detail")
+            viewModel.clearDownloadError()
+        }
+    }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 navigationIcon = {
@@ -104,6 +143,27 @@ fun FileViewerScreen(
                     }
                 },
                 actions = {
+                    // Web `file.tsx`: offered once the read carries content.
+                    if (viewModel.isDownloadable()) {
+                        if (download.fetching) {
+                            CircularProgressIndicator(
+                                modifier = Modifier
+                                    .padding(horizontal = 16.dp)
+                                    .size(20.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        } else {
+                            IconButton(
+                                onClick = viewModel::requestDownload,
+                                enabled = download.ready == null,
+                            ) {
+                                Icon(
+                                    DownloadGlyph,
+                                    contentDescription = stringResource(R.string.files_download),
+                                )
+                            }
+                        }
+                    }
                     IconButton(onClick = viewModel::refresh) {
                         Icon(Icons.Filled.Refresh, contentDescription = stringResource(R.string.files_refresh))
                     }
