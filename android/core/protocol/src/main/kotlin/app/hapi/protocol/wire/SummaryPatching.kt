@@ -167,6 +167,7 @@ object SummaryPatching {
         thinking = session.thinking,
         activeAt = session.activeAt,
         updatedAt = session.updatedAt,
+        hasConversationContent = session.hasConversationContent,
         pinned = session.pinned ?: false,
         globalPinned = session.globalPinned ?: false,
         metadata = toSessionSummaryMetadata(session.metadata),

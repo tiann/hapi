@@ -205,6 +205,10 @@
     <string name="sessions_filter_all">All</string>
     <string name="sessions_filter_unknown_machine">Unknown machine</string>
     <string name="sessions_offline_banner">Offline — showing cached sessions</string>
+    <string name="sessions_search_hint">Search sessions</string>
+    <string name="sessions_search_clear">Clear search</string>
+    <string name="sessions_search_no_results">No sessions matching “%1$s”</string>
+    <string name="sessions_search_no_results_hint">Try another term, or clear the search.</string>
     <string name="sessions_empty_loading_title">Loading sessions…</string>
     <string name="sessions_empty_offline_title">Hub unreachable</string>
     <string name="sessions_empty_title">No sessions yet</string>

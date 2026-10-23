@@ -212,6 +212,10 @@
     <string name="sessions_filter_all">全部</string>
     <string name="sessions_filter_unknown_machine">未知机器</string>
     <string name="sessions_offline_banner">离线 — 显示缓存的会话</string>
+    <string name="sessions_search_hint">搜索会话</string>
+    <string name="sessions_search_clear">清除搜索</string>
+    <string name="sessions_search_no_results">没有匹配“%1$s”的会话</string>
+    <string name="sessions_search_no_results_hint">换个关键词，或清除搜索。</string>
     <string name="sessions_empty_loading_title">正在加载会话…</string>
     <string name="sessions_empty_offline_title">无法连接 hub</string>
     <string name="sessions_empty_title">还没有会话</string>

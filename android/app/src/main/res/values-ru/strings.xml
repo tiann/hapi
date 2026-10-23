@@ -205,6 +205,10 @@
     <string name="sessions_filter_all">Все</string>
     <string name="sessions_filter_unknown_machine">Неизвестная машина</string>
     <string name="sessions_offline_banner">Офлайн — показаны кешированные сессии</string>
+    <string name="sessions_search_hint">Поиск сессий</string>
+    <string name="sessions_search_clear">Очистить поиск</string>
+    <string name="sessions_search_no_results">Нет сессий, подходящих под запрос «%1$s»</string>
+    <string name="sessions_search_no_results_hint">Попробуйте другой запрос или очистите поиск.</string>
     <string name="sessions_empty_loading_title">Загрузка сессий…</string>
     <string name="sessions_empty_offline_title">Хаб недоступен</string>
     <string name="sessions_empty_title">Сессий пока нет</string>
