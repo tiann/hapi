@@ -41,6 +41,7 @@ import app.hapi.protocol.wire.SendMessageRequest
 import app.hapi.protocol.wire.SessionResponse
 import app.hapi.protocol.wire.SessionsResponse
 import app.hapi.protocol.wire.SetSessionPinRequest
+import app.hapi.protocol.wire.SessionTitleSuggestionResponse
 import app.hapi.protocol.wire.SkillsResponse
 import app.hapi.protocol.wire.SlashCommandsResponse
 import app.hapi.protocol.wire.SpawnResponse
@@ -341,6 +342,10 @@ class HapiApi internal constructor(
             UpdateSessionSummaryRequest(text).toJsonBody(),
         )
     }
+
+    /** `POST /api/sessions/:id/title-suggestion` — hub capability `titleSuggestion`. */
+    suspend fun suggestSessionTitle(sessionId: String): SessionTitleSuggestionResponse =
+        request("POST", url("api", "sessions", sessionId, "title-suggestion").build(), EMPTY_JSON)
 
     /** `PUT /api/sessions/:id/pin` — mode `'none' | 'project' | 'global'`. */
     suspend fun setSessionPinMode(sessionId: String, mode: String) {

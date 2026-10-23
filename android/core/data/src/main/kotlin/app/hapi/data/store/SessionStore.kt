@@ -4,12 +4,14 @@ import app.hapi.data.api.HapiApi
 import app.hapi.data.sse.SseSubscriptionKey
 import app.hapi.protocol.patch.applySessionDetailPatch
 import app.hapi.protocol.wire.HapiJson
+import app.hapi.protocol.wire.MetadataSummary
 import app.hapi.protocol.wire.ReopenSessionResponse
 import app.hapi.protocol.wire.Session
 import app.hapi.protocol.wire.SessionPatch
 import app.hapi.protocol.wire.SessionPatches
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SummaryPatching
+import app.hapi.protocol.wire.SummaryText
 import app.hapi.protocol.wire.SyncEvent
 import app.hapi.protocol.wire.sortSessionSummaries
 import java.io.File
@@ -60,6 +62,15 @@ interface SessionListStore {
 
     /** `PATCH /sessions/:id` rename, optimistic `metadata.name`; rolls forward on failure. */
     suspend fun renameSession(sessionId: String, name: String)
+
+    /** `PATCH /sessions/:id/summary` (1–255 chars), optimistic `metadata.summary`. */
+    suspend fun updateSessionSummary(sessionId: String, text: String)
+
+    /** `POST /sessions/:id/title-suggestion` — the hub-generated title text. */
+    suspend fun suggestSessionTitle(sessionId: String): String
+
+    /** Hub health capability `titleSuggestion` (fetched once per store). */
+    suspend fun titleSuggestionAvailable(): Boolean
 
     /** `DELETE /sessions/:id`, optimistic removal; 409 while active (restore + rethrow). */
     suspend fun deleteSession(sessionId: String)
@@ -304,6 +315,54 @@ class SessionStore(
             }
             throw error
         }
+    }
+
+    /**
+     * `PATCH /sessions/:id/summary` — optimistic `metadata.summary` on both
+     * caches (same shape as [renameSession]'s `metadata.name` write); rolls
+     * forward on failure.
+     */
+    override suspend fun updateSessionSummary(sessionId: String, text: String) {
+        updateSummaries { list ->
+            val index = list.indexOfFirst { it.id == sessionId }
+            if (index < 0) return@updateSummaries list
+            val current = list[index]
+            val metadata = current.metadata ?: return@updateSummaries list
+            list.toMutableList().also {
+                it[index] = current.copy(metadata = metadata.copy(summary = SummaryText(text)))
+            }
+        }
+        updateDetailLocal(sessionId) { detail ->
+            detail.metadata?.let {
+                detail.copy(metadata = it.copy(summary = MetadataSummary(text, System.currentTimeMillis())))
+            } ?: detail
+        }
+        try {
+            api.updateSessionSummary(sessionId, text)
+        } catch (error: Exception) {
+            scheduleRefresh()
+            if (_details.value.containsKey(sessionId)) {
+                scope.launch { runCatching { loadSessionDetail(sessionId) } }
+            }
+            throw error
+        }
+    }
+
+    override suspend fun suggestSessionTitle(sessionId: String): String =
+        api.suggestSessionTitle(sessionId).title
+
+    /** Cached after the first successful health read; failures retry next call (web refetches per mount). */
+    private var titleSuggestionCapability: Boolean? = null
+
+    override suspend fun titleSuggestionAvailable(): Boolean {
+        titleSuggestionCapability?.let { return it }
+        val available = try {
+            api.health().capabilities?.titleSuggestion == true
+        } catch (error: Exception) {
+            return false
+        }
+        titleSuggestionCapability = available
+        return available
     }
 
     override suspend fun deleteSession(sessionId: String) {

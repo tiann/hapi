@@ -145,6 +145,10 @@ private class InteractionSessionStore : SessionDetailStore {
         reopenFailure?.let { throw it }
         return reopenResult ?: ReopenSessionResponse(sessionId = sessionId, resumed = true)
     }
+
+    override suspend fun updateSessionSummary(sessionId: String, text: String) = record("summary:$sessionId")
+    override suspend fun suggestSessionTitle(sessionId: String): String = "Suggested title"
+    override suspend fun titleSuggestionAvailable(): Boolean = true
 }
 
 private class InteractionMachineStore : MachineListStore {
