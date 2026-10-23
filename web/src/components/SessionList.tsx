@@ -4,6 +4,7 @@ import { SessionListScrollAnchor } from './SessionListScrollAnchor'
 import type { SessionSummary } from '@/types/api'
 import { SESSION_LIFECYCLE_IDLE } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
+import { useSearchHistoryField } from '@/components/SearchHistory'
 import {
     buildSessionSearchScoreIndex,
     compareSessionsBySearchRelevance,
@@ -837,6 +838,7 @@ export function SessionListSearch(props: {
     const { t } = useTranslation()
     const [datePickerOpen, setDatePickerOpen] = useState(false)
     const inputRef = useRef<HTMLInputElement>(null)
+    const history = useSearchHistoryField('sessions', props.value, props.onChange, inputRef)
     const collapsedButtonRef = useRef<HTMLButtonElement>(null)
     const dateButtonRef = useRef<HTMLButtonElement>(null)
     const hasDateRange = Boolean(props.customStart && props.customEnd)
@@ -1042,7 +1044,7 @@ export function SessionListSearch(props: {
                     ref={inputRef}
                     type="search"
                     value={props.value}
-                    onChange={(event) => props.onChange(event.target.value)}
+                    {...history.inputProps}
                     placeholder={t('sessions.search.placeholder')}
                     aria-label={searchLabel}
                     title={searchLabel}
@@ -1059,6 +1061,7 @@ export function SessionListSearch(props: {
                             inputRef.current?.focus()
                         }}
                         className="session-list-search-clear-endcap flex min-h-[48px] min-w-[48px] shrink-0 items-center justify-center border-l border-[var(--app-border)] bg-[var(--app-subtle-bg)] text-[var(--app-hint)] transition-colors hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] focus-visible:ring-inset"
+                        onMouseDown={(event) => { if (event.button === 0) event.preventDefault() }}
                         title={t('sessions.search.clear')}
                         aria-label={t('sessions.search.clear')}
                     >
@@ -1066,6 +1069,7 @@ export function SessionListSearch(props: {
                     </button>
                 ) : null}
             </div>
+            {history.suggestions}
             {datePicker}
         </div>
     )

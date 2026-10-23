@@ -12,6 +12,7 @@ import { resolveAbsoluteFilePath } from '@/lib/file-path'
 import { SessionHeader } from '@/components/SessionHeader'
 import { LoadingState } from '@/components/LoadingState'
 import { useAppContext } from '@/lib/app-context'
+import { useSearchHistoryField } from '@/components/SearchHistory'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useGitStatusFiles } from '@/hooks/queries/useGitStatusFiles'
 import { useSession } from '@/hooks/queries/useSession'
@@ -380,6 +381,9 @@ export default function FilesPage() {
         })
     }, [activeTab, navigate, sessionId])
 
+    const searchInputRef = useRef<HTMLInputElement>(null)
+    const history = useSearchHistoryField('files', searchQuery, setSearchQuery, searchInputRef)
+
     useEffect(() => {
         try {
             localStorage.setItem(DIRECTORY_SORT_STORAGE_KEY, JSON.stringify(directorySort))
@@ -561,13 +565,15 @@ export default function FilesPage() {
                     <div className="relative min-w-0 flex-1">
                         <SearchIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--app-hint)]" />
                         <input
+                            ref={searchInputRef}
                             value={searchQuery}
-                            onChange={(event) => setSearchQuery(event.target.value)}
+                            {...history.inputProps}
                             placeholder={t('files.page.searchPlaceholder')}
                             className="h-9 w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] py-2 pl-9 pr-20 text-sm text-[var(--app-fg)] outline-none placeholder:text-[var(--app-hint)] focus:border-[var(--app-link)] focus:ring-1 focus:ring-[var(--app-link)]"
                             autoCapitalize="none"
                             autoCorrect="off"
                         />
+                        {history.suggestions}
                         {searchQuery ? (
                             <button
                                 type="button"

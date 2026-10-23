@@ -36,6 +36,7 @@ import { useMinuteTick } from '@/hooks/useMinuteTick'
 import { useTransientScrollbar } from '@/hooks/useTransientScrollbar'
 import { queryKeys } from '@/lib/query-keys'
 import { matchesSearchQuery } from '@hapi/protocol'
+import { useSearchHistoryField } from '@/components/SearchHistory'
 
 type ScrollAnchor = {
     id: string
@@ -399,6 +400,8 @@ export function ConversationOutlinePanel(props: {
 }) {
     const { t, locale } = useTranslation()
     const [searchQuery, setSearchQuery] = useState('')
+    const searchInputRef = useRef<HTMLInputElement>(null)
+    const history = useSearchHistoryField('outlines', searchQuery, setSearchQuery, searchInputRef)
     const normalizedSearchQuery = searchQuery.trim()
     const filteredItems = useMemo(() => {
         if (normalizedSearchQuery.length === 0) {
@@ -435,13 +438,15 @@ export function ConversationOutlinePanel(props: {
                             <path d="m21 21-4.3-4.3" />
                         </svg>
                         <input
+                            ref={searchInputRef}
                             type="search"
                             value={searchQuery}
-                            onChange={(event) => setSearchQuery(event.target.value)}
+                            {...history.inputProps}
                             placeholder={t('session.outline.searchPlaceholder')}
                             aria-label={t('session.outline.searchLabel')}
                             className="h-9 w-full rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] py-2 pl-9 pr-3 text-sm text-[var(--app-fg)] outline-none placeholder:text-[var(--app-hint)] focus:border-[var(--app-link)] focus:ring-1 focus:ring-[var(--app-link)]"
                         />
+                        {history.suggestions}
                     </div>
                     {props.hasMoreMessages ? (
                         <Button
