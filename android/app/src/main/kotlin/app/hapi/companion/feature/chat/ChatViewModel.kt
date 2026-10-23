@@ -1530,8 +1530,22 @@ class ChatViewModel(
 
     // ---------------------------------------------------------------- config --
 
-    /** `POST /permission-mode` with an optimistic detail flip; server truth on error. */
+    /**
+     * Web's terminal-control flag (SessionChat.tsx:996):
+     * `controlledByUser && !concurrentClients` — shared-clients sessions
+     * report the flag but keep remote config switching.
+     */
+    private fun terminalControlled(detail: Session?): Boolean =
+        detail?.agentState?.controlledByUser == true && detail?.metadata?.capabilities?.concurrentClients != true
+
+    /**
+     * `POST /permission-mode` with an optimistic detail flip; server truth on
+     * error. Inactive sessions stay switchable (web parity — the send path
+     * auto-resumes); only copilot sessions under local terminal control lose
+     * the switcher (web withholds the callback, SessionChat.tsx:2159-2163).
+     */
     fun setPermissionMode(mode: PermissionMode) {
+        if (currentFlavor() == "copilot" && terminalControlled(currentDetail())) return
         runConfigChange(
             optimistic = { it.copy(permissionMode = mode.wireId) },
             call = { api.setPermissionMode(sessionId, mode.wireId) },
@@ -1655,7 +1669,7 @@ class ChatViewModel(
         return SessionConfigUi(
             flavor = flavor,
             active = detail?.active ?: summary?.active ?: false,
-            controlledByUser = detail?.agentState?.controlledByUser == true && detail?.metadata?.capabilities?.concurrentClients != true,
+            controlledByUser = terminalControlled(detail),
             permissionMode = detail?.permissionMode,
             permissionModes = PermissionModes.forFlavor(flavor).filter {
                 detail?.metadata?.capabilities?.concurrentClients != true || it != PermissionMode.SafeYolo

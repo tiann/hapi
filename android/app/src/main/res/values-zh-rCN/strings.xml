@@ -328,7 +328,10 @@
     <string name="chat_tool_awaiting_approval">等待审批</string>
     <string name="chat_tool_awaiting_approval_badge">⏳ 等待审批</string>
     <string name="chat_tool_approved">✓ 已批准</string>
+    <string name="chat_tool_approved_for_session">✓ 本会话已批准</string>
+    <string name="chat_tool_approved_allow_all_edits">✓ 已批准：允许所有编辑</string>
     <string name="chat_tool_denied">✕ 已拒绝</string>
+    <string name="chat_tool_aborted">✕ 已中止</string>
     <string name="chat_tool_canceled">— 已取消</string>
     <string name="chat_tool_status_pending">等待中</string>
     <string name="chat_tool_status_error">错误</string>

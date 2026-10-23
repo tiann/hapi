@@ -1060,6 +1060,67 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun `permission mode switch is withheld for terminal-controlled copilot sessions`() = runTest {
+        val harness = InteractionHarness(
+            this,
+            detail(
+                flavor = "copilot",
+                permissionMode = "read-only",
+                agentState = AgentState(controlledByUser = true),
+            ),
+        )
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { "loadDetail:$IX_SESSION" in it }
+
+        harness.viewModel.setPermissionMode(PermissionMode.Yolo)
+        testScheduler.advanceUntilIdle()
+
+        // Web parity: the switcher callback is withheld (SessionChat.tsx:
+        // 2159-2163) — no request, no optimistic flip.
+        assertTrue(harness.api.configCalls.value.none { it.startsWith("mode:") })
+        assertEquals("read-only", harness.sessionStore.currentDetail(IX_SESSION)?.permissionMode)
+    }
+
+    @Test
+    fun `permission mode switch survives terminal control outside copilot and shared-clients copilot`() = runTest {
+        val sharedClients = detail(
+            flavor = "copilot",
+            permissionMode = "read-only",
+            agentState = AgentState(controlledByUser = true),
+        ).copy(
+            metadata = SessionMetadata(
+                path = "/repo", host = "devbox", flavor = "copilot",
+                capabilities = SessionCapabilities(concurrentClients = true),
+            ),
+        )
+        val harness = InteractionHarness(this, sharedClients)
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { "loadDetail:$IX_SESSION" in it }
+
+        harness.viewModel.setPermissionMode(PermissionMode.Yolo)
+        harness.api.configCalls.first { "mode:yolo" in it }
+        testScheduler.advanceUntilIdle()
+
+        // Terminal-controlled claude keeps the switcher: only copilot loses
+        // it on web (controlledByUser derivation matches SessionChat.tsx:996).
+        harness.sessionStore.setDetail(
+            detail(flavor = "claude", agentState = AgentState(controlledByUser = true)),
+        )
+        harness.viewModel.setPermissionMode(PermissionMode.AcceptEdits)
+        harness.api.configCalls.first { "mode:acceptEdits" in it }
+    }
+
+    @Test
+    fun `permission mode switch stays available for inactive sessions`() = runTest {
+        val harness = InteractionHarness(this, detail(active = false, permissionMode = "default"))
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { "loadDetail:$IX_SESSION" in it }
+
+        harness.viewModel.setPermissionMode(PermissionMode.AcceptEdits)
+        harness.api.configCalls.first { "mode:acceptEdits" in it }
+    }
+
+    @Test
     fun `model and effort switches route per flavor`() = runTest {
         val harness = InteractionHarness(this, detail(flavor = "claude", model = "sonnet", effort = null))
         harness.viewModel.start()
