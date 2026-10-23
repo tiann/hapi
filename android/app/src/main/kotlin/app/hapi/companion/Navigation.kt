@@ -514,6 +514,12 @@ fun HapiNavigation() {
                     // a hint chip (no per-line highlight — B-M4c trade-off).
                     navController.navigate(Routes.fileViewer(sessionId, path, mode = "file", line = line))
                 },
+                onOpenSession = { targetId ->
+                    // Session citations PUSH the cited chat: back returns to
+                    // the citing conversation (web SPA history parity), unlike
+                    // the supersede callback above which replaces this entry.
+                    navController.navigate(Routes.chat(targetId)) { launchSingleTop = true }
+                },
                 onOpenScratchlist = { navController.navigate(Routes.scratchlist(sessionId)) },
             )
         }
