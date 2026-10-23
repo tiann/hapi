@@ -302,6 +302,8 @@ export function ImagePreview(props: {
                     role="dialog"
                     aria-modal="true"
                     aria-label={activePreview.label}
+                    // Keep preview gestures from starting an ancestor's attachment drag.
+                    onPointerDown={stopEvent}
                 >
                     <div className="flex items-center gap-2 border-b border-white/10 bg-black/50 px-3 pb-2 pt-[calc(env(safe-area-inset-top)+0.5rem)]">
                         <div className="min-w-0 flex-1 truncate text-sm font-medium">{activePreview.fileName}</div>
