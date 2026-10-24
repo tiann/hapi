@@ -7,15 +7,29 @@ import app.hapi.data.store.MachineListStore
 import app.hapi.protocol.catalog.AgentFlavor
 import app.hapi.protocol.wire.AgentAvailabilityEntry
 import app.hapi.protocol.wire.AgentAvailabilityResponse
+import app.hapi.protocol.wire.AgyModelSummary
+import app.hapi.protocol.wire.AgyModelsResponse
 import app.hapi.protocol.wire.CodexModelSummary
 import app.hapi.protocol.wire.CodexModelsResponse
+import app.hapi.protocol.wire.CopilotModelSummary
+import app.hapi.protocol.wire.CopilotModelsResponse
+import app.hapi.protocol.wire.CursorModelsResponse
+import app.hapi.protocol.wire.GrokModelSummary
 import app.hapi.protocol.wire.GrokModelsResponse
+import app.hapi.protocol.wire.GrokReasoningEffortOption
 import app.hapi.protocol.wire.HapiJson
+import app.hapi.protocol.wire.KimiModelSummary
+import app.hapi.protocol.wire.KimiModelsResponse
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.MachineDirectoryEntry
 import app.hapi.protocol.wire.MachineListDirectoryResponse
 import app.hapi.protocol.wire.MachineMetadata
 import app.hapi.protocol.wire.MachinePathsExistsResponse
+import app.hapi.protocol.wire.OpencodeModelSummary
+import app.hapi.protocol.wire.OpencodeModelVariantsResponse
+import app.hapi.protocol.wire.OpencodeModelsResponse
+import app.hapi.protocol.wire.PiModelSummary
+import app.hapi.protocol.wire.PiModelsResponse
 import app.hapi.protocol.wire.SpawnResponse
 import app.hapi.protocol.wire.SpawnSessionRequest
 import app.hapi.protocol.wire.SyncEvent
@@ -49,7 +63,6 @@ private class FakeGateway : NewSessionGateway {
     val spawnCalls = mutableListOf<Pair<String, SpawnSessionRequest>>()
     val codexCalls = mutableListOf<String>()
     val availabilityCalls = mutableListOf<String>()
-    val grokCalls = mutableListOf<Pair<String, String>>()
     val includeHiddenCalls = mutableListOf<Boolean>()
 
     var entries: List<MachineDirectoryEntry> = emptyList()
@@ -57,8 +70,6 @@ private class FakeGateway : NewSessionGateway {
     var spawnResult: SpawnResponse = SpawnResponse(type = "success", sessionId = "s-new")
     var codexResult: CodexModelsResponse = CodexModelsResponse(success = true, models = emptyList())
     var codexThrows: Exception? = null
-    var grokResult = GrokModelsResponse(success = true)
-    var grokThrows: Exception? = null
     var availabilityResult = AgentAvailabilityResponse(
         AgentFlavor.CREATABLE.map { AgentAvailabilityEntry(agent = it.id, available = true) },
     )
@@ -102,10 +113,77 @@ private class FakeGateway : NewSessionGateway {
         return codexResult
     }
 
+    // Flavor catalogs: every call recorded (args included) with a queue of
+    // scripted results — dequeue per call, last entry repeats.
+    val agyCalls = mutableListOf<Pair<String, Boolean>>()
+    val piCalls = mutableListOf<String>()
+    val cursorCalls = mutableListOf<String>()
+    val opencodeModelsCalls = mutableListOf<Pair<String, String>>()
+    val opencodeVariantsCalls = mutableListOf<Pair<String, String?>>()
+    val grokCalls = mutableListOf<Pair<String, String>>()
+    val copilotCalls = mutableListOf<Pair<String, String>>()
+    val kimiCalls = mutableListOf<Pair<String, String>>()
+
+    var agyResults = mutableListOf<AgyModelsResponse>()
+    var piResults = mutableListOf<PiModelsResponse>()
+    var cursorResults = mutableListOf<CursorModelsResponse>()
+    var opencodeModelsResults = mutableListOf<OpencodeModelsResponse>()
+    var opencodeVariantsResults = mutableListOf<OpencodeModelVariantsResponse>()
+    var grokResults = mutableListOf<GrokModelsResponse>()
+    var copilotResults = mutableListOf<CopilotModelsResponse>()
+    var kimiResults = mutableListOf<KimiModelsResponse>()
+
+    /** Optional suspending intercepts to park a fetch in Loading. */
+    var agyHandler: (suspend (String, Boolean) -> AgyModelsResponse)? = null
+    var cursorHandler: (suspend (String) -> CursorModelsResponse)? = null
+    var grokHandler: (suspend (String, String) -> GrokModelsResponse)? = null
+
+    private fun <T> dequeue(queue: MutableList<T>, fallback: T): T =
+        synchronized(queue) {
+            if (queue.size > 1) queue.removeAt(0) else queue.firstOrNull() ?: fallback
+        }
+
+    override suspend fun agyModels(machineId: String, refresh: Boolean): AgyModelsResponse {
+        agyCalls.add(machineId to refresh)
+        agyHandler?.let { return it(machineId, refresh) }
+        return dequeue(agyResults, AgyModelsResponse(success = true))
+    }
+
+    override suspend fun cursorModels(machineId: String): CursorModelsResponse {
+        cursorCalls.add(machineId)
+        cursorHandler?.let { return it(machineId) }
+        return dequeue(cursorResults, CursorModelsResponse(success = true))
+    }
+
     override suspend fun grokModels(machineId: String, cwd: String): GrokModelsResponse {
         grokCalls.add(machineId to cwd)
-        grokThrows?.let { throw it }
-        return grokResult
+        grokHandler?.let { return it(machineId, cwd) }
+        return dequeue(grokResults, GrokModelsResponse(success = true))
+    }
+
+    override suspend fun piModels(machineId: String): PiModelsResponse {
+        piCalls.add(machineId)
+        return dequeue(piResults, PiModelsResponse(success = true))
+    }
+
+    override suspend fun opencodeModels(machineId: String, cwd: String): OpencodeModelsResponse {
+        opencodeModelsCalls.add(machineId to cwd)
+        return dequeue(opencodeModelsResults, OpencodeModelsResponse(success = true))
+    }
+
+    override suspend fun opencodeModelVariants(machineId: String, cwd: String?): OpencodeModelVariantsResponse {
+        opencodeVariantsCalls.add(machineId to cwd)
+        return dequeue(opencodeVariantsResults, OpencodeModelVariantsResponse(success = true))
+    }
+
+    override suspend fun copilotModels(machineId: String, cwd: String): CopilotModelsResponse {
+        copilotCalls.add(machineId to cwd)
+        return dequeue(copilotResults, CopilotModelsResponse(success = true))
+    }
+
+    override suspend fun kimiModels(machineId: String, cwd: String): KimiModelsResponse {
+        kimiCalls.add(machineId to cwd)
+        return dequeue(kimiResults, KimiModelsResponse(success = true))
     }
 }
 
@@ -262,9 +340,93 @@ class SpawnBodyTest {
                 codexFastTierVisible = false,
             ),
         )
-        // Cursor has no v1 model picker: even a stashed model id is not sent.
-        assertEquals(setOf("directory", "agent", "yolo", "sessionType"), cursor.keys)
+        // Cursor ALWAYS pins the wire model (`auto` or the exact id — the CLI
+        // needs the explicit flag, web `resolvedModel` for cursor).
+        assertEquals(setOf("directory", "agent", "model", "yolo", "sessionType"), cursor.keys)
+        assertEquals("sonic", cursor["model"]!!.jsonPrimitive.content)
         assertEquals(true, cursor["yolo"]!!.jsonPrimitive.boolean)
+
+        val cursorAuto = encode(
+            NewSessionLogic.buildSpawnRequest(
+                NewSessionForm(directory = "/repo", agent = "cursor"),
+                codexFastTierVisible = false,
+            ),
+        )
+        assertEquals("auto", cursorAuto["model"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `flavor spawn bodies map model, effort and permission fields per flavor`() {
+        // agy: catalog model when picked, omitted when auto; yolo (no native select).
+        val agy = encode(
+            NewSessionLogic.buildSpawnRequest(
+                NewSessionForm(directory = "/repo", agent = "agy", model = "gemini-3.7-flash-high", yolo = true),
+                codexFastTierVisible = false,
+            ),
+        )
+        assertEquals(setOf("directory", "agent", "model", "yolo", "sessionType"), agy.keys)
+        assertEquals("gemini-3.7-flash-high", agy["model"]!!.jsonPrimitive.content)
+        val agyAuto = encode(
+            NewSessionLogic.buildSpawnRequest(
+                NewSessionForm(directory = "/repo", agent = "agy"),
+                codexFastTierVisible = false,
+            ),
+        )
+        assertEquals(setOf("directory", "agent", "yolo", "sessionType"), agyAuto.keys)
+
+        // opencode: model + modelReasoningEffort + native permissionMode, never yolo.
+        val opencode = encode(
+            NewSessionLogic.buildSpawnRequest(
+                NewSessionForm(
+                    directory = "/repo",
+                    agent = "opencode",
+                    model = "glm-5.3",
+                    modelReasoningEffort = "high",
+                    yolo = true,
+                ),
+                codexFastTierVisible = false,
+            ),
+        )
+        assertEquals(
+            setOf("directory", "agent", "model", "modelReasoningEffort", "permissionMode", "sessionType"),
+            opencode.keys,
+        )
+        assertEquals("default", opencode["permissionMode"]!!.jsonPrimitive.content)
+
+        // grok: catalog model + launch effort + permissionMode (auto honored).
+        val grok = encode(
+            NewSessionLogic.buildSpawnRequest(
+                NewSessionForm(directory = "/repo", agent = "grok", model = "grok-4", effort = "high"),
+                codexFastTierVisible = false,
+            ),
+        )
+        assertEquals(setOf("directory", "agent", "model", "effort", "permissionMode", "sessionType"), grok.keys)
+        assertEquals("high", grok["effort"]!!.jsonPrimitive.content)
+
+        // pi: provider-qualified model + launch effort; managed permission → no permissionMode.
+        val pi = encode(
+            NewSessionLogic.buildSpawnRequest(
+                NewSessionForm(directory = "/repo", agent = "pi", model = "anthropic/claude", effort = "low"),
+                codexFastTierVisible = false,
+            ),
+        )
+        assertEquals(setOf("directory", "agent", "model", "effort", "yolo", "sessionType"), pi.keys)
+
+        // copilot/kimi: catalog model + native permissionMode, no effort.
+        val copilot = encode(
+            NewSessionLogic.buildSpawnRequest(
+                NewSessionForm(directory = "/repo", agent = "copilot", model = "gpt-5.2"),
+                codexFastTierVisible = false,
+            ),
+        )
+        assertEquals(setOf("directory", "agent", "model", "permissionMode", "copilotAgentMode", "sessionType"), copilot.keys)
+        val kimi = encode(
+            NewSessionLogic.buildSpawnRequest(
+                NewSessionForm(directory = "/repo", agent = "kimi", model = "k2", effort = "high"),
+                codexFastTierVisible = false,
+            ),
+        )
+        assertEquals(setOf("directory", "agent", "model", "permissionMode", "sessionType"), kimi.keys)
     }
 
     @Test
@@ -417,6 +579,24 @@ class NewSessionLogicTest {
         assertEquals("default", staleMode.permissionMode)
         assertEquals(listOf("default", "read-only", "autoReview", "yolo"), app.hapi.protocol.catalog.PermissionModes.forFlavor("codex").map { it.wireId })
         assertEquals("safe-yolo", NewSessionLogic.sanitizeDraft(NewSessionForm(agent = "kimi", permissionMode = "safe-yolo")).permissionMode)
+    }
+
+    @Test
+    fun `pre-slice drafts without cursorSelectedBase decode with the auto default`() {
+        // Draft JSON written before the cursor base picker existed: the new
+        // additive field must default instead of failing the restore.
+        val legacy = HapiJson.decodeFromString(
+            NewSessionForm.serializer(),
+            """
+            {"machineId":"m1","directory":"/repo","agent":"cursor","model":"sonic",
+             "effort":"auto","modelReasoningEffort":"default","permissionMode":"default",
+             "yolo":false,"sessionType":"simple","worktreeName":"",
+             "serviceTier":"standard","collaborationMode":"default","copilotAgentMode":"interactive"}
+            """.trimIndent(),
+        )
+        assertEquals("cursor", legacy.agent)
+        assertEquals("sonic", legacy.model)
+        assertEquals("auto", legacy.cursorSelectedBase)
     }
 
     @Test
@@ -1006,98 +1186,6 @@ class NewSessionViewModelTest {
     }
 
     @Test
-    fun `grok auto gate disables the option, resets selection and shows hint when unsupported`() = runTest {
-        val gateway = FakeGateway().apply {
-            grokResult = GrokModelsResponse(success = true, autoPermissionModeSupported = false)
-        }
-        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1", homeDir = "/home/dev"))), FakePrefs())
-        advanceUntilIdle()
-        vm.setAgent("grok")
-        vm.setPermissionMode("auto")
-        advanceUntilIdle()
-
-        // Probe fires once for the seeded, existing directory.
-        assertEquals(listOf("m1" to "/home/dev"), gateway.grokCalls)
-        val state = vm.uiState.value
-        val options = (state.permission as PermissionUi.NativeSelect).options
-        assertEquals(listOf("default", "auto", "plan", "bypassPermissions"), options.map { it.value })
-        val auto = options.single { it.value == "auto" }
-        assertFalse(auto.enabled)
-        assertEquals("Auto (unavailable)", auto.label)
-        assertTrue(options.filter { it.value != "auto" }.all { it.enabled })
-        assertTrue(state.grokAutoUnavailable)
-        // The `auto` selection the user made before the probe landed is reset.
-        assertEquals("default", state.form.permissionMode)
-
-        // A new directory re-probes: the capability is cwd-scoped.
-        vm.setDirectory("/home/dev/proj")
-        advanceUntilIdle()
-        assertEquals(listOf("m1" to "/home/dev", "m1" to "/home/dev/proj"), gateway.grokCalls)
-    }
-
-    @Test
-    fun `grok auto stays available when supported, unknown, failed or falsy payload`() = runTest {
-        fun vmWith(result: GrokModelsResponse, failure: Exception? = null): Pair<NewSessionViewModel, FakeGateway> {
-            val gateway = FakeGateway().apply {
-                grokResult = result
-                grokThrows = failure
-            }
-            val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1", homeDir = "/home/dev"))), FakePrefs())
-            return vm to gateway
-        }
-
-        for ((label, result, failure) in listOf(
-            Triple("supported", GrokModelsResponse(success = true, autoPermissionModeSupported = true), null as Exception?),
-            // Field omitted: only a literal false gates (web `=== false`).
-            Triple("omitted", GrokModelsResponse(success = true), null),
-            Triple("falsy payload", GrokModelsResponse(success = false), null),
-            Triple("probe failure", GrokModelsResponse(success = true), RuntimeException("probe boom")),
-        )) {
-            val (vm, gateway) = vmWith(result, failure)
-            advanceUntilIdle()
-            vm.setAgent("grok")
-            vm.setPermissionMode("auto")
-            advanceUntilIdle()
-
-            assertEquals(listOf("m1" to "/home/dev"), gateway.grokCalls, label)
-            val state = vm.uiState.value
-            val auto = (state.permission as PermissionUi.NativeSelect).options.single { it.value == "auto" }
-            assertTrue(auto.enabled, label)
-            assertEquals("Auto", auto.label, label)
-            assertFalse(state.grokAutoUnavailable, label)
-            assertEquals("auto", state.form.permissionMode, label)
-        }
-    }
-
-    @Test
-    fun `grok probe is gated on agent and existing directory, claude auto never gates`() = runTest {
-        // Default claude agent with an existing directory: no probe, and the
-        // claude Auto option (same wire value) stays fully available.
-        val gateway = FakeGateway()
-        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1", homeDir = "/home/dev"))), FakePrefs())
-        advanceUntilIdle()
-        vm.setPermissionMode("auto")
-        advanceUntilIdle()
-        assertEquals(emptyList(), gateway.grokCalls)
-        val claudeState = vm.uiState.value
-        val claudeAuto = (claudeState.permission as PermissionUi.NativeSelect).options.single { it.value == "auto" }
-        assertTrue(claudeAuto.enabled)
-        assertFalse(claudeState.grokAutoUnavailable)
-        assertEquals("auto", claudeState.form.permissionMode)
-
-        // Grok on a non-existent directory: positive-existence gate blocks the probe.
-        val missing = FakeGateway().apply { existsAnswer = { false } }
-        val vm2 = buildViewModel(missing, FakeMachineStore(listOf(machine("m1", homeDir = "/gone"))), FakePrefs())
-        advanceUntilIdle()
-        vm2.setAgent("grok")
-        advanceUntilIdle()
-        assertEquals(emptyList(), missing.grokCalls)
-        val missingState = vm2.uiState.value
-        assertTrue((missingState.permission as PermissionUi.NativeSelect).options.single { it.value == "auto" }.enabled)
-        assertFalse(missingState.grokAutoUnavailable)
-    }
-
-    @Test
     fun `agent switch resets dependent options but keeps yolo`() = runTest {
         val vm = buildViewModel(FakeGateway(), FakeMachineStore(listOf(machine("m1"))), FakePrefs())
         advanceUntilIdle()
@@ -1131,6 +1219,455 @@ class NewSessionViewModelTest {
         val toggle = vm.uiState.value.permission
         assertTrue(toggle is PermissionUi.YoloToggle)
         assertEquals("Yolo", (toggle as PermissionUi.YoloToggle).nativeModeLabel)
+    }
+
+    // -------------------------------------------------- flavor model pickers --
+
+    private fun agySuccess(vararg models: AgyModelSummary, warning: String? = null) =
+        AgyModelsResponse(
+            success = true,
+            availableModels = models.toList(),
+            currentModelId = null,
+            error = warning,
+        )
+
+    @Test
+    fun `agy catalog renders rows, keeps picked unlisted models and spends refresh on retry`() = runTest {
+        val gateway = FakeGateway().apply {
+            agyResults = mutableListOf(
+                agySuccess(AgyModelSummary(modelId = "gemini-3.7-flash-high", name = "Gemini 3.7 Flash (High)")),
+            )
+        }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs())
+        advanceUntilIdle()
+        assertEquals(0, gateway.agyCalls.size) // machine-scoped gate: claude fetches nothing
+
+        vm.setAgent("agy")
+        advanceUntilIdle()
+        assertEquals(listOf("m1" to false), gateway.agyCalls)
+        val ready = vm.uiState.value.agy
+        assertTrue(ready is AgyUi.Ready)
+        assertEquals(listOf("auto", "gemini-3.7-flash-high"), ready.options.map { it.value })
+        assertEquals("Gemini 3.7 Flash (High)", ready.options[1].label)
+        assertEquals("auto", ready.selected)
+        assertNull(ready.warning)
+
+        vm.setModel("gemini-3.6-flash-low") // picked by the user
+        advanceUntilIdle()
+
+        // Catalog swap drops the picked model — Retry refetches with refresh.
+        gateway.agyResults = mutableListOf(agySuccess(AgyModelSummary(modelId = "gemini-3.7-flash-high", name = "Gemini 3.7 Flash (High)")))
+        vm.retryAgyModels()
+        advanceUntilIdle()
+        assertEquals(listOf("m1" to false, "m1" to true), gateway.agyCalls)
+        val kept = vm.uiState.value.agy
+        assertTrue(kept is AgyUi.Ready)
+        // Synthetic "(no longer listed)" row keeps the picked selection visible.
+        assertEquals("gemini-3.6-flash-low", kept.selected)
+        assertEquals(
+            listOf("auto", "gemini-3.6-flash-low", "gemini-3.7-flash-high"),
+            kept.options.map { it.value },
+        )
+        assertEquals("Gemini 3.6 Flash (Low) (no longer listed)", kept.options[1].label)
+    }
+
+    @Test
+    fun `agy auth failure renders the error wall and Retry recovers`() = runTest {
+        val gateway = FakeGateway().apply {
+            agyResults = mutableListOf(
+                AgyModelsResponse(success = false, error = "Please run agy to sign in"),
+            )
+        }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs())
+        advanceUntilIdle()
+        vm.setAgent("agy")
+        advanceUntilIdle()
+        val error = vm.uiState.value.agy
+        assertTrue(error is AgyUi.Error)
+        assertEquals("Please run agy to sign in", error.message)
+
+        gateway.agyResults = mutableListOf(
+            agySuccess(AgyModelSummary(modelId = "gemini-3.7-flash-high", name = null), warning = "stale sign-in"),
+        )
+        vm.retryAgyModels()
+        advanceUntilIdle()
+        val ready = vm.uiState.value.agy
+        assertTrue(ready is AgyUi.Ready)
+        assertEquals("stale sign-in", ready.warning) // amber banner over a usable list
+
+        gateway.agyResults = mutableListOf(agySuccess())
+        vm.retryAgyModels()
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.agy is AgyUi.NoModels)
+    }
+
+    @Test
+    fun `agy draft restore reconciles an unpicked stale selection to default`() = runTest {
+        val gateway = FakeGateway().apply {
+            agyResults = mutableListOf(agySuccess(AgyModelSummary(modelId = "gemini-3.7-flash-high", name = null)))
+        }
+        val prefs = FakePrefs(
+            draft = NewSessionForm(machineId = "m1", directory = "/repo", agent = "agy", model = "stale-model"),
+        )
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), prefs)
+        advanceUntilIdle()
+        // Restored selection is NOT user-picked: the catalog reconcile drops it.
+        assertEquals("auto", vm.uiState.value.form.model)
+        val ready = vm.uiState.value.agy
+        assertTrue(ready is AgyUi.Ready)
+        assertEquals("auto", ready.selected)
+    }
+
+    @Test
+    fun `grok coerces unsupported auto permission, disables the row and reconciles efforts`() = runTest {
+        val gateway = FakeGateway().apply {
+            grokResults = mutableListOf(
+                GrokModelsResponse(
+                    success = true,
+                    availableModels = listOf(
+                        GrokModelSummary(
+                            modelId = "grok-4",
+                            name = "Grok 4",
+                            reasoningEfforts = listOf(GrokReasoningEffortOption(value = "low"), GrokReasoningEffortOption(value = "high")),
+                        ),
+                    ),
+                    currentModelId = null,
+                    autoPermissionModeSupported = false,
+                ),
+            )
+        }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs())
+        advanceUntilIdle()
+        vm.setAgent("grok")
+        vm.setDirectory("/repo")
+        advanceUntilIdle()
+        assertEquals(listOf("m1" to "/repo"), gateway.grokCalls)
+        assertEquals(
+            listOf(OptionItem("auto", "Default"), OptionItem("grok-4", "Grok 4")),
+            vm.uiState.value.modelOptions,
+        )
+
+        // Click-time guard: the machine proved Auto unsupported → default.
+        vm.setPermissionMode("auto")
+        runCurrent()
+        assertEquals("default", vm.uiState.value.form.permissionMode)
+        val permission = vm.uiState.value.permission
+        assertTrue(permission is PermissionUi.NativeSelect)
+        assertEquals(setOf("auto"), permission.disabledValues)
+        assertTrue(permission.options.first { it.value == "auto" }.label.endsWith("(unavailable)"))
+        assertFalse(permission.options.first { it.value == "auto" }.enabled)
+        assertEquals("Grok did not enable Auto permissions for this account or CLI build.", permission.hint)
+
+        // A ready catalog with permissionMode=auto coerces on arrival too.
+        vm.setDirectory("/repo2")
+        advanceUntilIdle()
+        assertEquals("default", vm.uiState.value.form.permissionMode)
+
+        // Effort off the effective model's advertised list resets on refetch.
+        vm.setModel("grok-4")
+        vm.setEffort("medium") // not in [auto, low, high]
+        vm.setDirectory("/repo3")
+        advanceUntilIdle()
+        assertEquals("auto", vm.uiState.value.form.effort)
+        // The advertised list drives the rendered options.
+        assertEquals(
+            listOf("auto", "low", "high"),
+            vm.uiState.value.effortOptions?.map { it.value },
+        )
+    }
+
+    @Test
+    fun `opencode adopts the backend default, keeps explicit Default and validates effort against variants`() = runTest {
+        val gateway = FakeGateway().apply {
+            opencodeModelsResults = mutableListOf(
+                OpencodeModelsResponse(
+                    success = true,
+                    availableModels = listOf(
+                        OpencodeModelSummary(modelId = "a-model", name = null),
+                        OpencodeModelSummary(modelId = "b-model", name = null),
+                    ),
+                    currentModelId = "b-model",
+                ),
+            )
+            opencodeVariantsResults = mutableListOf(
+                OpencodeModelVariantsResponse(
+                    success = true,
+                    variants = mapOf("a-model" to listOf("a-low"), "b-model" to emptyList()),
+                ),
+            )
+        }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs())
+        advanceUntilIdle()
+        vm.setAgent("opencode")
+        vm.setDirectory("/repo")
+        advanceUntilIdle()
+        assertEquals(listOf("m1" to "/repo"), gateway.opencodeModelsCalls)
+        assertEquals(listOf("m1"), gateway.opencodeVariantsCalls.map { it.first })
+
+        // Uninitialized selection adopts the backend default row.
+        assertEquals("b-model", vm.uiState.value.form.model)
+        val ready = vm.uiState.value.opencode
+        assertTrue(ready is OpencodeUi.Ready)
+        assertEquals(listOf("auto", "a-model", "b-model"), ready.options.map { it.value })
+        assertEquals("b-model (Default)", ready.options[2].label) // (default) annotation
+        assertEquals("b-model", ready.selected)
+
+        // Explicit Default is a settled choice — a refetch must not re-adopt.
+        vm.setModel("auto")
+        gateway.opencodeModelsResults = mutableListOf(
+            OpencodeModelsResponse(
+                success = true,
+                availableModels = listOf(OpencodeModelSummary(modelId = "b-model", name = null)),
+                currentModelId = "b-model",
+            ),
+        )
+        vm.retryOpencodeModels()
+        advanceUntilIdle()
+        assertEquals("auto", vm.uiState.value.form.model)
+
+        // b-model has no variants → any non-default effort is invalid → reset;
+        // the effort field hides for a variant-less dynamic model.
+        vm.setModel("b-model")
+        vm.setModelReasoningEffort("high")
+        vm.retryOpencodeModels()
+        advanceUntilIdle()
+        assertEquals("default", vm.uiState.value.form.modelReasoningEffort)
+        assertNull(vm.uiState.value.reasoningEffortOptions)
+
+        // A model with variants renders the dynamic effort list.
+        vm.setModel("a-model")
+        runCurrent()
+        assertEquals(
+            listOf("default", "a-low"),
+            vm.uiState.value.reasoningEffortOptions?.map { it.value },
+        )
+    }
+
+    @Test
+    fun `cursor dual picker defers a base pick while loading, flushes it and guards create`() = runTest {
+        val gateway = FakeGateway()
+        var parked: Continuation<CursorModelsResponse>? = null
+        gateway.cursorHandler = { _ -> suspendCoroutine { parked = it } }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs())
+        advanceUntilIdle()
+        vm.setAgent("cursor")
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.cursor is CursorUi.Loading)
+
+        // Base picked while the catalog is still loading → deferred.
+        vm.setCursorBase("composer-2.5")
+        runCurrent()
+        assertEquals("composer-2.5", vm.uiState.value.form.cursorSelectedBase)
+
+        parked!!.resumeWith(
+            Result.success(
+                CursorModelsResponse(
+                    success = true,
+                    availableModels = listOf(
+                        OpencodeModelSummary(modelId = "composer-2.5[fast=true]", name = null),
+                        OpencodeModelSummary(modelId = "composer-2.5[smart=true]", name = null),
+                    ),
+                    cliModelSkus = emptyList(),
+                ),
+            ),
+        )
+        advanceUntilIdle()
+        // Flush applied the deferred base: multi-variant → wire stays Auto.
+        val ready = vm.uiState.value.cursor
+        assertTrue(ready is CursorUi.Ready)
+        assertEquals(CursorModels.PickerMode.DUAL, ready.mode)
+        assertEquals(listOf("auto", "composer-2.5"), ready.modelOptions.map { it.value })
+        assertEquals("composer-2.5", ready.selectedModel)
+        assertTrue(ready.showVariantPicker)
+        assertEquals("auto", ready.selectedVariant) // placeholder while no wire picked
+
+        // Create without a variant pick is blocked with the guard message.
+        vm.setDirectory("/repo")
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.canCreate)
+        vm.create()
+        advanceUntilIdle()
+        assertEquals(0, gateway.spawnCalls.size)
+        assertEquals("Select variant", vm.uiState.value.spawnError)
+
+        // Variant pick sends the exact wire id.
+        vm.setCursorVariant("composer-2.5[smart=true]")
+        vm.create()
+        advanceUntilIdle()
+        assertEquals(1, gateway.spawnCalls.size)
+        assertEquals("composer-2.5[smart=true]", gateway.spawnCalls.single().second.model)
+    }
+
+    @Test
+    fun `cursor flat picker sends the wire and reconciles unlisted selections`() = runTest {
+        val gateway = FakeGateway()
+        val machines = FakeMachineStore(listOf(machine("m1"), machine("m2")))
+        val vm = buildViewModel(gateway, machines, FakePrefs())
+        advanceUntilIdle()
+        gateway.cursorResults = mutableListOf(
+            CursorModelsResponse(
+                success = true,
+                availableModels = listOf(OpencodeModelSummary(modelId = "alpha-2", name = null)),
+                cliModelSkus = emptyList(),
+            ),
+        )
+        vm.setAgent("cursor")
+        advanceUntilIdle()
+        val ready = vm.uiState.value.cursor
+        assertTrue(ready is CursorUi.Ready)
+        assertEquals(CursorModels.PickerMode.FLAT, ready.mode)
+        assertEquals(listOf("auto", "alpha-2"), ready.modelOptions.map { it.value })
+        assertFalse(ready.showVariantPicker)
+
+        // Flat pick routes through setModel; the base row tracks the wire.
+        vm.setModel("alpha-2")
+        runCurrent()
+        assertEquals("alpha-2", vm.uiState.value.form.model)
+        assertEquals("alpha-2", vm.uiState.value.form.cursorSelectedBase)
+
+        // A machine switch refetches (per-machine key); a catalog that no
+        // longer lists the wire resets model + base to Auto.
+        gateway.cursorResults = mutableListOf(
+            CursorModelsResponse(
+                success = true,
+                availableModels = listOf(OpencodeModelSummary(modelId = "beta-1", name = null)),
+                cliModelSkus = emptyList(),
+            ),
+        )
+        vm.setMachine("m2")
+        advanceUntilIdle()
+        assertEquals(listOf("m1", "m2"), gateway.cursorCalls)
+        assertEquals("auto", vm.uiState.value.form.model)
+        assertEquals("auto", vm.uiState.value.form.cursorSelectedBase)
+    }
+
+    @Test
+    fun `copilot and kimi reconcile unlisted selections and label their rows`() = runTest {
+        val gateway = FakeGateway().apply {
+            copilotResults = mutableListOf(
+                CopilotModelsResponse(
+                    success = true,
+                    availableModels = listOf(CopilotModelSummary(modelId = "gpt-5.2", name = "GPT-5.2")),
+                ),
+            )
+            kimiResults = mutableListOf(
+                KimiModelsResponse(
+                    success = true,
+                    availableModels = listOf(KimiModelSummary(modelId = "glm-5.3", name = "GLM-5.3", provider = "TheHive")),
+                ),
+            )
+        }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs())
+        advanceUntilIdle()
+
+        vm.setAgent("copilot")
+        vm.setDirectory("/repo")
+        advanceUntilIdle()
+        assertEquals(listOf("m1" to "/repo"), gateway.copilotCalls)
+        assertEquals(
+            listOf(OptionItem("auto", "Auto"), OptionItem("gpt-5.2", "GPT-5.2")),
+            vm.uiState.value.modelOptions,
+        )
+        vm.setModel("gpt-5.2")
+        gateway.copilotResults = mutableListOf(CopilotModelsResponse(success = true, availableModels = emptyList()))
+        vm.setDirectory("/repo2") // new cwd key → refetch → reconcile
+        advanceUntilIdle()
+        assertEquals("auto", vm.uiState.value.form.model)
+
+        vm.setAgent("kimi")
+        vm.setDirectory("/repo")
+        advanceUntilIdle()
+        assertEquals(listOf("m1" to "/repo"), gateway.kimiCalls)
+        assertEquals(
+            listOf(OptionItem("auto", "Default"), OptionItem("glm-5.3", "TheHive — GLM-5.3")),
+            vm.uiState.value.modelOptions,
+        )
+    }
+
+    @Test
+    fun `pi resolves provider-qualified picks and drops unsupported effort or unlisted models`() = runTest {
+        val gateway = FakeGateway().apply {
+            piResults = mutableListOf(
+                PiModelsResponse(
+                    success = true,
+                    availableModels = listOf(
+                        PiModelSummary(
+                            provider = "anthropic",
+                            modelId = "claude",
+                            name = "Claude",
+                            reasoning = true,
+                            thinkingLevelMap = mapOf("low" to "low", "high" to null),
+                        ),
+                        PiModelSummary(provider = "local", modelId = "nr-model", name = null, reasoning = false),
+                    ),
+                ),
+            )
+        }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs())
+        advanceUntilIdle()
+        vm.setAgent("pi")
+        advanceUntilIdle()
+        assertEquals(listOf("m1"), gateway.piCalls)
+        assertEquals(
+            listOf(OptionItem("auto", "Default"), OptionItem("anthropic/claude", "Claude"), OptionItem("local/nr-model", "nr-model")),
+            vm.uiState.value.modelOptions,
+        )
+
+        // Unsupported thinking level (high mapped to null) resets with the pick.
+        vm.setEffort("high")
+        vm.setModel("anthropic/claude")
+        runCurrent()
+        assertEquals("auto", vm.uiState.value.form.effort)
+        // The supported dynamic options come from the model's map: the
+        // null-mapped high drops, xhigh/max lack explicit entries.
+        assertEquals(listOf("auto", "off", "minimal", "low", "medium"), vm.uiState.value.effortOptions?.map { it.value })
+
+        // A non-reasoning model hides the effort field entirely.
+        vm.setModel("local/nr-model")
+        runCurrent()
+        assertNull(vm.uiState.value.effortOptions)
+        assertEquals("auto", vm.uiState.value.form.effort)
+
+        // Unlisted pick → model + effort reset.
+        vm.setModel("openai/gpt")
+        advanceUntilIdle()
+        assertEquals("auto", vm.uiState.value.form.model)
+    }
+
+    @Test
+    fun `flavor catalog loading gates Create until the selection resolves`() = runTest {
+        val gateway = FakeGateway()
+        var parked: Continuation<GrokModelsResponse>? = null
+        gateway.grokHandler = { _, _ -> suspendCoroutine { parked = it } }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs())
+        advanceUntilIdle()
+        vm.setAgent("grok")
+        vm.setDirectory("/repo")
+        advanceUntilIdle()
+        vm.setModel("grok-4") // non-default pick while the catalog is pending
+        runCurrent()
+        assertFalse(vm.uiState.value.canCreate)
+        assertTrue(vm.uiState.value.modelsLoading)
+
+        // Auto picked while the catalog is pending: the arrival of a catalog
+        // that proves Auto unsupported coerces the permission mode.
+        vm.setPermissionMode("auto")
+        runCurrent()
+        assertEquals("auto", vm.uiState.value.form.permissionMode)
+
+        parked!!.resumeWith(
+            Result.success(
+                GrokModelsResponse(
+                    success = true,
+                    availableModels = listOf(GrokModelSummary(modelId = "grok-4", name = null)),
+                    autoPermissionModeSupported = false,
+                ),
+            ),
+        )
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.canCreate)
+        assertEquals("grok-4", vm.uiState.value.form.model)
+        assertEquals("default", vm.uiState.value.form.permissionMode)
     }
 
     @Test
@@ -1375,4 +1912,5 @@ class NewSessionViewModelTest {
         assertEquals("auto", vm.uiState.value.form.model)
         assertEquals("default", vm.uiState.value.form.permissionMode)
     }
+
 }

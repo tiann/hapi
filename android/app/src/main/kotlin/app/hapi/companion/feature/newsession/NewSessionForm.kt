@@ -18,8 +18,10 @@ data class NewSessionForm(
     val directory: String = "",
     /** Flavor id from [AgentFlavor.CREATABLE]. */
     val agent: String = "claude",
-    /** `'auto'` = no explicit model (claude presets / codex catalog ids). */
+    /** `'auto'` = no explicit model. Flavor-specific meaning: claude presets, codex/opencode/grok/copilot/kimi/pi catalog ids, agy catalog ids, cursor ACP wire ids (`auto` is still sent for cursor). */
     val model: String = "auto",
+    /** Cursor only: the dual picker's base row (web `cursorSelectedBase`); wire lives in [model]. */
+    val cursorSelectedBase: String = "auto",
     /** Claude launch effort; `'auto'` = omit. */
     val effort: String = "auto",
     /** Codex reasoning effort; `'default'` = omit. */
@@ -142,8 +144,11 @@ object NewSessionLogic {
     /**
      * Exact spawn body (`POST /api/machines/:id/spawn`), field-for-field port
      * of the web `handleCreate` mapping:
-     * - `model`/`effort` only for flavors whose picker exists in this v1
-     *   (claude static list, codex machine catalog; others send no model);
+     * - `model` for every flavor picker: claude presets, codex/opencode/grok/
+     *   copilot/kimi/pi/agy catalog ids (only when not `'auto'`); cursor always
+     *   sends — `'auto'` or the exact wire id;
+     * - `effort` for claude/grok/pi when not `'auto'`; `modelReasoningEffort`
+     *   for codex/opencode when not `'default'`;
      * - `yolo` only for flavors still on the YOLO toggle (not
      *   `usesNativePermissionSelect`) — **including `false`**;
      * - `permissionMode` for every `usesNativePermissionSelect` flavor —
@@ -161,19 +166,23 @@ object NewSessionLogic {
      */
     fun buildSpawnRequest(form: NewSessionForm, codexFastTierVisible: Boolean): SpawnSessionRequest {
         val agent = form.agent
-        val resolvedModel = when {
-            // v1 model pickers: claude (static presets) and codex (machine
-            // catalog). Other flavors' discovery endpoints are TODO(M3d+),
-            // so their model is never sent.
-            (agent == "claude" || agent == "codex") && form.model != "auto" -> form.model
+        val resolvedModel = when (agent) {
+            // Cursor pins Auto explicitly instead of omitting `--model`.
+            "cursor" -> form.model.trim().ifEmpty { "auto" }
+            "claude", "codex", "opencode", "agy", "grok", "copilot", "kimi", "pi" ->
+                form.model.trim().takeIf { it.isNotEmpty() && it != "auto" }
             else -> null
         }
         return SpawnSessionRequest(
             directory = form.trimmedDirectory,
             agent = agent,
             model = resolvedModel,
-            effort = if (agent == "claude" && form.effort != "auto") form.effort else null,
-            modelReasoningEffort = if (agent == "codex" && form.modelReasoningEffort != "default") {
+            effort = if ((agent == "claude" || agent == "grok" || agent == "pi") && form.effort != "auto") {
+                form.effort
+            } else {
+                null
+            },
+            modelReasoningEffort = if ((agent == "codex" || agent == "opencode") && form.modelReasoningEffort != "default") {
                 form.modelReasoningEffort
             } else {
                 null
