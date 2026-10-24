@@ -253,6 +253,8 @@
     <string name="sessions_search_no_results">没有匹配“%1$s”的会话</string>
     <string name="sessions_search_no_results_hint">换个关键词，或清除搜索。</string>
     <string name="sessions_grouped_layout">按目录分组</string>
+    <string name="sessions_group_expand">展开分组</string>
+    <string name="sessions_group_collapse">折叠分组</string>
     <string name="sessions_unread_filter">仅未读</string>
     <string name="sessions_unread_empty_title">没有未读会话</string>
     <string name="sessions_unread_empty_hint">全部读完了，有新活动时会出现在这里。</string>

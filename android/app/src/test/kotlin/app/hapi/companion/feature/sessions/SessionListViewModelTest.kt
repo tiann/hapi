@@ -204,6 +204,7 @@ private fun TestScope.buildViewModel(
     connection: MutableStateFlow<ConnectionState> = MutableStateFlow(ConnectionState(ConnectionState.Phase.Connected)),
     lastSeenStore: LastSeenStore = LastSeenStore(backgroundScope),
     displayPrefs: SessionDisplayPrefs? = null,
+    groupCollapsePrefs: SessionGroupCollapsePrefs? = null,
 ): Triple<SessionListViewModel, FakeSessionStore, FakeMachineStore> {
     val viewModel = SessionListViewModel(
         sessionStore = sessions,
@@ -215,6 +216,7 @@ private fun TestScope.buildViewModel(
         connectionState = connection,
         nowMs = { currentTime },
         displayPrefs = displayPrefs,
+        groupCollapsePrefs = groupCollapsePrefs,
     )
     return Triple(viewModel, sessions, machines)
 }
@@ -1161,9 +1163,10 @@ class SessionListViewModelTest {
         val state = viewModel.uiState.first { it.rows.size == 2 }
         assertTrue(state.grouped)
         // Two machines, one display title: two DIRECTORY sections whose keys
-        // (machine+directory) differ — the LazyColumn header keys stay unique.
+        // (machine+directory) differ — the LazyColumn header keys stay unique —
+        // and whose titles carry the machine suffix (web `groupTitle` parity).
         assertEquals(listOf(SessionSectionKind.DIRECTORY, SessionSectionKind.DIRECTORY), state.sections.map { it.kind })
-        assertEquals(listOf("repo/app", "repo/app"), state.sections.map { it.title })
+        assertEquals(setOf("repo/app · laptop", "repo/app · desktop"), state.sections.map { it.title }.toSet())
         assertEquals(setOf("laptop::/repo/app", "desktop::/repo/app"), state.sections.map { it.key }.toSet())
         assertEquals(
             listOf("laptop-row"),
@@ -1192,7 +1195,7 @@ class SessionListViewModelTest {
         viewModel.setSearchQuery("build")
         val groupedSearch = viewModel.uiState.first { it.isSearching && it.rows.size == 2 }
         assertEquals(listOf(SessionSectionKind.DIRECTORY, SessionSectionKind.DIRECTORY), groupedSearch.sections.map { it.kind })
-        assertEquals(listOf("repo/app", "repo/app"), groupedSearch.sections.map { it.title })
+        assertEquals(setOf("repo/app · laptop", "repo/app · desktop"), groupedSearch.sections.map { it.title }.toSet())
         assertEquals(setOf("laptop::/repo/app", "desktop::/repo/app"), groupedSearch.sections.map { it.key }.toSet())
 
         // Flat + search: no directory headers — one plain body, both
@@ -1289,5 +1292,126 @@ class SessionListViewModelTest {
         assertEquals(listOf("a/first", "deploy-work/x"), state.sections.drop(1).map { it.title })
         assertEquals(listOf("old-title"), state.sections[1].rows.map { it.id })
         assertEquals(listOf("new-path"), state.sections[2].rows.map { it.id })
+    }
+
+    // ---------------------------------------------- group collapse system --
+
+    @Test
+    fun `quiet groups default collapsed while active pinned or selected groups stay open`() = runTest {
+        val sessions = FakeSessionStore().apply {
+            set(
+                summary("quiet-a", updatedAt = 900, path = "/repo/quiet"),
+                summary("live", updatedAt = 800, active = true, path = "/repo/live"),
+                summary("pinned", updatedAt = 700, pinned = true, path = "/repo/pinned"),
+                summary("opened", updatedAt = 600, path = "/repo/open"),
+            )
+        }
+        val (viewModel) = buildViewModel(sessions)
+        viewModel.uiState.first { it.rows.size == 4 }
+        viewModel.onSessionOpened("opened")
+
+        // Gate on the selected group opening so the assertion below cannot
+        // race a pre-selection emission.
+        val state = viewModel.uiState.first { s ->
+            s.sections.any { it.key == "__unknown__::/repo/open" && !it.collapsed }
+        }
+        val collapsedByKey = state.sections.filter { it.kind == SessionSectionKind.DIRECTORY }.associateBy { it.key }
+        // Web `isGroupCollapsed` default: no active, no pinned, not the open
+        // session's group → collapsed; every live signal keeps a group open.
+        assertEquals(true, collapsedByKey.getValue("__unknown__::/repo/quiet").collapsed)
+        assertEquals(false, collapsedByKey.getValue("__unknown__::/repo/live").collapsed)
+        assertEquals(false, collapsedByKey.getValue("__unknown__::/repo/pinned").collapsed)
+        assertEquals(false, collapsedByKey.getValue("__unknown__::/repo/open").collapsed)
+    }
+
+    @Test
+    fun `toggleDirectoryGroup flips the section and writes through the prefs store`() = runTest {
+        val prefs = InMemorySessionGroupCollapsePrefs()
+        val sessions = FakeSessionStore().apply {
+            set(summary("a", updatedAt = 900, path = "/repo/app"), summary("b", updatedAt = 800, path = "/repo/lib"))
+        }
+        val (viewModel) = buildViewModel(sessions, groupCollapsePrefs = prefs)
+        val before = viewModel.uiState.first { it.rows.size == 2 }
+        val appKey = before.sections.first { it.title == "repo/app" }.key.orEmpty()
+        assertTrue(before.sections.first { it.key == appKey }.collapsed)
+
+        viewModel.toggleDirectoryGroup(appKey)
+        val opened = viewModel.uiState.first { it.sections.first { it.key == appKey }.collapsed == false }
+        // Rows survive the collapse state change — collapse is render-only.
+        assertEquals(2, opened.sections.sumOf { it.rows.size })
+        runCurrent() // flush the write-through coroutine before asserting on prefs
+        assertEquals(mapOf(appKey to false), prefs.overrides("hub-test").first())
+
+        viewModel.toggleDirectoryGroup(appKey)
+        val recollapsed = viewModel.uiState.first { it.sections.first { it.key == appKey }.collapsed }
+        runCurrent()
+        assertEquals(mapOf(appKey to true), prefs.overrides("hub-test").first())
+        assertEquals(2, recollapsed.sections.sumOf { it.rows.size })
+    }
+
+    @Test
+    fun `searching forces every group open regardless of overrides`() = runTest {
+        val prefs = InMemorySessionGroupCollapsePrefs()
+        val sessions = FakeSessionStore().apply {
+            set(summary("a", updatedAt = 900, name = "deploy fix", path = "/repo/app"))
+        }
+        val (viewModel) = buildViewModel(sessions, groupCollapsePrefs = prefs)
+        val key = viewModel.uiState.first { it.rows.size == 1 }.sections.single().key.orEmpty()
+
+        // Empty search: the heuristic applies (quiet group folds).
+        val idle = viewModel.uiState.first { !it.isSearching }
+        assertTrue(idle.sections.single().collapsed)
+
+        // Non-empty search: everything renders open — a folded group would
+        // hide the very rows the user is hunting for.
+        viewModel.setSearchQuery("deploy")
+        val searching = viewModel.uiState.first { it.isSearching }
+        assertFalse(searching.sections.single { it.kind == SessionSectionKind.DIRECTORY }.collapsed)
+    }
+
+    @Test
+    fun `collapsed sections keep their rows intact for counts`() = runTest {
+        val sessions = FakeSessionStore().apply {
+            set(
+                summary("a1", updatedAt = 900, path = "/repo/app"),
+                summary("a2", updatedAt = 800, path = "/repo/app"),
+                summary("a3", updatedAt = 700, path = "/repo/app"),
+            )
+        }
+        val (viewModel) = buildViewModel(sessions)
+        val state = viewModel.uiState.first { it.rows.size == 3 }
+        val section = state.sections.single { it.kind == SessionSectionKind.DIRECTORY }
+        assertTrue(section.collapsed)
+        assertEquals(3, section.rows.size)
+        // The header count and the flat rows view stay in lockstep.
+        assertEquals(state.rows.size, state.sections.sumOf { it.rows.size })
+    }
+
+    @Test
+    fun `multi machine groups suffix the machine label and single machine stays bare`() = runTest {
+        val sessions = FakeSessionStore().apply {
+            set(
+                summary("one", updatedAt = 900, machineId = "m1", path = "/repo/app"),
+                summary("two", updatedAt = 800, machineId = "m2", path = "/repo/app"),
+            )
+        }
+        val machines = FakeMachineStore().apply {
+            backing.value = listOf(machine("m1", host = "one.local", displayName = "Devbox"), machine("m2", host = "two.local", displayName = "Laptop"))
+        }
+        val (viewModel) = buildViewModel(sessions, machines)
+        val multi = viewModel.uiState.first { it.rows.size == 2 }
+        assertEquals(
+            setOf("repo/app · Devbox", "repo/app · Laptop"),
+            multi.sections.filter { it.kind == SessionSectionKind.DIRECTORY }.map { it.title }.toSet(),
+        )
+        // Rows still carry the machine for flat mode; the grouped header owns
+        // the disambiguation, so the group rows' meta line is not rendered.
+        assertEquals("Devbox", multi.rows.first { it.id == "one" }.machine?.label)
+
+        // Same list collapsed to one machine: the suffix disappears.
+        val single = FakeSessionStore().apply { set(summary("one", updatedAt = 900, machineId = "m1", path = "/repo/app")) }
+        val (bare) = buildViewModel(single)
+        val bareState = bare.uiState.first { it.rows.size == 1 }
+        assertEquals("repo/app", bareState.sections.single { it.kind == SessionSectionKind.DIRECTORY }.title)
     }
 }

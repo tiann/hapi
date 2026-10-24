@@ -246,6 +246,8 @@
     <string name="sessions_search_no_results">Нет сессий, подходящих под запрос «%1$s»</string>
     <string name="sessions_search_no_results_hint">Попробуйте другой запрос или очистите поиск.</string>
     <string name="sessions_grouped_layout">Группировать по каталогам</string>
+    <string name="sessions_group_expand">Развернуть группу</string>
+    <string name="sessions_group_collapse">Свернуть группу</string>
     <string name="sessions_unread_filter">Только непрочитанные</string>
     <string name="sessions_unread_empty_title">Непрочитанных сессий нет</string>
     <string name="sessions_unread_empty_hint">Вы всё прочитали. Сессии появляются здесь, когда приходит новая активность.</string>

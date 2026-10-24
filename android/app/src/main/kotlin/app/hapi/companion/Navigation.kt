@@ -66,6 +66,7 @@ import app.hapi.companion.feature.scratchlist.ScratchlistMedia
 import app.hapi.companion.feature.scratchlist.ScratchlistScreen
 import app.hapi.companion.feature.scratchlist.ScratchlistViewModel
 import app.hapi.companion.feature.sessions.SessionDisplayPrefs
+import app.hapi.companion.feature.sessions.SessionGroupCollapsePrefs
 import app.hapi.companion.feature.sessions.SessionListViewModel
 import app.hapi.companion.feature.share.ShareScreen
 import app.hapi.companion.feature.share.ShareSessionGateway
@@ -358,7 +359,9 @@ fun HapiNavigation() {
             val scope = rememberCoroutineScope()
             val holder = viewModel<SessionListViewModelHolder>(
                 key = "sessions",
-                factory = viewModelFactory { SessionListViewModelHolder(graph.sessionDisplayPrefs) },
+                factory = viewModelFactory {
+                    SessionListViewModelHolder(graph.sessionDisplayPrefs, graph.sessionGroupCollapsePrefs)
+                },
             )
             HomeScreen(
                 viewModel = holder.forHub(hubGraph),
@@ -794,6 +797,7 @@ private class ShareViewModelHolder : ViewModel() {
  */
 private class SessionListViewModelHolder(
     private val displayPrefs: SessionDisplayPrefs? = null,
+    private val groupCollapsePrefs: SessionGroupCollapsePrefs? = null,
 ) : ViewModel() {
     private var graph: HubGraph? = null
     private var scope: CoroutineScope? = null
@@ -814,6 +818,7 @@ private class SessionListViewModelHolder(
             hubKey = hubGraph.hubUrl,
             connectionState = hubGraph.sseEngine.connectionState(SseSubscriptionKey.Global),
             displayPrefs = displayPrefs,
+            groupCollapsePrefs = groupCollapsePrefs,
         ).also { model = it }
     }
 

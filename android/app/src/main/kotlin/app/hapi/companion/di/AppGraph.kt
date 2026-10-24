@@ -6,6 +6,7 @@ import app.hapi.companion.fcm.RegisterDeviceWorker
 import app.hapi.companion.feature.newsession.DataStoreNewSessionPrefs
 import app.hapi.companion.feature.newsession.NewSessionPrefs
 import app.hapi.companion.feature.sessions.SessionDisplayPrefs
+import app.hapi.companion.feature.sessions.SessionGroupCollapsePrefs
 import app.hapi.companion.feature.pairing.PairingClient
 import app.hapi.companion.feature.pairing.PairingClientFactory
 import app.hapi.companion.feature.settings.AppLanguage
@@ -127,6 +128,14 @@ class AppGraph(context: Context) {
 
     /** Session-list display prefs (directory grouping toggle; web localStorage twin). */
     val sessionDisplayPrefs: SessionDisplayPrefs = DataStoreSessionDisplayPrefs(appContext.hapiDataStore)
+
+    /**
+     * Directory-group collapse overrides for the session list. Own DataStore
+     * (`session_group_collapse`): the writes are bursty per-toggle, kept out
+     * of `hapi_prefs` (`files_dir_expand` precedent).
+     */
+    val sessionGroupCollapsePrefs: SessionGroupCollapsePrefs =
+        DataStoreSessionGroupCollapsePrefs(appContext.sessionGroupCollapseDataStore)
 
     /**
      * Eagerly-cached language for non-composable surfaces (B-M5a): FCM
