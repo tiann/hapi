@@ -353,7 +353,7 @@ class ChatTranscriptTest {
         )
         mount(blocks)
         browse(26, 0)
-        compose.onNodeWithText("💭 Reasoning ▸").performClick()
+        compose.onNodeWithText("Reasoning").performClick()
         compose.onNodeWithText("Retained reasoning content").assertIsDisplayed()
         browse(55, 0)
         browse(26, 0)

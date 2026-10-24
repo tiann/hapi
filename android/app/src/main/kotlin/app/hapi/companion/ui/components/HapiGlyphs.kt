@@ -230,7 +230,7 @@ internal val HapiClockGlyph: ImageVector by lazy {
 internal val HapiSquareCheckGlyph: ImageVector by lazy {
     strokeIcon(
         "HapiSquareCheck",
-        "M5 3 h14 a2 2 0 0 1 2 2 v14 a2 2 0 0 1 -2 2 H5 a2 2 0 0 1 -2 -2 V5 a2 2 0 0 1 2 -2 z M9 12 l2 2 4-4",
+        "M5 3 h14 a2 2 0 0 1 2 2 v14 a2 2 0 0 1 -2 2 H5 a2 2 0 0 1 -2 -2 V5 a2 2 0 0 1 2 -2 z M16 9 l-5.5 5.5 L8 12",
     )
 }
 
