@@ -2,6 +2,7 @@ package app.hapi.data.api
 
 import app.hapi.protocol.wire.ApprovePermissionRequest
 import app.hapi.protocol.wire.CancelMessageResponse
+import app.hapi.protocol.wire.CursorChatStoreStatus
 import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.DeleteUploadResponse
@@ -66,6 +67,13 @@ interface ChatSessionApi : MessagesApi, AttachmentUploadApi {
 
     /** `POST /api/sessions/:id/resume` — the returned id may differ (superseding spawn). */
     suspend fun resumeSession(sessionId: String, permissionMode: String? = null): ResumeSessionResponse
+
+    /**
+     * `GET /api/sessions/:id/cursor-chat-store` — runner capability probe for
+     * the Cursor reopen gate. Throws (old runner / offline) → callers treat as
+     * unknown status: soft-allow reopen with an unverified hint.
+     */
+    suspend fun getCursorChatStoreStatus(sessionId: String): CursorChatStoreStatus
 
     /** `POST .../permissions/:rid/approve`; 404 not-pending, 409 `session_inactive`. */
     suspend fun approvePermission(

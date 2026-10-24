@@ -824,6 +824,7 @@ private class SessionListViewModelHolder : ViewModel() {
             scope = nextScope,
             hubKey = hubGraph.hubUrl,
             connectionState = hubGraph.sseEngine.connectionState(SseSubscriptionKey.Global),
+            cursorChatStoreProbe = hubGraph.session.api::getCursorChatStoreStatus,
         ).also { model = it }
     }
 

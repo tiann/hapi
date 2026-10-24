@@ -6,6 +6,7 @@ import app.hapi.data.store.LastSeenState
 import app.hapi.data.store.LastSeenStore
 import app.hapi.data.store.MachineListStore
 import app.hapi.data.store.SessionListStore
+import app.hapi.protocol.wire.CursorChatStoreStatus
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.sortSessionSummaries
@@ -132,6 +133,17 @@ class SessionListViewModel(
     /** Global SSE transport state (`SseEngine.connectionState(Global)`); none in tests by default. */
     connectionState: Flow<ConnectionState> = emptyFlow(),
     private val nowMs: () -> Long = System::currentTimeMillis,
+    /**
+     * Cursor chat-store probe (`GET /api/sessions/:id/cursor-chat-store`).
+     * Fail-loud default: an unwired probe throws, which the gate catches as
+     * "unknown" → soft-allow reopen + unverified hint (tiann/hapi#1084).
+     * Navigation wires it to the hub API.
+     */
+    private val cursorChatStoreProbe: suspend (String) -> CursorChatStoreStatus = {
+        error("cursor chat-store probe not wired")
+    },
+    /** Wall clock for the probe staleness window; injectable for JVM tests. */
+    private val now: () -> Long = System::currentTimeMillis,
 ) {
     private val machineFilter = MutableStateFlow<String?>(null)
     private val searchQuery = MutableStateFlow("")
@@ -157,9 +169,136 @@ class SessionListViewModel(
     /** Reopen succeeded — navigate into this (possibly superseding) session id. */
     val reopened: SharedFlow<String> = _reopened.asSharedFlow()
 
+    // ------------------------------------------- Cursor chat-store gate (C) --
+
+    /** One row's probe lifecycle: `onDisk == null && !failed` = in flight. */
+    private data class CursorProbeEntry(
+        val sessionId: String,
+        val onDisk: Boolean? = null,
+        val failed: Boolean = false,
+        /** Set once a failed probe has been retried on the machine's return — stops list-SSE churn from re-probing in a loop. */
+        val retriedOnMachineOnline: Boolean = false,
+        val startedAtMs: Long,
+    )
+
+    private val mutableCursorProbe = MutableStateFlow<CursorProbeEntry?>(null)
+
+    /** Cursor reopen gate for the row whose actions sheet is open (null = none). */
+    data class CursorReopenGateUi(
+        val sessionId: String?,
+        val gate: CursorReopenGate,
+    )
+
+    /**
+     * List-level Cursor reopen gate — web `SessionList.tsx` probes on menu
+     * open (`useCursorChatStoreStatus`, staleTime 5s) and gates the row menu
+     * via `resolveCursorReopenGate`. Applicability is re-derived from the
+     * live list, so a session that activates (or vanishes) clears the gate
+     * even while its sheet is open.
+     */
+    val cursorReopenGate: StateFlow<CursorReopenGateUi> = combine(
+        mutableCursorProbe,
+        sessionStore.sessions,
+    ) { entry, sessions ->
+        if (entry == null) return@combine CursorReopenGateUi(null, CursorReopenGate(null, false))
+        val summary = sessions.firstOrNull { it.id == entry.sessionId }
+        val applicable = summary != null && isCursorChatStoreProbeApplicable(
+            active = summary.active,
+            flavor = summary.metadata?.flavor,
+            cursorSessionId = summary.metadata?.agentSessionId,
+            path = summary.metadata?.path,
+        )
+        CursorReopenGateUi(
+            sessionId = entry.sessionId,
+            gate = resolveCursorReopenGate(
+                applicable = applicable,
+                onDisk = entry.onDisk,
+                probeFailed = entry.failed,
+                isLoading = entry.onDisk == null && !entry.failed,
+            ),
+        )
+    }.stateIn(
+        scope,
+        SharingStarted.Eagerly,
+        CursorReopenGateUi(null, CursorReopenGate(null, false)),
+    )
+
+    /**
+     * Long-press hook: seed the gate for the row about to open its sheet.
+     * Non-applicable rows clear it; a fresh probe starts unless one settled
+     * within the 5s staleness window (web `staleTime: 5_000`).
+     */
+    fun beginCursorReopenProbe(summary: SessionSummary) {
+        val applicable = isCursorChatStoreProbeApplicable(
+            active = summary.active,
+            flavor = summary.metadata?.flavor,
+            cursorSessionId = summary.metadata?.agentSessionId,
+            path = summary.metadata?.path,
+        )
+        if (!applicable) {
+            mutableCursorProbe.value = null
+            return
+        }
+        val existing = mutableCursorProbe.value
+        if (existing != null && existing.sessionId == summary.id &&
+            now() - existing.startedAtMs < CURSOR_PROBE_STALE_MS
+        ) {
+            return
+        }
+        val startedAtMs = now()
+        val initial = CursorProbeEntry(sessionId = summary.id, startedAtMs = startedAtMs)
+        mutableCursorProbe.value = initial
+        launchCursorProbe(initial)
+    }
+
+    /**
+     * Runs one probe for [initial]'s row and CASes the settled entry over it
+     * (the CAS drops the result if the row's sheet closed or re-probed in
+     * between — never resurrect a closed gate).
+     */
+    private fun launchCursorProbe(initial: CursorProbeEntry) {
+        scope.launch {
+            val settled = try {
+                initial.copy(onDisk = cursorChatStoreProbe(initial.sessionId).onDisk, failed = false)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                initial.copy(onDisk = null, failed = true)
+            }
+            mutableCursorProbe.compareAndSet(initial, settled)
+        }
+    }
+
     private var refreshJob: Job? = null
 
     init {
+        // Stopped→live refresh (#1084): the hub 503s the probe while the
+        // row's machine is stopped (`no_machine_online`), so a failed probe
+        // often just means "machine stopped". When that machine reconnects,
+        // re-probe the open sheet's row so a definitive verdict replaces the
+        // failure — bypassing the 5s staleness window, which would otherwise
+        // keep serving the failed verdict. One retry per failure: the
+        // `retriedOnMachineOnline` flag stops session-list SSE churn from
+        // re-probing in a loop while the machine stays online.
+        scope.launch {
+            combine(
+                mutableCursorProbe,
+                sessionStore.sessions,
+                machineStore.machines,
+            ) { entry, sessions, machines -> Triple(entry, sessions, machines) }
+                .collect { (entry, sessions, machines) ->
+                    if (entry?.failed != true || entry.retriedOnMachineOnline) return@collect
+                    val machineId = sessions.firstOrNull { it.id == entry.sessionId }
+                        ?.metadata?.machineId ?: return@collect
+                    if (machines.none { it.id == machineId && it.active }) return@collect
+                    val retried = entry.copy(
+                        retriedOnMachineOnline = true,
+                        startedAtMs = now(),
+                    )
+                    if (!mutableCursorProbe.compareAndSet(entry, retried)) return@collect
+                    launchCursorProbe(retried)
+                }
+        }
         scope.launch {
             combine(sessionStore.sessions, machineFilter) { _, filter -> filter }.collect { selected ->
                 // Validate against the current snapshot, not an older combined
@@ -586,6 +725,9 @@ class SessionListViewModel(
     }
 
     companion object {
+        /** Web `useCursorChatStoreStatus` staleness window — re-probe after this. */
+        const val CURSOR_PROBE_STALE_MS: Long = 5_000
+
         /** `getSessionTitle` (`web/src/lib/sessionTitle.ts`). */
         fun sessionTitle(summary: SessionSummary): String {
             val metadata = summary.metadata

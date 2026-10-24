@@ -742,4 +742,13 @@
     <string name="runner_skew_binary_updated_hint">(на диске уже более новая версия CLI — раннер скоро перезапустится сам)</string>
     <string name="runner_skew_upgrade_cli_first">(на диске ещё нет более новой версии CLI — установите/обновите на этом хосте)</string>
     <string name="runner_skew_restart_failed">Не удалось перезапустить раннер</string>
+    <!-- Cursor reopen gate + migration banner (tiann/hapi#1084, #873; slice C) -->
+    <string name="sessions_reopen_cursor_missing">Данные чата Cursor больше недоступны на записанной машине.</string>
+    <string name="sessions_reopen_cursor_checking">Проверка доступности данных чата Cursor на записанной машине.</string>
+    <string name="sessions_reopen_cursor_unverified">Не удалось проверить данные чата Cursor (раннер может быть устаревшим). Повторное открытие всё ещё доступно — обновите CLI на той машине, если оно не сработает.</string>
+    <string name="chat_inactive_cannot_resume">Эта сессия неактивна и не может быть возобновлена.</string>
+    <string name="chat_cursor_migration_title">Обновление сессии Cursor</string>
+    <string name="chat_cursor_migration_body">Переключение этого устаревшего чата на более безопасный протокол ACP. Для сессий с длинной историей это занимает 15–20 секунд; ваш диалог возобновится автоматически, а любой черновой текст сохранится.</string>
+    <string name="chat_cursor_migration_ambiguous_title">Обновление сессии Cursor требует проверки вручную</string>
+    <string name="chat_cursor_migration_ambiguous_body">Этот чат существует на диске в нескольких папках рабочего пространства, либо размер на диске не совпадает с синхронизированной историей, поэтому HAPI отказался переносить его автоматически. Проверьте логи хаба на предмет списка кандидатов (поиск по «[migrator] ambiguous legacy store» или «[migrator] size sanity check refused»), удалите устаревшие папки в ~/.cursor/chats/ и откройте сессию заново.</string>
 </resources>
