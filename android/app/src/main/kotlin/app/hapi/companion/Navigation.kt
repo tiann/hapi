@@ -42,6 +42,7 @@ import app.hapi.companion.feature.chat.blocks.fetchGeneratedMediaFile
 import app.hapi.companion.feature.chat.composer.DictationController
 import app.hapi.companion.feature.chat.composer.HapiDictationApi
 import app.hapi.companion.feature.chat.composer.MediaRecorderDictation
+import app.hapi.companion.feature.directorybrowser.DirectoryBrowserPrefs
 import app.hapi.companion.feature.files.ApiFilesGateway
 import app.hapi.companion.feature.files.FileViewerScreen
 import app.hapi.companion.feature.files.FileViewerStrings
@@ -652,7 +653,7 @@ fun HapiNavigation() {
                 key = "newSession:${hubGraph.hubUrl}",
                 factory = viewModelFactory {
                     NewSessionViewModelHolder(
-                        hubGraph, graph.newSessionPrefs, machineId,
+                        hubGraph, graph.newSessionPrefs, graph.directoryBrowserPrefs, machineId,
                         newSessionStrings(formContext),
                     )
                 },
@@ -994,6 +995,7 @@ private class ScratchlistViewModelHolder(
 private class NewSessionViewModelHolder(
     hubGraph: HubGraph,
     prefs: NewSessionPrefs,
+    browserPrefs: DirectoryBrowserPrefs,
     initialMachineId: String?,
     strings: NewSessionStrings,
 ) : ViewModel() {
@@ -1003,6 +1005,7 @@ private class NewSessionViewModelHolder(
         gateway = ApiNewSessionGateway(hubGraph.session.api),
         machineStore = hubGraph.machineStore,
         prefs = prefs,
+        browserPrefs = browserPrefs,
         scope = scope,
         initialMachineId = initialMachineId,
         strings = strings,

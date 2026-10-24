@@ -96,6 +96,13 @@ class RemoteDirectoryBrowserController(
         includeHidden: Boolean,
     ) -> MachineListDirectoryResponse,
     private val fallbackError: String,
+    /**
+     * Show-hidden seed, read at every [open] — the persisted preference
+     * (web reads `hapi:workspaceBrowserShowHidden` at mount). Default: off.
+     */
+    private val includeHiddenProvider: () -> Boolean = { false },
+    /** Show-hidden toggle notification (persist the new choice; web writes localStorage here). */
+    private val onIncludeHiddenChange: (Boolean) -> Unit = {},
 ) {
     private val mutableState = MutableStateFlow(RemoteDirectoryBrowserState())
     val state: StateFlow<RemoteDirectoryBrowserState> = mutableState.asStateFlow()
@@ -116,6 +123,7 @@ class RemoteDirectoryBrowserController(
             open = true,
             path = path,
             roots = usableRoots,
+            includeHidden = includeHiddenProvider(),
         )
         load(path)
     }
@@ -148,6 +156,7 @@ class RemoteDirectoryBrowserController(
     fun setIncludeHidden(includeHidden: Boolean) {
         if (!mutableState.value.open) return
         mutableState.update { it.copy(includeHidden = includeHidden) }
+        onIncludeHiddenChange(includeHidden)
         load(mutableState.value.path)
     }
 
