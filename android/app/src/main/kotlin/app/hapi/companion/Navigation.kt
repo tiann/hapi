@@ -78,6 +78,10 @@ import app.hapi.companion.feature.share.ShareScreen
 import app.hapi.companion.feature.share.ShareSessionGateway
 import app.hapi.companion.feature.share.ShareTarget
 import app.hapi.companion.feature.share.ShareTargetController
+import app.hapi.companion.feature.settings.DictationSettingsViewModel
+import app.hapi.companion.feature.settings.MachinesScreen
+import app.hapi.companion.feature.settings.MachinesViewModel
+import app.hapi.companion.feature.settings.RenameMachineGateway
 import app.hapi.companion.feature.settings.SettingsGeneralScreen
 import app.hapi.companion.feature.settings.SettingsHubScreen
 import app.hapi.companion.feature.settings.SettingsViewModel
@@ -93,6 +97,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
@@ -169,6 +174,9 @@ object Routes {
     const val SETTINGS_GENERAL = "settings/general"
     const val SETTINGS_USAGE = "settings/usage"
     const val SETTINGS_STORAGE = "settings/storage"
+
+    /** Machines management (rename) under settings (web `/settings/machines`). */
+    const val SETTINGS_MACHINES = "settings/machines"
 }
 
 /**
@@ -437,6 +445,20 @@ fun HapiNavigation() {
             )
             SettingsGeneralScreen(
                 viewModel = holder.viewModel,
+                dictation = holder.dictation,
+                onOpenMachines = { navController.navigate(Routes.SETTINGS_MACHINES) },
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(Routes.SETTINGS_MACHINES) {
+            val hubGraph = activeHubGraph ?: return@composable
+            val holder = viewModel<MachinesViewModelHolder>(
+                key = "settingsMachines:${hubGraph.hubUrl}",
+                factory = viewModelFactory { MachinesViewModelHolder(hubGraph) },
+            )
+            MachinesScreen(
+                viewModel = holder.viewModel,
                 onBack = { navController.popBackStack() },
             )
         }
@@ -487,7 +509,12 @@ fun HapiNavigation() {
             }
             val holder = viewModel<ChatViewModelHolder>(
                 key = "chat:${hubGraph.hubUrl}:$sessionId",
-                factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext) },
+                factory = viewModelFactory {
+                    ChatViewModelHolder(
+                        hubGraph, sessionId, appContext,
+                        graph.dictationProviderId, graph.dictationLanguage,
+                    )
+                },
             )
             DisposableEffect(holder) {
                 composedChat.value = ComposedChat(hubGraph.hubUrl, holder.viewModel)
@@ -657,7 +684,12 @@ fun HapiNavigation() {
                 viewModel<ChatViewModelHolder>(
                     viewModelStoreOwner = owner,
                     key = "chat:${hubGraph.hubUrl}:$sessionId",
-                    factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext) },
+                    factory = viewModelFactory {
+                        ChatViewModelHolder(
+                            hubGraph, sessionId, appContext,
+                            graph.dictationProviderId, graph.dictationLanguage,
+                        )
+                    },
                 )
             }
             ScratchlistScreen(
@@ -876,6 +908,8 @@ private class ChatViewModelHolder(
     hubGraph: HubGraph,
     sessionId: String,
     appContext: Context,
+    dictationProviderId: StateFlow<String?>,
+    dictationLanguage: StateFlow<String?>,
 ) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -895,12 +929,16 @@ private class ChatViewModelHolder(
 
     /**
      * Holder-scoped so a recording survives rotation; [onCleared] discards
-     * any take still open when the screen goes away for good.
+     * any take still open when the screen goes away for good. The provider /
+     * language overrides read the app-graph caches live, so settings changes
+     * apply from the next take without recreating the chat.
      */
     val dictation = DictationController(
         api = HapiDictationApi(hubGraph.session.api),
         recorder = MediaRecorderDictation(appContext),
         scope = scope,
+        preferredProviderId = { dictationProviderId.value },
+        languageCode = { dictationLanguage.value },
     )
 
     override fun onCleared() {
@@ -988,6 +1026,30 @@ private class SettingsViewModelHolder(
         fetchHealth = { hubGraph.session.api.health() },
         scope = scope,
         probeHealth = probeHealth,
+    )
+
+    /** Dictation provider/language rows: app-wide prefs + this hub's providers. */
+    val dictation = DictationSettingsViewModel(
+        prefs = graph.dictationPrefs,
+        api = HapiDictationApi(hubGraph.session.api),
+        scope = scope,
+    )
+
+    override fun onCleared() {
+        scope.cancel()
+    }
+}
+
+/** Shell for the machines screen; live store keeps names current after rename. */
+private class MachinesViewModelHolder(hubGraph: HubGraph) : ViewModel() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    val viewModel = MachinesViewModel(
+        machineStore = hubGraph.machineStore,
+        renameGateway = RenameMachineGateway { machineId, displayName ->
+            hubGraph.session.api.renameMachine(machineId, displayName)
+        },
+        scope = scope,
     )
 
     override fun onCleared() {
