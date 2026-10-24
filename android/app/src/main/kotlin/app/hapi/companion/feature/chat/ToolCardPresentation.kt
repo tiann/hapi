@@ -2,7 +2,23 @@ package app.hapi.companion.feature.chat
 
 import app.hapi.companion.feature.chat.blocks.toolPresentationName
 import android.content.res.Resources
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.ui.graphics.vector.ImageVector
 import app.hapi.companion.R
+import app.hapi.companion.ui.components.HapiBookGlyph
+import app.hapi.companion.ui.components.HapiBulbGlyph
+import app.hapi.companion.ui.components.HapiClipboardGlyph
+import app.hapi.companion.ui.components.HapiGlobeGlyph
+import app.hapi.companion.ui.components.HapiHelpGlyph
+import app.hapi.companion.ui.components.HapiMsgGlyph
+import app.hapi.companion.ui.components.HapiPencilGlyph
+import app.hapi.companion.ui.components.HapiPuzzleGlyph
+import app.hapi.companion.ui.components.HapiRocketGlyph
+import app.hapi.companion.ui.components.HapiTerminalGlyph
+import app.hapi.companion.ui.components.HapiUsersGlyph
+import app.hapi.companion.ui.components.HapiWrenchGlyph
 import app.hapi.protocol.chat.ChatToolCall
 import app.hapi.protocol.chat.getInputStringAny
 import app.hapi.protocol.chat.isAskUserQuestionToolName
@@ -17,31 +33,40 @@ import kotlinx.serialization.json.JsonPrimitive
  * Collapsed tool-card header: icon glyph + title + optional subtitle. Port of
  * the presentation registry in `web/src/components/ToolCard/knownTools.tsx`
  * (the read-only subset — the web's `minimal` flag maps to "no inline body by
- * default" and is a per-card expansion default here). Icons are text glyphs in
- * the same family as the event-row emoji the shared protocol presentation
- * already emits.
+ * default" and is a per-card expansion default here).
  */
 data class ToolCardPresentation(
-    val icon: String,
+    val icon: ToolGlyph,
     val title: String,
     val subtitle: String?,
 )
 
-private object ToolIcons {
-    const val TERMINAL = "💻"
-    const val READ = "📖"
-    const val SEARCH = "🔍"
-    const val EDIT = "✏️"
-    const val WEB = "🌐"
-    const val AGENT = "🚀"
-    const val QUESTION = "❓"
-    const val PLAN = "📋"
-    const val IDEA = "💡"
-    const val PUZZLE = "🧩"
-    const val MESSAGE = "💬"
-    const val TEAM = "👥"
-    const val WARNING = "⚠️"
-    const val WRENCH = "🔧"
+/**
+ * Vector icons for the tool-card registry. Device emoji fonts render
+ * inconsistently (and color them), so the web's emoji set maps onto lucide
+ * 24 dp stroke glyphs ([vector]) instead.
+ */
+enum class ToolGlyph {
+    TERMINAL, READ, SEARCH, EDIT, WEB, AGENT, QUESTION, PLAN, IDEA,
+    PUZZLE, MESSAGE, TEAM, WARNING, WRENCH,
+}
+
+/** Static vector per glyph — stays callable from non-Composable code. */
+fun ToolGlyph.vector(): ImageVector = when (this) {
+    ToolGlyph.TERMINAL -> HapiTerminalGlyph
+    ToolGlyph.READ -> HapiBookGlyph
+    ToolGlyph.SEARCH -> Icons.Default.Search
+    ToolGlyph.EDIT -> HapiPencilGlyph
+    ToolGlyph.WEB -> HapiGlobeGlyph
+    ToolGlyph.AGENT -> HapiRocketGlyph
+    ToolGlyph.QUESTION -> HapiHelpGlyph
+    ToolGlyph.PLAN -> HapiClipboardGlyph
+    ToolGlyph.IDEA -> HapiBulbGlyph
+    ToolGlyph.PUZZLE -> HapiPuzzleGlyph
+    ToolGlyph.MESSAGE -> HapiMsgGlyph
+    ToolGlyph.TEAM -> HapiUsersGlyph
+    ToolGlyph.WARNING -> Icons.Default.Warning
+    ToolGlyph.WRENCH -> HapiWrenchGlyph
 }
 
 // ---------------------------------------------------------------- helpers --
@@ -180,10 +205,10 @@ fun toolCardPresentation(
     val description = tool.description
 
     if (name.startsWith("mcp__")) {
-        return ToolCardPresentation(ToolIcons.PUZZLE, mcpTitle(name), null)
+        return ToolCardPresentation(ToolGlyph.PUZZLE, mcpTitle(name), null)
     }
     if (isAskUserQuestionToolName(name) || isRequestUserInputToolName(name)) {
-        return ToolCardPresentation(ToolIcons.QUESTION, questionTitle(input, res), questionSubtitle(input, res))
+        return ToolCardPresentation(ToolGlyph.QUESTION, questionTitle(input, res), questionSubtitle(input, res))
     }
 
     fun filePathTitle(keys: List<String>, fallback: String): String =
@@ -198,7 +223,7 @@ fun toolCardPresentation(
                 if (first?.get("type").asStringOrNull() == "read") {
                     first?.get("name").asStringOrNull()?.let { file ->
                         return ToolCardPresentation(
-                            ToolIcons.READ,
+                            ToolGlyph.READ,
                             displayPath(file, basePath),
                             terminalSubtitle(input, description, res),
                         )
@@ -206,31 +231,31 @@ fun toolCardPresentation(
                 }
             }
             return ToolCardPresentation(
-                ToolIcons.TERMINAL,
+                ToolGlyph.TERMINAL,
                 terminalTitle(input, description, res),
                 terminalSubtitle(input, description, res),
             )
         }
 
         "Read" -> return ToolCardPresentation(
-            ToolIcons.READ, filePathTitle(listOf("file_path", "path", "file"), res.getString(R.string.tool_read_file)), null,
+            ToolGlyph.READ, filePathTitle(listOf("file_path", "path", "file"), res.getString(R.string.tool_read_file)), null,
         )
 
         "NotebookRead" -> return ToolCardPresentation(
-            ToolIcons.READ, filePathTitle(listOf("notebook_path"), res.getString(R.string.tool_read_notebook)), null,
+            ToolGlyph.READ, filePathTitle(listOf("notebook_path"), res.getString(R.string.tool_read_notebook)), null,
         )
 
         "Edit" -> return ToolCardPresentation(
-            ToolIcons.EDIT, filePathTitle(listOf("file_path", "path"), res.getString(R.string.tool_edit_file)), null,
+            ToolGlyph.EDIT, filePathTitle(listOf("file_path", "path"), res.getString(R.string.tool_edit_file)), null,
         )
 
         "MultiEdit" -> {
             val file = getInputStringAny(input, listOf("file_path", "path"))
-                ?: return ToolCardPresentation(ToolIcons.EDIT, res.getString(R.string.tool_edit_file), null)
+                ?: return ToolCardPresentation(ToolGlyph.EDIT, res.getString(R.string.tool_edit_file), null)
             val count = (input.asObjectOrNull()?.get("edits") as? JsonArray)?.size ?: 0
             val path = displayPath(file, basePath)
             return ToolCardPresentation(
-                ToolIcons.EDIT,
+                ToolGlyph.EDIT,
                 if (count > 1) res.getString(R.string.tool_edits_count, path, count) else path,
                 null,
             )
@@ -247,41 +272,41 @@ fun toolCardPresentation(
                 }
             }
             return ToolCardPresentation(
-                ToolIcons.EDIT, filePathTitle(listOf("file_path", "path"), res.getString(R.string.tool_write_file)), subtitle,
+                ToolGlyph.EDIT, filePathTitle(listOf("file_path", "path"), res.getString(R.string.tool_write_file)), subtitle,
             )
         }
 
         "NotebookEdit" -> return ToolCardPresentation(
-            ToolIcons.EDIT,
+            ToolGlyph.EDIT,
             filePathTitle(listOf("notebook_path"), res.getString(R.string.tool_edit_notebook)),
             getInputStringAny(input, listOf("edit_mode"))?.let { "mode: $it" },
         )
 
         "Glob" -> return ToolCardPresentation(
-            ToolIcons.SEARCH, getInputStringAny(input, listOf("pattern")) ?: res.getString(R.string.tool_search_files), null,
+            ToolGlyph.SEARCH, getInputStringAny(input, listOf("pattern")) ?: res.getString(R.string.tool_search_files), null,
         )
 
         "Grep" -> {
             val pattern = getInputStringAny(input, listOf("pattern"))
             return ToolCardPresentation(
-                ToolIcons.SEARCH, pattern?.let { "grep(pattern: $it)" } ?: res.getString(R.string.tool_search_content), null,
+                ToolGlyph.SEARCH, pattern?.let { "grep(pattern: $it)" } ?: res.getString(R.string.tool_search_content), null,
             )
         }
 
         "LS" -> return ToolCardPresentation(
-            ToolIcons.SEARCH, filePathTitle(listOf("path"), res.getString(R.string.tool_list_files)), null,
+            ToolGlyph.SEARCH, filePathTitle(listOf("path"), res.getString(R.string.tool_list_files)), null,
         )
 
         "WebFetch" -> {
             val url = getInputStringAny(input, listOf("url"))
-                ?: return ToolCardPresentation(ToolIcons.WEB, res.getString(R.string.tool_web_fetch), null)
+                ?: return ToolCardPresentation(ToolGlyph.WEB, res.getString(R.string.tool_web_fetch), null)
             val host = Regex("^[a-zA-Z][a-zA-Z0-9+.-]*://([^/]+)").find(url)?.groupValues?.get(1) ?: url
-            return ToolCardPresentation(ToolIcons.WEB, host, url)
+            return ToolCardPresentation(ToolGlyph.WEB, host, url)
         }
 
         "WebSearch" -> {
             val query = getInputStringAny(input, listOf("query"))
-            return ToolCardPresentation(ToolIcons.WEB, query ?: res.getString(R.string.tool_web_search), query?.let { truncate(it, 80) })
+            return ToolCardPresentation(ToolGlyph.WEB, query ?: res.getString(R.string.tool_web_search), query?.let { truncate(it, 80) })
         }
 
         "Task", "Agent" -> {
@@ -295,7 +320,7 @@ fun toolCardPresentation(
             }
             val subtitle = getInputStringAny(input, listOf("prompt"))?.let { truncate(it, 120) }
                 ?: getInputStringAny(input, listOf("subagent_type"))
-            return ToolCardPresentation(ToolIcons.AGENT, title, subtitle)
+            return ToolCardPresentation(ToolGlyph.AGENT, title, subtitle)
         }
 
         "CodexAgent", "spawn_agent", "resume_agent", "wait_agent", "close_agent", "interrupt_agent" -> {
@@ -310,7 +335,7 @@ fun toolCardPresentation(
                 },
             )
             val prompt = getInputStringAny(input, listOf("prompt", "summary"))
-            return ToolCardPresentation(ToolIcons.AGENT, title, prompt?.let { truncate(it, 120) })
+            return ToolCardPresentation(ToolGlyph.AGENT, title, prompt?.let { truncate(it, 120) })
         }
 
         "SendMessage", "send_input", "send_message", "followup_task" -> {
@@ -327,46 +352,46 @@ fun toolCardPresentation(
                 else -> res.getString(R.string.tool_message_agent)
             }
             val summary = getInputStringAny(input, listOf("summary"))
-            return ToolCardPresentation(ToolIcons.MESSAGE, title, summary?.let { truncate(it, 120) })
+            return ToolCardPresentation(ToolGlyph.MESSAGE, title, summary?.let { truncate(it, 120) })
         }
 
-        "list_agents" -> return ToolCardPresentation(ToolIcons.TEAM, res.getString(R.string.tool_list_agents), null)
+        "list_agents" -> return ToolCardPresentation(ToolGlyph.TEAM, res.getString(R.string.tool_list_agents), null)
 
         "TeamCreate" -> {
             val teamName = getInputStringAny(input, listOf("team_name"))
             return ToolCardPresentation(
-                ToolIcons.TEAM,
+                ToolGlyph.TEAM,
                 teamName?.let { res.getString(R.string.tool_team_named, it) }
                     ?: res.getString(R.string.tool_create_team),
                 getInputStringAny(input, listOf("description")),
             )
         }
 
-        "TeamDelete" -> return ToolCardPresentation(ToolIcons.TEAM, res.getString(R.string.tool_delete_team), null)
+        "TeamDelete" -> return ToolCardPresentation(ToolGlyph.TEAM, res.getString(R.string.tool_delete_team), null)
 
-        "TodoWrite" -> return ToolCardPresentation(ToolIcons.IDEA, res.getString(R.string.tool_todo_list), null)
+        "TodoWrite" -> return ToolCardPresentation(ToolGlyph.IDEA, res.getString(R.string.tool_todo_list), null)
 
-        "update_plan" -> return ToolCardPresentation(ToolIcons.PLAN, res.getString(R.string.tool_plan), null)
+        "update_plan" -> return ToolCardPresentation(ToolGlyph.PLAN, res.getString(R.string.tool_plan), null)
 
-        "ExitPlanMode", "exit_plan_mode" -> return ToolCardPresentation(ToolIcons.PLAN, res.getString(R.string.tool_plan_proposal), null)
+        "ExitPlanMode", "exit_plan_mode" -> return ToolCardPresentation(ToolGlyph.PLAN, res.getString(R.string.tool_plan_proposal), null)
 
         "Skill" -> {
             val skill = getInputStringAny(input, listOf("skill"))
             return ToolCardPresentation(
-                ToolIcons.PUZZLE,
+                ToolGlyph.PUZZLE,
                 skill?.let { res.getString(R.string.tool_skill_named, it) } ?: res.getString(R.string.tool_skill),
                 null,
             )
         }
 
         "CodexReasoning" -> return ToolCardPresentation(
-            ToolIcons.IDEA, getInputStringAny(input, listOf("title")) ?: res.getString(R.string.tool_reasoning), null,
+            ToolGlyph.IDEA, getInputStringAny(input, listOf("title")) ?: res.getString(R.string.tool_reasoning), null,
         )
 
         "CodexPermission" -> {
             val permissionTool = getInputStringAny(input, listOf("tool"))
             return ToolCardPresentation(
-                ToolIcons.QUESTION,
+                ToolGlyph.QUESTION,
                 permissionTool?.let { res.getString(R.string.tool_permission_named, it) }
                     ?: res.getString(R.string.tool_permission_request),
                 getInputStringAny(input, listOf("message", "command")),
@@ -380,7 +405,7 @@ fun toolCardPresentation(
                 val display = basename(displayPath(first, basePath))
                 if (files.size > 1) "$display (+${files.size - 1})" else display
             }
-            return ToolCardPresentation(ToolIcons.EDIT, res.getString(R.string.tool_apply_changes), subtitle)
+            return ToolCardPresentation(ToolGlyph.EDIT, res.getString(R.string.tool_apply_changes), subtitle)
         }
 
         "CodexDiff" -> {
@@ -389,22 +414,22 @@ fun toolCardPresentation(
                 ?.firstOrNull { it.startsWith("+++ ") }
                 ?.removePrefix("+++ ")?.removePrefix("b/")
                 ?.let { it.substringAfterLast('/') }
-            return ToolCardPresentation(ToolIcons.EDIT, res.getString(R.string.tool_diff), subtitle)
+            return ToolCardPresentation(ToolGlyph.EDIT, res.getString(R.string.tool_diff), subtitle)
         }
 
         "AgyTaskLog" -> {
             val task = getInputStringAny(input, listOf("task"))
             return ToolCardPresentation(
-                ToolIcons.MESSAGE,
+                ToolGlyph.MESSAGE,
                 task?.let { res.getString(R.string.tool_task_log, it) }
                     ?: res.getString(R.string.tool_inspecting_task_log),
                 null,
             )
         }
 
-        "AgyAsyncTask" -> return ToolCardPresentation(ToolIcons.PLAN, description ?: res.getString(R.string.tool_background_task), null)
+        "AgyAsyncTask" -> return ToolCardPresentation(ToolGlyph.PLAN, description ?: res.getString(R.string.tool_background_task), null)
 
-        "AgyError" -> return ToolCardPresentation(ToolIcons.WARNING, description ?: res.getString(R.string.tool_error), null)
+        "AgyError" -> return ToolCardPresentation(ToolGlyph.WARNING, description ?: res.getString(R.string.tool_error), null)
     }
 
     // Generic fallback (web `getToolPresentation` tail): promote a semantic
@@ -429,7 +454,7 @@ fun toolCardPresentation(
         }
     }
     return ToolCardPresentation(
-        ToolIcons.WRENCH,
+        ToolGlyph.WRENCH,
         title,
         subtitle?.takeIf { it != title }?.let { truncate(it, 80) },
     )
@@ -449,7 +474,7 @@ internal fun toolSummaryPresentation(tool: ChatToolCall, basePath: String?, res:
     }
     if (fileAction != null) {
         val path = getInputStringAny(tool.input, listOf("file_path", "path", "file", "notebook_path", "image_path"))
-        return ToolCardPresentation(if (name in setOf("Edit", "MultiEdit", "NotebookEdit", "Write")) ToolIcons.EDIT else ToolIcons.READ,
+        return ToolCardPresentation(if (name in setOf("Edit", "MultiEdit", "NotebookEdit", "Write")) ToolGlyph.EDIT else ToolGlyph.READ,
             res.getString(fileAction) + (path?.let { " · " + basename(it.takeLast(240)) } ?: ""), null)
     }
     // Bound all textual preview inputs BEFORE title parsing (shell splitting, regexes,

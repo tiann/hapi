@@ -28,6 +28,12 @@ data class HapiExtendedColors(
     val tableBackground: Color,
     val tableHeaderBackground: Color,
     val divider: Color,
+    /**
+     * Extended-thinking card fill (web `--app-reasoning-bg`). Deliberately NOT
+     * a Material3 role: it must stay distinguishable from the tool-card
+     * surface (`surfaceContainerLow`) under every theme.
+     */
+    val reasoningBackground: Color,
     val diffAddBackground: Color,
     val diffAddText: Color,
     val diffRemoveBackground: Color,
@@ -51,6 +57,7 @@ val HapiLightExtendedColors = HapiExtendedColors(
     tableBackground = Color(0xFFF5F6F7),
     tableHeaderBackground = Color(0xFFECEFF2),
     divider = Color(0xFFE2E5E9),
+    reasoningBackground = Color(0xFFF2F4F6),
     diffAddBackground = Color(0xFFE6FFED),
     diffAddText = Color(0xFF24292E),
     diffRemoveBackground = Color(0xFFFFEEF0),
@@ -74,6 +81,7 @@ val HapiDarkExtendedColors = HapiExtendedColors(
     tableBackground = Color(0xFF2A2F35),
     tableHeaderBackground = Color(0xFF353B43),
     divider = Color(0xFF3A3F45),
+    reasoningBackground = Color(0xFF2B3036),
     diffAddBackground = Color(0xFF0D2E1F),
     diffAddText = Color(0xFFC9D1D9),
     diffRemoveBackground = Color(0xFF3F1B23),
@@ -100,6 +108,7 @@ val HapiOledExtendedColors = HapiExtendedColors(
     tableBackground = Color(0xFF0E0E10),
     tableHeaderBackground = Color(0xFF161618),
     divider = Color(0xFF26262A),
+    reasoningBackground = Color(0xFF0E0E10),
     diffAddBackground = Color(0xFF07251A),
     diffAddText = Color(0xFFC9D1D9),
     diffRemoveBackground = Color(0xFF2C1217),

@@ -205,6 +205,28 @@
     <string name="sessions_filter_all">All</string>
     <string name="sessions_filter_unknown_machine">Unknown machine</string>
     <string name="sessions_offline_banner">Offline — showing cached sessions</string>
+    <string name="sessions_search_hint">Search sessions</string>
+    <string name="sessions_search_clear">Clear search</string>
+    <string name="sessions_search_no_results">No sessions matching “%1$s”</string>
+    <string name="sessions_search_no_results_hint">Try another term, or clear the search.</string>
+    <string name="sessions_grouped_layout">Group by directory</string>
+    <string name="sessions_group_expand">Expand group</string>
+    <string name="sessions_group_collapse">Collapse group</string>
+    <string name="sessions_unread_filter">Unread only</string>
+    <string name="sessions_unread_empty_title">No unread sessions</string>
+    <string name="sessions_unread_empty_hint">You\'re all caught up. Sessions light up here when new activity arrives.</string>
+    <string name="sessions_active_filter">Active only</string>
+    <string name="sessions_pin_in_progress">In progress</string>
+    <string name="sessions_active_empty_title">No active sessions</string>
+    <string name="sessions_active_empty_hint">Sessions connected to a runner appear here.</string>
+    <string name="sessions_section_running">Running</string>
+    <string name="sessions_section_pending">Pending</string>
+    <string name="sessions_section_active">Active</string>
+    <string name="sessions_section_idle">Idle (keepalive only)</string>
+    <string name="sessions_mark_all_read">Mark all as read (%1$d)</string>
+    <string name="sessions_mark_all_read_title">Mark all as read?</string>
+    <string name="sessions_mark_all_read_description">This will mark %1$d unread sessions as read on this device.</string>
+    <string name="sessions_mark_all_read_confirm">Confirm</string>
     <string name="sessions_empty_loading_title">Loading sessions…</string>
     <string name="sessions_empty_offline_title">Hub unreachable</string>
     <string name="sessions_empty_title">No sessions yet</string>
@@ -218,11 +240,13 @@
     <string name="sessions_action_pin_project">Pin to project</string>
     <string name="sessions_action_pin_global">Pin globally</string>
     <string name="sessions_action_rename">Rename</string>
+    <string name="sessions_action_mark_unread">Mark unread</string>
     <string name="sessions_action_reopen">Reopen</string>
     <string name="sessions_action_archive">Archive</string>
     <string name="sessions_action_delete">Delete</string>
     <string name="sessions_error_pin">Pin failed</string>
     <string name="sessions_error_archive">Archive failed</string>
+    <string name="sessions_error_summary">Couldn\'t save the generated title</string>
     <string name="sessions_error_rename">Rename failed</string>
     <string name="sessions_error_delete">Delete failed</string>
     <string name="sessions_error_reopen">Reopen failed</string>
@@ -230,6 +254,12 @@
     <string name="sessions_error_delete_active">Session is still active — archive it first</string>
     <string name="sessions_reopen_failed_fallback">Failed to reopen session</string>
     <string name="sessions_rename_title">Rename session</string>
+    <string name="sessions_action_rename_save">Save</string>
+    <string name="sessions_action_copy_reference">Copy reference</string>
+    <string name="sessions_reference_copied">Reference copied</string>
+    <string name="sessions_rename_suggest">Generate</string>
+    <string name="sessions_rename_suggesting">Generating…</string>
+    <string name="sessions_rename_suggest_error">Failed to generate a title. Please try again.</string>
     <string name="sessions_rename_placeholder">Session name</string>
     <string name="sessions_delete_title">Delete session?</string>
     <string name="sessions_delete_message">“%1$s” and its message history will be removed from the hub permanently. Active sessions must be archived first.</string>
@@ -240,7 +270,6 @@
     <string name="chat_back">Back</string>
     <string name="chat_open_files">Session files</string>
     <string name="chat_open_scratchlist">Scratchlist</string>
-    <string name="chat_open_scratchlist_count">Scratchlist (%1$d)</string>
     <string name="chat_open_settings">Session settings</string>
     <string name="chat_session_actions">Session actions</string>
     <string name="chat_scratchlist_badge">Scratchlist</string>
@@ -252,8 +281,6 @@
     <string name="chat_load_failed_hint">Check the connection to your hub and try again.</string>
     <string name="chat_empty_title">No messages yet</string>
     <string name="chat_empty_hint">Messages will appear here as the agent works.</string>
-    <string name="chat_new_messages_one">1 new message ↓</string>
-    <string name="chat_new_messages_many">%1$d new messages ↓</string>
 
     <!-- Chat snackbar notices (semantic ChatNotice resolution) -->
     <string name="chat_notice_no_transcription">No transcription provider configured on hub</string>
@@ -282,7 +309,7 @@
     <string name="chat_composer_placeholder">Message the agent…</string>
     <string name="chat_attachment_uploading">Uploading…</string>
     <string name="chat_attachment_failed_retry">Failed — tap to retry</string>
-    <string name="chat_recording">● Recording…  %1$s</string>
+    <string name="chat_recording">Recording… %1$s</string>
     <string name="chat_cancel">Cancel</string>
     <string name="chat_park_draft">Park draft to scratchlist</string>
     <string name="chat_composer_add_attachment">Add attachment</string>
@@ -319,9 +346,9 @@
 
     <!-- Chat blocks (B-M2c/d) -->
     <string name="chat_tool_awaiting_approval">Awaiting approval</string>
-    <string name="chat_tool_awaiting_approval_badge">⏳ Awaiting approval</string>
-    <string name="chat_tool_approved">✓ Approved</string>
-    <string name="chat_tool_denied">✕ Denied</string>
+    <string name="chat_tool_awaiting_approval_badge">Awaiting approval</string>
+    <string name="chat_tool_approved">Approved</string>
+    <string name="chat_tool_denied">Denied</string>
     <string name="chat_tool_resolved">Resolved in Codex</string>
     <string name="chat_tool_canceled">— Canceled</string>
     <string name="chat_tool_status_pending">pending</string>
@@ -336,8 +363,7 @@
     <string name="chat_empty_snippet">(empty)</string>
     <string name="chat_result">Result</string>
     <string name="chat_result_error">Result · error</string>
-    <string name="chat_reasoning_expanded">💭 Reasoning ▾</string>
-    <string name="chat_reasoning_collapsed">💭 Reasoning ▸</string>
+    <string name="chat_reasoning">Reasoning</string>
     <string name="chat_not_delivered_retry">Not delivered — tap to retry</string>
     <string name="chat_not_delivered">Not delivered</string>
     <string name="chat_review_title">Code review</string>
@@ -531,7 +557,7 @@
     <string name="new_session_error_runner_upgrade_required">Upgrade and restart this machine’s HAPI runner before creating sessions.</string>
     <string name="new_session_error_no_available_agents">No supported Agents are installed on this machine.</string>
     <string name="new_session_error_selected_agent_unavailable">The selected Agent is not available on this machine.</string>
-    <string name="chat_back_to_latest">Back to latest ↓</string>
+    <string name="chat_back_to_latest">Back to latest</string>
     <string name="chat_history_retry">Couldn\'t load history. Tap to retry.</string>
     <string name="chat_history_continue">Continue loading history</string>
     <string name="chat_history_load">Load older messages</string>

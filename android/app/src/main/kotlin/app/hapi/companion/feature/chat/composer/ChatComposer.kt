@@ -21,6 +21,8 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -57,14 +59,23 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import app.hapi.companion.R
 import app.hapi.companion.feature.chat.ComposerUiState
 import app.hapi.companion.feature.chat.attachments.ComposerAttachmentStatus
 import app.hapi.companion.feature.chat.attachments.ComposerAttachmentUi
 import app.hapi.companion.feature.chat.attachments.rememberChipThumbnail
+import app.hapi.companion.ui.components.ArrowUpGlyph
+import app.hapi.companion.ui.components.FolderGlyph
+import app.hapi.companion.ui.components.MicGlyph
+import app.hapi.companion.ui.components.PlusGlyph
+import app.hapi.companion.ui.components.StopGlyph
+import app.hapi.companion.ui.components.HapiImageGlyph
+import app.hapi.companion.ui.components.HapiInboxGlyph
+import app.hapi.companion.ui.components.HapiNoteGlyph
+import app.hapi.companion.ui.components.HapiPaperclipGlyph
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.companion.ui.theme.hapi
+import app.hapi.protocol.wire.SkillSummary
 import app.hapi.protocol.wire.SlashCommand
 import kotlinx.coroutines.delay
 
@@ -75,6 +86,13 @@ import kotlinx.coroutines.delay
  * otherwise Send (long-press offers "Send & steer" during a turn). The card
  * also hosts dictation and attachment controls, while slash suggestions stay
  * outside so the popup cannot be clipped by the rounded surface.
+ *
+ * The leading side of the action row carries the quick navigations (Files /
+ * Scratchlist / Park): web's narrow viewport folds its model/effort value
+ * buttons into the settings gear so only those three stay directly reachable
+ * (ComposerButtons.tsx `effectiveLayout`), and Android is permanently
+ * narrow — so the same set belongs in the row while model/mode/effort live
+ * behind the top-bar gear.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -91,10 +109,19 @@ fun ChatComposer(
     onAttachmentRemove: (String) -> Unit = {},
     slashSuggestions: List<SlashCommand> = emptyList(),
     onSlashCommandSelected: (SlashCommand) -> Unit = {},
+    /** `$` skills menu (web `getSkillSuggestions`); empty hides it. */
+    skillSuggestions: List<SkillSummary> = emptyList(),
+    onSkillSelected: (SkillSummary) -> Unit = {},
     /** null ⇒ dictation unavailable (no controller wired) — mic button hidden. */
     dictation: DictationState? = null,
     onDictationToggle: () -> Unit = {},
     onDictationCancel: () -> Unit = {},
+    /** null ⇒ Files quick action hidden (tests / previews). */
+    onOpenFiles: (() -> Unit)? = null,
+    /** null ⇒ Scratchlist quick action hidden (feature off / tests). */
+    onOpenScratchlist: (() -> Unit)? = null,
+    /** null ⇒ Park quick action hidden (scratchlist off or empty draft). */
+    onParkDraft: (() -> Unit)? = null,
 ) {
     val focusRequester = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
@@ -109,10 +136,17 @@ fun ChatComposer(
     }
     Surface(color = MaterialTheme.colorScheme.surface, modifier = modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(vertical = 8.dp)) {
+            // One trigger at a time: the text cannot start with both `/` and `$`.
             if (slashSuggestions.isNotEmpty()) {
                 SlashCommandDropdown(
                     suggestions = slashSuggestions,
                     onSelect = onSlashCommandSelected,
+                    modifier = Modifier.padding(bottom = 6.dp),
+                )
+            } else if (skillSuggestions.isNotEmpty()) {
+                SkillSuggestionDropdown(
+                    suggestions = skillSuggestions,
+                    onSelect = onSkillSelected,
                     modifier = Modifier.padding(bottom = 6.dp),
                 )
             }
@@ -193,6 +227,30 @@ fun ChatComposer(
                                 Icon(PlusGlyph, contentDescription = null, modifier = Modifier.size(20.dp))
                             }
                         }
+                        if (onOpenFiles != null) {
+                            ComposerActionButton(
+                                contentDescription = stringResource(R.string.chat_open_files),
+                                onClick = onOpenFiles,
+                            ) {
+                                Icon(FolderGlyph, contentDescription = null, modifier = Modifier.size(19.dp))
+                            }
+                        }
+                        if (onOpenScratchlist != null) {
+                            ComposerActionButton(
+                                contentDescription = stringResource(R.string.chat_open_scratchlist),
+                                onClick = onOpenScratchlist,
+                            ) {
+                                Icon(HapiNoteGlyph, contentDescription = null, modifier = Modifier.size(19.dp))
+                            }
+                        }
+                        if (onParkDraft != null) {
+                            ComposerActionButton(
+                                contentDescription = stringResource(R.string.chat_park_draft),
+                                onClick = onParkDraft,
+                            ) {
+                                Icon(HapiInboxGlyph, contentDescription = null, modifier = Modifier.size(19.dp))
+                            }
+                        }
                         Spacer(modifier = Modifier.weight(1f))
                         if (dictation != null) {
                             MicButton(state = dictation, onToggle = onDictationToggle)
@@ -264,14 +322,15 @@ private fun ComposerAttachmentChip(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            Text(
-                text = "✕",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.hapi.hint,
+            Icon(
+                imageVector = Icons.Default.Close,
+                contentDescription = null,
+                tint = MaterialTheme.hapi.hint,
                 modifier = Modifier
                     .clip(CircleShape)
                     .clickable(onClick = onRemove)
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
+                    .size(14.dp),
             )
         }
     }
@@ -299,7 +358,12 @@ private fun ChipThumb(attachment: ComposerAttachmentUi) {
             )
         } else {
             Surface(color = MaterialTheme.colorScheme.surfaceContainerHighest, modifier = Modifier.size(36.dp)) {}
-            Text(text = if (attachment.mimeType.startsWith("image/")) "🖼" else "📎", fontSize = 15.sp)
+            Icon(
+                imageVector = if (attachment.mimeType.startsWith("image/")) HapiImageGlyph else HapiPaperclipGlyph,
+                contentDescription = null,
+                tint = MaterialTheme.hapi.hint,
+                modifier = Modifier.size(16.dp),
+            )
         }
         if (attachment.status == ComposerAttachmentStatus.Uploading) {
             CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -313,6 +377,14 @@ internal fun formatChipSize(bytes: Long): String = when {
     bytes >= 1024 -> "%.0f KB".format(bytes / 1024.0)
     else -> "$bytes B"
 }
+
+/**
+ * Park affordance gate (the web overflow item's own condition): the quick
+ * action renders only when the scratchlist feature is on and the composer
+ * actually holds a non-blank draft to park.
+ */
+internal fun parkDraftEligible(scratchlistEnabled: Boolean, draftText: String): Boolean =
+    scratchlistEnabled && draftText.isNotBlank()
 
 /** Shared 48 dp touch target with a centered 38 dp visual circle. */
 @OptIn(ExperimentalFoundationApi::class)
@@ -366,41 +438,89 @@ private fun SlashCommandDropdown(
     onSelect: (SlashCommand) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    AutocompleteSurface(modifier) {
+        LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
+            items(suggestions, key = { "${it.source}:${it.name}" }) { command ->
+                AutocompleteRow(
+                    leading = "/",
+                    name = command.name,
+                    description = command.description,
+                    onClick = { onSelect(command) },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Skills list above the input — same dropdown shell with the `$` glyph
+ * (web renders `$name` labels in `Autocomplete`).
+ */
+@Composable
+private fun SkillSuggestionDropdown(
+    suggestions: List<SkillSummary>,
+    onSelect: (SkillSummary) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    AutocompleteSurface(modifier) {
+        LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
+            items(suggestions, key = { it.name }) { skill ->
+                AutocompleteRow(
+                    leading = "$",
+                    name = skill.name,
+                    description = skill.description,
+                    onClick = { onSelect(skill) },
+                )
+            }
+        }
+    }
+}
+
+/** Shared dropdown chrome (web `Autocomplete` container). */
+@Composable
+private fun AutocompleteSurface(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         shape = RoundedCornerShape(12.dp),
         tonalElevation = 2.dp,
         modifier = modifier.fillMaxWidth(),
     ) {
-        LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
-            items(suggestions, key = { "${it.source}:${it.name}" }) { command ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .combinedClickable(onClick = { onSelect(command) })
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                ) {
-                    Text(
-                        text = "/${command.name}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    command.description?.takeIf { it.isNotBlank() }?.let { description ->
-                        Text(
-                            text = description,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.hapi.hint,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHighest)
-            }
+        content()
+    }
+}
+
+/** One suggestion row: `leading + name` and an optional 2-line description. */
+@Composable
+private fun AutocompleteRow(
+    leading: String,
+    name: String,
+    description: String?,
+    onClick: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Text(
+            text = "$leading$name",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        description?.takeIf { it.isNotBlank() }?.let { text ->
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.hapi.hint,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
+    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHighest)
 }
 
 // ------------------------------------------------------------- dictation --
@@ -619,6 +739,20 @@ private fun ChatComposerPreview() {
                             status = ComposerAttachmentStatus.Ready,
                         ),
                     ),
+                )
+                // Full quick-action row: Files / Scratchlist / Park next to "+".
+                ChatComposer(
+                    state = ComposerUiState(
+                        text = "Draft worth parking before closing the tab",
+                        isSending = false,
+                        canSteer = true,
+                    ),
+                    onTextChange = {}, onSend = {}, onSendSteer = {}, onAbort = {},
+                    onAddAttachment = {},
+                    onOpenFiles = {},
+                    onOpenScratchlist = {},
+                    onParkDraft = {},
+                    dictation = DictationState.Idle,
                 )
             }
         }
