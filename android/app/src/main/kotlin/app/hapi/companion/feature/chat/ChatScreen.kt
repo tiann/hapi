@@ -182,6 +182,7 @@ internal fun ChatScreen(
         }
     }
     val slashSuggestions by viewModel.slashSuggestions.collectAsState()
+    val skillSuggestions by viewModel.skillSuggestions.collectAsState()
 
     // --------------------------------------------------------- attachments --
     val attachmentItems by viewModel.attachments.items.collectAsState()
@@ -342,6 +343,8 @@ internal fun ChatScreen(
                         onAttachmentRemove = viewModel.attachments::remove,
                         slashSuggestions = slashSuggestions,
                         onSlashCommandSelected = viewModel::selectSlashCommand,
+                        skillSuggestions = skillSuggestions,
+                        onSkillSelected = viewModel::selectSkill,
                         dictation = if (dictationAvailable) dictationState else null,
                         onDictationToggle = onDictationToggle,
                         onDictationCancel = { dictation?.cancel() },
