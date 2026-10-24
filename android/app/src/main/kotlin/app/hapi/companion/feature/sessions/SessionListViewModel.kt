@@ -928,9 +928,10 @@ class SessionListViewModel(
             groups.forEach { group ->
                 // Multi-machine unfiltered view: disambiguate same-named
                 // directories across machines by suffixing the machine label
-                // (web `groupTitle`); single-machine or unknown labels stay bare.
+                // (web `groupTitle`); single-machine, unknown, or blank labels
+                // stay bare.
                 val machineLabel = machineLabels[group.key.substringBefore("::")]
-                val title = if (machineLabel != null) "${group.title} · $machineLabel" else group.title
+                val title = if (!machineLabel.isNullOrBlank()) "${group.title} · $machineLabel" else group.title
                 add(
                     SessionSectionUi(
                         kind = SessionSectionKind.DIRECTORY,

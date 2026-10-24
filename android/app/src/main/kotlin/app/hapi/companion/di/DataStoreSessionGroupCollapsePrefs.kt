@@ -17,7 +17,7 @@ import kotlinx.coroutines.flow.map
 /**
  * Process-wide group-collapse DataStore. Separate from `hapi_prefs` so the
  * bursty per-toggle writes never contend with the settings file
- * (`files_dir_expand` precedent).
+ * (`chat_drafts` precedent).
  */
 internal val Context.sessionGroupCollapseDataStore: DataStore<Preferences> by preferencesDataStore(name = "session_group_collapse")
 

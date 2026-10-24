@@ -132,7 +132,7 @@ class AppGraph(context: Context) {
     /**
      * Directory-group collapse overrides for the session list. Own DataStore
      * (`session_group_collapse`): the writes are bursty per-toggle, kept out
-     * of `hapi_prefs` (`files_dir_expand` precedent).
+     * of `hapi_prefs` (`chat_drafts` precedent).
      */
     val sessionGroupCollapsePrefs: SessionGroupCollapsePrefs =
         DataStoreSessionGroupCollapsePrefs(appContext.sessionGroupCollapseDataStore)

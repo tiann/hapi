@@ -13,8 +13,7 @@ import kotlinx.serialization.json.jsonPrimitive
  * Per-directory-group collapse overrides for the grouped session list (web
  * `SessionList.tsx` `collapseOverrides`). Web keeps a plain in-memory `Map`
  * that dies on every reload; Android processes get killed constantly, so the
- * overrides persist (DataStore twin below — the same divergence the
- * files `DirectoryExpandPrefs` header documents).
+ * overrides persist (DataStore twin below).
  */
 interface SessionGroupCollapsePrefs {
 
