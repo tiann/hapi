@@ -306,7 +306,6 @@
     <string name="chat_back">Назад</string>
     <string name="chat_open_files">Файлы сессии</string>
     <string name="chat_open_scratchlist">Заметки</string>
-    <string name="chat_open_scratchlist_count">Заметки (%1$d)</string>
     <string name="chat_open_settings">Настройки сессии</string>
     <string name="chat_session_actions">Действия с сессией</string>
     <string name="chat_scratchlist_badge">Заметки</string>

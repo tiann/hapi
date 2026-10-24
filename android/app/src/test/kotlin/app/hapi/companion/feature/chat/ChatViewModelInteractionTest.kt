@@ -2240,20 +2240,4 @@ class ChatViewModelInteractionTest {
         harness.viewModel.insertComposerText("second note")
         harness.viewModel.composer.first { it.text == "first note\nsecond note" }
     }
-
-    @Test
-    fun `scratchlist entry count feeds the top-bar badge`() = runTest {
-        val scratch = FakeScratchlist()
-        val harness = InteractionHarness(this, scratchlist = scratch)
-
-        scratch.sessionState.value = ScratchlistSessionState(
-            entries = listOf(
-                app.hapi.protocol.wire.ScratchlistEntry("e1", "one", 1, 1),
-                app.hapi.protocol.wire.ScratchlistEntry("e2", "two", 2, 2),
-            ),
-            loaded = true,
-        )
-
-        harness.viewModel.scratchlistCount.first { it == 2 }
-    }
 }

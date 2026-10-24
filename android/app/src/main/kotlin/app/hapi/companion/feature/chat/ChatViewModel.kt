@@ -748,15 +748,6 @@ class ChatViewModel(
         SkillSuggestions.filter(skills, query, recent)
     }.stateIn(scope, SharingStarted.Eagerly, emptyList())
 
-    /**
-     * Entry count for the top-bar scratchlist badge (B-M4d); stays 0 without
-     * a wired store. The store refetches on [start] (open) and on the
-     * `scratchlistUpdatedAt` SSE trigger.
-     */
-    val scratchlistCount: StateFlow<Int> =
-        (scratchlist?.state(sessionId)?.map { it.entries.size } ?: flowOf(0))
-            .stateIn(scope, SharingStarted.Eagerly, 0)
-
     /** Whether a scratchlist store is wired — gates the badge and park affordances. */
     val scratchlistEnabled: Boolean = scratchlist != null
 

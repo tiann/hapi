@@ -306,7 +306,6 @@
     <string name="chat_back">Back</string>
     <string name="chat_open_files">Session files</string>
     <string name="chat_open_scratchlist">Scratchlist</string>
-    <string name="chat_open_scratchlist_count">Scratchlist (%1$d)</string>
     <string name="chat_open_settings">Session settings</string>
     <string name="chat_session_actions">Session actions</string>
     <string name="chat_scratchlist_badge">Scratchlist</string>
