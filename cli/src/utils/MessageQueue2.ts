@@ -346,13 +346,16 @@ export class MessageQueue2<T> {
         if (!localId) return null;
 
         // An indeterminate steer is deliberately held outside the normal queue.
-        // A later explicit Steer retries that same reservation; automatic queue
-        // drains never see it.
+        // A later explicit Steer owns a fresh attempt, so an abandoned
+        // request's late callbacks cannot mutate its replacement.
         const existing = this.reservations.get(localId);
         if (existing) {
             if (existing.state !== 'indeterminate') return null;
-            existing.state = 'reserved';
-            return existing;
+            const retry: QueueReservation<T> = { ...existing, state: 'reserved', cancelReason: undefined };
+            existing.state = 'cancelled';
+            existing.cancelReason = 'explicit';
+            this.reservations.set(localId, retry);
+            return retry;
         }
 
         const idx = this.queue.findIndex(item => item.localId === localId);

@@ -440,7 +440,7 @@ export async function runOpencode(opts: {
 
     session.onCancelQueuedMessage((localId) => {
         const removedFromQueue = messageQueue.cancelByLocalId(localId);
-        if (removedFromQueue) {
+        if (removedFromQueue === true) {
             if (queuedClearLocalId === localId) {
                 queuedClearLocalId = null;
                 clearTransitionLatched = false;
@@ -457,6 +457,7 @@ export async function runOpencode(opts: {
             logger.debug(`[opencode] cancelByLocalId(${localId}): removed from queue`);
             return true;
         }
+        if (removedFromQueue !== false) return removedFromQueue;
         if (preparingLocalIds.has(localId)) {
             cancelledBeforeEnqueue.add(localId);
             logger.debug(`[opencode] cancelByLocalId(${localId}): marked for cancellation before enqueue`);

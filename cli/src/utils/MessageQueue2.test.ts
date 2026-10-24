@@ -609,10 +609,18 @@ describe('MessageQueue2', () => {
         expect(queue.beginReservationDispatch(reservation!)).toBe(true);
         expect(queue.markReservationIndeterminate(reservation!)).toBe(true);
         expect(queue.size()).toBe(0);
-        expect(queue.takeByLocalId('b')).toBe(reservation);
-        expect(queue.beginReservationDispatch(reservation!)).toBe(true);
-        expect(queue.restoreReservation(reservation!)).toBe(true);
-        expect(queue.takeByLocalId('b')).toBe(reservation);
+        const retry = queue.takeByLocalId('b');
+        expect(retry).not.toBeNull();
+        expect(retry).not.toBe(reservation);
+        expect(queue.beginReservationDispatch(retry!)).toBe(true);
+        expect(queue.commitReservation(reservation!)).toBe(false);
+        expect(queue.markReservationIndeterminate(reservation!)).toBe(false);
+        expect(queue.cancelByLocalId('b')).toBe('in-flight');
+        expect(queue.restoreReservation(retry!)).toBe(true);
+        const nextRetry = queue.takeByLocalId('b');
+        expect(nextRetry).not.toBeNull();
+        expect(nextRetry).not.toBe(retry);
+        expect(queue.commitReservation(retry!)).toBe(false);
     });
 
     it('allows a positive reconciliation after a queue reset', () => {
