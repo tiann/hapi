@@ -8,9 +8,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.unit.dp
 
-// Shared 24 dp stroke glyphs (the ComposerGlyphs/FilesUi strokeIcon precedent)
-// for surfaces core Material does not cover — image/paperclip/camera/doc/
-// clipboard/note/inbox shapes follow the lucide 24 dp paths (ISC license).
+// Shared 24 dp stroke glyphs for surfaces core Material does not cover —
+// the single strokeIcon home (ComposerGlyphs/FilesUi previously carried
+// private copies). Most shapes follow the lucide 24 dp paths (ISC license).
 // Never hand-draw a glyph core Material already ships (Close/Check/Add/
 // KeyboardArrow×/Lock/Refresh/Warning/…), and never add the
 // material-icons-extended dependency (existing decision).
@@ -242,4 +242,53 @@ internal val HapiCircleDotGlyph: ImageVector by lazy {
 /** Empty box — task-list markers, pending state (lucide `square`). */
 internal val HapiSquareGlyph: ImageVector by lazy {
     strokeIcon("HapiSquare", "M5 3 h14 a2 2 0 0 1 2 2 v14 a2 2 0 0 1 -2 2 H5 a2 2 0 0 1 -2 -2 V5 a2 2 0 0 1 2 -2 z")
+}
+
+// ── Composer + files glyphs (moved here from their private copies) ──────────
+
+/** Folder outline (the web `FolderIcon` path) — files Browse tab + chat top bar. */
+internal val FolderGlyph: ImageVector by lazy {
+    strokeIcon("HapiFolder", "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z", 1.6f)
+}
+
+/** Git branch — the Changes header (the web `GitBranchIcon` paths). */
+internal val GitBranchGlyph: ImageVector by lazy {
+    strokeIcon(
+        "HapiGitBranch",
+        "M6 3 L6 15 M6 15 a3 3 0 1 0 0.0001 0 M18 3 a3 3 0 1 0 0.0001 0 M18 9 a9 9 0 0 1 -9 9",
+        2f,
+    )
+}
+
+/** "+" — opens the attachment picker sheet. */
+internal val PlusGlyph: ImageVector by lazy {
+    strokeIcon("HapiPlus", "M12 5 L12 19 M5 12 L19 12", 2f)
+}
+
+/** Microphone — dictation toggle. */
+internal val MicGlyph: ImageVector by lazy {
+    strokeIcon(
+        "HapiMic",
+        "M12 3 a3 3 0 0 1 3 3 v5 a3 3 0 0 1 -6 0 v-5 a3 3 0 0 1 3 -3 " +
+            "M6.5 11 a5.5 5.5 0 0 0 11 0 M12 16.5 L12 20.5 M9 20.5 L15 20.5",
+    )
+}
+
+/** Stop square — abort while a turn runs, and the recording-stop state. */
+internal val StopGlyph: ImageVector by lazy {
+    strokeIcon("HapiStop", "M8 8 h8 v8 h-8 z", 2f)
+}
+
+/** Upward arrow — send. */
+internal val ArrowUpGlyph: ImageVector by lazy {
+    strokeIcon("HapiArrowUp", "M12 19 L12 5.5 M6.5 11 L12 5.5 L17.5 11", 2.2f)
+}
+
+/** Clock — schedule-send toggle (web `ScheduleIcon`; accent-filled while pending). */
+internal val ScheduleGlyph: ImageVector by lazy {
+    strokeIcon(
+        "HapiSchedule",
+        "M12 5 a7 7 0 0 1 7 7 a7 7 0 0 1 -7 7 a7 7 0 0 1 -7 -7 a7 7 0 0 1 7 -7 " +
+            "M12 8.5 L12 12 L14.7 14",
+    )
 }

@@ -92,8 +92,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import app.hapi.companion.R
-import app.hapi.companion.feature.files.FolderGlyph
 import app.hapi.companion.ui.components.AgentFlavorIcon
+import app.hapi.companion.ui.components.FolderGlyph
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.wire.PendingRequest

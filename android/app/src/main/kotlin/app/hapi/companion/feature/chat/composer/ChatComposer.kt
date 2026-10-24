@@ -66,7 +66,12 @@ import app.hapi.companion.feature.chat.ComposerUiState
 import app.hapi.companion.feature.chat.attachments.ComposerAttachmentStatus
 import app.hapi.companion.feature.chat.attachments.ComposerAttachmentUi
 import app.hapi.companion.feature.chat.attachments.rememberChipThumbnail
-import app.hapi.companion.feature.files.FolderGlyph
+import app.hapi.companion.ui.components.ArrowUpGlyph
+import app.hapi.companion.ui.components.FolderGlyph
+import app.hapi.companion.ui.components.MicGlyph
+import app.hapi.companion.ui.components.PlusGlyph
+import app.hapi.companion.ui.components.ScheduleGlyph
+import app.hapi.companion.ui.components.StopGlyph
 import app.hapi.companion.ui.components.HapiImageGlyph
 import app.hapi.companion.ui.components.HapiInboxGlyph
 import app.hapi.companion.ui.components.HapiNoteGlyph
