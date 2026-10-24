@@ -5,7 +5,15 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -16,8 +24,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
@@ -34,38 +44,51 @@ fun AgentTextBlockView(block: AgentTextBlock, modifier: Modifier = Modifier) {
 }
 
 /**
- * Extended thinking: collapsed to a subdued one-liner by default, expands in
- * place to the full reasoning markdown (still subdued — it is meta-content).
+ * Extended thinking, as a web-parity card: tinted surface with a header row
+ * (chevron + label) that folds the full reasoning markdown away. Collapsed by
+ * default and per-block. Unlike the web there is no streaming shimmer — the
+ * Android block model has no "streaming" flag to key it on.
  */
 @Composable
 fun AgentReasoningBlockView(block: AgentReasoningBlock, modifier: Modifier = Modifier) {
     var expanded by rememberSaveable(block.id) { mutableStateOf(false) }
     val hint = MaterialTheme.hapi.hint
 
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .animateContentSize(),
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.hapi.reasoningBackground,
+        modifier = modifier.fillMaxWidth(),
     ) {
-        Row(
-            modifier = Modifier
-                .clickable { expanded = !expanded }
-                .padding(vertical = 2.dp),
-        ) {
-            Text(
-                text = stringResource(
-                    if (expanded) R.string.chat_reasoning_expanded else R.string.chat_reasoning_collapsed,
-                ),
-                style = MaterialTheme.typography.labelMedium,
-                color = hint,
-            )
-        }
-        if (expanded) {
-            CompositionLocalProvider(LocalContentColor provides hint) {
-                Markdown(
-                    text = block.text,
-                    modifier = Modifier.padding(start = 8.dp, top = 4.dp),
+        Column(Modifier.animateContentSize()) {
+            Row(
+                modifier = Modifier
+                    .clickable { expanded = !expanded }
+                    .padding(start = 4.dp, top = 2.dp, bottom = 2.dp)
+                    .heightIn(min = 44.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = if (expanded) Icons.Default.KeyboardArrowDown
+                    else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp),
+                    tint = hint,
                 )
+                Text(
+                    text = stringResource(R.string.chat_reasoning),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = hint,
+                )
+            }
+            if (expanded) {
+                HorizontalDivider(color = MaterialTheme.hapi.divider, modifier = Modifier.padding(horizontal = 14.dp))
+                CompositionLocalProvider(LocalContentColor provides hint) {
+                    Markdown(
+                        text = block.text,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    )
+                }
             }
         }
     }

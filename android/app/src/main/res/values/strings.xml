@@ -392,12 +392,12 @@
 
     <!-- Chat blocks (B-M2c/d) -->
     <string name="chat_tool_awaiting_approval">Awaiting approval</string>
-    <string name="chat_tool_awaiting_approval_badge">⏳ Awaiting approval</string>
-    <string name="chat_tool_approved">✓ Approved</string>
-    <string name="chat_tool_approved_for_session">✓ Approved for session</string>
-    <string name="chat_tool_approved_allow_all_edits">✓ Approved: allow all edits</string>
-    <string name="chat_tool_denied">✕ Denied</string>
-    <string name="chat_tool_aborted">✕ Aborted</string>
+    <string name="chat_tool_awaiting_approval_badge">Awaiting approval</string>
+    <string name="chat_tool_approved">Approved</string>
+    <string name="chat_tool_approved_for_session">Approved for session</string>
+    <string name="chat_tool_approved_allow_all_edits">Approved: allow all edits</string>
+    <string name="chat_tool_denied">Denied</string>
+    <string name="chat_tool_aborted">Aborted</string>
     <string name="chat_tool_resolved">Resolved in Codex</string>
     <string name="chat_tool_canceled">— Canceled</string>
     <string name="chat_tool_status_pending">pending</string>
@@ -412,8 +412,7 @@
     <string name="chat_empty_snippet">(empty)</string>
     <string name="chat_result">Result</string>
     <string name="chat_result_error">Result · error</string>
-    <string name="chat_reasoning_expanded">💭 Reasoning ▾</string>
-    <string name="chat_reasoning_collapsed">💭 Reasoning ▸</string>
+    <string name="chat_reasoning">Reasoning</string>
     <string name="chat_not_delivered_retry">Not delivered — tap to retry</string>
     <string name="chat_not_delivered">Not delivered</string>
     <string name="chat_review_title">Code review</string>
@@ -625,7 +624,7 @@
     <string name="new_session_error_runner_upgrade_required">Upgrade and restart this machine’s HAPI runner before creating sessions.</string>
     <string name="new_session_error_no_available_agents">No supported Agents are installed on this machine.</string>
     <string name="new_session_error_selected_agent_unavailable">The selected Agent is not available on this machine.</string>
-    <string name="chat_back_to_latest">Back to latest ↓</string>
+    <string name="chat_back_to_latest">Back to latest</string>
     <string name="chat_history_retry">Couldn\'t load history. Tap to retry.</string>
     <string name="chat_history_continue">Continue loading history</string>
     <string name="chat_history_load">Load older messages</string>

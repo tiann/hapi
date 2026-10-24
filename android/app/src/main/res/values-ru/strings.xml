@@ -392,12 +392,12 @@
 
     <!-- Chat blocks (B-M2c/d) -->
     <string name="chat_tool_awaiting_approval">Ожидает одобрения</string>
-    <string name="chat_tool_awaiting_approval_badge">⏳ Ожидает одобрения</string>
-    <string name="chat_tool_approved">✓ Одобрено</string>
-    <string name="chat_tool_approved_for_session">✓ Одобрено для сессии</string>
-    <string name="chat_tool_approved_allow_all_edits">✓ Одобрено: разрешить все правки</string>
-    <string name="chat_tool_denied">✕ Отклонено</string>
-    <string name="chat_tool_aborted">✕ Прервано</string>
+    <string name="chat_tool_awaiting_approval_badge">Ожидает одобрения</string>
+    <string name="chat_tool_approved">Одобрено</string>
+    <string name="chat_tool_approved_for_session">Одобрено для сессии</string>
+    <string name="chat_tool_approved_allow_all_edits">Одобрено: разрешить все правки</string>
+    <string name="chat_tool_denied">Отклонено</string>
+    <string name="chat_tool_aborted">Прервано</string>
     <string name="chat_tool_resolved">Решено в Codex</string>
     <string name="chat_tool_canceled">— Отменено</string>
     <string name="chat_tool_status_pending">ожидает</string>
@@ -412,8 +412,7 @@
     <string name="chat_empty_snippet">(пусто)</string>
     <string name="chat_result">Результат</string>
     <string name="chat_result_error">Результат · ошибка</string>
-    <string name="chat_reasoning_expanded">💭 Рассуждения ▾</string>
-    <string name="chat_reasoning_collapsed">💭 Рассуждения ▸</string>
+    <string name="chat_reasoning">Рассуждения</string>
     <string name="chat_not_delivered_retry">Не доставлено — нажмите, чтобы повторить</string>
     <string name="chat_not_delivered">Не доставлено</string>
     <string name="chat_review_title">Ревью кода</string>
@@ -625,7 +624,7 @@
     <string name="new_session_error_runner_upgrade_required">Обновите и перезапустите раннер HAPI этой машины перед созданием сессий.</string>
     <string name="new_session_error_no_available_agents">На этой машине не установлено ни одного поддерживаемого агента.</string>
     <string name="new_session_error_selected_agent_unavailable">Выбранный агент недоступен на этой машине.</string>
-    <string name="chat_back_to_latest">К последним ↓</string>
+    <string name="chat_back_to_latest">К последним</string>
     <string name="chat_history_retry">Не удалось загрузить историю. Нажмите, чтобы повторить.</string>
     <string name="chat_history_continue">Продолжить загрузку истории</string>
     <string name="chat_history_load">Загрузить старые сообщения</string>
