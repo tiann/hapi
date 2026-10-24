@@ -724,4 +724,5 @@
     <string name="runner_skew_binary_updated_hint">(newer CLI on disk — runner should self-restart soon)</string>
     <string name="runner_skew_upgrade_cli_first">(no newer CLI on disk yet — install/upgrade on that host)</string>
     <string name="runner_skew_restart_failed">Failed to restart runner</string>
+    <string name="toast_open">Open</string>
 </resources>

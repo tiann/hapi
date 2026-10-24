@@ -724,4 +724,5 @@
     <string name="runner_skew_binary_updated_hint">(на диске уже более новая версия CLI — раннер скоро перезапустится сам)</string>
     <string name="runner_skew_upgrade_cli_first">(на диске ещё нет более новой версии CLI — установите/обновите на этом хосте)</string>
     <string name="runner_skew_restart_failed">Не удалось перезапустить раннер</string>
+    <string name="toast_open">Открыть</string>
 </resources>
