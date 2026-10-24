@@ -318,8 +318,6 @@
     <string name="chat_load_failed_hint">Проверьте подключение к хабу и попробуйте снова.</string>
     <string name="chat_empty_title">Сообщений пока нет</string>
     <string name="chat_empty_hint">Сообщения появятся здесь по мере работы агента.</string>
-    <string name="chat_new_messages_one">1 новое сообщение ↓</string>
-    <string name="chat_new_messages_many">Новых сообщений: %1$d ↓</string>
 
     <!-- Chat snackbar notices (semantic ChatNotice resolution) -->
     <string name="chat_notice_no_transcription">На хабе не настроен провайдер транскрипции</string>
@@ -350,7 +348,7 @@
     <string name="chat_composer_placeholder">Сообщение агенту…</string>
     <string name="chat_attachment_uploading">Загрузка…</string>
     <string name="chat_attachment_failed_retry">Ошибка — нажмите, чтобы повторить</string>
-    <string name="chat_recording">● Запись…  %1$s</string>
+    <string name="chat_recording">Запись… %1$s</string>
     <string name="chat_cancel">Отмена</string>
     <string name="chat_park_draft">Отложить черновик в заметки</string>
     <string name="chat_composer_add_attachment">Добавить вложение</string>

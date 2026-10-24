@@ -325,8 +325,6 @@
     <string name="chat_load_failed_hint">请检查与 hub 的连接后重试。</string>
     <string name="chat_empty_title">还没有消息</string>
     <string name="chat_empty_hint">智能体工作时，消息会显示在这里。</string>
-    <string name="chat_new_messages_one">1 条新消息 ↓</string>
-    <string name="chat_new_messages_many">%1$d 条新消息 ↓</string>
 
     <!-- Chat snackbar notices (semantic ChatNotice resolution) -->
     <string name="chat_notice_no_transcription">Hub 未配置转录提供商</string>
@@ -357,7 +355,7 @@
     <string name="chat_composer_placeholder">输入消息…</string>
     <string name="chat_attachment_uploading">上传中…</string>
     <string name="chat_attachment_failed_retry">失败 — 点按重试</string>
-    <string name="chat_recording">● 录音中…  %1$s</string>
+    <string name="chat_recording">录音中… %1$s</string>
     <string name="chat_cancel">取消</string>
     <string name="chat_park_draft">将草稿存入草稿夹</string>
     <string name="chat_composer_add_attachment">添加附件</string>

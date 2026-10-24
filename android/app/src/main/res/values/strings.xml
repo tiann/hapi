@@ -318,8 +318,6 @@
     <string name="chat_load_failed_hint">Check the connection to your hub and try again.</string>
     <string name="chat_empty_title">No messages yet</string>
     <string name="chat_empty_hint">Messages will appear here as the agent works.</string>
-    <string name="chat_new_messages_one">1 new message ↓</string>
-    <string name="chat_new_messages_many">%1$d new messages ↓</string>
 
     <!-- Chat snackbar notices (semantic ChatNotice resolution) -->
     <string name="chat_notice_no_transcription">No transcription provider configured on hub</string>
@@ -350,7 +348,7 @@
     <string name="chat_composer_placeholder">Message the agent…</string>
     <string name="chat_attachment_uploading">Uploading…</string>
     <string name="chat_attachment_failed_retry">Failed — tap to retry</string>
-    <string name="chat_recording">● Recording…  %1$s</string>
+    <string name="chat_recording">Recording… %1$s</string>
     <string name="chat_cancel">Cancel</string>
     <string name="chat_park_draft">Park draft to scratchlist</string>
     <string name="chat_composer_add_attachment">Add attachment</string>
