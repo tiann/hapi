@@ -395,6 +395,67 @@ class HapiApiTest {
     }
 
     @Test
+    fun `session config catalog endpoints hit their per-flavor paths and decode`() {
+        server.enqueue(
+            ok("""{"success":true,"options":[{"value":"low","name":"Low"},{"value":"high"}],"currentValue":"high","currentModelId":"m1","targetModelId":"m1"}""")
+        )
+        val opencode = runBlocking { session.api.getSessionOpencodeReasoningEffortOptions("s1") }
+        assertEquals("/api/sessions/s1/opencode-reasoning-effort-options", server.takeRequest().path)
+        assertTrue(opencode.success)
+        assertEquals("low", opencode.options!!.first().value)
+        assertEquals("Low", opencode.options!!.first().name)
+        assertEquals("high", opencode.currentValue)
+
+        server.enqueue(ok("""{"success":true,"options":[{"value":"high","name":"Think hard"}],"currentValue":null}"""))
+        val grok = runBlocking { session.api.getSessionGrokReasoningEffortOptions("s1") }
+        assertEquals("/api/sessions/s1/grok-reasoning-effort-options", server.takeRequest().path)
+        assertEquals("Think hard", grok.options!!.single().name)
+        assertNull(grok.currentValue)
+
+        server.enqueue(ok("""{"success":true,"availableModels":[{"provider":"pi","modelId":"0.5-pro","reasoning":true}]}"""))
+        val pi = runBlocking { session.api.getSessionPiModels("s1") }
+        assertEquals("/api/sessions/s1/pi-models", server.takeRequest().path)
+        assertEquals("0.5-pro", pi.availableModels!!.single().modelId)
+        assertTrue(pi.availableModels!!.single().reasoning == true)
+
+        server.enqueue(
+            ok(
+                """{"success":true,"availableModels":[{"modelId":"composer-2.5[fast=true]"}],"cliModelSkus":[{"modelId":"composer-2.5-high","name":"High"}],"currentModelId":"composer-2.5[fast=true]","parameterized":true}"""
+            )
+        )
+        val sessionCursor = runBlocking { session.api.getSessionCursorModels("s1") }
+        assertEquals("/api/sessions/s1/cursor-models", server.takeRequest().path)
+        assertEquals("composer-2.5[fast=true]", sessionCursor.currentModelId)
+        assertEquals("composer-2.5[fast=true]", sessionCursor.availableModels!!.single().modelId)
+        assertEquals("High", sessionCursor.cliModelSkus!!.single().name)
+        assertTrue(sessionCursor.parameterized == true)
+
+        server.enqueue(ok("""{"success":true,"availableModels":[],"cliModelSkus":[]}"""))
+        runBlocking { session.api.getMachineCursorModels("m1") }
+        assertEquals("/api/machines/m1/cursor-models", server.takeRequest().path)
+    }
+
+    @Test
+    fun `service tier posts the string value and an explicit json null clears it`() {
+        server.enqueue(ok("""{"ok":true}"""))
+        runBlocking { session.api.setServiceTier("s1", "fast") }
+        var request = server.takeRequest()
+        assertEquals("/api/sessions/s1/service-tier", request.path)
+        assertEquals(
+            "fast",
+            Json.parseToJsonElement(request.body.readUtf8()).jsonObject.getValue("serviceTier").jsonPrimitive.content,
+        )
+
+        server.enqueue(ok("""{"ok":true}"""))
+        runBlocking { session.api.setServiceTier("s1", null) }
+        request = server.takeRequest()
+        assertEquals(
+            JsonNull,
+            Json.parseToJsonElement(request.body.readUtf8()).jsonObject.getValue("serviceTier"),
+        )
+    }
+
+    @Test
     fun `unregister device is a DELETE with a json body`() {
         server.enqueue(ok("""{"ok":true}"""))
 

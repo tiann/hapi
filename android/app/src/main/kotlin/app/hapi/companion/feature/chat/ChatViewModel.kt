@@ -21,6 +21,7 @@ import app.hapi.protocol.chat.AgentReasoningBlock
 import app.hapi.protocol.chat.AggregatedAssistantMeta
 import app.hapi.companion.feature.sessions.SessionListViewModel
 import app.hapi.companion.feature.sessions.formatReopenError
+import app.hapi.companion.feature.newsession.CursorModels
 import app.hapi.data.api.ApiError
 import app.hapi.data.api.ChatSessionApi
 import app.hapi.data.sse.SseEngine
@@ -61,8 +62,12 @@ import app.hapi.protocol.wire.AgentState
 import app.hapi.protocol.wire.ApprovePermissionRequest
 import app.hapi.protocol.wire.AttachmentMetadata
 import app.hapi.protocol.wire.CodexModelSummary
+import app.hapi.protocol.wire.GrokReasoningEffortOption
 import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.Machine
+import app.hapi.protocol.wire.OpencodeModelSummary
+import app.hapi.protocol.wire.OpencodeReasoningEffortOption
+import app.hapi.protocol.wire.PiModelSummary
 import app.hapi.protocol.wire.SendMessageRequest
 import app.hapi.protocol.wire.Session
 import app.hapi.protocol.wire.SessionReadState
@@ -210,7 +215,7 @@ data class QueuedRowUi(
     val indeterminate: Boolean = false,
 )
 
-/** Session config sheet model (M3b switching). */
+/** Session config sheet model (M3b switching; slice C adds the breadth sections). */
 data class SessionConfigUi(
     val flavor: String?,
     val active: Boolean,
@@ -225,10 +230,19 @@ data class SessionConfigUi(
     val modelOptions: List<CatalogOption>?,
     /** True while the codex model catalog loads (sheet shows a spinner row). */
     val modelOptionsLoading: Boolean,
-    /** Claude `effort` or codex `modelReasoningEffort`, whichever applies. */
+    /**
+     * Claude `effort`, codex/opencode `modelReasoningEffort`, grok/pi `effort`,
+     * whichever applies.
+     */
     val effort: String?,
     /** null → hide the effort section. */
     val effortOptions: List<CatalogOption>?,
+    /** Codex service tier (Fast mode); null = no override (renders Standard). */
+    val serviceTier: String? = null,
+    /** Fast mode section gate: the active codex model advertises a fast tier. */
+    val fastModeAvailable: Boolean = false,
+    /** Cursor variant rows (exact wire ids); null → hide the section. */
+    val variantOptions: List<CatalogOption>? = null,
 )
 
 /** One-shot side effects for the screen. */
@@ -314,9 +328,11 @@ sealed interface PermissionAction {
  *   invoked-race ingested), Edit (cancel + prefill) and Steer (POST steer).
  * - **Permissions** ([resolvePermission]): flavor-exact approve/deny bodies,
  *   optimistic [PermissionRowOverride]s settled by the agentState patch.
- * - **Config** ([config]/[setPermissionMode]/[setModel]/[setEffort]): catalog
- *   pickers with optimistic detail updates, rolled back to server truth on
- *   error; codex model catalog fetched per session ([loadModelOptions]).
+ * - **Config** ([config]/[setPermissionMode]/[setModel]/[setEffort]):
+ *   catalog pickers with optimistic detail updates, rolled back to server
+ *   truth on error; per-flavor catalogs fetched per session
+ *   ([loadModelOptions]) — codex models+efforts, opencode/grok dynamic
+ *   efforts, pi thinking levels, cursor variants.
  *
  * B-M3f adds:
  * - **Attachments** ([attachments], a [ComposerAttachments] tray): picks are
@@ -537,14 +553,31 @@ class ChatViewModel(
     )
     private val codexPlanOperations = MutableStateFlow(CodexPlanOperations())
 
-    private sealed interface CodexModels {
-        data object Idle : CodexModels
-        data object Loading : CodexModels
-        data class Loaded(val models: List<CodexModelSummary>) : CodexModels
-        data object Failed : CodexModels
-    }
+    /**
+     * Per-flavor dynamic catalogs behind the config sheet (slice C). One
+     * fetch per sheet open: [loadModelOptions] routes on the session flavor,
+     * fills the fields that flavor needs, and leaves [loadedFlavor] null on
+     * failure so the next open retries.
+     */
+    private data class ConfigCatalogs(
+        val loading: Boolean = false,
+        /** Flavor the catalogs were fetched for; null = not loaded yet / failed. */
+        val loadedFlavor: String? = null,
+        val codexModels: List<CodexModelSummary>? = null,
+        val opencodeEfforts: List<OpencodeReasoningEffortOption>? = null,
+        val grokEfforts: List<GrokReasoningEffortOption>? = null,
+        val piModels: List<PiModelSummary>? = null,
+        /** Cursor session catalog (`GET /api/sessions/:id/cursor-models`). */
+        val cursorSessionModels: List<OpencodeModelSummary>? = null,
+        /** Machine catalog merge-in; fetch failure tolerated (stays null). */
+        val cursorMachineModels: List<OpencodeModelSummary>? = null,
+        val cursorSessionSkus: List<OpencodeModelSummary>? = null,
+        val cursorMachineSkus: List<OpencodeModelSummary>? = null,
+        /** The machine's live cursor wire (`currentModelId` of the session catalog). */
+        val cursorCurrentModelId: String? = null,
+    )
 
-    private val codexModels = MutableStateFlow<CodexModels>(CodexModels.Idle)
+    private val catalogs = MutableStateFlow(ConfigCatalogs())
 
     private sealed interface SlashFetch {
         data object Idle : SlashFetch
@@ -642,11 +675,11 @@ class ChatViewModel(
     val config: StateFlow<SessionConfigUi> = combine(
         sessionStore.sessionDetail(sessionId),
         summaryFlow(),
-        codexModels,
+        catalogs,
         configOpPending,
-    ) { detail, summary, models, _ ->
-        buildConfigUi(detail, summary, models)
-    }.stateIn(scope, SharingStarted.Eagerly, buildConfigUi(null, null, CodexModels.Idle))
+    ) { detail, summary, catalogs, _ ->
+        buildConfigUi(detail, summary, catalogs)
+    }.stateIn(scope, SharingStarted.Eagerly, buildConfigUi(null, null, ConfigCatalogs()))
 
     /**
      * Slash-command dropdown rows (B-M3ce): non-empty only while the composer
@@ -1951,7 +1984,8 @@ class ChatViewModel(
 
     /**
      * Effort switch, flavor-routed: claude → `POST /effort`; codex/opencode →
-     * `POST /model-reasoning-effort`. Null clears.
+     * `POST /model-reasoning-effort`. Null clears. Pi's rows toggle off by
+     * posting null when the clicked row is already selected (web parity).
      */
     fun setEffort(effort: String?) {
         val usesReasoningEffort = currentFlavor() == "codex" || currentFlavor() == "opencode"
@@ -1969,28 +2003,150 @@ class ChatViewModel(
         )
     }
 
-    /** Fetch the codex model catalog for the picker (no-op for other flavors). */
+    /**
+     * `POST /service-tier` (codex Fast mode) — `'fast' | 'standard'`; an
+     * explicit `'standard'` persists Fast-off distinctly from an untouched
+     * session. Optimistic flip with the shared rollback.
+     */
+    fun setServiceTier(serviceTier: String) {
+        runConfigChange(
+            optimistic = { it.copy(serviceTier = serviceTier) },
+            call = { api.setServiceTier(sessionId, serviceTier) },
+        )
+    }
+
+    /** Flavors whose config sheet needs a dynamic catalog fetch. */
+    private val configCatalogFlavors = setOf("codex", "opencode", "grok", "pi", "cursor")
+
+    /**
+     * Fetch the session flavor's dynamic config catalogs (codex models +
+     * efforts, opencode/grok reasoning-effort options, pi models, cursor
+     * session+machine catalogs). One load per flavor: a failure leaves
+     * `loadedFlavor` null so the next sheet open retries. Other flavors are a
+     * no-op (static/no catalog).
+     */
     fun loadModelOptions() {
-        if (currentFlavor() != "codex") return
-        if (codexModels.value is CodexModels.Loading || codexModels.value is CodexModels.Loaded) return
-        codexModels.value = CodexModels.Loading
+        val flavor = currentFlavor() ?: return
+        if (flavor !in configCatalogFlavors) return
+        val state = catalogs.value
+        if (state.loading || state.loadedFlavor == flavor) return
+        catalogs.value = ConfigCatalogs(loading = true)
         scope.launch {
-            codexModels.value = try {
-                val response = api.getSessionCodexModels(sessionId)
-                val models = response.models
-                if (response.success && models != null) {
-                    CodexModels.Loaded(models)
-                } else {
-                    _events.tryEmit(ChatEvent.Notice(ChatNotice.ModelsLoadFailed(response.error)))
-                    CodexModels.Failed
-                }
-            } catch (cancellation: CancellationException) {
-                throw cancellation
-            } catch (error: Exception) {
-                _events.tryEmit(ChatEvent.Notice(ChatNotice.ModelsLoadFailed(error.message)))
-                CodexModels.Failed
+            catalogs.value = when (flavor) {
+                "codex" -> loadCodexCatalogs()
+                "opencode" -> loadOpencodeCatalogs()
+                "grok" -> loadGrokCatalogs()
+                "pi" -> loadPiCatalogs()
+                "cursor" -> loadCursorCatalogs()
+                else -> ConfigCatalogs()
             }
         }
+    }
+
+    private suspend fun loadCodexCatalogs(): ConfigCatalogs {
+        val response = try {
+            api.getSessionCodexModels(sessionId)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            _events.tryEmit(ChatEvent.Notice(ChatNotice.ModelsLoadFailed(error.message)))
+            return ConfigCatalogs()
+        }
+        val models = response.models
+        return if (response.success && models != null) {
+            ConfigCatalogs(loadedFlavor = "codex", codexModels = models)
+        } else {
+            _events.tryEmit(ChatEvent.Notice(ChatNotice.ModelsLoadFailed(response.error)))
+            ConfigCatalogs()
+        }
+    }
+
+    /** Silent-hide on failure — the opencode section simply stays absent (web parity). */
+    private suspend fun loadOpencodeCatalogs(): ConfigCatalogs {
+        val response = try {
+            api.getSessionOpencodeReasoningEffortOptions(sessionId)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            return ConfigCatalogs()
+        }
+        val options = response.options
+        return if (response.success && options != null) {
+            ConfigCatalogs(loadedFlavor = "opencode", opencodeEfforts = options)
+        } else {
+            ConfigCatalogs()
+        }
+    }
+
+    /** Silent-hide on failure — the grok section stays absent (web parity). */
+    private suspend fun loadGrokCatalogs(): ConfigCatalogs {
+        val response = try {
+            api.getSessionGrokReasoningEffortOptions(sessionId)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            return ConfigCatalogs()
+        }
+        val options = response.options
+        return if (response.success && options != null) {
+            ConfigCatalogs(loadedFlavor = "grok", grokEfforts = options)
+        } else {
+            ConfigCatalogs()
+        }
+    }
+
+    /** Silent-hide on failure — pi thinking levels need the resolved model row. */
+    private suspend fun loadPiCatalogs(): ConfigCatalogs {
+        val response = try {
+            api.getSessionPiModels(sessionId)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            return ConfigCatalogs()
+        }
+        val models = response.availableModels
+        return if (response.success && models != null) {
+            ConfigCatalogs(loadedFlavor = "pi", piModels = models)
+        } else {
+            ConfigCatalogs()
+        }
+    }
+
+    /**
+     * Session catalog first (authoritative); the machine catalog merges in to
+     * fill display names and extra CLI skus — its failure is tolerated (web
+     * parity: `useCursorModelsForMachine` error only downgrades readiness).
+     */
+    private suspend fun loadCursorCatalogs(): ConfigCatalogs {
+        val session = try {
+            api.getSessionCursorModels(sessionId)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            return ConfigCatalogs()
+        }
+        if (!session.success) return ConfigCatalogs()
+
+        val machineId = currentDetail()?.metadata?.machineId
+        val machine = if (machineId != null) {
+            try {
+                api.getMachineCursorModels(machineId)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                null
+            }
+        } else {
+            null
+        }
+        return ConfigCatalogs(
+            loadedFlavor = "cursor",
+            cursorSessionModels = session.availableModels ?: emptyList(),
+            cursorMachineModels = if (machine?.success == true) machine.availableModels ?: emptyList() else null,
+            cursorSessionSkus = session.cliModelSkus ?: emptyList(),
+            cursorMachineSkus = if (machine?.success == true) machine.cliModelSkus ?: emptyList() else null,
+            cursorCurrentModelId = session.currentModelId,
+        )
     }
 
     private fun runConfigChange(optimistic: (Session) -> Session, call: suspend () -> Unit) {
@@ -2012,13 +2168,19 @@ class ChatViewModel(
         }
     }
 
-    private fun buildConfigUi(detail: Session?, summary: SessionSummary?, models: CodexModels): SessionConfigUi {
+    private fun buildConfigUi(
+        detail: Session?,
+        summary: SessionSummary?,
+        catalogs: ConfigCatalogs,
+    ): SessionConfigUi {
         val flavor = detail?.metadata?.flavor ?: summary?.metadata?.flavor
         val model = detail?.model
         val modelOptions: List<CatalogOption>?
         var modelOptionsLoading = false
         var effort: String? = null
         var effortOptions: List<CatalogOption>? = null
+        var fastModeAvailable = false
+        var variantOptions: List<CatalogOption>? = null
 
         when (flavor) {
             "claude" -> {
@@ -2027,29 +2189,55 @@ class ChatViewModel(
                 effortOptions = ModelCatalog.claudeEffortOptions(effort)
             }
             "codex" -> {
-                when (models) {
-                    is CodexModels.Loaded -> {
-                        modelOptions = models.models.map { summaryRow ->
-                            CatalogOption(
-                                value = summaryRow.id,
-                                label = summaryRow.displayName + if (summaryRow.isDefault) " · default" else "",
-                            )
-                        }
-                        val selected = models.models.firstOrNull { it.id == model }
-                            ?: models.models.firstOrNull { it.isDefault }
-                        val efforts = selected?.supportedReasoningEfforts.orEmpty()
-                        if (efforts.isNotEmpty()) {
-                            effort = detail?.modelReasoningEffort
-                            effortOptions = listOf(CatalogOption(null, "Default")) + efforts.map { level ->
-                                CatalogOption(level, level.replaceFirstChar { it.uppercaseChar() })
-                            }
-                        }
+                val models = catalogs.codexModels
+                if (models != null) {
+                    modelOptions = models.map { summaryRow ->
+                        CatalogOption(
+                            value = summaryRow.id,
+                            label = summaryRow.displayName + if (summaryRow.isDefault) " · default" else "",
+                        )
                     }
-                    is CodexModels.Loading -> {
-                        modelOptions = emptyList()
-                        modelOptionsLoading = true
-                    }
-                    else -> modelOptions = emptyList()
+                } else {
+                    modelOptions = emptyList()
+                    modelOptionsLoading = catalogs.loading
+                }
+                // Codex efforts come from the active model's advertised list
+                // (selection, else default row); presets when it advertises
+                // none — the section is never hidden (web parity).
+                effort = detail?.modelReasoningEffort
+                effortOptions = SessionConfigSections.codexReasoningEffortOptions(
+                    effort,
+                    models?.let { SessionConfigSections.codexModelReasoningEfforts(it, model) },
+                )
+                fastModeAvailable = SessionConfigSections.advertisesFastTier(model, models)
+            }
+            "opencode" -> {
+                modelOptions = null // Model picker stays create-form only.
+                effort = detail?.modelReasoningEffort
+                effortOptions = SessionConfigSections.opencodeReasoningEffortOptions(effort, catalogs.opencodeEfforts)
+            }
+            "grok" -> {
+                modelOptions = null
+                effort = detail?.effort
+                effortOptions = SessionConfigSections.grokReasoningEffortOptions(catalogs.grokEfforts)
+            }
+            "pi" -> {
+                modelOptions = null
+                effort = detail?.effort
+                val piModels = catalogs.piModels
+                effortOptions = SessionConfigSections.piThinkingOptions(
+                    effort,
+                    piModels?.let {
+                        SessionConfigSections.piSelectedModel(it, model, detail?.metadata?.piSelectedModel)
+                    },
+                )
+            }
+            "cursor" -> {
+                modelOptions = null
+                variantOptions = if (catalogs.loadedFlavor == "cursor") {
+                    SessionConfigSections.cursorVariantOptions(cursorPicker(detail, catalogs))
+                } else {
+                    null
                 }
             }
             else -> modelOptions = null // Generic fallback: hide the picker.
@@ -2066,8 +2254,24 @@ class ChatViewModel(
             modelOptionsLoading = modelOptionsLoading,
             effort = effort,
             effortOptions = effortOptions,
+            serviceTier = detail?.serviceTier,
+            fastModeAvailable = fastModeAvailable,
+            variantOptions = variantOptions,
         )
     }
+
+    /** Session-sheet cursor picker: session + machine catalogs + merged CLI skus. */
+    private fun cursorPicker(detail: Session?, catalogs: ConfigCatalogs): CursorModels.PickerState =
+        CursorModels.buildSessionPickerState(
+            sessionModels = catalogs.cursorSessionModels ?: emptyList(),
+            machineModels = catalogs.cursorMachineModels ?: emptyList(),
+            cliSkus = CursorModels.mergeCliSkus(
+                catalogs.cursorMachineSkus ?: emptyList(),
+                catalogs.cursorSessionSkus ?: emptyList(),
+            ),
+            sessionModel = detail?.model,
+            sessionCurrentModelId = catalogs.cursorCurrentModelId,
+        )
 
     // ------------------------------------------------------------- internals --
 

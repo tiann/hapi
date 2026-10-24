@@ -329,4 +329,77 @@ class CursorModelsTest {
         // currentModel pinned at Auto: only explicit picker rows exist.
         assertEquals(listOf("auto", "alpha-2"), catalog.baseOptions.map { it.value })
     }
+
+    // ------------------------------------------------- session-sheet merge (slice C) --
+
+    @Test
+    fun `session merge dedupes session-first, fills from machine and injects the current wire`() {
+        val session = listOf(model("composer-2.5[fast=true]", "Session row"))
+        val machine = listOf(
+            model("composer-2.5[fast=true]", "Advertised"),
+            model("composer-2.5[]"),
+            model("gpt-5.5-high"), // CLI sku: never a catalog row.
+        )
+        val merged = CursorModels.mergeSessionModels(session, machine, currentWireId = "gpt-5.5[]")
+        // Session row wins the duplicate (machine name dropped); machine fills;
+        // the eligible current wire is injected last when unlisted.
+        assertEquals(
+            listOf(
+                "composer-2.5[fast=true]" to "Session row",
+                "composer-2.5[]" to null,
+                "gpt-5.5[]" to null,
+            ),
+            merged.map { it.modelId to it.name },
+        )
+    }
+
+    @Test
+    fun `cli sku merge sorts longer sources first and keeps first occurrence per id`() {
+        val short = listOf(model("a-1-high"), model("a-1"))
+        val long = listOf(model("b-2-high"), model("a-1", "Named"), model("c-3"))
+        val merged = CursorModels.mergeCliSkus(short, long)
+        // The longer source iterates first (stable), first occurrence wins per id.
+        assertEquals(
+            listOf("b-2-high", "a-1" to "Named", "c-3", "a-1-high"),
+            merged.map { if (it.modelId == "a-1") it.modelId to it.name else it.modelId },
+        )
+    }
+
+    @Test
+    fun `session picker hints the catalog with the live wire but selects the persisted model`() {
+        val picker = CursorModels.buildSessionPickerState(
+            sessionModels = listOf(model("composer-2.5[fast=true]")),
+            machineModels = listOf(model("gpt-5.5[]"), model("gpt-5.5[thinking=true]")),
+            cliSkus = emptyList(),
+            sessionModel = null, // Hub never persisted a model override.
+            sessionCurrentModelId = "gpt-5.5[thinking=true]",
+        )
+        // The machine's live wire joined the catalog via the hint…
+        assertTrue(picker.catalog.wireToBase.containsKey("gpt-5.5[thinking=true]"))
+        // …and renders selected (fallback selection = currentModelId).
+        assertEquals("gpt-5.5[thinking=true]", picker.wireId)
+        // A persisted session model wins the rendered selection.
+        val persisted = CursorModels.buildSessionPickerState(
+            sessionModels = listOf(model("composer-2.5[fast=true]")),
+            machineModels = emptyList(),
+            cliSkus = emptyList(),
+            sessionModel = "composer-2.5[fast=true]",
+            sessionCurrentModelId = "gpt-5.5[thinking=true]",
+        )
+        assertEquals("composer-2.5[fast=true]", persisted.wireId)
+    }
+
+    @Test
+    fun `findBestCliSkuForAcpWire scores speed and effort hints and skips foreign bases`() {
+        val skus = listOf("composer-2.5", "composer-2.5-high", "composer-2.5-high-fast")
+        // Bare wire: every same-base sku ties at 0 → first advertise order wins.
+        assertEquals("composer-2.5", CursorModels.findBestCliSkuForAcpWire("composer-2.5[]", skus))
+        // fast=true: +2 for the fast sku, −1 conflicts elsewhere.
+        assertEquals("composer-2.5-high-fast", CursorModels.findBestCliSkuForAcpWire("composer-2.5[fast=true]", skus))
+        // effort hint: reasoning=high matches -high (absent elsewhere except -high-fast has no effort param → absent).
+        assertEquals("composer-2.5-high", CursorModels.findBestCliSkuForAcpWire("composer-2.5[reasoning=high]", skus))
+        // Foreign base never maps; an ACP-wire-shaped sku id is skipped.
+        assertNull(CursorModels.findBestCliSkuForAcpWire("gpt-5.5[]", skus))
+        assertNull(CursorModels.findBestCliSkuForAcpWire("composer-2.5[]", listOf("composer-2.5[x=1]")))
+    }
 }

@@ -378,6 +378,11 @@
     <string name="chat_config_loading_models">Loading models…</string>
     <string name="chat_config_models_unavailable">Model list unavailable for this session.</string>
     <string name="chat_config_effort">Effort</string>
+    <string name="chat_config_reasoning_effort">Reasoning effort</string>
+    <string name="chat_config_fast_mode">Fast mode</string>
+    <string name="chat_config_fast_mode_standard">Standard</string>
+    <string name="chat_config_fast_mode_fast">Fast</string>
+    <string name="chat_config_variant">Variant</string>
 
     <!-- Chat blocks (B-M2c/d) -->
     <string name="chat_tool_awaiting_approval">Awaiting approval</string>

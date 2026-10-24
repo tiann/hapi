@@ -21,6 +21,7 @@ import app.hapi.protocol.wire.FileReadResponse
 import app.hapi.protocol.wire.FileSearchResponse
 import app.hapi.protocol.wire.GitCommandResponse
 import app.hapi.protocol.wire.GrokModelsResponse
+import app.hapi.protocol.wire.GrokReasoningEffortResponse
 import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.HubHealthResponse
 import app.hapi.protocol.wire.KimiModelsResponse
@@ -33,6 +34,7 @@ import app.hapi.protocol.wire.MachinesResponse
 import app.hapi.protocol.wire.MessagesResponse
 import app.hapi.protocol.wire.OpencodeModelsResponse
 import app.hapi.protocol.wire.OpencodeModelVariantsResponse
+import app.hapi.protocol.wire.OpencodeReasoningEffortResponse
 import app.hapi.protocol.wire.PiModelsResponse
 import app.hapi.protocol.wire.QueuedStateRequest
 import app.hapi.protocol.wire.QueuedStateResponse
@@ -449,12 +451,16 @@ class HapiApi internal constructor(
         )
     }
 
-    /** `POST /api/sessions/:id/service-tier` (codex) — `'fast' | 'standard'` (standard = explicit off). */
-    suspend fun setServiceTier(sessionId: String, serviceTier: String) {
+    /** `POST /api/sessions/:id/service-tier` (codex) — `'fast' | 'standard'` (standard = explicit off), null clears. */
+    override suspend fun setServiceTier(sessionId: String, serviceTier: String?) {
         request<Unit>(
             "POST",
             url("api", "sessions", sessionId, "service-tier").build(),
-            jsonBody(buildJsonObject { put("serviceTier", serviceTier) }),
+            jsonBody(
+                buildJsonObject {
+                    put("serviceTier", serviceTier?.let(::JsonPrimitive) ?: JsonNull)
+                }
+            ),
         )
     }
 
@@ -482,6 +488,28 @@ class HapiApi internal constructor(
      */
     override suspend fun getSessionCodexModels(sessionId: String): CodexModelsResponse =
         request("GET", url("api", "sessions", sessionId, "codex-models").build())
+
+    /**
+     * `GET /api/sessions/:id/opencode-reasoning-effort-options` — dynamic
+     * efforts of the active opencode model (empty list ⇒ hide the section).
+     */
+    override suspend fun getSessionOpencodeReasoningEffortOptions(sessionId: String): OpencodeReasoningEffortResponse =
+        request("GET", url("api", "sessions", sessionId, "opencode-reasoning-effort-options").build())
+
+    /**
+     * `GET /api/sessions/:id/grok-reasoning-effort-options` — dynamic efforts
+     * of the active grok model (static fallback list when empty).
+     */
+    override suspend fun getSessionGrokReasoningEffortOptions(sessionId: String): GrokReasoningEffortResponse =
+        request("GET", url("api", "sessions", sessionId, "grok-reasoning-effort-options").build())
+
+    /** `GET /api/sessions/:id/pi-models` — the active Pi session's model catalog. */
+    override suspend fun getSessionPiModels(sessionId: String): PiModelsResponse =
+        request("GET", url("api", "sessions", sessionId, "pi-models").build())
+
+    /** `GET /api/sessions/:id/cursor-models` — ACP wires + CLI skus of the active cursor session. */
+    override suspend fun getSessionCursorModels(sessionId: String): CursorModelsResponse =
+        request("GET", url("api", "sessions", sessionId, "cursor-models").build())
 
     // ------------------------------------------------- commands & skills --
 
@@ -574,8 +602,8 @@ class HapiApi internal constructor(
     suspend fun getMachinePiModels(machineId: String): PiModelsResponse =
         request("GET", url("api", "machines", machineId, "pi-models").build())
 
-    /** `GET /api/machines/:id/cursor-models`. */
-    suspend fun getMachineCursorModels(machineId: String): CursorModelsResponse =
+    /** `GET /api/machines/:id/cursor-models` — also merged into the session cursor catalog. */
+    override suspend fun getMachineCursorModels(machineId: String): CursorModelsResponse =
         request("GET", url("api", "machines", machineId, "cursor-models").build())
 
     /** `GET /api/machines/:id/opencode-models?cwd=` — catalog is cwd-scoped. */

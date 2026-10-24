@@ -378,6 +378,11 @@
     <string name="chat_config_loading_models">Загрузка моделей…</string>
     <string name="chat_config_models_unavailable">Список моделей недоступен для этой сессии.</string>
     <string name="chat_config_effort">Усилие</string>
+    <string name="chat_config_reasoning_effort">Уровень рассуждений</string>
+    <string name="chat_config_fast_mode">Быстрый режим</string>
+    <string name="chat_config_fast_mode_standard">Стандартный</string>
+    <string name="chat_config_fast_mode_fast">Быстрый</string>
+    <string name="chat_config_variant">Вариант</string>
 
     <!-- Chat blocks (B-M2c/d) -->
     <string name="chat_tool_awaiting_approval">Ожидает одобрения</string>

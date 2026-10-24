@@ -318,12 +318,19 @@ object CursorModels {
     ): PickerState {
         val trimmed = currentModel.trim()
         val wireHint = if (trimmed.isNotEmpty() && !isAutoModelId(trimmed)) trimmed else null
-        val injectCurrent = wireHint?.takeIf { isAcpCatalogModelId(it) }
         val catalog = appendCliSkus(
-            buildCatalog(pickModelsForPicker(machineModels), injectCurrent),
+            buildCatalog(pickModelsForPicker(machineModels), wireHint),
             cliSkus,
         )
+        return pickerState(catalog, trimmed)
+    }
 
+    /**
+     * `buildCursorPickerState` body shared by the create-form and session-sheet
+     * builders: resolve the wire → base → variants chain off the catalog.
+     */
+    private fun pickerState(catalog: Catalog, currentModel: String?): PickerState {
+        val trimmed = currentModel?.trim().orEmpty()
         val wireId = if (trimmed.isEmpty() || isAutoModelId(trimmed)) AUTO else trimmed
         val baseKey = if (wireId != AUTO) resolveBaseKey(wireId, catalog) else null
         val useDual = hasMultiVariantBases(catalog)
@@ -344,6 +351,204 @@ object CursorModels {
             },
             showVariantPicker = showVariantPicker,
         )
+    }
+
+    // ------------------------------------------------- session chat merge --
+    // Ports of `mergeCursorModelSummaries` / `mergeCursorCliModelSkus` /
+    // `buildSessionCursorPickerState` (`web/src/lib/cursorPickerState.ts`,
+    // `web/src/lib/sessionChatCursorModel.ts`) for the session config sheet.
+
+    /**
+     * `mergeCursorModelSummaries` — session (ACP) rows win on duplicate ids;
+     * machine rows fill display names and extra wires; the current wire is
+     * injected last when catalog-eligible but unlisted.
+     */
+    fun mergeSessionModels(
+        primary: List<OpencodeModelSummary>,
+        secondary: List<OpencodeModelSummary>,
+        currentWireId: String? = null,
+    ): List<OpencodeModelSummary> {
+        val merged = LinkedHashMap<String, OpencodeModelSummary>()
+
+        fun add(model: OpencodeModelSummary) {
+            val modelId = model.modelId.trim()
+            if (modelId.isEmpty() || !isAcpCatalogModelId(modelId)) return
+            merged.getOrPut(modelId) { model.copy(modelId = modelId) }
+        }
+
+        primary.forEach(::add)
+        secondary.forEach(::add)
+        val trimmedCurrent = currentWireId?.trim()
+        if (!trimmedCurrent.isNullOrEmpty() && isAcpCatalogModelId(trimmedCurrent)) {
+            merged.getOrPut(trimmedCurrent) { OpencodeModelSummary(modelId = trimmedCurrent) }
+        }
+        return merged.values.toList()
+    }
+
+    /** `mergeCursorCliModelSkus` — longer source first (stable), first occurrence wins per id. */
+    fun mergeCliSkus(vararg sources: List<OpencodeModelSummary>): List<OpencodeModelSummary> {
+        val merged = LinkedHashMap<String, OpencodeModelSummary>()
+        for (source in sources.sortedByDescending { it.size }) {
+            for (entry in source) {
+                val modelId = entry.modelId.trim()
+                if (modelId.isEmpty()) continue
+                merged.getOrPut(modelId) { entry.copy(modelId = modelId) }
+            }
+        }
+        return merged.values.toList()
+    }
+
+    /**
+     * `buildSessionCursorPickerState` — the session-sheet picker. The catalog
+     * hint and the rendered selection differ on purpose (web parity): the
+     * catalog injects the machine's live wire (`currentModelId`) first, while
+     * the selected row prefers the hub-persisted session model.
+     */
+    fun buildSessionPickerState(
+        sessionModels: List<OpencodeModelSummary>,
+        machineModels: List<OpencodeModelSummary>,
+        cliSkus: List<OpencodeModelSummary>,
+        sessionModel: String?,
+        sessionCurrentModelId: String?,
+    ): PickerState {
+        val wireHint = sessionCurrentModelId ?: sessionModel
+        val catalog = appendCliSkus(
+            buildCatalog(
+                pickModelsForPicker(mergeSessionModels(sessionModels, machineModels, wireHint)),
+                wireHint,
+            ),
+            cliSkus,
+        )
+        return pickerState(catalog, sessionModel ?: sessionCurrentModelId)
+    }
+
+    // ------------------------------------------------- sku ↔ wire matching --
+    // Ports of the `findBestCliSkuForAcpWire` chain
+    // (`shared/src/cursorCliSku.ts`) used by default-variant resolution and
+    // ACP-wire → sku-row highlight.
+
+    /** `parseCursorWireParams` — `base[k=v,…]` → param map (bare keys → `"true"`). */
+    fun parseWireParams(modelId: String): Map<String, String> {
+        val variant = variantId(modelId)
+        if (variant.isEmpty()) return emptyMap()
+        val params = LinkedHashMap<String, String>()
+        for (part in variant.split(',')) {
+            val segment = part.trim()
+            if (segment.isEmpty()) continue
+            val eq = segment.indexOf('=')
+            if (eq == -1) {
+                params[segment] = "true"
+            } else {
+                params[segment.substring(0, eq).trim()] = segment.substring(eq + 1).trim()
+            }
+        }
+        return params
+    }
+
+    /** `inferSkuParamHints` — effort/speed hints carried by CLI sku suffixes. */
+    private fun skuParamHints(slug: String): Map<String, String> {
+        val lower = slug.lowercase()
+        val hints = LinkedHashMap<String, String>()
+        when {
+            lower.contains("extra-high") || lower.contains("xhigh") -> {
+                hints["reasoning"] = "extra-high"
+                hints["effort"] = "xhigh"
+            }
+            lower.contains("-high") -> {
+                hints["reasoning"] = "high"
+                hints["effort"] = "high"
+            }
+            lower.contains("-low") -> {
+                hints["reasoning"] = "low"
+                hints["effort"] = "low"
+            }
+            lower.contains("-medium") -> {
+                hints["reasoning"] = "medium"
+                hints["effort"] = "medium"
+            }
+            lower.contains("-none") -> hints["reasoning"] = "none"
+        }
+        // CLI convention: `-fast` means fast=true; absence means false so a
+        // base-only sku never tie-breaks onto the fast variant.
+        hints["fast"] = if (lower.contains("-fast")) "true" else "false"
+        if (lower.contains("thinking")) hints["thinking"] = "true"
+        return hints
+    }
+
+    /** `scoreWireAgainstSku` — +2 per matching hint, −1 per conflicting one. */
+    private fun scoreWireAgainstSku(slug: String, wireId: String): Int {
+        val hints = skuParamHints(slug)
+        val params = parseWireParams(wireId)
+        var score = 0
+        for ((key, value) in hints) {
+            val wireValue = params[key]
+            if (wireValue == value) {
+                score += 2
+            } else if (wireValue != null) {
+                score -= 1
+            }
+        }
+        return score
+    }
+
+    /**
+     * `matchCliSkuToAcpWireId(sku, [{modelId: wireId}]) === wireId` reduced to
+     * the single-wire call shape used here: same base (sku suffixes stripped,
+     * tolerating the legacy `cursor-` prefix via [cliSkuBaseId]/[baseId]), and
+     * a suffixed sku may not collapse onto a bare, non-parameterized base.
+     */
+    private fun skuMapsOntoWire(sku: String, wireId: String): Boolean {
+        if (!isAcpCatalogModelId(wireId)) return false
+        if (baseId(wireId) != cliSkuBaseId(sku)) return false
+        if (isCliSkuVariantId(sku) && !isAcpWireModelId(wireId)) return false
+        return true
+    }
+
+    /** `findBestCliSkuForAcpWire` — highest-scoring CLI sku that maps onto the wire. */
+    fun findBestCliSkuForAcpWire(wireId: String, skuIds: List<String>): String? {
+        var best: String? = null
+        var bestScore = Int.MIN_VALUE
+        for (sku in skuIds) {
+            val trimmed = sku.trim()
+            if (trimmed.isEmpty() || isAcpWireModelId(trimmed)) continue
+            if (!skuMapsOntoWire(trimmed, wireId)) continue
+            val score = scoreWireAgainstSku(trimmed, wireId)
+            if (score > bestScore) {
+                bestScore = score
+                best = trimmed
+            }
+        }
+        return best
+    }
+
+    /**
+     * `resolveDefaultCursorVariantWire` — the base's default variant: its
+     * first ACP wire in catalog order, mapped to the best CLI sku when skus
+     * replace the raw wires in the picker.
+     */
+    fun defaultVariantWire(baseKey: String, catalog: Catalog): String? {
+        val pickerVariants = resolveVariantOptions(baseKey, catalog)
+        if (pickerVariants.isEmpty()) return null
+        if (pickerVariants.size == 1) return pickerVariants[0].wireId
+
+        val catalogVariants = catalog.variantsByBase[baseKey].orEmpty()
+        val defaultAcp = catalogVariants.firstOrNull { isAcpWireModelId(it.wireId) } ?: catalogVariants.first()
+        if (pickerVariants.any { it.wireId == defaultAcp.wireId }) return defaultAcp.wireId
+        val bestSku = findBestCliSkuForAcpWire(defaultAcp.wireId, pickerVariants.map { it.wireId })
+        return bestSku ?: pickerVariants[0].wireId
+    }
+
+    /**
+     * `buildCursorEffortPickerOptionsWithDefaultFirst` — variant rows with the
+     * base default pinned first (the session sheet's variant section order).
+     */
+    fun variantOptionsDefaultFirst(baseKey: String?, catalog: Catalog): List<OptionItem> {
+        val variants = resolveVariantOptions(baseKey, catalog)
+        val options = variants.map { OptionItem(it.wireId, it.label.trim().ifEmpty { variantLabel(it.wireId) }) }
+        if (baseKey == null) return options
+        val defaultWire = defaultVariantWire(baseKey, catalog)
+        val defaultOption = options.firstOrNull { it.value == defaultWire } ?: return options
+        return listOf(defaultOption) + options.filter { it.value != defaultWire }
     }
 
     /**

@@ -385,6 +385,11 @@
     <string name="chat_config_loading_models">正在加载模型…</string>
     <string name="chat_config_models_unavailable">此会话暂无模型列表。</string>
     <string name="chat_config_effort">思考强度</string>
+    <string name="chat_config_reasoning_effort">推理强度</string>
+    <string name="chat_config_fast_mode">快速模式</string>
+    <string name="chat_config_fast_mode_standard">标准</string>
+    <string name="chat_config_fast_mode_fast">快速</string>
+    <string name="chat_config_variant">变体</string>
 
     <!-- Chat blocks (B-M2c/d) -->
     <string name="chat_tool_awaiting_approval">等待审批</string>

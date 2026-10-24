@@ -447,6 +447,41 @@ data class PiModelSummary(
     val thinkingLevelMap: Map<String, String?>? = null,
 )
 
+/**
+ * `GET /api/sessions/:id/grok-reasoning-effort-options` — RPC-wrapped.
+ * Ported from `GrokReasoningEffortResponse` (`shared/src/apiTypes.ts`).
+ */
+@Serializable
+data class GrokReasoningEffortResponse(
+    val success: Boolean,
+    val options: List<GrokReasoningEffortOption>? = null,
+    val currentValue: String? = null,
+    val error: String? = null,
+)
+
+/** `OpencodeReasoningEffortOption` (`shared/src/apiTypes.ts`). */
+@Serializable
+data class OpencodeReasoningEffortOption(
+    val value: String,
+    val name: String? = null,
+)
+
+/**
+ * `GET /api/sessions/:id/opencode-reasoning-effort-options` — RPC-wrapped.
+ * [currentModelId] lets clients detect a pending model switch (the backend
+ * still reports the previous model's options). Ported from
+ * `OpencodeReasoningEffortResponse` (`shared/src/apiTypes.ts`).
+ */
+@Serializable
+data class OpencodeReasoningEffortResponse(
+    val success: Boolean,
+    val options: List<OpencodeReasoningEffortOption>? = null,
+    val currentValue: String? = null,
+    val currentModelId: String? = null,
+    val targetModelId: String? = null,
+    val error: String? = null,
+)
+
 /** `POST /api/sessions/:id/upload` (RPC-wrapped: check [success]). */
 @Serializable
 data class UploadFileResponse(
