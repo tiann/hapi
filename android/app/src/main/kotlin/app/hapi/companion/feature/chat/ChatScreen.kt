@@ -72,7 +72,7 @@ import app.hapi.companion.feature.chat.composer.DictationController
 import app.hapi.companion.feature.chat.composer.DictationEvent
 import app.hapi.companion.feature.chat.composer.DictationState
 import app.hapi.companion.feature.chat.composer.QueuedMessagesBar
-import app.hapi.companion.feature.files.FolderGlyph
+import app.hapi.companion.feature.chat.composer.parkDraftEligible
 import app.hapi.companion.feature.sessions.DeleteSessionDialog
 import app.hapi.companion.feature.sessions.RenameSessionDialog
 import app.hapi.companion.ui.markdown.LocalMarkdownRenderCache
@@ -182,6 +182,7 @@ internal fun ChatScreen(
         }
     }
     val slashSuggestions by viewModel.slashSuggestions.collectAsState()
+    val skillSuggestions by viewModel.skillSuggestions.collectAsState()
 
     // --------------------------------------------------------- attachments --
     val attachmentItems by viewModel.attachments.items.collectAsState()
@@ -284,26 +285,17 @@ internal fun ChatScreen(
                 actions = {
                     // Two icons max (device feedback: four icons squeezed the
                     // title out) — gear for the frequent config switches,
-                    // everything else in the overflow menu.
+                    // destructive/session-scoped actions in the overflow menu.
+                    // Files/Scratchlist/Park moved to the composer action row
+                    // (they are draft-level, not session-level, actions).
                     IconButton(onClick = { configSheetOpen = true }) {
                         Icon(Icons.Filled.Settings, contentDescription = stringResource(R.string.chat_open_settings))
                     }
-                    val scratchlistCount by viewModel.scratchlistCount.collectAsState()
                     SessionOverflowMenu(
                         active = state.header.active,
-                        onOpenFiles = onOpenFiles,
-                        scratchlistCount = scratchlistCount,
-                        onOpenScratchlist = if (viewModel.scratchlistEnabled) onOpenScratchlist else null,
                         onRename = { renameDialogOpen = true },
                         onReopen = viewModel::reopenSession,
                         onDelete = { deleteDialogOpen = true },
-                        // Draft-level action, relocated from the composer's
-                        // own overflow (one less button in the input bar).
-                        onParkDraft = if (viewModel.scratchlistEnabled && composerState.text.isNotBlank()) {
-                            viewModel::parkComposerDraft
-                        } else {
-                            null
-                        },
                     )
                 },
             )
@@ -342,9 +334,20 @@ internal fun ChatScreen(
                         onAttachmentRemove = viewModel.attachments::remove,
                         slashSuggestions = slashSuggestions,
                         onSlashCommandSelected = viewModel::selectSlashCommand,
+                        skillSuggestions = skillSuggestions,
+                        onSkillSelected = viewModel::selectSkill,
                         dictation = if (dictationAvailable) dictationState else null,
                         onDictationToggle = onDictationToggle,
                         onDictationCancel = { dictation?.cancel() },
+                        onOpenFiles = onOpenFiles,
+                        onOpenScratchlist = if (viewModel.scratchlistEnabled) onOpenScratchlist else null,
+                        onParkDraft = if (
+                            parkDraftEligible(viewModel.scratchlistEnabled, composerState.text)
+                        ) {
+                            viewModel::parkComposerDraft
+                        } else {
+                            null
+                        },
                     )
                 }
             }
@@ -431,9 +434,10 @@ internal fun ChatScreen(
 }
 
 /**
- * Top-bar ⋮ menu: navigation entries first (Files always, Scratchlist with
- * entry count when enabled), then Rename always; Reopen only for inactive
- * sessions; Delete last.
+ * Top-bar ⋮ menu — session-scoped actions only: Rename always, Reopen only
+ * for inactive sessions, Delete last. The navigation/quick actions (Files /
+ * Scratchlist / Park) live in the composer action row now, one thumb-reach
+ * closer to the draft they act on.
  */
 @Composable
 private fun SessionOverflowMenu(
@@ -441,44 +445,12 @@ private fun SessionOverflowMenu(
     onRename: () -> Unit,
     onReopen: () -> Unit,
     onDelete: () -> Unit,
-    onOpenFiles: () -> Unit = {},
-    /** Entry-count suffix on the scratchlist row. */
-    scratchlistCount: Int = 0,
-    /** null ⇒ scratchlist row hidden (feature off / tests). */
-    onOpenScratchlist: (() -> Unit)? = null,
-    /** null ⇒ hidden (scratchlist off or empty composer). */
-    onParkDraft: (() -> Unit)? = null,
 ) {
     var open by remember { mutableStateOf(false) }
     IconButton(onClick = { open = true }) {
         Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.chat_session_actions))
     }
     DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-        DropdownMenuItem(
-            text = { Text(stringResource(R.string.chat_open_files)) },
-            leadingIcon = { Icon(FolderGlyph, contentDescription = null) },
-            onClick = {
-                open = false
-                onOpenFiles()
-            },
-        )
-        if (onOpenScratchlist != null) {
-            DropdownMenuItem(
-                text = {
-                    Text(
-                        if (scratchlistCount > 0) {
-                            stringResource(R.string.chat_open_scratchlist_count, scratchlistCount)
-                        } else {
-                            stringResource(R.string.chat_open_scratchlist)
-                        },
-                    )
-                },
-                onClick = {
-                    open = false
-                    onOpenScratchlist()
-                },
-            )
-        }
         HorizontalDivider()
         DropdownMenuItem(
             text = { Text(stringResource(R.string.sessions_action_rename)) },
@@ -487,15 +459,6 @@ private fun SessionOverflowMenu(
                 onRename()
             },
         )
-        if (onParkDraft != null) {
-            DropdownMenuItem(
-                text = { Text(stringResource(R.string.chat_park_draft)) },
-                onClick = {
-                    open = false
-                    onParkDraft()
-                },
-            )
-        }
         if (!active) {
             DropdownMenuItem(
                 text = { Text(stringResource(R.string.sessions_action_reopen)) },

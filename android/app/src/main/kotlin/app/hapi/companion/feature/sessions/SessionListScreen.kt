@@ -1,5 +1,13 @@
 package app.hapi.companion.feature.sessions
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -11,25 +19,34 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -53,10 +70,13 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
+import app.hapi.companion.feature.files.FolderGlyph
 import app.hapi.companion.ui.components.AgentFlavorIcon
 import app.hapi.companion.ui.theme.HapiTheme
+import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.wire.PendingRequest
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SessionSummaryMetadata
@@ -68,16 +88,24 @@ import app.hapi.protocol.wire.TodoProgress
  * outside; taps surface through [onOpenSession].
  *
  * Inventory (mirrors the web sidebar semantics):
- * - offline banner over snapshot data, machine filter chips (≥ 2 machines),
- *   pull-to-refresh, empty state;
- * - pinned section first (the sort already puts globalPinned/pinned rows on
- *   top; a header + divider make the boundary visible);
+ * - offline banner over snapshot data, search box (relevance-ranked, port of
+ *   the web sidebar search), lens chips — unread-only, active-only, and the
+ *   pin-in-progress sections toggle — plus mark-all-read (hub-wide count,
+ *   confirm dialog), machine filter chips (≥ 2 machines), pull-to-refresh,
+ *   empty state + no-search-results + no-unread + no-active states;
+ * - duplicate agent-session views are collapsed and fresh "new session"
+ *   stubs hidden (ViewModel pipeline, web sidebar parity);
+ * - sections: pinned first; with pin-in-progress on, connected unpinned rows
+ *   float into Running (thinking/background tasks, pulsing) / Pending
+ *   (pulsing) / Active / Idle-keepalive buckets above the plain Sessions
+ *   body (disconnected rows stay dimmed there);
  * - per row: flavor brand icon + title, spinner while a turn is in flight,
  *   summary line, `project · worktree · machine` meta line (machine only
  *   when it disambiguates), relative `updatedAt`, pending-request badge,
  *   todo-progress chip, unread dot; disconnected rows are dimmed —
  *   connected is the resting state, so no presence dot (web parity);
  * - long-press → actions sheet: pin (none/project/global), rename (dialog),
+ *   mark unread (watermark parked behind the activity),
  *   reopen (inactive rows; navigates into the possibly-superseding id),
  *   archive, delete (confirm; 409 while active) — optimistic store updates;
  *   failures land in a snackbar (B-M2b + B-M3ce).
@@ -101,6 +129,7 @@ fun SessionListScreen(
     var sheetRow by remember { mutableStateOf<SessionRowUi?>(null) }
     var renameRow by remember { mutableStateOf<SessionRowUi?>(null) }
     var deleteRow by remember { mutableStateOf<SessionRowUi?>(null) }
+    var markAllReadOpen by remember { mutableStateOf(false) }
 
     DisposableEffect(viewModel) {
         viewModel.start()
@@ -115,6 +144,7 @@ fun SessionListScreen(
                     is SessionListError.PinFailed -> R.string.sessions_error_pin
                     is SessionListError.ArchiveFailed -> R.string.sessions_error_archive
                     is SessionListError.RenameFailed -> R.string.sessions_error_rename
+                    is SessionListError.SummaryFailed -> R.string.sessions_error_summary
                     is SessionListError.DeleteFailed -> R.string.sessions_error_delete
                     is SessionListError.ReopenFailed -> R.string.sessions_error_reopen
                     is SessionListError.MachinesRefreshFailed -> R.string.sessions_error_machines
@@ -144,6 +174,24 @@ fun SessionListScreen(
             if (state.isOffline) {
                 OfflineBanner()
             }
+            SearchField(
+                query = state.searchQuery,
+                onQueryChange = viewModel::setSearchQuery,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+            SessionLensRow(
+                showUnreadOnly = state.showUnreadOnly,
+                showActiveOnly = state.showActiveOnly,
+                pinInProgress = state.pinInProgress,
+                grouped = state.grouped,
+                unreadCount = state.unreadCount,
+                onToggleUnread = { viewModel.setUnreadOnly(!state.showUnreadOnly) },
+                onToggleActive = { viewModel.setActiveOnly(!state.showActiveOnly) },
+                onTogglePinInProgress = { viewModel.setPinInProgress(!state.pinInProgress) },
+                onToggleGrouped = { viewModel.setGrouped(!state.grouped) },
+                onMarkAllRead = { markAllReadOpen = true },
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            )
             state.machineFilters.find { it.id == state.activeMachineFilter }?.let { filter ->
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(stringResource(R.string.sessions_filter_summary, machineFilterLabel(filter)),
@@ -159,15 +207,21 @@ fun SessionListScreen(
                     .weight(1f),
             ) {
                 if (state.rows.isEmpty()) {
-                    EmptyState(hasLoaded = state.hasLoaded, isOffline = state.isOffline)
+                    when {
+                        state.isSearching -> SearchEmptyState(query = state.searchQuery)
+                        state.showUnreadOnly -> UnreadEmptyState()
+                        state.showActiveOnly -> ActiveEmptyState()
+                        else -> EmptyState(hasLoaded = state.hasLoaded, isOffline = state.isOffline)
+                    }
                 } else {
                     SessionRows(
-                        rows = state.rows,
+                        sections = state.sections,
                         onOpen = { sessionId ->
                             viewModel.onSessionOpened(sessionId)
                             onOpenSession(sessionId)
                         },
                         onLongPress = { sheetRow = it },
+                        onToggleGroup = viewModel::toggleDirectoryGroup,
                     )
                 }
             }
@@ -192,11 +246,20 @@ fun SessionListScreen(
     }
 
     sheetRow?.let { row ->
+        val context = LocalContext.current
         SessionActionsSheet(
             row = row,
             onDismiss = { sheetRow = null },
             onSetPinMode = { mode ->
                 viewModel.setPinMode(row.id, mode)
+                sheetRow = null
+            },
+            onCopyReference = {
+                // Web's Copy-reference: hub-path prose + steer suffix, never a share link.
+                val text = SessionReference.buildSessionReferenceText(row.title, row.id)
+                context.getSystemService(ClipboardManager::class.java)
+                    .setPrimaryClip(ClipData.newPlainText("HAPI", text))
+                Toast.makeText(context, R.string.sessions_reference_copied, Toast.LENGTH_SHORT).show()
                 sheetRow = null
             },
             onArchive = {
@@ -205,6 +268,10 @@ fun SessionListScreen(
             },
             onRename = {
                 renameRow = row
+                sheetRow = null
+            },
+            onMarkUnread = {
+                viewModel.markSessionUnread(row.id)
                 sheetRow = null
             },
             onReopen = {
@@ -225,6 +292,15 @@ fun SessionListScreen(
                 renameRow = null
             },
             onDismiss = { renameRow = null },
+            onSuggestTitle = if (state.titleSuggestionAvailable) {
+                { viewModel.suggestSessionTitle(row.id) }
+            } else {
+                null
+            },
+            onConfirmGenerated = { text ->
+                viewModel.updateSessionSummary(row.id, text)
+                renameRow = null
+            },
         )
     }
     deleteRow?.let { row ->
@@ -237,38 +313,137 @@ fun SessionListScreen(
             onDismiss = { deleteRow = null },
         )
     }
+    if (markAllReadOpen) {
+        MarkAllReadDialog(
+            count = state.unreadCount,
+            onConfirm = {
+                viewModel.markAllSessionsRead()
+                markAllReadOpen = false
+            },
+            onDismiss = { markAllReadOpen = false },
+        )
+    }
 }
 
 // ------------------------------------------------------------------ list --
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SessionRows(
-    rows: List<SessionRowUi>,
+    sections: List<SessionSectionUi>,
     onOpen: (String) -> Unit,
     onLongPress: (SessionRowUi) -> Unit,
+    onToggleGroup: (String) -> Unit,
 ) {
-    // The sort contract puts globalPinned/pinned rows first; the boundary
-    // index is where the pinned section ends.
-    val pinnedCount = rows.takeWhile {
-        it.summary.globalPinned == true || it.summary.pinned == true
-    }.size
-
     LazyColumn(modifier = Modifier.fillMaxSize()) {
-        if (pinnedCount > 0) {
-            item(key = "header-pinned") { SectionHeader(stringResource(R.string.sessions_section_pinned)) }
-        }
-        items(rows.take(pinnedCount), key = { it.id }) { row ->
-            SessionRow(row, onOpen = onOpen, onLongPress = onLongPress)
-        }
-        if (pinnedCount in 1 until rows.size) {
-            item(key = "divider-pinned") {
-                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                SectionHeader(stringResource(R.string.sessions_section_sessions))
+        sections.forEachIndexed { index, section ->
+            when (section.kind) {
+                SessionSectionKind.PINNED -> item(key = "header-pinned") {
+                    SectionHeader(stringResource(R.string.sessions_section_pinned))
+                }
+                SessionSectionKind.RUNNING -> item(key = "header-running") {
+                    BucketSectionHeader(R.string.sessions_section_running, color = RunningGreen, pulse = true)
+                }
+                SessionSectionKind.PENDING -> item(key = "header-pending") {
+                    BucketSectionHeader(R.string.sessions_section_pending, color = PendingAmber, pulse = true)
+                }
+                SessionSectionKind.ACTIVE -> item(key = "header-active") {
+                    BucketSectionHeader(R.string.sessions_section_active, color = null, pulse = false)
+                }
+                SessionSectionKind.IDLE -> item(key = "header-idle") {
+                    BucketSectionHeader(R.string.sessions_section_idle, color = null, pulse = false)
+                }
+                // The plain body keeps the old look: unlabeled when it is the
+                // only section, divider + header once something sits above it.
+                SessionSectionKind.RECENT -> if (index > 0) item(key = "divider-recent") {
+                    Column {
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                        SectionHeader(stringResource(R.string.sessions_section_sessions))
+                    }
+                }
+                // Directory group (grouped layout): collapsible header keyed
+                // by the GROUP key, not the title — two machines sharing a
+                // directory name would collide on a title-derived key. The
+                // Surface stops scrolled content from showing through the
+                // sticky header.
+                SessionSectionKind.DIRECTORY -> stickyHeader(key = "header-dir-${section.key}") {
+                    Surface(color = MaterialTheme.colorScheme.background) {
+                        DirectoryGroupHeader(
+                            title = section.title.orEmpty(),
+                            count = section.rows.size,
+                            collapsed = section.collapsed,
+                            onToggle = { section.key?.let(onToggleGroup) },
+                        )
+                    }
+                }
+            }
+            // Collapsed groups keep their rows in the section (counts and
+            // tests see the full group); only rendering skips them.
+            if (section.kind != SessionSectionKind.DIRECTORY || !section.collapsed) {
+                val inDirectoryGroup = section.kind == SessionSectionKind.DIRECTORY
+                items(section.rows, key = { it.id }) { row ->
+                    SessionRow(
+                        row = row,
+                        onOpen = onOpen,
+                        onLongPress = onLongPress,
+                        indentStart = if (inDirectoryGroup) 16.dp else 0.dp,
+                        showMeta = !inDirectoryGroup,
+                    )
+                }
             }
         }
-        items(rows.drop(pinnedCount), key = { it.id }) { row ->
-            SessionRow(row, onOpen = onOpen, onLongPress = onLongPress)
-        }
+    }
+}
+
+/**
+ * Collapsible directory-group header (web `renderDirectoryGroup` header):
+ * chevron + folder glyph + display name + `($count)` — the literal `(n)`
+ * matches web and is locale-independent.
+ */
+@Composable
+private fun DirectoryGroupHeader(
+    title: String,
+    count: Int,
+    collapsed: Boolean,
+    onToggle: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggle)
+            .heightIn(min = 48.dp)
+            .padding(start = 8.dp, end = 16.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = if (collapsed) Icons.AutoMirrored.Filled.KeyboardArrowRight else Icons.Filled.KeyboardArrowDown,
+            contentDescription = stringResource(
+                if (collapsed) R.string.sessions_group_expand else R.string.sessions_group_collapse,
+            ),
+            tint = MaterialTheme.hapi.hint,
+            modifier = Modifier.size(20.dp),
+        )
+        Icon(
+            imageVector = FolderGlyph,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = title,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = "($count)",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.hapi.hint,
+        )
     }
 }
 
@@ -282,12 +457,55 @@ private fun SectionHeader(text: String) {
     )
 }
 
+/** Bucket accent colors — the row spinner's green, an amber for pending (web: success/warning badges). */
+private val RunningGreen = Color(0xFF34C759)
+private val PendingAmber = Color(0xFFFF9F0A)
+
+/**
+ * Running-bucket header: a status dot — pulsing for live states (working /
+ * pending), steady for quiet ones (active / idle) — plus the label in the
+ * bucket's accent color (web: `RUNNING_BUCKETS` pulse/colorClass).
+ */
+@Composable
+private fun BucketSectionHeader(labelRes: Int, color: Color?, pulse: Boolean) {
+    val dotColor = color ?: MaterialTheme.colorScheme.onSurfaceVariant
+    val alpha = if (pulse) {
+        val transition = rememberInfiniteTransition(label = "bucket-pulse")
+        transition.animateFloat(
+            initialValue = 0.35f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(600), RepeatMode.Reverse),
+            label = "bucket-pulse-alpha",
+        ).value
+    } else {
+        1f
+    }
+    Row(
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .background(dotColor.copy(alpha = alpha), CircleShape),
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = stringResource(labelRes),
+            style = MaterialTheme.typography.labelMedium,
+            color = dotColor,
+        )
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SessionRow(
     row: SessionRowUi,
     onOpen: (String) -> Unit,
     onLongPress: (SessionRowUi) -> Unit,
+    indentStart: Dp = 0.dp,
+    showMeta: Boolean = true,
 ) {
     val summary = row.summary
     Column(
@@ -300,7 +518,7 @@ private fun SessionRow(
             // 8dp keeps the old content-to-gap rhythm: rows shrank from three
             // text lines to two, and the unchanged 10dp read as oversized
             // gaps between the now-shorter items (device feedback).
-            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .padding(start = 16.dp + indentStart, end = 16.dp, top = 8.dp, bottom = 8.dp)
             // Dimming expresses "disconnected" (web parity): connected is the
             // resting state here, so only the exception gets marked — no
             // per-row presence dot.
@@ -351,7 +569,13 @@ private fun SessionRow(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        MetaLine(row)
+        // Inside a directory group the meta line is pure repetition: its
+        // first segment (projectLabel) comes from the same
+        // worktree/path rule as the group title — same source, same value —
+        // and what remains is noise. Flat mode keeps the full meta line.
+        if (showMeta) {
+            MetaLine(row)
+        }
         BadgeLine(summary)
     }
 }
@@ -429,11 +653,23 @@ private fun TodoChip(progress: TodoProgress) {
         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         shape = RoundedCornerShape(6.dp),
     ) {
-        Text(
-            text = "☑ ${progress.completed}/${progress.total}",
-            style = MaterialTheme.typography.labelSmall,
+        // No literal "☑" glyph (emoji-font fallback renders it as a colored
+        // emoji on many devices); the material Check icon is the stable twin.
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-        )
+        ) {
+            Icon(
+                imageVector = Icons.Default.Check,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(14.dp),
+            )
+            Text(
+                text = " ${progress.completed}/${progress.total}",
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
     }
 }
 
@@ -459,6 +695,169 @@ private fun OfflineBanner() {
             text = stringResource(R.string.sessions_offline_banner),
             style = MaterialTheme.typography.labelMedium,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+        )
+    }
+}
+
+/** Live search box — filters + relevance-ranks the list (web sidebar parity). */
+@Composable
+private fun SearchField(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = onQueryChange,
+        modifier = modifier,
+        singleLine = true,
+        placeholder = { Text(stringResource(R.string.sessions_search_hint)) },
+        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+        trailingIcon = {
+            if (query.isNotEmpty()) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = stringResource(R.string.sessions_search_clear),
+                    modifier = Modifier.clickable { onQueryChange("") },
+                )
+            }
+        },
+    )
+}
+
+/** Search active but nothing matched — distinct from the plain empty list. */
+@Composable
+private fun SearchEmptyState(query: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = stringResource(R.string.sessions_search_no_results, query),
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Spacer(modifier = Modifier.size(8.dp))
+        Text(
+            text = stringResource(R.string.sessions_search_no_results_hint),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * Lens chips + mark-all-read (web toolbar parity): the directory-grouping
+ * layout toggle (Android-native; the web sidebar is always grouped), the
+ * transient unread-only and active-only lenses, the pin-in-progress sections
+ * toggle, and — only while something is unread — the mark-all-read button
+ * with the hub-wide count. Horizontally scrollable: four chips + button
+ * overflows narrow screens.
+ */
+@Composable
+private fun SessionLensRow(
+    showUnreadOnly: Boolean,
+    showActiveOnly: Boolean,
+    pinInProgress: Boolean,
+    grouped: Boolean,
+    unreadCount: Int,
+    onToggleUnread: () -> Unit,
+    onToggleActive: () -> Unit,
+    onTogglePinInProgress: () -> Unit,
+    onToggleGrouped: () -> Unit,
+    onMarkAllRead: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    LazyRow(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        item {
+            FilterChip(
+                selected = grouped,
+                onClick = onToggleGrouped,
+                label = { Text(stringResource(R.string.sessions_grouped_layout)) },
+            )
+        }
+        item {
+            FilterChip(
+                selected = showUnreadOnly,
+                onClick = onToggleUnread,
+                label = { Text(stringResource(R.string.sessions_unread_filter)) },
+            )
+        }
+        item {
+            FilterChip(
+                selected = showActiveOnly,
+                onClick = onToggleActive,
+                label = { Text(stringResource(R.string.sessions_active_filter)) },
+            )
+        }
+        item {
+            FilterChip(
+                selected = pinInProgress,
+                onClick = onTogglePinInProgress,
+                label = { Text(stringResource(R.string.sessions_pin_in_progress)) },
+            )
+        }
+        if (unreadCount > 0) {
+            item {
+                TextButton(onClick = onMarkAllRead) {
+                    Text(stringResource(R.string.sessions_mark_all_read, unreadCount))
+                }
+            }
+        }
+    }
+}
+
+/** Lens on but everything is read — distinct from the plain empty list. */
+@Composable
+private fun UnreadEmptyState() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = stringResource(R.string.sessions_unread_empty_title),
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Spacer(modifier = Modifier.size(8.dp))
+        Text(
+            text = stringResource(R.string.sessions_unread_empty_hint),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** Lens on but nothing is active — distinct from the plain empty list. */
+@Composable
+private fun ActiveEmptyState() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = stringResource(R.string.sessions_active_empty_title),
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Spacer(modifier = Modifier.size(8.dp))
+        Text(
+            text = stringResource(R.string.sessions_active_empty_hint),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
@@ -506,8 +905,10 @@ private fun SessionActionsSheet(
     row: SessionRowUi,
     onDismiss: () -> Unit,
     onSetPinMode: (PinMode) -> Unit,
+    onCopyReference: () -> Unit,
     onArchive: () -> Unit,
     onRename: () -> Unit,
+    onMarkUnread: () -> Unit,
     onReopen: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -531,11 +932,16 @@ private fun SessionActionsSheet(
             SheetAction(stringResource(R.string.sessions_action_pin_global)) { onSetPinMode(PinMode.Global) }
         }
         SheetAction(stringResource(R.string.sessions_action_rename), onClick = onRename)
-        if (!summary.active) {
+        SheetAction(stringResource(R.string.sessions_action_copy_reference), onClick = onCopyReference)
+        SheetAction(stringResource(R.string.sessions_action_mark_unread), onClick = onMarkUnread)
+        // Web's SessionActionMenu gating: a connected session offers Archive;
+        // a disconnected one offers Reopen + Delete (delete is 409 while active).
+        if (summary.active) {
+            SheetAction(stringResource(R.string.sessions_action_archive), destructive = true, onClick = onArchive)
+        } else {
             SheetAction(stringResource(R.string.sessions_action_reopen), onClick = onReopen)
+            SheetAction(stringResource(R.string.sessions_action_delete), destructive = true, onClick = onDelete)
         }
-        SheetAction(stringResource(R.string.sessions_action_archive), destructive = true, onClick = onArchive)
-        SheetAction(stringResource(R.string.sessions_action_delete), destructive = true, onClick = onDelete)
         Spacer(modifier = Modifier.size(16.dp))
     }
 }
@@ -599,14 +1005,41 @@ private fun SessionRowsPreview() {
     HapiTheme {
         Surface {
             SessionRows(
-                rows = listOf(
-                    previewRow("s1", "Pinned build fix", pinned = true),
-                    previewRow("s2", "Session list UI", active = true, thinking = true, unread = true, todo = TodoProgress(3, 5)),
-                    previewRow("s3", "Fixture sweep", active = true, pending = 2),
-                    previewRow("s4", "Old research"),
+                sections = listOf(
+                    SessionSectionUi(
+                        SessionSectionKind.PINNED,
+                        listOf(previewRow("s1", "Pinned build fix", pinned = true)),
+                    ),
+                    SessionSectionUi(
+                        SessionSectionKind.RUNNING,
+                        listOf(previewRow("s2", "Session list UI", active = true, thinking = true, unread = true, todo = TodoProgress(3, 5))),
+                    ),
+                    SessionSectionUi(
+                        SessionSectionKind.PENDING,
+                        listOf(previewRow("s3", "Fixture sweep", active = true, pending = 2)),
+                    ),
+                    SessionSectionUi(
+                        SessionSectionKind.RECENT,
+                        listOf(previewRow("s4", "Old research")),
+                    ),
+                    SessionSectionUi(
+                        SessionSectionKind.DIRECTORY,
+                        listOf(previewRow("s5", "Grouped open row"), previewRow("s6", "Another grouped row")),
+                        title = "github/hapi",
+                        key = "m1::/data/github/hapi",
+                        collapsed = false,
+                    ),
+                    SessionSectionUi(
+                        SessionSectionKind.DIRECTORY,
+                        listOf(previewRow("s7", "Hidden by collapse")),
+                        title = "repo/lib",
+                        key = "m1::/repo/lib",
+                        collapsed = true,
+                    ),
                 ),
                 onOpen = {},
                 onLongPress = {},
+                onToggleGroup = {},
             )
         }
     }

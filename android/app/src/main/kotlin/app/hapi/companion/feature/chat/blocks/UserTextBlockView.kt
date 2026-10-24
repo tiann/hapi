@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -37,6 +38,8 @@ import app.hapi.companion.feature.chat.messagePreview
 import app.hapi.companion.ui.theme.HapiTypography
 import app.hapi.companion.feature.chat.attachments.PreviewImage
 import app.hapi.companion.feature.chat.attachments.rememberPreviewImage
+import app.hapi.companion.ui.components.HapiImageGlyph
+import app.hapi.companion.ui.components.HapiPaperclipGlyph
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.protocol.chat.ChatAttachment
 import app.hapi.protocol.chat.UserTextBlock
@@ -150,13 +153,24 @@ private fun AttachmentChip(attachment: ChatAttachment) {
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.55f),
         shape = RoundedCornerShape(8.dp),
     ) {
-        Text(
-            text = "${if (attachment.mimeType.startsWith("image/")) "🖼" else "📎"} ${attachment.filename}",
-            style = MaterialTheme.typography.labelMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-        )
+        ) {
+            Icon(
+                imageVector = if (attachment.mimeType.startsWith("image/")) HapiImageGlyph else HapiPaperclipGlyph,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = attachment.filename,
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 

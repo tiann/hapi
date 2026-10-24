@@ -1,11 +1,13 @@
 package app.hapi.companion.feature.sessions
 
 import app.hapi.data.api.ApiError
+import app.hapi.data.store.LastSeenState
 import app.hapi.data.store.LastSeenStore
 import app.hapi.data.store.MachineListStore
 import app.hapi.data.store.SessionListStore
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.SessionSummary
+import app.hapi.protocol.wire.sortSessionSummaries
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -15,6 +17,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.stateIn
@@ -53,10 +56,28 @@ data class MachineFilterUi(
     val label: String,
     val sessionCount: Int,
     val unnamed: Boolean = false,
+    /** Runner-reported CPU/RAM, null when absent or the machine is unknown. */
+    val health: MachineHealthUi.Presentation? = null,
+)
+
+/** One rendered list section — pinned first, running buckets when the pin-in-progress view is on, rest last. */
+enum class SessionSectionKind { PINNED, RUNNING, PENDING, ACTIVE, IDLE, RECENT, DIRECTORY }
+
+data class SessionSectionUi(
+    val kind: SessionSectionKind,
+    val rows: List<SessionRowUi>,
+    /** [SessionSectionKind.DIRECTORY] header — the group display name. */
+    val title: String? = null,
+    /** [SessionSectionKind.DIRECTORY] group key (`machineId::directory`); drives toggling. */
+    val key: String? = null,
+    /** [SessionSectionKind.DIRECTORY] collapse state (web `isGroupCollapsed`). */
+    val collapsed: Boolean = false,
 )
 
 data class SessionListUiState(
     val rows: List<SessionRowUi>,
+    /** Sections the screen renders (same rows as [rows], regrouped). */
+    val sections: List<SessionSectionUi> = emptyList(),
     /** Choices for the filter sheet, derived from all sessions. */
     val machineFilters: List<MachineFilterUi>,
     /** `null` = All. Always one of [machineFilters] ids (stale picks fall back). */
@@ -66,9 +87,32 @@ data class SessionListUiState(
     val hasLoaded: Boolean,
     /** Last refresh failed — show the offline banner over snapshot data. */
     val isOffline: Boolean,
+    /** Live search-box text; blank = no filtering/ranking. */
+    val searchQuery: String = "",
+    /** Transient unread lens (web parity: not a persisted preference). */
+    val showUnreadOnly: Boolean = false,
+    /** Transient active-only lens (web: persisted display pref; P2 wires persistence). */
+    val showActiveOnly: Boolean = false,
+    /** Transient pin-in-progress sections toggle (web: persisted display pref, default off). */
+    val pinInProgress: Boolean = false,
+    /** Directory-grouped layout (web is always grouped; Android keeps flat as the toggle-off state). */
+    val grouped: Boolean = SessionDisplayPrefs.DEFAULT_GROUPED,
+    /** Unread sessions on this hub (drives the mark-all-read affordance). */
+    val unreadCount: Int = 0,
+    /** Hub advertises the AI title-suggestion endpoint (health capability). */
+    val titleSuggestionAvailable: Boolean = false,
 ) {
     val hasMachineFilters: Boolean get() = machineFilters.size >= 2
+    val isSearching: Boolean get() = searchQuery.isNotBlank()
 }
+
+/** Grouping inputs that travel together through the uiState combine. */
+private data class SelectionSnapshot(
+    val filter: String?,
+    val query: String,
+    val selected: String?,
+    val overrides: Map<String, Boolean>,
+)
 
 /**
  * Session-list state machine: combines [SessionListStore] / [MachineListStore]
@@ -90,8 +134,19 @@ class SessionListViewModel(
     private val scope: CoroutineScope,
     /** Last-seen baseline scope, e.g. the hub origin. */
     private val hubKey: String = "default",
+    /** Display preferences; null keeps every toggle in-memory (tests). */
+    private val displayPrefs: SessionDisplayPrefs? = null,
+    /** Group-collapse overrides; null keeps them in-memory (tests). */
+    private val groupCollapsePrefs: SessionGroupCollapsePrefs? = null,
 ) {
     private val machineFilter = MutableStateFlow<String?>(null)
+    private val searchQuery = MutableStateFlow("")
+    private val selectedSessionId = MutableStateFlow<String?>(null)
+    private val showUnreadOnly = MutableStateFlow(false)
+    private val showActiveOnly = MutableStateFlow(false)
+    private val pinInProgress = MutableStateFlow(false)
+    private val grouped = MutableStateFlow(SessionDisplayPrefs.DEFAULT_GROUPED)
+    private val collapseOverrides = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     private val isRefreshing = MutableStateFlow(false)
     private val isOffline = MutableStateFlow(false)
     private val hasRefreshedOnce = MutableStateFlow(false)
@@ -106,9 +161,23 @@ class SessionListViewModel(
     /** Reopen succeeded — navigate into this (possibly superseding) session id. */
     val reopened: SharedFlow<String> = _reopened.asSharedFlow()
 
+    /** Hub capability `titleSuggestion` (drives the rename dialog's Suggest button). */
+    private val _titleSuggestionAvailable = MutableStateFlow(false)
+    val titleSuggestionAvailable: StateFlow<Boolean> = _titleSuggestionAvailable.asStateFlow()
+
     private var refreshJob: Job? = null
 
     init {
+        // Persisted display prefs drive the grouping toggle; local writes
+        // echo through the DataStore flow with the same value (no fight).
+        displayPrefs?.let { prefs ->
+            scope.launch { prefs.grouped.collect { grouped.value = it } }
+        }
+        // Persisted collapse overrides drive the directory-group headers;
+        // local writes echo through the DataStore flow with the same value.
+        groupCollapsePrefs?.let { prefs ->
+            scope.launch { prefs.overrides(hubKey).collect { collapseOverrides.value = it } }
+        }
         scope.launch {
             combine(sessionStore.sessions, machineFilter) { _, filter -> filter }.collect { selected ->
                 // Validate against the current snapshot, not an older combined
@@ -134,25 +203,47 @@ class SessionListViewModel(
                 }
             }
         }
+        // Health capability once per scope (store caches across calls); the
+        // dialog hides Suggest when the hub lacks the endpoint (web parity:
+        // `App.tsx` gates on `capabilities.titleSuggestion`).
+        scope.launch {
+            runCatching { _titleSuggestionAvailable.value = sessionStore.titleSuggestionAvailable() }
+        }
     }
 
     val uiState: StateFlow<SessionListUiState> = combine(
-        sessionStore.sessions,
-        machineStore.machines,
-        lastSeenStore.state,
-        machineFilter,
+        combine(sessionStore.sessions, machineStore.machines, lastSeenStore.state) { sessions, machines, lastSeen ->
+            Triple(sessions, machines, lastSeen)
+        },
+        combine(machineFilter, searchQuery, selectedSessionId, collapseOverrides) { filter, query, selected, overrides ->
+            SelectionSnapshot(filter, query, selected, overrides)
+        },
         combine(isRefreshing, isOffline, hasRefreshedOnce) { refreshing, offline, loaded ->
             Triple(refreshing, offline, loaded)
         },
-    ) { sessions, machines, lastSeen, filter, (refreshing, offline, refreshedOnce) ->
+        combine(showUnreadOnly, showActiveOnly) { unreadOnly, activeOnly ->
+            unreadOnly to activeOnly
+        },
+        combine(pinInProgress, grouped, _titleSuggestionAvailable) { pinning, groupedMode, titleSuggestion ->
+            Triple(pinning, groupedMode, titleSuggestion)
+        },
+    ) { (sessions, machines, lastSeen), selection, (refreshing, offline, refreshedOnce), (unreadOnly, activeOnly), (pinning, grouped, titleSuggestion) ->
         buildUiState(
             sessions = sessions,
             machines = machines,
-            lastSeen = lastSeen.lastSeen,
-            filter = filter,
+            lastSeenState = lastSeen,
+            filter = selection.filter,
+            searchQuery = selection.query,
+            selectedSessionId = selection.selected,
+            collapseOverrides = selection.overrides,
             isRefreshing = refreshing,
             isOffline = offline,
             hasLoaded = refreshedOnce || sessions.isNotEmpty(),
+            showUnreadOnly = unreadOnly,
+            showActiveOnly = activeOnly,
+            pinInProgress = pinning,
+            grouped = grouped,
+            titleSuggestionAvailable = titleSuggestion,
         )
     }.stateIn(
         scope = scope,
@@ -220,8 +311,71 @@ class SessionListViewModel(
         machineFilter.value = machineId
     }
 
+    /** Search-box input; blank disables filtering/ranking entirely. */
+    fun setSearchQuery(query: String) {
+        searchQuery.value = query
+    }
+
+    /** Unread-lens toggle; transient — resets with the process like the web's. */
+    fun setUnreadOnly(enabled: Boolean) {
+        showUnreadOnly.value = enabled
+    }
+
+    /** Active-only lens toggle; transient until the P2 Display settings screen persists it. */
+    fun setActiveOnly(enabled: Boolean) {
+        showActiveOnly.value = enabled
+    }
+
+    /** Pin-in-progress sections toggle (`pinInProgressSessions`); transient until P2 persists it. */
+    fun setPinInProgress(enabled: Boolean) {
+        pinInProgress.value = enabled
+    }
+
+    /**
+     * Directory-grouped vs flat list. Persisted when [displayPrefs] is
+     * wired (production); tests drive it without a store.
+     */
+    fun setGrouped(enabled: Boolean) {
+        grouped.value = enabled
+        val prefs = displayPrefs ?: return
+        scope.launch { runCatching { prefs.setGrouped(enabled) } }
+    }
+
+    /**
+     * Directory-group header tap (web `toggleGroup`): flips the group's
+     * collapse state and persists the override. Rows always stay in
+     * [SessionSectionUi.rows] — the screen just skips rendering them.
+     */
+    fun toggleDirectoryGroup(key: String) {
+        val section = uiState.value.sections.firstOrNull {
+            it.kind == SessionSectionKind.DIRECTORY && it.key == key
+        } ?: return
+        val next = !isGroupCollapsed(
+            key = key,
+            rows = section.rows,
+            selectedSessionId = selectedSessionId.value,
+            searching = uiState.value.isSearching,
+            overrides = collapseOverrides.value,
+        )
+        collapseOverrides.value = collapseOverrides.value + (key to next)
+        val prefs = groupCollapsePrefs ?: return
+        scope.launch { runCatching { prefs.setOverride(hubKey, key, next) } }
+    }
+
+    /** Row action: park the watermark behind the current activity and pin the mark. */
+    fun markSessionUnread(sessionId: String) {
+        val summary = sessionStore.sessions.value.firstOrNull { it.id == sessionId } ?: return
+        lastSeenStore.markUnread(sessionId, summary.updatedAt)
+    }
+
+    /** Toolbar action: stamp every session on this hub as seen. */
+    fun markAllSessionsRead() {
+        lastSeenStore.markAllSeen(sessionStore.sessions.value)
+    }
+
     /** Call when navigating into a session: stamps the last-seen watermark. */
     fun onSessionOpened(sessionId: String) {
+        selectedSessionId.value = sessionId
         val summary = sessionStore.sessions.value.firstOrNull { it.id == sessionId } ?: return
         lastSeenStore.markSeen(sessionId, summary.updatedAt)
     }
@@ -267,6 +421,28 @@ class SessionListViewModel(
         }
     }
 
+    /** `PATCH /sessions/:id/summary` with optimistic `metadata.summary`; failures surface on [errors]. */
+    fun updateSessionSummary(sessionId: String, text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        scope.launch {
+            try {
+                sessionStore.updateSessionSummary(sessionId, trimmed)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                _errors.tryEmit(SessionListError.SummaryFailed(sessionId, error.message))
+            }
+        }
+    }
+
+    /**
+     * `POST /sessions/:id/title-suggestion` — suspending (the rename dialog
+     * awaits it inline); failures propagate to the caller's catch → dialog error.
+     */
+    suspend fun suggestSessionTitle(sessionId: String): String =
+        sessionStore.suggestSessionTitle(sessionId)
+
     /** `DELETE /sessions/:id` with optimistic removal; 409 while active gets explicit wording (in the UI). */
     fun deleteSession(sessionId: String) {
         scope.launch {
@@ -309,12 +485,22 @@ class SessionListViewModel(
     private fun buildUiState(
         sessions: List<SessionSummary>,
         machines: List<Machine>,
-        lastSeen: Map<String, Long>,
+        lastSeenState: LastSeenState,
         filter: String?,
+        searchQuery: String,
+        selectedSessionId: String?,
+        collapseOverrides: Map<String, Boolean> = emptyMap(),
         isRefreshing: Boolean,
         isOffline: Boolean,
         hasLoaded: Boolean,
+        showUnreadOnly: Boolean,
+        showActiveOnly: Boolean = false,
+        pinInProgress: Boolean = false,
+        grouped: Boolean = SessionDisplayPrefs.DEFAULT_GROUPED,
+        titleSuggestionAvailable: Boolean = false,
     ): SessionListUiState {
+        val lastSeen = lastSeenState.lastSeen
+        val manualUnread = lastSeenState.manualUnread
         val names = machines.mapNotNull { machine ->
             val metadata = machine.metadata ?: return@mapNotNull null
             val name = metadata.displayName?.trim()?.takeIf { it.isNotEmpty() }
@@ -330,6 +516,7 @@ class SessionListViewModel(
         }
 
         // Derive choices before filtering so the selection cannot hide alternatives.
+        val machinesById = machines.associateBy { it.id }
         val filters = sessions
             .groupBy { it.metadata?.machineId ?: UNKNOWN_MACHINE_ID }
             .map { (id, group) ->
@@ -340,6 +527,7 @@ class SessionListViewModel(
                     } ?: shortIds.getValue(id),
                     sessionCount = group.size,
                     unnamed = id !in names,
+                    health = MachineHealthUi.present(machinesById[id]?.health),
                 )
             }
             .sortedWith(compareBy<MachineFilterUi> {
@@ -356,11 +544,55 @@ class SessionListViewModel(
             sessions.filter { (it.metadata?.machineId ?: UNKNOWN_MACHINE_ID) == activeFilter }
         }
 
+        // Sidebar list body, matching the web list: collapse duplicate
+        // agent-session views (resume/reopen chains) and hide fresh "new
+        // session" stubs, then re-apply the canonical order — dedup regroups
+        // rows and must not leave the store's pinned/active ordering behind.
+        val prepared = sortSessionSummaries(
+            SessionListFilters.prepareSidebarSessions(visible, selectedSessionId),
+        )
+
+        // Active-only lens, on the prepared list BEFORE search like the
+        // reference — the search box only narrows further.
+        val activeLensed = if (!showActiveOnly) {
+            prepared
+        } else {
+            SessionListFilters.filterActiveSessionsOnly(prepared, selectedSessionId)
+        }
+
+        // Text search: relevance ranking over the already-prepared corpus,
+        // pins kept contiguous ahead of ordinary rows.
+        val searched = if (searchQuery.isBlank()) {
+            activeLensed
+        } else {
+            val machineLabels = filters.associate { it.id to it.label }
+            val index = SessionListSearch.buildSessionSearchScoreIndex(activeLensed, searchQuery) { machineId ->
+                machineLabels[machineId ?: UNKNOWN_MACHINE_ID] ?: ""
+            }
+            SessionListSearch.sortSessionsBySearchRelevancePreservingPins(
+                activeLensed.filter { it.id in index.matchedIds },
+                index,
+            )
+        }
+
+        // Unread lens, after search like the web list: drop already-seen rows,
+        // keep the open session. Not applied to the machine-filter choices or
+        // the unread count below — both stay derived from the full list.
+        val lensed = if (!showUnreadOnly) {
+            searched
+        } else {
+            SessionListFilters.filterUnreadSessionsOnly(searched, selectedSessionId, lastSeen)
+        }
+
         // With one machine — or a machine filter active — every visible row
         // shares the machine, so repeating it per row is noise.
         val showMachine = filters.size >= 2 && activeFilter == null
 
-        val rows = visible.map { summary ->
+        // Multi-machine unfiltered view: directory-group headers carry the
+        // machine label; the grouped rows' own meta line is not rendered.
+        val machineLabels = if (showMachine) filters.associate { it.id to it.label } else emptyMap()
+
+        val rows = lensed.map { summary ->
             val title = sessionTitle(summary)
             val summaryText = summary.metadata?.summary?.text?.takeIf { it.isNotBlank() }
             SessionRowUi(
@@ -372,22 +604,185 @@ class SessionListViewModel(
                     summary.metadata?.worktree?.let { add(it.name.ifBlank { it.branch }) }
                 }.takeIf { it.isNotEmpty() }?.joinToString(" · "),
                 flavor = summary.metadata?.flavor,
-                unread = LastSeenStore.isUnread(summary, lastSeen[summary.id] ?: 0),
+                unread = LastSeenStore.hasUnreadActivity(
+                    summary.updatedAt,
+                    lastSeen[summary.id] ?: 0,
+                    manualUnread[summary.id],
+                ),
                 machine = if (showMachine) filters.find { it.id == (summary.metadata?.machineId ?: UNKNOWN_MACHINE_ID) } else null,
             )
         }
 
         return SessionListUiState(
             rows = rows,
+            sections = buildSessionSections(
+                rows = rows,
+                pinInProgress = pinInProgress,
+                grouped = grouped,
+                isSearching = searchQuery.isNotBlank(),
+                selectedSessionId = selectedSessionId,
+                collapseOverrides = collapseOverrides,
+                machineLabels = machineLabels,
+            ),
             machineFilters = filters,
             activeMachineFilter = activeFilter,
+            searchQuery = searchQuery,
+            showUnreadOnly = showUnreadOnly,
+            showActiveOnly = showActiveOnly,
+            pinInProgress = pinInProgress,
+            grouped = grouped,
+            unreadCount = LastSeenStore.unreadSessionCount(sessions, lastSeen, manualUnread),
+            titleSuggestionAvailable = titleSuggestionAvailable,
             isRefreshing = isRefreshing,
             hasLoaded = hasLoaded,
             isOffline = isOffline,
         )
     }
 
+    /**
+     * Group the rendered rows into screen sections. Flat mode (grouped off):
+     * the plain pinned prefix + rest (the sort contract puts pins on top);
+     * pin-in-progress floats connected unpinned rows into running buckets.
+     *
+     * Grouped mode mirrors the web sidebar exactly: a global-pinned section
+     * on top (local pins stay inside their directory group, sorted first),
+     * running buckets when pin-in-progress is on, then directory groups —
+     * pinned-group → active-group → latest-updated, or search-relevance
+     * (first-encounter) order while searching — each carrying its collapse
+     * state and machine-disambiguated title.
+     */
+    private fun buildSessionSections(
+        rows: List<SessionRowUi>,
+        pinInProgress: Boolean,
+        grouped: Boolean,
+        isSearching: Boolean,
+        selectedSessionId: String? = null,
+        collapseOverrides: Map<String, Boolean> = emptyMap(),
+        machineLabels: Map<String, String> = emptyMap(),
+    ): List<SessionSectionUi> {
+        if (grouped) {
+            return buildGroupedSections(
+                rows = rows,
+                pinInProgress = pinInProgress,
+                isSearching = isSearching,
+                selectedSessionId = selectedSessionId,
+                collapseOverrides = collapseOverrides,
+                machineLabels = machineLabels,
+            )
+        }
+        if (!pinInProgress) {
+            val pinnedCount = rows.takeWhile {
+                it.summary.globalPinned == true || it.summary.pinned == true
+            }.size
+            return buildList {
+                if (pinnedCount > 0) add(SessionSectionUi(SessionSectionKind.PINNED, rows.take(pinnedCount)))
+                add(SessionSectionUi(SessionSectionKind.RECENT, rows.drop(pinnedCount)))
+            }
+        }
+        val buckets = SessionBuckets.bucketSessionRows(rows)
+        return buildList {
+            if (buckets.pinned.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.PINNED, buckets.pinned))
+            if (buckets.working.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.RUNNING, buckets.working))
+            if (buckets.pending.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.PENDING, buckets.pending))
+            if (buckets.active.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.ACTIVE, buckets.active))
+            if (buckets.idle.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.IDLE, buckets.idle))
+            if (buckets.rest.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.RECENT, buckets.rest))
+        }
+    }
+
+    /**
+     * Web-sidebar layout: global-pinned rows first (local pins stay in their
+     * directory group), then the running buckets when pin-in-progress floats
+     * connected rows, then the directory groups over everything left.
+     */
+    private fun buildGroupedSections(
+        rows: List<SessionRowUi>,
+        pinInProgress: Boolean,
+        isSearching: Boolean,
+        selectedSessionId: String? = null,
+        collapseOverrides: Map<String, Boolean> = emptyMap(),
+        machineLabels: Map<String, String> = emptyMap(),
+    ): List<SessionSectionUi> {
+        val globalPinned = rows.filter { it.summary.globalPinned == true }
+        val floated = if (pinInProgress) {
+            val buckets = SessionBuckets.bucketSessionRows(rows - globalPinned.toSet())
+            buckets
+        } else {
+            null
+        }
+        val floatedRows = floated?.let { buckets ->
+            buckets.working + buckets.pending + buckets.active + buckets.idle
+        }.orEmpty()
+        val remaining = rows - globalPinned.toSet() - floatedRows.toSet()
+
+        val groups = if (isSearching) {
+            // Rows carry relevance order; groups keep first-encounter order.
+            SessionDirectoryGroups.groupRowsInEncounterOrder(remaining)
+        } else {
+            SessionDirectoryGroups.groupRows(remaining)
+        }
+
+        return buildList {
+            if (globalPinned.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.PINNED, globalPinned))
+            if (floated != null) {
+                if (floated.working.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.RUNNING, floated.working))
+                if (floated.pending.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.PENDING, floated.pending))
+                if (floated.active.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.ACTIVE, floated.active))
+                if (floated.idle.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.IDLE, floated.idle))
+            }
+            groups.forEach { group ->
+                // Multi-machine unfiltered view: disambiguate same-named
+                // directories across machines by suffixing the machine label
+                // (web `groupTitle`); single-machine, unknown, or blank labels
+                // stay bare.
+                val machineLabel = machineLabels[group.key.substringBefore("::")]
+                val title = if (!machineLabel.isNullOrBlank()) "${group.title} · $machineLabel" else group.title
+                add(
+                    SessionSectionUi(
+                        kind = SessionSectionKind.DIRECTORY,
+                        rows = group.rows,
+                        title = title,
+                        key = group.key,
+                        collapsed = isGroupCollapsed(
+                            key = group.key,
+                            rows = group.rows,
+                            selectedSessionId = selectedSessionId,
+                            searching = isSearching,
+                            overrides = collapseOverrides,
+                        ),
+                    ),
+                )
+            }
+        }
+    }
+
     companion object {
+        /**
+         * Web collapse default (`SessionList.tsx` `isGroupCollapsed` tail): a
+         * quiet group — no active, no pinned, not holding the open session —
+         * starts collapsed; anything live starts expanded.
+         */
+        fun defaultGroupCollapsed(rows: List<SessionRowUi>, selectedSessionId: String?): Boolean =
+            rows.none { it.summary.active || it.summary.pinned == true } && rows.none { it.id == selectedSessionId }
+
+        /**
+         * Group collapse state (web `isGroupCollapsed`): searching forces
+         * everything open, an explicit override wins, otherwise the
+         * [defaultGroupCollapsed] heuristic.
+         */
+        fun isGroupCollapsed(
+            key: String,
+            rows: List<SessionRowUi>,
+            selectedSessionId: String?,
+            searching: Boolean,
+            overrides: Map<String, Boolean>,
+        ): Boolean {
+            if (searching) return false
+            val override = overrides[key]
+            if (override != null) return override
+            return defaultGroupCollapsed(rows, selectedSessionId)
+        }
+
         /** `getSessionTitle` (`web/src/lib/sessionTitle.ts`). */
         fun sessionTitle(summary: SessionSummary): String {
             val metadata = summary.metadata
@@ -432,6 +827,7 @@ sealed interface SessionListError {
     data class PinFailed(override val sessionId: String, override val message: String?) : SessionListError
     data class ArchiveFailed(override val sessionId: String, override val message: String?) : SessionListError
     data class RenameFailed(override val sessionId: String, override val message: String?) : SessionListError
+    data class SummaryFailed(override val sessionId: String, override val message: String?) : SessionListError
     data class DeleteFailed(
         override val sessionId: String,
         override val message: String?,
