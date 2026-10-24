@@ -97,6 +97,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -908,8 +909,11 @@ private class ChatViewModelHolder(
     hubGraph: HubGraph,
     sessionId: String,
     appContext: Context,
-    dictationProviderId: StateFlow<String?>,
-    dictationLanguage: StateFlow<String?>,
+    // Defaults keep the holder compilable for callers that predate dictation
+    // overrides (e.g. forks with extra chat entry points): null flows mean
+    // auto provider + auto language, i.e. the pre-override behavior.
+    dictationProviderId: StateFlow<String?> = MutableStateFlow(null),
+    dictationLanguage: StateFlow<String?> = MutableStateFlow(null),
 ) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
