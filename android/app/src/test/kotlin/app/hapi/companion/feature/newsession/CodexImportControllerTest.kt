@@ -16,6 +16,10 @@ import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.GrokModelsResponse
 import app.hapi.protocol.wire.MachineListDirectoryResponse
 import app.hapi.protocol.wire.MachinePathsExistsResponse
+import app.hapi.protocol.wire.PiImportSessionsRequest
+import app.hapi.protocol.wire.PiImportSessionsResponse
+import app.hapi.protocol.wire.PiLocalSessionsResponse
+import app.hapi.protocol.wire.ReopenSessionResponse
 import app.hapi.protocol.wire.ResumeSessionResponse
 import app.hapi.protocol.wire.SpawnResponse
 import app.hapi.protocol.wire.SpawnSessionRequest
@@ -158,6 +162,15 @@ class CodexImportControllerTest {
             restartCalls.add(1)
             return restartResult
         }
+
+        override suspend fun piSessions(cwd: String?, machineId: String?): PiLocalSessionsResponse =
+            PiLocalSessionsResponse(success = true, sessions = emptyList())
+
+        override suspend fun importPiSessions(payload: PiImportSessionsRequest): PiImportSessionsResponse =
+            PiImportSessionsResponse(success = true)
+
+        override suspend fun reopenSession(sessionId: String): ReopenSessionResponse =
+            ReopenSessionResponse(sessionId = sessionId, resumed = true)
     }
 
     private class RecordingStore(initial: Map<String, Long> = emptyMap()) : CodexImportedSessionsStore {

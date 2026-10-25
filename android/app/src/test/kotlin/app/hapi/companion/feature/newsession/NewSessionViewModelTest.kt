@@ -25,6 +25,12 @@ import app.hapi.protocol.wire.MachineDirectoryEntry
 import app.hapi.protocol.wire.MachineListDirectoryResponse
 import app.hapi.protocol.wire.MachineMetadata
 import app.hapi.protocol.wire.MachinePathsExistsResponse
+import app.hapi.protocol.wire.PiImportResult
+import app.hapi.protocol.wire.PiImportSessionsRequest
+import app.hapi.protocol.wire.PiImportSessionsResponse
+import app.hapi.protocol.wire.PiLocalSessionSummary
+import app.hapi.protocol.wire.PiLocalSessionsResponse
+import app.hapi.protocol.wire.ReopenSessionResponse
 import app.hapi.protocol.wire.ResumeSessionResponse
 import app.hapi.protocol.wire.SpawnResponse
 import app.hapi.protocol.wire.SpawnSessionRequest
@@ -64,6 +70,9 @@ private class FakeGateway : NewSessionGateway {
     val codexSessionsCalls = mutableListOf<Pair<String?, String?>>()
     val syncCalls = mutableListOf<CodexDesktopSyncRequest>()
     val resumeCalls = mutableListOf<Pair<String, String?>>()
+    val piSessionsCalls = mutableListOf<Pair<String?, String?>>()
+    val piImportCalls = mutableListOf<PiImportSessionsRequest>()
+    val piReopenCalls = mutableListOf<String>()
 
     var entries: List<MachineDirectoryEntry> = emptyList()
     var existsAnswer: (String) -> Boolean? = { true }
@@ -85,6 +94,12 @@ private class FakeGateway : NewSessionGateway {
     var duplicateResult: CodexDuplicateSessionsResponse = CodexDuplicateSessionsResponse(success = true)
     var mergeResult: CodexMergeDuplicateSessionsResponse =
         CodexMergeDuplicateSessionsResponse(success = true)
+    var piSessionsResult: PiLocalSessionsResponse =
+        PiLocalSessionsResponse(success = true, sessions = emptyList())
+    var piSessionsThrows: Exception? = null
+    var piImportResult: PiImportSessionsResponse = PiImportSessionsResponse(success = true)
+    var piReopenResult: ReopenSessionResponse =
+        ReopenSessionResponse(sessionId = "hapi-reopened", resumed = true)
     var availabilityResult = AgentAvailabilityResponse(
         AgentFlavor.CREATABLE.map { AgentAvailabilityEntry(agent = it.id, available = true) },
     )
@@ -169,6 +184,22 @@ private class FakeGateway : NewSessionGateway {
         mergeResult
 
     override suspend fun restartCodexDesktop(): CodexDesktopScriptResponse = CodexDesktopScriptResponse(success = true)
+
+    override suspend fun piSessions(cwd: String?, machineId: String?): PiLocalSessionsResponse {
+        piSessionsCalls.add(cwd to machineId)
+        piSessionsThrows?.let { throw it }
+        return piSessionsResult
+    }
+
+    override suspend fun importPiSessions(payload: PiImportSessionsRequest): PiImportSessionsResponse {
+        piImportCalls.add(payload)
+        return piImportResult
+    }
+
+    override suspend fun reopenSession(sessionId: String): ReopenSessionResponse {
+        piReopenCalls.add(sessionId)
+        return piReopenResult
+    }
 }
 
 private class FakeMachineStore(initial: List<Machine> = emptyList()) : MachineListStore {
@@ -1788,5 +1819,190 @@ class NewSessionViewModelTest {
         assertFalse(vm.codexImport.state.value.duplicateMergeConfirmOpen)
         assertEquals("merge script died", vm.uiState.value.codexImport.duplicateMergeError,
             "retained failure renders on the inline section")
+    }
+
+    // ------------------------------------------------------ pi import (C) --
+
+    private fun piSession(
+        id: String,
+        title: String = "Session $id",
+        cwd: String? = "/repo",
+    ): PiLocalSessionSummary = PiLocalSessionSummary(
+        id = id,
+        title = title,
+        cwd = cwd,
+        file = "/pi/$id.jsonl",
+        modifiedAt = 1_700_000_000_000,
+        messageCount = 2,
+    )
+
+    @Test
+    fun `pi import at create replaces spawn, reopens and emits the reopened id`() = runTest {
+        val gateway = FakeGateway().apply {
+            piSessionsResult = PiLocalSessionsResponse(
+                success = true,
+                machineId = "m1",
+                sessions = listOf(piSession("pi-native-1")),
+            )
+            piImportResult = PiImportSessionsResponse(
+                success = true,
+                machineId = "m1",
+                results = listOf(
+                    PiImportResult(
+                        piSessionId = "pi-native-1",
+                        hapiSessionId = "hapi-imported-1",
+                        action = "created",
+                        appended = 2,
+                    ),
+                ),
+            )
+            piReopenResult = ReopenSessionResponse(sessionId = "hapi-imported-1", resumed = true)
+        }
+        val prefs = FakePrefs()
+        val vmScope = newVmScope()
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), prefs, scope = vmScope)
+        advanceUntilIdle()
+
+        val spawnedIds = mutableListOf<String>()
+        vmScope.launch { vm.spawned.collect(spawnedIds::add) }
+
+        vm.setAgent("pi")
+        vm.setDirectory("/data/work")
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.canCreate)
+
+        vm.openPiImportDialog()
+        advanceUntilIdle()
+        assertEquals(listOf<Pair<String?, String?>>("/data/work" to "m1"), gateway.piSessionsCalls)
+
+        vm.piImport.toggleSession("pi-native-1")
+        vm.piImport.confirm() // one checked row → inline select + close
+        advanceUntilIdle()
+        assertEquals("pi-native-1", vm.piImport.state.value.selectedSessionId)
+        // Selecting inline adopts the session cwd as the form directory.
+        assertEquals("/repo", vm.uiState.value.form.directory)
+        // Launch-only model/effort controls hide while a history is selected.
+        assertFalse(vm.uiState.value.showPiLaunchConfig)
+
+        vm.create()
+        advanceUntilIdle()
+
+        assertEquals(0, gateway.spawnCalls.size, "the import chain replaces the spawn call")
+        val request = gateway.piImportCalls.single()
+        assertEquals(listOf("pi-native-1"), request.sessionIds)
+        assertEquals("/repo", request.cwd, "session cwd wins over the form directory")
+        assertEquals("m1", request.machineId, "listing machine id backfilled from the load")
+        assertEquals(listOf("hapi-imported-1"), gateway.piReopenCalls)
+        assertEquals(listOf("hapi-imported-1"), spawnedIds)
+        assertEquals("m1", prefs.stored.lastMachineId)
+        assertTrue(prefs.draftCleared)
+    }
+
+    @Test
+    fun `clearing the pi selection restores the launch config`() = runTest {
+        val gateway = FakeGateway().apply {
+            piSessionsResult = PiLocalSessionsResponse(
+                success = true,
+                machineId = "m1",
+                sessions = listOf(piSession("pi-native-1")),
+            )
+        }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs())
+        advanceUntilIdle()
+
+        vm.setAgent("pi")
+        vm.setDirectory("/data/work")
+        vm.openPiImportDialog()
+        advanceUntilIdle()
+        vm.piImport.toggleSession("pi-native-1")
+        vm.piImport.confirm()
+        advanceUntilIdle()
+        assertFalse(vm.uiState.value.showPiLaunchConfig)
+
+        vm.clearPiImportSelection()
+        advanceUntilIdle()
+
+        assertNull(vm.piImport.state.value.selectedSessionId)
+        assertTrue(vm.uiState.value.showPiLaunchConfig, "no history selected → model/effort apply again")
+    }
+
+    @Test
+    fun `switching away from pi clears import state`() = runTest {
+        val gateway = FakeGateway().apply {
+            piSessionsResult = PiLocalSessionsResponse(
+                success = true,
+                machineId = "m1",
+                sessions = listOf(piSession("pi-native-1")),
+            )
+        }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs())
+        advanceUntilIdle()
+
+        vm.setAgent("pi")
+        vm.setDirectory("/data/work")
+        vm.openPiImportDialog()
+        advanceUntilIdle()
+        vm.piImport.toggleSession("pi-native-1")
+        vm.piImport.confirm()
+        advanceUntilIdle()
+        assertEquals("pi-native-1", vm.piImport.state.value.selectedSessionId)
+
+        vm.setAgent("claude")
+        advanceUntilIdle()
+
+        val state = vm.piImport.state.value
+        assertFalse(state.open)
+        assertTrue(state.sessions.isEmpty())
+        assertNull(state.selectedSessionId)
+        assertNull(state.error)
+        assertNull(state.machineId)
+    }
+
+    @Test
+    fun `machine change drops the pi listing context`() = runTest {
+        val gateway = FakeGateway().apply {
+            piSessionsResult = PiLocalSessionsResponse(
+                success = true,
+                machineId = "m1",
+                sessions = listOf(piSession("pi-native-1")),
+            )
+        }
+        val vm = buildViewModel(
+            gateway,
+            FakeMachineStore(listOf(machine("m1", workspaceRoots = listOf("/data")), machine("m2"))),
+            FakePrefs(),
+        )
+        advanceUntilIdle()
+
+        vm.setAgent("pi")
+        vm.setDirectory("/data/work")
+        vm.openPiImportDialog()
+        advanceUntilIdle()
+        assertEquals("m1", vm.piImport.state.value.machineId)
+
+        vm.setMachine("m2")
+        advanceUntilIdle()
+
+        val state = vm.piImport.state.value
+        assertTrue(state.sessions.isEmpty())
+        assertNull(state.machineId)
+        assertNull(state.selectedSessionId)
+    }
+
+    @Test
+    fun `pi scan failure surfaces on the inline section`() = runTest {
+        val gateway = FakeGateway().apply {
+            piSessionsThrows = RuntimeException("rpc down")
+        }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs())
+        advanceUntilIdle()
+
+        vm.setAgent("pi")
+        vm.setDirectory("/data/work")
+        vm.openPiImportDialog()
+        advanceUntilIdle()
+
+        assertEquals("rpc down", vm.piImport.state.value.error)
+        assertEquals("rpc down", vm.uiState.value.piImport.error)
     }
 }

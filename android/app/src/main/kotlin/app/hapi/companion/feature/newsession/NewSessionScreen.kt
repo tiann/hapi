@@ -74,6 +74,7 @@ fun NewSessionScreen(
     val state by viewModel.uiState.collectAsState()
     val directoryBrowser by viewModel.directoryBrowser.state.collectAsState()
     val codexImport by viewModel.codexImport.state.collectAsState()
+    val piImport by viewModel.piImport.state.collectAsState()
 
     LaunchedEffect(viewModel) {
         viewModel.spawned.collect(onCreated)
@@ -119,6 +120,8 @@ fun NewSessionScreen(
             onCreate = viewModel::create,
             onCodexImportChoose = viewModel::openCodexImportDialog,
             onCodexImportClear = viewModel::clearCodexImportSelection,
+            onPiImportChoose = viewModel::openPiImportDialog,
+            onPiImportClear = viewModel::clearPiImportSelection,
         )
     }
     if (directoryBrowser.open) {
@@ -157,6 +160,18 @@ fun NewSessionScreen(
             onDismiss = viewModel::closeDuplicateMergeDialog,
         )
     }
+    if (piImport.open) {
+        PiSessionImportDialog(
+            state = piImport,
+            onDismiss = viewModel.piImport::close,
+            onToggleSession = viewModel.piImport::toggleSession,
+            onSelectAll = viewModel.piImport::selectAll,
+            onClearSelection = viewModel.piImport::clearSelection,
+            onDirectoryFilterChange = viewModel.piImport::setDirectoryFilter,
+            onSearchQueryChange = viewModel.piImport::setSearchQuery,
+            onConfirm = viewModel.piImport::confirm,
+        )
+    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -184,6 +199,8 @@ internal fun NewSessionContent(
     onCreate: () -> Unit,
     onCodexImportChoose: () -> Unit = {},
     onCodexImportClear: () -> Unit = {},
+    onPiImportChoose: () -> Unit = {},
+    onPiImportClear: () -> Unit = {},
 ) {
     val form = state.form
     Column(
@@ -212,6 +229,17 @@ internal fun NewSessionContent(
                 isDisabled = state.formLocked,
                 onChooseHistory = onCodexImportChoose,
                 onClear = onCodexImportClear,
+            )
+        }
+
+        // Pi-history inline section, same placement rule (web
+        // PiImportActions renders right after the codex block).
+        if (form.agent == "pi") {
+            PiImportActions(
+                state = state.piImport,
+                isDisabled = state.formLocked,
+                onChooseHistory = onPiImportChoose,
+                onClear = onPiImportClear,
             )
         }
 
