@@ -54,8 +54,9 @@ function getClaudeModelOptions(currentModel?: string | null, customOptions?: Mod
         return getClaudeComposerModelOptions(currentModel)
     }
 
-    // Supplied options lead in their own order. Presets they do not list stay
-    // selectable after them: a partial list must not hide Opus (#718).
+    // The machine's catalog is the CLI's own /model list, so it replaces the
+    // built-in presets rather than extending them. A saved model it does not
+    // list stays as the current model.
     const listed: ModelOption[] = []
     for (const option of customOptions) {
         const value = normalizeCurrentModel(option.value)
@@ -63,11 +64,9 @@ function getClaudeModelOptions(currentModel?: string | null, customOptions?: Mod
             listed.push({ value, label: option.label })
         }
     }
-    const presets = getClaudeComposerModelOptions(null)
-        .filter((option) => option.value !== null && !listed.some((existing) => existing.value === option.value))
 
     return withCurrentModelOption(
-        [{ value: null, label: 'Default' }, ...listed, ...presets],
+        [{ value: null, label: 'Default' }, ...listed],
         currentModel,
         getClaudeModelLabel
     )
@@ -84,11 +83,9 @@ export function getClaudeLaunchModelOptions(
     notListedSuffix: string
 ): Array<{ value: string; label: string }> {
     const catalogOptions = getClaudeModelChoices(catalog)
-    const presetValues = new Set(getClaudeComposerModelOptions(null).map((option) => option.value))
     const selected = normalizeCurrentModel(selectedModel)
     const isGone = catalog.length > 0
         && selected !== null
-        && !presetValues.has(selected)
         && !catalogOptions.some((option) => option.value === selected)
 
     return getClaudeModelOptions(selectedModel, catalogOptions).map((option) => ({
