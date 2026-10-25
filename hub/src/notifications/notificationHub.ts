@@ -1,6 +1,11 @@
 import type { Session, SyncEngine, SyncEvent } from '../sync/syncEngine'
 import type { SessionEndReason } from '@hapi/protocol'
-import type { NotificationChannel, NotificationHubOptions, TaskNotification } from './notificationTypes'
+import type {
+    ModelErrorNotification,
+    NotificationChannel,
+    NotificationHubOptions,
+    TaskNotification
+} from './notificationTypes'
 import type { NotificationSendContext } from './notificationSendContext'
 import { extractMessageEventType, extractTaskNotification } from './eventParsing'
 
@@ -8,10 +13,27 @@ export class NotificationHub {
     private readonly channels: NotificationChannel[]
     private readonly readyCooldownMs: number
     private readonly permissionDebounceMs: number
+    private readonly modelErrorRetryDelaysMs: number[]
     private readonly lastKnownRequests: Map<string, Set<string>> = new Map()
     private readonly notificationDebounce: Map<string, NodeJS.Timeout> = new Map()
     private readonly lastReadyNotificationAt: Map<string, number> = new Map()
+    /**
+     * sessionId -> the `eventId` of the last `lastModelError` we already
+     * notified for. Fire ONCE per distinct error event; subsequent
+     * `session-updated` storms must not re-trigger. Identity is eventId
+     * (CLI UUID), not wall-clock atTs — clocks can move backwards.
+     *
+     * Kept across failed deliveries while a bounded backoff retry timer
+     * is pending — do not delete it to "retry on next session-updated"
+     * (that storms on keepalive and misses inactive sessions).
+     */
+    private readonly lastModelErrorNotifiedId: Map<string, string> = new Map()
+    private readonly modelErrorRetryTimers: Map<string, NodeJS.Timeout> = new Map()
+    private readonly modelErrorRetryAttempts: Map<string, number> = new Map()
+    /** In-flight notifiedAt persistence tasks (delivery already succeeded). */
+    private readonly modelErrorWatermarkTasks: Map<string, Promise<void>> = new Map()
     private unsubscribeSyncEvents: (() => void) | null = null
+    private stopped = false
 
     constructor(
         private readonly syncEngine: SyncEngine,
@@ -21,12 +43,33 @@ export class NotificationHub {
         this.channels = channels
         this.readyCooldownMs = options?.readyCooldownMs ?? 5000
         this.permissionDebounceMs = options?.permissionDebounceMs ?? 500
+        this.modelErrorRetryDelaysMs = options?.modelErrorRetryDelaysMs
+            ?? [5_000, 15_000, 45_000, 120_000]
         this.unsubscribeSyncEvents = this.syncEngine.subscribe((event) => {
             this.handleSyncEvent(event)
         })
+        // SyncEngine.reloadAll() emits session-added before NotificationHub
+        // exists. Rehydrate any undelivered model-error alerts (including
+        // inactive sessions) so a hub restart cannot drop a pending page.
+        this.rehydrateUndeliveredModelErrors()
+    }
+
+    private rehydrateUndeliveredModelErrors(): void {
+        for (const session of this.syncEngine.getSessions()) {
+            const error = session.metadata?.lastModelError
+            if (
+                !error
+                || typeof error.acknowledgedAt === 'number'
+                || typeof error.notifiedAt === 'number'
+            ) {
+                continue
+            }
+            this.checkForModelErrorNotification(session)
+        }
     }
 
     stop(): void {
+        this.stopped = true
         if (this.unsubscribeSyncEvents) {
             this.unsubscribeSyncEvents()
             this.unsubscribeSyncEvents = null
@@ -38,21 +81,41 @@ export class NotificationHub {
         this.notificationDebounce.clear()
         this.lastKnownRequests.clear()
         this.lastReadyNotificationAt.clear()
+        this.lastModelErrorNotifiedId.clear()
+        for (const timer of this.modelErrorRetryTimers.values()) {
+            clearTimeout(timer)
+        }
+        this.modelErrorRetryTimers.clear()
+        this.modelErrorRetryAttempts.clear()
+        this.modelErrorWatermarkTasks.clear()
     }
 
     private handleSyncEvent(event: SyncEvent): void {
         if ((event.type === 'session-updated' || event.type === 'session-added') && event.sessionId) {
             const session = this.syncEngine.getSession(event.sessionId)
-            if (!session || !session.active) {
-                this.clearSessionState(event.sessionId)
+            if (!session) {
+                this.clearSessionState(event.sessionId, true)
+                return
+            }
+            if (!session.active) {
+                // Keep lastModelErrorNotifiedId across inactive/resume so the
+                // same eventId does not re-ping when the session comes back.
+                this.clearSessionState(event.sessionId, false)
+                // Still dispatch undelivered model-errors (no notifiedAt) —
+                // emergency pages must not wait for the session to become
+                // active again after a failed delivery + hub restart.
+                this.checkForModelErrorNotification(session)
                 return
             }
             this.checkForPermissionNotification(session)
+            // Model-error gating: fire when metadata.lastModelError.eventId
+            // differs from what we last notified for this session.
+            this.checkForModelErrorNotification(session)
             return
         }
 
         if (event.type === 'session-removed' && event.sessionId) {
-            this.clearSessionState(event.sessionId)
+            this.clearSessionState(event.sessionId, true)
             return
         }
 
@@ -82,7 +145,7 @@ export class NotificationHub {
         }
     }
 
-    private clearSessionState(sessionId: string): void {
+    private clearSessionState(sessionId: string, removeModelErrorWatermark = false): void {
         const existingTimer = this.notificationDebounce.get(sessionId)
         if (existingTimer) {
             clearTimeout(existingTimer)
@@ -90,6 +153,184 @@ export class NotificationHub {
         }
         this.lastKnownRequests.delete(sessionId)
         this.lastReadyNotificationAt.delete(sessionId)
+        if (removeModelErrorWatermark) {
+            this.lastModelErrorNotifiedId.delete(sessionId)
+            this.clearModelErrorRetry(sessionId)
+        }
+    }
+
+    private clearModelErrorRetry(sessionId: string): void {
+        const timer = this.modelErrorRetryTimers.get(sessionId)
+        if (timer) {
+            clearTimeout(timer)
+        }
+        this.modelErrorRetryTimers.delete(sessionId)
+        this.modelErrorRetryAttempts.delete(sessionId)
+    }
+
+    private checkForModelErrorNotification(session: Session): void {
+        const lastModelError = session.metadata?.lastModelError
+        if (
+            !lastModelError
+            || typeof lastModelError.eventId !== 'string'
+            || typeof lastModelError.atTs !== 'number'
+        ) {
+            return
+        }
+        // Don't ping for already-acknowledged errors. The web UI sets
+        // acknowledgedAt when the operator dismisses the banner; if they
+        // dismissed and the row gets re-emitted (e.g. a different metadata
+        // field changed), we don't want to re-ring the wrist.
+        if (typeof lastModelError.acknowledgedAt === 'number') {
+            this.clearModelErrorRetry(session.id)
+            return
+        }
+        // Durable watermark (survives hub restart). Seed the in-memory map
+        // so concurrent session-updated storms stay quiet in this process.
+        if (typeof lastModelError.notifiedAt === 'number') {
+            this.lastModelErrorNotifiedId.set(session.id, lastModelError.eventId)
+            this.clearModelErrorRetry(session.id)
+            return
+        }
+        const lastNotifiedId = this.lastModelErrorNotifiedId.get(session.id)
+        if (lastNotifiedId === lastModelError.eventId) {
+            return
+        }
+        const eventId = lastModelError.eventId
+        const atTs = lastModelError.atTs
+        // New error supersedes any in-flight retry for an older eventId.
+        this.clearModelErrorRetry(session.id)
+        // Optimistic watermark: prevents concurrent session-updated storms
+        // from double-firing. On delivery failure we KEEP it and schedule a
+        // bounded backoff retry (do not rely on keepalive session-updated).
+        this.lastModelErrorNotifiedId.set(session.id, eventId)
+
+        const notification: ModelErrorNotification = {
+            kind: lastModelError.kind,
+            transient: lastModelError.transient,
+            rawSnippet: lastModelError.rawSnippet,
+            priorAssistantClaimsDone: Boolean(lastModelError.priorAssistantClaimsDone),
+            eventId,
+            atTs
+        }
+
+        void this.notifyModelError(session, notification).then(async (completed) => {
+            if (this.lastModelErrorNotifiedId.get(session.id) !== eventId) {
+                return
+            }
+            if (completed) {
+                this.persistModelErrorWatermark(session.id, eventId)
+                return
+            }
+            this.scheduleModelErrorRetry(session.id, eventId)
+        }).catch((error) => {
+            console.error('[NotificationHub] Failed to send model-error notification:', error)
+            if (this.lastModelErrorNotifiedId.get(session.id) === eventId) {
+                this.scheduleModelErrorRetry(session.id, eventId)
+            }
+        })
+    }
+
+    /**
+     * Delivery already succeeded — retry only the durable notifiedAt write so
+     * a hub restart cannot re-page. Never re-invokes channels.
+     */
+    private persistModelErrorWatermark(sessionId: string, eventId: string): void {
+        const task = this.runPersistModelErrorWatermark(sessionId, eventId)
+        this.modelErrorWatermarkTasks.set(sessionId, task)
+        void task.finally(() => {
+            if (this.modelErrorWatermarkTasks.get(sessionId) === task) {
+                this.modelErrorWatermarkTasks.delete(sessionId)
+            }
+        })
+    }
+
+    private async runPersistModelErrorWatermark(sessionId: string, eventId: string): Promise<void> {
+        for (const delayMs of [0, ...this.modelErrorRetryDelaysMs]) {
+            if (delayMs > 0) {
+                await new Promise((resolve) => setTimeout(resolve, delayMs))
+            }
+            if (this.stopped) {
+                return
+            }
+            if (this.lastModelErrorNotifiedId.get(sessionId) !== eventId) {
+                return
+            }
+            try {
+                await this.syncEngine.markModelErrorNotified(sessionId, eventId)
+                return
+            } catch (error) {
+                console.error('[NotificationHub] Failed to persist model-error notifiedAt:', error)
+            }
+        }
+    }
+
+    private scheduleModelErrorRetry(sessionId: string, eventId: string): void {
+        if (this.modelErrorRetryTimers.has(sessionId)) {
+            return
+        }
+        const attempt = this.modelErrorRetryAttempts.get(sessionId) ?? 0
+        if (attempt >= this.modelErrorRetryDelaysMs.length) {
+            console.error(
+                `[NotificationHub] Exhausted model-error delivery retries for session=${sessionId} eventId=${eventId}`
+            )
+            return
+        }
+        const delayMs = this.modelErrorRetryDelaysMs[attempt] ?? 5_000
+        this.modelErrorRetryAttempts.set(sessionId, attempt + 1)
+        const timer = setTimeout(() => {
+            this.modelErrorRetryTimers.delete(sessionId)
+            void this.retryModelErrorNotification(sessionId, eventId)
+        }, delayMs)
+        this.modelErrorRetryTimers.set(sessionId, timer)
+    }
+
+    private async retryModelErrorNotification(sessionId: string, eventId: string): Promise<void> {
+        const session = this.syncEngine.getSession(sessionId)
+        if (!session) {
+            this.clearModelErrorRetry(sessionId)
+            this.lastModelErrorNotifiedId.delete(sessionId)
+            return
+        }
+        const lastModelError = session.metadata?.lastModelError
+        if (
+            !lastModelError
+            || lastModelError.eventId !== eventId
+            || typeof lastModelError.acknowledgedAt === 'number'
+        ) {
+            this.clearModelErrorRetry(sessionId)
+            return
+        }
+
+        const notification: ModelErrorNotification = {
+            kind: lastModelError.kind,
+            transient: lastModelError.transient,
+            rawSnippet: lastModelError.rawSnippet,
+            priorAssistantClaimsDone: Boolean(lastModelError.priorAssistantClaimsDone),
+            eventId,
+            atTs: lastModelError.atTs
+        }
+
+        try {
+            const completed = await this.notifyModelError(session, notification)
+            // A newer eventId may have taken the watermark while we were in flight.
+            // Do not install an obsolete retry that blocks the latest error.
+            if (this.lastModelErrorNotifiedId.get(sessionId) !== eventId) {
+                return
+            }
+            if (completed) {
+                this.modelErrorRetryAttempts.delete(sessionId)
+                this.persistModelErrorWatermark(sessionId, eventId)
+                return
+            }
+            this.scheduleModelErrorRetry(sessionId, eventId)
+        } catch (error) {
+            console.error('[NotificationHub] Failed to retry model-error notification:', error)
+            if (this.lastModelErrorNotifiedId.get(sessionId) !== eventId) {
+                return
+            }
+            this.scheduleModelErrorRetry(sessionId, eventId)
+        }
     }
 
     private getNotifiableSession(sessionId: string): Session | null {
@@ -226,5 +467,31 @@ export class NotificationHub {
                 console.error('[NotificationHub] Failed to send session completion notification:', error)
             }
         }
+    }
+
+    private async notifyModelError(session: Session, notification: ModelErrorNotification): Promise<boolean> {
+        const ctx: NotificationSendContext = { nativeGate: { sent: false } }
+        let attempted = false
+        let delivered = false
+        for (const channel of this.channels) {
+            if (typeof channel.sendModelError !== 'function') {
+                continue
+            }
+            try {
+                const outcome = await channel.sendModelError(session, notification, ctx)
+                if (outcome !== 'unavailable') {
+                    attempted = true
+                }
+                if (outcome === 'delivered') {
+                    delivered = true
+                }
+            } catch (error) {
+                attempted = true
+                console.error('[NotificationHub] Failed to send model-error notification:', error)
+            }
+        }
+        // No implementers / all unavailable: keep watermark (avoid retry storm).
+        // At least one channel tried and none delivered: roll back for retry.
+        return !attempted || delivered
     }
 }

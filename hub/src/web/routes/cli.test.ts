@@ -1,7 +1,8 @@
-import { beforeAll, describe, expect, it, mock } from 'bun:test'
+import { afterEach, beforeAll, describe, expect, it, mock } from 'bun:test'
 import { Hono } from 'hono'
 import type { SyncEngine } from '../../sync/syncEngine'
-import { createConfiguration } from '../../configuration'
+import { createConfiguration, getConfiguration } from '../../configuration'
+import { writeAutoBridgeTransientModelErrorsEnabled } from '../../config/autoBridgeTransientModelErrors'
 import { createCliRoutes } from './cli'
 import { SessionIdentityConflictError } from '../../store/sessions'
 
@@ -287,5 +288,63 @@ describe('cli lazy session creation', () => {
         })
 
         expect(response.status).toBe(409)
+    })
+})
+
+describe('cli autoBridgeTransientModelErrors namespace gate', () => {
+    afterEach(async () => {
+        await writeAutoBridgeTransientModelErrorsEnabled(getConfiguration().dataDir, false)
+    })
+
+    it('returns hub auto-bridge only for the default namespace', async () => {
+        await writeAutoBridgeTransientModelErrorsEnabled(getConfiguration().dataDir, true)
+        const sessionId = '22222222-2222-4222-8222-222222222222'
+        const app = createApp({
+            getOrCreateSession: () => ({ id: sessionId }),
+            resolveSessionAccess: () => ({
+                ok: true,
+                session: { id: sessionId },
+                sessionId
+            })
+        } as never)
+
+        const defaultCreate = await app.request('/cli/sessions', {
+            method: 'POST',
+            headers: {
+                ...authHeaders(),
+                'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+                id: sessionId,
+                tag: 'auto-bridge-default',
+                metadata: {}
+            })
+        })
+        expect(defaultCreate.status).toBe(200)
+        const defaultBody = await defaultCreate.json() as { autoBridgeTransientModelErrors?: boolean }
+        expect(defaultBody.autoBridgeTransientModelErrors).toBe(true)
+
+        const tenantCreate = await app.request('/cli/sessions', {
+            method: 'POST',
+            headers: {
+                authorization: 'Bearer test-token:tenant-a',
+                'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+                id: sessionId,
+                tag: 'auto-bridge-tenant',
+                metadata: {}
+            })
+        })
+        expect(tenantCreate.status).toBe(200)
+        const tenantCreateBody = await tenantCreate.json() as { autoBridgeTransientModelErrors?: boolean }
+        expect(tenantCreateBody.autoBridgeTransientModelErrors).toBe(false)
+
+        const tenantGet = await app.request(`/cli/sessions/${sessionId}`, {
+            headers: { authorization: 'Bearer test-token:tenant-a' }
+        })
+        expect(tenantGet.status).toBe(200)
+        const tenantGetBody = await tenantGet.json() as { autoBridgeTransientModelErrors?: boolean }
+        expect(tenantGetBody.autoBridgeTransientModelErrors).toBe(false)
     })
 })
