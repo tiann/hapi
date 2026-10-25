@@ -82,6 +82,26 @@ describe('resolveToolAutoApprovalDecision inspect_peer', () => {
     })
 })
 
+describe('resolveToolAutoApprovalDecision archive_peer', () => {
+    it.each([
+        'archive_peer',
+        'mcp__hapi__archive_peer',
+        'hapi_archive_peer',
+        'Archive Peer Session'
+    ])('does not auto-approve %s in default mode', (toolName) => {
+        expect(resolveToolAutoApprovalDecision('default', toolName, 'call-1')).toBeNull()
+    })
+
+    it.each([
+        'archive_peer',
+        'mcp__hapi__archive_peer',
+        'hapi_archive_peer',
+        'Archive Peer Session'
+    ])('does not auto-approve %s in read-only mode', (toolName) => {
+        expect(resolveToolAutoApprovalDecision('read-only', toolName, 'call-1')).toBeNull()
+    })
+})
+
 describe('resolveToolAutoApprovalDecision list_peers', () => {
     it.each([
         'list_peers',
