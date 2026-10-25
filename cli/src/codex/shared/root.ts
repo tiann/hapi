@@ -119,7 +119,19 @@ export class SharedCodexRoot {
                 const text = formatMessageWithAttachments(message.content.text, message.content.attachments);
                 const resolved = text.trim().startsWith('/') ? await this.queue.command(id, () => this.command(text)) : text;
                 if (resolved === null) { this.session.emitMessagesConsumed([id], { clearQueuedThinkingGrace: true }); return; }
-                await this.queue.enqueue(id, buildUserInputFromMessage(resolved), this.interrupted);
+                const input = buildUserInputFromMessage(resolved);
+                // Peer nudges arrive tagged deliveryMode 'steer' (ping_peer): inject
+                // into the active turn via turn/steer instead of waiting for turn end.
+                // Indeterminate outcomes stay reserved for explicit retry; explicit
+                // refusal falls through to the ordinary native queue.
+                const turnId = this.currentTurn;
+                if (message.meta?.deliveryMode === 'steer' && turnId) {
+                    // Steer + refuse→enqueue share one queue serial so cancel
+                    // cannot ACK between reject and queue/add.
+                    await this.queue.steerThenEnqueue(id, turnId, input, this.interrupted);
+                    return;
+                }
+                await this.queue.enqueue(id, input, this.interrupted);
             }).catch(error => this.notice(`Message not confirmed: ${error instanceof Error ? error.message : error}. Inspect the queue before retrying.`));
         });
         this.session.onCancelQueuedMessage(async id => { await this.bound; return this.stopping ? 'indeterminate' : this.queue.cancel(id); });
