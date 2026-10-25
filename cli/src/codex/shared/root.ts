@@ -16,6 +16,7 @@ import { resolveCodexPermissionModeConfig } from '../utils/permissionModeConfig'
 import { resolveCodexSlashCommand } from '../utils/slashCommands';
 import { parseReasoningEffortValue } from '../utils/reasoningEffort';
 import { SharedCodexPermissions } from './permissions';
+import { SharedCodexAsyncQuestions } from './asyncQuestions';
 import { SharedCodexQueue } from './queue';
 import { SharedCodexProjection, inputText } from './projection';
 import { getCodexSystemPrompt } from '../utils/systemPrompt';
@@ -46,6 +47,10 @@ export class SharedCodexRoot {
     bridge!: HapiMcpBridge;
     threadId = '';
     private permissions!: SharedCodexPermissions;
+    private readonly questions: SharedCodexAsyncQuestions;
+    private waitingForInput = false;
+    private nativeWaitingForInput = false;
+    private readonly sleepingItems = new Set<string>();
     private queue!: SharedCodexQueue;
     private projection!: SharedCodexProjection;
     private readonly children = new Map<string, SharedCodexProjection>();
@@ -76,6 +81,11 @@ export class SharedCodexRoot {
 
     constructor(readonly bootstrap: SessionBootstrapResult, private readonly host: RootHost) {
         this.session = bootstrap.session;
+        this.questions = new SharedCodexAsyncQuestions(this.session, async (id, text) => {
+            await this.bound;
+            if (this.closed || this.stopping || this.reconnecting) throw new Error('Codex is disconnected');
+            await this.submitInput(id, text, true);
+        });
         this.client = new CodexAppServerClient({ endpoint: host.endpoint, token: host.token, cwd: bootstrap.workingDirectory });
         this.client.setNotificationHandler((method, params) => {
             if (method === 'serverRequest/resolved') {
@@ -83,13 +93,23 @@ export class SharedCodexRoot {
             }
             if (method === 'thread/settings/updated' && record(params).threadId === this.threadId) this.acceptSettings(record(record(params).threadSettings));
             if (record(params).threadId === this.threadId) {
+                const item = record(record(params).item);
+                if (method === 'item/completed' || method === 'item/started' && ['userMessage', 'sleep'].includes(String(item.type))) this.turnRevision++;
+                if (item.type === 'sleep' && string(item.id) && record(params).turnId === this.currentTurn) {
+                    if (method === 'item/started') this.sleepingItems.add(String(item.id));
+                    if (method === 'item/completed') this.sleepingItems.delete(String(item.id));
+                    this.publishWaitingForInput();
+                }
+                if (method === 'thread/status/changed') { this.turnRevision++; this.setWaitingForInput(record(params).status); }
                 if (method === 'turn/started') {
                     this.turnRevision++; this.currentTurn = string(record(record(params).turn).id); this.interrupted = false;
+                    this.sleepingItems.clear(); this.setWaitingForInput(null);
                     if (this.currentTurn) this.latestTurn = { id: this.currentTurn, status: 'inProgress' };
                     this.publishSteering();
                 }
                 if (method === 'turn/completed' && (!this.currentTurn || record(record(params).turn).id === this.currentTurn)) {
                     this.turnRevision++; this.currentTurn = undefined; this.interrupted = record(record(params).turn).status === 'interrupted';
+                    this.sleepingItems.clear(); this.setWaitingForInput(null);
                     this.publishSteering();
                 }
                 const p = record(params);
@@ -119,7 +139,7 @@ export class SharedCodexRoot {
                 const text = formatMessageWithAttachments(message.content.text, message.content.attachments);
                 const resolved = text.trim().startsWith('/') ? await this.queue.command(id, () => this.command(text)) : text;
                 if (resolved === null) { this.session.emitMessagesConsumed([id], { clearQueuedThinkingGrace: true }); return; }
-                await this.queue.enqueue(id, buildUserInputFromMessage(resolved), this.interrupted);
+                await this.submitInput(id, resolved, message.meta?.deliveryMode === 'steer' || this.waitingForInput);
             }).catch(error => this.notice(`Message not confirmed: ${error instanceof Error ? error.message : error}. Inspect the queue before retrying.`));
         });
         this.session.onCancelQueuedMessage(async id => { await this.bound; return this.stopping ? 'indeterminate' : this.queue.cancel(id); });
@@ -148,7 +168,7 @@ export class SharedCodexRoot {
         this.bridge = await buildHapiMcpBridge(this.session, { exportSessionEnv: false, emitTitleSummary: false,
             skillLookup: { workingDirectory: this.bootstrap.workingDirectory, flavor: 'codex' } });
         await initializeSharedClient(this.client);
-        this.permissions = new SharedCodexPermissions(this.session, this.client, this.host.generation);
+        this.permissions = new SharedCodexPermissions(this.session, this.client, this.host.generation, raw => this.questions.reply(raw));
         this.client.setServerRequestHandler(request => { void this.receiveRequest(request); });
     }
     private async receiveRequest(request: { id: string | number; method: string; params: unknown }): Promise<void> {
@@ -197,8 +217,9 @@ export class SharedCodexRoot {
             // advertise a destructive operation we cannot make atomic yet.
             conversationHistory: { forkCurrent: true, forkAtMessage: true, rewindToMessage: false }
         } }));
-        this.session.updateAgentState(state => ({ ...state, controlledByUser: false, startingMode: undefined, codexPlanProposalId: null, requests: {},
-            completedRequests: { ...state.completedRequests, ...Object.fromEntries(Object.entries(state.requests ?? {}).map(([id, request]) =>
+        this.session.updateAgentState(state => ({ ...state, controlledByUser: false, startingMode: undefined, codexPlanProposalId: null, waitingForInput: false,
+            requests: Object.fromEntries(Object.entries(state.requests ?? {}).filter(([id]) => id.startsWith('codex-async:'))),
+            completedRequests: { ...state.completedRequests, ...Object.fromEntries(Object.entries(state.requests ?? {}).filter(([id]) => !id.startsWith('codex-async:')).map(([id, request]) =>
                 [id, { ...request, completedAt: Date.now(), status: 'canceled' as const }])) }
         }));
         if (subscribe) response = record(await this.client.request('thread/resume', { threadId }));
@@ -211,6 +232,26 @@ export class SharedCodexRoot {
         if (this.stopping) throw new Error('Codex execution is stopping');
         this.registerControls(); this.ready();
         this.heartbeat = setInterval(() => this.alive(), 2_000); this.alive(); this.session.emitSessionReady();
+    }
+    private async submitInput(id: string, text: string, steer: boolean): Promise<void> {
+        const input = buildUserInputFromMessage(text);
+        if (steer && this.currentTurn) {
+            const result = await this.queue.steer(id, this.currentTurn, input);
+            if (result.steered) return;
+            if (result.indeterminate) throw new Error('Delivery is uncertain; inspect the queue before retrying');
+        }
+        await this.queue.enqueue(id, input, this.interrupted);
+    }
+    private setWaitingForInput(status: unknown): void {
+        const value = record(status);
+        this.nativeWaitingForInput = value.type === 'active' && Array.isArray(value.activeFlags) && value.activeFlags.includes('waitingOnUserInput');
+        this.publishWaitingForInput();
+    }
+    private publishWaitingForInput(): void {
+        const waiting = this.nativeWaitingForInput || this.sleepingItems.size > 0;
+        if (waiting === this.waitingForInput) return;
+        this.waitingForInput = waiting;
+        this.session.updateAgentState(state => ({ ...state, waitingForInput: waiting }));
     }
     private publishSteering(): void {
         const active = Boolean(this.currentTurn) && !this.stopping && !this.closed && !this.reconnecting && this.client.isInitialized();
@@ -274,6 +315,7 @@ export class SharedCodexRoot {
         }
         if (method === 'thread/archived') { await this.host.end(this, false); return; }
         if (method === 'thread/queue/changed') await this.queue.reconcile();
+        this.questions.notification(method, params);
         await this.projection.notification(method, params, modelAtReceipt); this.alive();
     }
     async readThread(threadId = this.threadId): Promise<Record<string, unknown>> {
@@ -304,7 +346,12 @@ export class SharedCodexRoot {
             const id = string(last?.id);
             this.latestTurn = id && last ? { id, status: string(last.status) ?? 'unknown', planId: planProposalForTurn(this.threadId, last) } : undefined;
         }
-        await this.projection.history(thread); await this.queue.reconcile(); this.alive();
+        await this.projection.history(thread);
+        if (revision === this.turnRevision) {
+            this.questions.restore(this.threadId, thread);
+            this.setWaitingForInput(thread.status);
+        }
+        await this.queue.reconcile(); this.alive();
     }
     private async refreshChildren(subscribe: boolean): Promise<void> {
         let cursor: string | undefined;
@@ -348,7 +395,7 @@ export class SharedCodexRoot {
                 try {
                     await initializeSharedClient(this.client);
                     if (this.stopping) return;
-                    this.permissions = new SharedCodexPermissions(this.session, this.client, `${this.host.generation}:${randomUUID()}`);
+                    this.permissions = new SharedCodexPermissions(this.session, this.client, `${this.host.generation}:${randomUUID()}`, raw => this.questions.reply(raw));
                     this.client.setServerRequestHandler(request => { void this.receiveRequest(request); });
                     const settingsRevision = this.settingsRevision;
                     const response = record(await this.client.request('thread/resume', { threadId: this.threadId }));
@@ -570,7 +617,7 @@ export class SharedCodexRoot {
     close(archived: boolean): Promise<void> {
         return this.closing ??= (async () => {
             this.stopAccepting(); this.closed = true; clearInterval(this.heartbeat);
-            this.permissions?.close();
+            this.permissions?.close(); this.sleepingItems.clear(); this.setWaitingForInput(null);
             await this.client.disconnect(); await this.notifications; await this.queue?.flush(); this.bridge?.server.stop();
             if (archived) this.session.updateMetadata(metadata => ({ ...metadata, lifecycleState: 'archived', lifecycleStateSince: Date.now() }));
             // Inactive is resumable; uploads referenced by pending input must survive.

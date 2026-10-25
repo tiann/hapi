@@ -24,13 +24,11 @@ export function classifySessionAttention(
             : null
     }
 
-    if (summary.thinking) {
-        return null
-    }
-
     const pendingRequestKinds = Array.isArray(summary.pendingRequestKinds)
         ? summary.pendingRequestKinds
         : []
+
+    if (summary.thinking && !pendingRequestKinds.includes('input')) return null
 
     if (pendingRequestKinds.includes('permission')) {
         return { kind: 'permission' }
