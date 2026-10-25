@@ -1093,4 +1093,8 @@ private fun codexImportStrings(context: Context) = CodexImportStrings(
     timeout = context.getString(R.string.codex_sync_error_timeout),
     sessionActive = context.getString(R.string.codex_sync_error_active),
     createFailed = context.getString(R.string.new_session_error_create),
+    clientNotFound = context.getString(R.string.codex_sync_restart_failed_not_found),
+    restartFailedBody = context.getString(R.string.codex_sync_restart_failed_body),
+    detectFailedBody = context.getString(R.string.codex_sync_duplicates_detect_failed_body),
+    mergeFailedBody = context.getString(R.string.codex_sync_duplicates_merge_failed_body),
 )

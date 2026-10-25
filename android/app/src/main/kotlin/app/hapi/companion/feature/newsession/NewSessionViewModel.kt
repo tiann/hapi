@@ -163,6 +163,11 @@ data class CodexImportSectionUi(
     val error: String? = null,
     /** Bulk import or import-at-create in flight. */
     val busy: Boolean = false,
+    /**
+     * Duplicate detection failed after an otherwise successful bulk import
+     * (web toasts `duplicates.detect.failed.*`; inline here — divergence).
+     */
+    val duplicateDetectError: String? = null,
 )
 
 /**
@@ -219,9 +224,11 @@ class NewSessionViewModel(
     )
 
     /**
-     * Codex session-import controller (slice A). Selecting a session inline
+     * Codex session-import controller (slices A+B). Selecting a session inline
      * adopts its cwd through the form's own [setDirectory] (web
-     * `handleSelectCodexSession` → `setDirectory(session.cwd.trim())`).
+     * `handleSelectCodexSession` → `setDirectory(session.cwd.trim())`); a
+     * confirmed duplicate merge navigates through [spawned] like a created
+     * session would (web `props.onSuccess(redirectSessionId)`).
      */
     val codexImport = CodexImportController(
         scope = scope,
@@ -229,6 +236,7 @@ class NewSessionViewModel(
         store = codexImportStore,
         strings = codexStrings,
         applyDirectory = ::setDirectory,
+        navigateToSession = { sessionId -> _spawned.tryEmit(sessionId) },
     )
 
     private var directoryJob: Job? = null
@@ -484,6 +492,20 @@ class NewSessionViewModel(
     /** The inline section's Clear button (web `onClear`). */
     fun clearCodexImportSelection() {
         codexImport.clearInlineSelection()
+    }
+
+    /**
+     * Confirm inside the duplicate-merge dialog (web
+     * `handleMergeDuplicateSessions`); a successful merge navigates through
+     * [spawned] with the redirect session id.
+     */
+    fun mergeDuplicateCodexSessions() {
+        codexImport.mergeDuplicates()
+    }
+
+    /** Dismiss the duplicate-merge confirm dialog (web `closeDuplicateMergeDialog`). */
+    fun closeDuplicateMergeDialog() {
+        codexImport.closeDuplicateMergeDialog()
     }
 
     /**
@@ -1064,6 +1086,7 @@ class NewSessionViewModel(
             loading = codexImportState.loading,
             error = codexImportState.error,
             busy = codexImportBusy,
+            duplicateDetectError = codexImportState.duplicateDetectError,
         )
 
         return NewSessionUiState(

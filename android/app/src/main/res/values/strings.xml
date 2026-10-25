@@ -658,4 +658,22 @@
     <string name="codex_sync_inline_description">Optional: choose one local Codex session, then pick model/settings and Create to import.</string>
     <string name="codex_sync_inline_clear">Clear selected history</string>
     <string name="codex_sync_inline_choose">Choose history</string>
+    <string name="codex_sync_archive_action">Archive in Codex</string>
+    <string name="codex_sync_restart">Restart Codex client</string>
+    <string name="codex_sync_restart_confirming">Restarting…</string>
+    <string name="codex_sync_restart_started_title">Restart started</string>
+    <string name="codex_sync_restart_started_body">Codex client is restarting to refresh sessions.</string>
+    <string name="codex_sync_restart_failed_title">Failed to restart Codex client</string>
+    <string name="codex_sync_restart_failed_body">Failed to run the restart script.</string>
+    <string name="codex_sync_restart_failed_not_found">Failed to restart Codex client: not installed or not found</string>
+    <string name="codex_sync_duplicates_confirm_title">Duplicate sessions detected</string>
+    <string name="codex_sync_duplicates_confirm_description">Duplicate sessions were detected. Merge them?</string>
+    <string name="codex_sync_duplicates_confirm_confirm">Merge</string>
+    <string name="codex_sync_duplicates_confirm_confirming">Merging…</string>
+    <string name="codex_sync_duplicates_detect_failed_title">Failed to detect duplicate sessions</string>
+    <string name="codex_sync_duplicates_detect_failed_body">Failed to detect duplicate sessions.</string>
+    <string name="codex_sync_duplicates_merge_success_title">Duplicate sessions merged</string>
+    <string name="codex_sync_duplicates_merge_success_body">Merged duplicates for the selected Codex sessions.</string>
+    <string name="codex_sync_duplicates_merge_failed_title">Failed to merge duplicate sessions</string>
+    <string name="codex_sync_duplicates_merge_failed_body">Failed to merge duplicate sessions.</string>
 </resources>

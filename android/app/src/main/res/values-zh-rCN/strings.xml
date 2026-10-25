@@ -665,4 +665,22 @@
     <string name="codex_sync_inline_description">可选：先单选一个本机 Codex 会话，再选择模型/思考强度，点创建时导入。</string>
     <string name="codex_sync_inline_clear">清除已选历史</string>
     <string name="codex_sync_inline_choose">选择历史</string>
+    <string name="codex_sync_archive_action">在 Codex 侧归档</string>
+    <string name="codex_sync_restart">重启codex客户端</string>
+    <string name="codex_sync_restart_confirming">重启中…</string>
+    <string name="codex_sync_restart_started_title">已发起重启</string>
+    <string name="codex_sync_restart_started_body">Codex 客户端正在重启以刷新会话。</string>
+    <string name="codex_sync_restart_failed_title">重启 Codex 客户端失败</string>
+    <string name="codex_sync_restart_failed_body">重启脚本执行失败。</string>
+    <string name="codex_sync_restart_failed_not_found">尝试重启codex客户端失败，未安装/找不到codex客户端</string>
+    <string name="codex_sync_duplicates_confirm_title">检测到重复会话</string>
+    <string name="codex_sync_duplicates_confirm_description">检测到重复会话，是否进行合并？</string>
+    <string name="codex_sync_duplicates_confirm_confirm">合并</string>
+    <string name="codex_sync_duplicates_confirm_confirming">合并中…</string>
+    <string name="codex_sync_duplicates_detect_failed_title">重复会话检测失败</string>
+    <string name="codex_sync_duplicates_detect_failed_body">重复会话检测失败。</string>
+    <string name="codex_sync_duplicates_merge_success_title">重复会话已合并</string>
+    <string name="codex_sync_duplicates_merge_success_body">已按本次选中的 Codex 会话完成去重合并。</string>
+    <string name="codex_sync_duplicates_merge_failed_title">重复会话合并失败</string>
+    <string name="codex_sync_duplicates_merge_failed_body">重复会话合并失败。</string>
 </resources>

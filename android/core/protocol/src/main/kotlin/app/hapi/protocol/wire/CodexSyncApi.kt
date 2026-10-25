@@ -88,3 +88,80 @@ data class CodexDesktopScriptResponse(
     /** Created Hapi session ids, parallel to [sessionIds] when present. */
     val hapiSessionIds: List<String>? = null,
 )
+
+/**
+ * `POST /api/codex/archive-session` body — `machineId` travels only when the
+ * caller has one; null is omitted (`explicitNulls=false`), matching the web
+ * client's `{sessionId, machineId: machineId ?? undefined}` (slice B).
+ */
+@Serializable
+data class CodexArchiveSessionRequest(
+    val sessionId: String,
+    val machineId: String? = null,
+)
+
+/**
+ * `POST /api/codex/archive-session` reply (`CodexArchiveSessionResponse`) —
+ * flattened union: success carries [archivedPath], failure is HTTP 200 with
+ * `success:false` + [error] (web `handleArchiveCodexImportSession` throws on
+ * it). Added in slice B (duplicate-merge confirm + archive/restart).
+ */
+@Serializable
+data class CodexArchiveSessionResponse(
+    val success: Boolean = true,
+    val archivedPath: String? = null,
+    val machineId: String? = null,
+    val error: String? = null,
+)
+
+/**
+ * `GET /api/codex/status` reply (`CodexDesktopStatusResponse`) — liveness
+ * probe for the restart affordance. `codexClientAvailable=false` means the
+ * client is not installed/findable and the restart call must not be sent.
+ */
+@Serializable
+data class CodexDesktopStatusResponse(
+    val success: Boolean = true,
+    val codexDesktopRunning: Boolean? = null,
+    val codexClientAvailable: Boolean = false,
+)
+
+/**
+ * One duplicate group: the local Codex thread that produced several Hapi
+ * sessions (`hapiSessionIds`), the survivor after merging
+ * ([canonicalSessionId]), and what the merge removed ([removedSessionIds]).
+ */
+@Serializable
+data class CodexDuplicateSessionGroup(
+    val codexSessionId: String,
+    val hapiSessionIds: List<String> = emptyList(),
+    val canonicalSessionId: String? = null,
+    val removedSessionIds: List<String>? = null,
+)
+
+/**
+ * `POST /api/codex/duplicate-sessions` reply (`CodexDuplicateSessionsResponse`)
+ * — detection scope is exactly the request's `sessionIds`; failures are HTTP
+ * 200 with `success:false` + [error] and must not disturb the already
+ * completed import (web only toasts them).
+ */
+@Serializable
+data class CodexDuplicateSessionsResponse(
+    val success: Boolean = true,
+    val duplicates: List<CodexDuplicateSessionGroup> = emptyList(),
+    val error: String? = null,
+)
+
+/**
+ * `POST /api/codex/merge-duplicate-sessions` reply
+ * (`CodexMergeDuplicateSessionsResponse`) — [merged] reuses the group shape
+ * so the caller can resolve the redirect target from the survivors'
+ * [CodexDuplicateSessionGroup.canonicalSessionId].
+ */
+@Serializable
+data class CodexMergeDuplicateSessionsResponse(
+    val success: Boolean = true,
+    val merged: List<CodexDuplicateSessionGroup> = emptyList(),
+    val mergedCount: Int = 0,
+    val error: String? = null,
+)

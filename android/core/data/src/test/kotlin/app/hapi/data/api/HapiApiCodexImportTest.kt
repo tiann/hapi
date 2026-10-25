@@ -24,7 +24,8 @@ import okhttp3.mockwebserver.MockWebServer
 
 /**
  * Wire shapes of the codex-import endpoints (slice A):
- * `GET /api/codex/sessions` + `POST /api/codex/sync-session`.
+ * `GET /api/codex/sessions` + `POST /api/codex/sync-session`;
+ * slice B adds archive/status/dedupe/restart.
  */
 class HapiApiCodexImportTest {
 
@@ -163,5 +164,163 @@ class HapiApiCodexImportTest {
         assertEquals(false, response.success)
         assertEquals("boom", response.error)
         assertNull(response.hapiSessionIds)
+    }
+
+    // ------------------------------------------ POST /codex/archive-session (B) --
+
+    @Test
+    fun `archive posts sessionId and omits machineId when null`() {
+        server.enqueue(ok("""{"success":true,"archivedPath":"/arc/a.jsonl"}"""))
+
+        val response = runBlocking { session.api.archiveCodexSession("a") }
+
+        val request = server.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/api/codex/archive-session", request.requestUrl!!.encodedPath)
+        val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+        assertEquals("a", body["sessionId"]!!.jsonPrimitive.content)
+        assertTrue("machineId" !in body, "null machineId is omitted like the web's undefined")
+        assertTrue(response.success)
+        assertEquals("/arc/a.jsonl", response.archivedPath)
+        assertNull(response.machineId)
+    }
+
+    @Test
+    fun `archive sends machineId when provided`() {
+        server.enqueue(ok("""{"success":true,"archivedPath":"/arc/b.jsonl","machineId":"m1"}"""))
+
+        val response = runBlocking { session.api.archiveCodexSession("b", machineId = "m1") }
+
+        val body = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+        assertEquals("m1", body["machineId"]!!.jsonPrimitive.content)
+        assertEquals("m1", response.machineId)
+    }
+
+    @Test
+    fun `archive soft failure decodes success false with error`() {
+        server.enqueue(ok("""{"success":false,"error":"not found","machineId":"m1"}"""))
+
+        val response = runBlocking { session.api.archiveCodexSession("gone") }
+
+        assertEquals(false, response.success)
+        assertEquals("not found", response.error)
+        assertEquals("m1", response.machineId)
+        assertNull(response.archivedPath)
+    }
+
+    // --------------------------------------------------- GET /codex/status (B) --
+
+    @Test
+    fun `status probes codex client liveness`() {
+        server.enqueue(
+            ok("""{"success":true,"codexDesktopRunning":false,"codexClientAvailable":true}"""),
+        )
+
+        val response = runBlocking { session.api.getCodexDesktopStatus() }
+
+        val request = server.takeRequest()
+        assertEquals("GET", request.method)
+        assertEquals("/api/codex/status", request.requestUrl!!.encodedPath)
+        assertTrue(response.success)
+        assertEquals(true, response.codexClientAvailable)
+        assertEquals(false, response.codexDesktopRunning)
+    }
+
+    // ---------------------------------------- POST /codex/duplicate-sessions (B) --
+
+    @Test
+    fun `duplicate detection posts only the batch sessionIds`() {
+        server.enqueue(
+            ok(
+                """
+                {"success":true,"duplicates":[
+                  {"codexSessionId":"a","hapiSessionIds":["h1","h2"],
+                   "canonicalSessionId":"h1","removedSessionIds":["h2"]}
+                ]}
+                """.trimIndent(),
+            ),
+        )
+
+        val response = runBlocking {
+            session.api.getCodexDuplicateSessions(CodexDesktopSyncRequest(sessionIds = listOf("a", "b")))
+        }
+
+        val request = server.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/api/codex/duplicate-sessions", request.requestUrl!!.encodedPath)
+        val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+        assertEquals(
+            listOf("a", "b"),
+            body["sessionIds"]!!.jsonArray.map { it.jsonPrimitive.content },
+        )
+        assertTrue(body.keys == setOf("sessionIds"), "only the batch sessionIds are sent")
+
+        assertTrue(response.success)
+        val group = response.duplicates.single()
+        assertEquals("a", group.codexSessionId)
+        assertEquals(listOf("h1", "h2"), group.hapiSessionIds)
+        assertEquals("h1", group.canonicalSessionId)
+        assertEquals(listOf("h2"), group.removedSessionIds)
+    }
+
+    @Test
+    fun `duplicate detection failure arrives as success false`() {
+        server.enqueue(ok("""{"success":false,"duplicates":[],"error":"script failed"}"""))
+
+        val response = runBlocking {
+            session.api.getCodexDuplicateSessions(CodexDesktopSyncRequest(sessionIds = listOf("a")))
+        }
+
+        assertEquals(false, response.success)
+        assertTrue(response.duplicates.isEmpty())
+        assertEquals("script failed", response.error)
+    }
+
+    // --------------------------------- POST /codex/merge-duplicate-sessions (B) --
+
+    @Test
+    fun `merge posts the same batch shape as detection`() {
+        server.enqueue(
+            ok(
+                """
+                {"success":true,"merged":[
+                  {"codexSessionId":"a","hapiSessionIds":["h1","h2"],"canonicalSessionId":"h1"}
+                ],"mergedCount":1}
+                """.trimIndent(),
+            ),
+        )
+
+        val response = runBlocking {
+            session.api.mergeCodexDuplicateSessions(CodexDesktopSyncRequest(sessionIds = listOf("a")))
+        }
+
+        val request = server.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/api/codex/merge-duplicate-sessions", request.requestUrl!!.encodedPath)
+        val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+        assertEquals(
+            listOf("a"),
+            body["sessionIds"]!!.jsonArray.map { it.jsonPrimitive.content },
+        )
+
+        assertTrue(response.success)
+        assertEquals(1, response.mergedCount)
+        assertEquals("h1", response.merged.single().canonicalSessionId)
+    }
+
+    // ------------------------------------------ POST /codex/restart-desktop (B) --
+
+    @Test
+    fun `restart posts an empty body to the restart endpoint`() {
+        server.enqueue(ok("""{"success":true,"message":"restarted"}"""))
+
+        val response = runBlocking { session.api.restartCodexDesktop() }
+
+        val request = server.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/api/codex/restart-desktop", request.requestUrl!!.encodedPath)
+        assertEquals("{}", request.body.readUtf8(), "no-body POST convention sends an empty object")
+        assertTrue(response.success)
+        assertEquals("restarted", response.message)
     }
 }

@@ -1,7 +1,9 @@
 package app.hapi.companion.feature.newsession
 
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -12,6 +14,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -41,13 +44,14 @@ import java.text.DateFormat
 import java.util.Date
 
 /**
- * Codex session-import sheet (slice A) — Android presentation of the web
- * `CodexSessionSyncDialog` in its new-session (multi-select) usage. Slice A
- * deliberately omits the header's restart-client button and the archive
- * context/long-press menu (slices B/C); everything else — workdir filter,
- * search, badges, batch import — is the web behavior. Rendering as a modal
- * bottom sheet instead of a centered dialog matches the screen's existing
- * directory-browser presentation (declared divergence).
+ * Codex session-import sheet (slices A+B) — Android presentation of the web
+ * `CodexSessionSyncDialog` in its new-session (multi-select) usage: workdir
+ * filter, search, badges, batch import, plus — since slice B — the header's
+ * restart-client button, the archive long-press menu and its red error
+ * banner. Rendering as a modal bottom sheet instead of a centered dialog
+ * matches the screen's existing directory-browser presentation (declared
+ * divergence); web's right-click opener is Android's long-press (no
+ * context-menu API parity).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -60,11 +64,16 @@ fun CodexSessionSyncDialog(
     onWorkdirFilterChange: (String) -> Unit,
     onSearchQueryChange: (String) -> Unit,
     onConfirm: () -> Unit,
+    onArchive: (String) -> Unit,
+    onRestart: () -> Unit,
 ) {
     val workdirOptions = CodexImportLogic.workdirOptions(state.sessions)
     val filtered = CodexImportLogic.filterSessions(state.sessions, state.workdirFilter, state.searchQuery)
     val busy = state.importing || state.loading
     val dateFormat = remember { DateFormat.getDateTimeInstance() }
+    // Web keeps the open archive menu in dialog state (`archiveMenuSessionId`);
+    // here it is plain composable state reset naturally on recomposition.
+    var archiveMenuSessionId by remember { mutableStateOf<String?>(null) }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -74,15 +83,60 @@ fun CodexSessionSyncDialog(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text(
-                stringResource(R.string.codex_sync_title),
-                style = MaterialTheme.typography.titleMedium,
-            )
-            Text(
-                stringResource(R.string.codex_sync_description),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            // Header: title + description with the restart button on the
+            // right (web dialog header row, L242-254).
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        stringResource(R.string.codex_sync_title),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        stringResource(R.string.codex_sync_description),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(onClick = onRestart, enabled = !state.restartingDesktop) {
+                    Text(
+                        if (state.restartingDesktop) {
+                            stringResource(R.string.codex_sync_restart_confirming)
+                        } else {
+                            stringResource(R.string.codex_sync_restart)
+                        },
+                        maxLines = 1,
+                    )
+                }
+            }
+
+            // Restart outcome (web toasts restart.started/failed — inline
+            // here, declared divergence).
+            if (state.restartStarted) {
+                Text(
+                    stringResource(R.string.codex_sync_restart_started_title) + "\n" +
+                        stringResource(R.string.codex_sync_restart_started_body),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            state.restartError?.let { error ->
+                Text(
+                    stringResource(R.string.codex_sync_restart_failed_title) + "\n" + error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            state.archiveError?.let { error ->
+                Text(
+                    error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
 
             // Selected count + batch actions (web header row).
             Row(
@@ -151,7 +205,14 @@ fun CodexSessionSyncDialog(
                             isCurrent = session.id == state.selectedSessionId,
                             isImported = state.importedMarkers.containsKey(session.id),
                             enabled = !busy,
+                            archiveMenuOpen = archiveMenuSessionId == session.id,
                             onToggle = { onToggleSession(session.id) },
+                            onOpenArchiveMenu = { archiveMenuSessionId = session.id },
+                            onArchive = {
+                                archiveMenuSessionId = null
+                                onArchive(session.id)
+                            },
+                            onCloseArchiveMenu = { archiveMenuSessionId = null },
                             dateFormat = dateFormat,
                         )
                     }
@@ -172,7 +233,10 @@ fun CodexSessionSyncDialog(
                     .padding(bottom = 16.dp),
                 horizontalArrangement = Arrangement.End,
             ) {
-                TextButton(onClick = onDismiss, enabled = !state.importing) {
+                TextButton(
+                    onClick = onDismiss,
+                    enabled = !state.importing && !state.restartingDesktop,
+                ) {
                     Text(stringResource(R.string.codex_sync_cancel))
                 }
                 Button(
@@ -243,7 +307,14 @@ private fun WorkdirFilterDropdown(
     }
 }
 
-/** One selectable session row: checkbox + title + badges + preview + cwd + time. */
+/**
+ * One selectable session row: checkbox + title + badges + preview + cwd +
+ * time. Long-press (web: long-press **or** right-click, L353-367) opens the
+ * archive menu (L419-436): Archive runs the parent action, Cancel just
+ * closes it. [combinedClickable] keeps tap-toggle and long-press-menu as one
+ * gesture handler so a long press never toggles the checkbox.
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun CodexSessionRow(
     session: CodexLocalSessionSummary,
@@ -251,15 +322,25 @@ private fun CodexSessionRow(
     isCurrent: Boolean,
     isImported: Boolean,
     enabled: Boolean,
+    archiveMenuOpen: Boolean,
     onToggle: () -> Unit,
+    onOpenArchiveMenu: () -> Unit,
+    onArchive: () -> Unit,
+    onCloseArchiveMenu: () -> Unit,
     dateFormat: DateFormat,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(enabled = enabled, role = Role.Checkbox, onClick = onToggle),
-        verticalAlignment = Alignment.Top,
-    ) {
+    Box {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .combinedClickable(
+                    enabled = enabled,
+                    role = Role.Checkbox,
+                    onClick = onToggle,
+                    onLongClick = onOpenArchiveMenu,
+                ),
+            verticalAlignment = Alignment.Top,
+        ) {
         Checkbox(checked = checked, onCheckedChange = null, enabled = enabled)
         Column(
             modifier = Modifier
@@ -306,6 +387,24 @@ private fun CodexSessionRow(
                 dateFormat.format(Date(session.modifiedAt)),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        }
+
+        // Archive menu (web L419-436): two items — Archive runs the parent
+        // action (the controller owns the API + row removal + error banner),
+        // Cancel just closes the menu.
+        DropdownMenu(
+            expanded = archiveMenuOpen,
+            onDismissRequest = onCloseArchiveMenu,
+        ) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.codex_sync_archive_action)) },
+                onClick = onArchive,
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.codex_sync_cancel)) },
+                onClick = onCloseArchiveMenu,
             )
         }
     }

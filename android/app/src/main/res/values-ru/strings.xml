@@ -658,4 +658,22 @@
     <string name="codex_sync_inline_description">Необязательно: выберите одну локальную сессию Codex, затем выберите модель/настройки и нажмите «Создать» для импорта.</string>
     <string name="codex_sync_inline_clear">Очистить выбранную историю</string>
     <string name="codex_sync_inline_choose">Выбрать историю</string>
+    <string name="codex_sync_archive_action">Архивировать в Codex</string>
+    <string name="codex_sync_restart">Перезапустить клиент Codex</string>
+    <string name="codex_sync_restart_confirming">Перезапуск…</string>
+    <string name="codex_sync_restart_started_title">Перезапуск запущен</string>
+    <string name="codex_sync_restart_started_body">Клиент Codex перезапускается для обновления сессий.</string>
+    <string name="codex_sync_restart_failed_title">Не удалось перезапустить клиент Codex</string>
+    <string name="codex_sync_restart_failed_body">Не удалось выполнить скрипт перезапуска.</string>
+    <string name="codex_sync_restart_failed_not_found">Не удалось перезапустить клиент Codex: не установлен или не найден</string>
+    <string name="codex_sync_duplicates_confirm_title">Обнаружены дубликаты сессий</string>
+    <string name="codex_sync_duplicates_confirm_description">Обнаружены дубликаты сессий. Объединить их?</string>
+    <string name="codex_sync_duplicates_confirm_confirm">Объединить</string>
+    <string name="codex_sync_duplicates_confirm_confirming">Объединение…</string>
+    <string name="codex_sync_duplicates_detect_failed_title">Не удалось обнаружить дубликаты сессий</string>
+    <string name="codex_sync_duplicates_detect_failed_body">Не удалось обнаружить дубликаты сессий.</string>
+    <string name="codex_sync_duplicates_merge_success_title">Дубликаты сессий объединены</string>
+    <string name="codex_sync_duplicates_merge_success_body">Объединены дубликаты выбранных сессий Codex.</string>
+    <string name="codex_sync_duplicates_merge_failed_title">Не удалось объединить дубликаты сессий</string>
+    <string name="codex_sync_duplicates_merge_failed_body">Не удалось объединить дубликаты сессий.</string>
 </resources>

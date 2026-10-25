@@ -7,9 +7,14 @@ import app.hapi.protocol.wire.AuthRequest
 import app.hapi.protocol.wire.AuthResponse
 import app.hapi.protocol.wire.CancelMessageResponse
 import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
+import app.hapi.protocol.wire.CodexArchiveSessionRequest
+import app.hapi.protocol.wire.CodexArchiveSessionResponse
 import app.hapi.protocol.wire.CodexDesktopScriptResponse
+import app.hapi.protocol.wire.CodexDesktopStatusResponse
 import app.hapi.protocol.wire.CodexDesktopSyncRequest
+import app.hapi.protocol.wire.CodexDuplicateSessionsResponse
 import app.hapi.protocol.wire.CodexLocalSessionsResponse
+import app.hapi.protocol.wire.CodexMergeDuplicateSessionsResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.DeleteUploadRequest
 import app.hapi.protocol.wire.DeleteUploadResponse
@@ -578,6 +583,58 @@ class HapiApi internal constructor(
      */
     suspend fun syncCodexSession(sync: CodexDesktopSyncRequest): CodexDesktopScriptResponse =
         request("POST", url("api", "codex", "sync-session").build(), sync.toJsonBody())
+
+    // ------------------------------------------- codex archive/status/dedupe (B) --
+
+    /**
+     * `POST /api/codex/archive-session` — archive (move away) one local Codex
+     * transcript. `machineId` is omitted from the body when null (web ref:
+     * `archiveCodexSession` sends `machineId: machineId ?? undefined`). A
+     * failure is HTTP 200 `success:false` — check the flag. Added in slice B.
+     */
+    suspend fun archiveCodexSession(
+        sessionId: String,
+        machineId: String? = null,
+    ): CodexArchiveSessionResponse =
+        request(
+            "POST",
+            url("api", "codex", "archive-session").build(),
+            CodexArchiveSessionRequest(sessionId, machineId).toJsonBody(),
+        )
+
+    /**
+     * `GET /api/codex/status` — codex client liveness probe (first step of the
+     * restart affordance; `codexClientAvailable=false` ⇒ restart must not be
+     * attempted). Added in slice B.
+     */
+    suspend fun getCodexDesktopStatus(): CodexDesktopStatusResponse =
+        request("GET", url("api", "codex", "status").build())
+
+    /**
+     * `POST /api/codex/duplicate-sessions` — detect duplicate Hapi sessions
+     * for exactly the batch carried in [payload] (detection scope == execution
+     * scope; the web caller passes only `sessionIds`). Failures are HTTP 200
+     * `success:false`. Added in slice B.
+     */
+    suspend fun getCodexDuplicateSessions(payload: CodexDesktopSyncRequest): CodexDuplicateSessionsResponse =
+        request("POST", url("api", "codex", "duplicate-sessions").build(), payload.toJsonBody())
+
+    /**
+     * `POST /api/codex/merge-duplicate-sessions` — execute the merge for the
+     * same batch that was detected. Failures are HTTP 200 `success:false`.
+     * Added in slice B.
+     */
+    suspend fun mergeCodexDuplicateSessions(payload: CodexDesktopSyncRequest): CodexMergeDuplicateSessionsResponse =
+        request("POST", url("api", "codex", "merge-duplicate-sessions").build(), payload.toJsonBody())
+
+    /**
+     * `POST /api/codex/restart-desktop` — restart the codex desktop client
+     * (no body; the hub route ignores it). Reuses the script envelope, so a
+     * failure is HTTP 200 `success:false`. Only called after
+     * [getCodexDesktopStatus] reports `codexClientAvailable`. Added in slice B.
+     */
+    suspend fun restartCodexDesktop(): CodexDesktopScriptResponse =
+        request("POST", url("api", "codex", "restart-desktop").build(), EMPTY_JSON)
 
 
     // --------------------------------------------------------- git & files --

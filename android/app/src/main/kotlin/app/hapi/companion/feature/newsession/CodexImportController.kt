@@ -1,6 +1,7 @@
 package app.hapi.companion.feature.newsession
 
 import app.hapi.protocol.wire.CodexDesktopSyncRequest
+import app.hapi.protocol.wire.CodexDuplicateSessionGroup
 import app.hapi.protocol.wire.CodexLocalSessionSummary
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -14,17 +15,29 @@ import kotlinx.coroutines.launch
  * Strings the codex-import flow needs at runtime (B-M5a Strings seam):
  * defaults are English; the Navigation holder resolves resources per locale.
  * Web refs: `codexSync.failed.body`, `codexSync.failed.bodyWithReason`,
- * `codexSync.error.timeout`, `codexSync.error.active`.
+ * `codexSync.error.timeout`, `codexSync.error.active`,
+ * `codexSync.restart.failed.notFound/body`, `codexSync.duplicates.*`.
  */
 class CodexImportStrings(
     /** Load + soft-failure fallback (`codexSync.failed.body`). */
     val loadFailed: String = "Failed to import Codex sessions.",
     /** `%1$s` = failure detail (`codexSync.failed.bodyWithReason`). */
     val importFailedReason: String = "Import failed: %1\$s",
-    /** `codexSync.error.timeout` (matched via [CodexImportController.TIMEOUT_PATTERN]). */
+    /** `codexSync.error.timeout` (matched via [CodexImportMerge.TIMEOUT_PATTERN]). */
     val timeout: String = "Operation timed out",
-    /** `codexSync.error.active` (matched via [CodexImportController.ACTIVE_PATTERN]). */
+    /** `codexSync.error.active` (matched via [CodexImportMerge.ACTIVE_PATTERN]). */
     val sessionActive: String = "This session is still active. Please wait until it ends and try again.",
+    /**
+     * `codexSync.restart.failed.notFound` (matched via
+     * [CodexImportMerge.NOT_FOUND_PATTERN]; also the status-probe failure).
+     */
+    val clientNotFound: String = "Failed to restart Codex client: not installed or not found",
+    /** `codexSync.restart.failed.body` — restart normalize fallback. */
+    val restartFailedBody: String = "Failed to run the restart script.",
+    /** `codexSync.duplicates.detect.failed.body` — detect normalize fallback. */
+    val detectFailedBody: String = "Failed to detect duplicate sessions.",
+    /** `codexSync.duplicates.merge.failed.body` — merge normalize fallback. */
+    val mergeFailedBody: String = "Failed to merge duplicate sessions.",
     /**
      * Import-at-create outer-catch fallback. Web hardcodes the untranslated
      * literal `'Failed to create session'`; Android already localizes that
@@ -60,9 +73,46 @@ data class CodexImportUiState(
     val importingAtCreate: Boolean = false,
     /** Imported markers, for the badge + default-check rule. */
     val importedMarkers: Map<String, Long> = emptyMap(),
+    /** Failed archive, shown as the dialog's red banner (web `archiveError`). */
+    val archiveError: String? = null,
+    /** Restart-client probe/restart in flight (web `isRestartingCodexDesktop`). */
+    val restartingDesktop: Boolean = false,
+    /** Last restart succeeded (web toasts `restart.started.*`; inline here). */
+    val restartStarted: Boolean = false,
+    /** Last restart failed — normalized message (web toasts `restart.failed.*`). */
+    val restartError: String? = null,
+    /**
+     * Codex thread ids whose import detected duplicates — the batch both
+     * detected and re-sent for merging (web `pendingDuplicateSessionIds`).
+     */
+    val pendingDuplicateSessionIds: List<String> = emptyList(),
+    /** Hapi session ids the import created (web `pendingDuplicateHapiSessionIds`). */
+    val pendingDuplicateHapiSessionIds: List<String> = emptyList(),
+    /** Duplicate groups behind the confirm dialog (web `duplicateSessionGroups`). */
+    val duplicateSessionGroups: List<CodexDuplicateSessionGroup> = emptyList(),
+    /** Merge in flight (web `isMergingDuplicateSessions`). */
+    val mergingDuplicates: Boolean = false,
+    /**
+     * Failed merge, shown inline in the still-open confirm dialog (web
+     * rethrows and lets ConfirmDialog catch — same keep-open semantics).
+     */
+    val duplicateMergeError: String? = null,
+    /**
+     * Failed duplicate detection after an otherwise successful import (web
+     * only toasts `duplicates.detect.failed.*`; the import result stands).
+     */
+    val duplicateDetectError: String? = null,
 ) {
     val selectedSession: CodexLocalSessionSummary?
         get() = selectedSessionId?.let { id -> sessions.firstOrNull { it.id == id } }
+
+    /**
+     * The merge confirm dialog is open exactly when a batch is pending and
+     * groups were detected (web `isDuplicateMergeConfirmOpen && groups > 0`;
+     * the flag and the data always flip together, so it is derived).
+     */
+    val duplicateMergeConfirmOpen: Boolean
+        get() = pendingDuplicateSessionIds.isNotEmpty() && duplicateSessionGroups.isNotEmpty()
 }
 
 /** Outcome of the import-at-create chain (sync → resume). */
@@ -75,13 +125,17 @@ sealed interface CodexImportAtCreateResult {
 }
 
 /**
- * Controller for the codex session-import flow (slice A): owns the list
- * dialog state, the inline section's selection, and the two import paths
- * (bulk from the dialog, single during Create). Web refs:
- * `web/src/components/CodexSessionSyncDialog.tsx` (dialog state machine) and
- * the codex-import branches of `web/src/components/NewSession/index.tsx`
+ * Controller for the codex session-import flow (slices A+B): owns the list
+ * dialog state, the inline section's selection, the two import paths (bulk
+ * from the dialog, single during Create), and — since slice B — the
+ * duplicate-merge confirm leg, the archive action and the restart affordance.
+ * Web refs: `web/src/components/CodexSessionSyncDialog.tsx` (dialog state
+ * machine) and the codex-import branches of
+ * `web/src/components/NewSession/index.tsx`
  * (`loadCodexImportSessions`, `handleBulkImportCodexSessions`,
- * `handleSelectCodexImportSession`, `handleCreate`).
+ * `handleMergeDuplicateSessions`, `handleArchiveCodexImportSession`,
+ * `handleRestartCodexDesktop`, `handleSelectCodexImportSession`,
+ * `handleCreate`).
  *
  * Faithful behaviors:
  * - `GET /api/codex/sessions` soft failures are silent: HTTP 200 +
@@ -99,6 +153,24 @@ sealed interface CodexImportAtCreateResult {
  * - Confirm with exactly one checked row = inline select (+ apply that
  *   session's cwd to the form directory); more = bulk import. Bulk failure
  *   keeps the dialog open with selections intact.
+ * - After a successful bulk import the same batch is re-checked for
+ *   duplicates (`POST /codex/duplicate-sessions`, only `sessionIds`):
+ *   duplicates arm the merge-confirm state; a detection failure never
+ *   disturbs the finished import (web toasts; here
+ *   [CodexImportUiState.duplicateDetectError]).
+ * - The pending-duplicate state is independent of the import dialog's
+ *   lifecycle (web keeps it in separate useState slots); closing the import
+ *   dialog does not clear it — only [closeDuplicateMergeDialog] and the next
+ *   bulk import's stale-flush do.
+ * - Merge confirm failure keeps the confirm dialog open with the error
+ *   inline (web rethrows out of `handleMergeDuplicateSessions` and
+ *   `ConfirmDialog` catches into its error slot); success clears the
+ *   pending state and navigates to the canonical session.
+ * - Archive removes the row (and the inline selection when it pointed at
+ *   it); failures land in the dialog's red [CodexImportUiState.archiveError]
+ *   banner. Restart probes `/codex/status` first — an unavailable client
+ *   short-circuits with the not-found message and never calls
+ *   restart-desktop.
  *
  * Declared Android divergences (web behavior in parens):
  * - bulk-import success has no toast and no session-list refetch (web toasts
@@ -110,9 +182,18 @@ sealed interface CodexImportAtCreateResult {
  *   [CodexImportStrings.loadFailed] (web uses `dialog.error.default`).
  * - the import-at-create error is raw, exactly like web's `setError` (no
  *   timeout/active classification there either).
- * - duplicate-detection/merge and the restart/archive affordances are
- *   slices B/C and absent; launcher-not-found errors therefore pass through
- *   raw (web classifies them to `codexSync.restart.failed.notFound`).
+ * - duplicate detection after a successful import surfaces as
+ *   [CodexImportUiState.duplicateDetectError] on the inline section instead
+ *   of a transient toast (web: `duplicates.detect.failed.*` toast).
+ * - merge success navigates straight to the redirect session with no toast
+ *   (web also toasts `duplicates.merge.success.*`) and no session-list
+ *   refetch (web `refetchSessions`); the merged session opens directly, so
+ *   the list refreshes on next entry. Merge failure shows only the
+ *   normalized message in the confirm dialog's error slot (web toasts the
+ *   title first, then shows the same message inline).
+ * - restart feedback is inline in the import dialog (web: toasts for
+ *   `restart.started.*` / `restart.failed.*`; the not-found body and script
+ *   fallback are reused verbatim from the strings seam).
  */
 class CodexImportController(
     private val scope: CoroutineScope,
@@ -121,6 +202,8 @@ class CodexImportController(
     private val strings: CodexImportStrings = CodexImportStrings(),
     /** Applies a session cwd to the form directory (web `setDirectory(session.cwd.trim())`). */
     private val applyDirectory: (String) -> Unit = {},
+    /** Merge-confirmed navigation target (web `props.onSuccess(redirectSessionId)`). */
+    private val navigateToSession: (String) -> Unit = {},
 ) {
     private val mutable = MutableStateFlow(CodexImportUiState())
     val state: StateFlow<CodexImportUiState> = mutable.asStateFlow()
@@ -260,13 +343,19 @@ class CodexImportController(
      * inline selection only when it was part of the batch, and closes the
      * dialog. On failure the dialog stays open with the normalized error.
      * `cwd`/`machineId` mirror the web payload: trimmed form directory, and
-     * the listing machine with the form machine as fallback.
+     * the listing machine with the form machine as fallback. Since slice B a
+     * successful import immediately re-checks the same batch for duplicates
+     * (web L1223-1249): stale pending state is flushed first, then
+     * `POST /codex/duplicate-sessions` with only `sessionIds` arms the
+     * merge-confirm state when duplicates come back. Detection failures
+     * never roll the import back — they surface as
+     * [CodexImportUiState.duplicateDetectError].
      */
     fun bulkImport(sessionIds: List<String>) {
         val current = state.value
         if (current.importing || current.loading || sessionIds.isEmpty()) return
         val requestMachineId = current.machineId ?: formMachineId.ifEmpty { null }
-        update { it.copy(importing = true) }
+        update { it.copy(importing = true, duplicateDetectError = null) }
         scope.launch {
             try {
                 val result = gateway.syncCodexSession(
@@ -286,6 +375,39 @@ class CodexImportController(
                 )
                 resetDialogFields()
                 update { it.copy(open = false, selectedSessionId = keepSelection) }
+                // Duplicate detection (slice B) — second hop after the import
+                // itself succeeded; scope == the batch just imported.
+                val importedHapiIds = result.hapiSessionIds ?: emptyList()
+                closeDuplicateMergeDialog()
+                update { it.copy(pendingDuplicateHapiSessionIds = importedHapiIds) }
+                try {
+                    val duplicateResult = gateway.getCodexDuplicateSessions(
+                        CodexDesktopSyncRequest(sessionIds = sessionIds),
+                    )
+                    if (!duplicateResult.success) {
+                        throw IllegalStateException(
+                            normalizeError(duplicateResult.error, strings.detectFailedBody),
+                        )
+                    }
+                    if (duplicateResult.duplicates.isNotEmpty()) {
+                        update {
+                            it.copy(
+                                pendingDuplicateSessionIds = sessionIds,
+                                pendingDuplicateHapiSessionIds = importedHapiIds,
+                                duplicateSessionGroups = duplicateResult.duplicates,
+                            )
+                        }
+                    }
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (detectError: Exception) {
+                    // Web toasts; the import stands and the dialog is closed.
+                    update {
+                        it.copy(
+                            duplicateDetectError = normalizeError(detectError.message, strings.detectFailedBody),
+                        )
+                    }
+                }
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: Exception) {
@@ -296,6 +418,125 @@ class CodexImportController(
                 update { it.copy(importError = formatFailure(reason)) }
             } finally {
                 update { it.copy(importing = false) }
+            }
+        }
+    }
+
+    /**
+     * `handleMergeDuplicateSessions`: execute the confirmed merge for the
+     * pending batch. Success resolves the redirect target (first canonical
+     * survivor, else the first imported Hapi session), clears the pending
+     * state and hands the id to [navigateToSession] (web `onSuccess`;
+     * `refetchSessions` is a declared divergence). Failure keeps the confirm
+     * dialog open with the normalized message inline — web rethrows and
+     * `ConfirmDialog` catches into its own error slot.
+     */
+    fun mergeDuplicates() {
+        val current = state.value
+        if (current.mergingDuplicates || current.pendingDuplicateSessionIds.isEmpty()) return
+        val pendingBatch = current.pendingDuplicateSessionIds
+        update { it.copy(mergingDuplicates = true, duplicateMergeError = null) }
+        scope.launch {
+            try {
+                val result = gateway.mergeCodexDuplicateSessions(
+                    CodexDesktopSyncRequest(sessionIds = pendingBatch),
+                )
+                if (!result.success) {
+                    throw IllegalStateException(normalizeError(result.error, strings.mergeFailedBody))
+                }
+                val redirectSessionId = CodexImportMerge.resolveCodexImportRedirectSessionId(
+                    merged = result.merged,
+                    importedHapiSessionIds = state.value.pendingDuplicateHapiSessionIds,
+                )
+                closeDuplicateMergeDialog()
+                redirectSessionId?.let(navigateToSession)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                update {
+                    it.copy(duplicateMergeError = normalizeError(error.message, strings.mergeFailedBody))
+                }
+            } finally {
+                update { it.copy(mergingDuplicates = false) }
+            }
+        }
+    }
+
+    /** `closeDuplicateMergeDialog`: clears all four pending slots at once. */
+    fun closeDuplicateMergeDialog() {
+        update {
+            it.copy(
+                pendingDuplicateSessionIds = emptyList(),
+                pendingDuplicateHapiSessionIds = emptyList(),
+                duplicateSessionGroups = emptyList(),
+                duplicateMergeError = null,
+            )
+        }
+    }
+
+    /**
+     * `handleArchiveCodexImportSession`: archive one local transcript on the
+     * listing machine (form machine as fallback — web
+     * `codexImportMachineId ?? machineId`). Success removes the row and, when
+     * the inline selection pointed at it, clears the selection; failure
+     * rethrows into the dialog's [CodexImportUiState.archiveError] banner
+     * (web `handleArchive` catch, no toast channel).
+     */
+    fun archive(sessionId: String) {
+        val current = state.value
+        if (current.importing || current.loading) return
+        val machineId = current.machineId ?: formMachineId.ifEmpty { null }
+        update { it.copy(archiveError = null) }
+        scope.launch {
+            try {
+                val result = gateway.archiveCodexSession(sessionId, machineId)
+                if (!result.success) {
+                    throw IllegalStateException(result.error.orEmpty())
+                }
+                update { state2 ->
+                    state2.copy(
+                        sessions = state2.sessions.filterNot { it.id == sessionId },
+                        selectedSessionId = state2.selectedSessionId?.takeIf { it != sessionId },
+                    )
+                }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                update { it.copy(archiveError = error.message ?: strings.loadFailed) }
+            }
+        }
+    }
+
+    /**
+     * `handleRestartCodexDesktop`: probe `/codex/status` first — an
+     * unavailable client short-circuits with the not-found message and the
+     * restart call is never made; otherwise `POST /restart-desktop` and
+     * branch on the envelope's `success` (failures normalized with the
+     * script fallback). Outcomes are inline in the dialog (web toasts —
+     * declared divergence): [CodexImportUiState.restartStarted] on success,
+     * [CodexImportUiState.restartError] on failure.
+     */
+    fun restart() {
+        val current = state.value
+        if (current.restartingDesktop) return
+        update { it.copy(restartingDesktop = true, restartStarted = false, restartError = null) }
+        scope.launch {
+            try {
+                val status = gateway.getCodexDesktopStatus()
+                if (!status.codexClientAvailable) {
+                    throw IllegalStateException(strings.clientNotFound)
+                }
+                val result = gateway.restartCodexDesktop()
+                if (!result.success) {
+                    throw IllegalStateException(normalizeError(result.error, strings.restartFailedBody))
+                }
+                update { it.copy(restartStarted = true) }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                update { it.copy(restartError = normalizeError(error.message, strings.restartFailedBody)) }
+            } finally {
+                update { it.copy(restartingDesktop = false) }
             }
         }
     }
@@ -387,23 +628,17 @@ class CodexImportController(
 
     // ---------------------------------------------------------- internals --
 
-    /** Web's untranslated outer-catch literal — deliberately not localized. */
-    private fun normalizeError(message: String?, fallback: String): String {
-        val raw = message?.trim().orEmpty()
-        if (raw.isEmpty()) return fallback
-        if (TIMEOUT_PATTERN.containsMatchIn(raw)) return strings.timeout
-        if (ACTIVE_PATTERN.containsMatchIn(raw)) return strings.sessionActive
-        // Web also classifies "codex launcher not found" here; that strings
-        // key belongs to the restart feature (slice C) — raw passthrough.
-        return raw
-    }
+    /**
+     * Web `normalizeCodexScriptError` (pure twin in [CodexImportMerge]):
+     * classify timeout / active-thread / launcher-not-found, else pass
+     * through; blank falls back to the caller-provided message.
+     */
+    private fun normalizeError(message: String?, fallback: String): String =
+        CodexImportMerge.normalizeCodexScriptError(message, fallback, strings)
 
+    /** Web `formatCodexImportFailure` (pure twin in [CodexImportMerge]). */
     private fun formatFailure(reason: String): String =
-        if (reason == strings.timeout || reason == strings.sessionActive) {
-            reason
-        } else {
-            strings.importFailedReason.format(reason)
-        }
+        CodexImportMerge.formatCodexImportFailure(reason, strings)
 
     /**
      * The dialog's one-time init effects, run after a load settles:
@@ -441,21 +676,14 @@ class CodexImportController(
                 workdirFilter = CodexImportLogic.ALL_WORKDIR_FILTER,
                 searchQuery = "",
                 importError = null,
+                archiveError = null,
+                restartStarted = false,
+                restartError = null,
             )
         }
     }
 
     private fun update(transform: (CodexImportUiState) -> CodexImportUiState) {
         mutable.value = transform(mutable.value)
-    }
-
-    companion object {
-        /** `normalizeCodexScriptError` timeout pattern (`/i`). */
-        val TIMEOUT_PATTERN: Regex =
-            Regex("""执行超时|timed\s*out|timeout""", RegexOption.IGNORE_CASE)
-
-        /** `normalizeCodexScriptError` active-thread pattern (`/i`). */
-        val ACTIVE_PATTERN: Regex =
-            Regex("""当前会话仍处于活跃状态，请等待会话结束后重试|Active Hapi process already has this Codex thread""", RegexOption.IGNORE_CASE)
     }
 }

@@ -143,6 +143,18 @@ fun NewSessionScreen(
             onWorkdirFilterChange = viewModel.codexImport::setWorkdirFilter,
             onSearchQueryChange = viewModel.codexImport::setSearchQuery,
             onConfirm = viewModel.codexImport::confirm,
+            onArchive = viewModel.codexImport::archive,
+            onRestart = viewModel.codexImport::restart,
+        )
+    }
+    // Duplicate-merge confirm (slice B): armed only after a bulk import whose
+    // duplicate detection found groups; independent of the import dialog.
+    if (codexImport.duplicateMergeConfirmOpen) {
+        DuplicateMergeConfirmDialog(
+            isPending = codexImport.mergingDuplicates,
+            error = codexImport.duplicateMergeError,
+            onConfirm = viewModel::mergeDuplicateCodexSessions,
+            onDismiss = viewModel::closeDuplicateMergeDialog,
         )
     }
 }
