@@ -88,6 +88,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
     await root.bind('thread', { model: 'mock', thread: { turns: [] } }, false);
     const native = root.client as unknown as {
         initialized: boolean;
+        settings: Record<string, unknown>;
         thread: { id: string; turns: NativeTurn[] };
         queue: Array<{ id: string; clientUserMessageId: string; input: unknown }>;
         notify(method: string, params: unknown): void;
@@ -114,6 +115,97 @@ async function completePlan(f: Awaited<ReturnType<typeof fixture>>, status = 'co
     await vi.waitFor(() => expect(f.send).toHaveBeenCalledWith(expect.objectContaining({ name: 'ExitPlanMode' }), expect.any(String)));
     return codexPlanProposalId('thread', turn.id, 'plan-item');
 }
+
+describe('shared startup permissions', () => {
+    it.each([
+        ['default', 'on-request', 'workspaceWrite'],
+        ['read-only', 'never', 'readOnly'],
+        ['yolo', 'never', 'dangerFullAccess']
+    ] as const)('restores explicit %s after native resume subscriptions reset the launch policy', async (permissionMode, approvalPolicy, sandboxType) => {
+        const f = await fixture();
+        // Initial thread/start or cold thread/resume may accept YOLO, while
+        // a later subscription-only resume reports the native default again.
+        f.native.settings = { model: 'mock', approvalPolicy: permissionMode === 'default' ? 'never' : 'on-request',
+            sandboxPolicy: { type: permissionMode === 'default' ? 'dangerFullAccess' : 'workspaceWrite', writableRoots: [], networkAccess: false,
+                excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+            collaborationMode: { mode: 'default' } };
+        f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: f.native.settings });
+        const request = vi.spyOn(f.root.client, 'request');
+        const ready = vi.spyOn(f.root.session, 'emitSessionReady');
+
+        await f.root.activate({ permissionMode });
+
+        expect(request).toHaveBeenCalledWith('thread/settings/update', {
+            threadId: 'thread', approvalPolicy, sandboxPolicy: { type: sandboxType }
+        });
+        expect(f.native.settings).toMatchObject({ approvalPolicy, sandboxPolicy: { type: sandboxType } });
+        expect(ready).toHaveBeenCalledOnce();
+    });
+
+    it.each(['sandbox', 'sandboxPolicy'] as const)('accepts an already observed YOLO policy from %s without waiting for a nonexistent notification', async (key) => {
+        const f = await fixture();
+        f.root.acceptSettings({ model: 'mock', approvalPolicy: 'never', [key]: { type: 'dangerFullAccess' } });
+        const request = vi.spyOn(f.root.client, 'request');
+        const ready = vi.spyOn(f.root.session, 'emitSessionReady');
+        await f.root.activate({ permissionMode: 'yolo' });
+        expect(request).not.toHaveBeenCalledWith('thread/settings/update', expect.anything());
+        expect(ready).toHaveBeenCalledOnce();
+    });
+
+    it('uses the latest resume sandbox instead of a stale notification policy', async () => {
+        const f = await fixture();
+        f.root.acceptSettings({ model: 'mock', approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' } });
+        f.root.acceptSettings({ model: 'mock', approvalPolicy: 'on-request', sandbox: { type: 'workspaceWrite' } });
+        const request = vi.spyOn(f.root.client, 'request');
+        await f.root.activate({ permissionMode: 'yolo' });
+        expect(request).toHaveBeenCalledWith('thread/settings/update', {
+            threadId: 'thread', approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' }
+        });
+    });
+
+    it('does not expose restored input controls until the requested launch policy is confirmed', async () => {
+        const f = await fixture();
+        const controlCount = f.rpc.size;
+        const request = f.root.client.request.bind(f.root.client);
+        let pending: Record<string, unknown> | undefined;
+        vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'thread/settings/update') {
+                pending = params as Record<string, unknown>;
+                return {}; // Native only acknowledged queueing; no confirmation yet.
+            }
+            return request(method, params);
+        });
+        const ready = vi.spyOn(f.root.session, 'emitSessionReady');
+        const activation = f.root.activate({ permissionMode: 'yolo', collaborationMode: 'plan' });
+        await vi.waitFor(() => expect(pending).toBeDefined());
+        const readyBeforeConfirmation = ready.mock.calls.length;
+        const controlsBeforeConfirmation = f.rpc.size;
+        f.native.settings = { ...f.native.settings, ...pending };
+        f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: f.native.settings });
+        await activation;
+
+        expect(readyBeforeConfirmation).toBe(0);
+        expect(controlsBeforeConfirmation).toBe(controlCount);
+        expect(pending).toMatchObject({ approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' },
+            collaborationMode: { mode: 'plan' } });
+        expect(ready).toHaveBeenCalledOnce();
+    });
+
+    it('fails startup when native policy refuses the requested permission mode', async () => {
+        const f = await fixture();
+        const controlCount = f.rpc.size;
+        const request = f.root.client.request.bind(f.root.client);
+        vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'thread/settings/update') throw new Error('permission mode rejected by native policy');
+            return request(method, params);
+        });
+        const ready = vi.spyOn(f.root.session, 'emitSessionReady');
+
+        await expect(f.root.activate({ permissionMode: 'yolo' })).rejects.toThrow('permission mode rejected by native policy');
+        expect(ready).not.toHaveBeenCalled();
+        expect(f.rpc.size).toBe(controlCount);
+    });
+});
 
 describe('shared plan actions', () => {
     it('applies remote change_title as metadata.name then lets native terminal rename win', async () => {
