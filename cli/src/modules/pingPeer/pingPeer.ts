@@ -2,10 +2,11 @@
  * Resume-if-inactive + wait-active + POST /api/sessions/:id/messages,
  * plus read-only inspectPeer (GET session + messages, never resume).
  *
- * Shared by `hapi ping-peer` / `hapi inspect-peer` and MCP `ping_peer` /
- * `inspect_peer`. Uses the same hub JWT flow as the web app
- * (`POST /api/auth` with CLI_API_TOKEN), scoped to the token's namespace.
- * Callers must not invent parallel auth or arbitrary hosts.
+ * Shared by `hapi ping-peer` / `hapi inspect-peer` / `hapi search-peers` and
+ * MCP `ping_peer` / `inspect_peer` / `list_peers` / `search_peers`. Uses the
+ * same hub JWT flow as the web app (`POST /api/auth` with CLI_API_TOKEN),
+ * scoped to the token's namespace. Callers must not invent parallel auth or
+ * arbitrary hosts.
  */
 
 import axios, { type AxiosInstance } from 'axios'
@@ -45,6 +46,7 @@ export type PingPeerSessionSummary = {
         path?: string | null
         lifecycleState?: string | null
         piSessionId?: string
+        agentSessionId?: string
         summary?: { text?: string } | null
     } | null
 }
@@ -76,6 +78,15 @@ export type ListPeerSessionsOptions = {
     order?: 'updatedAt'
 }
 
+export type SearchPeerSessionsOptions = {
+    query: string
+    apiUrl?: string
+    accessToken?: string
+    http?: AxiosInstance
+    /** Max matches to return (default 30, hub max 100). */
+    limit?: number
+}
+
 const DEFAULT_WAIT_ACTIVE_SECS = 60
 const POLL_ACTIVE_MS = 2_000
 const POLL_PI_READY_MS = 1_000
@@ -87,7 +98,7 @@ function defaultSleep(ms: number): Promise<void> {
 const AUTH_RECOVERY_HINT =
     'On a remote runner, set HAPI_API_URL to the runner hub, and set CLI_API_TOKEN ' +
     'or run `hapi auth login` to save the token. Inside a HAPI session prefer MCP ' +
-    '`list_peers` / `ping_peer` / `inspect_peer`, which use the session CLI credentials.'
+    '`list_peers` / `search_peers` / `ping_peer` / `inspect_peer`, which use the session CLI credentials.'
 
 function resolveApiUrl(apiUrl?: string): string {
     const raw = (apiUrl ?? configuration.apiUrl).trim().replace(/\/+$/, '')
@@ -380,6 +391,54 @@ export async function listPeerSessions(
     })
 }
 
+/**
+ * Keyword search across the hub namespace (name / summary.text / path /
+ * agentSessionId / id). Not recency-bounded — finds quiet sessions that fall
+ * out of `list_peers`.
+ */
+export async function searchPeerSessions(
+    options: SearchPeerSessionsOptions
+): Promise<PingPeerSessionSummary[]> {
+    const query = options.query.trim()
+    if (!query) {
+        throw new PingPeerError('bad_args', 'search query is required')
+    }
+    const apiUrl = resolveApiUrl(options.apiUrl)
+    const accessToken = resolveAccessToken(options.accessToken)
+    const http = options.http ?? axios
+    const jwt = await exchangeJwt(apiUrl, accessToken, http)
+
+    const limit = options.limit ?? 30
+    const response = await http.get(
+        `${apiUrl}/api/sessions/search`,
+        {
+            headers: authHeaders(jwt),
+            params: { q: query, limit },
+            timeout: 15_000,
+            validateStatus: () => true
+        }
+    )
+    if (response.status < 200 || response.status >= 300) {
+        const detail = typeof response.data?.error === 'string'
+            ? response.data.error
+            : `HTTP ${response.status}`
+        throw new PingPeerError(
+            'auth_failed',
+            `failed to search sessions (${detail}). Hub URL: ${apiUrl}. ${AUTH_RECOVERY_HINT}`
+        )
+    }
+    const body = response.data
+    const sessions = Array.isArray(body?.sessions)
+        ? body.sessions
+        : Array.isArray(body)
+            ? body
+            : null
+    if (!sessions) {
+        throw new PingPeerError('auth_failed', 'failed to search sessions (unexpected response)')
+    }
+    return sessions as PingPeerSessionSummary[]
+}
+
 export type FormatPeerSessionsListOptions = {
     /** Max rows to print (default 30). */
     maxRows?: number
@@ -390,9 +449,20 @@ export type FormatPeerSessionsListOptions = {
      * an exact omitted count from the sample.
      */
     hasMore?: boolean
+    /** Keep input order (search rank) instead of sorting by updatedAt. */
+    preserveOrder?: boolean
+    /** Override empty-list copy (e.g. search miss). */
+    emptyMessage?: string
+    /**
+     * Compact MCP/CLI layout for large result pages (search_peers up to 100).
+     * One legend line + `id a|i flavor title` rows (full UUID; no key=value noise).
+     */
+    dense?: boolean
 }
 
 const MAX_PEER_LABEL_CHARS = 255
+/** Dense search rows: keep titles short so 100 hits stay cheap in model context. */
+const MAX_DENSE_PEER_LABEL_CHARS = 72
 
 /**
  * Hub fetch size for peer discovery: enough rows for the requested page, plus
@@ -408,7 +478,11 @@ export function peerListFetchLimit(requestedLimit: number, options?: { excludeCa
  * Web-parity title for peer shortlists: name → summary.text → basename(path) → id prefix.
  * Collapses whitespace so agent-readable rows stay one line each.
  */
-export function resolvePeerSessionLabel(session: PingPeerSessionSummary): string {
+export function resolvePeerSessionLabel(
+    session: PingPeerSessionSummary,
+    options?: { maxChars?: number }
+): string {
+    const maxChars = options?.maxChars ?? MAX_PEER_LABEL_CHARS
     const meta = session.metadata
     const pathLabel = meta?.path?.split(/[\\/]/).filter(Boolean).pop()?.trim()
     const raw = meta?.name?.trim()
@@ -419,38 +493,57 @@ export function resolvePeerSessionLabel(session: PingPeerSessionSummary): string
     if (!collapsed) {
         return session.id.slice(0, 8)
     }
-    return collapsed.length > MAX_PEER_LABEL_CHARS
-        ? collapsed.slice(0, MAX_PEER_LABEL_CHARS)
+    return collapsed.length > maxChars
+        ? collapsed.slice(0, maxChars)
         : collapsed
 }
 
 /**
- * Human/agent-readable shortlist for MCP `list_peers` and `hapi ping-peer --list`.
- * Newest `updatedAt` first. Same hub/namespace as the caller credentials.
+ * Human/agent-readable shortlist for MCP `list_peers` / `search_peers`
+ * and `hapi ping-peer --list` / `hapi search-peers`.
+ * Newest `updatedAt` first for list; search results keep hub rank order.
+ * Use `dense: true` for search_peers so large pages stay cheap in MCP context.
  */
 export function formatPeerSessionsList(
     sessions: PingPeerSessionSummary[],
     options: FormatPeerSessionsListOptions = {}
 ): string {
     const maxRows = options.maxRows ?? 30
+    const dense = options.dense === true
     const excludeId = options.excludeSessionId?.trim() ?? ''
     const filtered = excludeId
         ? sessions.filter((session) => session.id !== excludeId)
         : sessions
     if (filtered.length === 0) {
+        if (options.emptyMessage) {
+            return options.emptyMessage
+        }
         return 'No peer sessions found on this hub/namespace.'
     }
-    const sorted = [...filtered].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
-    const rows = sorted.slice(0, Math.max(1, maxRows)).map((session) => {
-        const flavor = session.metadata?.flavor ?? '?'
-        const name = resolvePeerSessionLabel(session)
-        return `  ${session.id}  active=${session.active}  flavor=${flavor}  ${name}`
-    })
-    const omitted = sorted.length - rows.length
+    const ordered = options.preserveOrder
+        ? filtered
+        : [...filtered].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+    const page = ordered.slice(0, Math.max(1, maxRows))
+    const rows = dense
+        ? [
+            '# id a|i flavor title',
+            ...page.map((session) => {
+                const flavor = (session.metadata?.flavor ?? '?').replace(/\s+/g, '')
+                const name = resolvePeerSessionLabel(session, { maxChars: MAX_DENSE_PEER_LABEL_CHARS })
+                const active = session.active ? 'a' : 'i'
+                return `${session.id} ${active} ${flavor} ${name}`
+            })
+        ]
+        : page.map((session) => {
+            const flavor = session.metadata?.flavor ?? '?'
+            const name = resolvePeerSessionLabel(session)
+            return `  ${session.id}  active=${session.active}  flavor=${flavor}  ${name}`
+        })
+    const omitted = ordered.length - page.length
     if (options.hasMore) {
-        rows.push('  … more sessions available (narrow with inspect_peer / ping_peer by id)')
+        rows.push(dense ? '…+' : '  … more sessions available (narrow with inspect_peer / ping_peer by id)')
     } else if (omitted > 0) {
-        rows.push(`  … ${omitted} more (narrow with inspect_peer / ping_peer by id)`)
+        rows.push(dense ? `…+${omitted}` : `  … ${omitted} more (narrow with inspect_peer / ping_peer by id)`)
     }
     return rows.join('\n')
 }

@@ -131,6 +131,8 @@ export type SessionCitationSteerTools = {
     pingTool: string
     /** Flavor-specific discovery tool when no citation is available. */
     listPeersTool?: string
+    /** Keyword inventory beyond list_peers recency (name/path/agentSessionId). */
+    searchPeersTool?: string
 }
 
 /**
@@ -150,6 +152,11 @@ export function buildSessionCitationSteerInstruction(tools: SessionCitationSteer
             ` To discover peers without a citation, call "${tools.listPeersTool}" ` +
             `(same hub/namespace; works from runner-spawned sessions). ` +
             `Shell fallback: hapi ping-peer --list.`
+    }
+    if (tools.searchPeersTool) {
+        text +=
+            ` To find quiet or aged-out sessions by keyword (name/path/agentSessionId), call "${tools.searchPeersTool}" ` +
+            `(not bounded by list_peers recency). Shell fallback: hapi search-peers <query>.`
     }
     return text
 }

@@ -101,3 +101,15 @@ describe('resolveToolAutoApprovalDecision list_peers', () => {
         )).toBeNull()
     })
 })
+
+describe('resolveToolAutoApprovalDecision search_peers', () => {
+    it.each([
+        'search_peers',
+        'hapi_search_peers',
+        'happy__search_peers',
+        'mcp__hapi__search_peers',
+        'Search Peer Sessions'
+    ])('auto-approves the exact discovery tool name %s', (toolName) => {
+        expect(resolveToolAutoApprovalDecision('default', toolName, 'call-1')).toBe('approved')
+    })
+})

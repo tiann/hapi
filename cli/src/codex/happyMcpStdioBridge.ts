@@ -1,7 +1,7 @@
 /**
  * HAPI MCP STDIO Bridge
  *
- * Minimal STDIO MCP server exposing HAPI tools such as `change_title`, `display_image`, `display_video`, `display_media`, `list_peers`, `ping_peer`, and `inspect_peer`.
+ * Minimal STDIO MCP server exposing HAPI tools such as `change_title`, `display_image`, `display_video`, `display_media`, `list_peers`, `search_peers`, `ping_peer`, and `inspect_peer`.
  * On invocation it forwards the tool call to an existing HAPI HTTP MCP server
  * using the StreamableHTTPClientTransport.
  *
@@ -23,7 +23,7 @@ import {
   SESSION_ID_PREFIX_PARAM_DESCRIPTION,
 } from '@hapi/protocol/sessionCitation';
 
-const DEFAULT_TOOL_NAMES = ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer'];
+const DEFAULT_TOOL_NAMES = ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'search_peers', 'ping_peer', 'inspect_peer'];
 
 function parseArgs(argv: string[]): { url: string | null; toolNames: Set<string> } {
   let url: string | null = null;
@@ -273,7 +273,7 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       server.registerTool<any, any>(
         'list_peers',
         {
-          description: 'List peer HAPI sessions on the same hub/namespace (id prefix, active, flavor, name). Uses this session\'s hub credentials - works from runner-spawned agents without being on the hub host. Prefer this over shelling `hapi ping-peer --list`. Then call inspect_peer / ping_peer with a listed id.',
+          description: 'List peer HAPI sessions on the same hub/namespace (id prefix, active, flavor, name). Uses this session\'s hub credentials - works from runner-spawned agents without being on the hub host. Prefer this over shelling `hapi ping-peer --list`. Then call inspect_peer / ping_peer with a listed id, or search_peers for keyword inventory beyond the recency window.',
           title: 'List Peer Sessions',
           inputSchema: listPeersInputSchema,
         },
@@ -286,6 +286,40 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
             return {
               content: [
                 { type: 'text' as const, text: `Failed to list peers: ${error instanceof Error ? error.message : String(error)}` },
+              ],
+              isError: true,
+            };
+          }
+        }
+      );
+    }
+
+    const searchPeersInputSchema: z.ZodTypeAny = z.object({
+      query: z.string().trim().min(1).max(256).describe(
+        'Keyword to match against session name, path, agentSessionId, or id.'
+      ),
+      limit: z.number().int().min(1).max(100).optional().describe(
+        'Max matches to return (default 30, max 100). Ranked by match field then updatedAt.'
+      ),
+    });
+
+    if (toolNames.has('search_peers')) {
+      server.registerTool<any, any>(
+        'search_peers',
+        {
+          description: 'Search peer HAPI sessions on the same hub/namespace by keyword (name, summary/displayed title, path, agentSessionId, id). Not bounded by list_peers recency — finds quiet/aged sessions. Returns a dense table: legend `# id a|i flavor title` then one row per hit (full UUID; a=active i=idle; title truncated). Prefer this over /proc→SQLite archaeology. Then call inspect_peer / ping_peer with a returned id.',
+          title: 'Search Peer Sessions',
+          inputSchema: searchPeersInputSchema,
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            const client = await ensureHttpClient();
+            const response = await client.callTool({ name: 'search_peers', arguments: args });
+            return response as any;
+          } catch (error) {
+            return {
+              content: [
+                { type: 'text' as const, text: `Failed to search peers: ${error instanceof Error ? error.message : String(error)}` },
               ],
               isError: true,
             };

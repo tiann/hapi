@@ -296,7 +296,7 @@ With the runner running:
 
 #### Split hub + remote runner (peer discovery)
 
-When the hub runs on one host and the runner on another, agents inside runner-spawned sessions should discover peers via MCP **`list_peers`** (same hub credentials as the session CLI). Prefer that over shelling `hapi ping-peer --list`.
+When the hub runs on one host and the runner on another, agents inside runner-spawned sessions should discover peers via MCP **`list_peers`** / **`search_peers`** (same hub credentials as the session CLI). Prefer that over shelling `hapi ping-peer --list` / `hapi search-peers`.
 
 ```
 [Hub host]  hapi hub          ← sessions DB + /api/sessions
@@ -306,7 +306,7 @@ When the hub runs on one host and the runner on another, agents inside runner-sp
 [Runner host]  hapi runner start  → spawns session CLIs
                      │
                      ▼
-              agent session  → MCP list_peers / inspect_peer / ping_peer
+              agent session  → MCP list_peers / search_peers / inspect_peer / ping_peer
 ```
 
 On the runner host, configure the **same** hub URL and token the hub uses:
@@ -318,7 +318,7 @@ export CLI_API_TOKEN="your-token-here"
 hapi runner start
 ```
 
-Session CLI may export an **explicit** non-default `HAPI_API_URL` (from env or settings) into child env so shell helpers hit the same remote hub. It does **not** mirror `CLI_API_TOKEN` into wrapped agents (settings/prompt-backed secrets stay out of agent env; a fresh `hapi` re-reads `~/.hapi/settings.json`, and systemd/env tokens already inherit). Prefer MCP `list_peers` inside a session. Web terminal PTYs still strip hub secrets. If `--list` fails with an auth/URL error, the message points at `hapi auth login` and the configured hub URL.
+Session CLI may export an **explicit** non-default `HAPI_API_URL` (from env or settings) into child env so shell helpers hit the same remote hub. It does **not** mirror `CLI_API_TOKEN` into wrapped agents (settings/prompt-backed secrets stay out of agent env; a fresh `hapi` re-reads `~/.hapi/settings.json`, and systemd/env tokens already inherit). Prefer MCP `list_peers` / `search_peers` inside a session. Web terminal PTYs still strip hub secrets. If `--list` / `search-peers` fails with an auth/URL error, the message points at `hapi auth login` and the configured hub URL.
 
 Additional runner commands:
 
