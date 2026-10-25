@@ -80,5 +80,21 @@ fun CodexImportSection(
                 color = MaterialTheme.colorScheme.error,
             )
         }
+        // Duplicate detection failed after an otherwise successful import
+        // (web `duplicates.detect.failed.*` toast — inline here, divergence).
+        state.duplicateDetectError?.let { detail ->
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    stringResource(R.string.codex_sync_duplicates_detect_failed_title),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Text(
+                    detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
     }
 }

@@ -3,10 +3,15 @@
 package app.hapi.companion.feature.newsession
 
 import app.hapi.protocol.wire.AgentAvailabilityResponse
+import app.hapi.protocol.wire.CodexArchiveSessionResponse
 import app.hapi.protocol.wire.CodexDesktopScriptResponse
+import app.hapi.protocol.wire.CodexDesktopStatusResponse
 import app.hapi.protocol.wire.CodexDesktopSyncRequest
+import app.hapi.protocol.wire.CodexDuplicateSessionGroup
+import app.hapi.protocol.wire.CodexDuplicateSessionsResponse
 import app.hapi.protocol.wire.CodexLocalSessionSummary
 import app.hapi.protocol.wire.CodexLocalSessionsResponse
+import app.hapi.protocol.wire.CodexMergeDuplicateSessionsResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.GrokModelsResponse
 import app.hapi.protocol.wire.MachineListDirectoryResponse
@@ -53,6 +58,11 @@ class CodexImportControllerTest {
         val codexSessionsCalls = mutableListOf<Pair<String?, String?>>()
         val syncCalls = mutableListOf<CodexDesktopSyncRequest>()
         val resumeCalls = mutableListOf<Pair<String, String?>>()
+        val archiveCalls = mutableListOf<Pair<String, String?>>()
+        val statusCalls = mutableListOf<Int>()
+        val duplicateCalls = mutableListOf<CodexDesktopSyncRequest>()
+        val mergeCalls = mutableListOf<CodexDesktopSyncRequest>()
+        val restartCalls = mutableListOf<Int>()
 
         var codexSessionsResult: CodexLocalSessionsResponse =
             CodexLocalSessionsResponse(success = true, sessions = emptyList())
@@ -63,6 +73,17 @@ class CodexImportControllerTest {
         var syncGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
         var resumeResult: ResumeSessionResponse = ResumeSessionResponse(sessionId = "s-resumed")
         var resumeThrows: Exception? = null
+        var archiveResult: CodexArchiveSessionResponse = CodexArchiveSessionResponse(success = true)
+        var archiveThrows: Exception? = null
+        var statusResult: CodexDesktopStatusResponse =
+            CodexDesktopStatusResponse(success = true, codexClientAvailable = true)
+        var duplicateResult: CodexDuplicateSessionsResponse =
+            CodexDuplicateSessionsResponse(success = true)
+        var duplicateThrows: Exception? = null
+        var mergeResult: CodexMergeDuplicateSessionsResponse =
+            CodexMergeDuplicateSessionsResponse(success = true)
+        var mergeThrows: Exception? = null
+        var restartResult: CodexDesktopScriptResponse = CodexDesktopScriptResponse(success = true)
 
         override suspend fun spawn(machineId: String, request: SpawnSessionRequest): SpawnResponse =
             throw UnsupportedOperationException()
@@ -103,6 +124,37 @@ class CodexImportControllerTest {
             resumeThrows?.let { throw it }
             return resumeResult
         }
+
+        override suspend fun archiveCodexSession(
+            sessionId: String,
+            machineId: String?,
+        ): CodexArchiveSessionResponse {
+            archiveCalls.add(sessionId to machineId)
+            archiveThrows?.let { throw it }
+            return archiveResult
+        }
+
+        override suspend fun getCodexDesktopStatus(): CodexDesktopStatusResponse {
+            statusCalls.add(1)
+            return statusResult
+        }
+
+        override suspend fun getCodexDuplicateSessions(payload: CodexDesktopSyncRequest): CodexDuplicateSessionsResponse {
+            duplicateCalls.add(payload)
+            duplicateThrows?.let { throw it }
+            return duplicateResult
+        }
+
+        override suspend fun mergeCodexDuplicateSessions(payload: CodexDesktopSyncRequest): CodexMergeDuplicateSessionsResponse {
+            mergeCalls.add(payload)
+            mergeThrows?.let { throw it }
+            return mergeResult
+        }
+
+        override suspend fun restartCodexDesktop(): CodexDesktopScriptResponse {
+            restartCalls.add(1)
+            return restartResult
+        }
     }
 
     private class RecordingStore(initial: Map<String, Long> = emptyMap()) : CodexImportedSessionsStore {
@@ -120,12 +172,14 @@ class CodexImportControllerTest {
         gateway: FakeGateway,
         store: CodexImportedSessionsStore = RecordingStore(),
         applied: MutableList<String> = mutableListOf(),
+        navigated: MutableList<String> = mutableListOf(),
     ): CodexImportController {
         val controller = CodexImportController(
             scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler)),
             gateway = gateway,
             store = store,
             applyDirectory = { applied.add(it) },
+            navigateToSession = { navigated.add(it) },
         )
         // Markers collector runs in the controller scope.
         advanceUntilIdle()
@@ -736,5 +790,392 @@ class CodexImportControllerTest {
 
         controller.clearSelection()
         assertEquals(emptySet(), controller.state.value.dialogSelection)
+    }
+
+    // --------------------------------------------- duplicate detection (B) --
+
+    @Test
+    fun `bulk import with duplicates arms the merge confirm state`() = runTest {
+        val groups = listOf(
+            CodexDuplicateSessionGroup(
+                codexSessionId = "a",
+                hapiSessionIds = listOf("h1", "h2"),
+                canonicalSessionId = "h1",
+                removedSessionIds = listOf("h2"),
+            ),
+        )
+        val gateway = FakeGateway().apply {
+            codexSessionsResult = CodexLocalSessionsResponse(
+                success = true,
+                sessions = listOf(session("a"), session("b")),
+            )
+            syncResult = CodexDesktopScriptResponse(success = true, hapiSessionIds = listOf("h1", "h2"))
+            duplicateResult = CodexDuplicateSessionsResponse(success = true, duplicates = groups)
+        }
+        val controller = buildController(gateway)
+        controller.openDialog("/repo", "m1")
+        advanceUntilIdle()
+        controller.toggleSession("a")
+        controller.toggleSession("b")
+
+        controller.confirm()
+        advanceUntilIdle()
+
+        val state = controller.state.value
+        assertFalse(state.open, "import succeeded and the dialog closed")
+        assertTrue(state.duplicateMergeConfirmOpen, "duplicates arm the confirm")
+        assertEquals(listOf("a", "b"), state.pendingDuplicateSessionIds, "pending batch == the imported batch")
+        assertEquals(listOf("h1", "h2"), state.pendingDuplicateHapiSessionIds)
+        assertEquals(groups, state.duplicateSessionGroups)
+        assertNull(state.duplicateDetectError)
+
+        val detection = gateway.duplicateCalls.single()
+        assertEquals(listOf("a", "b"), detection.sessionIds)
+        assertNull(detection.cwd, "detection payload carries only sessionIds")
+        assertNull(detection.machineId)
+    }
+
+    @Test
+    fun `bulk import without duplicates leaves the confirm closed`() = runTest {
+        val gateway = FakeGateway().apply {
+            codexSessionsResult = CodexLocalSessionsResponse(
+                success = true,
+                sessions = listOf(session("a"), session("b")),
+            )
+            syncResult = CodexDesktopScriptResponse(success = true, hapiSessionIds = listOf("h1"))
+        }
+        val controller = buildController(gateway)
+        controller.openDialog("/repo", "m1")
+        advanceUntilIdle()
+        controller.toggleSession("a")
+        controller.toggleSession("b")
+
+        controller.confirm()
+        advanceUntilIdle()
+
+        val state = controller.state.value
+        assertFalse(state.duplicateMergeConfirmOpen)
+        assertTrue(state.pendingDuplicateSessionIds.isEmpty())
+        assertTrue(state.duplicateSessionGroups.isEmpty())
+    }
+
+    @Test
+    fun `failed duplicate detection never disturbs the finished import`() = runTest {
+        val gateway = FakeGateway().apply {
+            codexSessionsResult = CodexLocalSessionsResponse(
+                success = true,
+                sessions = listOf(session("a"), session("b")),
+            )
+            syncResult = CodexDesktopScriptResponse(success = true, hapiSessionIds = listOf("h1"))
+            duplicateResult = CodexDuplicateSessionsResponse(success = false, error = "busy")
+        }
+        val store = RecordingStore()
+        val controller = buildController(gateway, store)
+        controller.openDialog("/repo", "m1")
+        advanceUntilIdle()
+        controller.toggleSession("a")
+        controller.toggleSession("b")
+
+        controller.confirm()
+        advanceUntilIdle()
+
+        val state = controller.state.value
+        assertFalse(state.open, "the import itself stands")
+        assertTrue(store.markers.value.containsKey("a"))
+        assertEquals("busy", state.duplicateDetectError, "soft failure is surfaced inline")
+        assertFalse(state.duplicateMergeConfirmOpen)
+
+        // Thrown detection errors surface the same way.
+        gateway.duplicateThrows = RuntimeException("probe exploded")
+        controller.bulkImport(listOf("a", "b"))
+        advanceUntilIdle()
+        assertEquals("probe exploded", controller.state.value.duplicateDetectError)
+        assertTrue(controller.state.value.pendingDuplicateSessionIds.isEmpty())
+    }
+
+    @Test
+    fun `pending duplicate state is flushed by the next bulk import`() = runTest {
+        val gateway = FakeGateway().apply {
+            codexSessionsResult = CodexLocalSessionsResponse(
+                success = true,
+                sessions = listOf(session("a"), session("b")),
+            )
+            syncResult = CodexDesktopScriptResponse(success = true, hapiSessionIds = listOf("h1"))
+            duplicateResult = CodexDuplicateSessionsResponse(
+                success = true,
+                duplicates = listOf(
+                    CodexDuplicateSessionGroup("a", hapiSessionIds = listOf("h1"), canonicalSessionId = "h1"),
+                ),
+            )
+        }
+        val controller = buildController(gateway)
+        controller.bulkImport(listOf("a"))
+        advanceUntilIdle()
+        assertTrue(controller.state.value.duplicateMergeConfirmOpen)
+
+        // Next import without duplicates flushes the stale pending state.
+        gateway.duplicateResult = CodexDuplicateSessionsResponse(success = true)
+        controller.bulkImport(listOf("b"))
+        advanceUntilIdle()
+
+        val state = controller.state.value
+        assertFalse(state.duplicateMergeConfirmOpen)
+        assertTrue(state.pendingDuplicateSessionIds.isEmpty())
+        assertTrue(state.duplicateSessionGroups.isEmpty())
+        assertEquals(
+            listOf("h1"),
+            state.pendingDuplicateHapiSessionIds,
+            "web keeps the newest import's hapi ids armed unconditionally",
+        )
+    }
+
+    // ---------------------------------------------------------- merge (B) --
+
+    @Test
+    fun `merge success clears the pending state and navigates to the canonical survivor`() = runTest {
+        val gateway = FakeGateway().apply {
+            syncResult = CodexDesktopScriptResponse(success = true, hapiSessionIds = listOf("h1", "h2"))
+            duplicateResult = CodexDuplicateSessionsResponse(
+                success = true,
+                duplicates = listOf(
+                    CodexDuplicateSessionGroup("a", hapiSessionIds = listOf("h1", "h2"), canonicalSessionId = "h1"),
+                ),
+            )
+            mergeResult = CodexMergeDuplicateSessionsResponse(
+                success = true,
+                merged = listOf(
+                    CodexDuplicateSessionGroup("a", hapiSessionIds = listOf("h1", "h2"), canonicalSessionId = "h9"),
+                ),
+                mergedCount = 1,
+            )
+        }
+        val navigated = mutableListOf<String>()
+        val controller = buildController(gateway, navigated = navigated)
+        controller.bulkImport(listOf("a"))
+        advanceUntilIdle()
+        assertTrue(controller.state.value.duplicateMergeConfirmOpen)
+
+        controller.mergeDuplicates()
+        advanceUntilIdle()
+
+        assertEquals(listOf("a"), gateway.mergeCalls.single().sessionIds, "merge re-sends the pending batch")
+        assertEquals(listOf("h9"), navigated, "navigates to the merge's canonical survivor")
+        val state = controller.state.value
+        assertFalse(state.duplicateMergeConfirmOpen)
+        assertTrue(state.pendingDuplicateSessionIds.isEmpty())
+        assertNull(state.duplicateMergeError)
+        assertFalse(state.mergingDuplicates)
+    }
+
+    @Test
+    fun `merge success falls back to the first imported hapi session`() = runTest {
+        val gateway = FakeGateway().apply {
+            syncResult = CodexDesktopScriptResponse(success = true, hapiSessionIds = listOf("h1", "h2"))
+            duplicateResult = CodexDuplicateSessionsResponse(
+                success = true,
+                duplicates = listOf(CodexDuplicateSessionGroup("a", hapiSessionIds = listOf("h1", "h2"))),
+            )
+            mergeResult = CodexMergeDuplicateSessionsResponse(success = true, mergedCount = 1)
+        }
+        val navigated = mutableListOf<String>()
+        val controller = buildController(gateway, navigated = navigated)
+        controller.bulkImport(listOf("a"))
+        advanceUntilIdle()
+
+        controller.mergeDuplicates()
+        advanceUntilIdle()
+
+        assertEquals(listOf("h1"), navigated)
+    }
+
+    @Test
+    fun `merge failure keeps the confirm dialog open and retryable`() = runTest {
+        val gateway = FakeGateway().apply {
+            syncResult = CodexDesktopScriptResponse(success = true, hapiSessionIds = listOf("h1"))
+            duplicateResult = CodexDuplicateSessionsResponse(
+                success = true,
+                duplicates = listOf(
+                    CodexDuplicateSessionGroup("a", hapiSessionIds = listOf("h1"), canonicalSessionId = "h1"),
+                ),
+            )
+            mergeResult = CodexMergeDuplicateSessionsResponse(success = false, error = "merge script died")
+        }
+        val navigated = mutableListOf<String>()
+        val controller = buildController(gateway, navigated = navigated)
+        controller.bulkImport(listOf("a"))
+        advanceUntilIdle()
+
+        controller.mergeDuplicates()
+        advanceUntilIdle()
+
+        val state = controller.state.value
+        assertTrue(state.duplicateMergeConfirmOpen, "failure leaves the dialog open (web rethrow)")
+        assertEquals("merge script died", state.duplicateMergeError)
+        assertTrue(navigated.isEmpty())
+
+        // Retry after fixing the backend: the pending batch is still armed.
+        gateway.mergeResult = CodexMergeDuplicateSessionsResponse(success = true, mergedCount = 1)
+        controller.mergeDuplicates()
+        advanceUntilIdle()
+        assertEquals(2, gateway.mergeCalls.size)
+        assertEquals(listOf("h1"), navigated)
+        assertFalse(controller.state.value.duplicateMergeConfirmOpen)
+    }
+
+    @Test
+    fun `close duplicate merge dialog clears every pending slot`() = runTest {
+        val gateway = FakeGateway().apply {
+            syncResult = CodexDesktopScriptResponse(success = true, hapiSessionIds = listOf("h1"))
+            duplicateResult = CodexDuplicateSessionsResponse(
+                success = true,
+                duplicates = listOf(
+                    CodexDuplicateSessionGroup("a", hapiSessionIds = listOf("h1"), canonicalSessionId = "h1"),
+                ),
+            )
+        }
+        val controller = buildController(gateway)
+        controller.bulkImport(listOf("a"))
+        advanceUntilIdle()
+        controller.mergeDuplicates()
+        advanceUntilIdle()
+
+        controller.closeDuplicateMergeDialog()
+        val state = controller.state.value
+        assertTrue(state.pendingDuplicateSessionIds.isEmpty())
+        assertTrue(state.pendingDuplicateHapiSessionIds.isEmpty())
+        assertTrue(state.duplicateSessionGroups.isEmpty())
+        assertNull(state.duplicateMergeError)
+    }
+
+    // -------------------------------------------------------- archive (B) --
+
+    @Test
+    fun `archive removes the row and the inline selection when it pointed there`() = runTest {
+        val gateway = FakeGateway().apply {
+            codexSessionsResult = CodexLocalSessionsResponse(
+                success = true,
+                sessions = listOf(session("a"), session("b")),
+                machineId = "m-echo",
+            )
+        }
+        val controller = buildController(gateway)
+        controller.openDialog("/repo", "m-form")
+        advanceUntilIdle()
+        controller.selectInline(session("a"))
+
+        controller.archive("a")
+        advanceUntilIdle()
+
+        assertEquals(listOf<Pair<String, String?>>("a" to "m-echo"), gateway.archiveCalls, "listing machine wins")
+        val state = controller.state.value
+        assertTrue(state.sessions.map { it.id }.containsAll(listOf("b")))
+        assertFalse(state.sessions.any { it.id == "a" }, "archived row is removed")
+        assertNull(state.selectedSessionId, "inline selection pointing at it is cleared")
+        assertNull(state.archiveError)
+    }
+
+    @Test
+    fun `archive keeps an unrelated inline selection`() = runTest {
+        val gateway = FakeGateway().apply {
+            codexSessionsResult = CodexLocalSessionsResponse(
+                success = true,
+                sessions = listOf(session("a"), session("b")),
+            )
+        }
+        val controller = buildController(gateway)
+        controller.openDialog("/repo", "m1")
+        advanceUntilIdle()
+        controller.selectInline(session("b"))
+
+        controller.archive("a")
+        advanceUntilIdle()
+
+        assertEquals("b", controller.state.value.selectedSessionId)
+    }
+
+    @Test
+    fun `archive failure lands in the dialog banner`() = runTest {
+        val gateway = FakeGateway().apply {
+            codexSessionsResult = CodexLocalSessionsResponse(
+                success = true,
+                sessions = listOf(session("a")),
+                machineId = null,
+            )
+            archiveResult = CodexArchiveSessionResponse(success = false, error = "file locked")
+        }
+        val controller = buildController(gateway)
+        controller.openDialog("/repo", "m-form")
+        advanceUntilIdle()
+
+        controller.archive("a")
+        advanceUntilIdle()
+
+        assertEquals(listOf<Pair<String, String?>>("a" to "m-form"), gateway.archiveCalls, "form machine as fallback")
+        assertEquals("file locked", controller.state.value.archiveError)
+        assertTrue(controller.state.value.sessions.any { it.id == "a" }, "row stays after a failed archive")
+
+        gateway.archiveResult = CodexArchiveSessionResponse(success = true)
+        gateway.archiveThrows = RuntimeException("socket reset")
+        controller.archive("a")
+        advanceUntilIdle()
+        assertEquals("socket reset", controller.state.value.archiveError)
+    }
+
+    // -------------------------------------------------------- restart (B) --
+
+    @Test
+    fun `restart with an unavailable client never calls restart-desktop`() = runTest {
+        val gateway = FakeGateway().apply {
+            statusResult = CodexDesktopStatusResponse(
+                success = true,
+                codexDesktopRunning = true,
+                codexClientAvailable = false,
+            )
+        }
+        val controller = buildController(gateway)
+
+        controller.restart()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.statusCalls.size)
+        assertEquals(0, gateway.restartCalls.size, "not-found short-circuits before the restart call")
+        val state = controller.state.value
+        assertEquals(
+            CodexImportStrings().clientNotFound,
+            state.restartError,
+            "not-found message, un-normalized probe failure",
+        )
+        assertFalse(state.restartStarted)
+        assertFalse(state.restartingDesktop)
+    }
+
+    @Test
+    fun `restart success sets the started notice`() = runTest {
+        val gateway = FakeGateway()
+        val controller = buildController(gateway)
+
+        controller.restart()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.statusCalls.size)
+        assertEquals(1, gateway.restartCalls.size)
+        val state = controller.state.value
+        assertTrue(state.restartStarted)
+        assertNull(state.restartError)
+        assertFalse(state.restartingDesktop)
+    }
+
+    @Test
+    fun `restart script failure is normalized into the error slot`() = runTest {
+        val gateway = FakeGateway().apply {
+            restartResult = CodexDesktopScriptResponse(success = false, error = "Command timed out")
+        }
+        val controller = buildController(gateway)
+
+        controller.restart()
+        advanceUntilIdle()
+
+        assertEquals("Operation timed out", controller.state.value.restartError)
+        assertFalse(controller.state.value.restartStarted)
     }
 }

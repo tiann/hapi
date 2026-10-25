@@ -7,10 +7,15 @@ import app.hapi.data.store.MachineListStore
 import app.hapi.protocol.catalog.AgentFlavor
 import app.hapi.protocol.wire.AgentAvailabilityEntry
 import app.hapi.protocol.wire.AgentAvailabilityResponse
+import app.hapi.protocol.wire.CodexArchiveSessionResponse
 import app.hapi.protocol.wire.CodexDesktopScriptResponse
+import app.hapi.protocol.wire.CodexDesktopStatusResponse
 import app.hapi.protocol.wire.CodexDesktopSyncRequest
+import app.hapi.protocol.wire.CodexDuplicateSessionGroup
+import app.hapi.protocol.wire.CodexDuplicateSessionsResponse
 import app.hapi.protocol.wire.CodexLocalSessionSummary
 import app.hapi.protocol.wire.CodexLocalSessionsResponse
+import app.hapi.protocol.wire.CodexMergeDuplicateSessionsResponse
 import app.hapi.protocol.wire.CodexModelSummary
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.GrokModelsResponse
@@ -74,6 +79,12 @@ private class FakeGateway : NewSessionGateway {
     var syncThrows: Exception? = null
     var resumeResult: ResumeSessionResponse = ResumeSessionResponse(sessionId = "s-resumed")
     var resumeThrows: Exception? = null
+    var archiveResult: CodexArchiveSessionResponse = CodexArchiveSessionResponse(success = true)
+    var statusResult: CodexDesktopStatusResponse =
+        CodexDesktopStatusResponse(success = true, codexClientAvailable = true)
+    var duplicateResult: CodexDuplicateSessionsResponse = CodexDuplicateSessionsResponse(success = true)
+    var mergeResult: CodexMergeDuplicateSessionsResponse =
+        CodexMergeDuplicateSessionsResponse(success = true)
     var availabilityResult = AgentAvailabilityResponse(
         AgentFlavor.CREATABLE.map { AgentAvailabilityEntry(agent = it.id, available = true) },
     )
@@ -143,6 +154,21 @@ private class FakeGateway : NewSessionGateway {
         resumeThrows?.let { throw it }
         return resumeResult
     }
+
+    override suspend fun archiveCodexSession(
+        sessionId: String,
+        machineId: String?,
+    ): CodexArchiveSessionResponse = archiveResult
+
+    override suspend fun getCodexDesktopStatus(): CodexDesktopStatusResponse = statusResult
+
+    override suspend fun getCodexDuplicateSessions(payload: CodexDesktopSyncRequest): CodexDuplicateSessionsResponse =
+        duplicateResult
+
+    override suspend fun mergeCodexDuplicateSessions(payload: CodexDesktopSyncRequest): CodexMergeDuplicateSessionsResponse =
+        mergeResult
+
+    override suspend fun restartCodexDesktop(): CodexDesktopScriptResponse = CodexDesktopScriptResponse(success = true)
 }
 
 private class FakeMachineStore(initial: List<Machine> = emptyList()) : MachineListStore {
@@ -1637,5 +1663,74 @@ class NewSessionViewModelTest {
         assertTrue(state.sessions.isEmpty())
         assertNull(state.machineId)
         assertNull(state.selectedSessionId)
+    }
+
+    // ------------------------------------------------- duplicate merge (B) --
+
+    @Test
+    fun `bulk import with duplicates emits the merge redirect via spawned`() = runTest {
+        val gateway = FakeGateway().apply {
+            codexSessionsResult = CodexLocalSessionsResponse(
+                success = true,
+                sessions = listOf(codexSession("thread-1"), codexSession("thread-2")),
+                machineId = "m1",
+            )
+            syncResult = CodexDesktopScriptResponse(
+                success = true,
+                syncedCount = 2,
+                sessionIds = listOf("thread-1", "thread-2"),
+                hapiSessionIds = listOf("h-1", "h-2"),
+            )
+            duplicateResult = CodexDuplicateSessionsResponse(
+                success = true,
+                duplicates = listOf(
+                    CodexDuplicateSessionGroup(
+                        codexSessionId = "thread-1",
+                        hapiSessionIds = listOf("h-1", "h-2"),
+                        canonicalSessionId = "h-1",
+                    ),
+                ),
+            )
+            mergeResult = CodexMergeDuplicateSessionsResponse(
+                success = true,
+                merged = listOf(
+                    CodexDuplicateSessionGroup(
+                        codexSessionId = "thread-1",
+                        hapiSessionIds = listOf("h-1", "h-2"),
+                        canonicalSessionId = "h-9",
+                    ),
+                ),
+                mergedCount = 1,
+            )
+        }
+        val vmScope = newVmScope()
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs(), scope = vmScope)
+        advanceUntilIdle()
+
+        val spawnedIds = mutableListOf<String>()
+        vmScope.launch { vm.spawned.collect(spawnedIds::add) }
+
+        vm.setAgent("codex")
+        vm.setDirectory("/repo")
+        vm.openCodexImportDialog()
+        advanceUntilIdle()
+
+        vm.codexImport.toggleSession("thread-1")
+        vm.codexImport.toggleSession("thread-2")
+        vm.codexImport.confirm()
+        advanceUntilIdle()
+
+        // Import closed the dialog; detection armed the confirm.
+        val state = vm.codexImport.state.value
+        assertFalse(state.open)
+        assertTrue(state.duplicateMergeConfirmOpen)
+        assertNull(state.duplicateDetectError)
+        assertNull(vm.uiState.value.codexImport.duplicateDetectError)
+
+        vm.mergeDuplicateCodexSessions()
+        advanceUntilIdle()
+
+        assertEquals(listOf("h-9"), spawnedIds, "merge redirect rides the spawned one-shot")
+        assertFalse(vm.codexImport.state.value.duplicateMergeConfirmOpen)
     }
 }
