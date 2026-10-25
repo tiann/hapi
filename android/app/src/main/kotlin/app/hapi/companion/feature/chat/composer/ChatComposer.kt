@@ -71,12 +71,13 @@ import app.hapi.protocol.wire.SlashCommand
 import kotlinx.coroutines.delay
 
 /**
- * The chat input card (B-M3a, extended in B-M3ce/B-M3f): attachments and the
+ * The chat input card (B-M3a, extended in B-M3ce/B-M3f/B-M16b): attachments and the
  * multiline text field grow above a fixed bottom action row. The trailing
  * primary action is stateful: Stop while a turn runs with an empty draft,
  * otherwise Send (long-press offers "Send & steer" during a turn). The card
- * also hosts dictation and attachment controls, while slash suggestions stay
- * outside so the popup cannot be clipped by the rounded surface.
+ * also hosts dictation, attachment and schedule-send controls, while slash /
+ * mention suggestions stay outside so the popup cannot be clipped by the
+ * rounded surface.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -97,6 +98,14 @@ fun ChatComposer(
     /** `@word` mention rows (B-M16a); rendered when the slash dropdown is empty. */
     mentionSuggestions: List<MentionSuggestion> = emptyList(),
     onMentionSelected: (MentionSuggestion) -> Unit = {},
+    /**
+     * Pending scheduled-send pick (B-M16b); non-null turns the clock button
+     * accent-filled, disables the attach button (web `hasSchedule`) and makes
+     * the next Send resolve `scheduledAt` at the send instant.
+     */
+    pendingSchedule: PendingSchedule? = null,
+    onScheduleSelected: (PendingSchedule) -> Unit = {},
+    onClearSchedule: () -> Unit = {},
     /** null ⇒ dictation unavailable (no controller wired) — mic button hidden. */
     dictation: DictationState? = null,
     onDictationToggle: () -> Unit = {},
@@ -106,6 +115,10 @@ fun ChatComposer(
     val keyboard = LocalSoftwareKeyboardController.current
     // Do not replay an old focus intent when returning from an inspector.
     var handledFocusRequest by remember { mutableLongStateOf(state.focusRequest) }
+    // Schedule panel toggle (B-M16b); opens fresh in the Relative tab each
+    // time because the picker composes only while open (web remounts too).
+    var schedulePickerOpen by remember { mutableStateOf(false) }
+    val hasSchedule = pendingSchedule != null
     LaunchedEffect(state.focusRequest) {
         if (state.focusRequest != handledFocusRequest) {
             handledFocusRequest = state.focusRequest
@@ -141,6 +154,16 @@ fun ChatComposer(
                 MentionDropdown(
                     suggestions = mentionSuggestions,
                     onSelect = onMentionSelected,
+                    modifier = Modifier.padding(bottom = 6.dp),
+                )
+            }
+            if (schedulePickerOpen) {
+                ScheduleTimePicker(
+                    pendingSchedule = pendingSchedule,
+                    onSchedule = {
+                        schedulePickerOpen = false
+                        onScheduleSelected(it)
+                    },
                     modifier = Modifier.padding(bottom = 6.dp),
                 )
             }
@@ -225,11 +248,43 @@ fun ChatComposer(
                             ComposerActionButton(
                                 contentDescription = stringResource(R.string.chat_composer_add_attachment),
                                 onClick = onAddAttachment,
+                                // web: attachments and a schedule are mutually
+                                // exclusive (`disabled={controlsDisabled || hasSchedule}`).
+                                enabled = !hasSchedule,
                             ) {
                                 Icon(PlusGlyph, contentDescription = null, modifier = Modifier.size(20.dp))
                             }
                         }
                         Spacer(modifier = Modifier.weight(1f))
+                        // Clock toggle (B-M16b, web ComposerButtons schedule
+                        // slot): with a pending pick the tap clears it; else it
+                        // toggles the picker. Disabled while sending or with
+                        // attachments on the tray (web `controlsDisabled ||
+                        // hasAttachments`); accent-filled while pending.
+                        ComposerActionButton(
+                            contentDescription = stringResource(R.string.chat_schedule_send),
+                            onClick = {
+                                if (hasSchedule) {
+                                    schedulePickerOpen = false
+                                    onClearSchedule()
+                                } else {
+                                    schedulePickerOpen = !schedulePickerOpen
+                                }
+                            },
+                            enabled = !state.isSending && attachments.isEmpty(),
+                            color = if (hasSchedule) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainerHigh
+                            },
+                            contentColor = if (hasSchedule) {
+                                MaterialTheme.colorScheme.onPrimary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        ) {
+                            Icon(ScheduleGlyph, contentDescription = null, modifier = Modifier.size(19.dp))
+                        }
                         if (dictation != null) {
                             MicButton(state = dictation, onToggle = onDictationToggle)
                         }
@@ -818,6 +873,27 @@ private fun MentionDropdownComposerPreview() {
                         insertText = "@docs/auth.md",
                     ),
                 ),
+            )
+        }
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun ScheduledComposerPreview() {
+    HapiTheme {
+        Surface {
+            ChatComposer(
+                state = ComposerUiState(
+                    text = "Wrap up the release notes and ping me",
+                    isSending = false,
+                    canSteer = false,
+                ),
+                onTextChange = {}, onSend = {}, onSendSteer = {}, onAbort = {},
+                pendingSchedule = PendingSchedule.Preset("+30m"),
+                onScheduleSelected = {},
+                onClearSchedule = {},
+                dictation = DictationState.Idle,
             )
         }
     }

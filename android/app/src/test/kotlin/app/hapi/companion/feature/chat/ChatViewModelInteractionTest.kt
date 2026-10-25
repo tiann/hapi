@@ -4,6 +4,7 @@ import app.hapi.companion.feature.chat.attachments.ComposerAttachmentStatus
 import app.hapi.companion.feature.chat.attachments.PreparedAttachment
 import app.hapi.companion.feature.chat.attachments.PrepareResult
 import app.hapi.companion.feature.chat.composer.ChatDrafts
+import app.hapi.companion.feature.chat.composer.PendingSchedule
 import app.hapi.companion.feature.share.PendingShare
 import app.hapi.companion.feature.share.SharedFile
 import app.hapi.companion.feature.share.SharedFileStatus
@@ -966,13 +967,19 @@ class ChatViewModelInteractionTest {
     // ---------------------------------------------------------- queued bar --
 
     /** Server-echoed queued row (id != localId, explicit `invokedAt: null`). */
-    private fun queuedServerRow(id: String, localId: String, text: String): DecryptedMessage =
+    private fun queuedServerRow(
+        id: String,
+        localId: String,
+        text: String,
+        scheduledAt: Long? = null,
+    ): DecryptedMessage =
         DecryptedMessage(
             id = id,
             seq = 7,
             localId = localId,
             createdAt = 500,
             invokedAt = OptionalField.Present(null),
+            scheduledAt = scheduledAt,
             content = buildJsonObject {
                 put("role", "user")
                 putJsonObject("content") {
@@ -1042,6 +1049,116 @@ class ChatViewModelInteractionTest {
         harness.viewModel.editQueuedMessage("srv-3")
         harness.viewModel.composer.first { it.text == "edit me" }
         assertEquals(listOf("srv-3"), harness.api.cancelCalls.value)
+    }
+
+    // ------------------------------------------------------ scheduled send --
+
+    @Test
+    fun `scheduled send resolves the preset at the send instant and clears the pick`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+
+        harness.viewModel.setComposerText("later please")
+        harness.viewModel.setPendingSchedule(PendingSchedule.Preset("+30m"))
+        assertEquals(PendingSchedule.Preset("+30m"), harness.viewModel.pendingSchedule.value)
+        harness.viewModel.sendMessage()
+
+        val (_, request) = harness.api.sendCalls.first { it.isNotEmpty() }.single()
+        // The now() fixture is 1_000 — a preset anchors to the Send tap.
+        assertEquals(1_801_000L, request.scheduledAt)
+        assertEquals("queue", request.deliveryMode)
+        assertNull(harness.viewModel.pendingSchedule.value)
+
+        val row = harness.window().state.first { state ->
+            state.messages.any { it.localId == "local-1" && it.status == MessageStatus.Sent }
+        }.messages.single()
+        assertEquals(1_801_000L, row.wire.scheduledAt)
+    }
+
+    @Test
+    fun `pending schedule downgrades a steer long-press to durable queue`() = runTest {
+        val harness = InteractionHarness(this, detail(thinking = true))
+        harness.viewModel.start()
+
+        harness.viewModel.setComposerText("steer later")
+        harness.viewModel.setPendingSchedule(PendingSchedule.Absolute(50_000))
+        harness.viewModel.sendMessage(steer = true)
+
+        val (_, request) = harness.api.sendCalls.first { it.isNotEmpty() }.single()
+        assertEquals(50_000L, request.scheduledAt)
+        // The wire forbids scheduledAt + steer; the web forces the send
+        // intent to 'default' while a schedule is pending.
+        assertEquals("queue", request.deliveryMode)
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `absolute pending pick auto-clears on the virtual clock and presets never do`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+
+        // now() fixture is 1_000 → this pick is 4_000 ms out.
+        harness.viewModel.setPendingSchedule(PendingSchedule.Absolute(5_000))
+        assertEquals(PendingSchedule.Absolute(5_000), harness.viewModel.pendingSchedule.value)
+        testScheduler.advanceTimeBy(3_999)
+        testScheduler.runCurrent()
+        assertEquals(PendingSchedule.Absolute(5_000), harness.viewModel.pendingSchedule.value)
+        testScheduler.advanceTimeBy(2)
+        testScheduler.runCurrent()
+        assertNull(harness.viewModel.pendingSchedule.value)
+
+        // Presets are send-relative; they never expire on a timer.
+        harness.viewModel.setPendingSchedule(PendingSchedule.Preset("+5m"))
+        testScheduler.advanceTimeBy(60_000_000)
+        testScheduler.runCurrent()
+        assertEquals(PendingSchedule.Preset("+5m"), harness.viewModel.pendingSchedule.value)
+    }
+
+    @Test
+    fun `within-grace past absolute pick clears immediately`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+
+        // 500 < now() = 1_000, but within the 30 s validation grace: the
+        // web's `remaining <= 0` branch clears it the moment it is picked.
+        harness.viewModel.setPendingSchedule(PendingSchedule.Absolute(500))
+        assertNull(harness.viewModel.pendingSchedule.value)
+    }
+
+    @Test
+    fun `edit of a scheduled queued row re-arms the pending schedule`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+        harness.window().ingestSseMessages(
+            listOf(
+                app.hapi.protocol.window.WindowMessage(
+                    queuedServerRow("srv-4", "l-4", "scheduled edit", scheduledAt = 99_999),
+                ),
+            ),
+        )
+        harness.viewModel.queuedRows.first { rows -> rows.any { it.id == "srv-4" } }
+
+        harness.viewModel.editQueuedMessage("srv-4")
+        harness.viewModel.composer.first { it.text == "scheduled edit" }
+        assertEquals(PendingSchedule.Absolute(99_999), harness.viewModel.pendingSchedule.value)
+        assertEquals(listOf("srv-4"), harness.api.cancelCalls.value)
+    }
+
+    @Test
+    fun `edit of an unscheduled row clears any pending pick`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+        harness.window().ingestSseMessages(
+            listOf(app.hapi.protocol.window.WindowMessage(queuedServerRow("srv-5", "l-5", "plain edit"))),
+        )
+        harness.viewModel.queuedRows.first { rows -> rows.any { it.id == "srv-5" } }
+        harness.viewModel.setPendingSchedule(PendingSchedule.Preset("+1h"))
+
+        // The web restores unconditionally (computeEditPendingSchedule(null)
+        // → null), so the re-send goes out immediately.
+        harness.viewModel.editQueuedMessage("srv-5")
+        harness.viewModel.composer.first { it.text == "plain edit" }
+        harness.viewModel.pendingSchedule.first { it == null }
     }
 
     // --------------------------------------------------------- permissions --

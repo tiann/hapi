@@ -121,6 +121,7 @@ internal fun ChatScreen(
     val jumpToken by viewModel.jumpToken.collectAsState()
     val jumpingLatest by viewModel.jumpingLatest.collectAsState()
     val composerState by viewModel.composer.collectAsState()
+    val pendingSchedule by viewModel.pendingSchedule.collectAsState()
     val codexPlanActions by viewModel.codexPlanActions.collectAsState()
     val queuedRows by viewModel.queuedRows.collectAsState()
     val configState by viewModel.config.collectAsState()
@@ -363,6 +364,9 @@ internal fun ChatScreen(
                         onSlashCommandSelected = viewModel::selectSlashCommand,
                         mentionSuggestions = mentionSuggestions,
                         onMentionSelected = viewModel::selectMentionSuggestion,
+                        pendingSchedule = pendingSchedule,
+                        onScheduleSelected = viewModel::setPendingSchedule,
+                        onClearSchedule = { viewModel.setPendingSchedule(null) },
                         dictation = if (dictationAvailable) dictationState else null,
                         onDictationToggle = onDictationToggle,
                         onDictationCancel = { dictation?.cancel() },
