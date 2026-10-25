@@ -69,7 +69,15 @@ export async function runAgentSession(opts: {
 
     const permissionAdapter = new PermissionAdapter(session, backend, () => currentPermissionMode);
 
+    // This path proxies the model through the stdio bridge spawned below, not
+    // this HTTP server directly, so `flavor` here is NOT what fixes this
+    // backend's display_* wording (that's the `--flavor` CLI arg a few lines
+    // down, read by happyMcpStdioBridge.ts). Kept for the HTTP server's own
+    // tools/list correctness in case anything connects to `happyServer.url`
+    // directly — do not assume removing the `--flavor` arg below is safe
+    // just because this option exists.
     const happyServer = await startHappyServer(session, {
+        flavor: opts.agentType,
         skillLookup: {
             workingDirectory,
             flavor: opts.agentType
@@ -82,6 +90,8 @@ export async function runAgentSession(opts: {
         happyServer.url,
         '--tools',
         happyServer.toolNames.join(','),
+        '--flavor',
+        opts.agentType,
         '--hapi-session-id',
         session.sessionId,
     ]);

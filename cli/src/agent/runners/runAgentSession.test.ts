@@ -159,6 +159,7 @@ describe('runAgentSession', () => {
         await running
 
         expect(harness.startHappyServerOptions).toEqual({
+            flavor: 'acp',
             skillLookup: {
                 workingDirectory: '/tmp/project',
                 flavor: 'acp'
@@ -170,6 +171,8 @@ describe('runAgentSession', () => {
             'http://127.0.0.1:1234',
             '--tools',
             'change_title,display_image,display_video,display_media,list_peers,ping_peer,inspect_peer,skill_lookup',
+            '--flavor',
+            'acp',
             '--hapi-session-id',
             'hub-session-acp-1',
         ])

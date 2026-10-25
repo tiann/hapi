@@ -152,7 +152,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     });
 
     // Start HAPI MCP server
-    const happyServer = await startHappyServer(session);
+    const happyServer = await startHappyServer(session, { flavor: 'claude' });
     logger.debug(`[START] HAPI MCP server started at ${happyServer.url}`);
 
     const formatFailureReason = (message: string): string => {

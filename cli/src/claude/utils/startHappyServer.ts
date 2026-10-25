@@ -19,7 +19,12 @@ import {
     registerGeneratedImage,
 } from "@/modules/common/generatedImages";
 import type { InlineMediaSource } from "@/modules/common/inlineMediaSource";
-import { DISPLAY_IMAGE_PROMPT_CURSOR, DISPLAY_MEDIA_PROMPT_CURSOR, DISPLAY_VIDEO_PROMPT_CURSOR } from "@/modules/common/displayImagePrompt";
+import {
+    DISPLAY_IMAGE_PROMPT_VARIANTS,
+    DISPLAY_MEDIA_PROMPT_VARIANTS,
+    DISPLAY_VIDEO_PROMPT_VARIANTS,
+    resolveDisplayToolPrompt,
+} from "@/modules/common/displayImagePrompt";
 import { resolveSkill } from "@/modules/common/skills";
 import {
     INSPECT_PEER_TOOL_DESCRIPTION,
@@ -37,11 +42,20 @@ type StartHappyServerOptions = {
      */
     emitTitleSummary?: boolean;
     enableChangeTitle?: boolean;
+    /**
+     * Agent flavor calling this bridge (e.g. 'claude', 'codex', 'cursor').
+     * Selects which display_image/display_video/display_media hint text is
+     * baked into each tool's own `description` — distinct from `skillLookup`,
+     * which only gates the `skill_lookup` tool. Omit for flavors with no
+     * dedicated variant; falls back to the generic hapi-mcp-bridge wording.
+     */
+    flavor?: string;
     skillLookup?: {
         workingDirectory: string;
         flavor: string;
     };
 };
+
 
 /** Registered on the MCP server, but never pre-approved via Claude --allowedTools. */
 const CLAUDE_MANUAL_APPROVAL_HAPI_TOOLS = new Set([
@@ -67,7 +81,8 @@ function createHapiMcpServer(
     client: ApiSessionClient,
     emitTitleSummary: boolean,
     enableChangeTitle: boolean,
-    skillLookup: StartHappyServerOptions['skillLookup']
+    skillLookup: StartHappyServerOptions['skillLookup'],
+    flavor: StartHappyServerOptions['flavor']
 ): McpServer {
     const handler = async (title: string) => {
         logger.debug('[hapiMCP] Changing title to:', title);
@@ -208,7 +223,7 @@ function createHapiMcpServer(
     }
 
     mcp.registerTool<any, any>('display_image', {
-        description: `Display a local image file to the human user inline in the current HAPI chat session. ${DISPLAY_IMAGE_PROMPT_CURSOR}`,
+        description: `Display a local image file to the human user inline in the current HAPI chat session. ${resolveDisplayToolPrompt(flavor, DISPLAY_IMAGE_PROMPT_VARIANTS)}`,
         title: 'Display Image',
         inputSchema: displayImageInputSchema,
     }, async (args: { path: string; title?: string }) => {
@@ -242,7 +257,7 @@ function createHapiMcpServer(
     });
 
     mcp.registerTool<any, any>('display_video', {
-        description: `Display a local mp4 or webm file inline in the current HAPI chat session. ${DISPLAY_VIDEO_PROMPT_CURSOR}`,
+        description: `Display a local mp4 or webm file inline in the current HAPI chat session. ${resolveDisplayToolPrompt(flavor, DISPLAY_VIDEO_PROMPT_VARIANTS)}`,
         title: 'Display Video',
         inputSchema: displayVideoInputSchema,
     }, async (args: { path: string; title?: string }) => {
@@ -276,7 +291,7 @@ function createHapiMcpServer(
     });
 
     mcp.registerTool<any, any>('display_media', {
-        description: `Send a local image, video, audio, or other file to the current HAPI chat session. Recognized media is shown inline; other files use a download card. ${DISPLAY_MEDIA_PROMPT_CURSOR}`,
+        description: `Send a local image, video, audio, or other file to the current HAPI chat session. Recognized media is shown inline; other files use a download card. ${resolveDisplayToolPrompt(flavor, DISPLAY_MEDIA_PROMPT_VARIANTS)}`,
         title: 'Display Media',
         inputSchema: displayMediaInputSchema,
     }, async (args: { path: string; title?: string }) => {
@@ -486,7 +501,7 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
     const mcps = new Map<string, McpServer>();
 
     const createMcpTransport = () => {
-        const mcp = createHapiMcpServer(client, emitTitleSummary, enableChangeTitle, options.skillLookup);
+        const mcp = createHapiMcpServer(client, emitTitleSummary, enableChangeTitle, options.skillLookup, options.flavor);
         const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (sessionId) => {

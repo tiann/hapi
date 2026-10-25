@@ -64,6 +64,7 @@ describe('buildHapiMcpBridge skill lookup config', () => {
 
         expect(harness.startOptions).toEqual({
             emitTitleSummary: undefined,
+            flavor: 'opencode',
             skillLookup
         })
         expect(harness.cliArgs).toEqual([
@@ -72,6 +73,8 @@ describe('buildHapiMcpBridge skill lookup config', () => {
             'http://127.0.0.1:43006/',
             '--tools',
             'change_title,display_image,display_video,display_media,list_peers,ping_peer,inspect_peer,skill_lookup',
+            '--flavor',
+            'opencode',
             '--hapi-session-id',
             'hub-session-1',
         ])
@@ -94,6 +97,8 @@ describe('buildHapiMcpBridge skill lookup config', () => {
             'http://127.0.0.1:43006/',
             '--tools',
             'change_title,display_image,display_video,display_media,list_peers,ping_peer,inspect_peer',
+            '--flavor',
+            'codex',
             '--hapi-session-id',
             'hub-session-1',
         ])

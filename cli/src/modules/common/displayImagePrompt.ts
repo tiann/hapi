@@ -55,3 +55,53 @@ export const DISPLAY_MEDIA_PROMPT_HAPI_MCP = trimIdent(`
 export const DISPLAY_MEDIA_PROMPT_CURSOR = trimIdent(`
     When you create or find a local audio file or other non-image file that the user should receive, call the tool "display_media" with the absolute filesystem path so HAPI can show a player or download card.
 `);
+
+/**
+ * Pick the flavor-correct display_image/video/media hint text for a tool's
+ * own MCP `description`. Each flavor calls these tools by a different name
+ * (`mcp__hapi__x` for Claude, `functions.hapi__x` for Codex, bare `x` for
+ * Cursor's native MCP overlay) — using the wrong variant tells the model to
+ * call a tool name that does not exist for its flavor. Shared by every place
+ * that registers these tools: the direct HTTP server (startHappyServer.ts,
+ * reached by Claude) and the stdio proxy (happyMcpStdioBridge.ts, reached by
+ * every other flavor via `hapi mcp --flavor <flavor>`).
+ */
+export type DisplayToolPromptVariants = { claude: string; codex: string; cursor: string; hapiMcp: string };
+
+/** One shared table per tool so the four-variant mapping is defined once, not re-typed at every call site. */
+export const DISPLAY_IMAGE_PROMPT_VARIANTS: DisplayToolPromptVariants = {
+    claude: DISPLAY_IMAGE_PROMPT_CLAUDE,
+    codex: DISPLAY_IMAGE_PROMPT_CODEX,
+    cursor: DISPLAY_IMAGE_PROMPT_CURSOR,
+    hapiMcp: DISPLAY_IMAGE_PROMPT_HAPI_MCP,
+};
+
+export const DISPLAY_VIDEO_PROMPT_VARIANTS: DisplayToolPromptVariants = {
+    claude: DISPLAY_VIDEO_PROMPT_CLAUDE,
+    codex: DISPLAY_VIDEO_PROMPT_CODEX,
+    cursor: DISPLAY_VIDEO_PROMPT_CURSOR,
+    hapiMcp: DISPLAY_VIDEO_PROMPT_HAPI_MCP,
+};
+
+export const DISPLAY_MEDIA_PROMPT_VARIANTS: DisplayToolPromptVariants = {
+    claude: DISPLAY_MEDIA_PROMPT_CLAUDE,
+    codex: DISPLAY_MEDIA_PROMPT_CODEX,
+    cursor: DISPLAY_MEDIA_PROMPT_CURSOR,
+    hapiMcp: DISPLAY_MEDIA_PROMPT_HAPI_MCP,
+};
+
+export function resolveDisplayToolPrompt(
+    flavor: string | undefined,
+    variants: DisplayToolPromptVariants
+): string {
+    switch (flavor) {
+        case 'claude':
+            return variants.claude;
+        case 'codex':
+            return variants.codex;
+        case 'cursor':
+            return variants.cursor;
+        default:
+            return variants.hapiMcp;
+    }
+}

@@ -65,6 +65,46 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
         expect(description).toContain('cannot be used to read, inspect, or analyze image contents')
     })
 
+    it('picks the flavor-correct display_image hint text via --flavor', async () => {
+        await runHappyMcpStdioBridge([
+            '--url',
+            'http://127.0.0.1:43006',
+            '--tools',
+            'display_image',
+            '--flavor',
+            'codex'
+        ])
+
+        const description = harness.configs.get('display_image')?.description
+        expect(description).toContain('functions.hapi__display_image')
+        expect(description).not.toContain('"display_image"')
+    })
+
+    it('accepts --flavor=value form', async () => {
+        await runHappyMcpStdioBridge([
+            '--url',
+            'http://127.0.0.1:43006',
+            '--tools',
+            'display_image',
+            '--flavor=codex'
+        ])
+
+        const description = harness.configs.get('display_image')?.description
+        expect(description).toContain('functions.hapi__display_image')
+    })
+
+    it('defaults to the generic hapi-mcp hint text when --flavor is omitted', async () => {
+        await runHappyMcpStdioBridge([
+            '--url',
+            'http://127.0.0.1:43006',
+            '--tools',
+            'display_image'
+        ])
+
+        const description = harness.configs.get('display_image')?.description
+        expect(description).toContain('"hapi_display_image"')
+    })
+
     it('registers and forwards skill_lookup when the HTTP server enables it', async () => {
         await runHappyMcpStdioBridge([
             '--url',

@@ -79,9 +79,24 @@ export async function buildHapiMcpBridge(
     // Belt-and-suspenders: onMaterialized already exports; keep env set for non-lazy too.
     if (options.exportSessionEnv !== false) exportHapiSessionEnv(client.sessionId);
 
+    // This bridge is shared by every non-Codex-"local"/"shared" launcher too
+    // (Cursor ACP, Copilot, Grok, Kimi, OpenCode) — each already threads its
+    // real flavor through `skillLookup.flavor`. Only fall back to 'codex'
+    // for the two Codex call sites that pass no skillLookup at all
+    // (codexLocalLauncher.ts, codexRemoteLauncher.ts's app-server path).
+    const flavor = options.skillLookup?.flavor ?? 'codex';
+    // Every caller of this function proxies the model through the stdio bridge
+    // spawned below, not this HTTP server directly, so `flavor` here is NOT
+    // what fixes those callers' display_* wording (that's the `--flavor` CLI
+    // arg a few lines down, read by happyMcpStdioBridge.ts). This keeps the
+    // HTTP server's own tools/list internally correct for `flavor` too, in
+    // case anything ever connects to `happyServer.url` directly — do not
+    // assume removing the `--flavor` arg below is safe just because this
+    // option exists.
     const happyServer = await startHappyServer(client, {
         emitTitleSummary: options.emitTitleSummary,
         enableChangeTitle: options.enableChangeTitle,
+        flavor,
         skillLookup: options.skillLookup
     });
     // Stamp the hub row id so orphanReap can find MCP helpers after the agent
@@ -92,6 +107,8 @@ export async function buildHapiMcpBridge(
         happyServer.url,
         '--tools',
         happyServer.toolNames.join(','),
+        '--flavor',
+        flavor,
         '--hapi-session-id',
         client.sessionId,
     ]);
