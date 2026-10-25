@@ -91,6 +91,9 @@ fun ChatComposer(
     onAttachmentRemove: (String) -> Unit = {},
     slashSuggestions: List<SlashCommand> = emptyList(),
     onSlashCommandSelected: (SlashCommand) -> Unit = {},
+    /** `@word` mention rows (B-M16a); rendered when the slash dropdown is empty. */
+    mentionSuggestions: List<MentionSuggestion> = emptyList(),
+    onMentionSelected: (MentionSuggestion) -> Unit = {},
     /** null ⇒ dictation unavailable (no controller wired) — mic button hidden. */
     dictation: DictationState? = null,
     onDictationToggle: () -> Unit = {},
@@ -113,6 +116,12 @@ fun ChatComposer(
                 SlashCommandDropdown(
                     suggestions = slashSuggestions,
                     onSelect = onSlashCommandSelected,
+                    modifier = Modifier.padding(bottom = 6.dp),
+                )
+            } else if (mentionSuggestions.isNotEmpty()) {
+                MentionDropdown(
+                    suggestions = mentionSuggestions,
+                    onSelect = onMentionSelected,
                     modifier = Modifier.padding(bottom = 6.dp),
                 )
             }
@@ -401,6 +410,57 @@ private fun SlashCommandDropdown(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHighest)
+            }
+        }
+    }
+}
+
+// -------------------------------------------------------- mention dropdown --
+
+/**
+ * `@` mention rows above the input (B-M16a, web `Autocomplete.tsx` twin):
+ * session chips (`@<title>` + `Session · <id8> [· active]`) ahead of file hits
+ * (`@<fileName>` + path); tap swaps the active word for the insert text.
+ */
+@Composable
+private fun MentionDropdown(
+    suggestions: List<MentionSuggestion>,
+    onSelect: (MentionSuggestion) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val mentionSuggestionsDescription = stringResource(R.string.chat_mention_suggestions)
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        shape = RoundedCornerShape(12.dp),
+        tonalElevation = 2.dp,
+        modifier = modifier
+            .fillMaxWidth()
+            .semantics { contentDescription = mentionSuggestionsDescription },
+    ) {
+        LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
+            items(suggestions, key = { it.key }) { suggestion ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .combinedClickable(onClick = { onSelect(suggestion) })
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                ) {
+                    Text(
+                        text = suggestion.label,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = suggestion.description,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.hapi.hint,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHighest)
             }
@@ -705,6 +765,36 @@ private fun SlashDropdownComposerPreview() {
                         source = "builtin",
                     ),
                     SlashCommand(name = "code-review", description = null, source = "project"),
+                ),
+            )
+        }
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun MentionDropdownComposerPreview() {
+    HapiTheme {
+        Surface {
+            ChatComposer(
+                state = ComposerUiState(text = "@ref", isSending = false, canSteer = false),
+                onTextChange = {}, onSend = {}, onSendSteer = {}, onAbort = {},
+                dictation = DictationState.Idle,
+                mentionSuggestions = listOf(
+                    MentionSuggestion.SessionMention(
+                        id = "3f9d2c1b8e7a4d60",
+                        title = "Refactor auth flow",
+                        key = "session:3f9d2c1b8e7a4d60",
+                        label = "@Refactor auth flow",
+                        description = "Session · 3f9d2c1b",
+                        insertText = "See session \"Refactor auth flow\" (/sessions/3f9d2c1b8e7a4d60) for context.",
+                    ),
+                    MentionSuggestion.FileMention(
+                        key = "@docs/auth.md",
+                        label = "@auth.md",
+                        description = "docs/auth.md",
+                        insertText = "@docs/auth.md",
+                    ),
                 ),
             )
         }

@@ -9,6 +9,8 @@ import app.hapi.companion.feature.share.SharedFile
 import app.hapi.companion.feature.share.SharedFileStatus
 import app.hapi.companion.feature.chat.blocks.planProposalMarkdown
 import app.hapi.companion.feature.chat.composer.ChatDrafts
+import app.hapi.companion.feature.chat.composer.MentionSuggestion
+import app.hapi.companion.feature.chat.composer.Mentions
 import app.hapi.companion.feature.chat.composer.SlashCommands
 import app.hapi.companion.feature.chat.composer.appendTranscript
 import app.hapi.companion.ui.markdown.MarkdownRenderCache
@@ -86,6 +88,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
@@ -316,6 +319,14 @@ sealed interface PermissionAction {
  *   store-optimistic rename, delete (409-aware) with [ChatEvent.SessionDeleted],
  *   reopen reusing the supersede path (window seed + draft move +
  *   [ChatEvent.SessionSuperseded]) and [formatReopenError] for 422s.
+ *
+ * B-M16a adds:
+ * - **Composer mentions** ([mentionSuggestions]/[selectMentionSuggestion]): an
+ *   active `@word` at the composer tail opens the mention dropdown. Sources:
+ *   cached session rows (`matchSessionsForMention` — content gate, scored,
+ *   self-excluded) merged ahead of `GET /files` hits (codex/copilot only,
+ *   limit 50, silent on failure); selection swaps the whole word for the
+ *   suggestion's insert text (Copy-reference prose / flavor `@path` form).
  *
  * M2 core (unchanged): owns the session-scope SSE subscription while
  * [start]ed (dual-subscription model: `HubGraph` owns the global pipe) and
@@ -563,6 +574,52 @@ class ChatViewModel(
         val fetched = (fetch as? SlashFetch.Loaded)?.commands
         SlashCommands.filter(SlashCommands.merge(detail?.metadata?.slashCommands, fetched), query)
     }.stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    /**
+     * Mention dropdown rows (B-M16a): non-empty only while the composer tail
+     * is an active `@word` (web `findActiveWord` rules — see [Mentions]).
+     * Sources merge like the web (`[...sessionHits, ...fileHits]`):
+     * - Sessions from the cached list (`matchSessionsForMention`: content
+     *   filter + score, current session excluded, limit 20) — pure client.
+     * - Files via `GET /api/sessions/:id/files` (limit 50) — codex/copilot
+     *   flavors only; RPC failure is silently an empty file leg (web parity).
+     * Each query change restarts the file leg (flatMapLatest = the web's
+     * generation guard against stale results).
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val mentionSuggestions: StateFlow<List<MentionSuggestion>> = composerText
+        .map { Mentions.mentionQueryOf(it) }
+        .distinctUntilChanged()
+        .flatMapLatest { query ->
+            if (query == null) {
+                flowOf(emptyList())
+            } else {
+                val sessionFlow = sessionStore.sessions
+                    .map { sessions -> Mentions.sessionSuggestions(sessions, query, excludeId = sessionId) }
+                val fileFlow = sessionStore.sessionDetail(sessionId)
+                    .map { detail -> detail?.metadata?.flavor }
+                    .distinctUntilChanged()
+                    .flatMapLatest { flavor ->
+                        if (flavor == null || flavor !in Mentions.FILE_MENTION_FLAVORS) {
+                            flowOf(emptyList())
+                        } else {
+                            flow {
+                                val files = try {
+                                    val response = api.searchSessionFiles(sessionId, query, Mentions.FILE_SEARCH_LIMIT)
+                                    if (response.success) response.files.orEmpty() else emptyList()
+                                } catch (cancellation: CancellationException) {
+                                    throw cancellation
+                                } catch (_: Exception) {
+                                    emptyList()
+                                }
+                                emit(files.map { Mentions.fileSuggestion(flavor, it) })
+                            }
+                        }
+                    }
+                combine(sessionFlow, fileFlow) { sessionHits, fileHits -> sessionHits + fileHits }
+            }
+        }
+        .stateIn(scope, SharingStarted.Eagerly, emptyList())
 
     /**
      * Entry count for the top-bar scratchlist badge (B-M4d); stays 0 without
@@ -957,6 +1014,17 @@ class ChatViewModel(
     /** Dropdown tap: replace the slash token with `/name ` ready for arguments. */
     fun selectSlashCommand(command: SlashCommand) {
         setComposerText("/${command.name} ")
+    }
+
+    /**
+     * Mention dropdown tap: replace the active `@word` with the suggestion's
+     * insert text (web `applySuggestion` — whole-word swap + trailing space,
+     * evaluated at the composer tail). Replacing the word closes the menu.
+     */
+    fun selectMentionSuggestion(suggestion: MentionSuggestion) {
+        val text = composerText.value
+        val edit = Mentions.applySuggestion(text, text.length, text.length, suggestion.insertText)
+        setComposerText(edit.text)
     }
 
     /**

@@ -37,6 +37,8 @@ import app.hapi.protocol.chat.normalizeDecryptedMessage
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.DecryptedMessage
 import app.hapi.protocol.wire.DeleteUploadResponse
+import app.hapi.protocol.wire.FileSearchItem
+import app.hapi.protocol.wire.FileSearchResponse
 import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.MessagesPage
@@ -51,6 +53,7 @@ import app.hapi.protocol.wire.Session
 import app.hapi.protocol.wire.SessionMetadata
 import app.hapi.protocol.wire.SessionCapabilities
 import app.hapi.protocol.wire.SessionSummary
+import app.hapi.protocol.wire.SessionSummaryMetadata
 import app.hapi.protocol.wire.SlashCommand
 import app.hapi.protocol.wire.SlashCommandsResponse
 import app.hapi.protocol.wire.SteerQueuedMessageResponse
@@ -278,6 +281,15 @@ private class RecordingChatApi : ChatSessionApi {
     override suspend fun getSlashCommands(sessionId: String): SlashCommandsResponse {
         slashCommandsCalls.value += 1
         return slashCommandsResult
+    }
+
+    var fileSearchResult: FileSearchResponse = FileSearchResponse(success = false, error = "not scripted")
+    var fileSearchFailure: Exception? = null
+    val fileSearchCalls = MutableStateFlow<List<Triple<String, String, Int?>>>(emptyList())
+    override suspend fun searchSessionFiles(sessionId: String, query: String, limit: Int?): FileSearchResponse {
+        fileSearchCalls.value = fileSearchCalls.value + Triple(sessionId, query, limit)
+        fileSearchFailure?.let { throw it }
+        return fileSearchResult
     }
 
     var uploadResult: UploadFileResponse = UploadFileResponse(success = true, path = "/uploads/ok")
@@ -1482,6 +1494,116 @@ class ChatViewModelInteractionTest {
         harness.viewModel.setComposerText("/")
         val suggestions = harness.viewModel.slashSuggestions.first { it.isNotEmpty() }
         assertEquals(listOf("deploy"), suggestions.map { it.name })
+    }
+
+    // ------------------------------------------------------------- mentions --
+
+    private fun peerSummary(
+        id: String,
+        name: String? = "Peer chat",
+        hasContent: Boolean = true,
+    ): SessionSummary = SessionSummary(
+        id = id,
+        active = false,
+        updatedAt = 200,
+        hasConversationContent = hasContent,
+        metadata = name?.let {
+            SessionSummaryMetadata(path = "/work/peer", name = it)
+        },
+    )
+
+    @Test
+    fun `at-query merges session rows ahead of file hits and searches files once`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "codex"))
+        harness.sessionStore.summaries.value = listOf(
+            peerSummary("sess-peer-01"),
+            // Current session and empty stubs are never mentionable.
+            peerSummary(IX_SESSION, name = "this chat"),
+            peerSummary("sess-husk", name = "Husk", hasContent = false),
+        )
+        harness.api.fileSearchResult = FileSearchResponse(
+            success = true,
+            files = listOf(
+                FileSearchItem(fileName = "notes.md", filePath = "docs", fullPath = "docs/notes.md", fileType = "file"),
+            ),
+        )
+        harness.viewModel.start()
+
+        harness.viewModel.setComposerText("check @peer")
+        val suggestions = harness.viewModel.mentionSuggestions.first { it.size == 2 }
+
+        // Sessions first (web `[...sessionHits, ...fileHits]`), husk/current excluded.
+        assertEquals("session:sess-peer-01", suggestions[0].key)
+        assertEquals("@Peer chat", suggestions[0].label)
+        assertEquals("@\"docs/notes.md\"", suggestions[1].key)
+        assertEquals("@notes.md", suggestions[1].label)
+        assertEquals(listOf(Triple(IX_SESSION, "peer", 50)), harness.api.fileSearchCalls.value)
+
+        // Retyping the query refires the file RPC once per distinct query.
+        harness.viewModel.setComposerText("check @Peer")
+        harness.api.fileSearchCalls.first { it.size == 2 }
+        assertEquals(
+            listOf(Triple(IX_SESSION, "peer", 50), Triple(IX_SESSION, "Peer", 50)),
+            harness.api.fileSearchCalls.value,
+        )
+        harness.viewModel.mentionSuggestions.first { rows -> rows.size == 2 && rows[0].label == "@Peer chat" }
+    }
+
+    @Test
+    fun `file mentions fire only for codex and copilot flavors`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "claude"))
+        harness.sessionStore.summaries.value = listOf(peerSummary("sess-peer-01"))
+        harness.viewModel.start()
+
+        harness.viewModel.setComposerText("@peer")
+        val suggestions = harness.viewModel.mentionSuggestions.first { it.isNotEmpty() }
+
+        assertEquals(listOf("session:sess-peer-01"), suggestions.map { it.key })
+        testScheduler.advanceUntilIdle()
+        assertEquals(emptyList(), harness.api.fileSearchCalls.value)
+    }
+
+    @Test
+    fun `file RPC failure degrades silently to session-only rows`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "copilot"))
+        harness.sessionStore.summaries.value = listOf(peerSummary("sess-peer-01"))
+        harness.api.fileSearchFailure = RuntimeException("hub says no")
+        harness.viewModel.start()
+
+        harness.viewModel.setComposerText("@peer")
+        val suggestions = harness.viewModel.mentionSuggestions.first { it.isNotEmpty() }
+
+        assertEquals(listOf("session:sess-peer-01"), suggestions.map { it.key })
+        assertEquals(listOf(Triple(IX_SESSION, "peer", 50)), harness.api.fileSearchCalls.value)
+    }
+
+    @Test
+    fun `selecting a mention replaces the word and closes the dropdown`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "claude"))
+        harness.sessionStore.summaries.value = listOf(peerSummary("sess-peer-01"))
+        harness.viewModel.start()
+
+        harness.viewModel.setComposerText("check @peer")
+        val row = harness.viewModel.mentionSuggestions.first { it.isNotEmpty() }.single()
+
+        harness.viewModel.selectMentionSuggestion(row)
+
+        val expected = "check " + row.insertText + " "
+        harness.viewModel.composer.first { it.text == expected }
+        harness.viewModel.mentionSuggestions.first { it.isEmpty() }
+    }
+
+    @Test
+    fun `mid-word prefix never queries or fires the file RPC`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "codex"))
+        harness.sessionStore.summaries.value = listOf(peerSummary("sess-peer-01"))
+        harness.viewModel.start()
+
+        harness.viewModel.setComposerText("foo@peer")
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(emptyList(), harness.viewModel.mentionSuggestions.value)
+        assertEquals(emptyList(), harness.api.fileSearchCalls.value)
     }
 
     // ------------------------------------------------------------ dictation --
