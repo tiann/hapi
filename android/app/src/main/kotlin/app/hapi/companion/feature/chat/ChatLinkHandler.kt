@@ -68,7 +68,7 @@ fun rememberChatLinkHandler(
     }
 }
 
-private fun Context.openUrl(url: String) {
+internal fun Context.openUrl(url: String) {
     try {
         startActivity(Intent(Intent.ACTION_VIEW, url.toUri()))
     } catch (_: ActivityNotFoundException) {

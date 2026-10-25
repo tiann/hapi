@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { INCLUSIVE_INPUT_TOKEN_USAGE_MARKER, type InclusiveInputTokenUsageMarker } from '@hapi/protocol/usage';
+import { isDisplayLinksToolName, redactDisplayLinksToolInput } from '@hapi/protocol';
 import type { AgentMessage, PlanItem } from './types';
 import type { InlineMediaSource } from '@/modules/common/inlineMediaSource';
 
@@ -102,7 +103,9 @@ export function convertAgentMessage(message: AgentMessage, model?: string | null
                 type: 'tool-call',
                 name: message.name,
                 callId: message.id,
-                input: message.input,
+                input: isDisplayLinksToolName(message.name)
+                    ? redactDisplayLinksToolInput(message.input)
+                    : message.input,
                 status: message.status,
                 ...(message.title ? { nativeTitle: message.title } : {}),
                 ...(message.kind ? { nativeKind: message.kind } : {}),

@@ -159,6 +159,7 @@ describe('runAgentSession', () => {
         await running
 
         expect(harness.startHappyServerOptions).toEqual({
+            enableDisplayLinks: false,
             skillLookup: {
                 workingDirectory: '/tmp/project',
                 flavor: 'acp'
