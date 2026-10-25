@@ -151,7 +151,17 @@ data class NewSessionUiState(
     val confirmCreateDirectory: Boolean,
     /** Codex-history inline section (slice A); renders only for agent codex. */
     val codexImport: CodexImportSectionUi = CodexImportSectionUi(),
-    /** Web `isFormDisabled`: spawning or any codex-import activity locks the form. */
+    /** Pi-history inline section (slice C); renders only for agent pi. */
+    val piImport: PiImportSectionUi = PiImportSectionUi(),
+    /**
+     * Web `showPiLaunchConfig` (`agent !== 'pi' || !selectedPiImportSession`):
+     * launch-only model/effort controls hide while a Pi history is selected —
+     * the import reopens the native session as-is and they would silently not
+     * apply. Android's pi pickers are still TODO in this lineage, so today
+     * this flag only anticipates them (it is exposed for parity + tests).
+     */
+    val showPiLaunchConfig: Boolean = true,
+    /** Web `isFormDisabled`: spawning or any codex/pi-import activity locks the form. */
     val formLocked: Boolean = false,
 )
 
@@ -168,6 +178,16 @@ data class CodexImportSectionUi(
      * (web toasts `duplicates.detect.failed.*`; inline here — divergence).
      */
     val duplicateDetectError: String? = null,
+)
+
+/** What the pi-history inline section renders (web `PiImportActions`). */
+data class PiImportSectionUi(
+    /** Selected session's title; null shows the description instead. */
+    val selectedTitle: String? = null,
+    val loading: Boolean = false,
+    val error: String? = null,
+    /** Bulk import or import-at-create in flight. */
+    val busy: Boolean = false,
 )
 
 /**
@@ -197,6 +217,7 @@ class NewSessionViewModel(
     private val strings: NewSessionStrings = NewSessionStrings(),
     private val codexImportStore: CodexImportedSessionsStore = MemoryCodexImportedSessionsStore(),
     private val codexStrings: CodexImportStrings = CodexImportStrings(),
+    private val piStrings: PiImportStrings = PiImportStrings(),
 ) {
     private val form = MutableStateFlow(NewSessionForm())
     private val prefsData = MutableStateFlow(NewSessionPrefsData())
@@ -237,6 +258,21 @@ class NewSessionViewModel(
         strings = codexStrings,
         applyDirectory = ::setDirectory,
         navigateToSession = { sessionId -> _spawned.tryEmit(sessionId) },
+    )
+
+    /**
+     * Pi session-import controller (slice C). Selecting a session inline
+     * adopts its cwd through the form's own [setDirectory] (web
+     * `handleSelectPiImportSession` → `setDirectory(session.cwd.trim())`).
+     * The web session-list refresh after a bulk import stays a no-op here —
+     * this screen does not own the session list (declared divergence, see
+     * [PiImportController]).
+     */
+    val piImport = PiImportController(
+        scope = scope,
+        gateway = gateway,
+        strings = piStrings,
+        applyDirectory = ::setDirectory,
     )
 
     private var directoryJob: Job? = null
@@ -335,9 +371,17 @@ class NewSessionViewModel(
                 s, exists, stored, outside, lookupError ->
             DirectoryData(s, exists, stored, outside, lookupError)
         },
-        combine(isSpawning, spawnError, confirmCreateDirectory, machinesRefreshSettled, codexImport.state) {
-                spawning, error, confirmed, settled, codexImportState ->
-            SpawnFlags(spawning, error, confirmed, settled, codexImportState)
+        combine(
+            isSpawning,
+            spawnError,
+            confirmCreateDirectory,
+            machinesRefreshSettled,
+            // Pair wrap: the outer combine stays within the 5-flow overload.
+            combine(codexImport.state, piImport.state) { codexImportState, piImportState ->
+                codexImportState to piImportState
+            },
+        ) { spawning, error, confirmed, settled, imports ->
+            SpawnFlags(spawning, error, confirmed, settled, imports.first, imports.second)
         },
     ) { currentForm, machines, catalogs, directoryData, flags ->
         buildUiState(currentForm, machines, catalogs, directoryData, flags)
@@ -355,6 +399,7 @@ class NewSessionViewModel(
                 confirmed = false,
                 machinesSettled = false,
                 codexImport = codexImport.state.value,
+                piImport = piImport.state.value,
             ),
         ),
     )
@@ -365,6 +410,7 @@ class NewSessionViewModel(
         val confirmed: Boolean,
         val machinesSettled: Boolean,
         val codexImport: CodexImportUiState,
+        val piImport: PiImportUiState,
     )
 
     private data class CatalogState(
@@ -436,8 +482,10 @@ class NewSessionViewModel(
         }
         applyPreferredLaunchSettings(form.value.machineId, agent)
         // Codex import state exists only for the codex flavor (web effect on
-        // `agent !== 'codex'`).
+        // `agent !== 'codex'`); the pi twin clears on any agent switch away
+        // from pi (declared divergence — web only bumps its generation).
         if (agent != "codex") codexImport.resetForAgentChange()
+        if (agent != "pi") piImport.resetForAgentChange()
         refreshCodexModelsIfNeeded()
         refreshGrokAutoSupportIfNeeded()
     }
@@ -506,6 +554,23 @@ class NewSessionViewModel(
     /** Dismiss the duplicate-merge confirm dialog (web `closeDuplicateMergeDialog`). */
     fun closeDuplicateMergeDialog() {
         codexImport.closeDuplicateMergeDialog()
+    }
+
+    /**
+     * The pi inline section's Choose-history button (web `onChooseHistory`):
+     * open the dialog and scan for the current form context. Web's loader
+     * no-ops unless agent is pi and a machine is selected.
+     */
+    fun openPiImportDialog() {
+        val current = form.value
+        val machineId = current.machineId ?: return
+        if (current.agent != "pi") return
+        piImport.openDialog(current.trimmedDirectory, machineId)
+    }
+
+    /** The pi inline section's Clear button (web `onClear`). */
+    fun clearPiImportSelection() {
+        piImport.clearInlineSelection()
     }
 
     /**
@@ -581,6 +646,31 @@ class NewSessionViewModel(
                                 _spawned.tryEmit(result.resumedSessionId)
                             }
                             is CodexImportAtCreateResult.Failed ->
+                                spawnError.value = result.rawError
+                        }
+                        return@launch
+                    }
+                }
+
+                // Pi import-at-create (web `handleCreate` pi branch): runs
+                // after the directory gates, before a spawn. The whole
+                // import → reopen chain replaces the spawn call; the reopened
+                // id is what navigation opens.
+                if (current.agent == "pi") {
+                    val selected = piImport.state.value.selectedSession
+                    if (selected != null) {
+                        val importRequest = PiImportLogic.buildSingleImportRequest(
+                            form = current,
+                            selected = selected,
+                            formMachineId = machineId,
+                            importMachineId = piImport.state.value.machineId,
+                        )
+                        when (val result = piImport.importAtCreate(importRequest)) {
+                            is PiImportAtCreateResult.Imported -> {
+                                persistOnSuccess(machineId, directory, current)
+                                _spawned.tryEmit(result.sessionId)
+                            }
+                            is PiImportAtCreateResult.Failed ->
                                 spawnError.value = result.rawError
                         }
                         return@launch
@@ -685,8 +775,9 @@ class NewSessionViewModel(
     private fun applyMachineSelection(machineId: String, resetDirectory: Boolean) {
         directoryBrowser.close()
         // The listing machine is gone — drop sessions/selection (web
-        // `handleMachineChange` codex block).
+        // `handleMachineChange` codex + pi blocks).
         codexImport.resetForContextChange()
+        piImport.resetForContextChange()
         pathExistence.value = emptyMap()
         outsideWorkspaceRoots.value = emptySet()
         directoryLookupError.value = null
@@ -1080,7 +1171,13 @@ class NewSessionViewModel(
         val codexImportBusy = codexImportState.loading ||
             codexImportState.importing ||
             codexImportState.importingAtCreate
-        val formLocked = flags.isSpawning || codexImportBusy
+        // Pi twin (web isFormDisabled pi terms: importing flags; the scan's
+        // loading counts too, matching the codex slice's Android reading).
+        val piImportState = flags.piImport
+        val piImportBusy = piImportState.loading ||
+            piImportState.importing ||
+            piImportState.importingAtCreate
+        val formLocked = flags.isSpawning || codexImportBusy || piImportBusy
         val codexSection = CodexImportSectionUi(
             selectedTitle = codexImportState.selectedSession?.title,
             loading = codexImportState.loading,
@@ -1088,6 +1185,16 @@ class NewSessionViewModel(
             busy = codexImportBusy,
             duplicateDetectError = codexImportState.duplicateDetectError,
         )
+        val piSection = PiImportSectionUi(
+            selectedTitle = piImportState.selectedSession?.title,
+            loading = piImportState.loading,
+            error = piImportState.error,
+            busy = piImportBusy,
+        )
+        // Web `showPiLaunchConfig`: launch-only model/effort controls hide
+        // while a pi history is selected — the import reopens the native
+        // session as-is and they would silently not apply.
+        val showPiLaunchConfig = agent != "pi" || piImportState.selectedSession == null
 
         return NewSessionUiState(
             form = currentForm,
@@ -1119,6 +1226,7 @@ class NewSessionViewModel(
                 trimmed.isNotEmpty() &&
                 !flags.isSpawning &&
                 !codexImportBusy &&
+                !piImportBusy &&
                 !missingWorktreeDirectory &&
                 !directoryOutsideRoots &&
                 availability is AgentAvailabilityUi.Loaded &&
@@ -1127,6 +1235,8 @@ class NewSessionViewModel(
                 !codexValidationPending,
             confirmCreateDirectory = flags.confirmed && needsCreationWarning,
             codexImport = codexSection,
+            piImport = piSection,
+            showPiLaunchConfig = showPiLaunchConfig,
             formLocked = formLocked,
         )
     }

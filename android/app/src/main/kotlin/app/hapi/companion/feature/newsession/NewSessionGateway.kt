@@ -13,6 +13,10 @@ import app.hapi.protocol.wire.AgentAvailabilityResponse
 import app.hapi.protocol.wire.GrokModelsResponse
 import app.hapi.protocol.wire.MachineListDirectoryResponse
 import app.hapi.protocol.wire.MachinePathsExistsResponse
+import app.hapi.protocol.wire.PiImportSessionsRequest
+import app.hapi.protocol.wire.PiImportSessionsResponse
+import app.hapi.protocol.wire.PiLocalSessionsResponse
+import app.hapi.protocol.wire.ReopenSessionResponse
 import app.hapi.protocol.wire.ResumeSessionResponse
 import app.hapi.protocol.wire.SpawnResponse
 import app.hapi.protocol.wire.SpawnSessionRequest
@@ -92,6 +96,31 @@ interface NewSessionGateway {
 
     /** `POST /api/codex/restart-desktop` (slice B) — script envelope; check `success`. */
     suspend fun restartCodexDesktop(): CodexDesktopScriptResponse
+
+    /**
+     * `GET /api/pi/sessions` (pi import, slice C). Soft failures arrive as
+     * HTTP 200 `{success:false, sessions:[]}` — and unlike the codex twin the
+     * web Pi caller treats that as an error; that policy lives in
+     * [PiImportController], not here.
+     */
+    suspend fun piSessions(
+        cwd: String? = null,
+        machineId: String? = null,
+    ): PiLocalSessionsResponse
+
+    /**
+     * `POST /api/pi/import-sessions` (slice C) — failures are a top-level
+     * HTTP 200 `success:false` **or** per-item `results[i].error`; the caller
+     * scores the batch from `results`.
+     */
+    suspend fun importPiSessions(payload: PiImportSessionsRequest): PiImportSessionsResponse
+
+    /**
+     * `POST /api/sessions/:id/reopen` (slice C) — the pi import-at-create leg
+     * reopens the imported session as-is (web `api.reopenSession`); the
+     * returned id may differ from [sessionId] (superseding spawn).
+     */
+    suspend fun reopenSession(sessionId: String): ReopenSessionResponse
 }
 
 /** Production adapter over the hub's [HapiApi]. */
@@ -143,4 +172,15 @@ class ApiNewSessionGateway(private val api: HapiApi) : NewSessionGateway {
 
     override suspend fun restartCodexDesktop(): CodexDesktopScriptResponse =
         api.restartCodexDesktop()
+
+    override suspend fun piSessions(
+        cwd: String?,
+        machineId: String?,
+    ): PiLocalSessionsResponse = api.getPiSessions(cwd, machineId)
+
+    override suspend fun importPiSessions(payload: PiImportSessionsRequest): PiImportSessionsResponse =
+        api.importPiSessions(payload)
+
+    override suspend fun reopenSession(sessionId: String): ReopenSessionResponse =
+        api.reopenSession(sessionId)
 }

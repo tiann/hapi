@@ -58,6 +58,7 @@ import app.hapi.companion.feature.newsession.NewSessionPrefs
 import app.hapi.companion.feature.newsession.NewSessionScreen
 import app.hapi.companion.feature.newsession.NewSessionStrings
 import app.hapi.companion.feature.newsession.NewSessionViewModel
+import app.hapi.companion.feature.newsession.PiImportStrings
 import app.hapi.companion.feature.pairing.ManualEntryScreen
 import app.hapi.companion.feature.pairing.PairingScreen
 import app.hapi.companion.feature.pairing.PairingUiState
@@ -640,6 +641,7 @@ fun HapiNavigation() {
                         newSessionStrings(formContext),
                         codexImportedSessionsStore = graph.codexImportedSessionsStore,
                         codexImportStrings = codexImportStrings(formContext),
+                        piImportStrings = piImportStrings(formContext),
                     )
                 },
             )
@@ -983,6 +985,7 @@ private class NewSessionViewModelHolder(
     strings: NewSessionStrings,
     codexImportedSessionsStore: CodexImportedSessionsStore = MemoryCodexImportedSessionsStore(),
     codexImportStrings: CodexImportStrings = CodexImportStrings(),
+    piImportStrings: PiImportStrings = PiImportStrings(),
 ) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -995,6 +998,7 @@ private class NewSessionViewModelHolder(
         strings = strings,
         codexImportStore = codexImportedSessionsStore,
         codexStrings = codexImportStrings,
+        piStrings = piImportStrings,
     )
 
     override fun onCleared() {
@@ -1097,4 +1101,17 @@ private fun codexImportStrings(context: Context) = CodexImportStrings(
     restartFailedBody = context.getString(R.string.codex_sync_restart_failed_body),
     detectFailedBody = context.getString(R.string.codex_sync_duplicates_detect_failed_body),
     mergeFailedBody = context.getString(R.string.codex_sync_duplicates_merge_failed_body),
+)
+
+/** Resource-resolved [PiImportStrings] (slice C Strings seam). */
+private fun piImportStrings(context: Context) = PiImportStrings(
+    loadFailed = context.getString(R.string.pi_import_failed_body),
+    errorDiverged = context.getString(R.string.pi_import_error_diverged),
+    errorActive = context.getString(R.string.pi_import_error_active),
+    successTitle = context.getString(R.string.pi_import_success_title),
+    successBodyOne = context.getString(R.string.pi_import_success_body_one),
+    successBodyMany = context.getString(R.string.pi_import_success_body_many),
+    failedTitle = context.getString(R.string.pi_import_failed_title),
+    failedPartial = context.getString(R.string.pi_import_failed_partial),
+    createFailed = context.getString(R.string.new_session_error_create),
 )

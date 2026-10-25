@@ -683,4 +683,34 @@
     <string name="codex_sync_duplicates_merge_success_body">已按本次选中的 Codex 会话完成去重合并。</string>
     <string name="codex_sync_duplicates_merge_failed_title">重复会话合并失败</string>
     <string name="codex_sync_duplicates_merge_failed_body">重复会话合并失败。</string>
+
+    <!-- Pi 历史导入（批次15 C）；web 对应 locales/zh-CN.ts 的 piImport.*。 -->
+    <string name="pi_import_inline_title">导入 Pi 历史</string>
+    <string name="pi_import_inline_description">可选：选择本机已有的 Pi session，导入历史后继续对话。</string>
+    <string name="pi_import_inline_clear">清除</string>
+    <string name="pi_import_inline_choose">选择历史</string>
+    <string name="pi_import_dialog_title">导入 Pi sessions</string>
+    <string name="pi_import_dialog_description">选择本机 Pi 历史。单选会立即继续，多选会批量导入到会话列表。</string>
+    <string name="pi_import_dialog_concurrent_warning">多个进程可以同时打开同一个 Pi session，但不要从未刷新的副本交替写入。继续在 HAPI 中操作前，请重新加载或关闭其他 Pi 进程，避免产生意外分支。</string>
+    <string name="pi_import_selected_count_one">已选择 1 个</string>
+    <string name="pi_import_selected_count_many">已选择 %1$d 个</string>
+    <string name="pi_import_select_all">全部选择</string>
+    <string name="pi_import_clear_all">全部清除</string>
+    <string name="pi_import_all_directories">全部目录</string>
+    <string name="pi_import_search">搜索标题、消息、路径、模型或 ID</string>
+    <string name="pi_import_loading">正在扫描 Pi sessions…</string>
+    <string name="pi_import_empty">没有找到可导入的 Pi session。</string>
+    <string name="pi_import_imported">已导入</string>
+    <string name="pi_import_needs_attention">需要处理</string>
+    <string name="pi_import_messages">条消息</string>
+    <string name="pi_import_confirm">导入</string>
+    <string name="pi_import_importing">正在导入…</string>
+    <string name="pi_import_success_title">Pi sessions 已导入</string>
+    <string name="pi_import_success_body_one">已导入 1 个 Pi sessions。</string>
+    <string name="pi_import_success_body_many">已导入 %1$d 个 Pi sessions。</string>
+    <string name="pi_import_failed_title">Pi 导入失败</string>
+    <string name="pi_import_failed_body">导入 Pi 历史失败。</string>
+    <string name="pi_import_failed_partial">%1$d 个 session 导入失败：%2$s</string>
+    <string name="pi_import_error_diverged">本机 Pi 分支在上次导入后发生变化，请先检查会话再继续。</string>
+    <string name="pi_import_error_active">请先停止正在运行的 Hapi Pi session，再导入新增的原生历史。</string>
 </resources>

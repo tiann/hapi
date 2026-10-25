@@ -32,6 +32,9 @@ import app.hapi.protocol.wire.MachinePathsExistsRequest
 import app.hapi.protocol.wire.MachinePathsExistsResponse
 import app.hapi.protocol.wire.MachinesResponse
 import app.hapi.protocol.wire.MessagesResponse
+import app.hapi.protocol.wire.PiImportSessionsRequest
+import app.hapi.protocol.wire.PiImportSessionsResponse
+import app.hapi.protocol.wire.PiLocalSessionsResponse
 import app.hapi.protocol.wire.QueuedStateRequest
 import app.hapi.protocol.wire.QueuedStateResponse
 import app.hapi.protocol.wire.RegisterDeviceRequest
@@ -635,6 +638,38 @@ class HapiApi internal constructor(
      */
     suspend fun restartCodexDesktop(): CodexDesktopScriptResponse =
         request("POST", url("api", "codex", "restart-desktop").build(), EMPTY_JSON)
+
+
+    // --------------------------------------------------------- pi import (C) --
+
+    /**
+     * `GET /api/pi/sessions?cwd=&machineId=` — local Pi sessions on the
+     * target machine. Query params ride along only when non-blank after
+     * trimming, and the **trimmed** value is sent (web ref: `getPiSessions`
+     * in `web/src/api/client.ts`). Soft failures are HTTP 200
+     * `{success:false, sessions:[]}` — unlike the codex twin, the web Pi
+     * caller treats `success:false` as an error; decoding only, policy lives
+     * in the caller. Added for C (pi session import).
+     */
+    suspend fun getPiSessions(
+        cwd: String? = null,
+        machineId: String? = null,
+    ): PiLocalSessionsResponse {
+        val target = url("api", "pi", "sessions").apply {
+            cwd?.trim()?.takeIf { it.isNotEmpty() }?.let { addQueryParameter("cwd", it) }
+            machineId?.trim()?.takeIf { it.isNotEmpty() }?.let { addQueryParameter("machineId", it) }
+        }
+        return request("GET", target.build())
+    }
+
+    /**
+     * `POST /api/pi/import-sessions` — import local Pi sessions into Hapi
+     * (web ref: `importPiSessions`). Failures are HTTP 200 with a top-level
+     * `success:false` **or** per-item `results[i].error` — the import callers
+     * score the batch from `results` (`hapiSessionId && !error`). Added for C.
+     */
+    suspend fun importPiSessions(payload: PiImportSessionsRequest): PiImportSessionsResponse =
+        request("POST", url("api", "pi", "import-sessions").build(), payload.toJsonBody())
 
 
     // --------------------------------------------------------- git & files --

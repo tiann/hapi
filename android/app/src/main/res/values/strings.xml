@@ -676,4 +676,34 @@
     <string name="codex_sync_duplicates_merge_success_body">Merged duplicates for the selected Codex sessions.</string>
     <string name="codex_sync_duplicates_merge_failed_title">Failed to merge duplicate sessions</string>
     <string name="codex_sync_duplicates_merge_failed_body">Failed to merge duplicate sessions.</string>
+
+    <!-- Pi history import (slice C); web twins: piImport.* in locales/en.ts. -->
+    <string name="pi_import_inline_title">Import Pi history</string>
+    <string name="pi_import_inline_description">Optional: choose an existing local Pi session to import and continue.</string>
+    <string name="pi_import_inline_clear">Clear</string>
+    <string name="pi_import_inline_choose">Choose history</string>
+    <string name="pi_import_dialog_title">Import Pi sessions</string>
+    <string name="pi_import_dialog_description">Select local Pi histories. One selection is continued now; multiple selections are imported in the background.</string>
+    <string name="pi_import_dialog_concurrent_warning">Multiple processes can open the same Pi session, but avoid writing from stale copies. Before continuing in HAPI, reload or close any other Pi process to avoid an unintended branch.</string>
+    <string name="pi_import_selected_count_one">1 selected</string>
+    <string name="pi_import_selected_count_many">%1$d selected</string>
+    <string name="pi_import_select_all">Select all</string>
+    <string name="pi_import_clear_all">Clear all</string>
+    <string name="pi_import_all_directories">All directories</string>
+    <string name="pi_import_search">Search title, prompt, path, model, or ID</string>
+    <string name="pi_import_loading">Scanning Pi sessions…</string>
+    <string name="pi_import_empty">No importable Pi sessions found.</string>
+    <string name="pi_import_imported">Imported</string>
+    <string name="pi_import_needs_attention">Needs attention</string>
+    <string name="pi_import_messages">messages</string>
+    <string name="pi_import_confirm">Import</string>
+    <string name="pi_import_importing">Importing…</string>
+    <string name="pi_import_success_title">Pi sessions imported</string>
+    <string name="pi_import_success_body_one">Imported 1 Pi session.</string>
+    <string name="pi_import_success_body_many">Imported %1$d Pi sessions.</string>
+    <string name="pi_import_failed_title">Pi import failed</string>
+    <string name="pi_import_failed_body">Failed to import Pi history.</string>
+    <string name="pi_import_failed_partial">%1$d sessions failed: %2$s</string>
+    <string name="pi_import_error_diverged">The local Pi branch changed after the previous import. Review the session before continuing.</string>
+    <string name="pi_import_error_active">Stop the active Hapi Pi session before importing newer native history.</string>
 </resources>
