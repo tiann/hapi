@@ -55,6 +55,7 @@ type MessagesResponse = {
     snapshotHeadSeq: number | null      // newest position at snapshot time
     snapshotHeadAt: number | null
     hasMore: boolean                    // more rows exist in the requested direction
+    totalCount?: number                 // optional: total durable message rows (all pages)
   }
 }
 ```

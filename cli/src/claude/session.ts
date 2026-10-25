@@ -3,10 +3,11 @@ import { ApiClient, ApiSessionClient } from '@/lib';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { logger } from '@/ui/logger';
 import { AgentSessionBase } from '@/agent/sessionBase';
-import type { SessionEffort, SessionModel } from '@/api/types';
+import type { Metadata, SessionEffort, SessionModel } from '@/api/types';
 import type { EnhancedMode } from './loop';
 import type { PermissionMode } from './loop';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
+import { decideClaudeSessionFound, resolveClaudeResumeGuardId } from './utils/claudeResumeGuard';
 
 type LocalLaunchFailure = {
     message: string;
@@ -26,6 +27,18 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     readonly startingMode: 'local' | 'remote';
     localLaunchFailure: LocalLaunchFailure | null = null;
     private nativeSkillNames = new Set<string>();
+    /**
+     * Resume id we asked Claude to continue on this spawn. Cleared after the
+     * first successful sessionFound adopt so later SessionStart events
+     * (`/clear`, compact, …) can mint a new id without being treated as a
+     * silent overwrite of the resume pointer (#1933).
+     */
+    private resumeGuardId: string | null;
+    /**
+     * Synchronous durable resume target. Prefer this over getMetadata() because
+     * updateMetadata is async and can lag behind adopt /clear.
+     */
+    private durableResumeId: string | null = null;
 
     constructor(opts: {
         api: ApiClient;
@@ -80,7 +93,81 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         this.permissionMode = opts.permissionMode;
         this.model = opts.model;
         this.effort = opts.effort;
+        this.resumeGuardId = resolveClaudeResumeGuardId(opts.sessionId, opts.claudeArgs);
+        this.durableResumeId = resolveClaudeResumeGuardId(opts.sessionId, opts.claudeArgs);
     }
+
+    /**
+     * Adopt a Claude transcript id into durable metadata — unless we asked to
+     * resume A on this spawn and Claude silently minted B (tiann/hapi#1933).
+     * Launchers rearm the guard before each spawn from the ID actually passed
+     * to Claude; a successful adopt / confirmed resume clears it so `/clear`
+     * can mint a new id. Mismatch keeps the guard armed.
+     */
+    override onSessionFound = (sessionId: string, extras?: Partial<Metadata>): void => {
+        const forkRequested = Boolean(extras?.forkedFrom)
+            || Boolean(this.claudeArgs?.includes('--fork-session'));
+        const decision = decideClaudeSessionFound({
+            requestedId: this.resumeGuardId,
+            reportedId: sessionId,
+            forkRequested
+        });
+        if (decision.action === 'reject') {
+            const message =
+                `Claude resume mismatch: requested ${decision.requestedId} but Claude ` +
+                `reported ${decision.reportedId}. Keeping the prior resume pointer; ` +
+                `refusing to overwrite metadata.claudeSessionId. Reopen with an explicit ` +
+                `fork if a new native transcript is intended.`;
+            logger.warn(`[Session] ${message}`);
+            this.client.sendSessionEvent({ type: 'message', message });
+            // Local transport tails registered ids only — still notify listeners
+            // so the live process is followed, without burning the durable pointer.
+            // Keep resumeGuardId armed so a subsequent launch that reports B
+            // again cannot write B into metadata.
+            this.sessionId = decision.reportedId;
+            this.notifySessionFoundListeners(decision.reportedId);
+            return;
+        }
+        this.commitSessionId(decision.sessionId, extras);
+        this.durableResumeId = decision.sessionId;
+        this.resumeGuardId = null;
+    };
+
+    /**
+     * Durable Claude transcript id for the next `--resume` / SDK resume.
+     * Backed by an in-memory pointer so async metadata ACK lag cannot resume
+     * a stale A after adopt or /clear. After mismatch, live sessionId may
+     * follow minted B for local transport while durableResumeId stays A.
+     */
+    getClaudeResumeSessionId = (): string | null => {
+        if (typeof this.durableResumeId === 'string' && this.durableResumeId.trim().length > 0) {
+            return this.durableResumeId.trim();
+        }
+        return null;
+    };
+
+    /**
+     * Arm the mismatch guard from the resume id about to be passed to Claude.
+     * Call immediately before each local/remote launch.
+     */
+    armResumeGuard = (requestedId: string | null): void => {
+        this.resumeGuardId = typeof requestedId === 'string' && requestedId.trim().length > 0
+            ? requestedId.trim()
+            : null;
+    };
+
+    /**
+     * Successful local `--resume A` often re-emits SessionStart with the same
+     * id, so onSessionFound is skipped. Clear the mismatch guard anyway so a
+     * later `/clear` can mint B.
+     */
+    confirmResumeSessionId = (sessionId: string): void => {
+        if (this.resumeGuardId && this.resumeGuardId === sessionId) {
+            this.resumeGuardId = null;
+            this.durableResumeId = sessionId;
+            logger.debug(`[Session] Resume confirmed for ${sessionId}; mismatch guard released`);
+        }
+    };
 
     setPermissionMode = (mode: PermissionMode): void => {
         this.permissionMode = mode;
@@ -117,10 +204,18 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     };
 
     /**
-     * Clear the current session ID (used by /clear command)
+     * Clear the current session ID (used by /clear command).
+     * Also drops durable metadata.claudeSessionId so the next launch does not
+     * resume the transcript the user just discarded.
      */
     clearSessionId = (): void => {
         this.sessionId = null;
+        this.resumeGuardId = null;
+        this.durableResumeId = null;
+        this.client.updateMetadata((metadata) => ({
+            ...metadata,
+            claudeSessionId: undefined
+        }));
         logger.debug('[Session] Session ID cleared');
     };
 
