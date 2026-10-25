@@ -13,6 +13,7 @@ import {
     type KeyboardEvent as ReactKeyboardEvent,
     type MutableRefObject,
     type SyntheticEvent as ReactSyntheticEvent,
+    Fragment,
     useCallback,
     useEffect,
     useImperativeHandle,
@@ -306,7 +307,7 @@ export function HappyComposer(props: {
     controlledByUser?: boolean
     concurrentClients?: boolean
     agentFlavor?: string | null
-    availableModelOptions?: Array<{ value: string | null; label: string }>
+    availableModelOptions?: Array<{ value: string | null; label: string; group?: string }>
     /** Full Pi model data with thinkingLevelMap for provider grouping + thinking level filtering */
     piModels?: PiModelSummary[]
     /** Pi: provider-qualified selected model from metadata (survives reload;
@@ -1793,13 +1794,20 @@ export function HappyComposer(props: {
                                             })}
                                         </div>
                                     ))
-                                    : modelOptions.map((option) => {
+                                    : modelOptions.map((option, index) => {
                                         const isSelected = selectedModelBase !== undefined
                                             ? selectedModelBase === option.value
                                             : model === option.value
+                                        const startsGroup = option.group !== undefined
+                                            && option.group !== modelOptions[index - 1]?.group
                                         return (
+                                        <Fragment key={option.value ?? 'auto'}>
+                                        {startsGroup ? (
+                                            <div className="px-3 pt-2 pb-0.5 text-xs font-medium text-[var(--app-hint)]">
+                                                {option.group}
+                                            </div>
+                                        ) : null}
                                         <button
-                                            key={option.value ?? 'auto'}
                                             type="button"
                                             disabled={modelEffortControlsDisabled}
                                             className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
@@ -1831,6 +1839,7 @@ export function HappyComposer(props: {
                                                 {option.label}
                                             </span>
                                         </button>
+                                        </Fragment>
                                         )
                                     })}
                             </div>

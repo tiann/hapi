@@ -61,7 +61,7 @@ function getClaudeModelOptions(currentModel?: string | null, customOptions?: Mod
     for (const option of customOptions) {
         const value = normalizeCurrentModel(option.value)
         if (value && !listed.some((existing) => existing.value === value)) {
-            listed.push({ value, label: option.label })
+            listed.push(option.group ? { value, label: option.label, group: option.group } : { value, label: option.label })
         }
     }
 
@@ -80,18 +80,27 @@ function getClaudeModelOptions(currentModel?: string | null, customOptions?: Mod
 export function getClaudeLaunchModelOptions(
     catalog: readonly ClaudeModelSummary[],
     selectedModel: string,
-    notListedSuffix: string
-): Array<{ value: string; label: string }> {
-    const catalogOptions = getClaudeModelChoices(catalog)
+    notListedSuffix: string,
+    otherModelsLabel: string
+): Array<{ value: string; label: string; group?: string }> {
+    const catalogOptions = getClaudeCatalogOptions(catalog, otherModelsLabel)
     const selected = normalizeCurrentModel(selectedModel)
     const isGone = catalog.length > 0
         && selected !== null
         && !catalogOptions.some((option) => option.value === selected)
 
     return getClaudeModelOptions(selectedModel, catalogOptions).map((option) => ({
+        ...option,
         value: option.value ?? 'auto',
         label: isGone && option.value === selected ? `${option.label} (${notListedSuffix})` : option.label
     }))
+}
+
+/** Catalog options with earlier versions under `otherModelsLabel`, as Claude Code's model sheet lists them. */
+export function getClaudeCatalogOptions(catalog: readonly ClaudeModelSummary[], otherModelsLabel: string): ModelOption[] {
+    return getClaudeModelChoices(catalog).map(({ value, label, section }) => (
+        section === 'other' ? { value, label, group: otherModelsLabel } : { value, label }
+    ))
 }
 
 function getAgyModelOptions(currentModel?: string | null, customOptions?: ModelOption[]): ModelOption[] {

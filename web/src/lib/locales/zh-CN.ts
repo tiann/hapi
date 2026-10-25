@@ -1122,6 +1122,7 @@ export default {
   'misc.copilotAgentMode': '代理模式',
   'misc.permissionMode': '权限模式',
   'misc.model': '模型',
+  'misc.otherModels': '其他模型',
   'misc.reasoningEffort': '推理强度',
   'misc.effort': '思考强度',
   'misc.fastMode': '快速模式',

@@ -78,6 +78,18 @@ describe('getModelOptionsForFlavor', () => {
         ])
     })
 
+    it('keeps the group of each Claude catalog option', () => {
+        const options = getModelOptionsForFlavor('claude', null, [
+            { value: 'opus', label: 'Opus 5.5' },
+            { value: 'claude-opus-4-7', label: 'Opus 4.7', group: 'Other models' },
+        ])
+        expect(options).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'opus', label: 'Opus 5.5' },
+            { value: 'claude-opus-4-7', label: 'Opus 4.7', group: 'Other models' },
+        ])
+    })
+
     it('keeps a saved built-in alias the catalog does not list as the current model', () => {
         const options = getModelOptionsForFlavor('claude', 'opus[1m]', [
             { value: 'opus', label: 'Opus 5.5' },
@@ -237,26 +249,26 @@ describe('getClaudeLaunchModelOptions', () => {
         { value: 'claude-opus-4-7', displayName: 'Opus 4.7' },
     ]
 
-    it('offers the catalog choices with Default as auto', () => {
-        expect(getClaudeLaunchModelOptions(catalog, 'auto', 'no longer listed').slice(0, 3)).toEqual([
+    it('offers the catalog choices with Default as auto and earlier versions under Other models', () => {
+        expect(getClaudeLaunchModelOptions(catalog, 'auto', 'no longer listed', 'Other models')).toEqual([
             { value: 'auto', label: 'Default' },
             { value: 'opus', label: 'Opus 5.5' },
-            { value: 'claude-opus-4-7', label: 'Opus 4.7' },
+            { value: 'claude-opus-4-7', label: 'Opus 4.7', group: 'Other models' },
         ])
     })
 
     it('marks a saved model the catalog no longer lists instead of dropping it', () => {
-        const options = getClaudeLaunchModelOptions(catalog, 'claude-opus-4-1', 'no longer listed')
+        const options = getClaudeLaunchModelOptions(catalog, 'claude-opus-4-1', 'no longer listed', 'Other models')
         expect(options[1]).toEqual({ value: 'claude-opus-4-1', label: 'claude-opus-4-1 (no longer listed)' })
     })
 
     it('marks a saved built-in alias the catalog no longer lists, like any other model', () => {
-        const options = getClaudeLaunchModelOptions(catalog, 'opus[1m]', 'no longer listed')
+        const options = getClaudeLaunchModelOptions(catalog, 'opus[1m]', 'no longer listed', 'Other models')
         expect(options[1]).toEqual({ value: 'opus[1m]', label: 'Opus 1M (no longer listed)' })
     })
 
     it('keeps a saved model selectable before the catalog arrives, without claiming it is gone', () => {
-        const options = getClaudeLaunchModelOptions([], 'claude-opus-4-1', 'no longer listed')
+        const options = getClaudeLaunchModelOptions([], 'claude-opus-4-1', 'no longer listed', 'Other models')
         expect(options.slice(0, 3)).toEqual([
             { value: 'auto', label: 'Default' },
             { value: 'claude-opus-4-1', label: 'claude-opus-4-1' },

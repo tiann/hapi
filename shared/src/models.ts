@@ -80,17 +80,37 @@ export function getClaudeModelLabel(model: string): string | null {
 export type ClaudeModelChoice = {
     value: string
     label: string
+    /** `main` is each family's newest model; `other` is every earlier version. */
+    section: 'main' | 'other'
+}
+
+/** `opus`, `opus[1m]`, `claude-opus-4-7` → `opus`. */
+function getClaudeModelFamily(value: string): string {
+    return value.replace(/^claude-/, '').split(/[-[]/)[0] ?? value
 }
 
 /**
  * Picker choices for a catalog reported by the `claude` CLI: its own `/model`
- * rows, in its order and with its display names. The `default` row is omitted;
- * callers represent it as "no model".
+ * rows, with its display names, split the way Claude Code's model sheet
+ * splits them. The CLI lists each family's newest model before its earlier
+ * versions, so the first row of a family is `main` and later ones are
+ * `other`; within each section the CLI order is kept. The `default` row is
+ * omitted; callers represent it as "no model".
  */
 export function getClaudeModelChoices(catalog: readonly ClaudeModelSummary[]): ClaudeModelChoice[] {
-    return catalog
+    const families = new Set<string>()
+    const choices: ClaudeModelChoice[] = catalog
         .filter((model) => model.value !== 'default')
-        .map((model) => ({ value: model.value, label: model.displayName ?? model.value }))
+        .map((model) => {
+            const family = getClaudeModelFamily(model.value)
+            const section = families.has(family) ? 'other' : 'main'
+            families.add(family)
+            return { value: model.value, label: model.displayName ?? model.value, section }
+        })
+    return [
+        ...choices.filter((choice) => choice.section === 'main'),
+        ...choices.filter((choice) => choice.section === 'other'),
+    ]
 }
 
 /**

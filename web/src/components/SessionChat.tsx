@@ -62,7 +62,8 @@ import {
 } from '@/lib/messageDelivery'
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import { isSteeringSupportedForSession } from '@hapi/protocol'
-import { getClaudeEffortLevelsForModel, getClaudeModelChoices, resolveClaudeEffortForModel } from '@hapi/protocol'
+import { getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
+import { getClaudeCatalogOptions } from '@/components/AssistantChat/modelOptions'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
 import { rewindMessageWindow, type OlderLoadOutcome } from '@/lib/message-window-store'
 import { ShareSeedConsumer } from '@/components/ShareSeedConsumer'
@@ -1186,9 +1187,9 @@ function SessionChatInner(props: SessionChatProps) {
     // undefined and the composer keeps its built-in Claude presets.
     const claudeModelOptions = useMemo(() => (
         agentFlavor === 'claude' && claudeModelsState.availableModels.length > 0
-            ? getClaudeModelChoices(claudeModelsState.availableModels)
+            ? getClaudeCatalogOptions(claudeModelsState.availableModels, t('misc.otherModels'))
             : undefined
-    ), [agentFlavor, claudeModelsState.availableModels])
+    ), [agentFlavor, claudeModelsState.availableModels, t])
     // Levels the current Claude model accepts; undefined when unknown (no
     // catalog, or a model it does not list), which keeps every level.
     const claudeEffortOptions = useMemo(() => (

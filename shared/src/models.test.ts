@@ -85,14 +85,31 @@ const SUBSCRIPTION_CATALOG: ClaudeModelSummary[] = [
 ]
 
 describe('getClaudeModelChoices', () => {
-    test('lists the CLI picker rows as they are, labelled with their display names', () => {
+    test('lists the CLI picker rows with their display names, splitting each family\'s newest from the rest', () => {
         expect(getClaudeModelChoices(SUBSCRIPTION_CATALOG)).toEqual([
-            { value: 'opus', label: 'Opus 5.5' },
-            { value: 'claude-fable-5-1', label: 'Fable 5.1' },
-            { value: 'sonnet', label: 'Sonnet 5' },
-            { value: 'haiku', label: 'Haiku 4.5' },
-            { value: 'claude-opus-4-7', label: 'Opus 4.7' },
-            { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+            { value: 'opus', label: 'Opus 5.5', section: 'main' },
+            { value: 'claude-fable-5-1', label: 'Fable 5.1', section: 'main' },
+            { value: 'sonnet', label: 'Sonnet 5', section: 'main' },
+            { value: 'haiku', label: 'Haiku 4.5', section: 'main' },
+            { value: 'claude-opus-4-7', label: 'Opus 4.7', section: 'other' },
+            { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6', section: 'other' },
+        ])
+    })
+
+    test('reads the family from full ids and variants, keeping the CLI order within each section', () => {
+        const choices = getClaudeModelChoices([
+            { value: 'opus', displayName: 'Opus 5.5' },
+            { value: 'claude-haiku-4-5-20251001', displayName: 'Haiku 4.5' },
+            { value: 'opus[1m]', displayName: 'Opus 5.5 (1M)' },
+            { value: 'claude-sonnet-5-5', displayName: 'Sonnet 5.5' },
+            { value: 'claude-sonnet-4-6', displayName: 'Sonnet 4.6' },
+        ])
+        expect(choices.map((choice) => [choice.value, choice.section])).toEqual([
+            ['opus', 'main'],
+            ['claude-haiku-4-5-20251001', 'main'],
+            ['claude-sonnet-5-5', 'main'],
+            ['opus[1m]', 'other'],
+            ['claude-sonnet-4-6', 'other'],
         ])
     })
 
@@ -103,7 +120,7 @@ describe('getClaudeModelChoices', () => {
 
     test('falls back to the value when the CLI gives no display name', () => {
         expect(getClaudeModelChoices([{ value: 'claude-custom' }])).toEqual([
-            { value: 'claude-custom', label: 'claude-custom' },
+            { value: 'claude-custom', label: 'claude-custom', section: 'main' },
         ])
     })
 })

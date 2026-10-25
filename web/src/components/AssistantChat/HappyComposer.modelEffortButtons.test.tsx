@@ -153,6 +153,20 @@ describe('HappyComposer generic model/effort value buttons', () => {
         expect(screen.getByRole('button', { name: 'Settings' })).toBeTruthy()
     })
 
+    it('heads grouped model rows with their group name once', () => {
+        renderComposer('claude', {
+            model: 'opus',
+            availableModelOptions: [
+                { value: 'opus', label: 'Opus 5.5' },
+                { value: 'claude-opus-4-7', label: 'Opus 4.7', group: 'Other models' },
+                { value: 'claude-opus-4-6', label: 'Opus 4.6', group: 'Other models' },
+            ],
+        })
+        fireEvent.click(screen.getByRole('button', { name: 'Opus 5.5' }))
+        expect(screen.getAllByText('Other models')).toHaveLength(1)
+        expect(screen.getByRole('button', { name: 'Opus 4.7' })).toBeTruthy()
+    })
+
     it('offers only the effort levels the current Claude model accepts', () => {
         renderComposer('claude', { availableEffortOptions: [{ value: 'low' }, { value: 'high' }] })
         fireEvent.click(screen.getByRole('button', { name: 'High' }))

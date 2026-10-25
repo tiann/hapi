@@ -710,7 +710,7 @@ export function NewSession(props: {
     })
     const claudeModelOptions = useMemo(() => (
         agent === 'claude'
-            ? getClaudeLaunchModelOptions(claudeModelsState.availableModels, model, t('newSession.claudeModel.notListed'))
+            ? getClaudeLaunchModelOptions(claudeModelsState.availableModels, model, t('newSession.claudeModel.notListed'), t('misc.otherModels'))
             : undefined
     ), [agent, claudeModelsState.availableModels, model, t])
     const claudeEffortOptions = useMemo(() => {
