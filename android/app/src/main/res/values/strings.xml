@@ -6,6 +6,7 @@
     <string name="code_copy">Copy</string>
     <string name="code_copied">Copied</string>
     <string name="code_plain_fallback">text</string>
+    <string name="mermaid_render_error">Could not render diagram.</string>
     <string name="diff_binary_file">Binary file not shown</string>
     <string name="diff_show_more">Show %1$d more lines</string>
     <string name="diff_collapse">Collapse</string>

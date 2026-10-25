@@ -39,14 +39,14 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Offline iron rule: the only content ever loaded is
  * [buildMathDocument] HTML plus the bundled `assets/katex/` files, referenced
  * through the `file:///android_asset/katex/` base URL (asset URLs remain
- * loadable with file access disabled). [OfflineMathWebViewClient] rejects
+ * loadable with file access disabled). [OfflineMarkdownWebViewClient] rejects
  * every http(s)/ws(s) request and [WebSettings.blockNetworkLoads] blocks the
  * network stack outright, so a hostile formula cannot make the view fetch
  * anything at runtime.
  *
  * Height adaptation: the document reports its height through the
  * `MathBridge.onHeight` JS interface (ResizeObserver + load + timeout) and
- * [OfflineMathWebViewClient.onPageFinished] re-measures via
+ * [OfflineMarkdownWebViewClient.onPageFinished] re-measures via
  * `evaluateJavascript(scrollHeight)`; whichever lands first wins.
  */
 private class MathBridge(mainThread: Handler, onHeight: (Int) -> Unit) {
@@ -67,8 +67,11 @@ private class MathBridge(mainThread: Handler, onHeight: (Int) -> Unit) {
     }
 }
 
-/** Rejects all network requests; math renders from bundled assets only. */
-private class OfflineMathWebViewClient(private val onHeight: (Int) -> Unit) : WebViewClient() {
+/**
+ * Rejects all network requests; offline markdown views render from bundled
+ * assets only (KaTeX math, Mermaid diagrams).
+ */
+internal class OfflineMarkdownWebViewClient(private val onHeight: (Int) -> Unit) : WebViewClient() {
     override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
         return when (request.url.scheme?.lowercase()) {
             "http", "https", "ws", "wss" -> WebResourceResponse(
@@ -121,7 +124,7 @@ private class MathWebView(context: Context) : WebView(context) {
         isVerticalScrollBarEnabled = false
         isHorizontalScrollBarEnabled = false
         addJavascriptInterface(bridge, "MathBridge")
-        webViewClient = OfflineMathWebViewClient { px ->
+        webViewClient = OfflineMarkdownWebViewClient { px ->
             mainThread.post { reportedHeight = px }
         }
     }

@@ -121,8 +121,9 @@ val LocalMarkdownLinkHandler = staticCompositionLocalOf<MarkdownLinkHandler> { N
  * Compose. Display math renders through the offline KaTeX WebView
  * ([KaTeXMathBlock]); inline math is a declared v1 degradation (monospace TeX
  * via the code-span style) because an AnnotatedString cannot host a WebView
- * inline. Unknown fences (mermaid) degrade to plain [CodeBlock]s per the v1
- * plan; html blocks fall back to monospace text.
+ * inline. `mermaid` fences render through the offline mermaid WebView
+ * ([MermaidDiagramView], web-parity dispatch); other unknown fences degrade to
+ * plain [CodeBlock]s; html blocks fall back to monospace text.
  */
 @Composable
 fun Markdown(text: String, modifier: Modifier = Modifier) {
@@ -200,10 +201,18 @@ private fun MarkdownBlock(node: Node, parsed: ParsedMarkdown) {
         is BlockQuote -> MarkdownBlockQuote(node, parsed)
         is BulletList -> MarkdownList(node, ordered = false, parsed = parsed)
         is OrderedList -> MarkdownList(node, ordered = true, parsed = parsed)
-        is FencedCodeBlock -> CodeBlock(
-            code = node.literal.orEmpty().trimEnd('\n'),
-            language = node.info?.trim()?.takeWhile { !it.isWhitespace() }?.ifEmpty { null },
-        )
+        is FencedCodeBlock -> {
+            val code = node.literal.orEmpty().trimEnd('\n')
+            val language = node.info?.trim()?.takeWhile { !it.isWhitespace() }?.ifEmpty { null }
+            if (isMermaidFence(language)) {
+                // Same dispatch as the web (`MARKDOWN_COMPONENTS_BY_LANGUAGE`
+                // exact `mermaid` key): the fence renders as a diagram with
+                // the code header and raw-source fallback kept around it.
+                MermaidDiagramView(code = code)
+            } else {
+                CodeBlock(code = code, language = language)
+            }
+        }
         is IndentedCodeBlock -> CodeBlock(code = node.literal.orEmpty().trimEnd('\n'), language = null)
         is TableBlock -> MarkdownTable(node)
         is ThematicBreak -> HorizontalDivider(color = MaterialTheme.hapi.divider)
