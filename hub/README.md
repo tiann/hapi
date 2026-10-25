@@ -55,7 +55,7 @@ Dictation and voice-assistant provider keys can also be added from **Settings â†
 - `FCM_SERVICE_ACCOUNT_PATH` - Service-account JSON for private Firebase builds; the app must use the same project. Invalid configured credentials disable Android push instead of switching projects.
 - `HAPI_IOS_PUSH` - `relay` (default), `apns`, or `off`.
 - `HAPI_PUSH_RELAY_URL` - Shared Android/iOS push relay (default: `https://push.hapi.run`; persisted as `iosPushRelayUrl`). Independent of the `--relay` network tunnel.
-- `HAPI_SESSION_IDLE_TIMEOUT_MS` - Keep-alive-idle window in ms (default: 43200000 / 12 h; `0` disables). See "Session liveness" below.
+- `HAPI_SESSION_IDLE_TIMEOUT_MS` - Keep-alive-idle window in whole ms, digits only (default: 43200000 / 12 h; `0` disables and lifts existing idle marks). Suffixed values such as `1h` are rejected with a warning and fall back to the default. See "Session liveness" below.
 
 Official native apps register their encryption keys automatically; no push
 provider setup is needed on a fresh hub. See the [native companion push

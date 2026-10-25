@@ -154,6 +154,72 @@ describe('cli session handlers', () => {
         expect(store.messages.getAllMessages(session.id)).toHaveLength(2)
     })
 
+    it('a replayed message with a known localId is stored once and causes no side effects', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('replay', { flavor: 'claude' }, null, 'default')
+        const socket = new FakeSocket()
+        const progress = mock(); const activity = mock(); const bgDelta = mock(); const events: SyncEvent[] = []
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
+            onAgentProgress: progress, onSessionActivity: activity, onBackgroundTaskDelta: bgDelta,
+            onWebappEvent: event => { events.push(event) }
+        })
+        const message = { role: 'user', content: { type: 'text', text: 'hello' } }
+        socket.trigger('message', { sid: session.id, localId: 'replayed-1', message })
+        // Reconnect history resync sends the same row again.
+        socket.trigger('message', { sid: session.id, localId: 'replayed-1', message })
+
+        expect(store.messages.getAllMessages(session.id)).toHaveLength(1)
+        expect(progress).toHaveBeenCalledTimes(1)
+        expect(activity).toHaveBeenCalledTimes(1)
+        expect(socket.roomEvents.filter(e => e.event === 'update')).toHaveLength(1)
+        expect(events.filter(e => e.type === 'message-received')).toHaveLength(1)
+
+        // A background task start replayed the same way must count once, or the
+        // counter never returns to zero and the session never reconciles idle.
+        const started = { role: 'agent', content: { type: 'output', data: { type: 'tool_result', content: 'Command running in background with ID: bg-1' } } }
+        socket.trigger('message', { sid: session.id, localId: 'replayed-2', message: started })
+        socket.trigger('message', { sid: session.id, localId: 'replayed-2', message: started })
+        expect(store.messages.getAllMessages(session.id)).toHaveLength(2)
+        expect(bgDelta).toHaveBeenCalledTimes(1)
+        expect(bgDelta).toHaveBeenCalledWith(session.id, { started: 1, completed: 0 })
+        store.close()
+    })
+
+    it('a repeated messages-consumed ack is dated by the invocation it repeats, not the row clock', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('consumed-twice', { flavor: 'codex' }, null, 'default')
+        const socket = new FakeSocket()
+        const activity = mock()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {}, onSessionActivity: activity
+        })
+        // The CLI always emits the pair `message` + `messages-consumed` for a prompt.
+        const prompt = { role: 'user', content: { type: 'text', text: 'hello' } }
+        socket.trigger('message', { sid: session.id, localId: 'prompt-1', message: prompt })
+        socket.trigger('messages-consumed', { sid: session.id, localIds: ['prompt-1'] })
+        expect(activity).toHaveBeenCalledTimes(2)
+        const consumedAt = activity.mock.calls[1]![1] as number
+        expect(store.messages.getLocalMessageStates(session.id, ['prompt-1'])).toEqual([{ localId: 'prompt-1', invokedAt: consumedAt }])
+
+        // Later somebody renames the session, which moves the row clock.
+        Bun.sleepSync(2)
+        const stored = store.sessions.getSession(session.id)!
+        expect(store.sessions.updateSessionMetadata(session.id, { ...(stored.metadata as Record<string, unknown>), name: 'renamed' }, stored.metadataVersion, 'default').result).toBe('success')
+        expect(store.sessions.getSession(session.id)!.updatedAt).toBeGreaterThan(consumedAt)
+
+        // On reconnect the CLI replays the pair for the prompt it already
+        // consumed (the Codex history projection does so on every resume). The
+        // repeat still reports activity (a replay may have to re-sync the
+        // cache) but dated by the invocation it repeats, not by the rename.
+        socket.trigger('message', { sid: session.id, localId: 'prompt-1', message: prompt })
+        socket.trigger('messages-consumed', { sid: session.id, localIds: ['prompt-1'] })
+        expect(activity).toHaveBeenCalledTimes(3)
+        expect(activity.mock.calls[2]).toEqual([session.id, consumedAt])
+        expect(store.messages.getLocalMessageStates(session.id, ['prompt-1'])).toEqual([{ localId: 'prompt-1', invokedAt: consumedAt }])
+        store.close()
+    })
+
     it('drops redundant goal status events before persistence and broadcast', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('goal-status-session', {}, null, 'default')

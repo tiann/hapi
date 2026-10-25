@@ -332,6 +332,48 @@ describe('getOrCreateSession: requested identity', () => {
     })
 })
 
+describe('updateSessionMetadata: unchanged writes', () => {
+    it('advances the version but not updated_at when the merged value equals the row', () => {
+        // A CLI echoing the row back after a version mismatch (or replaying
+        // its local copy on reconnect) is not activity: list order and the
+        // unread watermark key off updated_at.
+        const store = makeStore()
+        const created = store.sessions.getOrCreateSession(
+            'echo',
+            { path: '/tmp/project', host: 'localhost', lifecycleState: 'running' },
+            null,
+            'default'
+        )
+        Bun.sleepSync(2)
+
+        // `worktree: undefined` is what the CLI's metadata object literally
+        // carries; JSON never stored it, so it must not read as a change.
+        const echo = store.sessions.updateSessionMetadata(
+            created.id,
+            { lifecycleState: 'running', host: 'localhost', path: '/tmp/project', worktree: undefined },
+            created.metadataVersion,
+            'default'
+        )
+        expect(echo.result).toBe('success')
+        const afterEcho = store.sessions.getSession(created.id)!
+        expect(afterEcho.metadataVersion).toBe(created.metadataVersion + 1)
+        expect(afterEcho.updatedAt).toBe(created.updatedAt)
+
+        Bun.sleepSync(2)
+        const changed = store.sessions.updateSessionMetadata(
+            created.id,
+            { path: '/tmp/project', host: 'localhost', lifecycleState: 'running', name: 'renamed' },
+            afterEcho.metadataVersion,
+            'default'
+        )
+        expect(changed.result).toBe('success')
+        const afterChange = store.sessions.getSession(created.id)!
+        expect(afterChange.metadataVersion).toBe(afterEcho.metadataVersion + 1)
+        expect(afterChange.updatedAt).toBeGreaterThan(created.updatedAt)
+        store.close()
+    })
+})
+
 describe('updateSessionMetadata: refuse un-archive (#1911 M1)', () => {
     it('merge-preserves hub archive on unauthorized running write (success, not mismatch)', () => {
         const store = makeStore()
