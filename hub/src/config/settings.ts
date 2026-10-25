@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path'
 import { withSettingsFileLock } from '@hapi/protocol/settingsFileLock'
 
 export interface Settings {
+    newChatPreferences?: Record<string, import('@hapi/protocol').ChatCreationPreferences>
     machineId?: string
     machineIdConfirmedByServer?: boolean
     runnerAutoStartWhenRunningHappy?: boolean

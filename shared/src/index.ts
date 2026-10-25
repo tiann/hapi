@@ -27,3 +27,5 @@ export * from './utils'
 export * from './usage'
 export * from './version'
 export type * from './types'
+
+export * from './sessionCreation'

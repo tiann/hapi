@@ -16,6 +16,7 @@ import { getAuthToken } from '@/api/auth'
 import { buildHubRequestHeaders } from '@/api/hubExtraHeaders'
 
 export type PingPeerErrorCode =
+    | 'spawn_failed'
     | 'bad_args'
     | 'auth_failed'
     | 'not_found'
@@ -718,4 +719,60 @@ export function formatInspectPeerReport(result: InspectPeerResult): string {
         }
     }
     return lines.join('\n')
+}
+
+/** Same auth and transport as peer messaging; fresh children are never resumed. */
+export async function spawnPeer(
+    input: import('../common/spawnPeerTool').SpawnPeerInput,
+    context: { currentSessionId?: string; http?: AxiosInstance; apiUrl?: string; accessToken?: string; sleep?: (ms: number) => Promise<void>; now?: () => number } = {}
+): Promise<{ sessionId: string; path: string; name: string; preferencesWarning?: string }> {
+    const { SpawnPeerInputSchema } = await import('../common/spawnPeerTool')
+    const parsed = SpawnPeerInputSchema.parse(input)
+    const apiUrl = resolveApiUrl(context.apiUrl)
+    const http = context.http ?? axios
+    const jwt = await exchangeJwt(apiUrl, resolveAccessToken(context.accessToken), http)
+    const { message, waitActiveSecs = 60, ...creation } = parsed
+    const parentId = context.currentSessionId
+    const endpoint = parentId
+        ? `/api/sessions/${encodeURIComponent(parentId)}/create-peer`
+        : '/api/sessions/create'
+    let response
+    try {
+        response = await http.post(`${apiUrl}${endpoint}`, creation, {
+            headers: authHeaders(jwt), timeout: 90_000, validateStatus: () => true
+        })
+    } catch {
+        throw new PingPeerError('spawn_failed', 'Creation outcome is unknown. Check list_peers before creating another chat; the runner may have started a child.')
+    }
+    if (response.status < 200 || response.status >= 300 || response.data?.type !== 'success' || typeof response.data.sessionId !== 'string') {
+        throw new PingPeerError('spawn_failed', `${response.data?.message ?? response.data?.error ?? `Creation failed (HTTP ${response.status})`}${response.data?.sessionId ? `; possible child ${response.data.sessionId} (/sessions/${response.data.sessionId})` : ''}. Inspect peers before retrying if the outcome is uncertain.`)
+    }
+    const sessionId = response.data.sessionId
+    const sleep = context.sleep ?? defaultSleep
+    const now = context.now ?? Date.now
+    try {
+        await waitUntilActive(apiUrl, jwt, sessionId, waitActiveSecs, http, sleep, now)
+        const session = await getSession(apiUrl, jwt, sessionId, http)
+        if (session.metadata?.flavor === 'pi') await waitForPiReady(apiUrl, jwt, sessionId, waitActiveSecs, http, sleep, now)
+        // A unique localId lets verification identify this exact write even if
+        // the agent immediately produces more than a page of output.
+        const localId = crypto.randomUUID()
+        let sendError: unknown
+        try {
+            const sent = await http.post(`${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages`,
+                { text: message, localId }, { headers: authHeaders(jwt), timeout: 30_000, validateStatus: () => true })
+            if (sent.status < 200 || sent.status >= 300 || sent.data?.ok !== true) throw new Error(sent.data?.error ?? `HTTP ${sent.status}`)
+        } catch (error) { sendError = error }
+        // queued-state reads the exact localId without racing a busy transcript's
+        // latest-page boundary. A persisted invoked/queued id proves acceptance.
+        const verified = await http.post(`${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages/queued-state`,
+            { localIds: [localId] }, { headers: authHeaders(jwt), timeout: 10_000, validateStatus: () => true })
+        const ids = [...(verified.data?.queuedLocalIds ?? []), ...(verified.data?.invokedLocalMessages ?? []).map((m: { localId: string }) => m.localId)]
+        if (verified.status !== 200 || !ids.includes(localId)) {
+            throw new Error(sendError instanceof Error ? sendError.message : 'Initial message acceptance could not be verified')
+        }
+        return { sessionId, path: `/sessions/${sessionId}`, name: resolvePeerSessionLabel(session), preferencesWarning: response.data.preferencesWarning }
+    } catch (error) {
+        throw new PingPeerError('send_failed', `Created ${sessionId} (/sessions/${sessionId}), but initial message delivery is unconfirmed: ${error instanceof Error ? error.message : String(error)}. Child left running. Inspect it before retrying; do not create another automatically.`)
+    }
 }

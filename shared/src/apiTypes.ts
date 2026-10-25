@@ -142,10 +142,11 @@ export type MessagesResponse = {
 export type MachinesResponse = { machines: Machine[] }
 
 export type SpawnResponse =
-    | { type: 'success'; sessionId: string }
+    | { type: 'success'; sessionId: string; preferencesWarning?: string }
     | {
         type: 'error'
         message: string
+        sessionId?: string
         code?: 'agent_unavailable' | 'runner_upgrade_required' | 'outside_workspace_roots'
         agent?: z.infer<typeof AgentFlavorSchema>
     }

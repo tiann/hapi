@@ -24,6 +24,7 @@ Commands:
   hapi doctor                Run diagnostics and troubleshooting
   hapi ping-peer             List peers or message another session
   hapi inspect-peer <id>     Read another session's metadata and messages
+  hapi spawn-peer <json>     Create an independent chat and send its first message
   hapi mcp                   Start the MCP stdio bridge
 
 Options:

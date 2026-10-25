@@ -42,6 +42,11 @@ const mocks = vi.hoisted(() => ({
     addToast: vi.fn()
 }))
 
+vi.mock('./sharedPreferences', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./sharedPreferences')>()
+    const { useState } = await import('react')
+    return { ...actual, useSharedCreationPreferences: (_api: ApiClient, machines: { id: string }[]) => ({ data: useState(() => actual.readBrowserCreationPreferences(machines.map(m => m.id)))[0], retry: vi.fn() }) }
+})
 vi.mock('@/lib/use-translation', () => ({
     useTranslation: () => ({ t: (key: string) => key })
 }))

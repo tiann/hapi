@@ -1,3 +1,4 @@
+import { spawnPeerCommand } from './spawnPeer'
 import chalk from 'chalk'
 import { agyCommand } from './agy'
 import { authCommand } from './auth'
@@ -62,7 +63,8 @@ const COMMANDS: CommandDefinition[] = [
     runnerCommand,
     notifyCommand,
     pingPeerCommand,
-    inspectPeerCommand
+    inspectPeerCommand,
+    spawnPeerCommand
 ]
 
 const commandMap = new Map<string, CommandDefinition>()

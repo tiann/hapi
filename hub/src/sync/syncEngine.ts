@@ -2181,8 +2181,9 @@ export class SyncEngine {
         startingMode?: 'remote' | 'pty',
         // Required for fresh machine spawns so the runner stamps the HAPI id on
         // argv before the first webhook (#1911 Major: unreapable window).
-        namespace?: string
-    ): ReturnType<RpcGateway['spawnSession']> {
+        namespace?: string,
+        creationMetadata?: Pick<import('@hapi/protocol').Metadata, 'launchOrigin'>
+    ): Promise<Awaited<ReturnType<RpcGateway['spawnSession']>> & { sessionId?: string }> {
         // Fresh machine spawns historically omitted existingSessionId, so
         // buildCliArgs could not stamp --hapi-session-id / --existing-session-id.
         // A runner restart before the first webhook then left no persisted PID
@@ -2203,6 +2204,7 @@ export class SyncEngine {
                     machineId,
                     startedBy: 'runner',
                     startedFromRunner: true,
+                    ...creationMetadata,
                 },
                 null,
                 namespace,
@@ -2243,6 +2245,7 @@ export class SyncEngine {
             if (preallocated && allocatedSessionId) {
                 return {
                     type: 'error',
+                    sessionId: allocatedSessionId,
                     message: error instanceof Error ? error.message : String(error),
                 }
             }
@@ -2278,7 +2281,7 @@ export class SyncEngine {
             // Matches the throw-path keep-stub policy above (#1911 Critical).
             // Archive of these stubs is allowed via isMachineSpawnPreallocatedStub
             // hatch in archiveSession (no hostPid → no process to confirm).
-            return result
+            return { ...result, sessionId: allocatedSessionId }
         }
 
         // Runner must bind the preallocated id — a divergent success id leaves
@@ -2294,6 +2297,7 @@ export class SyncEngine {
             )
             return {
                 type: 'error',
+                sessionId: allocatedSessionId,
                 message: `Runner reported unexpected session id ${result.sessionId} (expected ${allocatedSessionId})`,
             }
         }
