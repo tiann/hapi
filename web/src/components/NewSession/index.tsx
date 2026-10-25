@@ -44,6 +44,7 @@ import { isOpencodeReasoningEffortValid } from './types'
 import type { AgentType, LaunchEffort, CodexReasoningEffort, NewSessionServiceTier, SessionType } from './types'
 import { ActionButtons } from './ActionButtons'
 import { AgentSelector } from './AgentSelector'
+import { CodexPromptModeSelector } from './CodexPromptModeSelector'
 import { CollaborationModeSelector } from './CollaborationModeSelector'
 import { CodexImportActions } from './CodexImportActions'
 import { PiImportActions } from './PiImportActions'
@@ -120,6 +121,7 @@ export function NewSession(props: {
     const [modelReasoningEffort, setModelReasoningEffort] = useState<CodexReasoningEffort>('default')
     const [opencodeSelectedModel, setOpencodeSelectedModel] = useState<string | null | undefined>(undefined)
     const [serviceTier, setServiceTier] = useState<NewSessionServiceTier>('standard')
+    const [codexPromptMode, setCodexPromptMode] = useState<'queue' | 'steer'>('queue')
     const [collaborationMode, setCollaborationMode] = useState<CodexCollaborationMode>('default')
     const [copilotAgentMode, setCopilotAgentMode] = useState<CopilotAgentMode>('interactive')
     const [yoloMode, setYoloMode] = useState(loadPreferredYoloMode)
@@ -181,6 +183,7 @@ export function NewSession(props: {
         setGrokPermissionMode('default')
         setNativePermissionMode('default')
         setServiceTier('standard')
+        setCodexPromptMode('queue')
         setCollaborationMode('default')
         setCopilotAgentMode('interactive')
         if (agent !== 'cursor') {
@@ -253,6 +256,7 @@ export function NewSession(props: {
             draft.agent === 'agy' && draft.model !== 'auto' ? draft.model : null
         )
         setServiceTier(draft.serviceTier)
+        setCodexPromptMode(draft.codexPromptMode ?? 'queue')
         setCollaborationMode(draft.collaborationMode)
         setCopilotAgentMode(draft.copilotAgentMode)
         setYoloMode(draft.yoloMode)
@@ -883,6 +887,7 @@ export function NewSession(props: {
         setModel(agent === 'opencode' ? 'auto' : preferred.model)
         setCursorSelectedBase(preferred.cursorSelectedBase)
         setEffort(preferred.effort)
+        setCodexPromptMode(preferred.codexPromptMode ?? 'queue')
         setModelReasoningEffort(preferred.modelReasoningEffort)
         if (usesSharedPermissionMode) {
             setNativePermissionMode(preferred.permissionMode ?? 'default')
@@ -1430,6 +1435,7 @@ export function NewSession(props: {
             modelReasoningEffort,
             serviceTier,
             collaborationMode,
+            ...(agent === 'codex' ? { codexPromptMode } : {}),
             copilotAgentMode,
             yoloMode,
             nativePermissionMode,
@@ -1450,6 +1456,7 @@ export function NewSession(props: {
         modelReasoningEffort,
         serviceTier,
         collaborationMode,
+        codexPromptMode,
         copilotAgentMode,
         yoloMode,
         nativePermissionMode,
@@ -1580,6 +1587,7 @@ export function NewSession(props: {
                 ? modelReasoningEffort
                 : undefined
             const preferredLaunchSettings = {
+                ...(agent === 'codex' ? { codexPromptMode } : {}),
                 model: agent === 'agy'
                     ? (agySelectedModel ?? 'auto')
                     : agent === 'opencode'
@@ -1679,6 +1687,7 @@ export function NewSession(props: {
                 worktreeName: sessionType === 'worktree' ? (worktreeName.trim() || undefined) : undefined,
                 serviceTier: resolvedServiceTier,
                 collaborationMode: resolvedCollaborationMode,
+                codexPromptMode: agent === 'codex' ? codexPromptMode : undefined,
                 copilotAgentMode: agent === 'copilot' ? copilotAgentMode : undefined,
             })
 
@@ -1994,6 +2003,12 @@ export function NewSession(props: {
                 }}
                 onYoloToggle={setYoloMode}
             />
+            {!selectedCodexImportSession ? <CodexPromptModeSelector
+                agent={agent}
+                value={codexPromptMode}
+                isDisabled={isFormDisabled}
+                onChange={setCodexPromptMode}
+            /> : null}
             <CollaborationModeSelector
                 agent={agent}
                 value={collaborationMode}

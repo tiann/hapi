@@ -647,6 +647,18 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => expect(screen.getByTestId('create')).toBeDisabled())
     })
 
+    it('restores the saved Codex follow-up preference in the form', async () => {
+        savePreferredLaunchSettings('machine-1', 'codex', {
+            model: 'auto', cursorSelectedBase: 'auto', effort: 'auto',
+            modelReasoningEffort: 'default', codexPromptMode: 'steer'
+        })
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1"
+            initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => { }} />)
+        await waitFor(() => expect(screen.getByRole('combobox', { name: 'newSession.codexPromptMode' })).toHaveValue('steer'))
+        fireEvent.click(screen.getByDisplayValue('claude'))
+        expect(screen.queryByRole('combobox', { name: 'newSession.codexPromptMode' })).not.toBeInTheDocument()
+    })
+
     it('saves changed launch settings only after creation succeeds', async () => {
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'session-1' })
 
@@ -666,16 +678,17 @@ describe('NewSession launch preferences', () => {
         fireEvent.click(screen.getByTestId('reasoning'))
         fireEvent.click(screen.getByTestId('permission-mode'))
         expect(loadPreferredLaunchSettings('machine-1', 'codex')).toBeNull()
+        fireEvent.change(screen.getByRole('combobox', { name: 'newSession.codexPromptMode' }), { target: { value: 'steer' } })
         fireEvent.click(screen.getByTestId('create'))
 
         await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('session-1'))
-        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: 'yolo' }))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: 'yolo', codexPromptMode: 'steer' }))
         expect(loadPreferredLaunchSettings('machine-1', 'codex')).toEqual({
             model: 'gpt-5.6-terra',
             cursorSelectedBase: 'auto',
             effort: 'auto',
             modelReasoningEffort: 'max',
-            permissionMode: 'yolo'
+            permissionMode: 'yolo', codexPromptMode: 'steer'
         })
     })
 

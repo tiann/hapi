@@ -1229,6 +1229,80 @@ describe('MessageService.sendMessage deliveryMode', () => {
         expect(gateChecks).toBe(0)
     })
 
+    it('uses the target session Steer preference for a text-only peer message', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('peer-steer', {
+            path: '/tmp/peer-steer', host: 'localhost', flavor: 'codex', codexPromptMode: 'steer'
+        }, null, 'default')
+        const { io, cliEmitted } = makeTrackingIo()
+        const service = new MessageService(store, io, makePublisher() as any)
+        // ping_peer posts only text through the messages endpoint.
+        await service.sendMessage(session.id, { text: 'A follow-up from another chat', sentFrom: 'webapp' })
+        expect(cliEmitted[0]).toMatchObject({
+            body: { message: { localId: expect.any(String), content: { meta: { deliveryMode: 'steer' } } } }
+        })
+        const pending = store.messages.getUninvokedLocalMessages(session.id)
+        expect(pending).toHaveLength(1)
+        expect(pending[0]?.localId).toEqual(expect.any(String))
+        service.replayImmediateQueuedMessages(session.id)
+        expect(cliEmitted[1]).toMatchObject({
+            body: { message: { content: { meta: { deliveryMode: 'queue' } } } }
+        })
+        store.messages.markMessagesInvoked(session.id, [pending[0]!.localId!], Date.now())
+        expect(store.messages.getUninvokedLocalMessages(session.id)).toHaveLength(0)
+        store.close()
+    })
+
+    it('queues scheduled sends even when delivery mode is omitted in a Steer session', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('scheduled-preference', {
+            path: '/tmp', host: 'localhost', flavor: 'codex', codexPromptMode: 'steer'
+        }, null, 'default')
+        const { io, cliEmitted } = makeTrackingIo()
+        const service = new MessageService(store, io, makePublisher() as any)
+        await service.sendMessage(session.id, { text: 'later', localId: 'scheduled', scheduledAt: Date.now() + 60000 })
+        expect(cliEmitted).toHaveLength(0)
+        expect(store.messages.getUninvokedLocalMessages(session.id)[0]?.content).toMatchObject({ meta: { deliveryMode: 'queue' } })
+        store.close()
+    })
+
+    it.each(['pi', 'claude'])('keeps omitted delivery mode queued for %s', async flavor => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('other-agent', {
+            path: '/tmp', host: 'localhost', flavor, codexPromptMode: 'steer'
+        }, null, 'default')
+        const { io, cliEmitted } = makeTrackingIo()
+        const service = new MessageService(store, io, makePublisher() as any)
+        await service.sendMessage(session.id, { text: 'peer message' })
+        expect(cliEmitted[0]).toMatchObject({ body: { message: { content: { meta: { deliveryMode: 'queue' } } } } })
+        store.close()
+    })
+
+    it.each([
+        ['steer', 'steer', 'steer'],
+        ['steer', undefined, 'steer'],
+        ['steer', 'queue', 'queue'],
+        ['queue', 'steer', 'queue'],
+        [undefined, 'steer', 'queue'],
+        ['queue', undefined, 'queue'],
+        [undefined, undefined, 'queue']
+    ] as const)('normalizes Codex preference %s and delivery %s to %s', async (codexPromptMode, deliveryMode, expected) => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('codex-delivery', {
+            path: '/tmp/codex-delivery', host: 'localhost', flavor: 'codex', codexPromptMode
+        }, null, 'default')
+        const { io, cliEmitted } = makeTrackingIo()
+        const service = new MessageService(store, io, makePublisher() as any)
+        await service.sendMessage(session.id, { text: 'follow up', localId: 'followup', deliveryMode })
+        expect(cliEmitted[0]).toMatchObject({
+            body: { message: { content: { meta: { deliveryMode: expected } } } }
+        })
+        service.replayImmediateQueuedMessages(session.id)
+        expect(cliEmitted[1]).toMatchObject({
+            body: { message: { content: { meta: { deliveryMode: 'queue' } } } }
+        })
+    })
+
     it('persists Pi steer provenance but downgrades every deferred CLI delivery to queue', async () => {
         const store = makeStore()
         const session = store.sessions.getOrCreateSession(

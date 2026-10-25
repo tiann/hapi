@@ -120,15 +120,18 @@ function getNormalizedDeliveryMode(
     requestedDeliveryMode: MessageDeliveryMode | undefined,
     scheduledAt: number | null | undefined
 ): MessageDeliveryMode {
-    if (requestedDeliveryMode !== 'steer' || scheduledAt != null) {
+    if (scheduledAt != null || requestedDeliveryMode === 'queue') {
         return 'queue'
     }
-
-    return isObject(metadata) && metadata.flavor === 'pi' ? 'steer' : 'queue'
+    if (isObject(metadata) && metadata.flavor === 'codex' && metadata.codexPromptMode === 'steer') {
+        return 'steer'
+    }
+    return requestedDeliveryMode === 'steer' && isObject(metadata) && metadata.flavor === 'pi'
+        ? 'steer' : 'queue'
 }
 
 /**
- * Native steer is scoped to the Pi turn active at the initial live emit. Once
+ * Native steer is scoped to the turn active at the initial live emit. Once
  * a durable row is delivered through reconnect, backfill, a clear gate, or a
  * scheduled scan, that turn identity is no longer provable. Preserve stored
  * provenance for Web diagnostics, but make deferred CLI delivery an ordinary
@@ -884,7 +887,9 @@ export class MessageService {
         const inserted = this.store.addMessageForCurrentSession(
             sessionId,
             content,
-            payload.localId ?? undefined,
+            // Peer sends omit localId. Steering still needs durable acknowledgement
+            // and uncertainty tracking, including across reconnects.
+            payload.localId ?? (deliveryMode === 'steer' ? randomUUID() : undefined),
             payload.scheduledAt ?? null
         )
         const actualSessionId = inserted.sessionId

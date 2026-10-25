@@ -539,6 +539,8 @@ export type MessagesQuery = z.infer<typeof MessagesQuerySchema>
 export const MessageDeliveryModeSchema = z.enum(['queue', 'steer'])
 export type MessageDeliveryMode = z.infer<typeof MessageDeliveryModeSchema>
 
+export const SessionCodexPromptModeRequestSchema = z.object({ mode: MessageDeliveryModeSchema })
+
 export const SendMessageRequestSchema = z.object({
     text: z.string(),
     localId: z.string().min(1).optional(),
@@ -652,7 +654,8 @@ export const SpawnSessionRequestSchema = z.object({
     serviceTier: z.enum(['fast', 'standard']).optional(),
     collaborationMode: CodexCollaborationModeSchema.optional(),
     copilotAgentMode: CopilotAgentModeSchema.optional(),
-    startingMode: z.enum(['remote', 'pty']).optional()
+    startingMode: z.enum(['remote', 'pty']).optional(),
+    codexPromptMode: MessageDeliveryModeSchema.optional()
 })
 
 export type SpawnSessionRequest = z.infer<typeof SpawnSessionRequestSchema>
