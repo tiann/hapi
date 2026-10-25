@@ -80,6 +80,7 @@ describe('buildHapiMcpBridge skill lookup config', () => {
             display_image: { approval_mode: 'prompt' },
             display_video: { approval_mode: 'prompt' },
             display_media: { approval_mode: 'prompt' },
+            archive_peer: { approval_mode: 'approve' },
             list_peers: { approval_mode: 'approve' },
             skill_lookup: { approval_mode: 'approve' }
         })
@@ -102,6 +103,7 @@ describe('buildHapiMcpBridge skill lookup config', () => {
             display_image: { approval_mode: 'prompt' },
             display_video: { approval_mode: 'prompt' },
             display_media: { approval_mode: 'prompt' },
+            archive_peer: { approval_mode: 'approve' },
             list_peers: { approval_mode: 'approve' }
         })
     })

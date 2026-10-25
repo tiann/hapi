@@ -672,3 +672,32 @@ describe('listSessions query params', () => {
         expect(pingParams[0]).toBeUndefined()
     })
 })
+
+describe('archivePeer', () => {
+    it('archives a same-namespace target through the existing archive endpoint', async () => {
+        const http = createHttpMock({
+            post: (url, body) => {
+                if (url.endsWith('/api/auth')) {
+                    expect(body).toEqual({ accessToken: 'tok:team' })
+                    return { status: 200, data: { token: 'namespace-jwt' } }
+                }
+                if (url.endsWith('/api/sessions/reviewer-1/archive')) {
+                    return { status: 200, data: { ok: true } }
+                }
+                throw new Error(`unexpected POST ${url}`)
+            },
+            get: () => ({
+                status: 200, data: {
+                    sessions: [
+                        { id: 'reviewer-1', active: true, metadata: { name: 'Review' } }
+                    ]
+                }
+            })
+        })
+        const { archivePeer } = await import('./pingPeer')
+        await expect(archivePeer({
+            sessionIdPrefix: 'reviewer', apiUrl: 'http://hub.test',
+            accessToken: 'tok:team', http: http as never
+        })).resolves.toEqual({ sessionId: 'reviewer-1', name: 'Review', alreadyArchived: false })
+    })
+})

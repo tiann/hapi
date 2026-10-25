@@ -23,7 +23,9 @@ import {
   SESSION_ID_PREFIX_PARAM_DESCRIPTION,
 } from '@hapi/protocol/sessionCitation';
 
-const DEFAULT_TOOL_NAMES = ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer'];
+import { ARCHIVE_PEER_TOOL_DESCRIPTION, archivePeerInputSchema } from '@/modules/common/archivePeerTool';
+
+const DEFAULT_TOOL_NAMES = ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'archive_peer'];
 
 function parseArgs(argv: string[]): { url: string | null; toolNames: Set<string> } {
   let url: string | null = null;
@@ -261,6 +263,24 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
           }
         }
       );
+    }
+
+    if (toolNames.has('archive_peer')) {
+      server.registerTool<any, any>('archive_peer', {
+        description: ARCHIVE_PEER_TOOL_DESCRIPTION,
+        title: 'Archive Peer Session',
+        inputSchema: archivePeerInputSchema,
+      }, async (args: Record<string, unknown>) => {
+        try {
+          const client = await ensureHttpClient();
+          return await client.callTool({ name: 'archive_peer', arguments: args }) as any;
+        } catch {
+          return {
+            content: [{ type: 'text' as const, text: 'Archive outcome is unconfirmed. Self-archiving can close this connection; inspect the target chat before retrying.' }],
+            isError: true,
+          };
+        }
+      });
     }
 
     const listPeersInputSchema: z.ZodTypeAny = z.object({

@@ -462,7 +462,14 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Session is inactive' }, 409)
         }
 
-        await engine.archiveSession(sessionResult.sessionId)
+        try {
+            await engine.archiveSession(sessionResult.sessionId)
+        } catch (error) {
+            if (error instanceof Error && error.message === 'Session process is still running and could not be stopped') {
+                return c.json({ error: error.message }, 409)
+            }
+            throw error
+        }
         return c.json({ ok: true })
     })
 

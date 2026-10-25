@@ -24,6 +24,7 @@ Commands:
   hapi doctor                Run diagnostics and troubleshooting
   hapi ping-peer             List peers or message another session
   hapi inspect-peer <id>     Read another session's metadata and messages
+  hapi archive-peer <id>     Archive a chat (or use --self)
   hapi mcp                   Start the MCP stdio bridge
 
 Options:
