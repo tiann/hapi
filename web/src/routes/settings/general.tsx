@@ -66,6 +66,8 @@ export default function SettingsGeneralPage() {
                             <SettingsSwitch
                                 label={t('settings.general.sessionSummaryContract')}
                                 description={t('settings.general.sessionSummaryContract.desc')}
+                                leftLabel={t('settings.general.sessionSummaryContract.off')}
+                                rightLabel={t('settings.general.sessionSummaryContract.on')}
                                 checked={hubSettingsQuery.data.sessionSummaryContract}
                                 onChange={(checked) => {
                                     if (hubSettingsMutation.isPending) return
@@ -75,6 +77,8 @@ export default function SettingsGeneralPage() {
                             <SettingsSwitch
                                 label={t('settings.general.sessionSummaryInChat')}
                                 description={t('settings.general.sessionSummaryInChat.desc')}
+                                leftLabel={t('settings.general.sessionSummaryInChat.off')}
+                                rightLabel={t('settings.general.sessionSummaryInChat.on')}
                                 checked={hubSettingsQuery.data.sessionSummaryInChat}
                                 onChange={(checked) => {
                                     if (hubSettingsMutation.isPending) return

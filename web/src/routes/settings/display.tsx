@@ -177,9 +177,9 @@ export default function SettingsDisplayPage() {
 
             <SettingsSection title={t('settings.display.sessions')}>
                 <SessionPreviewLimitControl />
-                <SettingsSwitch label={t('settings.display.activeSessionsOnly')} description={t('settings.display.activeSessionsOnly.desc')} checked={showActiveSessionsOnly} onChange={setShowActiveSessionsOnly} />
-                <SettingsSwitch label={t('settings.display.pinInProgressSessions')} description={t('settings.display.pinInProgressSessions.desc')} checked={pinInProgressSessions} onChange={setPinInProgressSessions} />
-                <SettingsSwitch label={t('settings.display.appBadge')} description={t('settings.display.appBadge.desc')} checked={appBadgeEnabled} onChange={setAppBadgeEnabled} />
+                <SettingsSwitch label={t('settings.display.activeSessionsOnly')} description={t('settings.display.activeSessionsOnly.desc')} leftLabel={t('settings.display.activeSessionsOnly.off')} rightLabel={t('settings.display.activeSessionsOnly.on')} checked={showActiveSessionsOnly} onChange={setShowActiveSessionsOnly} />
+                <SettingsSwitch label={t('settings.display.pinInProgressSessions')} description={t('settings.display.pinInProgressSessions.desc')} leftLabel={t('settings.display.pinInProgressSessions.off')} rightLabel={t('settings.display.pinInProgressSessions.on')} checked={pinInProgressSessions} onChange={setPinInProgressSessions} />
+                <SettingsSwitch label={t('settings.display.appBadge')} description={t('settings.display.appBadge.desc')} leftLabel={t('settings.display.appBadge.off')} rightLabel={t('settings.display.appBadge.on')} checked={appBadgeEnabled} onChange={setAppBadgeEnabled} />
                 <SettingsChoiceGroup
                     label={t('settings.display.sessionListStatus')}
                     description={t('settings.display.sessionListStatus.detailedDescription')}
@@ -194,6 +194,8 @@ export default function SettingsDisplayPage() {
                     <SettingsSwitch
                         key={option.key}
                         label={t(option.labelKey)}
+                        leftLabel={t('settings.display.sessionHeader.poleOff')}
+                        rightLabel={t('settings.display.sessionHeader.poleOn')}
                         checked={sessionHeaderMetadata[option.key]}
                         onChange={(checked) => setSessionHeaderMetadata(option.key, checked)}
                     />
@@ -204,6 +206,8 @@ export default function SettingsDisplayPage() {
                 <SettingsSwitch
                     label={t('settings.display.openExternalLinksInNewTab')}
                     description={t('settings.display.openExternalLinksInNewTab.desc')}
+                    leftLabel={t('settings.display.openExternalLinksInNewTab.off')}
+                    rightLabel={t('settings.display.openExternalLinksInNewTab.on')}
                     checked={openExternalLinksInNewTab}
                     onChange={setOpenExternalLinksInNewTab}
                 />
