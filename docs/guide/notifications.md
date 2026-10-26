@@ -1,8 +1,26 @@
 # Notifications
 
-Get notified when sessions need input, request permissions, fail, or complete — via Telegram, Server酱 (ServerChan), Web Push, or voice.
+Get notified when sessions need input, request permissions, fail, or complete — via native app notifications, Telegram, Server酱 (ServerChan), Web Push, or voice.
 
-Web Push works out of the box once you [install the PWA](./pwa.md); no configuration needed. The channels below are optional.
+Web Push needs no provider configuration: [install the PWA](./pwa.md) and allow notifications. The channels below are optional.
+
+## Native app notifications
+
+See [Native apps](./native-apps.md) for build, pairing and platform requirements.
+
+For official Android and iOS apps, pair an updated hub and allow notifications.
+No Firebase project or Apple developer account is needed. Notification content
+is end-to-end encrypted through the official push relay, which also works when
+you access the hub through Tailscale or your own HTTPS setup. Android requires
+Google Play services and FCM connectivity.
+
+Private app builds need matching Firebase/APNs credentials. An Android build
+without Firebase configuration has no FCM push. For a self-signed iOS build,
+the signing account, bundle ID and APNs environment must match the provider
+configuration; the official relay cannot deliver to an arbitrary self-build.
+See the [native push contract](../api/native-companion-contract.md) for settings
+and delivery details. This push relay is independent of the `--relay` network
+tunnel.
 
 ## Telegram Setup
 
@@ -19,7 +37,8 @@ export HAPI_PUBLIC_URL="https://your-public-url"
 hapi hub
 ```
 
-Then message your bot with `/start`, open the app, and enter your `CLI_API_TOKEN`.
+Then message your bot with `/start`, open the app, and bind using
+`CLI_API_TOKEN:<namespace>` (for example, `your-token:default`).
 
 Related environment variables:
 

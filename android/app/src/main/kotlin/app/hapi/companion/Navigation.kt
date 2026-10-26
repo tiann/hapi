@@ -28,7 +28,7 @@ import app.hapi.companion.di.HubGraph
 import app.hapi.companion.di.LocalAppGraph
 import app.hapi.companion.di.viewModelFactory
 import app.hapi.companion.feature.chat.ChatMedia
-import app.hapi.companion.feature.chat.ChatScreen
+import app.hapi.companion.feature.chat.ChatHost
 import app.hapi.companion.feature.chat.ChatViewModel
 import app.hapi.companion.feature.chat.composer.DictationController
 import app.hapi.companion.feature.chat.composer.HapiDictationApi
@@ -225,11 +225,11 @@ fun HapiNavigation() {
             val hubGraph = activeHubGraph ?: return@composable
             val scope = rememberCoroutineScope()
             val holder = viewModel<SessionListViewModelHolder>(
-                key = "sessions:${hubGraph.hubUrl}",
-                factory = viewModelFactory { SessionListViewModelHolder(hubGraph) },
+                key = "sessions",
+                factory = viewModelFactory { SessionListViewModelHolder() },
             )
             HomeScreen(
-                viewModel = holder.viewModel,
+                viewModel = holder.forHub(hubGraph),
                 activeHubUrl = activeHubUrl,
                 pairedHubs = registryState.hubs,
                 onSwitchHub = { hub -> scope.launch { graph.hubRegistry.setActiveHub(hub) } },
@@ -303,7 +303,7 @@ fun HapiNavigation() {
                 key = "chat:${hubGraph.hubUrl}:$sessionId",
                 factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext) },
             )
-            ChatScreen(
+            ChatHost(
                 viewModel = holder.viewModel,
                 media = remember(hubGraph, sessionId) {
                     ChatMedia(hubGraph.imageLoader) { imageId ->
@@ -546,24 +546,34 @@ fun HapiNavigation() {
 
 /**
  * Androidx-lifecycle shell around the plain [SessionListViewModel]: survives
- * config changes with the nav entry, owns the combine scope, and tears the
- * global SSE pipe down when the entry clears. Keyed per hub so a hub switch
- * builds a fresh one against the new [HubGraph].
+ * config changes with the nav entry. Retain only the current graph: returning
+ * to the same URL creates a new HubGraph and must not revive a closed store
+ * or its old filter. The global SSE pipe still belongs to HubGraph.
  */
-private class SessionListViewModelHolder(hubGraph: HubGraph) : ViewModel() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+private class SessionListViewModelHolder : ViewModel() {
+    private var graph: HubGraph? = null
+    private var scope: CoroutineScope? = null
+    private var model: SessionListViewModel? = null
 
-    val viewModel = SessionListViewModel(
-        sessionStore = hubGraph.sessionStore,
-        machineStore = hubGraph.machineStore,
-        lastSeenStore = hubGraph.lastSeenStore,
-        scope = scope,
-        hubKey = hubGraph.hubUrl,
-    )
+    fun forHub(hubGraph: HubGraph): SessionListViewModel {
+        model?.takeIf { graph === hubGraph }?.let { return it }
+        model?.stop()
+        scope?.cancel()
+        val nextScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        graph = hubGraph
+        scope = nextScope
+        return SessionListViewModel(
+            sessionStore = hubGraph.sessionStore,
+            machineStore = hubGraph.machineStore,
+            lastSeenStore = hubGraph.lastSeenStore,
+            scope = nextScope,
+            hubKey = hubGraph.hubUrl,
+        ).also { model = it }
+    }
 
     override fun onCleared() {
-        viewModel.stop()
-        scope.cancel()
+        model?.stop()
+        scope?.cancel()
     }
 }
 

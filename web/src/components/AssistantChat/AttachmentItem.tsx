@@ -1,4 +1,4 @@
-import { AttachmentPrimitive, useThreadComposerAttachment } from '@assistant-ui/react'
+import { AttachmentPrimitive, useAuiState } from '@assistant-ui/react'
 import type { PendingAttachment } from '@assistant-ui/react'
 import type { KeyboardEventHandler, MouseEventHandler, PointerEventHandler, PointerEvent as ReactPointerEvent } from 'react'
 import { ImagePreview } from '@/components/ImagePreview'
@@ -95,7 +95,7 @@ function DragHandle(props: AttachmentDragHandleProps & { isFile?: boolean }) {
 }
 
 export function AttachmentItem(props: { dragHandleProps?: AttachmentDragHandleProps } = {}) {
-    const { name, status, previewUrl } = useThreadComposerAttachment() as ComposerAttachmentWithPreview
+    const { name, status, previewUrl } = useAuiState((s) => s.attachment) as ComposerAttachmentWithPreview
     const isParking = useComposerParking()
     const isUploading = status.type === 'running'
     const isError = status.type === 'incomplete'

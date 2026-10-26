@@ -11,7 +11,7 @@ import { getToolResultViewComponent } from '@/components/ToolCard/views/_results
 import { formatTaskChildLabel, TaskStateIcon } from '@/components/ToolCard/helpers'
 import { CodeBlock } from '@/components/CodeBlock'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
-import { getEventPresentation } from '@/chat/presentation'
+import { formatDuration, getEventPresentation } from '@/chat/presentation'
 import { useTranslation } from '@/lib/use-translation'
 import { isSubagentToolName } from '@/chat/subagentTool'
 
@@ -84,8 +84,7 @@ export function getTraceSummaryText(
     }
 
     if (totalDurationMs !== null) {
-        const s = totalDurationMs / 1000
-        parts.push(`${s.toFixed(1)}s`)
+        parts.push(formatDuration(totalDurationMs))
     }
 
     return parts.join(' · ')

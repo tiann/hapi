@@ -13,9 +13,9 @@
         "test:mermaid-lightbox:e2e": "playwright test e2e/mermaid-lightbox.spec.ts"
     },
     "dependencies": {
-        "@assistant-ui/react": "^0.14.29",
-        "@assistant-ui/react-markdown": "^0.14.7",
-        "@assistant-ui/tap": "^0.9.8",
+        "@assistant-ui/react": "^0.15.21",
+        "@assistant-ui/react-markdown": "^0.14.16",
+        "@assistant-ui/tap": "^0.9.18",
         "@elevenlabs/react": "^0.13.0",
         "@hapi/protocol": "workspace:*",
         "@lobehub/icons": "^5.14.0",

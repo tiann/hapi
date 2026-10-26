@@ -1,5 +1,7 @@
 import AVFAudio
 import HapiClient
+import HapiProtocol
+import HapiUI
 import PhotosUI
 import SwiftUI
 import UIKit
@@ -11,9 +13,11 @@ import UniformTypeIdentifiers
 /// otherwise Send (long-press offers "Send & steer" during a turn). The card
 /// also hosts dictation and attachment controls.
 struct ChatComposerView: View {
+    @Environment(\.hapiTypography) private var typography
     let interactor: ChatInteractor
     /// nil ⇒ dictation unavailable (no controller wired) — mic button hidden.
     var dictation: DictationController?
+    var onOpenScratchlist: (ScratchlistEntry?, Bool) -> Void = { _, _ in }
 
     // Attachment pickers (the launchers live here; policy + upload live in
     // HapiKit — `AttachmentPreparer` / `ComposerAttachments`).
@@ -22,6 +26,13 @@ struct ChatComposerView: View {
     @State private var photoSelection: [PhotosPickerItem] = []
     @State private var cameraOpen = false
     @State private var filePickerOpen = false
+    @FocusState private var textFocused: Bool
+    @State private var preparingAttachment = false
+
+    private var scratchlistMode: Bool { interactor.composerDestination == .scratchlist }
+    private var composerPrompt: LocalizedStringKey {
+        scratchlistMode ? "Keep an instruction for later…" : "Message the agent…"
+    }
 
     private var text: Binding<String> {
         Binding(
@@ -46,6 +57,16 @@ struct ChatComposerView: View {
         let attachments = interactor.attachments.items
         VStack(spacing: 0) {
             VStack(spacing: 0) {
+                if scratchlistMode, let store = interactor.scratchlist {
+                    ScratchlistDrawerView(store: store, sessionId: interactor.sessionId, interactor: interactor,
+                        keyboardFocused: textFocused, onOpen: onOpenScratchlist)
+                }
+                if let error = interactor.scratchlistError {
+                    ScratchlistErrorBanner(message: error,
+                        actionTitle: interactor.scratchlistErrorDestination == nil ? "Dismiss" : "Retry",
+                        retry: interactor.retryScratchlistComposerOperation)
+                        .padding(.horizontal, 12)
+                }
                 if !attachments.isEmpty {
                     attachmentsRow(attachments)
                         .padding(.horizontal, 12)
@@ -58,7 +79,9 @@ struct ChatComposerView: View {
                     .padding(.horizontal, 12)
                     .padding(.top, 8)
                 }
-                TextField("Message the agent…", text: text, axis: .vertical)
+                TextField(composerPrompt, text: text, prompt: Text(composerPrompt).foregroundColor(.secondary), axis: .vertical)
+                    .focused($textFocused)
+                    .font(typography.bodyFont)
                     .lineLimit(1...6)
                     .textFieldStyle(.plain)
                     .padding(.horizontal, 12)
@@ -66,11 +89,18 @@ struct ChatComposerView: View {
                     .padding(.bottom, 4)
                 HStack(spacing: 2) {
                     addAttachmentButton
+                    if interactor.scratchlist != nil { scratchlistButton }
                     Spacer()
-                    if let dictation {
+                    if scratchlistMode, composer.canSteer {
+                        Button { interactor.abortSession() } label: {
+                            Image(systemName: "stop.fill").foregroundStyle(.red).frame(width: 44, height: 44)
+                        }.accessibilityLabel("Stop the current turn")
+                    }
+                    if let dictation, dictation.isAvailable {
                         micButton(dictation)
                     }
-                    primaryActionButton(composer, attachments: attachments)
+                    if scratchlistMode { parkButton }
+                    else { primaryActionButton(composer, attachments: attachments) }
                 }
                 // 44 pt touch slot with a centered 38 pt circle:
                 // 9 + 3 = the shared 12 pt visual inset.
@@ -82,22 +112,15 @@ struct ChatComposerView: View {
                     .fill(composerSurfaceColor)
             )
             .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
+            .shadow(color: .black.opacity(0.06), radius: 6, y: 2)
         }
-        .padding(.horizontal, 12)
+        .hapiReadingColumn()
         .padding(.vertical, 8)
-        .confirmationDialog("Attach", isPresented: $attachDialogOpen, titleVisibility: .visible) {
-            Button("Photo library") {
-                photosPickerOpen = true
-            }
-            if CameraCaptureView.isAvailable {
-                Button("Camera") {
-                    cameraOpen = true
-                }
-            }
-            Button("Files") {
-                filePickerOpen = true
-            }
+        .onChange(of: interactor.composerFocusRequest) {
+            textFocused = true
+        }
+        .task(id: dictation.map { ObjectIdentifier($0) }) {
+            await dictation?.refreshAvailability()
         }
         .photosPicker(
             isPresented: $photosPickerOpen,
@@ -153,7 +176,7 @@ struct ChatComposerView: View {
             }
             let result = await AttachmentPreparer.prepare(fileURL: movie.url)
             try? FileManager.default.removeItem(at: movie.url)
-            handle(result)
+            await handle(result)
             return
         }
         let naming = AttachmentPreparer.photoFilename(for: type)
@@ -168,10 +191,25 @@ struct ChatComposerView: View {
         ))
     }
 
-    private func handle(_ result: PrepareResult) {
+    private func handle(_ result: PrepareResult) async {
         switch result {
         case .ready(let prepared):
-            interactor.attachments.add(prepared)
+            if scratchlistMode, let store = interactor.scratchlist {
+                preparingAttachment = true
+                defer { preparingAttachment = false }
+                let limits = await store.limits(sessionId: interactor.sessionId)
+                let existing = interactor.attachments.scratchlistBudget
+                let outcome = await Task.detached(priority: .userInitiated) {
+                    ScratchlistAttachmentImport.prepare(data: prepared.bytes, filename: prepared.filename,
+                        mimeType: prepared.mimeType, existing: existing, limits: limits)
+                }.value
+                switch outcome {
+                case .ready(let attachment):
+                    interactor.attachments.add(PreparedAttachment(filename: attachment.filename, mimeType: attachment.mimeType,
+                        bytes: attachment.data, previewBytes: prepared.previewBytes), toScratchlist: true)
+                case .rejected(let message): interactor.reportScratchlistError(message)
+                }
+            } else { interactor.attachments.add(prepared) }
         case .tooLarge(let filename, _):
             interactor.postNotice(String(format: String(localized: "%@ is over the 50 MB upload limit"), filename))
         case .unreadable(let filename):
@@ -190,6 +228,7 @@ struct ChatComposerView: View {
                         onRetry: { interactor.attachments.retry(attachment.id) },
                         onRemove: { interactor.attachments.remove(attachment.id) }
                     )
+                    .disabled(interactor.scratchlistBusy || interactor.isSending)
                 }
             }
         }
@@ -204,11 +243,67 @@ struct ChatComposerView: View {
                 foreground: AnyShapeStyle(.secondary)
             ) {
                 Image(systemName: "plus")
-                    .font(.subheadline.weight(.medium))
+                    .font(.system(size: 15, weight: .medium))
             }
         }
         .buttonStyle(.plain)
+        .disabled(preparingAttachment || interactor.scratchlistBusy)
         .accessibilityLabel("Add attachment")
+        .accessibilityIdentifier("chat.add-attachment")
+        .confirmationDialog("Attach", isPresented: $attachDialogOpen, titleVisibility: .visible) {
+            Button("Photo library") {
+                photosPickerOpen = true
+            }
+            if CameraCaptureView.isAvailable {
+                Button("Camera") {
+                    cameraOpen = true
+                }
+            }
+            Button("Files") {
+                filePickerOpen = true
+            }
+        }
+    }
+
+    private var scratchlistButton: some View {
+        Button {
+            interactor.setComposerDestination(scratchlistMode ? .chat : .scratchlist)
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "tray")
+                if interactor.scratchlistCount > 0 {
+                    Text(verbatim: interactor.scratchlistCount > 99 ? "99+" : "\(interactor.scratchlistCount)")
+                        .font(.caption.weight(.medium)).monospacedDigit()
+                }
+            }
+            .foregroundStyle(scratchlistMode ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+            .padding(.horizontal, 6)
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(interactor.scratchlistBusy || interactor.isSending || preparingAttachment)
+        .accessibilityLabel(String(format: String(localized: "Scratchlist (%lld)"), Int64(interactor.scratchlistCount)))
+        .accessibilityValue(scratchlistMode ? String(localized: "Held — not sent") : String(localized: "Chat"))
+        .accessibilityIdentifier("scratchlist.toggle")
+    }
+
+    private var parkButton: some View {
+        Button { interactor.parkComposerDraft() } label: {
+            HStack(spacing: 5) {
+                if interactor.scratchlistBusy { ProgressView().controlSize(.small) }
+                else { Image(systemName: "tray.and.arrow.down") }
+                Text("Save draft").font(.subheadline.weight(.semibold))
+            }
+            .padding(.horizontal, 12)
+            .frame(minHeight: 38)
+            .background(.orange.opacity(0.16), in: Capsule())
+            .frame(minHeight: 44)
+        }
+        .buttonStyle(.plain)
+        .disabled(!interactor.hasComposerDraft || interactor.scratchlistBusy || interactor.isSending
+            || interactor.attachments.hasUnsettled || preparingAttachment)
+        .accessibilityIdentifier("scratchlist.park")
     }
 
     // MARK: - Dictation
@@ -233,7 +328,7 @@ struct ChatComposerView: View {
                         .controlSize(.small)
                 } else {
                     Image(systemName: recording ? "stop.fill" : "mic.fill")
-                        .font(.subheadline)
+                        .font(.system(size: 15))
                 }
             }
         }
@@ -310,7 +405,7 @@ struct ChatComposerView: View {
                     foreground: AnyShapeStyle(.white)
                 ) {
                     Image(systemName: "stop.fill")
-                        .font(.subheadline)
+                        .font(.system(size: 15))
                 }
             }
             .buttonStyle(.plain)
@@ -348,10 +443,12 @@ struct ChatComposerView: View {
             foreground: enabled ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary)
         ) {
             Image(systemName: "arrow.up")
-                .font(.subheadline.weight(.semibold))
+                .font(.system(size: 15, weight: .semibold))
         }
     }
 
+    // Icon-only controls keep their 38pt visuals / 44pt hit areas. Their
+    // symbols use fixed sizes; editable text remains fully Dynamic Type.
     private func actionCircle<Content: View>(
         background: AnyShapeStyle,
         foreground: AnyShapeStyle,

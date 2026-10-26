@@ -12,6 +12,7 @@ import { SESSION_REFERENCE_STEER_SUFFIX } from '@hapi/protocol/sessionCitation'
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
     return {
+        hasConversationContent: true,
         active: false,
         thinking: false,
         activeAt: 0,
@@ -89,6 +90,24 @@ describe('buildSessionReferenceText', () => {
 })
 
 describe('matchSessionsForMention', () => {
+    it('uses conversation content instead of titles for reference eligibility', () => {
+        const untitled = Object.assign(makeSession({
+            id: 'untitled-content',
+            metadata: { path: '/work/research', lifecycleState: 'archived' },
+        }), { hasConversationContent: true })
+        const namedEmpty = Object.assign(makeSession({
+            id: 'named-empty',
+            active: true,
+            metadata: { path: '/work/research', name: 'Research', agentSessionId: 'empty-thread' },
+        }), { hasConversationContent: false })
+
+        expect(matchSessionsForMention([untitled, namedEmpty], 'research').map(s => s.id))
+            .toEqual(['untitled-content'])
+        expect(matchSessionsForMention([untitled], 'untitled-con').map(s => s.id))
+            .toEqual(['untitled-content'])
+        expect(matchSessionsForMention([namedEmpty], '')).toEqual([])
+    })
+
     const sessions = [
         makeSession({
             id: 'aaa-active',
@@ -186,6 +205,23 @@ describe('matchSessionsForMention', () => {
         expect(hits.map((s) => s.id)).toEqual(['fff-machine'])
     })
 
+    it('requires every multi-word token (AND) via shared sessionMatchesQuery', () => {
+        const pool = [
+            makeSession({
+                id: 'full-and',
+                updatedAt: 50,
+                metadata: { path: '/work/home-lab', name: 'Assistant notes' },
+            }),
+            makeSession({
+                id: 'home-only',
+                updatedAt: 40,
+                metadata: { path: '/work/home-lab', name: 'other' },
+            }),
+        ]
+        const hits = matchSessionsForMention(pool, 'home assistant')
+        expect(hits.map((s) => s.id)).toEqual(['full-and'])
+    })
+
     it('empty query returns active/recent shortlist without archived', () => {
         const hits = matchSessionsForMention(sessions, '', { limit: 10 })
         // Active first (by updatedAt), then inactive recent — archived omitted.
@@ -202,6 +238,7 @@ describe('matchSessionsForMention', () => {
     it('excludes sidebar-hidden empty stubs from typed queries', () => {
         const stub = makeSession({
             id: 'stub-hidden',
+            hasConversationContent: false,
             updatedAt: 999,
             metadata: {
                 path: '/home/me/coding/hapi/worktrees/session-attached-jobs',
@@ -223,10 +260,11 @@ describe('matchSessionsForMention', () => {
         expect(getSessionTitle(stub)).toBe('session-attached-jobs')
     })
 
-    it('excludes path-only title husks even when sidebar would show them', () => {
-        // agentSessionId keeps the row in the sidebar (#836), but path fallback is not a title.
+    it('excludes empty stubs even when sidebar would show them', () => {
+        // A native session ID keeps the row visible, but does not prove it has content.
         const husk = makeSession({
             id: 'husk-with-agent',
+            hasConversationContent: false,
             updatedAt: 999,
             metadata: {
                 path: '/home/me/coding/hapi/worktrees/session-attached-jobs',
@@ -261,6 +299,7 @@ describe('matchSessionsForMention', () => {
         })
         const husk = makeSession({
             id: 'husk-path-only',
+            hasConversationContent: false,
             updatedAt: 90,
             metadata: {
                 path: '/work/mention-husks',
@@ -276,9 +315,10 @@ describe('matchSessionsForMention', () => {
         expect(matchSessionsForMention([husk], 'husk-pat').map((s) => s.id)).toEqual([])
     })
 
-    it('empty query also omits path-only husks from the shortlist', () => {
+    it('empty query also omits empty stubs from the shortlist', () => {
         const husk = makeSession({
             id: 'active-path-husk',
+            hasConversationContent: false,
             active: true,
             updatedAt: 500,
             metadata: {

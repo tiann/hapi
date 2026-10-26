@@ -1,6 +1,7 @@
 import os from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
+import { z } from 'zod'
 
 import { ApiClient } from '@/api/api'
 import type { ApiSessionClient } from '@/api/apiSession'
@@ -20,16 +21,45 @@ export { HAPI_SESSION_ID_ENV, exportHapiSessionEnv, exportHapiHubAuthEnv } from 
 
 export type SessionStartedBy = 'runner' | 'terminal'
 
+/** Matches shared CreateOrLoadSessionRequestSchema `id`. */
+const HubReservedSessionIdSchema = z.string().uuid()
+
 export type SessionBootstrapOptions = {
+    reportStarted?: boolean
+    /** Multi-session workers inject session identity into each child, never process.env. */
+    exportSessionEnv?: boolean
     flavor: string
     startedBy?: SessionStartedBy
     workingDirectory?: string
     tag?: string
+    /**
+     * Hub-preallocated / runner-stamped id for a *fresh* create bootstrap.
+     * Passed as `getOrCreateSession({ id })` so create-time metadata still runs
+     * while binding the reserved row. Distinct from reopen via
+     * `bootstrapExistingSession` / `--existing-session-id`.
+     *
+     * Must be a UUID (hub create schema). Non-UUID stamps (legacy HTTP spawn
+     * hints) stay reap-only: argv retains the id, create mints a new hub row.
+     */
+    reservedSessionId?: string
     agentState?: AgentState | null
     model?: string
     modelReasoningEffort?: string
     effort?: string
     metadataOverrides?: Partial<Metadata>
+}
+
+/** Hub create/load accepts optional `id` only as UUID — match that gate. */
+export function resolveReservedHubSessionId(reservedSessionId: string | undefined): string | undefined {
+    if (!reservedSessionId) return undefined
+    const parsed = HubReservedSessionIdSchema.safeParse(reservedSessionId)
+    if (!parsed.success) {
+        logger.debug(
+            `[START] Ignoring non-UUID reservedSessionId for create bind (reap stamp only): ${reservedSessionId}`
+        )
+        return undefined
+    }
+    return parsed.data
 }
 
 export type SessionBootstrapResult = {
@@ -201,6 +231,7 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
     const startedBy = options.startedBy ?? 'terminal'
     const sessionTag = options.tag ?? randomUUID()
     const agentState = options.agentState === undefined ? {} : options.agentState
+    const reservedHubId = resolveReservedHubSessionId(options.reservedSessionId)
 
     const api = await ApiClient.create()
 
@@ -219,6 +250,9 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
     })
 
     const sessionInfo = await api.getOrCreateSession({
+        ...(reservedHubId
+            ? { id: reservedHubId, adopt: true as const }
+            : {}),
         tag: sessionTag,
         metadata,
         state: agentState,
@@ -227,11 +261,17 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
         effort: options.effort
     })
 
+    if (reservedHubId && sessionInfo.id !== reservedHubId) {
+        throw new Error(
+            `Hub returned unexpected session id ${sessionInfo.id} (reserved ${reservedHubId})`
+        )
+    }
+
     const session = api.sessionSyncClient(sessionInfo)
 
-    exportHapiSessionEnv(sessionInfo.id)
+    if (options.exportSessionEnv !== false) exportHapiSessionEnv(sessionInfo.id)
 
-    await reportSessionStarted(sessionInfo.id, metadata)
+    if (options.reportStarted !== false) await reportSessionStarted(sessionInfo.id, metadata)
 
     return {
         api,
@@ -314,7 +354,7 @@ export async function bootstrapLazySession(options: SessionBootstrapOptions): Pr
             // Export only after the hub row exists. Exporting the provisional id at
             // bootstrap lets agents inherit HAPI_SESSION_ID before GET /api/sessions/:id
             // can resolve (and before hapiMcpUrl is persisted) — #1119 / PR #1121 Major.
-            exportHapiSessionEnv(materialized.id)
+            if (options.exportSessionEnv !== false) exportHapiSessionEnv(materialized.id)
             void reportSessionStarted(materialized.id, snapshot.metadata ?? metadata)
         }
     })
@@ -331,6 +371,8 @@ export async function bootstrapLazySession(options: SessionBootstrapOptions): Pr
 }
 
 export async function bootstrapExistingSession(options: {
+    reportStarted?: boolean
+    exportSessionEnv?: boolean
     sessionId: string
     flavor: string
     startedBy?: SessionStartedBy
@@ -347,6 +389,18 @@ export async function bootstrapExistingSession(options: {
     })
 
     const sessionInfo = await api.getSession(options.sessionId)
+    // #1911 M1 belt: match hub merge-preserve scope — only hub-authored archive.
+    // CLI self-archive (archivedBy=cli) must still reopen; hub clears before spawn
+    // for intentional revive. CAS closed hub-side (success+preserve + ack EXIT).
+    if (
+        sessionInfo.metadata?.lifecycleState === 'archived'
+        && sessionInfo.metadata?.archivedBy === 'hub'
+    ) {
+        throw new Error(
+            `HAPI session ${options.sessionId} is hub-archived; refuse --existing-session-id reopen `
+            + '(use hub reopen to clear archive metadata first)'
+        )
+    }
     const baseMetadata = buildSessionMetadata({
         flavor: options.flavor,
         startedBy,
@@ -371,9 +425,9 @@ export async function bootstrapExistingSession(options: {
     const session = api.sessionSyncClient(sessionInfo)
     session.updateMetadata(buildUpdatedMetadata)
 
-    exportHapiSessionEnv(sessionInfo.id)
+    if (options.exportSessionEnv !== false) exportHapiSessionEnv(sessionInfo.id)
 
-    await reportSessionStarted(sessionInfo.id, metadata)
+    if (options.reportStarted !== false) await reportSessionStarted(sessionInfo.id, metadata)
 
     return {
         api,

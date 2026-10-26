@@ -19,8 +19,10 @@ public enum MessageWindowConstants {
     /// Separate trim bucket for codex `agent-run-*` rows so background-agent
     /// traces don't evict chat.
     public static let agentRunWindowSize = 800
-    /// Request size for every page fetch.
+    /// Request size for ordinary latest/reset, forward, and older-page fetches.
     public static let pageSize = 200
+    /// Request size for a genuinely cold latest page, prioritizing first paint.
+    public static let initialPageSize = 20
 }
 
 public enum MessageViewMode: String, Sendable {
@@ -58,6 +60,7 @@ public enum OlderLoadOutcome: Sendable {
         case invalidated
         case epochReset = "epoch-reset"
         case exhausted
+        case cursorDidNotAdvance = "cursor-did-not-advance"
     }
 }
 
@@ -84,6 +87,8 @@ public struct MessageWindowState: Equatable, Sendable {
     public var isLoadingMore: Bool = false
     public var warning: String?
     public var viewMode: MessageViewMode = .tail
+    /// Local presentation policy; not persisted and not part of the wire.
+    public var historyRetentionLimit = MessageWindowConstants.historyWindowSize
     /// Bumped whenever the ``messages`` list instance changes.
     public var messagesVersion: Int = 0
     /// Bumped per applied older page (scroll-anchoring handle).

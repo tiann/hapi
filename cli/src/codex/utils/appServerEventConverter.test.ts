@@ -3,6 +3,43 @@ import { logger } from '@/ui/logger';
 import { AppServerEventConverter } from './appServerEventConverter';
 
 describe('AppServerEventConverter', () => {
+    const footer = 'AGENT_NOTIFY_SUMMARY {"status":"done","summary":"Finished"}';
+
+    it.each(['commentary', 'partial_answer'])('removes a summary footer from %s while preserving progress text', phase => {
+        const converter = new AppServerEventConverter();
+        converter.handleNotification('item/agentMessage/delta', { itemId: 'progress', delta: `Still working.\n${footer}` });
+        expect(converter.handleNotification('item/completed', {
+            item: { id: 'progress', type: 'agentMessage', phase }
+        })).toEqual([{ type: 'agent_message', message: 'Still working.' }]);
+    });
+
+    it.each(['final_answer', undefined, null, 'unknown'])('preserves summary footers when phase is %s', phase => {
+        const converter = new AppServerEventConverter();
+        const message = `Finished.\n${footer}`;
+        expect(converter.handleNotification('item/completed', {
+            item: { id: 'answer', type: 'agentMessage', text: message, phase }
+        })).toEqual([{ type: 'agent_message', message }]);
+    });
+
+    it('suppresses and deduplicates footer-only commentary without suppressing the final answer', () => {
+        const converter = new AppServerEventConverter();
+        const item = { id: 'progress', type: 'agentMessage', text: footer, phase: 'commentary' };
+        expect(converter.handleNotification('item/completed', { item })).toEqual([]);
+        expect(converter.handleNotification('item/completed', { item: { ...item, phase: undefined } })).toEqual([]);
+        expect(converter.handleNotification('item/completed', {
+            item: { ...item, id: 'final', phase: 'final_answer' }
+        })).toEqual([{ type: 'agent_message', message: footer }]);
+    });
+
+    it('leaves literal examples and malformed footers in commentary unchanged', () => {
+        const converter = new AppServerEventConverter();
+        for (const text of [`Example: ${footer}`, `${footer}\nMore explanation.`, 'AGENT_NOTIFY_SUMMARY {invalid}']) {
+            expect(converter.handleNotification('item/completed', {
+                item: { id: text, type: 'agentMessage', text, phase: 'commentary' }
+            })).toEqual([{ type: 'agent_message', message: text }]);
+        }
+    });
+
     it('maps thread/started', () => {
         const converter = new AppServerEventConverter();
         const events = converter.handleNotification('thread/started', { thread: { id: 'thread-1' } });
@@ -566,6 +603,15 @@ describe('AppServerEventConverter', () => {
 
 
 
+    it('uses completed proposal text instead of provisional plan deltas', () => {
+        const converter = new AppServerEventConverter();
+        expect(converter.handleNotification('item/started', { item: { id: 'plan', type: 'plan', text: '' } })).toEqual([]);
+        expect(converter.handleNotification('item/plan/delta', { itemId: 'plan', delta: 'provisional' })).toEqual([]);
+        expect(converter.handleNotification('item/completed', { item: { id: 'plan', type: 'plan', text: '# Final plan' } }))
+            .toEqual([{ type: 'proposed_plan', plan: '# Final plan' }]);
+        expect(converter.handleNotification('item/completed', { item: { id: 'empty', type: 'plan', text: ' \n' } })).toEqual([]);
+    });
+
     it('maps turn plan updates into update_plan events', () => {
         const converter = new AppServerEventConverter();
 
@@ -1033,6 +1079,75 @@ describe('AppServerEventConverter', () => {
         ]);
     });
 
+    it('converts compaction start notifications into scoped compaction_started events', () => {
+        const converter = new AppServerEventConverter();
+        const events = converter.handleNotification('item/started', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: { id: 'compact-item-1', type: 'contextCompaction' }
+        });
+
+        expect(events).toEqual([{
+            type: 'compaction_started',
+            thread_id: 'thread-1',
+            turn_id: 'turn-1',
+            compaction_id: 'compact-item-1'
+        }]);
+    });
+
+    it('dedups duplicate compaction starts per compaction id but allows successive compactions', () => {
+        const converter = new AppServerEventConverter();
+        const params = {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: { id: 'compact-item-1', type: 'contextCompaction' }
+        };
+
+        expect(converter.handleNotification('item/started', params)).toHaveLength(1);
+        expect(converter.handleNotification('item/started', params)).toEqual([]);
+        expect(converter.handleNotification('codex/event/item_started', {
+            msg: {
+                type: 'item_started',
+                thread_id: 'thread-1',
+                turn_id: 'turn-1',
+                item_id: 'compact-item-1',
+                item: { id: 'compact-item-1', type: 'contextCompaction' }
+            }
+        })).toEqual([]);
+        expect(converter.handleNotification('item/started', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: { id: 'compact-item-2', type: 'contextCompaction' }
+        })).toHaveLength(1);
+    });
+
+    it('drops malformed compaction starts without an item id', () => {
+        const converter = new AppServerEventConverter();
+        expect(converter.handleNotification('item/started', {
+            threadId: 'thread-1',
+            item: { type: 'contextCompaction' }
+        })).toEqual([]);
+    });
+
+    it('scopes compaction start dedup by thread so a reused item id still announces', () => {
+        const converter = new AppServerEventConverter();
+        expect(converter.handleNotification('item/started', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: { id: 'compact-item-1', type: 'contextCompaction' }
+        })).toHaveLength(1);
+        expect(converter.handleNotification('item/started', {
+            threadId: 'thread-2',
+            turnId: 'turn-9',
+            item: { id: 'compact-item-1', type: 'contextCompaction' }
+        })).toEqual([{
+            type: 'compaction_started',
+            thread_id: 'thread-2',
+            turn_id: 'turn-9',
+            compaction_id: 'compact-item-1'
+        }]);
+    });
+
     it('ignores compacted notifications without thread ids', () => {
         const converter = new AppServerEventConverter();
 
@@ -1108,5 +1223,19 @@ describe('AppServerEventConverter', () => {
         expect(logged.params?.item?.savedPath).toBe('/tmp/image.png');
 
         debug.mockRestore();
+    });
+
+    it('clears compaction start dedup on reset', () => {
+        const converter = new AppServerEventConverter();
+        const params = { threadId: 'thread-1', turnId: 'turn-1', item: { id: 'compact-item-1', type: 'contextCompaction' } };
+        expect(converter.handleNotification('item/started', params)).toHaveLength(1);
+        converter.reset();
+        expect(converter.handleNotification('item/started', params)).toHaveLength(1);
+    });
+
+    it('announces legacy compaction start without scope', () => {
+        const converter = new AppServerEventConverter();
+        const events = converter.handleNotification('item/started', { item: { id: 'compact-legacy', type: 'contextCompaction' } });
+        expect(events).toEqual([{ type: 'compaction_started', compaction_id: 'compact-legacy' }]);
     });
 });

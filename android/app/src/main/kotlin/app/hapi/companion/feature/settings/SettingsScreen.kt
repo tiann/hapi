@@ -157,6 +157,8 @@ fun SettingsScreen(
                     },
                     onClick = if (hubInfo is HubInfoState.Failed) viewModel::retryHubInfo else null,
                 )
+                SettingsDivider()
+                app.hapi.companion.ui.components.PrivacyPolicyLink()
             }
         }
     }
@@ -375,4 +377,5 @@ private fun languageLabel(language: AppLanguage): String = when (language) {
     AppLanguage.SYSTEM -> stringResource(R.string.settings_language_system)
     AppLanguage.ENGLISH -> "English"
     AppLanguage.SIMPLIFIED_CHINESE -> "简体中文"
+    AppLanguage.RUSSIAN -> "Русский"
 }

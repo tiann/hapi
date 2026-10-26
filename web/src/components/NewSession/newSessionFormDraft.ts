@@ -1,7 +1,7 @@
 import {
     CREATABLE_AGENT_FLAVORS,
     GROK_PERMISSION_MODES,
-    getPermissionModesForFlavor,
+    getLaunchPermissionModesForFlavor,
     normalizeCopilotAgentMode,
     resolveHapiYoloPermissionMode,
     type CodexCollaborationMode,
@@ -75,7 +75,7 @@ export function loadNewSessionFormDraft(): NewSessionFormDraft | null {
                 : 'interactive',
             yoloMode: Boolean(parsed.yoloMode),
             nativePermissionMode: (() => {
-                const modes = getPermissionModesForFlavor(restoredAgent)
+                const modes = getLaunchPermissionModesForFlavor(restoredAgent)
                 const parsedMode = parsed.nativePermissionMode as PermissionMode | undefined
                 if (agentPreserved && parsedMode && modes.includes(parsedMode)) {
                     return parsedMode
@@ -83,7 +83,7 @@ export function loadNewSessionFormDraft(): NewSessionFormDraft | null {
                 const yoloBridgeMode = LEGACY_YOLO_BRIDGE_AGENTS.includes(restoredAgent)
                     ? resolveHapiYoloPermissionMode(restoredAgent)
                     : null
-                if (agentPreserved && parsed.yoloMode && yoloBridgeMode && modes.includes(yoloBridgeMode)) {
+                if (agentPreserved && parsedMode === undefined && parsed.yoloMode && yoloBridgeMode && modes.includes(yoloBridgeMode)) {
                     return yoloBridgeMode
                 }
                 return 'default'

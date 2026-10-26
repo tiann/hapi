@@ -358,20 +358,24 @@ extension PushCoordinator: UNUserNotificationCenterDelegate {
         case UNNotificationDefaultActionIdentifier:
             environment?.openSession(payload.sessionId)
         case ActionID.allow:
-            guard let requestId = payload.requestId else { return }
+            guard payload.type == .permissionRequest, payload.supportsActions,
+                  let requestId = payload.requestId else { return }
             let outcome = await actionRunner().approve(
                 sessionId: payload.sessionId,
                 requestId: requestId
             )
             await reportIfFailed(outcome, payload: payload)
         case ActionID.deny:
-            guard let requestId = payload.requestId else { return }
+            guard payload.type == .permissionRequest, payload.supportsActions,
+                  let requestId = payload.requestId else { return }
             let outcome = await actionRunner().deny(
                 sessionId: payload.sessionId,
                 requestId: requestId
             )
             await reportIfFailed(outcome, payload: payload)
         case ActionID.reply:
+            guard payload.supportsActions,
+                  payload.type == .ready || payload.type == .taskNotification else { return }
             let text = (response as? UNTextInputNotificationResponse)?
                 .userText.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             guard !text.isEmpty else { return }

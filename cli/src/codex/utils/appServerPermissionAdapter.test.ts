@@ -25,13 +25,14 @@ describe('registerAppServerPermissionHandlers', () => {
             expect(id).toBe('tool-123');
             expect(input).toEqual({
                 itemId: 'tool-123',
-                questions: [{ id: 'approve_nav', question: 'Approve app tool call?' }]
+                isBlocking: true,
+                questions: [{ id: 'approve_nav', question: 'Approve app tool call?', isOther: true }]
             });
             return {
                 decision: 'accept',
                 answers: {
                     approve_nav: {
-                        answers: ['Allow']
+                        answers: ['None of the above', 'user_note: custom answer']
                     }
                 }
             };
@@ -48,12 +49,13 @@ describe('registerAppServerPermissionHandlers', () => {
 
         await expect(handler?.({
             itemId: 'tool-123',
-            questions: [{ id: 'approve_nav', question: 'Approve app tool call?' }]
+            isBlocking: true,
+            questions: [{ id: 'approve_nav', question: 'Approve app tool call?', isOther: true }]
         })).resolves.toEqual({
             decision: 'accept',
             answers: {
                 approve_nav: {
-                    answers: ['Allow']
+                    answers: ['None of the above', 'user_note: custom answer']
                 }
             }
         });

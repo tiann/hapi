@@ -35,7 +35,7 @@ import Observation
 ///   published ``permissionOverrides`` prunes rows whose request left
 ///   `agentState.requests`); hub 404/409 → benign "already handled".
 /// - **Config** (``config``/``setPermissionMode(_:)``/``setModel(_:)``/
-///   ``setEffort(_:)``/``loadModelOptions()``): catalog pickers with
+///   ``setEffort(_:)``/``setCollaborationMode(_:)``/``loadModelOptions()``): catalog pickers with
 ///   optimistic detail updates, rolled forward to server truth on error;
 ///   codex model catalog fetched per session.
 ///
@@ -67,6 +67,29 @@ public final class ChatInteractor {
     /// One config POST at a time (compare-and-set, like the Android
     /// `configOpPending`); exposed so the sheet can render a busy state.
     public private(set) var configOpPending = false
+
+    /// Local focus intent, observed by the composer without changing its draft.
+    public private(set) var composerFocusRequest = 0
+    public private(set) var composerDestination: ComposerDestination = .chat
+    public private(set) var scratchlistBusy = false
+    public private(set) var scratchlistError: String?
+    public private(set) var scratchlistErrorDestination: ComposerDestination?
+    public private(set) var scratchlistEntryErrors: [String: String] = [:]
+    public private(set) var queuedScratchlistEntries: Set<String> = []
+    private var parkAttempt: (text: String, attachments: [ComposerAttachmentSnapshot], id: String)?
+    private struct ScratchlistQueueAttempt {
+        let entry: ScratchlistEntry
+        let localId: String
+        let target: String
+        let attachments: [AttachmentMetadata]
+    }
+    private var scratchlistQueueAttempts: [String: ScratchlistQueueAttempt] = [:]
+    private var scratchlistSendTarget: String?
+    // Screen-owned, not row-local: recycled plan cards retain operation state.
+    private var pendingCodexPlanId: String?
+    private var implementedCodexPlanIds: Set<String> = []
+    private var continuedCodexPlanIds: Set<String> = []
+    private var codexPlanErrors: [String: String] = [:]
 
     private var queuedOpPending = false
     /// Raw override map; the published view prunes settled requests.
@@ -184,9 +207,17 @@ public final class ChatInteractor {
     /// an unsettled chip (uploading/failed) blocks the send with a notice.
     /// Text may be empty when attachments exist (wire: text OR attachments).
     public func sendMessage(steer: Bool = false) {
-        guard !isSending else { return }
+        guard !isSending, !scratchlistBusy else { return }
+        if composerDestination == .scratchlist {
+            parkComposerDraft()
+            return
+        }
         if attachments.hasUnsettled {
             emit(.notice("Attachments are still uploading — wait, or retry/remove the failed ones"))
+            return
+        }
+        if attachments.hasScratchlistAttachments {
+            sendComposerWithScratchlistAttachments(steer: steer)
             return
         }
         let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -202,6 +233,19 @@ public final class ChatInteractor {
         Task { [weak self] in
             guard let self else { return }
             self.drafts?.clear(sessionId: self.sessionId)
+            if attachmentMetadata == nil && (text == "/clear" || text == "/new")
+                && self.sessionStore.detail(for: self.sessionId)?.metadata?.capabilities?.concurrentClients == true {
+                defer { self.isSending = false }
+                do {
+                    let result = try await self.api.clearConversation(id: self.sessionId)
+                    self.sessionStore.scheduleRefresh()
+                    self.emit(.sessionSuperseded(sessionId: result.sessionId))
+                } catch {
+                    self.setComposerText(text)
+                    self.emit(.notice(Self.errorMessage(error, fallback: "Failed to create conversation")))
+                }
+                return
+            }
             await self.performSend(
                 text: text,
                 localId: localId,
@@ -238,6 +282,10 @@ public final class ChatInteractor {
     /// same localId. A retry cannot prove the original turn is still live —
     /// steer degrades to queue (web `getRetryDeliveryMode`).
     public func retryFailedMessage(localId: String) {
+        if let attempt = scratchlistQueueAttempts.values.first(where: { $0.localId == localId }) {
+            Task { await queueScratchlistEntry(attempt.entry) }
+            return
+        }
         guard !isSending else { return }
         isSending = true
         Task { [weak self] in
@@ -294,6 +342,7 @@ public final class ChatInteractor {
         return SendPayload(text: text, attachments: attachments)
     }
 
+    @discardableResult
     private func performSend(
         text: String,
         localId: String,
@@ -301,10 +350,12 @@ public final class ChatInteractor {
         deliveryMode: MessageDeliveryMode,
         attachments: [AttachmentMetadata]?,
         scheduledAt: Int?,
-        isRetry: Bool
-    ) async {
+        isRetry: Bool,
+        targetSessionId: String? = nil
+    ) async -> String? {
         defer { isSending = false }
-        let store = await windowController()
+        let target = targetSessionId ?? sessionId
+        let store = target == sessionId ? await windowController() : await windows.open(sessionId: target)
         if isRetry {
             await store.updateStatus(localId: localId, status: .sending)
         } else {
@@ -325,12 +376,14 @@ public final class ChatInteractor {
             deliveryMode: deliveryMode
         )
         do {
-            try await api.sendMessage(sessionId: sessionId, request)
+            try await api.sendMessage(sessionId: target, request)
             await store.updateStatus(localId: localId, status: successStatus())
+            return target
         } catch let error as APIError where error.status == 409 && error.code == "session_inactive" {
-            await resumeAndRetry(store: store, request: request, localId: localId)
+            return await resumeAndRetry(store: store, request: request, localId: localId, fromSessionId: target)
         } catch {
             await store.updateStatus(localId: localId, status: .failed)
+            return nil
         }
     }
 
@@ -347,24 +400,25 @@ public final class ChatInteractor {
     private func resumeAndRetry(
         store: MessageWindowController,
         request: SendMessageRequest,
-        localId: String
-    ) async {
+        localId: String,
+        fromSessionId: String
+    ) async -> String? {
         let targetSessionId: String
         do {
             targetSessionId = try await api.resumeSession(
-                id: sessionId,
-                permissionMode: sessionStore.detail(for: sessionId)?.permissionMode
+                id: fromSessionId,
+                permissionMode: sessionStore.detail(for: fromSessionId)?.permissionMode
             )
         } catch {
             await store.updateStatus(localId: localId, status: .failed)
             emit(.notice("Session is inactive and could not be resumed"))
-            return
+            return nil
         }
 
         let optimisticRow = await store.state.messages.first { $0.localId == localId }
         var targetStore = store
-        if targetSessionId != sessionId {
-            await windows.seed(fromSessionId: sessionId, toSessionId: targetSessionId)
+        if targetSessionId != fromSessionId {
+            await windows.seed(fromSessionId: fromSessionId, toSessionId: targetSessionId)
             targetStore = await windows.open(sessionId: targetSessionId)
             if let optimisticRow {
                 // Seeding copies rows across, but make the hand-off explicit:
@@ -372,22 +426,26 @@ public final class ChatInteractor {
                 await targetStore.appendOptimistic(optimisticRow)
                 await store.removeMessage(localIdOrId: localId)
             }
-            drafts?.move(fromSessionId: sessionId, toSessionId: targetSessionId)
+            drafts?.move(fromSessionId: fromSessionId, toSessionId: targetSessionId)
         }
 
         // Resume succeeded: reflect activity locally, refresh the list row.
-        sessionStore.updateDetailLocal(sessionId) { $0.active = true }
+        sessionStore.updateDetailLocal(fromSessionId) { $0.active = true }
         sessionStore.scheduleRefresh()
+        scratchlistSendTarget = targetSessionId
 
+        var accepted = false
         do {
             try await api.sendMessage(sessionId: targetSessionId, request)
             await targetStore.updateStatus(localId: localId, status: successStatus())
+            accepted = true
         } catch {
             await targetStore.updateStatus(localId: localId, status: .failed)
         }
         if targetSessionId != sessionId {
             emit(.sessionSuperseded(sessionId: targetSessionId))
         }
+        return accepted ? targetSessionId : nil
     }
 
     // MARK: - Queued bar
@@ -671,6 +729,18 @@ public final class ChatInteractor {
         )
     }
 
+    /// Codex `POST /collaboration-mode`; shared terminals can edit too.
+    public func setCollaborationMode(_ mode: CodexCollaborationMode) {
+        let config = config
+        guard config.canChangeCollaborationMode, mode != (config.collaborationMode ?? .default) else { return }
+        let api = api
+        let sessionId = sessionId
+        runConfigChange(
+            optimistic: { $0.collaborationMode = mode },
+            call: { try await api.setCollaborationMode(sessionId: sessionId, mode: mode) }
+        )
+    }
+
     /// `POST /model` — nil clears back to the agent default.
     public func setModel(_ model: String?) {
         let api = api
@@ -755,6 +825,60 @@ public final class ChatInteractor {
                 self.emit(.notice(Self.errorMessage(error, fallback: "Failed to update session")))
             }
         }
+    }
+
+    // MARK: - Codex plan client actions
+
+    public func codexPlanActions(planId: String) -> CodexPlanActionState {
+        let detail = sessionStore.detail(for: sessionId)
+        let available = detail?.active == true
+            && detail?.metadata?.flavor == "codex"
+            && detail?.metadata?.capabilities?.concurrentClients == true
+            && detail?.agentState?.codexPlanProposalId == planId
+            && !implementedCodexPlanIds.contains(planId)
+            && !continuedCodexPlanIds.contains(planId)
+        return CodexPlanActionState(
+            available: available,
+            pending: pendingCodexPlanId == planId,
+            canAct: available && pendingCodexPlanId == nil && !isSending && !configOpPending
+                && detail?.thinking != true,
+            error: codexPlanErrors[planId]
+        )
+    }
+
+    /// One request at a time, with no optimistic message or mode switch.
+    /// Refresh even on failure: another client may have consumed the proposal.
+    public func implementCodexPlan(planId: String) {
+        guard codexPlanActions(planId: planId).canAct else { return }
+        pendingCodexPlanId = planId
+        codexPlanErrors[planId] = nil
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.pendingCodexPlanId = nil }
+            do {
+                try await self.api.implementCodexPlan(sessionId: self.sessionId, planId: planId)
+                // Do not re-enable an accepted plan if the detail refresh fails
+                // or briefly returns state from before the queue acceptance.
+                self.implementedCodexPlanIds.insert(planId)
+            } catch {
+                let serverMessage = (error as? APIError)?.body.flatMap { body in
+                    (try? HapiJSON.decoder.decode(JSONValue.self, from: Data(body.utf8)))?
+                        .objectValue?["error"]?.stringValue
+                }
+                self.codexPlanErrors[planId] = serverMessage
+                    ?? Self.errorMessage(error, fallback: "Request failed")
+            }
+            _ = try? await self.sessionStore.loadSessionDetail(self.sessionId)
+        }
+    }
+
+    /// Continue planning dismisses this proposal’s actions and focuses the composer; it neither sends
+    /// text nor resolves an approval nor changes the collaboration mode.
+    public func continueCodexPlan(planId: String) {
+        guard codexPlanActions(planId: planId).canAct else { return }
+        continuedCodexPlanIds.insert(planId)
+        codexPlanErrors[planId] = nil
+        composerFocusRequest += 1
     }
 
     // MARK: - Internals
@@ -843,28 +967,218 @@ public final class ChatInteractor {
         }
     }
 
-    /// Scratchlist "Park current draft": the composer draft becomes a
-    /// scratchlist entry and the composer clears (store-optimistic; the
-    /// composer clears only after the hub accepts, so a failed park cannot
-    /// lose the draft).
+    public var hasComposerDraft: Bool { !Self.isBlank(composerText) || !attachments.items.isEmpty }
+
+    public func setComposerDestination(_ destination: ComposerDestination) {
+        guard !scratchlistBusy, !isSending else { return }
+        composerDestination = destination
+        scratchlistError = nil
+        scratchlistErrorDestination = nil
+    }
+
+    public func focusComposer() { composerFocusRequest += 1 }
+
+    public func reportScratchlistError(_ message: String) {
+        scratchlistError = message
+        scratchlistErrorDestination = nil
+    }
+
+    public func retryScratchlistComposerOperation() {
+        switch scratchlistErrorDestination {
+        case .scratchlist: parkComposerDraft()
+        case .chat: sendMessage()
+        case nil: scratchlistError = nil
+        }
+    }
+
+    /// Capture both text and attachment identities; only clear the accepted
+    /// snapshot. A retry of the same draft uses the same hub entry id.
     public func parkComposerDraft() {
-        guard let scratchlist else { return }
+        guard scratchlist != nil, !scratchlistBusy, !isSending, hasComposerDraft else { return }
+        scratchlistBusy = true
+        Task {
+            defer { scratchlistBusy = false }
+            _ = await parkCurrentDraft()
+        }
+    }
+
+    private func parkCurrentDraft() async -> Bool {
+        guard let scratchlist else { return false }
         let text = composerText
-        guard !Self.isBlank(text) else { return }
-        Task { [weak self] in
-            guard let self else { return }
-            switch await scratchlist.createEntry(sessionId: self.sessionId, text: text) {
-            case .created:
-                // Clear only when the draft is still what we parked (the
-                // operator may have kept typing while the POST ran).
-                if self.composerText == text {
-                    self.setComposerText("")
+        scratchlistError = nil
+        guard text.utf16.count <= ScratchlistCaps.maxTextLength else {
+            return failPark("Drafts can contain at most 10,000 characters — shorten the text before saving")
+        }
+        guard !attachments.hasUnsettled else {
+            return failPark("Attachments are still uploading — wait, or retry/remove the failed ones")
+        }
+        let snapshot = attachments.snapshot
+        guard !Self.isBlank(text) || !snapshot.isEmpty else { return false }
+        if parkAttempt?.text != text || parkAttempt?.attachments != snapshot {
+            guard !scratchlist.state(sessionId).atCap else { return failPark("Scratchlist is full (200 entries)") }
+            parkAttempt = (text, snapshot, "scratch-\(UUID().uuidString)")
+        }
+        let id = parkAttempt!.id
+        let prepared: ScratchlistTransfer.Parked
+        do {
+            prepared = try await ScratchlistTransfer.preparePark(api: api, store: scratchlist, sessionId: sessionId, snapshot: snapshot)
+        } catch { return failPark(error.localizedDescription) }
+        guard composerText == text, attachments.snapshot == snapshot, !attachments.hasUnsettled else {
+            await ScratchlistTransfer.cleanupPark(store: scratchlist, sessionId: sessionId, attachments: prepared.uploaded)
+            return failPark("Your input changed — review it and try again")
+        }
+        switch await scratchlist.createEntry(sessionId: sessionId, text: text, attachments: prepared.attachments, entryId: id) {
+        case .created(let entry):
+            attachments.markScratchlistPersisted(entry.attachments)
+            if composerText == text, attachments.snapshot == snapshot, !attachments.hasUnsettled {
+                setComposerText("")
+                attachments.discard(snapshot)
+            }
+            parkAttempt = nil
+            // A retried POST can return the first accepted set of attachments.
+            let canonicalIds = Set(entry.attachments.map(\.id))
+            await ScratchlistTransfer.cleanupPark(store: scratchlist, sessionId: sessionId,
+                attachments: prepared.uploaded.filter { !canonicalIds.contains($0.id) })
+            emit(.notice("Draft parked to scratchlist"))
+            return true
+        case .atCap:
+            await ScratchlistTransfer.cleanupPark(store: scratchlist, sessionId: sessionId, attachments: prepared.uploaded)
+            return failPark("Scratchlist is full (200 entries)")
+        case .failed:
+            await ScratchlistTransfer.cleanupPark(store: scratchlist, sessionId: sessionId, attachments: prepared.uploaded)
+            return failPark("Couldn't park the draft — check the hub connection")
+        }
+    }
+
+    private func failPark(_ message: String) -> Bool {
+        scratchlistError = message
+        scratchlistErrorDestination = .scratchlist
+        emit(.notice(message))
+        return false
+    }
+
+    /// The caller asks for a choice when there is an existing draft. Restoring
+    /// borrowed hub references is local and never resumes or sends a session.
+    @discardableResult
+    public func restoreScratchlistEntry(_ entry: ScratchlistEntry, choice: ScratchlistRestoreChoice = .append) async -> Bool {
+        guard !scratchlistBusy, !isSending, !queuedScratchlistEntries.contains(entry.entryId) else { return false }
+        scratchlistBusy = true
+        defer { scratchlistBusy = false }
+        scratchlistError = nil
+        if choice == .parkCurrent, hasComposerDraft {
+            guard await parkCurrentDraft() else { return false }
+            guard !hasComposerDraft else { return failPark("Your input changed — review it and try again") }
+        }
+        insertComposerText(entry.text)
+        attachments.restoreScratchlist(entry.attachments)
+        composerDestination = .chat
+        focusComposer()
+        return true
+    }
+
+    /// Direct queue sends have their own immutable payload; they never consume
+    /// the visible composer. Failed retries reuse the exact localId/uploads.
+    @discardableResult
+    public func queueScratchlistEntry(_ entry: ScratchlistEntry) async -> Bool {
+        guard let scratchlist, !scratchlistBusy, !isSending else { return false }
+        scratchlistBusy = true
+        defer { scratchlistBusy = false }
+        scratchlistEntryErrors[entry.entryId] = nil
+        if queuedScratchlistEntries.contains(entry.entryId) {
+            return await finishScratchlistQueue(entryId: entry.entryId, store: scratchlist)
+        }
+        do {
+            let attempt: ScratchlistQueueAttempt
+            let isRetry = scratchlistQueueAttempts[entry.entryId] != nil
+            if let previous = scratchlistQueueAttempts[entry.entryId] {
+                attempt = previous
+            } else {
+                let target = try await resolveScratchlistSendTarget(needsUpload: !entry.attachments.isEmpty)
+                let staged = try await ScratchlistTransfer.prepareSend(api: api, sourceSessionId: target,
+                    targetSessionId: target, snapshot: ScratchlistTransfer.snapshot(entry))
+                // Stable across closing/reopening the chat and lost responses:
+                // the same saved version cannot be queued twice by a retry.
+                attempt = ScratchlistQueueAttempt(entry: entry, localId: "scratchlist-\(entry.entryId)-\(entry.updatedAt)",
+                    target: target, attachments: staged)
+                scratchlistQueueAttempts[entry.entryId] = attempt
+            }
+            isSending = true
+            let acceptedTarget = await performSend(text: attempt.entry.text, localId: attempt.localId, createdAt: now(),
+                deliveryMode: .queue, attachments: attempt.attachments.isEmpty ? nil : attempt.attachments,
+                scheduledAt: nil, isRetry: isRetry, targetSessionId: attempt.target)
+            guard let acceptedTarget else {
+                scratchlistEntryErrors[entry.entryId] = "Couldn't queue the draft — retry"
+                return false
+            }
+            scratchlistSendTarget = acceptedTarget
+            queuedScratchlistEntries.insert(entry.entryId)
+            let removed = await finishScratchlistQueue(entryId: entry.entryId, store: scratchlist)
+            composerDestination = .chat
+            emit(.notice(removed ? "Draft added to the send queue" : "Already queued — couldn't remove the draft. Retry removal only."))
+            navigateAfterScratchlistSend()
+            return removed
+        } catch {
+            scratchlistEntryErrors[entry.entryId] = "Couldn't prepare the attachments — retry or remove the failed files"
+            return false
+        }
+    }
+
+    private func finishScratchlistQueue(entryId: String, store: any SessionScratchlistStoring) async -> Bool {
+        let removed = await store.deleteEntry(sessionId: scratchlistSendTarget ?? sessionId, entryId: entryId)
+        if removed {
+            scratchlistQueueAttempts[entryId] = nil
+            queuedScratchlistEntries.remove(entryId)
+            scratchlistEntryErrors[entryId] = nil
+        } else {
+            scratchlistEntryErrors[entryId] = "Already queued — couldn't remove the draft. Retry removal only."
+        }
+        return removed
+    }
+
+    private func resolveScratchlistSendTarget(needsUpload: Bool) async throws -> String {
+        if let scratchlistSendTarget { return scratchlistSendTarget }
+        guard needsUpload, !currentSessionState().active else { return sessionId }
+        let target = try await api.resumeSession(id: sessionId, permissionMode: sessionStore.detail(for: sessionId)?.permissionMode)
+        scratchlistSendTarget = target
+        sessionStore.updateDetailLocal(sessionId) { $0.active = true }
+        sessionStore.scheduleRefresh()
+        if target != sessionId {
+            await windows.seed(fromSessionId: sessionId, toSessionId: target)
+            drafts?.move(fromSessionId: sessionId, toSessionId: target)
+        }
+        return target
+    }
+
+    private func navigateAfterScratchlistSend() {
+        if let target = scratchlistSendTarget, target != sessionId { emit(.sessionSuperseded(sessionId: target)) }
+    }
+
+    private func sendComposerWithScratchlistAttachments(steer: Bool) {
+        let text = composerText
+        let snapshot = attachments.snapshot
+        isSending = true
+        Task {
+            defer { isSending = false }
+            do {
+                let target = try await resolveScratchlistSendTarget(needsUpload: true)
+                let staged = try await ScratchlistTransfer.prepareSend(api: api, sourceSessionId: target,
+                    targetSessionId: target, snapshot: snapshot)
+                guard composerText == text, attachments.snapshot == snapshot, !attachments.hasUnsettled else {
+                    for (source, staged) in zip(snapshot, staged) {
+                        if case .scratchlist = source.source { _ = try? await api.deleteUpload(sessionId: target, path: staged.path) }
+                    }
+                    scratchlistError = "Your input changed — review it and try again"
+                    scratchlistErrorDestination = .chat
+                    return
                 }
-                self.emit(.notice("Draft parked to scratchlist"))
-            case .atCap:
-                self.emit(.notice("Scratchlist is full (200 entries)"))
-            case .failed:
-                self.emit(.notice("Couldn't park the draft — check the hub connection"))
+                setComposerText("")
+                attachments.consumePrepared(snapshot)
+                _ = await performSend(text: text, localId: makeLocalId(), createdAt: now(), deliveryMode: steer ? .steer : .queue,
+                    attachments: staged, scheduledAt: nil, isRetry: false, targetSessionId: target)
+                navigateAfterScratchlistSend()
+            } catch {
+                scratchlistError = "Couldn't prepare the attachments — retry or remove the failed files"
+                scratchlistErrorDestination = .chat
             }
         }
     }

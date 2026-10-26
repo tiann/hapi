@@ -22,6 +22,8 @@ data class AgentState(
     val requests: Map<String, AgentStateRequest>? = null,
     /** Resolved requests keyed by request id. */
     val completedRequests: Map<String, AgentStateCompletedRequest>? = null,
+    /** Current actionable shared Codex proposal's tool-call id; null withdraws its menu. */
+    val codexPlanProposalId: String? = null,
 )
 
 /** A pending tool-permission / user-input request (`AgentStateRequestSchema`). */
@@ -31,6 +33,8 @@ data class AgentStateRequest(
     /** Tool arguments, shape depends on [tool] (zod `unknown`). */
     val arguments: JsonElement = JsonNull,
     val createdAt: Long? = null,
+    /** Native correlation only; approve/deny uses the request map key. */
+    val toolCallId: String? = null,
 )
 
 /** A resolved request (`AgentStateCompletedRequestSchema`). */
@@ -39,6 +43,8 @@ data class AgentStateCompletedRequest(
     val tool: String,
     val arguments: JsonElement = JsonNull,
     val createdAt: Long? = null,
+    /** Native correlation only; approve/deny uses the request map key. */
+    val toolCallId: String? = null,
     val completedAt: Long? = null,
     /** `'canceled' | 'denied' | 'approved'`. */
     val status: String,

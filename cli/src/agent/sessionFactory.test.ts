@@ -135,6 +135,61 @@ describe('bootstrapExistingSession', () => {
         )
     })
 
+    it('refuses to reopen a hub-archived session (hub-archive resurrection guard)', async () => {
+        // #1911 M1 belt: hub-archived only (matches store merge-preserve scope).
+        const session = createSession()
+        const existing = session.metadata
+        if (!existing) throw new Error('expected metadata')
+        session.metadata = {
+            ...existing,
+            lifecycleState: 'archived',
+            archivedBy: 'hub',
+            archiveReason: 'Archived from hub',
+        }
+        const sessionClient = { updateMetadata: vi.fn() }
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue(sessionClient)
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        await expect(bootstrapExistingSession({
+            sessionId: 'hapi-session-1',
+            flavor: 'claude',
+            workingDirectory: '/tmp/project',
+            startedBy: 'runner',
+        })).rejects.toThrow(/hub-archived|archived/)
+
+        expect(sessionClient.updateMetadata).not.toHaveBeenCalled()
+        expect(notifyRunnerSessionStartedMock).not.toHaveBeenCalled()
+        expect(sessionSyncClientMock).not.toHaveBeenCalled()
+    })
+
+    it('allows reopen of CLI self-archived sessions (archivedBy=cli)', async () => {
+        const session = createSession()
+        const existing = session.metadata
+        if (!existing) throw new Error('expected metadata')
+        session.metadata = {
+            ...existing,
+            lifecycleState: 'archived',
+            archivedBy: 'cli',
+            archiveReason: 'clean exit',
+        }
+        const sessionClient = { updateMetadata: vi.fn() }
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue(sessionClient)
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        await expect(bootstrapExistingSession({
+            sessionId: 'hapi-session-1',
+            flavor: 'claude',
+            workingDirectory: '/tmp/project',
+            startedBy: 'runner',
+        })).resolves.toMatchObject({ session: sessionClient })
+
+        expect(sessionClient.updateMetadata).toHaveBeenCalledOnce()
+    })
+
     it('preserves existing native resume metadata when reactivating a session', async () => {
         const session = createSession()
         const existingMetadata = session.metadata
@@ -363,6 +418,66 @@ describe('bootstrapSession HAPI_SESSION_ID export', () => {
 
         expect(result.sessionInfo.id).toBe('hub-session-42')
         expect(process.env[HAPI_SESSION_ID_ENV]).toBe('hub-session-42')
+    })
+
+    it('passes reservedSessionId as getOrCreateSession id (adopt-stub, #1911)', async () => {
+        const session = createSession()
+        session.id = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+        getOrCreateSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue({ isPending: () => false })
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        const result = await bootstrapSession({
+            flavor: 'claude',
+            workingDirectory: '/tmp/project',
+            reservedSessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+        })
+
+        expect(getOrCreateSessionMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+                adopt: true,
+            })
+        )
+        expect(result.sessionInfo.id).toBe('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee')
+    })
+
+    it('does not bind non-UUID reservedSessionId (reap stamp only; hub rejects non-uuid id)', async () => {
+        const session = createSession()
+        session.id = 'minted-hub-id'
+        getOrCreateSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue({ isPending: () => false })
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        await bootstrapSession({
+            flavor: 'claude',
+            workingDirectory: '/tmp/project',
+            reservedSessionId: 'spawned-test-456'
+        })
+
+        expect(getOrCreateSessionMock).toHaveBeenCalledWith(
+            expect.not.objectContaining({ id: expect.anything() })
+        )
+        // Call args should omit `id` entirely:
+        const call = getOrCreateSessionMock.mock.calls[0][0] as { id?: string }
+        expect(call.id).toBeUndefined()
+    })
+
+    it('throws when hub returns a different id than reservedSessionId', async () => {
+        const session = createSession()
+        session.id = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+        getOrCreateSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue({ isPending: () => false })
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        await expect(bootstrapSession({
+            flavor: 'claude',
+            workingDirectory: '/tmp/project',
+            reservedSessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+        })).rejects.toThrow(/unexpected session id/)
     })
 })
 

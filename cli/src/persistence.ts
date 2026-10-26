@@ -33,6 +33,7 @@ const defaultSettings: Settings = {}
  * This is written to disk by the runner to track its local process state
  */
 export interface RunnerLocallyPersistedState {
+  sharedCodexRuntime?: boolean;
   pid: number;
   httpPort: number;
   startTime: string;

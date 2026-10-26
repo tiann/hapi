@@ -463,12 +463,12 @@ struct InlineBuilder: MarkupVisitor {
 /// runs get the monospaced font + chip colors, link runs get the link color
 /// and underline. Bold/italic/strikethrough render natively from
 /// `InlinePresentationIntent`.
-func hapiStyledText(_ source: AttributedString, theme: HapiTheme) -> AttributedString {
+func hapiStyledText(_ source: AttributedString, theme: HapiTheme, typography: HapiTypography) -> AttributedString {
     var output = AttributedString()
     for run in source.runs {
         var piece = AttributedString(source[run.range])
         if let intent = run.inlinePresentationIntent, intent.contains(.code) {
-            piece[AttributeScopes.SwiftUIAttributes.FontAttribute.self] = theme.inlineCodeFont
+            piece[AttributeScopes.SwiftUIAttributes.FontAttribute.self] = typography.inlineCodeFont
             piece[AttributeScopes.SwiftUIAttributes.ForegroundColorAttribute.self] = theme.inlineCodeForeground
             piece[AttributeScopes.SwiftUIAttributes.BackgroundColorAttribute.self] = theme.inlineCodeBackground
         }
@@ -514,28 +514,41 @@ struct MarkdownBlockListView: View {
     let blocks: [MarkdownBlockNode]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
                 MarkdownBlockView(block: block)
+                    .padding(.top, Self.spacing(before: block, after: index > 0 ? blocks[index - 1] : nil))
             }
         }
+    }
+
+    // Pure layout calculation; does not need View's inferred MainActor isolation.
+    nonisolated static func spacing(before block: MarkdownBlockNode, after previous: MarkdownBlockNode?) -> CGFloat {
+        guard let previous else { return 0 }
+        if case .heading = block { return 24 }
+        if case .heading = previous { return 8 }
+        return 12
     }
 }
 
 struct MarkdownBlockView: View {
     let block: MarkdownBlockNode
     @Environment(\.hapiTheme) private var theme
+    @Environment(\.hapiTypography) private var typography
 
     var body: some View {
         switch block {
         case .paragraph(let text):
-            SwiftUI.Text(hapiStyledText(text, theme: theme))
-                .font(theme.bodyFont)
+            SwiftUI.Text(hapiStyledText(text, theme: theme, typography: typography))
+                .font(typography.bodyFont)
+                .lineSpacing(typography.bodyLineSpacing)
+                .fixedSize(horizontal: false, vertical: true)
                 .foregroundStyle(theme.textPrimary)
                 .textSelection(.enabled)
         case .heading(let level, let text):
-            SwiftUI.Text(hapiStyledText(text, theme: theme))
-                .font(headingFont(level))
+            SwiftUI.Text(hapiStyledText(text, theme: theme, typography: typography))
+                .font(typography.headingFont(level))
+                .fixedSize(horizontal: false, vertical: true)
                 .foregroundStyle(theme.textPrimary)
                 .textSelection(.enabled)
         case .codeBlock(let language, let code):
@@ -547,6 +560,7 @@ struct MarkdownBlockView: View {
                     .frame(width: 3)
                 MarkdownBlockListView(blocks: children)
             }
+            .fixedSize(horizontal: false, vertical: true)
             .padding(10)
             .background(theme.quoteBackground)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -563,27 +577,15 @@ struct MarkdownBlockView: View {
             MarkdownImageRow(alt: alt, destination: destination)
         }
     }
-
-    private func headingFont(_ level: Int) -> Font {
-        let size: CGFloat
-        switch level {
-        case 1: size = theme.bodySize + 6
-        case 2: size = theme.bodySize + 4
-        case 3: size = theme.bodySize + 2.5
-        case 4: size = theme.bodySize + 1.5
-        case 5: size = theme.bodySize + 1
-        default: size = theme.bodySize + 0.5
-        }
-        return .system(size: size, weight: .semibold)
-    }
 }
 
 struct MarkdownListView: View {
     let model: MarkdownListModel
     @Environment(\.hapiTheme) private var theme
+    @Environment(\.hapiTypography) private var typography
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             ForEach(Array(model.items.enumerated()), id: \.offset) { index, item in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     marker(for: item, index: index)
@@ -597,16 +599,16 @@ struct MarkdownListView: View {
     private func marker(for item: MarkdownListModel.Item, index: Int) -> some View {
         if let checked = item.checkbox {
             SwiftUI.Image(systemName: checked ? "checkmark.square.fill" : "square")
-                .font(.system(size: theme.bodySize - 2))
+                .font(.system(size: typography.bodySize - 2))
                 .foregroundStyle(checked ? theme.accent : theme.textHint)
                 .accessibilityLabel(SwiftUI.Text(checked ? "Completed" : "Not completed"))
         } else if model.isOrdered {
             SwiftUI.Text("\(model.startIndex + index).")
-                .font(theme.bodyFont.monospacedDigit())
+                .font(typography.bodyFont.monospacedDigit())
                 .foregroundStyle(theme.textHint)
         } else {
             SwiftUI.Text("•")
-                .font(theme.bodyFont)
+                .font(typography.bodyFont)
                 .foregroundStyle(theme.textHint)
         }
     }
@@ -615,15 +617,16 @@ struct MarkdownListView: View {
 struct MarkdownTableView: View {
     let model: MarkdownTableModel
     @Environment(\.hapiTheme) private var theme
+    @Environment(\.hapiTypography) private var typography
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
                 GridRow {
                     ForEach(Array(model.header.enumerated()), id: \.offset) { index, cell in
-                        SwiftUI.Text(hapiStyledText(cell, theme: theme))
+                        SwiftUI.Text(hapiStyledText(cell, theme: theme, typography: typography))
                             .fontWeight(.semibold)
-                            .font(theme.bodyFont)
+                            .font(typography.bodyFont)
                             .foregroundStyle(theme.textPrimary)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
@@ -635,8 +638,8 @@ struct MarkdownTableView: View {
                     Divider()
                     GridRow {
                         ForEach(Array(row.enumerated()), id: \.offset) { index, cell in
-                            SwiftUI.Text(hapiStyledText(cell, theme: theme))
-                                .font(theme.bodyFont)
+                            SwiftUI.Text(hapiStyledText(cell, theme: theme, typography: typography))
+                                .font(typography.bodyFont)
                                 .foregroundStyle(theme.textPrimary)
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 6)
@@ -666,6 +669,7 @@ struct MarkdownImageRow: View {
     let alt: String
     let destination: String?
     @Environment(\.hapiTheme) private var theme
+    @Environment(\.hapiTypography) private var typography
     @Environment(\.hapiOpenURL) private var hapiOpenURL
 
     var body: some View {
@@ -677,14 +681,14 @@ struct MarkdownImageRow: View {
 
         HStack(spacing: 6) {
             SwiftUI.Image(systemName: "photo")
-                .font(.system(size: theme.captionSize))
+                .font(.system(size: typography.captionSize))
                 .foregroundStyle(theme.textHint)
             if let url {
                 Button {
                     hapiOpenURL(url)
                 } label: {
                     SwiftUI.Text(label)
-                        .font(theme.captionFont)
+                        .font(typography.captionFont)
                         .foregroundStyle(theme.link)
                         .underline()
                         .lineLimit(1)
@@ -692,7 +696,7 @@ struct MarkdownImageRow: View {
                 .buttonStyle(.plain)
             } else {
                 SwiftUI.Text(label)
-                    .font(theme.captionFont)
+                    .font(typography.captionFont)
                     .foregroundStyle(theme.textSecondary)
                     .lineLimit(1)
             }

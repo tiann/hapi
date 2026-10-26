@@ -71,12 +71,13 @@ func getPermissions(_ agentState: AgentState?) -> PermissionMap {
             let entry = completed[id]!
             let status: ToolPermissionStatus = {
                 switch entry.status {
+                case .resolved: return .resolved
                 case .canceled: return .canceled
                 case .denied: return .denied
                 case .approved: return .approved
                 }
             }()
-            map.set(id, PermissionEntry(
+            map.set(entry.toolCallId ?? id, PermissionEntry(
                 toolName: entry.tool,
                 input: entry.arguments,
                 permission: ToolPermission(
@@ -100,9 +101,9 @@ func getPermissions(_ agentState: AgentState?) -> PermissionMap {
 
     if let requests = agentState?.requests {
         for id in requests.keys.sorted(by: { $0.utf16.lexicographicallyPrecedes($1.utf16) }) {
-            if map.has(id) { continue }
+            if agentState?.completedRequests?[id] != nil { continue }
             let request = requests[id]!
-            map.set(id, PermissionEntry(
+            map.set(request.toolCallId ?? id, PermissionEntry(
                 toolName: request.tool,
                 input: request.arguments,
                 permission: ToolPermission(

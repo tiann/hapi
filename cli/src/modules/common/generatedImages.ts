@@ -415,7 +415,7 @@ export function safeAcpFileName(uri: string | undefined | null): string | null {
     return null
 }
 
-export async function registerGeneratedImageFromAcpBlock(block: unknown): Promise<GeneratedImageMetadata | null> {
+export function registerGeneratedImageFromAcpBlock(block: unknown): GeneratedImageMetadata | null {
     if (!isObject(block) || block.type !== 'image') {
         return null
     }

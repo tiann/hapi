@@ -37,6 +37,7 @@ final class ChatSession {
     /// From this pipe's latest handshake; needed for `POST /api/visibility`
     /// (M3b) — new on every reconnect.
     private(set) var subscriptionId: String?
+    private(set) var isRemoved = false
     /// Set once `start()` opened the window; the chat model observes its
     /// state stream and calls its `fetchOlder`/`syncTail`.
     private(set) var windowController: MessageWindowController?
@@ -44,6 +45,7 @@ final class ChatSession {
     /// Fired (on the main actor) after SSE events that can update stores so
     /// the chat model can re-run its pipeline over the freshly patched data.
     @ObservationIgnored var onStoreActivity: (@MainActor () -> Void)?
+    @ObservationIgnored var onSessionRemoved: (@MainActor () -> Void)?
 
     private let baseURL: URL
     private let authManager: AuthManager
@@ -93,12 +95,17 @@ final class ChatSession {
 
     /// Open the window, then subscribe: every routed message event finds the
     /// controller already in place (the Android wiring order). Idempotent.
-    func start() async {
+    func start(preservingHistory: Bool = false) async {
         guard !started, !stopped else { return }
         started = true
         registerActive(self)
         let controller = await windows.open(sessionId: sessionId)
-        await controller.activate()
+        guard !stopped else { return }
+        if preservingHistory {
+            await controller.setViewMode(.history)
+        } else {
+            await controller.activate()
+        }
         // A stop() can land while the opens above were suspended; do not
         // bring the SSE up for a dead chat.
         guard !stopped else { return }
@@ -106,7 +113,7 @@ final class ChatSession {
         startSessionSSE()
         // Explicit catch-up on entry (the snapshot may be stale); the SSE
         // handshake's own gap handling covers everything missed after this.
-        Task { await controller.syncTail() }
+        if !preservingHistory { Task { await controller.syncTail() } }
     }
 
     /// Tears the session pipe down; the engine-side resume cursor is saved
@@ -119,6 +126,7 @@ final class ChatSession {
         // identity-guarded on the other side against register/stop races.
         unregisterActive(self)
         onStoreActivity = nil
+        onSessionRemoved = nil
         consumeTask?.cancel()
         consumeTask = nil
         reconnectNotice.update(.idle)
@@ -212,8 +220,10 @@ final class ChatSession {
         case .sessionRemoved(_, let removedId):
             router.route(event, scope: .session(sessionId))
             if removedId == sessionId {
+                isRemoved = true
                 // Web `clearMessageWindow` on session-removed.
                 await windows.clear(sessionId: sessionId)
+                onSessionRemoved?()
             }
         default:
             // `session-updated` (detail patch / full session), lifecycle,

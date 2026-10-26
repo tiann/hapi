@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { reduceTimeline } from './reducerTimeline'
+import { normalizeAgentRecord } from './normalizeAgent'
+import { aggregateResponseGroups } from '@/lib/assistant-runtime'
+import { buildVisibleChatBlocks } from './toolGroups'
 import { toolDurationMs } from '@/components/ToolCard/toolDuration'
 import type { TracedMessage } from './tracer'
 
@@ -234,6 +237,143 @@ describe('reduceTimeline', () => {
                 numTurns: 1
             }
         }])
+    })
+
+    it.each([false, true])('preserves persisted Codex duration through hydration and tail reload (usage first: %s)', (usageFirst) => {
+        const usage = { type: 'token_count', flavor: 'codex', model: 'gpt-5.4',
+            info: { last_token_usage: { input_tokens: 100, output_tokens: 10 } } }
+        const duration = { type: 'turn_duration', flavor: 'codex', durationMs: 39_426 }
+        const tail = [
+            { type: 'message', message: 'Completed answer' },
+            ...(usageFirst ? [usage, duration] : [duration, usage]),
+            // A late usage update must not erase the persisted duration.
+            usage
+        ].map((data, index) => normalizeAgentRecord(`tail-${index}`, null, 100_000 + index, { type: 'codex', data: { ...data, turn_id: 'round' } })).filter((message): message is TracedMessage => message !== null)
+        for (const withUser of [true, false]) {
+            const messages = withUser
+                ? [makeUserMessage('prompt', { invokedAt: 1 }), ...tail]
+                : JSON.parse(JSON.stringify(tail)) as TracedMessage[]
+            const { blocks } = reduceTimeline(messages, makeContext())
+            const visible = buildVisibleChatBlocks(blocks, { hasMoreMessages: !withUser })
+            const summary = aggregateResponseGroups(visible).get('tail-0:0')?.roundSummary
+            expect(summary).toMatchObject({ provider: 'codex', durationMs: 39_426, numTurns: 1,
+                usage: { input_tokens: 100, output_tokens: 10 },
+                modelUsage: { 'gpt-5.4': { inputTokens: 100, outputTokens: 10 } } })
+        }
+    })
+
+    it('keeps the existing latest-usage model policy when a persisted duration is present', () => {
+        const messages = [
+            { type: 'message', message: 'answer' },
+            { type: 'turn_duration', flavor: 'codex', durationMs: 1000 },
+            ...['old-model', 'new-model'].map(model => ({ type: 'token_count', flavor: 'codex', model,
+                info: { last_token_usage: { input_tokens: 100, output_tokens: 10 } } }))
+        ].map((data, index) => normalizeAgentRecord(`model-${index}`, null, index, { type: 'codex', data: { ...data, turn_id: 'round' } }))
+            .filter((message): message is TracedMessage => message !== null)
+        const { blocks } = reduceTimeline(messages, makeContext())
+        expect(blocks[0]).toMatchObject({ roundSummary: { durationMs: 1000,
+            modelUsage: { 'new-model': { inputTokens: 100, outputTokens: 10 } } } })
+        expect((blocks[0] as { roundSummary?: { modelUsage: unknown } }).roundSummary?.modelUsage).not.toHaveProperty('old-model')
+    })
+
+    it.each(['message', 'tool-call'] as const)('binds late metadata to its %s turn across queued user messages', (type) => {
+        const wire = (id: string, turn_id: string, data: Record<string, unknown>) => normalizeAgentRecord(id, null, 1000, {
+            type: 'codex', data: { ...data, turn_id }
+        })!
+        const answer = type === 'message' ? { type, message: 'first answer' }
+            : { type, name: 'ExitPlanMode', callId: 'plan-first', input: { plan: '# First' } }
+        const first = wire('first', 'turn-1', answer)
+        const second = wire('second', 'turn-2', { type: 'message', message: 'second answer' })
+        const usage = (turnId: string) => wire(`usage-${turnId}`, turnId, { type: 'token_count', flavor: 'codex',
+            model: 'gpt-5.4', info: { last_token_usage: { input_tokens: 100, output_tokens: 10 } } })
+        const duration = wire('duration', 'turn-1', { type: 'turn_duration', flavor: 'codex', durationMs: 39_426 })
+        const { blocks } = reduceTimeline([first, makeUserMessage('queued next prompt'), second, usage('turn-2'), duration, usage('turn-1')], makeContext())
+        const firstBlock = blocks.find(block => block.kind === (type === 'message' ? 'agent-text' : 'tool-call'))!
+        expect(firstBlock).toMatchObject({ roundSummary: { turnId: 'turn-1', durationMs: 39_426, numTurns: 1 } })
+        const secondBlock = blocks.find(block => block.id === 'second:0')!
+        expect(secondBlock).toMatchObject({ roundSummary: { turnId: 'turn-2', numTurns: 1 } })
+        expect((secondBlock as { roundSummary?: { durationMs?: number } }).roundSummary?.durationMs).toBeUndefined()
+    })
+
+    it('does not carry a previous native turn duration into a later summary in the same response group', () => {
+        const messages = [
+            { turn_id: 'first', type: 'message', message: 'first' },
+            { turn_id: 'first', type: 'turn_duration', flavor: 'codex', durationMs: 1000 },
+            { turn_id: 'second', type: 'message', message: 'second' },
+            { turn_id: 'second', type: 'token_count', flavor: 'codex', model: 'gpt-5.4',
+                info: { last_token_usage: { input_tokens: 100, output_tokens: 10 } } }
+        ].map((data, index) => normalizeAgentRecord(`turn-${index}`, null, index, { type: 'codex', data })!)
+        const { blocks } = reduceTimeline(messages, makeContext())
+        expect(blocks[0]).toMatchObject({ roundSummary: { turnId: 'second', numTurns: 1 } })
+        expect((blocks[0] as { roundSummary?: { durationMs?: number } }).roundSummary?.durationMs).toBeUndefined()
+    })
+
+    it('keeps legacy Codex Round usage when the persisted answer has no native turn ID', () => {
+        const messages = [
+            { type: 'message', message: 'legacy answer' },
+            { type: 'token_count', flavor: 'codex', turn_id: 'turn', model: 'gpt-5.4',
+                info: { last_token_usage: { input_tokens: 100, output_tokens: 10 } } },
+            { type: 'turn_duration', flavor: 'codex', turn_id: 'turn', durationMs: 39_426 }
+        ].map((data, index) => normalizeAgentRecord(`legacy-${index}`, null, index, { type: 'codex', data })!)
+        const { blocks } = reduceTimeline(messages, makeContext())
+        expect(blocks[0]).toMatchObject({ roundSummary: { provider: 'codex', numTurns: 1,
+            usage: { input_tokens: 100, output_tokens: 10 },
+            modelUsage: { 'gpt-5.4': { inputTokens: 100, outputTokens: 10 } } } })
+        expect((blocks[0] as { roundSummary?: { durationMs?: number } }).roundSummary?.durationMs).toBeUndefined()
+    })
+
+    it('rejects unmatched Codex metadata when the response has a different native turn ID', () => {
+        const messages = [
+            { type: 'message', message: 'new answer', turn_id: 'new' },
+            { type: 'token_count', flavor: 'codex', turn_id: 'old', model: 'gpt-5.4',
+                info: { last_token_usage: { input_tokens: 100, output_tokens: 10 } } },
+            { type: 'turn_duration', flavor: 'codex', turn_id: 'old', durationMs: 39_426 }
+        ].map((data, index) => normalizeAgentRecord(`unmatched-${index}`, null, index, { type: 'codex', data })!)
+        const { blocks } = reduceTimeline(messages, makeContext())
+        expect((blocks[0] as { roundSummary?: unknown }).roundSummary).toBeUndefined()
+    })
+
+    it('ignores older Codex metadata after a newer native turn summary in the same group', () => {
+        const messages = [
+            { turn_id: 'first', type: 'message', message: 'first' },
+            { turn_id: 'second', type: 'message', message: 'second' },
+            { turn_id: 'second', type: 'token_count', flavor: 'codex', model: 'new-model',
+                info: { last_token_usage: { input_tokens: 200, output_tokens: 20 } } },
+            { turn_id: 'first', type: 'turn_duration', flavor: 'codex', durationMs: 1000 },
+            { turn_id: 'first', type: 'token_count', flavor: 'codex', model: 'old-model',
+                info: { last_token_usage: { input_tokens: 100, output_tokens: 10 } } }
+        ].map((data, index) => normalizeAgentRecord(`late-${index}`, null, index, { type: 'codex', data })!)
+        const { blocks } = reduceTimeline(messages, makeContext())
+        expect(blocks[0]).toMatchObject({ roundSummary: { turnId: 'second',
+            usage: { input_tokens: 200, output_tokens: 20 },
+            modelUsage: { 'new-model': { inputTokens: 200, outputTokens: 20 } } } })
+        expect((blocks[0] as { roundSummary?: { durationMs?: number } }).roundSummary?.durationMs).toBeUndefined()
+    })
+
+    it('preserves completed Round summaries on plan cards scoped to each native turn', () => {
+        const messages: TracedMessage[] = []
+        for (const [index, turnId] of ['first', 'second'].entries()) {
+            messages.push(makeUserMessage(`prompt ${turnId}`, { id: `user-${turnId}` }))
+            const callId = `codex-plan-state:${turnId}`
+            for (const [messageIndex, data] of [
+                { type: 'tool-call', name: 'update_plan', callId, input: { plan: [{ step: turnId, status: 'completed' }] } },
+                { type: 'tool-call-result', callId, output: { status: 'updated' } },
+                { type: 'message', message: `${turnId} answer` },
+                { type: 'token_count', flavor: 'codex', model: 'gpt-5.4',
+                    info: { last_token_usage: { input_tokens: 100 * (index + 1), output_tokens: 10 } } },
+                { type: 'turn_duration', flavor: 'codex', durationMs: 1000 * (index + 1) }
+            ].entries()) {
+                messages.push(normalizeAgentRecord(`${turnId}-${messageIndex}`, null, messages.length,
+                    { type: 'codex', data: { ...data, turn_id: turnId } })!)
+            }
+        }
+        const { blocks } = reduceTimeline(messages, makeContext())
+        const plans = blocks.filter(block => block.kind === 'tool-call')
+        expect(plans).toHaveLength(2)
+        for (const [index, plan] of plans.entries()) {
+            expect(plan).toMatchObject({ roundSummary: { turnId: index === 0 ? 'first' : 'second',
+                durationMs: 1000 * (index + 1), usage: { input_tokens: 100 * (index + 1) } } })
+        }
     })
 
     it('does not derive a Round summary from unmarked token usage', () => {

@@ -1,3 +1,4 @@
+import { CodexRoundDuration } from './utils/roundDuration';
 import { logger } from '@/ui/logger';
 import { resolve } from 'node:path';
 import { startHookServer } from '@/claude/utils/startHookServer';
@@ -48,7 +49,7 @@ function extractTurnContextModel(event: CodexSessionEvent): string | null | unde
     const model = (event.payload as Record<string, unknown>).model;
     if (model === null) return null;
     if (typeof model !== 'string' || !model.trim()) return undefined;
-    return model.trim() === 'gpt-reserve' ? 'gpt-5.6-luna' : model.trim();
+    return model.trim();
 }
 
 export async function codexLocalLauncher(session: CodexSession): Promise<'switch' | 'exit'> {
@@ -58,6 +59,14 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
     let scanner: CodexSessionScanner | null = null;
     let hookReady = false;
     let shuttingDown = false;
+    let readyTimer: ReturnType<typeof setTimeout> | null = null;
+    const completedTurns = new Set<string>();
+    const cancelReady = (): void => {
+        if (readyTimer !== null) {
+            clearTimeout(readyTimer);
+            readyTimer = null;
+        }
+    };
     let pendingScannerSetup: Promise<void> | null = null;
     let transcriptLocator: CodexTranscriptLocator | null = null;
     let scannerTranscriptPath: string | null = null;
@@ -114,13 +123,15 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
             name: 'ExitPlanMode',
             callId,
             input: { plan: message.plan },
-            id: message.id
+            id: message.id,
+            turn_id: message.turnId
         });
         session.sendAgentMessage({
             type: 'tool-call-result',
             callId,
             output: null,
-            id: `${message.id}:result`
+            id: `${message.id}:result`,
+            turn_id: message.turnId
         });
     };
 
@@ -163,6 +174,8 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         pendingExecWrappers.clear();
     };
 
+    const roundDuration = new CodexRoundDuration();
+
     const dispatchTranscriptActions = (
         actions: CodexConversionAction[],
         context: { replayedHistory: boolean }
@@ -192,7 +205,8 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                 continue;
             }
 
-            const message = action.message;
+            const turnId = action.turnId ?? roundDuration.turnId;
+            const message = { ...action.message, ...(turnId ? { turn_id: turnId } : {}) };
             if (message.type === 'proposed_plan') {
                 // Codex may complete the Plan item before emitting its final text preface.
                 pendingPlansByTurnId.set(message.turnId, message);
@@ -315,6 +329,35 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                     session.setModelReasoningEffort(observedReasoningEffort);
                 }
                 dispatchTranscriptActions(convertTranscriptEvent(event), context);
+                if (event.type === 'event_msg' && event.payload && typeof event.payload === 'object') {
+                    const payload = event.payload as Record<string, unknown>;
+                    const timestamp = typeof event.timestamp === 'string' ? Date.parse(event.timestamp) : NaN;
+                    const turnId = typeof payload.turn_id === 'string' ? payload.turn_id : null;
+                    if (!context.replayedHistory) {
+                        if (payload.type === 'task_started') roundDuration.start(turnId, timestamp);
+                        if (payload.type === 'task_complete' || payload.type === 'turn_aborted' || payload.type === 'task_failed') {
+                            const duration = roundDuration.finish(turnId, timestamp, payload.type === 'task_complete');
+                            if (duration) session.sendAgentMessage(duration);
+                        }
+                    }
+                    if (payload.type === 'task_started' || payload.type === 'user_message'
+                        || payload.type === 'turn_aborted' || payload.type === 'task_failed') {
+                        cancelReady();
+                    } else if (payload.type === 'task_complete' && typeof payload.turn_id === 'string') {
+                        if (completedTurns.has(payload.turn_id)) return;
+                        completedTurns.add(payload.turn_id);
+                        if (context.replayedHistory || shuttingDown) return;
+                        cancelReady();
+                        // Finish forwarding this scan before notifying. A following turn in
+                        // the same batch cancels the alert; replay and shutdown never alert.
+                        readyTimer = setTimeout(() => {
+                            readyTimer = null;
+                            if (!shuttingDown && session.queue.size() === 0) {
+                                session.sendSessionEvent({ type: 'ready' });
+                            }
+                        }, 0);
+                    }
+                }
             }
         });
         if (shuttingDown) {
@@ -376,7 +419,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                     return;
                 }
                 for (const message of toolHookBridge.handle(data)) {
-                    session.sendAgentMessage(message);
+                    session.sendAgentMessage({ ...message, turn_id: data.turn_id });
                 }
                 return;
             }
@@ -417,7 +460,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
             await codexLocal({
                 path: session.path,
                 sessionId: resumeSessionId,
-                modelReasoningEffort: resumeSessionId ? undefined : (session.getModelReasoningEffort() ?? undefined) as ReasoningEffort | undefined,
+                modelReasoningEffort: (session.getModelReasoningEffort() ?? undefined) as ReasoningEffort | undefined,
                 onSessionFound: handleSessionFound,
                 abort: abortSignal,
                 codexArgs,
@@ -448,6 +491,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         return await launcher.run();
     } finally {
         shuttingDown = true;
+        cancelReady();
         session.removeTranscriptPathCallback(handleTranscriptPathCallback);
         hookServer.stop();
         const activeLocator = transcriptLocator;

@@ -1,6 +1,7 @@
-import { useMemo, useRef } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import '../src/index.css'
 import type { ApiClient } from '../src/api/client'
 import type { DecryptedMessage, MessagesResponse, Session } from '../src/types/api'
@@ -15,6 +16,7 @@ import { useHappyRuntime } from '../src/lib/assistant-runtime'
 import { HappyThread } from '../src/components/AssistantChat/HappyThread'
 import type { ChatBlock } from '../src/chat/types'
 import { getMessageWindowState } from '../src/lib/message-window-store'
+import { buildConversationOutline } from '../src/chat/outline'
 
 // Drives the real message-window store + chat pipeline + HappyThread against a
 // fake paginated message API, so e2e tests can exercise older-history loading
@@ -27,8 +29,17 @@ const BASE_AT = 1_700_000_000_000
 
 type Probe = {
     requests: { direction: string; beforeSeq: number | null; limit: number | undefined; at: number }[]
+    loadMore: () => Promise<unknown>
     refetch: () => Promise<void>
-    windowState: () => { messageCount: number; oldestSeq: number | null; newestSeq: number | null }
+    releaseLatest: () => void
+    holdBefore: () => void
+    releaseBefore: () => void
+    windowState: () => {
+        messageCount: number
+        oldestSeq: number | null
+        newestSeq: number | null
+        isLoadingMore: boolean
+    }
 }
 
 declare global {
@@ -37,15 +48,32 @@ declare global {
     }
 }
 
+let releaseLatestResponse = () => {}
+let latestResponseGate: Promise<void> | null = null
+let beforeResponseGate: Promise<void> | null = null
+let releaseBeforeResponse = () => {}
+
 window.__probe = {
     requests: [],
+    loadMore: async () => {},
     refetch: async () => {},
+    releaseLatest: () => releaseLatestResponse(),
+    holdBefore: () => {
+        beforeResponseGate = new Promise<void>((resolve) => {
+            releaseBeforeResponse = resolve
+        })
+    },
+    releaseBefore: () => {
+        beforeResponseGate = null
+        releaseBeforeResponse()
+    },
     windowState: () => {
         const state = getMessageWindowState(SESSION_ID)
         return {
             messageCount: state.messages.length,
             oldestSeq: state.oldestSeq,
-            newestSeq: state.newestSeq
+            newestSeq: state.newestSeq,
+            isLoadingMore: state.isLoadingMore
         }
     }
 }
@@ -62,14 +90,32 @@ window.__probe = {
 // - ?epochBump=1 — `before` responses carry a newer epoch than the tail, so
 //   every older-page request hits the store's deliberate epoch-mismatch stop
 //   (reset + tail resync, typed terminal stop).
-// - ?slowBefore=1 — delay older-page responses long enough for a normal tail
-//   synchronization to invalidate an in-flight request.
+// - ?coldInitial=1 — honor the production cold-open latest-page size instead
+//   of returning the legacy full 200-row page used by this fixture by default.
+// - ?slowBefore=1 — add latency to older-page responses. Use holdBefore /
+//   releaseBefore for tests that require a request to remain in flight.
+// - ?cachedReentry=1 — hydrate one cached message before activation, so the
+//   latest-tail refresh path can be tested independently from a cold window.
+// - ?holdLatest=1 — hold the latest response until `window.__probe.releaseLatest`
+//   is called, making the cached first paint observable.
+// - ?navigationShell=1 — add a pinned header/composer and outline controls.
+// - ?navigationMedia=1 — include generated-image previews in older history.
 const fixtureParams = new URLSearchParams(window.location.search)
+const navigationShell = fixtureParams.has('navigationShell')
+const navigationMedia = fixtureParams.has('navigationMedia')
 const shortPages = fixtureParams.has('shortPages')
 const failBeforeCount = Number(fixtureParams.get('failBefore') ?? '0')
 const filteredOlder = fixtureParams.has('filteredOlder')
 const epochBump = fixtureParams.has('epochBump')
+const coldInitial = fixtureParams.has('coldInitial')
 const slowBefore = fixtureParams.has('slowBefore')
+const cachedReentry = fixtureParams.has('cachedReentry')
+const holdLatest = fixtureParams.has('holdLatest')
+if (holdLatest) {
+    latestResponseGate = new Promise<void>((resolve) => {
+        releaseLatestResponse = resolve
+    })
+}
 let beforeAttempts = 0
 
 const allMessages: DecryptedMessage[] = Array.from({ length: TOTAL_MESSAGES }, (_, index) => {
@@ -79,13 +125,39 @@ const allMessages: DecryptedMessage[] = Array.from({ length: TOTAL_MESSAGES }, (
         id: `m-${seq}`,
         seq,
         localId: null,
-        content: filtered
+        content: navigationMedia && seq % 50 === 0 && seq < TOTAL_MESSAGES
+            ? {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: { type: 'generated-image', imageId: `img-${seq}`, fileName: `image-${seq}.svg`, mimeType: 'image/svg+xml' },
+                },
+            }
+            : filtered
             ? { role: 'agent', content: { type: 'output', data: { isMeta: true } } }
             : { role: 'user', content: { type: 'text', text: `Fixture message ${seq}` } },
         createdAt: BASE_AT + seq,
         invokedAt: BASE_AT + seq
     } as DecryptedMessage
 })
+
+if (cachedReentry) {
+    const cachedMessages = allMessages.slice(-200)
+    const cachedOldest = cachedMessages[0]
+    const cachedNewest = cachedMessages.at(-1)
+    if (!cachedOldest || !cachedNewest) throw new Error('Expected cached fixture messages')
+    const oldestPosition = positionOf(cachedOldest)
+    const newestPosition = positionOf(cachedNewest)
+    sessionStorage.setItem(`hapi:message-window:v2:${SESSION_ID}`, JSON.stringify({
+        messages: cachedMessages,
+        hasMore: true,
+        oldestPositionAt: oldestPosition.at,
+        oldestPositionSeq: oldestPosition.seq,
+        newestPositionAt: newestPosition.at,
+        newestPositionSeq: newestPosition.seq,
+        epoch: 1
+    }))
+}
 
 function positionOf(message: DecryptedMessage): { at: number; seq: number } {
     return { at: message.invokedAt ?? message.createdAt, seq: message.seq ?? 0 }
@@ -111,6 +183,9 @@ function pageFrom(messages: DecryptedMessage[], overrides: Partial<MessagesRespo
 }
 
 const fakeApi = {
+    getHubSettings: async () => ({ sessionSummaryInChat: false }),
+    getMachines: async () => ({ machines: [] }),
+    getGeneratedImageBlob: async () => new Blob(['<svg xmlns="http://www.w3.org/2000/svg" width="240" height="160"><rect width="240" height="160" fill="lightblue"/></svg>'], { type: 'image/svg+xml' }),
     getMessages: async (_sessionId: string, query: {
         limit?: number
         beforeAt?: number | null
@@ -118,10 +193,12 @@ const fakeApi = {
         afterAt?: number | null
         afterSeq?: number | null
     }): Promise<MessagesResponse> => {
-        const limit = query.limit ?? 200
+        const requestedLimit = query.limit ?? 200
         let direction = 'latest'
         if (query.beforeSeq != null || query.beforeAt != null) direction = 'before'
         else if (query.afterSeq != null || query.afterAt != null) direction = 'after'
+        const limit = direction === 'latest' && !coldInitial && !cachedReentry ? 200 : requestedLimit
+        const responseGate = direction === 'before' ? beforeResponseGate : null
         window.__probe.requests.push({
             direction,
             beforeSeq: query.beforeSeq ?? null,
@@ -134,6 +211,11 @@ const fakeApi = {
             resolve,
             direction === 'before' && slowBefore ? 500 : 50
         ))
+        if (responseGate) await responseGate
+
+        if (direction === 'latest' && latestResponseGate) {
+            await latestResponseGate
+        }
 
         if (direction === 'before') {
             beforeAttempts += 1
@@ -202,6 +284,8 @@ const noopSend = () => {}
 const noopAbort = async () => {}
 
 function FixtureThread() {
+    const [outlineOpen, setOutlineOpen] = useState(false)
+    const [forceScrollToken, setForceScrollToken] = useState(0)
     const {
         messages,
         warning,
@@ -216,6 +300,7 @@ function FixtureThread() {
         setViewMode
     } = useMessages(fakeApi, SESSION_ID)
 
+    window.__probe.loadMore = loadMore
     window.__probe.refetch = refetch
 
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
@@ -253,40 +338,64 @@ function FixtureThread() {
 
     return (
         <AssistantRuntimeProvider runtime={runtime}>
-            <div className="flex h-screen min-h-0 flex-col">
-                <HappyThread
-                    api={fakeApi}
-                    session={fakeSession}
-                    sessionId={SESSION_ID}
-                    metadata={null}
-                    disabled={false}
-                    onRefresh={() => {}}
-                    onViewModeChange={setViewMode}
-                    isSyncingTail={isSyncingTail}
-                    messagesWarning={warning}
-                    hasMoreMessages={hasMore}
-                    isLoadingMoreMessages={isLoadingMore}
-                    onLoadMore={loadMore}
-                    onCancelLoadMore={cancelLoadMore}
-                    // This fixture drives HappyThread directly, bypassing the
-                    // SessionChat block reduction that computes the real count.
-                    unseenCount={0}
-                    rawMessagesCount={messages.length}
-                    normalizedMessagesCount={normalizedMessages.length}
-                    messagesVersion={messagesVersion}
-                    historyVersion={historyVersion}
-                    forceScrollToken={0}
-                    outlineOpen={false}
-                    outlineItems={[]}
-                    onOutlineOpenChange={() => {}}
-                />
+            <div className={navigationShell ? 'flex h-full min-h-0' : 'flex h-screen min-h-0 flex-col'}>
+                {navigationShell ? (
+                    <aside className="hidden w-64 shrink-0 sm:block">Session sidebar</aside>
+                ) : null}
+                <div className="flex h-full min-h-0 flex-1 flex-col">
+                    {navigationShell ? (
+                        <header data-testid="navigation-header" className="flex h-[76px] shrink-0 items-center p-3">
+                            <button type="button" onClick={() => setOutlineOpen(true)}>Open history</button>
+                            <button type="button" onClick={() => setForceScrollToken(value => value + 1)}>Latest messages</button>
+                        </header>
+                    ) : null}
+                    <HappyThread
+                        api={fakeApi}
+                        session={fakeSession}
+                        sessionId={SESSION_ID}
+                        metadata={null}
+                        disabled={false}
+                        onRefresh={() => {}}
+                        onViewModeChange={setViewMode}
+                        isSyncingTail={isSyncingTail}
+                        messagesWarning={warning}
+                        hasMoreMessages={hasMore}
+                        isLoadingMoreMessages={isLoadingMore}
+                        onLoadMore={loadMore}
+                        onCancelLoadMore={cancelLoadMore}
+                        // This fixture drives HappyThread directly, bypassing the
+                        // SessionChat block reduction that computes the real count.
+                        unseenCount={0}
+                        rawMessagesCount={messages.length}
+                        normalizedMessagesCount={normalizedMessages.length}
+                        messagesVersion={messagesVersion}
+                        historyVersion={historyVersion}
+                        forceScrollToken={forceScrollToken}
+                        outlineOpen={navigationShell && outlineOpen}
+                        outlineItems={navigationShell ? buildConversationOutline(reconciled.blocks) : []}
+                        onOutlineOpenChange={setOutlineOpen}
+                    />
+                    {navigationShell ? (
+                        <footer data-testid="navigation-composer" className={`h-[150px] shrink-0 p-3 ${outlineOpen ? 'max-sm:hidden' : ''}`}>
+                            <textarea aria-label="Fixture composer" className="w-full resize-none" />
+                        </footer>
+                    ) : null}
+                </div>
             </div>
         </AssistantRuntimeProvider>
     )
 }
 
+const queryClient = new QueryClient({
+    defaultOptions: {
+        queries: { retry: false }
+    }
+})
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
-    <I18nProvider>
-        <FixtureThread />
-    </I18nProvider>
+    <QueryClientProvider client={queryClient}>
+        <I18nProvider>
+            <FixtureThread />
+        </I18nProvider>
+    </QueryClientProvider>
 )

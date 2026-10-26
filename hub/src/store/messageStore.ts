@@ -1,8 +1,12 @@
 import type { Database } from 'bun:sqlite'
 
+import { hasConversationMessageContent } from '@hapi/protocol/messages'
+import { decodeMessageContent } from './contentCodec'
+
 import type { StoredMessage } from './types'
 import {
     addMessage,
+    syncNativeQueuedMessage,
     addImportedMessage,
     cancelQueuedMessage,
     deleteLiveReasoningSnapshots,
@@ -53,6 +57,10 @@ export class MessageStore {
 
     addMessage(sessionId: string, content: unknown, localId?: string, scheduledAt?: number | null, createdAt?: number): StoredMessage {
         return addMessage(this.db, sessionId, content, localId, scheduledAt, createdAt)
+    }
+
+    syncNativeQueuedMessage(sessionId: string, localId: string, text: string): StoredMessage {
+        return syncNativeQueuedMessage(this.db, sessionId, localId, text)
     }
 
     deleteLiveReasoningSnapshots(sessionId: string, streamId: string, keepMessageId?: string): number {
@@ -153,6 +161,21 @@ export class MessageStore {
 
     minFutureScheduledAtBySessionIds(sessionIds: string[], now: number = Date.now()): Map<string, number> {
         return minFutureScheduledAtBySessionIds(this.db, sessionIds, now)
+    }
+
+    // ponytail: scans through leading bookkeeping; index content if that prefix becomes costly.
+    hasConversationContent(sessionId: string): boolean {
+        const query = this.db.prepare<{ content: string | Uint8Array }, [string]>(
+            'SELECT content FROM messages WHERE session_id = ? ORDER BY seq ASC'
+        )
+        try {
+            for (const row of query.iterate(sessionId)) {
+                if (hasConversationMessageContent(decodeMessageContent(row.content))) return true
+            }
+            return false
+        } finally {
+            query.finalize()
+        }
     }
 
     countMessages(sessionId: string): number {

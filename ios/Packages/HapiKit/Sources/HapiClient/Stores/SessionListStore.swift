@@ -84,6 +84,11 @@ public final class SessionListStore: SessionListStoring {
     /// for the Android `SessionStore.scratchlistInvalidations` flow).
     @ObservationIgnored public var onScratchlistInvalidation: (@MainActor (String) -> Void)?
 
+    /// Authoritative removal only: SSE from either pipe, or a successful
+    /// archive. Optimistic list removal/rollback, filters and failed refreshes
+    /// must not dismiss a client's currently selected session.
+    @ObservationIgnored public var onSessionRemoved: (@MainActor (String) -> Void)?
+
     @ObservationIgnored private let api: APIClient
     @ObservationIgnored private let snapshot: DiskCache<[SessionSummary]>?
     @ObservationIgnored private let refreshBatch: Duration
@@ -189,6 +194,7 @@ public final class SessionListStore: SessionListStoring {
             if next.count != sessions.count {
                 setSessions(next)
             }
+            onSessionRemoved?(sessionId)
         case .sessionEnded:
             // The reference has no session-ended cache branch: the state
             // change always arrives through the session-updated flow too.
@@ -228,6 +234,7 @@ public final class SessionListStore: SessionListStoring {
         }
         do {
             try await api.archiveSession(id: sessionId)
+            onSessionRemoved?(sessionId)
         } catch {
             if let removed, !sessions.contains(where: { $0.id == sessionId }) {
                 setSessions(sortSessionSummaries(sessions + [removed]))

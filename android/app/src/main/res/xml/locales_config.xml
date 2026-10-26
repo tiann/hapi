@@ -4,4 +4,5 @@
 <locale-config xmlns:android="http://schemas.android.com/apk/res/android">
     <locale android:name="en" />
     <locale android:name="zh-CN" />
+    <locale android:name="ru" />
 </locale-config>

@@ -278,7 +278,7 @@ object NewSessionLogic {
             sessionType = draft.sessionType,
             worktreeName = draft.worktreeName,
         )
-        val allowedModes = PermissionModes.forFlavor(base.agent).map { it.wireId }
+        val allowedModes = PermissionModes.forLaunch(base.agent).map { it.wireId }
         val sessionType = if (base.sessionType == SESSION_TYPE_WORKTREE) SESSION_TYPE_WORKTREE else SESSION_TYPE_SIMPLE
         return base.copy(
             permissionMode = if (base.permissionMode in allowedModes) base.permissionMode else "default",

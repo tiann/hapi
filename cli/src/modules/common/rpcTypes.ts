@@ -5,11 +5,11 @@ export interface SpawnSessionOptions {
     machineId?: string
     directory: string
     sessionId?: string
-    // Existing hub session id to reuse (reopen/resume). Distinct from the legacy
-    // `sessionId` field above (reserved/unused by spawn): when set, the CLI boots
-    // with `--hapi-session-id` so the child reuses the existing hub row (stable
-    // id) instead of minting a new one. Set only by the hub reopen/resume path.
+    // Live hub row id for reopen/resume. Runner stamps `--existing-session-id`.
     existingSessionId?: string
+    // Hub-preallocated machine-spawn stub. Runner stamps `--hapi-session-id`
+    // (adopt-stub create/getOrCreate) — must NOT take the reopen path.
+    reservedSessionId?: string
     resumeSessionId?: string
     approvedNewDirectoryCreation?: boolean
     agent?: AgentFlavor
@@ -33,10 +33,16 @@ export interface SpawnSessionOptions {
 
 export type SpawnSessionResult =
     | { type: 'success'; sessionId: string }
-    | { type: 'requestToApproveDirectoryCreation'; directory: string }
+    | { type: 'requestToApproveDirectoryCreation'; directory: string; childStarted: false }
     | {
         type: 'error'
         errorMessage: string
         code?: 'agent_unavailable' | 'outside_workspace_roots'
         agent?: AgentFlavor
+        /**
+         * Explicit false = runner rejected before exec (no OS child). Hub may
+         * delete a preallocated stub. Omitted/true = child may exist — keep stub
+         * until StopSession confirms gone (#1911 B3).
+         */
+        childStarted?: boolean
     }

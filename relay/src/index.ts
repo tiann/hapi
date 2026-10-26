@@ -1,12 +1,12 @@
 /**
  * HAPI push relay - a tiny standalone service that forwards E2E-encrypted
- * push envelopes from self-hosted hubs to APNs.
+ * push envelopes from self-hosted hubs to APNs and FCM.
  *
  * Privacy stance: the relay never sees notification content. Hubs encrypt
  * the payload with a per-device AES-256-GCM key known only to hub + device;
- * this service forwards the opaque `envelope` bytes to Apple, and the iOS
- * Notification Service Extension decrypts locally. Envelopes are never
- * logged - log lines carry only a hashed token prefix and the outcome.
+ * this service forwards the opaque `envelope` bytes to APNs or FCM, and the
+ * app decrypts locally. Envelopes are never logged - log lines carry only
+ * the platform, hashed token prefix, outcome and duration.
  *
  * Trust model: no client auth by design. Possession of a device token is the
  * capability (the same model FCM uses - cf. hub/src/fcm/fcmService.ts where
@@ -32,6 +32,7 @@ import {
     type RelayConfig
 } from './config'
 import { TokenBucketLimiter } from './rateLimit'
+import { FcmAccessTokenProvider, HttpFcmClient, parseServiceAccount, type FcmClient, type FcmPushResult } from './fcm'
 
 export const SERVICE_NAME = 'hapi-push-relay'
 
@@ -42,7 +43,8 @@ const HEX_TOKEN_RE = /^[0-9a-fA-F]+$/
 const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/
 
 export type RelayAppDeps = {
-    apns: ApnsClient
+    apns?: ApnsClient
+    fcm?: FcmClient
     version: string
     tokenLimiter: TokenBucketLimiter
     ipLimiter: TokenBucketLimiter
@@ -74,11 +76,13 @@ function pushError(status: number, code: string, message?: string): Response {
  * Privacy-preserving token reference for logs: a short hash prefix, never
  * the token itself (a device token is a push capability).
  */
-export function hashedTokenPrefix(token: string): string {
-    return createHash('sha256').update(token.toLowerCase()).digest('hex').slice(0, 12)
+export function hashedTokenPrefix(token: string, platform: 'ios' | 'android'): string {
+    const normalized = platform === 'ios' ? token.toLowerCase() : token
+    return createHash('sha256').update(`${platform}:${normalized}`).digest('hex').slice(0, 12)
 }
 
 type ValidPushRequest = {
+    platform: 'ios' | 'android'
     token: string
     envelope: string
     collapseId?: string
@@ -95,25 +99,19 @@ function validatePushBody(parsed: unknown): ValidationOutcome {
     }
     const body = parsed as Record<string, unknown>
 
-    if (body.platform === 'android') {
-        // Shape reserved: Android self-hosters use the hub's direct FCM path
-        // today; a relay lane may come later.
-        return {
-            valid: false,
-            response: pushError(501, 'unsupported_platform', 'platform "android" is not supported by the relay yet')
-        }
-    }
-    if (body.platform !== 'ios') {
+    if (body.platform !== 'ios' && body.platform !== 'android') {
         return { valid: false, response: pushError(400, 'bad_request', 'platform must be "ios" or "android"') }
     }
 
     const token = body.token
+    if (typeof token !== 'string' || token.length === 0 || token.length > 4096 || !/^[\x21-\x7e]+$/.test(token)) {
+        return { valid: false, response: pushError(400, 'bad_request', 'token must be a non-empty device token (max 4096 bytes)') }
+    }
     if (
-        typeof token !== 'string'
-        || token.length < 16
+        body.platform === 'ios' && (token.length < 16
         || token.length > 512
         || token.length % 2 !== 0
-        || !HEX_TOKEN_RE.test(token)
+        || !HEX_TOKEN_RE.test(token))
     ) {
         return { valid: false, response: pushError(400, 'bad_request', 'token must be a hex APNs device token') }
     }
@@ -147,7 +145,8 @@ function validatePushBody(parsed: unknown): ValidationOutcome {
     return {
         valid: true,
         request: {
-            token: token.toLowerCase(),
+            platform: body.platform,
+            token: body.platform === 'ios' ? token.toLowerCase() : token,
             envelope,
             collapseId,
             priority: priority ?? 10
@@ -163,7 +162,7 @@ function mapApnsResult(result: ApnsPushResult): { response: Response; outcome: s
     if (result.kind === 'transport-error') {
         return {
             response: pushError(502, 'upstream'),
-            outcome: `upstream-transport (${result.message})`
+            outcome: 'upstream-transport'
         }
     }
     const unregistered =
@@ -172,23 +171,31 @@ function mapApnsResult(result: ApnsPushResult): { response: Response; outcome: s
     if (unregistered) {
         return {
             response: pushError(410, 'unregistered'),
-            outcome: `unregistered (apns ${result.status} ${result.reason})`
+            outcome: `unregistered (apns ${result.status})`
         }
     }
     if (result.status === 429) {
-        // APNs can throttle delivery or provider-token updates. Keep the
-        // reason in the operator log so the two causes can be distinguished.
+        // APNs can throttle delivery or provider-token updates. Both are
+        // retryable and must retain the device registration.
         return {
             response: pushError(429, 'rate_limited'),
-            outcome: `apns-throttled (apns ${result.status} ${result.reason})`
+            outcome: `apns-throttled (apns ${result.status})`
         }
     }
     // Everything else (APNs 5xx, and 4xx caused by relay config such as
     // BadTopic / auth problems) is an upstream failure from the hub's view.
     return {
         response: pushError(502, 'upstream'),
-        outcome: `upstream (apns ${result.status} ${result.reason})`
+        outcome: `upstream (apns ${result.status})`
     }
+}
+
+function mapFcmResult(result: FcmPushResult): { response: Response; outcome: string } {
+    const response = result.kind === 'delivered' ? json(200, { ok: true })
+        : result.kind === 'unregistered' ? pushError(410, 'unregistered')
+        : result.kind === 'rate-limited' ? pushError(429, 'rate_limited')
+        : pushError(502, 'upstream')
+    return { response, outcome: `${result.kind}${result.status ? ` (fcm ${result.status})` : ''}` }
 }
 
 export function createRelayApp(deps: RelayAppDeps): RelayApp {
@@ -207,26 +214,37 @@ export function createRelayApp(deps: RelayAppDeps): RelayApp {
             return validated.response
         }
         const push = validated.request
-        const tokenRef = hashedTokenPrefix(push.token)
+        const tokenRef = hashedTokenPrefix(push.token, push.platform)
+        const prefix = `[relay] push platform=${push.platform} token=${tokenRef}`
+        if ((push.platform === 'ios' && !deps.apns) || (push.platform === 'android' && !deps.fcm)) {
+            return pushError(501, 'unsupported_platform', `platform "${push.platform}" is not configured`)
+        }
 
         if (!deps.ipLimiter.tryTake(clientIp ?? 'unknown')) {
-            log(`[relay] push token=${tokenRef} outcome=rate_limited (ip)`)
+            log(`${prefix} outcome=rate_limited (ip)`)
             return pushError(429, 'rate_limited')
         }
-        if (!deps.tokenLimiter.tryTake(push.token)) {
-            log(`[relay] push token=${tokenRef} outcome=rate_limited (token)`)
+        if (!deps.tokenLimiter.tryTake(`${push.platform}:${push.token}`)) {
+            log(`${prefix} outcome=rate_limited (token)`)
             return pushError(429, 'rate_limited')
         }
 
-        const result = await deps.apns.push({
-            deviceToken: push.token,
-            payload: buildApnsPayload(push.envelope),
-            collapseId: push.collapseId,
-            priority: push.priority
-        })
-        const mapped = mapApnsResult(result)
-        log(`[relay] push token=${tokenRef} outcome=${mapped.outcome}`)
-        return mapped.response
+        const started = Date.now()
+        try {
+            const mapped = push.platform === 'ios'
+                ? mapApnsResult(await deps.apns!.push({
+                    deviceToken: push.token,
+                    payload: buildApnsPayload(push.envelope),
+                    collapseId: push.collapseId,
+                    priority: push.priority
+                }))
+                : mapFcmResult(await deps.fcm!.push({ token: push.token, envelope: push.envelope, priority: push.priority }))
+            log(`${prefix} outcome=${mapped.outcome} durationMs=${Date.now() - started}`)
+            return mapped.response
+        } catch {
+            log(`${prefix} outcome=upstream durationMs=${Date.now() - started}`)
+            return pushError(502, 'upstream')
+        }
     }
 
     const handle = async (req: Request, clientIp: string | null): Promise<Response> => {
@@ -271,25 +289,40 @@ export function resolveClientIp(
 }
 
 export async function startRelay(config: RelayConfig = loadConfigFromEnv()) {
-    const keyFile = Bun.file(config.apnsKeyP8Path)
-    if (!(await keyFile.exists())) {
-        throw new Error(`APNs key file not found at RELAY_APNS_KEY_P8_PATH=${config.apnsKeyP8Path}`)
+    if (!config.apns && !config.fcm) throw new Error('Configure at least one push provider')
+    let apns: ApnsClient | undefined
+    if (config.apns) {
+        const settings = config.apns
+        const keyFile = Bun.file(settings.apnsKeyP8Path)
+        if (!(await keyFile.exists())) {
+            throw new Error('APNs key file not found; check RELAY_APNS_KEY_P8_PATH')
+        }
+        const jwtProvider = new ApnsJwtProvider({
+            privateKeyPem: await keyFile.text(),
+            keyId: settings.apnsKeyId,
+            teamId: settings.apnsTeamId
+        })
+        await jwtProvider.getToken()
+        apns = new Http2ApnsClient({
+            baseUrl: APNS_HOSTS[settings.apnsEnv],
+            topic: settings.apnsBundleId,
+            jwtProvider
+        })
     }
-    const privateKeyPem = await keyFile.text()
-
-    const jwtProvider = new ApnsJwtProvider({
-        privateKeyPem,
-        keyId: config.apnsKeyId,
-        teamId: config.apnsTeamId
-    })
-    const apns = new Http2ApnsClient({
-        baseUrl: APNS_HOSTS[config.apnsEnv],
-        topic: config.apnsBundleId,
-        jwtProvider
-    })
+    let fcm: FcmClient | undefined
+    if (config.fcm) {
+        try {
+            const account = parseServiceAccount(await Bun.file(config.fcm.serviceAccountPath).json())
+            const auth = await FcmAccessTokenProvider.create(account)
+            fcm = new HttpFcmClient(account.project_id, config.fcm.packageName, auth)
+        } catch {
+            throw new Error('Cannot load FCM credentials; check RELAY_FCM_SERVICE_ACCOUNT_PATH')
+        }
+    }
     const version = await readRelayVersion()
     const app = createRelayApp({
         apns,
+        fcm,
         version,
         tokenLimiter: new TokenBucketLimiter(TOKEN_RATE_LIMIT),
         ipLimiter: new TokenBucketLimiter(IP_RATE_LIMIT)
@@ -302,7 +335,7 @@ export async function startRelay(config: RelayConfig = loadConfigFromEnv()) {
     })
     console.log(
         `[relay] ${SERVICE_NAME} v${version} listening on :${server.port} `
-        + `(APNs ${config.apnsEnv}, topic ${config.apnsBundleId})`
+        + `(ios: ${apns ? 'enabled' : 'off'}, android: ${fcm ? 'enabled' : 'off'})`
     )
     return server
 }

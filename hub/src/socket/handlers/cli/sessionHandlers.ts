@@ -8,7 +8,7 @@ import type { Store, StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import { extractTodoWriteTodosFromMessageContent } from '../../../sync/todos'
 import { extractTeamStateFromMessageContent, applyTeamStateDelta } from '../../../sync/teams'
-import { extractBackgroundTaskDelta } from '../../../sync/backgroundTasks'
+import { extractBackgroundTaskCount } from '../../../sync/backgroundTasks'
 import { shouldRecordSessionActivity } from '../../../sync/sessionActivity'
 import type { CliSocketWithData } from '../../socketTypes'
 import type { SessionEndReason } from '@hapi/protocol'
@@ -39,7 +39,7 @@ type SessionReadyPayload = {
     time: number
 }
 
-type ResolveSessionAccess = (sessionId: string) => AccessResult<StoredSession>
+type ResolveSessionAccess = (sessionId: string, opts?: { fresh?: boolean }) => AccessResult<StoredSession>
 
 type EmitAccessError = (scope: 'session' | 'machine', id: string, reason: AccessErrorReason) => void
 
@@ -91,8 +91,10 @@ export type SessionHandlersDeps = {
     onSessionReady?: (payload: SessionReadyPayload) => void
     onSessionEnd?: (payload: SessionEndPayload) => void
     onWebappEvent?: (event: SyncEvent) => void
-    onBackgroundTaskDelta?: (sessionId: string, delta: { started: number; completed: number }) => void
+    onBackgroundTaskCount?: (sessionId: string, count: number) => void
     onSessionActivity?: (sessionId: string, updatedAt: number) => void
+    /** tiann/hapi#1820: any message is agent progress, either direction. */
+    onAgentProgress?: (sessionId: string, at: number) => void
     /** Delegates session-end immediate-queue sweep to the MessageService layer. */
     onSweepImmediateQueued?: (sessionId: string, now: number) => void
     /** Drops the queued-thinking grace so synchronous CLI handlers (e.g. slash
@@ -101,7 +103,31 @@ export type SessionHandlersDeps = {
 }
 
 export function registerSessionHandlers(socket: CliSocketWithData, deps: SessionHandlersDeps): void {
-    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionReady, onSessionEnd, onWebappEvent, onBackgroundTaskDelta, onSessionActivity, onSweepImmediateQueued, onMessagesConsumed } = deps
+    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionReady, onSessionEnd, onWebappEvent, onBackgroundTaskCount, onSessionActivity, onAgentProgress, onSweepImmediateQueued, onMessagesConsumed } = deps
+
+    socket.on('native-queue-message', data => {
+        const parsed = z.object({ sid: z.string(), localId: z.string().min(1), text: z.string().nullable() }).safeParse(data)
+        if (!parsed.success) return
+        const { sid, localId, text } = parsed.data
+        // Fresh resolve: the capabilities gate below decides whether the
+        // queue ledger is written, and capabilities can change via metadata
+        // writes (e.g. a merge copying capabilities onto this session) — a
+        // memo snapshot could silently drop or wrongly accept the entry.
+        // Queued input is human-paced, not a stream hot path.
+        const access = resolveSessionAccess(sid, { fresh: true })
+        if (!access.ok) { emitAccessError('session', sid, access.reason); return }
+        const metadata = access.value.metadata as Metadata | null
+        if (!metadata?.capabilities?.concurrentClients) return
+        if (text === null) {
+            const prior = store.messages.lookupQueuedMessage(sid, localId)
+            if ('resolvedId' in prior && store.messages.deleteQueuedMessageById(sid, localId)) {
+                onWebappEvent?.({ type: 'message-cancelled', sessionId: sid, messageId: prior.resolvedId, localId })
+            }
+        } else {
+            const message = store.messages.syncNativeQueuedMessage(sid, localId, text)
+            onWebappEvent?.({ type: 'message-received', sessionId: sid, message })
+        }
+    })
 
     socket.on('message', (data: unknown) => {
         const parsed = messageSchema.safeParse(data)
@@ -133,6 +159,14 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
+        // A background-task snapshot is session state, not chat: apply it
+        // without storing a hidden row.
+        const backgroundTaskCount = extractBackgroundTaskCount(content)
+        if (backgroundTaskCount !== null) {
+            onBackgroundTaskCount?.(sid, backgroundTaskCount)
+            return
+        }
+
         const msg = store.messages.addMessage(sid, content, localId, undefined, createdAt)
 
         // A reasoning stream arrives as a series of growing snapshots under one
@@ -146,6 +180,11 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         if (reasoningStreamId) {
             store.messages.deleteLiveReasoningSnapshots(sid, reasoningStreamId, msg.id)
         }
+
+        // tiann/hapi#1820: every stored message proves the agent is doing
+        // something, so it refreshes the keepalive-idle clock. Only human
+        // turns additionally bump `updatedAt` (list ordering).
+        onAgentProgress?.(sid, msg.createdAt)
 
         if (shouldRecordSessionActivity(content)) {
             onSessionActivity?.(sid, msg.createdAt)
@@ -195,11 +234,6 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             }
         }
 
-        const bgDelta = extractBackgroundTaskDelta(content)
-        if (bgDelta) {
-            onBackgroundTaskDelta?.(sid, bgDelta)
-        }
-
         const update = {
             id: randomUUID(),
             seq: msg.seq,
@@ -240,7 +274,11 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         }
 
         const { sid, metadata, expectedVersion } = parsed.data
-        const sessionAccess = resolveSessionAccess(sid)
+        // Fresh resolve: preserveHubOwnedMetadata below merges against
+        // sessionAccess.value.metadata, so the base must be the live row.
+        // A memo-stale base would drop a concurrently-set hub-owned key or
+        // resurrect a concurrently-cleared one in this very write.
+        const sessionAccess = resolveSessionAccess(sid, { fresh: true })
         if (!sessionAccess.ok) {
             cb({ result: 'error', reason: sessionAccess.reason })
             return
@@ -487,7 +525,11 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         if (!data || typeof data.sid !== 'string' || typeof data.time !== 'number') {
             return
         }
-        const sessionAccess = resolveSessionAccess(data.sid)
+        // Fresh resolve: the shared-Codex capability gate below decides
+        // whether the queue ledger is swept, and capabilities can change via
+        // metadata writes. Session end fires once per session — not a hot
+        // path — so read the live row rather than a memo snapshot.
+        const sessionAccess = resolveSessionAccess(data.sid, { fresh: true })
         if (!sessionAccess.ok) {
             emitAccessError('session', data.sid, sessionAccess.reason)
             return
@@ -505,7 +547,11 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // rows after the CLI exits — there is no longer an ack path, so they would
         // stay queued forever.  The 5-second tick in syncEngine.expireInactive
         // emits scheduled rows when they mature, regardless of session end.
-        if (data.reason !== 'cleared') {
+        // Shared Codex execution exit is suspension, not consumption. Its native
+        // queue ledger proves which messages can be replayed on ordinary resume.
+        // Never stamp pending/uncertain input as executed, including on archive.
+        const sharedCodex = (sessionAccess.value.metadata as Metadata | null)?.capabilities?.concurrentClients
+        if (data.reason !== 'cleared' && !sharedCodex) {
             try {
                 onSweepImmediateQueued?.(data.sid, Date.now())
             } catch (err) {

@@ -210,6 +210,111 @@ describe('codexLocalLauncher', () => {
         }
     });
 
+    it('persists original live transcript duration without timing replay or duplicate completions', async () => {
+        const transcriptPath = await writeTranscriptMeta('duration.jsonl', 'duration-session');
+        const event = (type: string, turn_id: string, timestamp: string) => JSON.stringify({
+            type: 'event_msg', timestamp, payload: { type, turn_id }
+        }) + '\n';
+        await appendFile(transcriptPath,
+            event('task_started', 'old', '2026-10-15T00:00:00.000Z')
+            + event('task_complete', 'old', '2026-10-15T01:00:00.000Z'));
+        const { session, agentMessages } = createSessionStub('default', undefined, tempDir, null, true);
+        let release!: () => void;
+        harness.runBarrier = new Promise<void>(resolve => { release = resolve; });
+        const running = codexLocalLauncher(session as never);
+        try {
+            await vi.waitFor(() => expect(harness.sessionHookHandlers).toHaveLength(1));
+            harness.sessionHookHandlers[0]('duration-session', { transcript_path: transcriptPath });
+            await wait(300);
+            expect(agentMessages).not.toContainEqual(expect.objectContaining({ type: 'turn_duration' }));
+            // Both records can arrive in one scan; receipt time would give a fabricated zero.
+            await appendFile(transcriptPath,
+                event('task_started', 'live', '2026-10-15T02:00:00.000Z')
+                + event('task_complete', 'live', '2026-10-15T02:00:39.426Z')
+                + event('task_complete', 'live', '2026-10-15T02:00:40.000Z')
+                + JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', turn_id: 'live',
+                    info: { last_token_usage: { input_tokens: 100, output_tokens: 10 } } } }) + '\n');
+            await vi.waitFor(() => expect(agentMessages).toContainEqual(expect.objectContaining({
+                type: 'turn_duration', flavor: 'codex', turn_id: 'live', durationMs: 39_426
+            })), { timeout: 3000 });
+            expect(agentMessages.filter(message => (message as { type?: string }).type === 'turn_duration')).toHaveLength(1);
+            await vi.waitFor(() => expect(agentMessages).toContainEqual(expect.objectContaining({
+                type: 'token_count', turn_id: 'live'
+            })));
+        } finally {
+            release();
+            await running;
+        }
+    });
+
+    it('notifies once for a live completion after forwarding the final answer, without replay alerts', async () => {
+        const transcriptPath = await writeTranscriptMeta('ready.jsonl', 'ready-session');
+        const event = (payload: Record<string, unknown>) => JSON.stringify({ type: 'event_msg', payload }) + '\n';
+        await appendFile(transcriptPath, event({ type: 'task_complete', turn_id: 'old' }));
+        const { session, sessionEvents, agentMessages } = createSessionStub('default', undefined, tempDir, null, true);
+        const sendReady = vi.spyOn(session, 'sendSessionEvent');
+        let release!: () => void;
+        harness.runBarrier = new Promise<void>((resolve) => { release = resolve; });
+        const running = codexLocalLauncher(session as never);
+        try {
+            await vi.waitFor(() => expect(harness.sessionHookHandlers).toHaveLength(1));
+            harness.sessionHookHandlers[0]('ready-session', { transcript_path: transcriptPath });
+            await wait(300);
+            expect(sessionEvents).not.toContainEqual({ type: 'ready' });
+            sendReady.mockImplementation((message) => {
+                if (message.type === 'ready') {
+                    expect(agentMessages).toContainEqual(expect.objectContaining({ message: 'finished answer' }));
+                }
+                sessionEvents.push(message);
+            });
+            await appendFile(transcriptPath,
+                event({ type: 'task_started', turn_id: 'live' })
+                + event({ type: 'agent_message', message: 'finished answer', phase: 'final_answer' })
+                + event({ type: 'task_complete', turn_id: 'live' }));
+            await vi.waitFor(() => expect(sessionEvents.filter(e => e.type === 'ready')).toHaveLength(1), { timeout: 3000 });
+            await appendFile(transcriptPath, event({ type: 'task_complete', turn_id: 'live' }) + event({ type: 'task_complete', turn_id: 'old' }));
+            await wait(300);
+            expect(sessionEvents.filter(e => e.type === 'ready')).toHaveLength(1);
+        } finally {
+            release();
+            await running;
+        }
+    });
+
+    it.each(['next-turn', 'queued', 'aborted', 'failed', 'shutdown'] as const)(
+        'does not notify while %s prevents an idle completion', async (scenario) => {
+            const transcriptPath = await writeTranscriptMeta('suppressed.jsonl', 'ready-session');
+            const event = (payload: Record<string, unknown>) => JSON.stringify({ type: 'event_msg', payload }) + '\n';
+            const { session, sessionEvents } = createSessionStub('default', undefined, tempDir);
+            if (scenario === 'queued') vi.spyOn(session.queue, 'size').mockReturnValue(1);
+            let release!: () => void;
+            harness.runBarrier = new Promise<void>((resolve) => { release = resolve; });
+            const running = codexLocalLauncher(session as never);
+            try {
+                await vi.waitFor(() => expect(harness.sessionHookHandlers).toHaveLength(1));
+                harness.sessionHookHandlers[0]('ready-session', { transcript_path: transcriptPath });
+                await wait(300);
+                const completion = scenario === 'aborted' ? 'turn_aborted' : scenario === 'failed' ? 'task_failed' : 'task_complete';
+                await appendFile(transcriptPath,
+                    event({ type: completion, turn_id: 'first' })
+                    + (scenario === 'next-turn' ? event({ type: 'task_started', turn_id: 'second' }) : ''));
+                if (scenario === 'shutdown') {
+                    release();
+                    await running;
+                }
+                await wait(300);
+                expect(sessionEvents).not.toContainEqual({ type: 'ready' });
+                if (scenario === 'next-turn') {
+                    await appendFile(transcriptPath, event({ type: 'task_complete', turn_id: 'second' }));
+                    await vi.waitFor(() => expect(sessionEvents).toContainEqual({ type: 'ready' }), { timeout: 3000 });
+                }
+            } finally {
+                release();
+                await running;
+            }
+        }
+    );
+
     it('rebuilds approval and sandbox args from yolo mode', async () => {
         const { session } = createSessionStub('yolo', [
             '--sandbox',
@@ -522,12 +627,14 @@ describe('codexLocalLauncher', () => {
             name: 'update_plan',
             callId: 'exec-plan-1',
             input: { plan: [{ step: 'Inspect', status: 'completed' }] },
-            id: expect.any(String)
+            id: expect.any(String),
+            turn_id: 'turn-hook'
         }, {
             type: 'tool-call-result',
             callId: 'exec-plan-1',
             output: 'Plan updated',
-            id: expect.any(String)
+            id: expect.any(String),
+            turn_id: 'turn-hook'
         }, {
             type: 'tool-call',
             name: 'CodexBash',
@@ -537,7 +644,8 @@ describe('codexLocalLauncher', () => {
                 cwd: '/tmp/worktree',
                 source: 'codex-hook'
             },
-            id: expect.any(String)
+            id: expect.any(String),
+            turn_id: 'turn-hook'
         }, {
             type: 'tool-call-result',
             callId: 'exec-command-1',
@@ -546,7 +654,8 @@ describe('codexLocalLauncher', () => {
                 stderr: '',
                 status: 'completed'
             },
-            id: expect.any(String)
+            id: expect.any(String),
+            turn_id: 'turn-hook'
         }]);
     });
 
@@ -1025,18 +1134,21 @@ describe('codexLocalLauncher', () => {
         }, {
             type: 'message',
             message: 'visible assistant preface',
+            turn_id: 'turn-with-preface',
             id: expect.any(String)
         }, {
             type: 'tool-call',
             name: 'ExitPlanMode',
             callId: 'codex-proposed-plan:plan-1',
             input: { plan: '## Proposed plan\n\n1. Inspect\n2. Implement' },
-            id: 'plan-1'
+            id: 'plan-1',
+            turn_id: 'turn-with-preface'
         }, {
             type: 'tool-call-result',
             callId: 'codex-proposed-plan:plan-1',
             output: null,
-            id: 'plan-1:result'
+            id: 'plan-1:result',
+            turn_id: 'turn-with-preface'
         }]);
         expect(agentMessages[9]).toMatchObject({
             callId: (agentMessages[8] as { callId: string }).callId
@@ -1124,7 +1236,8 @@ describe('codexLocalLauncher', () => {
             message: {
                 type: 'message',
                 message: 'visible final A',
-                id: 'final-a'
+                id: 'final-a',
+                turn_id: 'turn-ordered'
             }
         }, {
             type: 'user-message',
@@ -1134,7 +1247,8 @@ describe('codexLocalLauncher', () => {
             message: {
                 type: 'message',
                 message: 'visible final B',
-                id: 'final-b'
+                id: 'final-b',
+                turn_id: 'turn-ordered'
             }
         }]);
     });
@@ -1231,11 +1345,13 @@ describe('codexLocalLauncher', () => {
         expect(agentMessages).toEqual([{
             type: 'message',
             message: 'visible 0.147 commentary',
-            id: 'commentary-147'
+            id: 'commentary-147',
+            turn_id: 'turn-147'
         }, {
             type: 'message',
             message: 'visible 0.147 final answer',
-            id: 'final-147'
+            id: 'final-147',
+            turn_id: 'turn-147'
         }]);
     });
 
@@ -1282,7 +1398,8 @@ describe('codexLocalLauncher', () => {
         expect(agentMessages).toEqual([{
             type: 'message',
             message: 'visible answer at EOF',
-            id: 'final-at-eof'
+            id: 'final-at-eof',
+            turn_id: 'turn-final-at-eof'
         }]);
 
         releaseRunBarrier?.();
@@ -1291,7 +1408,8 @@ describe('codexLocalLauncher', () => {
         expect(agentMessages).toEqual([{
             type: 'message',
             message: 'visible answer at EOF',
-            id: 'final-at-eof'
+            id: 'final-at-eof',
+            turn_id: 'turn-final-at-eof'
         }]);
     });
 
@@ -1349,12 +1467,14 @@ describe('codexLocalLauncher', () => {
             name: 'ExitPlanMode',
             callId: 'codex-proposed-plan:plan-only',
             input: { plan: '## Plan only' },
-            id: 'plan-only'
+            id: 'plan-only',
+            turn_id: 'turn-plan-only'
         }, {
             type: 'tool-call-result',
             callId: 'codex-proposed-plan:plan-only',
             output: null,
-            id: 'plan-only:result'
+            id: 'plan-only:result',
+            turn_id: 'turn-plan-only'
         }]);
     });
 

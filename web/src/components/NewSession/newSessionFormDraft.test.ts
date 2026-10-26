@@ -8,6 +8,12 @@ import {
 } from './newSessionFormDraft'
 
 describe('newSessionFormDraft', () => {
+    it('drops Safe Yolo from a saved Codex draft without dropping other settings', () => {
+        sessionStorage.setItem('hapi:new-session-form-draft', JSON.stringify({
+            agent: 'codex', model: 'custom-model', nativePermissionMode: 'safe-yolo', yoloMode: true
+        }))
+        expect(loadNewSessionFormDraft()).toMatchObject({ model: 'custom-model', nativePermissionMode: 'default' })
+    })
     afterEach(() => {
         clearNewSessionFormDraft()
     })

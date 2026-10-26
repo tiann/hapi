@@ -736,7 +736,6 @@ private fun NewSessionPreviewCodexWorktree() {
                         listOf(
                             OptionItem("default", "Default"),
                             OptionItem("read-only", "Read Only"),
-                            OptionItem("safe-yolo", "Safe Yolo"),
                             OptionItem("yolo", "Yolo"),
                         ),
                     ),

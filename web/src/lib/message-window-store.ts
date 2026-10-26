@@ -1,6 +1,9 @@
 import { getReasoningStreamId } from '@hapi/protocol/messages'
 import type { ApiClient } from '@/api/client'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
+import { reduceChatBlocks } from '@/chat/reducer'
+import { buildVisibleChatBlocks, isEligibleForToolGrouping } from '@/chat/toolGroups'
+import type { NormalizedMessage } from '@/chat/types'
 import type { DecryptedMessage, MessageStatus, MessagesResponse } from '@/types/api'
 import { isQueuedForInvocation, mergeMessages } from '@/lib/messages'
 
@@ -40,9 +43,13 @@ export type MessageWindowState = {
 
 export const VISIBLE_WINDOW_SIZE = 400
 export const HISTORY_WINDOW_SIZE = 600
+export const INITIAL_PAGE_SIZE = 20
 const AGENT_RUN_WINDOW_SIZE = 800
 const OLDER_LOAD_WINDOW_SIZE = 800
 const PAGE_SIZE = 200
+const CACHED_REENTRY_PAGE_SIZE = 20
+// ponytail: fixed budget suggested in #2045, not field-measured; tune from load timings.
+const INITIAL_CONTEXT_WAIT_MS = 500
 
 type MessagePosition = {
     at: number
@@ -591,7 +598,20 @@ function applyLatestResponse(
         requestBaseline: Map<string, DecryptedMessage>
     }
 ): InternalState {
-    const retainedResponseMessages = response.messages.filter(shouldRetainWindowMessage)
+    const dismissedIds = new Set(
+        previous.messages
+            .filter((message) => message.queueDismissed)
+            .map((message) => message.id)
+    )
+    const retainedResponseMessages = response.messages
+        .filter(shouldRetainWindowMessage)
+        .map((message) => (
+            dismissedIds.has(message.id)
+            && message.invokedAt === null
+            && message.deliveryState === 'indeterminate'
+                ? { ...message, queueDismissed: true }
+                : message
+        ))
     const concurrentServerRows = previous.messages.filter((message) => (
         !optimisticMessage(message)
         && options.requestBaseline.get(message.id) !== message
@@ -667,6 +687,51 @@ function finishTailSync(sessionId: string, generation: number, warning: string |
     })
 }
 
+function isToolOnlyPage(messages: DecryptedMessage[]): boolean {
+    const normalized: NormalizedMessage[] = []
+    for (const message of messages) {
+        // Queued prompts render above the composer, not in the thread.
+        if (!shouldRetainWindowMessage(message) || isQueuedForInvocation(message)) continue
+        const next = normalizeDecryptedMessage(message)
+        if (next) normalized.push(next)
+    }
+    const { blocks } = reduceChatBlocks(normalized, null)
+    return buildVisibleChatBlocks(blocks, { hasMoreMessages: true }).every((block) => (
+        block.kind === 'tool-group'
+        || (block.kind === 'tool-call' && isEligibleForToolGrouping(block))
+    ))
+}
+
+// A cold tail page made only of tool activity renders as one collapsed card.
+// Fetch one older page before first paint so the preceding conversation is
+// visible; a timeout, failure, or epoch change falls back to the tail page.
+async function fetchInitialContextPage(
+    api: ApiClient,
+    sessionId: string,
+    latest: MessagesResponse
+): Promise<MessagesResponse | null> {
+    const before = pagePosition(latest.page.nextBeforeAt, latest.page.nextBeforeSeq)
+    if (!latest.page.hasMore || !before || !isToolOnlyPage(latest.messages)) {
+        return null
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+        const context = await Promise.race([
+            api.getMessages(sessionId, {
+                beforeAt: before.at,
+                beforeSeq: before.seq,
+                limit: PAGE_SIZE
+            }).catch(() => null),
+            new Promise<null>((resolve) => {
+                timer = setTimeout(() => resolve(null), INITIAL_CONTEXT_WAIT_MS)
+            })
+        ])
+        return context && context.page.epoch === latest.page.epoch ? context : null
+    } finally {
+        clearTimeout(timer)
+    }
+}
+
 async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
     const generation = beginTailSync(sessionId)
     try {
@@ -680,7 +745,25 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
 
         if (!canIncrement) {
             const requestBaseline = new Map(getState(sessionId).messages.map((message) => [message.id, message]))
-            const response = await api.getMessages(sessionId, { limit: PAGE_SIZE })
+            // Cold windows and cached re-entry prioritize the newest usable
+            // messages for first paint. Structural resets and cursor-backed
+            // non-activation synchronization use the full page so their
+            // authoritative replacement remains unchanged.
+            const isColdWindow = !initial.requiresLatestReset
+                && !preferLatestOnActivation
+                && initialCursor === null
+            const latestPageSize = initial.requiresLatestReset
+                ? PAGE_SIZE
+                : preferLatestOnActivation
+                    ? CACHED_REENTRY_PAGE_SIZE
+                    : isColdWindow
+                        ? INITIAL_PAGE_SIZE
+                        : PAGE_SIZE
+            const response = await api.getMessages(sessionId, { limit: latestPageSize })
+            if (!isCurrentTailSync(sessionId, generation)) return
+            const context = isColdWindow
+                ? await fetchInitialContextPage(api, sessionId, response)
+                : null
             if (!isCurrentTailSync(sessionId, generation)) return
             updateState(sessionId, (previous) => {
                 if (previous.syncGeneration !== generation) return previous
@@ -690,7 +773,15 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                         || response.page.reset,
                     requestBaseline
                 })
-                return buildState(next, { preferLatestOnActivation: false })
+                if (!context) {
+                    return buildState(next, { preferLatestOnActivation: false })
+                }
+                return buildState(mergeIntoWindow(next, context.messages, { mode: 'prepend' }), {
+                    preferLatestOnActivation: false,
+                    hasMore: context.page.hasMore,
+                    oldestPositionAt: context.page.nextBeforeAt,
+                    oldestPositionSeq: context.page.nextBeforeSeq
+                })
             })
             finishTailSync(sessionId, generation, null)
             return
@@ -1272,11 +1363,19 @@ export function markMessagesRequeued(sessionId: string, localIds: string[]): voi
     updateState(sessionId, (previous) => {
         let changed = false
         const messages = previous.messages.map((message) => {
-            if (!message.localId || !idSet.has(message.localId) || message.deliveryState === undefined) {
+            if (
+                !message.localId
+                || !idSet.has(message.localId)
+                || (message.deliveryState === undefined && message.queueDismissed !== true)
+            ) {
                 return message
             }
             changed = true
-            const { deliveryState: _deliveryState, ...requeued } = message
+            const {
+                deliveryState: _deliveryState,
+                queueDismissed: _queueDismissed,
+                ...requeued
+            } = message
             return requeued
         })
         return changed ? buildState(previous, { messages }) : previous
@@ -1300,11 +1399,12 @@ export function markMessagesConsumed(
             const needsStatus = message.status !== 'sent'
             const needsInvokedAt = message.invokedAt === null
             const needsSteered = steered === true && message.steered !== true
-            if (!needsStatus && !needsInvokedAt && !needsSteered) return message
+            const needsClearDismiss = message.queueDismissed === true
+            if (!needsStatus && !needsInvokedAt && !needsSteered && !needsClearDismiss) return message
             changed = true
-            const { deliveryState: _deliveryState, ...withoutDeliveryState } = message
+            const { deliveryState: _deliveryState, queueDismissed: _queueDismissed, ...withoutClientHold } = message
             return {
-                ...withoutDeliveryState,
+                ...withoutClientHold,
                 ...(needsStatus ? { status: 'sent' as MessageStatus } : {}),
                 ...(needsInvokedAt ? { invokedAt } : {}),
                 ...(needsSteered ? { steered: true } : {})

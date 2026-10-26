@@ -66,6 +66,11 @@
                 "tone": "warning"
             },
             {
+                "label": "Auto",
+                "mode": "autoReview",
+                "tone": "warning"
+            },
+            {
                 "label": "Yolo",
                 "mode": "yolo",
                 "tone": "danger"
@@ -115,7 +120,7 @@
                 "tone": "info"
             },
             {
-                "label": "Auto-review",
+                "label": "Auto",
                 "mode": "autoReview",
                 "tone": "warning"
             },

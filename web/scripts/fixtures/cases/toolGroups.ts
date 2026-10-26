@@ -74,6 +74,72 @@ function claudeToolResult(init: {
  */
 export const toolGroupCases: FixtureCase[] = [
     {
+        name: 'tool-group-codex-shared-commands',
+        description: 'Shared Codex unknown/mixed command actions select the default group, not a grouping boundary. Keep commands, patches and legacy hook calls together, preserve live/error state, and keep exploration groups separate.',
+        messages: [
+            { type: 'tool-call', name: 'CodexBash', callId: 'explore-before', input: {
+                command: 'cat README.md', command_source: 'agent',
+                command_actions: [{ type: 'read', command: 'cat README.md', name: 'README.md', path: '/repo/README.md' }]
+            } },
+            { type: 'tool-call-result', callId: 'explore-before', output: 'Readme' },
+            { type: 'tool-call', name: 'CodexBash', callId: 'shared-command', input: {
+                type: 'exec_command_begin', call_id: 'shared-command', cwd: '/repo',
+                command: '/bin/zsh -lc "git diff --stat"', command_source: 'unifiedExecStartup',
+                command_actions: [{ type: 'unknown', command: 'git diff --stat' }]
+            } },
+            { type: 'tool-call-result', callId: 'shared-command', output: { stdout: '1 file changed', exit_code: 0 } },
+            { type: 'tool-call', name: 'CodexPatch', callId: 'patch', input: {
+                changes: { '/repo/main.ts': { type: 'update', unified_diff: '-old\n+new' } }
+            } },
+            { type: 'tool-call-result', callId: 'patch', output: { success: true } },
+            { type: 'tool-call', name: 'CodexBash', callId: 'mixed-command', input: {
+                command: 'cat package.json && bun test', commandSource: 'unifiedExecStartup',
+                commandActions: [
+                    { type: 'read', command: 'cat package.json', name: 'package.json', path: '/repo/package.json' },
+                    { type: 'unknown', command: 'bun test' }
+                ]
+            } },
+            { type: 'tool-call-result', callId: 'mixed-command', output: { stdout: 'Test failed', exit_code: 1 }, is_error: true },
+            { type: 'tool-call', name: 'CodexBash', callId: 'legacy-command', input: { command: 'git status', source: 'codex-hook' } },
+            { type: 'tool-call', name: 'CodexBash', callId: 'explore-after', input: {
+                command: 'ls src', command_actions: [{ type: 'listFiles', command: 'ls src', path: '/repo/src' }]
+            } },
+            { type: 'tool-call-result', callId: 'explore-after', output: 'main.ts' }
+        ].map((data, index) => wireMessage({
+            id: `shared-group-${index}`, seq: index + 1, createdAt: T0 + index * 1000,
+            content: { role: 'agent', content: { type: 'codex', data } }
+        }))
+    },
+    {
+        name: 'tool-group-codex-user-shell-boundaries',
+        description: 'User shell remains standalone with unknown, exploration or absent command actions (including camelCase aliases); ordinary agent tools on either side cannot merge across it.',
+        messages: [
+            { type: 'tool-call', name: 'CodexBash', callId: 'agent-before', input: {
+                command: 'bun test', command_actions: [{ type: 'unknown', command: 'bun test' }]
+            } },
+            { type: 'tool-call', name: 'CodexPatch', callId: 'patch-before', input: { changes: {} } },
+            { type: 'tool-call', name: 'CodexBash', callId: 'user-unknown', input: {
+                command: 'git status', command_source: 'userShell',
+                command_actions: [{ type: 'unknown', command: 'git status' }]
+            } },
+            { type: 'tool-call', name: 'CodexBash', callId: 'user-read', input: {
+                command: 'cat README.md', commandSource: 'userShell',
+                commandActions: [{ type: 'read', command: 'cat README.md', name: 'README.md', path: '/repo/README.md' }]
+            } },
+            { type: 'tool-call', name: 'CodexBash', callId: 'user-unclassified', input: {
+                command: 'pwd', command_source: 'userShell'
+            } },
+            { type: 'tool-call', name: 'CodexBash', callId: 'agent-after', input: {
+                command: 'bun test', command_actions: [{ type: 'unknown', command: 'bun test' }]
+            } },
+            { type: 'tool-call', name: 'CodexPatch', callId: 'patch-after', input: { changes: {} } }
+        ].flatMap((data) => [data, { type: 'tool-call-result', callId: data.callId, output: 'Done' }])
+            .map((data, index) => wireMessage({
+                id: `shell-boundary-${index}`, seq: index + 1, createdAt: T0 + index * 1000,
+                content: { role: 'agent', content: { type: 'codex', data } }
+            }))
+    },
+    {
         name: 'tool-group-consecutive-reads',
         description: 'Three consecutive groupable tool calls (Read, Grep, Glob) collapse into one tool-group in visibleBlocks (membership + order + boundary ids), while blocks keeps three individual tool-call blocks.',
         messages: [

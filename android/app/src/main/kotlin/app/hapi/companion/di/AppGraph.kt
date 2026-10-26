@@ -10,7 +10,9 @@ import app.hapi.companion.feature.pairing.PairingClientFactory
 import app.hapi.companion.feature.settings.AppLanguage
 import app.hapi.companion.feature.settings.LanguagePrefs
 import app.hapi.companion.feature.settings.ThemePrefs
-import app.hapi.companion.push.DataStorePushDeviceIds
+import app.hapi.data.push.EncryptedPrefsPushIdentityStore
+import app.hapi.data.push.PushIdentityManager
+import app.hapi.data.push.PushMessageDecoder
 import app.hapi.companion.push.PushBinding
 import app.hapi.data.api.HapiApi
 import app.hapi.data.auth.AuthEvents
@@ -176,15 +178,18 @@ class AppGraph(context: Context) {
 
     /**
      * FCM device registration fan-out: every paired hub gets this install's
-     * token (`POST /api/devices/register`), keyed by a DataStore-persisted
-     * UUID. All entry points no-op when Firebase isn't configured
+     * token and persisted encryption identity (`POST /api/devices/register`).
+     * All entry points no-op when Firebase isn't configured
      * ([PushBinding.currentToken] returns null).
      */
+    val pushIdentityManager = PushIdentityManager(EncryptedPrefsPushIdentityStore(appContext))
+    val pushMessageDecoder = PushMessageDecoder(pushIdentityManager::existingKey)
+
     val deviceRegistrar: DeviceRegistrar = DeviceRegistrar(
         registry = hubRegistry,
         gateway = ApiPushDeviceGateway(pushHubAccess),
         tokenSource = { PushBinding.currentToken(appContext) },
-        deviceIds = DataStorePushDeviceIds(appContext.hapiDataStore),
+        identities = { withContext(Dispatchers.IO) { pushIdentityManager.getOrCreate() } },
         retryScheduler = { hubUrl -> RegisterDeviceWorker.enqueueRetry(appContext, hubUrl) },
         scope = scope,
     )

@@ -2,17 +2,24 @@ import { describe, expect, it, vi } from 'vitest';
 import { PermissionHandler } from './permissionHandler';
 import { PLAN_FAKE_REJECT, PLAN_FAKE_RESTART } from '../sdk/prompts';
 import type { Session } from '../session';
+import type { AgentState } from '@/api/types';
 
 function createFakeSession() {
     const queueItems: { message: string; mode: unknown }[] = [];
     let permissionMode: string | undefined;
+    let agentState: AgentState = { requests: {}, completedRequests: {} } as AgentState;
+    let rpcHandler: ((response: { id: string }) => Promise<void>) | undefined;
 
     const session = {
         client: {
             rpcHandlerManager: {
-                registerHandler: vi.fn(),
+                registerHandler: vi.fn((_method: string, handler: any) => {
+                    rpcHandler = handler;
+                }),
             },
-            updateAgentState: vi.fn(),
+            updateAgentState: vi.fn((fn: (s: AgentState) => AgentState) => {
+                agentState = fn(agentState);
+            }),
         },
         queue: {
             unshift: vi.fn((message: string, mode: unknown) => {
@@ -25,7 +32,12 @@ function createFakeSession() {
         getPermissionMode: vi.fn(() => permissionMode),
     } as unknown as Session;
 
-    return { session, queueItems };
+    return {
+        session,
+        queueItems,
+        getAgentState: () => agentState,
+        deliverRpcResponse: (r: { id: string }) => rpcHandler!(r),
+    };
 }
 
 describe('PermissionHandler — YOLO plan mode', () => {
@@ -139,5 +151,46 @@ describe('PermissionHandler — YOLO plan mode', () => {
         );
 
         expect(result.behavior).toBe('allow');
+    });
+});
+
+// tiann/hapi#1735: canceling a pending AskUserQuestion (e.g. Claude sending a
+// control_cancel_request) must finalize the request in agentState, and a
+// late answer for an untracked request must surface an error rather than
+// being silently dropped.
+describe('PermissionHandler — canceled request finalization', () => {
+    it('finalizes an aborted request as canceled in agentState, and rejects a late answer instead of dropping it', async () => {
+        const { session, getAgentState, deliverRpcResponse } = createFakeSession();
+        const handler = new PermissionHandler(session);
+
+        handler.onMessage({
+            type: 'assistant',
+            message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tc-1', name: 'AskUserQuestion', input: { questions: [] } }] },
+        } as any);
+
+        const controller = new AbortController();
+        const resultPromise = handler.handleToolCall(
+            'AskUserQuestion',
+            { questions: [] },
+            { permissionMode: 'default' } as any,
+            { signal: controller.signal }
+        );
+
+        expect(Object.keys(getAgentState().requests ?? {})).toEqual(['tc-1']);
+
+        // Claude Code sends control_cancel_request for this tool call
+        controller.abort();
+        await expect(resultPromise).rejects.toThrow('Permission request aborted');
+
+        // Fixed: the cancellation is now reflected in agentState, matching
+        // the session-level cancelPendingRequests path.
+        expect(getAgentState().requests?.['tc-1']).toBeUndefined();
+        expect(getAgentState().completedRequests?.['tc-1']).toMatchObject({ status: 'canceled' });
+
+        // Operator answers the now-stale widget anyway; the RPC handler must
+        // reject rather than silently succeed.
+        await expect(deliverRpcResponse({ id: 'tc-1' } as any)).rejects.toThrow(
+            'Permission request not found or already resolved'
+        );
     });
 });

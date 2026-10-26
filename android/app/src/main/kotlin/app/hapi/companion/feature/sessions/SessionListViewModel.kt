@@ -42,6 +42,7 @@ data class SessionRowUi(
     /** Raw flavor id (`claude`, `codex`, …); resolve labels via the catalog. */
     val flavor: String?,
     val unread: Boolean,
+    val machine: MachineFilterUi? = null,
 ) {
     val id: String get() = summary.id
 }
@@ -51,11 +52,12 @@ data class MachineFilterUi(
     val id: String,
     val label: String,
     val sessionCount: Int,
+    val unnamed: Boolean = false,
 )
 
 data class SessionListUiState(
     val rows: List<SessionRowUi>,
-    /** Render the chip bar only when at least two machines have sessions. */
+    /** Choices for the filter sheet, derived from all sessions. */
     val machineFilters: List<MachineFilterUi>,
     /** `null` = All. Always one of [machineFilters] ids (stale picks fall back). */
     val activeMachineFilter: String?,
@@ -65,7 +67,7 @@ data class SessionListUiState(
     /** Last refresh failed — show the offline banner over snapshot data. */
     val isOffline: Boolean,
 ) {
-    val showMachineFilterBar: Boolean get() = machineFilters.size >= 2
+    val hasMachineFilters: Boolean get() = machineFilters.size >= 2
 }
 
 /**
@@ -107,6 +109,16 @@ class SessionListViewModel(
     private var refreshJob: Job? = null
 
     init {
+        scope.launch {
+            combine(sessionStore.sessions, machineFilter) { _, filter -> filter }.collect { selected ->
+                // Validate against the current snapshot, not an older combined
+                // emission that may have queued before the user selected a row.
+                val ids = sessionStore.sessions.value.map { it.metadata?.machineId ?: UNKNOWN_MACHINE_ID }.toSet()
+                if (selected != null && (ids.size < 2 || selected !in ids)) {
+                    machineFilter.compareAndSet(selected, null)
+                }
+            }
+        }
         // Live SSE data is proof of connectivity: any list emission after a
         // failed refresh clears the stale offline banner (a device-observed
         // contradiction — active sessions updating under an "offline" banner).
@@ -303,30 +315,38 @@ class SessionListViewModel(
         isOffline: Boolean,
         hasLoaded: Boolean,
     ): SessionListUiState {
-        val machinesById = machines.associateBy { it.id }
-
-        fun machineLabel(machineId: String?): String? {
-            if (machineId == null) return null
-            val metadata = machinesById[machineId]?.metadata ?: return machineId.take(8)
-            val displayName = metadata.displayName?.takeIf { it.isNotBlank() }
-            return displayName ?: metadata.host
+        val names = machines.mapNotNull { machine ->
+            val metadata = machine.metadata ?: return@mapNotNull null
+            val name = metadata.displayName?.trim()?.takeIf { it.isNotEmpty() }
+                ?: metadata.host.trim().takeIf { it.isNotEmpty() }
+            name?.let { machine.id to it }
+        }.toMap()
+        val sessionMachineIds = sessions.map { it.metadata?.machineId ?: UNKNOWN_MACHINE_ID }.toSet()
+        val nameCounts = names.filterKeys { it in sessionMachineIds }.values.groupingBy { it.lowercase(java.util.Locale.ROOT) }.eachCount()
+        val shortIds = sessionMachineIds.associateWith { id ->
+            var length = minOf(8, id.length)
+            while (length < id.length && sessionMachineIds.any { it != id && it.take(length) == id.take(length) }) length++
+            id.take(length)
         }
 
-        // Filter chips derive from ALL sessions (pre-filter), like the web —
-        // filtering first would drop chips and silently clear the selection.
+        // Derive choices before filtering so the selection cannot hide alternatives.
         val filters = sessions
             .groupBy { it.metadata?.machineId ?: UNKNOWN_MACHINE_ID }
             .map { (id, group) ->
                 MachineFilterUi(
                     id = id,
-                    label = if (id == UNKNOWN_MACHINE_ID) "" else machineLabel(id).orEmpty(),
+                    label = names[id]?.let { name ->
+                        if (nameCounts[name.lowercase(java.util.Locale.ROOT)]!! > 1) "$name · ${shortIds.getValue(id)}" else name
+                    } ?: shortIds.getValue(id),
                     sessionCount = group.size,
+                    unnamed = id !in names,
                 )
             }
-            .sortedByDescending { it.sessionCount }
+            .sortedWith(compareBy<MachineFilterUi> {
+                when { it.id == UNKNOWN_MACHINE_ID -> 2; it.unnamed -> 1; else -> 0 }
+            }.thenBy { it.label.lowercase(java.util.Locale.ROOT) }.thenBy { it.id })
 
-        // A persisted pick whose machine no longer has sessions falls back to
-        // All; with fewer than two machines the bar hides and never filters.
+        // Match the selection invalidator while its collector catches up.
         val activeFilter = filter
             ?.takeIf { filters.size >= 2 && filters.any { chip -> chip.id == it } }
 
@@ -350,10 +370,10 @@ class SessionListViewModel(
                 meta = buildList {
                     projectLabel(summary)?.let(::add)
                     summary.metadata?.worktree?.let { add(it.name.ifBlank { it.branch }) }
-                    if (showMachine) machineLabel(summary.metadata?.machineId)?.let(::add)
                 }.takeIf { it.isNotEmpty() }?.joinToString(" · "),
                 flavor = summary.metadata?.flavor,
                 unread = LastSeenStore.isUnread(summary, lastSeen[summary.id] ?: 0),
+                machine = if (showMachine) filters.find { it.id == (summary.metadata?.machineId ?: UNKNOWN_MACHINE_ID) } else null,
             )
         }
 

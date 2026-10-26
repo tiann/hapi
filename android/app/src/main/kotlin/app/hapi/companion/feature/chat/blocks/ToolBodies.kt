@@ -5,26 +5,31 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
-import app.hapi.companion.feature.chat.displayPath
 import app.hapi.companion.feature.chat.terminalCommand
 import app.hapi.companion.ui.components.DiffView
-import app.hapi.companion.ui.markdown.CodeBlock
+import app.hapi.companion.ui.markdown.Markdown
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.ChatToolCall
 import app.hapi.protocol.chat.getInputString
 import app.hapi.protocol.chat.getInputStringAny
-import app.hapi.protocol.chat.isAskUserQuestionToolName
-import app.hapi.protocol.chat.isRequestUserInputToolName
 import app.hapi.protocol.git.DiffFile
 import app.hapi.protocol.git.UnifiedDiffParser
 import app.hapi.protocol.wire.HapiJson
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -42,30 +47,89 @@ import kotlinx.serialization.json.JsonPrimitive
  * - `Write` → the written content as a code block;
  * - `CodexDiff` (and any input/result that parses as a unified diff) → [DiffView];
  * - `TodoWrite`/`update_plan` → checklist rows;
- * - Ask/RequestUserInput → questions + options, read-only;
+ * - `ExitPlanMode`/`exit_plan_mode` → complete Markdown proposal from input;
+ * - Ask/RequestUserInput → questions + selected answers, read-only;
  * - anything else → pretty-printed JSON input, then the generic result.
  */
 @Composable
 internal fun ToolCallBody(tool: ChatToolCall, basePath: String?, modifier: Modifier = Modifier) {
+    val questionTool = isQuestionDetailsTool(tool.name)
+    val plan = planProposalMarkdown(tool)
+    val answers = if (questionTool) tool.permission?.answers else null
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        ToolInputSection(tool, basePath)
-        ToolResultSection(tool)
+        if (questionTool) {
+            QuestionToolBody(tool)
+        } else if (plan != null) {
+            // Plans are reading documents, never paged/truncated tool source.
+            Markdown(text = plan)
+            if (planProposalShowsResult(tool)) ToolResultSection(tool)
+        } else {
+            SectionLabel(stringResource(R.string.settings_usage_input))
+            ToolInputSection(tool)
+            ToolResultSection(tool)
+        }
+        var sourceExpanded by rememberSaveable(tool.id) { mutableStateOf(false) }
+        if (tool.input != null || tool.result != null || answers != null) {
+            TextButton(onClick = { sourceExpanded = !sourceExpanded }) {
+                Text(stringResource(R.string.files_viewer_source))
+            }
+            if (sourceExpanded) {
+                tool.input?.let {
+                    SectionLabel(stringResource(R.string.settings_usage_input))
+                    GenericJsonInput(it)
+                }
+                tool.result?.let {
+                    SectionLabel(stringResource(R.string.chat_result))
+                    GenericJsonInput(it)
+                }
+                answers?.let {
+                    SectionLabel(stringResource(R.string.tool_question_answers))
+                    GenericJsonInput(it)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuestionToolBody(tool: ChatToolCall) {
+    val details by produceState<QuestionToolDetails?>(null, tool) {
+        value = withContext(Dispatchers.Default) { questionToolDetails(tool) }
+    }
+    val prepared = details
+    if (prepared == null) {
+        androidx.compose.material3.CircularProgressIndicator()
+    } else {
+        SectionLabel(stringResource(if (prepared.hasAnswers) R.string.tool_questions_answers else R.string.settings_usage_input))
+        if (prepared.questions.isEmpty()) GenericJsonInput(tool.input)
+        else QuestionDetailsView(prepared.questions)
+        if (prepared.showResult) ToolResultSection(tool)
     }
 }
 
 // ------------------------------------------------------------------ input --
 
 @Composable
-private fun ToolInputSection(tool: ChatToolCall, basePath: String?) {
+private fun ToolInputSection(tool: ChatToolCall) {
     val input = tool.input
+    val name = toolPresentationName(tool.name)
     when {
-        tool.name in TERMINAL_TOOLS -> {
-            terminalCommand(input)?.let { command ->
-                CodeBlock(code = command, language = "bash")
-            }
+        name in TERMINAL_TOOLS -> {
+            val command = terminalCommand(input)
+            if (command != null) ToolTextContent(code = command, language = "bash") else GenericJsonInput(input)
         }
 
-        tool.name == "Edit" -> {
+        name == "exec" -> {
+            val source = toolSourceInput(input, listOf("code", "script"))
+            if (source != null) ToolTextContent(code = source, language = "javascript") else GenericJsonInput(input)
+        }
+
+        name == "CodexPatch" -> {
+            val patch = toolSourceInput(input, listOf("patch", "input", "command"))
+            if (patch != null) ToolTextContent(code = patch, language = "diff") else GenericJsonInput(input)
+        }
+
+        name == "Edit" -> {
             val old = getInputString(input, "old_string")
             val new = getInputString(input, "new_string")
             if (old != null && new != null) {
@@ -75,10 +139,10 @@ private fun ToolInputSection(tool: ChatToolCall, basePath: String?) {
             }
         }
 
-        tool.name == "MultiEdit" -> {
+        name == "MultiEdit" -> {
             val language = languageForPath(getInputStringAny(input, listOf("file_path", "path")))
             val edits = (input as? JsonObject)?.get("edits") as? JsonArray
-            if (edits != null) {
+            if (!edits.isNullOrEmpty()) {
                 edits.forEachIndexed { index, edit ->
                     val old = getInputString(edit, "old_string")
                     val new = getInputString(edit, "new_string")
@@ -87,6 +151,8 @@ private fun ToolInputSection(tool: ChatToolCall, basePath: String?) {
                             SectionLabel(stringResource(R.string.chat_edit_n_of_m, index + 1, edits.size))
                         }
                         BeforeAfter(old, new, language)
+                    } else {
+                        GenericJsonInput(edit)
                     }
                 }
             } else {
@@ -94,10 +160,10 @@ private fun ToolInputSection(tool: ChatToolCall, basePath: String?) {
             }
         }
 
-        tool.name == "Write" -> {
+        name == "Write" -> {
             val content = getInputStringAny(input, listOf("content", "text"))
             if (content != null) {
-                CodeBlock(
+                ToolTextContent(
                     code = content,
                     language = languageForPath(getInputStringAny(input, listOf("file_path", "path"))),
                 )
@@ -106,17 +172,19 @@ private fun ToolInputSection(tool: ChatToolCall, basePath: String?) {
             }
         }
 
-        tool.name == "CodexDiff" -> {
+        name == "CodexDiff" -> {
             val unified = getInputString(input, "unified_diff")
-            val files = unified?.let(::tryParseDiff)
+            val files = remember(unified) { unified?.takeIf { fitsToolPage(it) }?.let(::tryParseDiff) }
             if (files != null) {
                 files.forEach { DiffView(file = it) }
+            } else if (unified != null) {
+                ToolTextContent(code = unified, language = "diff")
             } else {
                 GenericJsonInput(input)
             }
         }
 
-        tool.name == "TodoWrite" || tool.name == "update_plan" -> {
+        name == "TodoWrite" || name == "update_plan" -> {
             val items = checklistItems(input)
             if (items.isNotEmpty()) {
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -132,15 +200,8 @@ private fun ToolInputSection(tool: ChatToolCall, basePath: String?) {
             }
         }
 
-        isAskUserQuestionToolName(tool.name) || isRequestUserInputToolName(tool.name) -> {
+        name == "request_user_input_async" -> {
             QuestionsReadOnly(input)
-        }
-
-        tool.name == "Read" || tool.name == "NotebookRead" || tool.name == "LS" -> {
-            // The title already carries the path; nothing else worth echoing.
-            getInputStringAny(input, listOf("file_path", "path", "notebook_path"))?.let { path ->
-                SectionLabel(displayPath(path, basePath))
-            }
         }
 
         else -> GenericJsonInput(input)
@@ -152,9 +213,9 @@ private fun BeforeAfter(old: String, new: String, language: String?) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         val emptyLabel = stringResource(R.string.chat_empty_snippet)
         SectionLabel(stringResource(R.string.chat_before))
-        CodeBlock(code = old.ifEmpty { emptyLabel }, language = language)
+        ToolTextContent(code = old.ifEmpty { emptyLabel }, language = language)
         SectionLabel(stringResource(R.string.chat_after))
-        CodeBlock(code = new.ifEmpty { emptyLabel }, language = language)
+        ToolTextContent(code = new.ifEmpty { emptyLabel }, language = language)
     }
 }
 
@@ -162,20 +223,34 @@ private fun BeforeAfter(old: String, new: String, language: String?) {
 private fun GenericJsonInput(input: JsonElement?) {
     when {
         input == null || input is JsonNull -> Unit
-        input is JsonPrimitive && input.isString -> CodeBlock(code = input.content, language = null)
-        else -> CodeBlock(code = prettyJson(input), language = "json")
+        input is JsonPrimitive && input.isString -> ToolTextContent(code = input.content, language = null)
+        else -> {
+            val text by produceState<String?>(null, input) {
+                value = null
+                value = withContext(Dispatchers.Default) { prettyJson(input) }
+            }
+            text?.let { ToolTextContent(code = it, language = "json") }
+        }
     }
 }
 
 @Composable
 private fun QuestionsReadOnly(input: JsonElement?) {
-    val questions = (input as? JsonObject)?.get("questions") as? JsonArray ?: return
+    val questions = (input as? JsonObject)?.get("questions") as? JsonArray
+    if (questions.isNullOrEmpty()) {
+        GenericJsonInput(input)
+        return
+    }
     val hint = MaterialTheme.hapi.hint
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         questions.forEach { entry ->
-            val question = entry as? JsonObject ?: return@forEach
+            val question = entry as? JsonObject
+            if (question == null || getInputStringAny(question, listOf("question", "title")) == null) {
+                GenericJsonInput(entry)
+                return@forEach
+            }
             val header = (question["header"] as? JsonPrimitive)?.contentOrNullIfNotString()
-            val text = (question["question"] as? JsonPrimitive)?.contentOrNullIfNotString()
+            val text = getInputStringAny(question, listOf("question", "title"))
             Column {
                 header?.let {
                     Text(text = it, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
@@ -185,20 +260,12 @@ private fun QuestionsReadOnly(input: JsonElement?) {
                 }
                 val options = question["options"] as? JsonArray
                 options?.forEach { option ->
-                    val label = when (option) {
-                        is JsonPrimitive -> option.contentOrNullIfNotString()
-                        is JsonObject -> (option["label"] as? JsonPrimitive)?.contentOrNullIfNotString()
-                            ?: (option["value"] as? JsonPrimitive)?.contentOrNullIfNotString()
-                        else -> null
-                    }
-                    label?.let {
-                        Text(
-                            text = "◦ $it",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = hint,
-                            modifier = Modifier.padding(start = 8.dp, top = 2.dp),
-                        )
-                    }
+                    Text(
+                        text = "◦ ${toolQuestionOptionText(option)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = hint,
+                        modifier = Modifier.padding(start = 8.dp, top = 2.dp),
+                    )
                 }
             }
         }
@@ -208,10 +275,12 @@ private fun QuestionsReadOnly(input: JsonElement?) {
 // ----------------------------------------------------------------- result --
 
 /** How a tool result renders: parsed diff > extracted text > pretty JSON. */
-private sealed interface ResultRendering {
+internal sealed interface ResultRendering {
     data class Diffs(val files: List<DiffFile>) : ResultRendering
     data class Terminal(val text: String) : ResultRendering
     data class Json(val pretty: String) : ResultRendering
+    data class Code(val text: String, val language: String?) : ResultRendering
+    data class Prose(val text: String) : ResultRendering
 }
 
 @Composable
@@ -219,67 +288,49 @@ private fun ToolResultSection(tool: ChatToolCall) {
     val result = tool.result ?: return
     if (result is JsonNull) return
     val isError = tool.state == "error"
-    val rendering = remember(result) { resultRendering(result) } ?: return
+    val rendering by produceState<ResultRendering?>(null, tool) {
+        value = withContext(Dispatchers.Default) { resultRendering(tool) }
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         SectionLabel(
             stringResource(if (isError) R.string.chat_result_error else R.string.chat_result),
         )
-        when (rendering) {
+        val metadata = remember(result) { toolResultMetadata(result) }
+        if (metadata.isNotEmpty()) SectionLabel(metadata.joinToString(" · "))
+        when (val rendering = rendering) {
             is ResultRendering.Diffs -> rendering.files.forEach { DiffView(file = it) }
-            is ResultRendering.Terminal -> TerminalText(rendering.text, isError = isError)
-            is ResultRendering.Json -> CodeBlock(code = rendering.pretty, language = "json")
+            is ResultRendering.Terminal -> ToolTextContent(code = rendering.text, terminal = true, isError = isError)
+            is ResultRendering.Json -> ToolTextContent(code = rendering.pretty, language = "json")
+            is ResultRendering.Code -> ToolTextContent(code = rendering.text, language = rendering.language)
+            is ResultRendering.Prose -> Markdown(text = rendering.text)
+            null -> Unit
         }
     }
 }
 
-private const val RESULT_RENDER_CAP = 20_000
-
-private fun resultRendering(result: JsonElement): ResultRendering? {
+internal fun resultRendering(tool: ChatToolCall): ResultRendering? {
+    val result = tool.result ?: return null
+    if (result is JsonNull) return null
     val text = extractResultText(result)
     if (text != null) {
         if (text.isBlank()) return null
-        tryParseDiff(text)?.let { return ResultRendering.Diffs(it) }
-        return ResultRendering.Terminal(text.take(RESULT_RENDER_CAP))
-    }
-    return ResultRendering.Json(prettyJson(result).take(RESULT_RENDER_CAP))
-}
-
-/**
- * Text of the common result shapes: plain string; `{stdout, stderr}`;
- * Claude-style `[{type: "text", text}]` arrays (or the same under `content`).
- * Null → not text-like, render as JSON.
- */
-internal fun extractResultText(result: JsonElement): String? {
-    when (result) {
-        is JsonPrimitive -> return if (result.isString) result.content else null
-        is JsonArray -> {
-            val texts = result.map { entry ->
-                val obj = entry as? JsonObject ?: return null
-                if ((obj["type"] as? JsonPrimitive)?.content != "text") return null
-                (obj["text"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: return null
+        return when (val style = toolResultStyle(tool)) {
+            is ToolResultStyle.Code -> ResultRendering.Code(text, style.language)
+            ToolResultStyle.Markdown -> if (fitsToolPage(text)) ResultRendering.Prose(text)
+                else ResultRendering.Code(text, "markdown")
+            ToolResultStyle.Terminal -> {
+                if (tool.state != "error" && fitsToolPage(text)) {
+                    tryParseDiff(text)?.let { return ResultRendering.Diffs(it) }
+                }
+                ResultRendering.Terminal(text)
             }
-            return texts.joinToString("\n")
-        }
-        is JsonObject -> {
-            val stdout = (result["stdout"] as? JsonPrimitive)?.takeIf { it.isString }?.content
-            val stderr = (result["stderr"] as? JsonPrimitive)?.takeIf { it.isString }?.content
-            if (stdout != null || stderr != null) {
-                val parts = mutableListOf<String>()
-                stdout?.trimEnd()?.takeIf { it.isNotEmpty() }?.let(parts::add)
-                stderr?.trimEnd()?.takeIf { it.isNotEmpty() }?.let { parts.add("stderr:\n$it") }
-                return parts.joinToString("\n\n")
-            }
-            (result["content"] as? JsonArray)?.let { return extractResultText(it) }
-            (result["content"] as? JsonPrimitive)?.takeIf { it.isString }?.let { return it.content }
-            return null
         }
     }
+    return ResultRendering.Json(prettyJson(result))
 }
 
 // ---------------------------------------------------------------- helpers --
-
-private val TERMINAL_TOOLS = setOf("Bash", "CodexBash", "shell_command", "run_shell_command")
 
 private val DIFF_MARKER = Regex("(^|\n)@@ -\\d")
 private val DIFF_HEADER = Regex("(^|\n)(diff --git |--- )")
@@ -302,13 +353,18 @@ private val EXTENSION_LANGUAGES = mapOf(
     "rb" to "ruby", "go" to "go", "rs" to "rust", "swift" to "swift", "c" to "c",
     "h" to "c", "cpp" to "cpp", "cc" to "cpp", "cs" to "csharp", "sh" to "shell",
     "bash" to "shell", "json" to "json", "yml" to "yaml", "yaml" to "yaml",
+    "cjs" to "javascript", "mjs" to "javascript", "mts" to "typescript", "cts" to "typescript",
+    "toml" to "toml", "zsh" to "shell", "diff" to "diff", "patch" to "diff",
     "xml" to "xml", "html" to "html", "css" to "css", "md" to "markdown", "sql" to "sql",
 )
 
-private fun languageForPath(path: String?): String? =
-    path?.substringAfterLast('.', missingDelimiterValue = "")?.lowercase()
-        ?.takeIf { it.isNotEmpty() }
-        ?.let { EXTENSION_LANGUAGES[it] }
+internal fun languageForPath(path: String?): String? {
+    val name = path?.replace('\\', '/')?.substringAfterLast('/')?.lowercase() ?: return null
+    if (name == "dockerfile") return "dockerfile"
+    if (name == "makefile") return "makefile"
+    if (name.startsWith('.') && name.count { it == '.' } == 1) return null
+    return EXTENSION_LANGUAGES[name.substringAfterLast('.', missingDelimiterValue = "")]
+}
 
 private fun JsonPrimitive.contentOrNullIfNotString(): String? = if (isString) content else null
 

@@ -1,12 +1,26 @@
-# HAPI iOS (native companion)
+# HAPI iOS
 
-Native SwiftUI client for HAPI. Fully independent of `web/` at the code level;
-it shares only the protocol contract (`docs/api/`) and the golden fixtures
-(`shared/fixtures/`, produced by the consistency track).
+Native SwiftUI/UIKit client for HAPI, independent of `web/` at the code level.
+It shares the [client protocol](../docs/api/client-contract/index.md) and
+web-generated golden fixtures in `shared/fixtures/`.
+
+## Current capabilities
+
+The app provides sessions/chat, approvals and questions, new sessions,
+attachments, files/Git, Scratchlist, standard dictation, usage/storage,
+settings and encrypted APNs notifications. It pairs with multiple hubs and
+keeps one active. Session lists support machine filtering, pinning and archive;
+sending to an inactive session can resume it and migrate the draft/navigation
+when the returned session ID changes.
+
+Model, permission and Codex collaboration controls follow the session's agent/capabilities;
+usage/storage require the owner namespace. Rename, Delete and explicit Reopen
+have API wrappers but no current iOS UI. See the [native app guide](../docs/guide/native-apps.md)
+for platform differences, web-only features and everyday use.
 
 ## Requirements
 
-- Xcode 16 or newer (iOS 17 SDK).
+- Xcode 16 or newer with Swift 6 support.
 - Deployment target: iOS 17.0.
 - Runtime dependencies (SPM, declared in `Packages/HapiKit/Package.swift`,
   used only by the `HapiUI` target): `swiftlang/swift-markdown` (GFM parsing
@@ -16,6 +30,9 @@ it shares only the protocol contract (`docs/api/`) and the golden fixtures
 
 ## Build
 
+Native chat scrolling architecture and acceptance checklist:
+[Native transcript scrolling](../docs/native-chat-scrolling.md).
+
 Open `ios/Hapi.xcodeproj` in Xcode and run the shared `Hapi` scheme, or from
 the command line:
 
@@ -24,18 +41,13 @@ the command line:
 xcodebuild build -project ios/Hapi.xcodeproj -scheme Hapi \
   -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
 
-# Package tests (also runs on macOS, the package is pure Foundation)
+# Package tests (macOS; protocol/client plus UI package tests)
 swift test --package-path ios/Packages/HapiKit
 ```
 
-CI runs both on `macos-15` via `.github/workflows/ios.yml` (triggered by
-changes under `ios/**` and `shared/fixtures/**`).
-
-### Localization catalog
-
-`Hapi/Resources/Localizable.xcstrings` is hand-maintained. Compiler string
-extraction stays disabled so opening or building the project does not rewrite
-the catalog with decorative or intentionally verbatim strings.
+CI runs package tests, the simulator build, and app-hosted transcript tests
+on `macos-15` via `.github/workflows/ios.yml` (triggered by changes under
+`ios/**` and `shared/fixtures/**`).
 
 ### Linux verification (no Mac needed)
 
@@ -65,571 +77,85 @@ use `InMemoryCredentialStore` through the `CredentialStoring` seam;
 fallback; `#if canImport(FoundationNetworking)` for URLSession types and
 a delegate-based SSE transport where `URLSession.bytes` is unavailable).
 
-## Layout
+### Protocol conformance fixtures
 
-```
-ios/
-  Hapi.xcodeproj/        Hand-rolled minimal project (objectVersion 77).
-  Hapi/                  App target sources. This is an Xcode 16 "synchronized
-                         folder": add files here and they join the target
-                         without touching project.pbxproj. As of M2a:
-                           Models/    AppModel (pairing state machine, hub
-                                      switching, deep-link routing, scene
-                                      phase) + HubSession (per-active-hub
-                                      APIClient/AuthManager/global SSEClient,
-                                      connection state, the M2a stores —
-                                      session list / machines / last-seen —
-                                      the SyncEventRouter feeding them, the
-                                      M2f message-window registry, and the
-                                      per-chat session factory) + ChatSession
-                                      (M2f per-open-chat wiring: session-scope
-                                      SSEClient with kept resume cursor,
-                                      window open/activate/tail-sync, ordered
-                                      event routing — one consume task,
-                                      every event awaited to the window
-                                      actor before the next — gap-handshake
-                                      full resync + detail refetch + catch-up
-                                      tail sync, scene-phase suspend/resume).
-                           Features/  Pairing/ (welcome, VisionKit QR scan,
-                                      manual entry, shared confirm + error
-                                      states), Home/ (session list host with
-                                      hub switcher + connection dot in the
-                                      toolbar), Sessions/ (SessionListView:
-                                      status dot with thinking pulse, title
-                                      cascade, flavor·machine·worktree meta,
-                                      pending/todo badges, unread dots,
-                                      pinned section, machine filter chips,
-                                      pull-to-refresh, long-press
-                                      pin/archive; row taps push the chat),
-                                      Chat/ (M2f read-only chat: ChatModel —
-                                      window state + session detail →
-                                      ChatPipeline off-main, ~100 ms
-                                      coalesced, last-seen stamping, header
-                                      cascade; ChatView — bottom-anchored
-                                      ScrollView/LazyVStack with auto-stick,
-                                      new-messages pill, top sentinel paging
-                                      with scroll re-anchoring, degraded
-                                      banners; Blocks/ — user bubble, agent
-                                      markdown, reasoning, tool cards with
-                                      per-tool bodies + knownTools-parity
-                                      presentation, tool groups, event rows,
-                                      cli output, generated images with
-                                      full-screen viewer, codex review;
-                                      M3ab upgrades: pending permission cards
-                                      grow the approval footer — Allow/Deny,
-                                      codex Allow/Abort, overflow
-                                      allow-for-session / allow-all-edits,
-                                      AskUserQuestion option cards + Other
-                                      free text, request_user_input fields
-                                      with user_note — and failed user rows
-                                      become tap-to-retry; Composer/ —
-                                      multiline input with long-press
-                                      "Send & steer" while thinking, abort
-                                      button, the A-M3f attachment tray
-                                      ("+" → photo library / camera / files
-                                      pickers; upload-on-pick chips with
-                                      spinner / thumbnail / tap-to-retry,
-                                      ✕ removes; attachments-only sends
-                                      allowed) and mic dictation (recording
-                                      chip with elapsed + cancel,
-                                      AVAudioRecorder m4a/AAC → hub
-                                      transcription, transcript appended to
-                                      the draft), and the queued-messages
-                                      bar with Steer/Edit/Cancel;
-                                      Attachments/ — pick preparation
-                                      (capped reads, ImageIO downscale of
-                                      >4 MB images to 2048 px JPEG, 512 px
-                                      previewUrl thumbs), camera capture,
-                                      and user-bubble previewUrl thumbnails
-                                      (off-main decode, also for web-sent
-                                      attachments); SessionConfigView —
-                                      the toolbar-gear sheet for permission
-                                      mode / model / effort per flavor),
-                                      Scratchlist/ (A-M4b per-session parked
-                                      notes, a sheet off the chat toolbar's
-                                      note icon with entry-count badge: entry
-                                      cards — 4-line preview, relative age,
-                                      authed attachment thumbnails/filename
-                                      chips — edit sheet with PhotosPicker →
-                                      guard → JPEG downscale → upload spinner
-                                      tile, full-screen attachment viewer,
-                                      per-entry "To composer" insertion, and
-                                      "Park current draft" in the screen
-                                      header — a deliberate placement
-                                      divergence from Android's composer
-                                      button, since the composer UI is owned
-                                      by the attachments package; the store +
-                                      guard live in HapiKit),
-                                      Links/ (app-wide \.hapiOpenURL handler:
-                                      https/http → SFSafariViewController,
-                                      confirm-first schemes → alert,
-                                      hapi-file:// → the session file viewer
-                                      when a chat installed its opener, else
-                                      an explanatory alert),
-                                      Files/ (A-M4a session files browser off
-                                      the chat toolbar folder icon:
-                                      Changes/Browse/Search segmented tabs —
-                                      branch header incl. detached, staged/
-                                      unstaged sections with status letters +
-                                      ±counts and degraded-numstat banner;
-                                      lazy directory outline with hidden
-                                      toggle and dirs-first sort; debounced
-                                      ripgrep search — and the single-file
-                                      viewer: diff ⇄ full toggle with
-                                      staged/unstaged sides and web-parity
-                                      auto-fallback, markdown Source/Preview,
-                                      images, copy path/contents, citation
-                                      "Line N" hint chip; chat hapi-file://
-                                      citations push it in full mode),
-                                      NewSession/ (A-M3c create form, a sheet
-                                      off the session list "+": machine picker
-                                      with last-used preselect + health line,
-                                      directory field with debounced 250 ms
-                                      list-directory autocomplete (per-parent
-                                      cache) + per-machine recent-path chips +
-                                      exists probe (worktree-blocking /
-                                      simple two-tap-create), flavor picker
-                                      over CREATABLE, per-flavor options —
-                                      claude model/effort/yolo; codex machine
-                                      catalog (rpc_target_missing hides it),
-                                      reasoning effort, native permission,
-                                      collaboration + fast tier when
-                                      advertised; copilot agent mode; pi
-                                      managed note — session type simple/
-                                      worktree + name, UserDefaults draft +
-                                      prefs per hub; success dismisses the
-                                      sheet and pushes the chat),
-                                      Settings/ (A-M4de sheet off the home
-                                      hub menu: Appearance — theme mode
-                                      system/light/dark/OLED persisted via
-                                      HapiClient ThemePrefs and applied in
-                                      RootView (HapiUI palette +
-                                      preferredColorScheme; system follows
-                                      the OS, explicit modes override, OLED
-                                      = dark on pure black); Language —
-                                      persist-only until the M5 i18n pass;
-                                      owner-gated (JWT ns == "default",
-                                      fail closed) Usage dashboard — range
-                                      7d/30d/all, stat tiles, Swift Charts
-                                      daily BarMark chart with calendar-
-                                      filled days + tap/drag day selection,
-                                      byAgent/byModel top-8 bar rows — and
-                                      Storage dashboard — SectorMark donut
-                                      of db/wal/shm with the total in the
-                                      center, legend rows with bytes +
-                                      percents, path, refresh; About — app/
-                                      protocol versions + hub health probe
-                                      with retry).
-  HapiNotificationService/
-                         Notification Service Extension target (P3):
-                         decrypts the E2E push envelope on device with the
-                         shared-Keychain push key and rewrites the generic
-                         alert — dependency-free, see "Push notifications"
-                         below. Also an Xcode 16 synchronized folder.
-  Packages/HapiKit/      Local SPM package with the real logic:
-    HapiProtocol         Pure-Foundation protocol layer. As of M2a:
-                           Models/   wire types mirroring shared/src/schemas.ts
-                                     (Session, SessionPatch + VersionedValue,
-                                     AgentState, DecryptedMessage, SessionSummary,
-                                     Machine, SyncEvent union, messages page),
-                                     plus the summary-side pure logic:
-                                     SummaryPatching (sessionSummary.ts
-                                     derivations + the useSSE list-patch rules
-                                     with their deliberate `>=` version gate —
-                                     vs the detail path's strict `>` — and the
-                                     keep-alive render-irrelevance filter) and
-                                     SessionSorting (the exact list order:
-                                     globalPinned > pinned > active > pending
-                                     desc among active > recency, stable)
-                           Catalog/  permission-mode / flavor tables ported from
-                                     shared/src/{modes,flavors,copilotModes}.ts,
-                                     plus the static create-form option lists
-                                     (claude models/efforts, codex reasoning-
-                                     effort fallback — NewSessionCatalogs)
-                           Patch/    versioned session-patch application ported
-                                     from web/src/lib/sessionPatch.ts
-                           Pairing/  BindLink — parses both pairing QR forms
-                                     (hapicompanion://bind?hub=&code= and the
-                                     web /?hub=&token= URL), form-decoding in
-                                     lockstep with the Android port
-                           Git/      A-M4a raw-git-stdout parsers ported from
-                                     web/src/lib/gitParsers.ts via the tested
-                                     Android twins: GitStatusParser
-                                     (porcelain-v2 records + branch headers,
-                                     buildGitStatusFiles merge, quirks
-                                     preserved — rename tab order, UU on both
-                                     sides, untracked dirs dropped) and
-                                     NumstatParser (binary -\t- markers,
-                                     brace + plain rename normalization,
-                                     multi-spelling stats map)
-                           Chat/     the chat normalization/reduction pipeline
-                                     ported file-for-file from web/src/chat/**
-                                     (M2b+M2c): Normalize/NormalizeUser/
-                                     NormalizeAgent (decode tree incl. agy),
-                                     Tracer (sidechain grouping), Reducer*
-                                     (timeline, tool pairing, stream coalescing,
-                                     agent-run cards, events dedupe/folding,
-                                     cli-output merge), ToolGroups (+ codex
-                                     exploration family), the normative fixture
-                                     projection (FixtureProjection), and the
-                                     JS-semantics interop layer (JSInterop:
-                                     nullish coalescing, truthiness, canonical
-                                     JSON serializer). Validated block-for-block
-                                     against shared/fixtures/chat/** by
-                                     ChatFixtureTests (one parameterized test
-                                     per fixture, line-level diff on mismatch).
-                           Window/   the message window state machine ported
-                                     from web/src/lib/message-window-store.ts +
-                                     messages.ts (M2d): MessageWindowState
-                                     (cursors/epoch/generations + persisted v2
-                                     snapshot shape), MessageWindowLogic (pure
-                                     transitions: tail sync, older pages +
-                                     epoch-mismatch reset, trims that never
-                                     drop queued rows, SSE ingest, optimistic
-                                     lifecycle, queued-state reconcile),
-                                     MessageMerge (position order, localId echo
-                                     replacement, 10 s dedup fallback) and
-                                     WindowMessage (wire row + client status,
-                                     tri-state invokedAt, identity-carrying
-                                     class — reset preservation compares rows
-                                     by instance like the web's `!==`).
-                                     Retention calls the chat pipeline's
-                                     normalize directly, so the two cannot
-                                     drift.
-    HapiClient           Transport layer. As of M1b+M1c+M1d:
-                           APIClient        typed REST client (Endpoints/*):
-                                            Bearer auth, 401 -> refresh ->
-                                            retry-once, {error, code} parsing
-                                            (APIError), 256 MB URLCache for
-                                            generated images. HTTP goes through
-                                            the HTTPPerforming seam, so tests
-                                            inject a recording performer.
-                           Auth/            JWT payload decoding, AuthManager
-                                            (actor; single-flight refresh via
-                                            POST /api/auth, proactive refresh
-                                            10 min before exp, terminal
-                                            authFailed state), Keychain
-                                            credential store (per-hub records
-                                            under run.hapi.companion),
-                                            HubRegistry (multi-hub + active
-                                            hub in UserDefaults),
-                                            HubPairingService (normalize ->
-                                            /health + protocolVersion check ->
-                                            /api/auth -> persist; unpair with
-                                            fallback), tested through the
-                                            HTTPPerforming seam.
-                           SSE/             actor SSEClient — handshake-gated
-                                            connect (resume ok/gap surfaced),
-                                            sticky per-subscription cursor with
-                                            at-least-once replay, 10 s connect
-                                            timeout + 90 s staleness watchdog,
-                                            backoff per sse.md (1 s ×2 → 30 s,
-                                            300 s after 8 attempts, 0–500 ms
-                                            jitter), suspend/resume with the
-                                            45 s foreground staleness check,
-                                            NWPath change → immediate reconnect.
-                                            SSELineParser, ReconnectPolicy/
-                                            SSETimings, URLSessionSSETransport
-                                            (gzip streaming-decompression
-                                            verification TODO — fallback flag
-                                            `acceptEncodingIdentity`).
-                           MultipartEncoder for the voice-transcription
-                                            endpoint (M4c).
-                           Stores/          M2a @MainActor @Observable stores
-                                            mirroring the Android/web
-                                            semantics: SessionListStore
-                                            (sorted summaries + per-id detail
-                                            cache; full-session upsert
-                                            preserving hub-computed scheduled
-                                            fields, strict-> detail vs >=
-                                            summary patch gates, keep-alive
-                                            identity preservation, REST
-                                            fallback for unparseable data,
-                                            16 ms coalesced refresh,
-                                            optimistic pin/archive),
-                                            MachineStore (the machine-updated
-                                            decision tree), LastSeenStore
-                                            (unread watermarks + per-scope
-                                            baseline), SyncEventRouter
-                                            (SyncEvent fan-out + gap-handshake
-                                            full resync), DiskCache (500 ms
-                                            debounced atomic JSON snapshots
-                                            per hub for instant cold start).
-                                            Plus MessageWindowController
-                                            (M2d): per-session actor driving
-                                            the HapiProtocol window logic —
-                                            single-flight tail sync with
-                                            trailing drain, older-page loads,
-                                            SSE ingest hooks, optimistic
-                                            send/cancel, queued-state
-                                            reconciliation (≤1000-id batches)
-                                            — behind the MessagesProviding
-                                            seam (APIClient conforms; the
-                                            fixture harness scripts it);
-                                            WindowSnapshotStore (per-session
-                                            Caches snapshots, LRU 10);
-                                            MessageWindowControllers registry
-                                            (hydrate on open, seed across
-                                            resume/reopen id changes).
-                           Chat/            ChatPipeline (M2f): the actor the
-                                            app's chat screen runs its
-                                            reduction on — queued-row filter,
-                                            normalize memoized by row instance
-                                            identity, reduce + toolGroups with
-                                            previousGroups-stable group ids.
-                           NewSession/      pure create-form logic (A-M3c),
-                                            tested against the Android/web
-                                            reference: NewSessionForm (typed
-                                            draft, tolerant decode) +
-                                            NewSessionLogic (the exact spawn
-                                            body per SpawnSessionRequestSchema
-                                            incl. the per-flavor yolo/
-                                            permissionMode matrix, parent-path
-                                            derivation + suggestion filtering,
-                                            recent-path LRU(8), worktree-name
-                                            validation, codex catalog helpers,
-                                            draft sanitization).
-                                            Since M3ab: ChatInteractor — the
-                                            per-session interaction engine
-                                            (optimistic composer sends with
-                                            queue/steer delivery + retry,
-                                            session_inactive resume→retry with
-                                            superseding-id window seed + draft
-                                            migration, queued-bar
-                                            cancel/edit/steer with the
-                                            invoked-race reconcile,
-                                            flavor-exact permission
-                                            approve/deny bodies with
-                                            optimistic Resolving/
-                                            AlreadyHandled overrides settled
-                                            by the agentState patch, config
-                                            switches with optimistic detail
-                                            update + reload-on-error, codex
-                                            model catalog); ChatDrafts
-                                            (UserDefaults per hub+session,
-                                            debounced) and PermissionInputs
-                                            (AskUserQuestion /
-                                            request_user_input parsers).
-                                            SSE/ adds VisibilityReporter:
-                                            POST /api/visibility per tracked
-                                            handshake subscriptionId on
-                                            scene-phase flips, 404 pruning.
-                           Settings/        A-M4de pure settings logic,
-                                            transcribed (with tests) from
-                                            the Android reference: UsageMath
-                                            (formatTokens/formatBytes web
-                                            thresholds, cache hit rate,
-                                            calendar-filled daily bars via
-                                            pure Gregorian day math),
-                                            StorageMath (donut slices +
-                                            half-up percents, web-geometry
-                                            test-locked), OwnerGate (JWT
-                                            ns == "default", fail closed),
-                                            ThemePrefs/LanguagePrefs
-                                            (@Observable UserDefaults
-                                            persistence). Endpoints/ adds
-                                            the owner-only GET
-                                            /api/usage/summary and GET
-                                            /api/storage/sqlite.
-                                            Since A-M3f: Attachments/ —
-                                            AttachmentPolicy (the pure
-                                            compress/reject/preview policy,
-                                            constants shared verbatim with
-                                            the Android port: 4 MB image
-                                            compress threshold → 2048 px
-                                            JPEG q85, 50 MB hard cap, 512 px
-                                            previewUrl data-URL thumbs) and
-                                            ComposerAttachments (the
-                                            upload-on-pick tray:
-                                            uploading/ready/failed chips,
-                                            retained payloads for retry,
-                                            best-effort deletes on remove /
-                                            mid-upload removal / discard,
-                                            consume() → the send body's
-                                            AttachmentMetadata); Voice/ —
-                                            DictationController
-                                            (idle/starting/recording/
-                                            transcribing over recorder +
-                                            transport seams, provider
-                                            memoized from GET providers,
-                                            first standard-capable entry
-                                            wins) with VoiceEndpoints
-                                            (GET /api/voice/transcription/
-                                            providers + the one multipart
-                                            endpoint POST
-                                            /api/voice/transcription).
-                           Files/           A-M4a testable core of the files
-                                            feature behind the FilesRequesting
-                                            seam (Endpoints/FileEndpoints.swift
-                                            adds the six git/files REST calls;
-                                            wire types in HapiProtocol
-                                            Models/FilesApi.swift): FilesModel
-                                            (Changes = status + parallel
-                                            numstat sides merged through
-                                            GitStatusParser with per-side
-                                            degraded banners; Browse = cached
-                                            lazy tree flattening with hidden
-                                            toggle + dirs-first sort; Search =
-                                            300 ms debounce, limit 200) and
-                                            FileViewerModel (parallel diff +
-                                            base64 file loads, staged toggle
-                                            reload, image/markdown/binary
-                                            classification, web-parity
-                                            auto-fallback to full mode; the
-                                            unified-diff emptiness probe is
-                                            injected since the parser lives in
-                                            HapiUI).
-                                            Since A-M4b: ScratchlistStore —
-                                            the per-session scratchlist cache
-                                            (open/release observation,
-                                            16 ms-coalesced refetch on the
-                                            scratchlistUpdatedAt SSE signal
-                                            via SessionListStore.
-                                            onScratchlistInvalidation,
-                                            optimistic create/update/delete
-                                            with surgical entryId reconcile +
-                                            rollback, idempotent create via
-                                            client entryId, 200-entry cap
-                                            pre-check + hub 409 verdict,
-                                            base64 attachment upload with
-                                            in-flight names, cached limits
-                                            with offline defaults) and the
-                                            pure ScratchlistAttachmentGuard
-                                            (Fits/Downscale/Reject budget
-                                            verdicts) + Endpoints/
-                                            ScratchlistEndpoints and the
-                                            HapiProtocol wire models
-                                            (ScratchlistApi.swift); the
-                                            ChatInteractor grows the
-                                            scratchlist badge count and the
-                                            insertComposerText /
-                                            parkComposerDraft seams.
-    HapiUI               Rendering foundation (M2e). SwiftUI, no app coupling:
-                           Markdown/  MarkdownTransforms (string-level ports of
-                                      the web remark plugins: table repair,
-                                      indented-code disable, CJK autolink strip,
-                                      file-path + bare-URL detection, HrefPolicy)
-                                      and MarkdownRenderer (swift-markdown
-                                      visitor -> block tree -> SwiftUI views;
-                                      links flow through the \.hapiOpenURL
-                                      environment action, workspace files use
-                                      hapi-file://?path=&line= URLs)
-                           Code/      CodeBlockView + SyntaxHighlighting
-                                      protocol with the Highlightr engine
-                                      (off-main, cached, 400-line cap)
-                           Diff/      UnifiedDiffParser + DiffTextView
-                                      (hunks, +/- gutters, compact/expand)
-                           Theme/     HapiTheme palettes (light/dark/OLED)
-                                      via the \.hapiTheme environment
-                         Since M2f the app target links HapiUI and renders
-                         chat prose/code/diffs through it; RootView injects
-                         the palette and the \.hapiOpenURL link handler.
-```
+Run package tests from a full repository checkout. Test paths resolve
+`shared/fixtures/` relative to `#filePath`; copying only the package loses that
+context. The Linux script stages the package and fixtures at the required depth.
 
-The app target stays thin; features live in `HapiKit` so they are testable
-with `swift test` and free of UI concerns.
+| Suite | Coverage |
+|---|---|
+| `HapiProtocolTests` | Wire decoding, mode catalogs, versioned patches, and normalize → reduce → group projections against the golden fixtures. |
+| `HapiClientTests` | Pagination fixtures through the message-window controller, chat pipeline/interactions, REST requests, authentication, SSE recovery, stores and push. |
+| `HapiUITests` / `HapiTests` | Renderer logic and app-hosted layout, interaction, recycling and transcript behavior on supported Apple toolchains. |
 
-### Fixtures
+Fixture conformance pins protocol/state semantics, not identical web/native
+presentation. When changing fixture inputs or generation, run
+`bun run gen:fixtures` at the repo root and include generated changes; never
+hand-edit fixtures. See [fixture guidance](../shared/fixtures/README.md) and
+[UI development](#ui-development) for targeted app-hosted checks.
 
-`HapiProtocolTests` reads the golden fixtures from the repo-root
-`shared/fixtures/` directory, resolved from the test file's own `#filePath`
-(package root `ios/Packages/HapiKit` -> `../../../shared/fixtures`), so the
-suite needs a full repo checkout. Since M1a, `FixtureDecodingTests` decodes
-every `chat/*.json` input as `[DecryptedMessage]` (+ `AgentState`), and
-`CatalogTests` verifies the ported mode tables against
-`catalogs/modes.json`. Since M2b/M2c, `ChatFixtureTests` is the pipeline
-gate: for every chat fixture it runs the ported normalize → reduce → group
-pipeline over the stored `input`, applies the normative projection, and
-compares canonical JSON byte-for-byte against the stored `expected` —
-failures are per-fixture and print the first differing line with context.
-Since M2d, `HapiClientTests/PaginationFixtureTests` replays every
-`pagination/*.json` op script against the real `MessageWindowController`
-driven by a scripted `MessagesProviding`: it asserts the exact `GET /messages`
-query objects (`expectedRequests`, including the explicit-null
-`untilAt`/`untilSeq` of the first catch-up request), the older-load outcomes,
-the queued-state reconcile candidates, and the final window projection
-(`expectedState`) — all canonical-JSON compares with the same per-op labels
-and first-differing-line diffs. Since M2f, `HapiClientTests/ChatPipelineTests`
-drives the app-facing `ChatPipeline` runner with fixture-derived window rows:
-non-empty unique stable ids, memo-stable recomputes, the queued-row filter,
-and group-id stability across an older-page arrival (`previousGroups`).
-Since M3ab, `HapiClientTests/Chat/ChatInteractorTests` transcribes the
-Android interaction suite against the real client stack (only HTTP is
-scripted): canonical approve/deny/send/config wire bodies asserted
-byte-for-byte, optimistic send happy/fail/retry, 409 → resume → retry (same
-and superseding id), queued cancel invoked-race, steer reconcile, edit
-prefill, permission override lifecycle, and config optimistic + rollback.
-Since A-M3f, `Attachments/AttachmentPolicyTests` ports the Android policy
-matrix, `Attachments/ComposerAttachmentsTests` drives the upload tray over
-the real client (exact base64 upload bodies, consume/retry/remove,
-mid-upload removal orphan delete, detached discard),
-`Voice/DictationControllerTests` transcribes the Android dictation suite
-(fake recorder + transport), `EndpointRequestTests` covers the voice
-endpoints (multipart shape included), and `ChatInteractorTests` gains the
-attachment-send matrix (metadata on the wire byte-for-byte, refuse while
-uploading, attachments-only sends, retry with identical attachments,
-remove/discard deletes).
-Since A-M4a, `HapiProtocolTests/Git/*` transcribes the Android git-parser
-suites (expectations produced by running the exact inputs through
-`web/src/lib/gitParsers.ts`), and `HapiClientTests/Files/*` transcribes the
-files/viewer model suites against a fake gateway (numstat merge + degraded
-banners, lazy tree cache, search debounce, staged-toggle reload, the
-auto-fallback rules, base64/image/binary classification) plus asserts the
-six git/files endpoint URLs against the recording performer.
-Since A-M4b, `Stores/ScratchlistStoreTests` transcribes the Android
-scratchlist store suite (optimistic CRUD reconcile/rollback, at-cap 409 +
-local short-circuit, SSE-invalidation refetch for observed sessions, upload
-in-flight progress + typed 413, attachment delete 409/ok mapping, limits
-cache/offline defaults — canonical wire bodies asserted) plus the
-`SessionListStore` invalidation-seam test; `ScratchlistAttachmentGuardTests`
-ports the nine budget-verdict cases; and
-`Chat/ChatInteractorScratchlistTests` covers the park/insert/badge seams
-against a fake store.
+New-session directory regression checks: `ios/scripts/linux-test.sh --filter
+'NewSession|RemoteDirectoryBrowser'` covers path queries and browser navigation;
+`HapiTests/NewSessionDirectoryTests` covers the form's defaults, roster refresh,
+offline machines and spawn validation. On a device, verify home → parent → a
+project outside home, explicit workspace-root prefixes, `~/` and hidden-directory
+completion, and clearing the input while machine health updates arrive. A
+restored or selected offline machine stays selected until the user chooses an
+online machine; its old path is never silently moved to another host.
 
-## Pairing (M1d)
+## Pairing
 
-How to pair the app with a hub (`docs/api/client-contract/auth.md` is the
-contract; the app accepts multiple hubs and keeps one active):
+The app supports multiple hubs with one active selection. See the
+[auth contract](../docs/api/client-contract/auth.md) for the wire rules.
 
-- **Local hub, manual entry** — the everyday dev loop:
-  1. Start the stack from the repo root: `bun run dev` (or just the hub). The
-     hub prints its URL and the access token (`CLI_API_TOKEN`, auto-generated
-     into the hub's `settings.json` on first run).
-  2. In the app: *Enter Manually* → hub URL (e.g. `http://192.168.1.20:3006`
-     — the phone must reach the hub's LAN address, not `localhost`; a typed
-     address without a scheme gets `http://` prefixed) → paste the token →
-     *Continue* → *Pair*.
-  3. The app checks `GET /health` (reachability + `protocolVersion`), then
-     exchanges the token via `POST /api/auth` and stores it in the Keychain.
-- **QR scan** — start the hub with `--relay`: the terminal prints two QR
-  codes. The scanner accepts **both** — the companion deeplink
-  (`hapicompanion://bind?hub=…&code=…`, canonical) and the web direct-access
-  URL (`https://<web>/?hub=…&token=…`). The web app's Settings → Companion
-  Pairing screen renders the deeplink QR too.
-- **Deep link** — opening a `hapicompanion://bind` link routes through the
-  same confirm sheet; a link for an already-paired hub just switches to it.
-- **Simulator**: camera scanning is unavailable (`DataScannerViewController`
-  unsupported) — the scanner screen says so; use manual entry. Plain-HTTP LAN
-  hubs work because `NSAllowsLocalNetworking` stays enabled (ATS default
-  otherwise).
-- **Sign out** (home → hub menu) deletes the stored token for that hub and
-  falls back to the next paired hub, or to pairing. A hub that terminally
-  rejects its stored token (rotated/revoked → `POST /api/auth` 401) is signed
-  out automatically with a banner.
+- **Manual entry:** start `hapi hub --relay`, then *Enter Manually* → HTTPS
+  hub address and access token → *Pair*. The address starts empty, with a
+  separate protocol menu defaulting to HTTPS; type the domain/IP and optional
+  port without a scheme. Pasting a full HTTP(S) URL updates that menu. A full
+  companion or web pairing link pasted into either field fills both values
+  for review — only submitting the form starts a connection. For a source-tree
+  `bun run dev` hub, put an HTTPS reverse proxy or tunnel in front of
+  `localhost:3006`; a physical phone must reach that endpoint. The app checks `GET /health`,
+  requires `protocolVersion == ProtocolVersion.supported`, exchanges the
+  token with `POST /api/auth` and stores credentials in the Keychain.
+- **QR scan:** the in-app scanner accepts both hub QR forms —
+  `hapicompanion://bind?hub=…&code=…` and the web direct-access URL
+  `https://<web>/?hub=…&token=…`. Web **Settings → Companion pairing** also
+  displays the companion QR.
+- **Deep link:** opening `hapicompanion://bind` presents pairing confirmation;
+  an already-paired hub can be selected directly.
+- **Simulator:** use manual entry because `DataScannerViewController` is
+  unavailable. Camera pairing is optional on physical devices too.
+- **Sign out:** home → hub menu removes that hub's credentials and falls back
+  to another paired hub or pairing. A rejected access token, or a freshly
+  issued JWT rejected again, triggers re-pairing. Temporary network/5xx refresh
+  failures retain credentials.
 
-Manual test pass for the app layer (the pairing sequence itself is covered by
-`PairingLogicTests` via injected HTTP fakes; `AppModel`/views are UI-bound):
-pair via manual entry against a local hub → kill + relaunch (restores paired
-state, SSE reconnects) → background/foreground (connection dot pauses and
-resumes) → pair a second hub and switch between them → sign out of both →
-scan both `--relay` QR forms → open a `hapicompanion://bind` link from Notes
-(unpaired: confirm; paired: "already paired" notice) → rotate
-`CLI_API_TOKEN` on the hub and watch the auto sign-out banner.
+The parser accepts HTTP URLs. Manual entry uses the selected protocol
+(default HTTPS); HTTP must be selected explicitly or supplied in a full URL
+or pairing link. The form warns that HTTP is unencrypted and may be restricted
+by iOS. It never guesses HTTP for a local address or downgrades after a failed
+HTTPS connection. Input acceptance is not a transport exemption.
+`Hapi/Info.plist` and the project build settings declare no ATS exceptions,
+including no `NSAllowsLocalNetworking`. Use HTTPS endpoints for a reliable
+pairing setup; HTTP behavior remains subject to system network policy.
 
-## Push notifications (P3)
+Manual app-layer acceptance: pair → kill/relaunch → background/foreground →
+pair a second hub and switch → sign out → scan both QR forms → open a deep
+link for unpaired/paired hubs. Also check that transient hub failures preserve
+pairing, while a rejected rotated token shows the sign-out banner.
+Manual-entry form and system-paste behavior is covered by app-hosted
+`ManualPairingFormTests` and `ManualEntryPresentationTests`; pure pairing
+and auth behavior is covered by the package tests; this checklist is for the
+app wiring and platform interaction.
 
-End-to-end encrypted APNs push, mirroring the Android FCM stack
-(`docs/api/native-companion-contract.md` + the iOS extension below).
+## Push notifications
+
+End-to-end encrypted APNs push; wire details live in the
+[native push contract](../docs/api/native-companion-contract.md). Official
+builds use the hub's default push relay. Self-signed builds need matching
+provider credentials as described below.
 
 **How it works**
 
@@ -660,10 +186,13 @@ End-to-end encrypted APNs push, mirroring the Android FCM stack
   title/body, stamps the action category, and stores the decrypted fields in
   `userInfo` for the tap/action handlers. Undecryptable payloads deliver
   the generic alert unchanged. The appex links nothing beyond the SDK — it
-  carries a ~60-line copy of the HapiKit `PushEnvelope` decrypt, kept honest
+  carries an SDK-only copy of the HapiKit `PushEnvelope` decrypt, kept honest
   by the shared test vector.
 - **Actions.** `permission-request` → Allow / Deny; `ready` and
-  `task-notification` → inline Reply. Handlers run in the notification
+  `task-notification` → inline Reply. `input-request` previews the first
+  question, remaining question count and session name, with tap-to-open only
+  (no approval or Reply action). Apple Watch mirrors the preview; answer on
+  the phone. Handlers run in the notification
   delegate's async completion and resolve the owning hub Android-style
   (active hub first, then the roster; 404 "Session not found" / 403 = try
   the next hub) — approve/deny post `{}`, reply posts `{text, localId}`.
@@ -678,38 +207,367 @@ End-to-end encrypted APNs push, mirroring the Android FCM stack
 test vector are verified by `HapiClientTests/Push/*` — structural checks run
 in the Linux container, the CryptoKit vector/tamper tests on Darwin CI.
 
-**First build with push (Xcode-side, once):** the project now has two
-targets. Signing is `Automatic`, but a personal/team identity is required
-for push entitlements:
+### Self-signed builds with push
 
-1. Select your team under *Signing & Capabilities* for **both** the `Hapi`
-   app target and the `HapiNotificationService` extension target.
-2. The app target ships `Hapi/Hapi.entitlements` (`aps-environment:
-   development` — Xcode/App Store flips it to `production` at distribution)
-   plus the shared keychain group; the extension ships the keychain group
-   only. If Xcode prompts to register the capability, accept — free personal
-   teams cannot sign push entitlements, a paid/organization team is needed.
-3. Simulators cannot receive APNs: expect `didFailToRegister…` there (the
-   Settings row shows the error). Everything else — decrypt, categories,
-   actions — can be exercised with `xcrun simctl push` using a payload whose
-   `hapi.e` was produced with the device's registered key.
+1. Select a paid/organization team under *Signing & Capabilities* for both
+   the `Hapi` app and `HapiNotificationService` extension. Use bundle IDs
+   registered to that team. Free personal teams cannot sign push entitlements.
+2. Keep the same Keychain access group in both targets:
+   `$(AppIdentifierPrefix)run.hapi.companion.push`. The app also declares
+   `aps-environment: development`; distribution signing determines the final
+   entitlement. The extension shares the key through `keychain-access-groups`,
+   not an App Group container.
+3. Configure the hub with `HAPI_IOS_PUSH=apns` and `APNS_KEY_P8_PATH`,
+   `APNS_KEY_ID`, `APNS_TEAM_ID`, and `APNS_BUNDLE_ID` matching the signed app.
+   Set `APNS_ENV=sandbox` for development tokens or `production` for
+   distribution tokens. Alternatively use a self-hosted push relay with
+   matching provider settings. The official relay cannot send to an arbitrary
+   self-signed app. See [transport configuration](../docs/api/native-companion-contract.md#transports-self-host-direct-apns-vs-official-relay).
 
-## Milestones (track A of the native-clients plan)
+APNs availability on a simulator depends on the host/runtime and signing
+setup. Use `xcrun simctl push <simulator> <bundle-id> <payload.json>` for local
+notification injection, with `hapi.e` encrypted using that install's push key.
+This checks local handling, not provider delivery. Verify registration,
+background/lock-screen delivery and actions on a signed physical device.
 
-- **M0** — this scaffold: project, HapiKit package, CI, one passing test.
-- **M1** — foundations: HapiProtocol wire models + catalogs; APIClient + auth
-  (Keychain, single-flight 401 refresh); SSEClient + reconnect state machine +
-  versioned patch application (incl. gzip streaming check); pairing flow
-  (VisionKit scan + `hapicompanion://bind` deep link + multi-hub).
-- **M2** — read-only chat: session list; chat pipeline port
-  (normalize/reducer/toolGroups, fixtures green is the gate); message window
-  store; Markdown/code/diff renderers; read-only ChatView with paging.
-- **M3** — interaction: composer (optimistic send, queue/steer, drafts,
-  reopen migration, slash commands); permission UX; new session; attachments.
-- **M4** — secondary features: files/git; Scratchlist; dictation;
-  usage/storage (Swift Charts); settings.
-- **M5** — polish: zh-CN localization, Dynamic Type/VoiceOver, long-session
-  memory profiling, App Store material.
+## Layout
+
+| Path | Responsibility |
+|---|---|
+| `Hapi.xcodeproj/` | App, notification extension and app-hosted tests. App sources use Xcode synchronized folders. |
+| `Hapi/Models/` | `AppModel` pairing/navigation, active `HubSession`, per-chat `ChatSession`, and `PushCoordinator`. |
+| `Hapi/Features/` | SwiftUI screens and app models for pairing, sessions, chat, new sessions, files, Scratchlist and settings; UIKit transcript hosting. |
+| `Packages/HapiKit/Sources/HapiProtocol/` | Foundation wire models, catalogs, pairing parser, versioned patches, chat reduction, message-window logic and Git parsers. |
+| `Packages/HapiKit/Sources/HapiClient/` | Auth/REST/SSE, stores and disk snapshots, message windows, chat interaction, attachments, dictation, push and testable feature logic. |
+| `Packages/HapiKit/Sources/HapiUI/` | Reusable Markdown, syntax highlighting, diff rendering, theme and typography. |
+| `HapiNotificationService/` | SDK-only extension that decrypts APNs content using the shared Keychain key. |
+| `Packages/HapiKit/Tests/`, `HapiTests/` | Package and app-hosted verification. |
+
+The app owns navigation, lifecycle and screen presentation; HapiKit supplies
+protocol, transport, testable feature logic and reusable UI. `HapiProtocol` and
+`HapiClient` build without the UI dependencies on Linux.
+
+The active hub maintains a global SSE connection; an open chat adds a
+session-scoped connection. Chat event handling is ordered through the window
+actor. Preserve per-hub credentials/drafts, version watermarks, resume cursors
+and superseding-session navigation when changing this wiring. The transcript
+uses `AnchoredTranscriptList` (`UICollectionView` with SwiftUI hosting) and
+prepares Markdown off the main thread; see
+[native transcript scrolling](../docs/native-chat-scrolling.md).
+
+## Scratchlist workflow
+
+The composer tray toggles a session-local `chat` / `scratchlist` destination.
+Scratchlist mode shows one recent draft, or just a header while the input is
+focused or when using accessibility text sizes, and an explicitly labelled
+**Save draft** action. Tap the header to open the full list, or × to return to
+chat. Closing the drawer preserves input; taking a draft or accepting a queue
+send returns to chat mode. The queue remains a
+separate, automatically delivered surface.
+
+Text and attachments park as one snapshot. Failed saves retain input and
+retry the same entry ID. Taking a saved attachment creates a borrowed hub
+reference, without resuming the session; an explicit chat send stages it to
+the active/resumed session's upload directory. Queue actions do not consume
+the composer and use a stable local ID for the saved entry version. A failed
+post-acceptance deletion retries removal only. The full inventory uses one
+navigation stack for reading and transactional editing, with discard guards
+and editor identities protecting against late uploads.
+
+Inventory rows show two lines of text, an attachment count, **Take draft** and
+a menu for queueing, editing, copying and deleting. Pull down for search
+(including attachment filenames); full filenames and relative timestamps live
+in the detail view. The editor's + menu offers photos and files. Empty states
+and routine chrome avoid explanatory paragraphs; failures stay inline with
+their recovery action, without a duplicate toast.
+
+Regression suites: package `ScratchlistComposerWorkflowTests`,
+`ScratchlistAttachmentFlowTests`, `ScratchlistStoreTests` and
+`ComposerAttachmentsTests`; app-hosted `ScratchlistScreenModelTests` and
+`ScratchlistPresentationTests` (including transcript-anchor preservation).
+The presentation suite attaches light/dark, compact, accessibility, inventory
+and editor renders. Manually check keyboard/VoiceOver, conflict choices,
+photo/file retry, and inactive-session sending on a connected device.
+
+## UI development
+
+### Localization catalog
+
+`Hapi/Resources/Localizable.xcstrings` is **manually managed**, including every
+entry's `"extractionState" : "manual"`. Keep `SWIFT_EMIT_LOC_STRINGS = NO` for the
+app/extension in Debug and Release. That setting disables compiler extraction;
+it does **not** prevent the Xcode editor from synchronizing or saving a catalog.
+Unspecified ownership can still turn entries into `stale` during synchronization.
+
+Use Xcode's native catalog formatting (key order, spacing, escaping), not a
+generic JSON formatter. After adding or editing translations, run from repo root:
+
+```sh
+python3 ios/scripts/localizations.py --check   # read-only ownership check; no Xcode needed
+python3 ios/scripts/localizations.py --fix     # macOS/Xcode: mark manual, normalize native format
+```
+
+The normalizer uses `xcstringstool` on a temporary copy, verifies that all keys,
+translations, plural variations and comments survive, and writes only if needed.
+It never deletes real entries: review/remove unwanted auto-extracted additions
+before `--fix`, rather than silently making them permanent. Keep dynamic values
+and decorative text verbatim in SwiftUI where they are not localization keys.
+
+CI checks manual ownership, tests normalization idempotence, and verifies that
+building/testing does not rewrite the catalog. Formatting is delegated to the
+installed Xcode rather than reimplementing its ordering in Python; `--check`
+does not enforce one Xcode version's byte-level formatting on another version.
+
+After migrating an existing checkout, use **Product → Clean Build Folder** if
+Xcode still synchronizes old extraction results, then rebuild/reopen and inspect
+the diff. Do not hide the file with `.gitignore`, `skip-worktree`, or restore it
+unconditionally: real translation edits must remain visible and committed.
+
+### iPad navigation and resizing
+
+iPad uses a two-column `NavigationSplitView`: sessions in the sidebar and a
+separate detail navigation stack for chat → files/viewer/process pages. The
+sidebar requests 280–360pt (320pt ideal); the system collapses the same view
+hierarchy in compact windows. iPhone keeps its single `NavigationStack`.
+Cold starts and hub switches show **Select a session** until the user chooses
+one; notifications and new sessions can open an ID before its list row arrives.
+Selection and nested navigation are in memory, not restored across launches.
+
+`SessionNavigationState` owns selection, detail path and column visibility;
+neither window geometry nor sidebar filters may clear them. Reopening the
+selected session preserves its file page. A different/superseding session resets
+the entire detail stack, but a late superseding callback cannot replace a chat
+the user has since selected. Only explicit removal events or successful archive
+operations clear the current selection, never optimistic list removal/rollback.
+
+The detail's identity is hub/session-based, so resizing preserves the existing
+chat, draft, attachment tray and transcript anchor. Native menus/sheets remain
+native; the hub sign-out and attachment dialogs are anchored to their buttons.
+The explicit scene manifest disables additional HAPI windows, **not** Split
+View/Stage Manager with other apps. Do not enable scene-manifest generation
+(which generates multiple-scene support) or require full screen. Multiwindow,
+third-column inspectors, keyboard shortcuts and drag/drop are not implemented.
+
+`SessionNavigationTests` covers navigation/removal policy and the built scene
+manifest. `SessionSplitPresentationTests` runs on an actual iPad simulator and
+uses the production split shell/list plus a real, non-networked chat specimen:
+selection, compact programmatic opening, nested Back, filtering, resizing,
+reading anchors, draft/attachment retention and surface/subscription lifetime.
+CI keeps the iPhone suite and adds iPad Air 11-inch (M2). Run it locally with:
+
+```sh
+HAPI_TEST_DEVICE_TYPE=com.apple.CoreSimulator.SimDeviceType.iPad-Air-11-inch-M2 \
+  ios/scripts/test-transcript.sh \
+    -only-testing:HapiTests/SessionNavigationTests \
+    -only-testing:HapiTests/SessionSplitPresentationTests
+```
+
+Optional specimens: set `TEST_RUNNER_HAPI_IPAD_CAPTURE` to a **new temporary
+directory**; these are synthetic test conversations, not release screenshots.
+Before release, manually verify mini/11/13-inch portrait and landscape,
+one-third/half-screen and Stage Manager resizing, keyboard docking/floating and
+hardware-keyboard transitions, light/dark, Chinese/English, Dynamic Type and
+VoiceOver. Check settings/new-session/Scratchlist/inspection sheets while
+resizing, notification navigation, and background/foreground reconnection.
+
+### Reading typography
+
+`HapiUI` separates color palettes (`HapiTheme`) from resolved Dynamic Type
+metrics (`HapiTypography`). Install `.hapiTypography()` at a presentation root,
+outside `AnchoredTranscriptList`; hosted rows inherit those metrics. Do not
+scale the resolved values again. Body/user/composer text starts at 16pt,
+inline code at 15pt, code/diffs/terminal at 14pt, and captions at 12pt.
+Body and code add 3pt and 2pt of scaled inter-line spacing respectively.
+
+The transcript and composer share a centered, at-most-720pt reading column
+with 16pt minimum side margins. Font, Bold Text, locale, and effective width
+changes invalidate height measurements while preserving the reading anchor.
+Ordinary streaming updates retain unchanged hosting roots and measurements.
+
+User messages stay fully expanded through 8,000 characters and 120 source lines,
+even when they span multiple screens. Only larger payloads fold to a preview
+bounded to 2,000 characters / 24 lines. The folding threshold is separate from
+the preview budget; both bound the actual text passed to layout. **View full
+message** opens a screen-owned reader with one 4,000-character / 80-source-line
+part mounted at a time, previous/next navigation, and exact full-content copy.
+Paging preserves Unicode and whitespace without scanning the entire payload on
+open. The reader survives cell recycling and pauses hidden history/tail following;
+closing it preserves the reading position. Stored/sent messages are never truncated.
+
+The UIKit transcript suite covers typography changes, recycling, shrinking
+text, tablet/phone widths, and tail following. Optional deterministic visual
+specimens cover light/dark/OLED, mixed Chinese/English, code, tables, diffs,
+approvals, and the actual composer. They use a non-networked test interactor;
+they are **not** live conversations or App Store screenshots. Capture into a
+new temporary directory, never over the release gallery:
+
+```sh
+TEST_RUNNER_HAPI_TYPOGRAPHY_CAPTURE=/tmp/hapi-typography-review \
+  ios/scripts/test-transcript.sh -only-testing:HapiTests/TypographySnapshotTests
+```
+
+### Session settings
+
+The chat gear presents a single-page model/effort and permission/collaboration
+form. All selections use native menus; permission explanations, high-risk
+indicators, model-loading/retry states and update feedback remain in the form.
+Changes apply immediately; Done only dismisses. On regular-width windows the
+production toolbar button anchors an iPad popover; compact windows adapt that
+same presenter to a medium/large sheet (large for accessibility text).
+
+Run the configuration and real-presentation tests on both phone and tablet:
+
+```sh
+ios/scripts/test-transcript.sh \
+  -only-testing:HapiTests/SessionConfigTests \
+  -only-testing:HapiTests/SessionConfigPresentationTests
+
+# Pick a device type supported by your installed runtime:
+# xcrun simctl list devicetypes
+HAPI_TEST_DEVICE_TYPE=com.apple.CoreSimulator.SimDeviceType.iPad-Pro-11-inch-M5-12GB \
+  ios/scripts/test-transcript.sh \
+  -only-testing:HapiTests/SessionConfigTests \
+  -only-testing:HapiTests/SessionConfigPresentationTests
+```
+
+The script creates and deletes an isolated simulator. Set
+`TEST_RUNNER_HAPI_SESSION_CONFIG_CAPTURE` to a new temporary directory for
+non-networked specimens (not App Store screenshots). A widened phone window
+is not a substitute for the native iPad anchor test. For AXe-driven menu and
+Done checks, run only
+`SessionConfigPresentationTests/testNativeDevicePresentationIsAnchoredOnIPadAndAdaptsOnIPhone`
+with `TEST_RUNNER_HAPI_SESSION_CONFIG_INTERACTIVE_SECONDS=180`; leave the panel
+open when the pause ends. Manually check rotation and Split View/window resizing,
+menu checkmarks and risk announcements, and that closing preserves the chat's
+draft and reading position.
+
+### Tool inspection
+
+Inline approvals use a neutral card with a quiet pending/submitting/handled
+status, a full-input link, and adaptive action rows. `ChatActionButtonStyle`
+owns the complete 44pt minimum target (10pt corners); do not add system bordered
+button padding or another minimum label height. Approvals, question navigation
+and plan actions share only this style, never their submission semantics.
+Queued-message actions also keep 44pt targets and stack when the column is too
+narrow. Native alerts, sheets and form controls retain their system styling.
+
+`PermissionActionPresentationTests` covers flavor gates, action geometry, busy
+and already-handled states, failures, themes and large text. To capture isolated,
+non-networked approval specimens, set `TEST_RUNNER_HAPI_APPROVAL_CAPTURE` to a
+new temporary directory and run it through `ios/scripts/test-transcript.sh`.
+
+Plan proposals (`ExitPlanMode` / `exit_plan_mode`) are reading documents, not
+activity summaries: their complete `input.plan` Markdown stays visible in the
+conversation, before any approval controls. The same renderer is used in the
+inspector; null output does not show a misleading "No output" placeholder.
+Shared Codex proposals expose **Implement plan** and **Continue planning** only
+when the active session's `agentState.codexPlanProposalId` matches the tool-call
+id. Implementation uses the dedicated plan endpoint, not permission approval;
+continue hides that proposal’s action menu locally and focuses the composer,
+preserving its draft and plan mode without sending a message. The plan document
+remains readable, and a new proposal gets a fresh menu. Pending/error state
+survives row recycling. Withdrawn, historical and child proposals stay read-only
+(an outstanding operation/error can still be shown).
+Plans are prewarmed in the chat Markdown cache and never use the ordinary
+tool-output preview/paging budget. The inspector retains raw fields under Source.
+
+Tool summaries open a native large sheet instead of expanding their output
+inside the conversation. Tool groups also stay as one summary row: tapping one
+opens a native lazy list in the same inspector. Calls remain chronological, with
+each new presentation initially positioned at the latest tool. Streaming never
+scrolls the list; **Latest tool** explicitly returns to its end. Details push
+inside the same sheet, retaining the list position on Back. Both levels keep a
+toolbar Close action and native swipe dismissal. The inspector resolves stable
+group/tool IDs from live data; output-only changes do not reconfigure unchanged
+group summaries in the transcript. Group headers prioritize total calls over
+category counts.
+File/image summaries show the action and basename; commands use a bounded preview.
+Success is quiet, while running/errors remain visible; every row keeps a 44pt target.
+Edits show their recorded input, with a separate **View current file** action.
+Task/Agent sidechains open a process page; approvals and question answering remain in
+the conversation/process, not in the read-only inspector.
+
+Question inspectors show recorded selections, custom answers and notes with
+Markdown questions/options. `request_user_input` also restores answers from
+historical results; live permission answers take precedence. Answered cards
+avoid duplicate results, but retain errors and the full input/result/answers
+under **Source**. Answer submission remains in the conversation.
+
+Synchronous questions use a dedicated inline card, not the orange approval
+footer. Only one question is shown at a time: single-selection taps advance
+to the next question, while multiple-selection and text questions use **Next
+question**. **Previous question** retains all choices and notes; the last step
+always requires **Submit answer**. Recommended labels are display-only badges,
+never default selections or rewritten wire values. Other-answer/note fields
+expand on demand; text-only questions and prefilled drafts show them immediately.
+Codex choice questions with `isOther: true` also offer **None of the above**.
+Selecting it stays on the current question and focuses optional notes; empty
+notes are valid. Its wire value remains `None of the above` in every language,
+and recorded answers/notes appear in summaries and details. Requests without
+`isOther` (including Pi and MCP forms) keep their existing choices.
+All form state survives transcript-cell recycling for the retained request.
+Successful records collapse to answer summaries; missing recorded answers are
+shown as handled, not inferred from local drafts. Ordinary approvals retain their approval footer.
+
+Question tests include pure navigation/answer-building checks and app-hosted
+layout/recycling specimens (fake data; no live agent or saved credentials):
+
+```sh
+TEST_RUNNER_HAPI_QUESTION_CAPTURE=/tmp/hapi-question-review \
+  ios/scripts/test-transcript.sh -only-testing:HapiTests/QuestionAnswerDraftTests \
+    -only-testing:HapiTests/QuestionCardPresentationTests
+```
+
+Inspection pauses transcript tail-following and hidden history paging, without
+opening another SSE subscription. Closing returns to the reading anchor;
+opening/closing at bottom does not itself show **Back to latest**. The button
+appears when the transcript is far enough from bottom (or the live tail has been
+trimmed), and explicitly resumes following. Trimmed records remain visible as
+labeled, read-only snapshots; missing groups retain their last membership,
+without switching to another group. Incomplete history is labeled and can be
+loaded from the conversation after closing the inspector. Large text is loaded
+in 20,000-character parts and can be copied in full; large diffs use paged source
+instead of eager rows.
+
+The inspector recognizes namespaced command/script/patch calls. File reads use
+source-language highlighting; web/agent prose uses Markdown (large documents
+fall back to paged source). Common nested result envelopes are unwrapped, with
+command exit/status metadata kept visible. **Source** reveals the original
+input/result, including fields not shown in the preview; mixed text/media
+results stay JSON instead of losing non-text blocks.
+
+The app-hosted suite covers selection, live updates, native sheet presentation,
+2/42/240-call lists, initial positioning, detail navigation, surface handoffs,
+Unicode paging, and reading-position preservation. Native swipe gestures and
+release-device animation smoothness still need manual acceptance. Transcript
+specimens run the real ChatModel/ChatTranscriptView with fake HTTP and closed
+loopback SSE; sheet specimens are non-networked. Both use deterministic test
+records, not live sessions or App Store screenshots. Capture into a fresh directory:
+
+```sh
+TEST_RUNNER_HAPI_TOOL_CAPTURE=/tmp/hapi-tool-review \
+  ios/scripts/test-transcript.sh -only-testing:HapiTests/ToolInspectionPresentationTests \
+    -only-testing:HapiTests/ToolTranscriptPresentationTests
+```
+
+### Home filtering
+
+Home keeps a fixed Sessions title: hub switching on the leading edge,
+Filters and New Session on the trailing edge. The native menu currently
+offers machine single-selection; only applied filters add a summary line.
+Filters are transient per home/hub and never select a new session's machine.
+Options/counts come from all session summaries, including historical machines;
+the online roster supplies names only. Missing names use a labeled short ID.
+Session-count updates do not reorder options or reset the list's scroll position.
+
+App-hosted filter tests use observable in-memory stores (no network or pairing).
+Optional layout captures are test specimens, not live or App Store screenshots:
+
+```sh
+TEST_RUNNER_HAPI_HOME_CAPTURE=/tmp/hapi-home-review \
+  ios/scripts/test-transcript.sh -only-testing:HapiTests/SessionListFilterTests \
+    -only-testing:HapiTests/HomeFilterPresentationTests
+```
 
 ## Notes
 

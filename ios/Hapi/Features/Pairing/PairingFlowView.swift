@@ -20,7 +20,7 @@ struct PairingFlowView: View {
     @State private var showScanner = false
     @State private var showManualEntry = false
 
-    private static let docsURL = URL(string: "https://app.hapi.run/docs/")
+    private static let docsURL = URL(string: "https://hapi.run/docs/guide/quick-start")
 
     var body: some View {
         NavigationStack {
@@ -70,6 +70,10 @@ struct PairingFlowView: View {
                         .controlSize(.large)
                     }
                     .padding(.horizontal, 24)
+
+                    PrivacyPolicyLink()
+                        .font(.subheadline)
+                        .padding(.bottom, 24)
                 }
                 .frame(maxWidth: 480)
                 .frame(maxWidth: .infinity)

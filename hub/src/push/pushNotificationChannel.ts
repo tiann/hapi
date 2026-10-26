@@ -5,6 +5,7 @@ import { getAgentName, getSessionName } from '../notifications/sessionInfo'
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
 import type { PushPayload, PushService } from './pushService'
+import { composeInputRequestNotification, getFirstPendingRequest } from '../notifications/inputRequest'
 
 export class PushNotificationChannel implements NotificationChannel {
     constructor(
@@ -32,17 +33,17 @@ export class PushNotificationChannel implements NotificationChannel {
         }
 
         const name = getSessionName(session)
-        const requests = session.agentState?.requests ?? null
-        const requestEntries = requests ? Object.entries(requests) : []
-        const [requestId, request] = requestEntries[0] ?? [undefined, null]
+        const pending = getFirstPendingRequest(session)
+        const { requestId, request } = pending ?? {}
+        const inputNotification = composeInputRequestNotification(session, pending)
         const toolName = request?.tool ? ` (${request.tool})` : ''
 
         const payload: PushPayload = {
-            title: 'Permission Request',
-            body: `${name}${toolName}`,
-            tag: `permission-${session.id}`,
+            title: inputNotification?.title ?? 'Permission Request',
+            body: inputNotification?.body ?? `${name}${toolName}`,
+            tag: inputNotification?.tag ?? `permission-${session.id}`,
             data: {
-                type: 'permission-request',
+                type: inputNotification?.type ?? 'permission-request',
                 sessionId: session.id,
                 url: this.buildSessionPath(session.id),
                 requestId

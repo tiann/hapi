@@ -12,6 +12,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MessageService } from './messageService'
+import type { EventPublisher } from './eventPublisher'
 import { Store } from '../store'
 import type { Server } from 'socket.io'
 import { SESSION_EXPORT_MESSAGE_LIMIT } from '@hapi/protocol/sessionExport'
@@ -102,6 +103,24 @@ function makePublisher() {
 // ---------------------------------------------------------------------------
 
 describe('MessageService goal status filtering', () => {
+    it('does not discard or replay an uncertain shared input on a not-found cancellation ACK', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('shared-unknown', { capabilities: { concurrentClients: true } }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'possibly executing' } }, 'shared-q')
+        store.messages.setMessagesDeliveryState(session.id, ['shared-q'], 'indeterminate')
+        const service = new MessageService(store, makeIo(ack => ack(null, [{ removed: false }])), makePublisher() as unknown as EventPublisher)
+        expect(await service.cancelQueuedMessage(session.id, 'shared-q')).toEqual({ status: 'busy', localId: 'shared-q' })
+        expect(await service.retryIndeterminateMessage(session.id, 'shared-q')).toEqual({ status: 'retry-unavailable', localId: 'shared-q' })
+        expect(store.messages.lookupQueuedMessage(session.id, 'shared-q').status).toBe('indeterminate')
+    })
+    it('does not discard a shared native queue when the worker is disconnected from the hub', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('shared-offline', { capabilities: { concurrentClients: true } }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'may be executing' } }, 'shared-q')
+        const service = new MessageService(store, makeIo(() => { throw new Error('offline') }, 0), makePublisher() as unknown as EventPublisher)
+        expect(await service.cancelQueuedMessage(session.id, 'shared-q')).toEqual({ status: 'busy', localId: 'shared-q' })
+        expect(store.messages.lookupQueuedMessage(session.id, 'shared-q').status).toBe('indeterminate')
+    })
     function redundantGoalStatusContent(message: string): unknown {
         return {
             role: 'agent',
@@ -1059,6 +1078,38 @@ describe('MessageService.sendMessage with scheduledAt', () => {
         // scheduledAt must be null in DB
         const msgs = store.messages.getMessages(session.id)
         expect(msgs[0].scheduledAt).toBeNull()
+    })
+
+    it('mints a localId for senders that omit one so the agent echo dedupes', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'no-local-id')
+        const publisher = makePublisher()
+
+        const cliEmitted: Array<{ body: { message: { localId: string | null } } }> = []
+        const io = {
+            of: (ns: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (ns === '/cli') cliEmitted.push(data as typeof cliEmitted[number])
+                    },
+                    timeout: (_ms: number) => ({ emit: () => {} })
+                }),
+                adapter: { rooms: { get: () => undefined } }
+            })
+        } as unknown as Server
+
+        const service = new MessageService(store, io, publisher as any)
+        await service.sendMessage(session.id, { text: 'peer ping' })
+        await service.sendMessage(session.id, { text: 'peer ping' })
+
+        const [first, second] = cliEmitted.map((update) => update.body.message.localId)
+        expect(first).toEqual(expect.any(String))
+        expect(second).toEqual(expect.any(String))
+        expect(second).not.toBe(first)
+
+        // Shared Codex echoes the user turn back under the id it received.
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'peer ping' }, meta: { sentFrom: 'cli' } }, first!)
+        expect(store.messages.getMessages(session.id)).toHaveLength(2)
     })
 
     it('past scheduledAt (already mature): emits to /cli immediately', async () => {

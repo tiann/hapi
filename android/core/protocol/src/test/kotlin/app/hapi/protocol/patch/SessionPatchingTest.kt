@@ -86,6 +86,26 @@ class SessionPatchingTest {
 
     // --- version gates in applySessionDetailPatch ---
 
+    @Test fun `Codex proposal id decodes and is withdrawn without stale SSE resurrection`() {
+        val state = HapiJson.decodeFromString<AgentState>("""{"codexPlanProposalId":"plan-1","requests":{}}""")
+        assertEquals("plan-1", state.codexPlanProposalId)
+        assertTrue(state.requests!!.isEmpty())
+        assertEquals(state, HapiJson.decodeFromString<AgentState>(HapiJson.encodeToString(AgentState.serializer(), state)))
+        assertNull(HapiJson.decodeFromString<AgentState>("{}").codexPlanProposalId)
+        val session = makeSession(agentState = state, agentStateVersion = 3)
+        val clearedState = HapiJson.decodeFromString<AgentState>("""{"codexPlanProposalId":null}""")
+        val cleared = assertNotNull(applySessionDetailPatch(session, SessionPatch(agentState = VersionedValue(4, clearedState))))
+        assertNull(cleared.agentState?.codexPlanProposalId)
+        assertEquals(4, cleared.agentStateVersion)
+        for (version in listOf(3L, 4L)) {
+            assertNull(applySessionDetailPatch(cleared, SessionPatch(agentState = VersionedValue(version, state))))
+        }
+        val next = assertNotNull(applySessionDetailPatch(cleared, SessionPatch(
+            agentState = VersionedValue(5, AgentState(codexPlanProposalId = "plan-2")),
+        )))
+        assertEquals("plan-2", next.agentState?.codexPlanProposalId)
+    }
+
     @Test
     fun `stale metadata patch is dropped entirely`() {
         val session = makeSession(metadataVersion = 5, metadata = metadata("current"))

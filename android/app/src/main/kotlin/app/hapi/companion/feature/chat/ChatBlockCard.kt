@@ -62,6 +62,7 @@ fun ChatBlockCard(
     block: VisibleChatBlock,
     basePath: String?,
     modifier: Modifier = Modifier,
+    processSteps: Int? = null,
 ) {
     when (block) {
         is UserTextBlock -> UserTextBlockView(block, modifier)
@@ -71,7 +72,7 @@ fun ChatBlockCard(
         is CliOutputBlock -> CliOutputBlockView(block, modifier)
         is GeneratedImageBlock -> GeneratedImageBlockView(block, modifier)
         is CodexReviewBlock -> CodexReviewBlockView(block, modifier)
-        is ToolCallBlock -> ToolCallBlockView(block, basePath, modifier)
+        is ToolCallBlock -> ToolCallBlockView(block, basePath, modifier, processSteps)
         is ToolGroupBlock -> ToolGroupBlockView(block, basePath, modifier)
     }
 }

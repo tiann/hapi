@@ -5,6 +5,10 @@ import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
 import { getConversationMessageAnchorId } from '@/chat/outline'
 import { MessageTimestamp } from '@/components/AssistantChat/messages/MessageTimestamp'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
+import { CodeBlock } from '@/components/CodeBlock'
+import { parseGoalStatusMessage } from '@/components/ToolCard/goalTools'
+import { GoalSummary } from '@/components/ToolCard/views/GoalView'
+import { useTranslation } from '@/lib/use-translation'
 
 function formatTokenDelta(event: AgentEvent | undefined): string | null {
     if (!event || event.type !== 'compact-summary') return null
@@ -16,17 +20,17 @@ function formatTokenDelta(event: AgentEvent | undefined): string | null {
 }
 
 export function HappySystemMessage() {
+    const { t } = useTranslation()
     const role = useAuiState((s) => s.message.role)
     const messageId = useAuiState((s) => s.message.id)
     const text = useAuiState((s) => {
         if (s.message.role !== 'system') return ''
         return s.message.content[0]?.type === 'text' ? s.message.content[0].text : ''
     })
-    const icon = useAuiState((s) => {
+    const event = useAuiState((s) => {
         if (s.message.role !== 'system') return null
         const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
-        const event = custom?.kind === 'event' ? custom.event : undefined
-        return event ? getEventPresentation(event).icon : null
+        return custom?.kind === 'event' ? custom.event : undefined
     })
     const compactSummary = useAuiState((s) => {
         if (s.message.role !== 'system') return undefined
@@ -35,6 +39,27 @@ export function HappySystemMessage() {
     })
 
     if (role !== 'system') return null
+
+    const icon = event ? getEventPresentation(event).icon : null
+    const goalMessage = event?.type === 'message' && typeof event.message === 'string' ? event.message : null
+    const goal = goalMessage !== null ? parseGoalStatusMessage(goalMessage) : null
+    if (goal && goalMessage !== null) {
+        return (
+            <MessagePrimitive.Root id={getConversationMessageAnchorId(messageId)} className="scroll-mt-4 py-1">
+                <section aria-label={t('session.status.goal')} className="mx-auto max-w-[92%] rounded-[20px] bg-[var(--app-tool-card-bg)] p-3 text-left">
+                    <div className="mb-2 flex items-center gap-2 text-sm font-medium text-[var(--app-fg)]">
+                        <span>{t('session.status.goal')}</span>
+                        <MessageTimestamp className="text-[10px] font-normal text-[var(--app-hint)]" />
+                    </div>
+                    <GoalSummary result={goal} surface="inline" />
+                    <details className="mt-3 min-w-0 text-xs text-[var(--app-hint)]">
+                        <summary className="cursor-pointer py-1">{t('tool.goal.raw')}</summary>
+                        <CodeBlock code={goalMessage} language="json" />
+                    </details>
+                </section>
+            </MessagePrimitive.Root>
+        )
+    }
 
     // Pi compaction summaries are real content, not status: render them as an
     // independent block (header with token delta + the summary markdown)

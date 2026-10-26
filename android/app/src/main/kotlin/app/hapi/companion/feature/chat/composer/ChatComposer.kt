@@ -40,6 +40,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
@@ -92,8 +96,19 @@ fun ChatComposer(
     onDictationToggle: () -> Unit = {},
     onDictationCancel: () -> Unit = {},
 ) {
+    val focusRequester = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    // Do not replay an old focus intent when returning from an inspector.
+    var handledFocusRequest by remember { mutableLongStateOf(state.focusRequest) }
+    LaunchedEffect(state.focusRequest) {
+        if (state.focusRequest != handledFocusRequest) {
+            handledFocusRequest = state.focusRequest
+            focusRequester.requestFocus()
+            keyboard?.show()
+        }
+    }
     Surface(color = MaterialTheme.colorScheme.surface, modifier = modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+        Column(modifier = Modifier.padding(vertical = 8.dp)) {
             if (slashSuggestions.isNotEmpty()) {
                 SlashCommandDropdown(
                     suggestions = slashSuggestions,
@@ -137,12 +152,14 @@ fun ChatComposer(
                     BasicTextField(
                         value = state.text,
                         onValueChange = onTextChange,
-                        textStyle = MaterialTheme.typography.bodyLarge.copy(
+                        textStyle = app.hapi.companion.ui.theme.HapiTypography.body.copy(
                             color = MaterialTheme.colorScheme.onSurface,
                         ),
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                         maxLines = 6,
                         modifier = Modifier
+                            .focusRequester(focusRequester)
+                            .testTag("chat-composer-input")
                             .fillMaxWidth()
                             .padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 4.dp),
                         decorationBox = { inner ->

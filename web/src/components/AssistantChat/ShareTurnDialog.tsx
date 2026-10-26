@@ -210,6 +210,13 @@ function prepareExportElement(element: HTMLElement, exportWidth: number, preserv
                shaped baseline. Zero spacing keeps each text run intact. */
             letter-spacing: 0 !important;
         }
+        .hapi-share-export-root .katex,
+        .hapi-share-export-root .katex * {
+            letter-spacing: normal !important;
+        }
+        .hapi-share-export-root .katex {
+            line-height: 1.2 !important;
+        }
         .hapi-share-export-root :not(pre) > code {
             position: relative !important;
             /* html2canvas-pro paints an inline element's background using its
@@ -303,6 +310,82 @@ function waitForStyleSheets(document: Document): Promise<void> {
     })).then(() => undefined)
 }
 
+const KATEX_FONT_FAMILIES = [
+    'KaTeX_Main',
+    'KaTeX_Math',
+    'KaTeX_AMS',
+    'KaTeX_Caligraphic',
+    'KaTeX_Fraktur',
+    'KaTeX_SansSerif',
+    'KaTeX_Script',
+    'KaTeX_Size1',
+    'KaTeX_Size2',
+    'KaTeX_Size3',
+    'KaTeX_Size4',
+    'KaTeX_Typewriter',
+] as const
+
+const loadedKaTeXFonts = new WeakMap<Document, Map<string, Promise<FontFace[]>>>()
+
+export function getKaTeXFontRequests(root: HTMLElement): string[] {
+    const requests = new Set<string>()
+    const elements = [
+        ...(root.matches('.katex') ? [root] : []),
+        ...Array.from(root.querySelectorAll<HTMLElement>('.katex, .katex *')),
+    ]
+    const getStyle = root.ownerDocument.defaultView?.getComputedStyle.bind(root.ownerDocument.defaultView)
+
+    for (const element of elements) {
+        const style = getStyle?.(element)
+        if (!style) continue
+        const family = style.fontFamily
+            .split(',')
+            .map((value) => value.trim().replace(/^['"]|['"]$/g, ''))
+            .find((value): value is (typeof KATEX_FONT_FAMILIES)[number] => (
+                KATEX_FONT_FAMILIES.includes(value as (typeof KATEX_FONT_FAMILIES)[number])
+            ))
+        if (!family) continue
+
+        const fontStyle = style.fontStyle === 'italic' ? 'italic' : 'normal'
+        const numericWeight = Number.parseInt(style.fontWeight, 10)
+        const fontWeight = style.fontWeight === 'bold' || numericWeight >= 600 ? 'bold' : 'normal'
+        const stylePrefix = fontStyle === 'italic' ? 'italic ' : ''
+        const weightPrefix = fontWeight === 'bold' ? 'bold ' : ''
+        requests.add(`${stylePrefix}${weightPrefix}16px "${family}"`)
+    }
+
+    return requests.size > 0 ? [...requests] : ['16px "KaTeX_Main"']
+}
+
+function loadKaTeXFont(document: Document, request: string): Promise<FontFace[]> {
+    let documentFonts = loadedKaTeXFonts.get(document)
+    if (!documentFonts) {
+        documentFonts = new Map()
+        loadedKaTeXFonts.set(document, documentFonts)
+    }
+
+    const existing = documentFonts.get(request)
+    if (existing) return existing
+
+    const loading = document.fonts.load(request).catch(() => {
+        documentFonts?.delete(request)
+        return []
+    })
+    documentFonts.set(request, loading)
+    return loading
+}
+
+async function waitForKaTeXFonts(root: HTMLElement): Promise<void> {
+    const ownerDocument = root.ownerDocument
+    if (!ownerDocument.fonts) return
+
+    // Loading every KaTeX family/style combination makes each export wait for
+    // fonts that are not present in the captured formula. The computed styles
+    // identify the small subset actually used by this turn.
+    const fontRequests = getKaTeXFontRequests(root)
+    await Promise.all(fontRequests.map((request) => loadKaTeXFont(ownerDocument, request)))
+}
+
 function appendTextFallback(target: DocumentFragment | HTMLElement, snapshot: ShareTurnSnapshot): void {
     if (snapshot.text.trim().length === 0) return
     const fallback = document.createElement('div')
@@ -314,13 +397,14 @@ function appendTextFallback(target: DocumentFragment | HTMLElement, snapshot: Sh
     target.appendChild(fallback)
 }
 
-function resolveCssUrls(cssText: string, styleSheetUrl: string | null): string {
-    if (!styleSheetUrl) return cssText
+function resolveCssUrls(cssText: string, styleSheetUrl: string | null, fallbackBaseUrl: string): string {
+    const baseUrl = styleSheetUrl ?? fallbackBaseUrl
+    if (!baseUrl) return cssText
     return cssText.replace(/url\(\s*(['"]?)(.*?)\1\s*\)/gi, (match, quote: string, rawUrl: string) => {
         const url = rawUrl.trim()
         if (!url || /^(?:data:|blob:|#|[a-z][a-z\d+.-]*:|\/\/)/i.test(url)) return match
         try {
-            return `url(${quote}${new URL(url, styleSheetUrl).href}${quote})`
+            return `url(${quote}${new URL(url, baseUrl).href}${quote})`
         } catch {
             return match
         }
@@ -339,7 +423,8 @@ function copyLoadedStyleSheets(source: Document, target: Document): void {
         try {
             const cssText = resolveCssUrls(
                 Array.from(sheet.cssRules, (rule) => rule.cssText).join('\n'),
-                sheet.href
+                sheet.href,
+                source.baseURI
             )
             if (!cssText) continue
             const style = target.createElement('style')
@@ -386,7 +471,9 @@ async function waitForImages(root: HTMLElement): Promise<void> {
 async function waitForExportReady(root: HTMLElement): Promise<void> {
     const ownerDocument = root.ownerDocument
     await waitForStyleSheets(ownerDocument)
-    if (ownerDocument.fonts) {
+    if (root.querySelector('.katex')) {
+        await waitForKaTeXFonts(root)
+    } else if (ownerDocument.fonts) {
         await ownerDocument.fonts.ready.catch(() => undefined)
     }
     await waitForImages(root)
@@ -458,10 +545,14 @@ async function elementToPngBlob(
         const maxScale = Math.sqrt(MAX_EXPORT_PIXELS / Math.max(1, captureWidth * captureHeight))
         const scale = Math.min(SHARE_EXPORT_SCALE, maxScale)
         const backgroundColor = getComputedStyle(captureElement).backgroundColor || '#ffffff'
+        const containsKaTeX = captureElement.querySelector('.katex') !== null
         const { default: html2canvas } = await import('html2canvas-pro')
         canvas = await html2canvas(captureElement, {
             backgroundColor,
-            foreignObjectRendering: false,
+            // KaTeX relies on browser font metrics and nested CSS positioning
+            // for fractions, accents, delimiters, and aligned environments.
+            // Use Chromium's native foreignObject paint for those nodes.
+            foreignObjectRendering: containsKaTeX,
             imageTimeout: 15000,
             logging: false,
             removeContainer: true,

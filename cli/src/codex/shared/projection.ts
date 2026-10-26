@@ -1,0 +1,254 @@
+import { CodexRoundDuration } from '../utils/roundDuration';
+import { createHash } from 'node:crypto';
+import type { ApiSessionClient } from '@/api/apiSession';
+import { normalizeSessionDisplayTitle } from '@/agent/sessionDisplayRename';
+import { registerGeneratedImageFromPath } from '@/modules/common/generatedImages';
+import { AppServerEventConverter } from '../utils/appServerEventConverter';
+import { record, string } from './gateway';
+import { codexPlanProposalId } from './plan';
+
+export function inputText(input: unknown): string {
+    if (!Array.isArray(input)) return '';
+    return input.map(part => {
+        const value = record(part);
+        return string(value.text) ?? (value.type === 'mention' ? `@"${value.path}"` : value.type === 'skill' ? `$${value.name}`
+            : value.type === 'localImage' ? `[Image: ${value.path}]` : value.type === 'image' ? '[Image]' : '');
+    }).filter(Boolean).join('\n');
+}
+
+function requestedTitle(item: Record<string, unknown>): string | undefined {
+    if (item.type !== 'mcpToolCall' || item.server !== 'hapi' || item.tool !== 'change_title') return;
+    return normalizeSessionDisplayTitle(string(record(item.arguments).title)) ?? undefined;
+}
+
+function successfulTitle(item: Record<string, unknown>, pending?: string): string | undefined {
+    if (item.type !== 'mcpToolCall' || (item.status !== undefined && item.status !== 'completed')
+        || item.error != null || item.result == null) return;
+    const result = record(item.result);
+    if ('Err' in result || result.isError === true || record(result.Ok).isError === true) return;
+    return requestedTitle(item) ?? pending;
+}
+
+function metadataHasDisplayTitle(metadata: { name?: string; summary?: { text: string } } | null | undefined): boolean {
+    return Boolean(metadata?.name?.trim() || metadata?.summary?.text?.trim());
+}
+
+/** Canonical V2 stream only. Stable message IDs also deduplicate snapshot replay at the hub. */
+export class SharedCodexProjection {
+    private converter = new AppServerEventConverter();
+    private readonly roundDuration = new CodexRoundDuration();
+    private readonly emitted = new Set<string>();
+    private readonly turns = new Map<string, string>();
+    private readonly turnModels = new Map<string, string>();
+    // Unlike transcript emission, title side effects survive reset/replay.
+    private readonly pendingTitles = new Map<string, string>();
+    private readonly completedTitles = new Set<string>();
+    private titleRevision = 0;
+    constructor(private readonly session: ApiSessionClient, readonly threadId: string,
+        private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string) {
+        if (!parentThreadId) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
+    }
+
+    turnFor(id: string): string | undefined { return this.turns.get(id); }
+    reset(): void { this.converter = new AppServerEventConverter(); this.emitted.clear(); }
+    private send(body: Record<string, unknown>, key: string): void {
+        if (this.emitted.has(key)) return;
+        this.emitted.add(key);
+        const id = `codex:${this.threadId}:${key}`;
+        this.session.sendAgentMessage(this.parentThreadId && !String(body.type).startsWith('agent-run-') ? {
+            type: 'agent-run-trace', agentId: this.threadId, cardId: `codex-agent:${this.threadId}`, message: { ...body, id }, id,
+            scope: { role: 'child', threadId: this.threadId, parentThreadId: this.parentThreadId }, scope_role: 'child'
+        } : { ...body, id }, id);
+    }
+
+    private applyDisplayRename(title: string, revision: number): void {
+        this.session.updateMetadata(metadata => {
+            if (revision !== this.titleRevision) return metadata;
+            const normalized = normalizeSessionDisplayTitle(title);
+            if (!normalized || metadata.name?.trim() === normalized) return metadata;
+            return { ...metadata, name: normalized };
+        });
+    }
+
+    async notification(method: string, params: unknown, modelAtReceipt?: string, receivedAt = Date.now()): Promise<void> {
+        const p = record(params);
+        const item = record(p.item);
+        if (!this.parentThreadId && p.threadId === this.threadId && string(item.id)) {
+            const key = `${string(p.turnId) ?? 'thread'}:${item.id}`;
+            if (!this.completedTitles.has(key)) {
+                const title = requestedTitle(item);
+                if (method === 'item/started' && title) this.pendingTitles.set(key, title);
+                if (method === 'item/completed') {
+                    const completedTitle = successfulTitle(item, this.pendingTitles.get(key));
+                    this.pendingTitles.delete(key);
+                    if (completedTitle) {
+                        this.completedTitles.add(key);
+                        const revision = ++this.titleRevision;
+                        this.applyDisplayRename(completedTitle, revision);
+                    }
+                }
+            }
+        }
+        await this.project(method, params, modelAtReceipt);
+        if (p.threadId === this.threadId && !this.parentThreadId) {
+            const turn = record(p.turn);
+            const turnId = string(turn.id);
+            if (method === 'turn/started') this.roundDuration.start(turnId, receivedAt);
+            if (method === 'turn/completed') {
+                const duration = this.roundDuration.finish(turnId, receivedAt, turn.status === 'completed');
+                if (duration) this.send(duration, `duration:${turnId}`);
+            }
+        }
+    }
+
+    private async project(method: string, params: unknown, modelAtReceipt?: string, fromHistory = false): Promise<void> {
+        if (method.startsWith('codex/event/')) return;
+        const p = record(params);
+        const item = record(p.item);
+        const turnId = string(p.turnId) ?? string(record(p.turn).id);
+        const send = (body: Record<string, unknown>, key: string) => this.send({
+            ...body, ...(turnId ? { turn_id: turnId } : {})
+        }, key);
+        // Settings may already describe the next turn by the time queued
+        // notifications are projected. Never attribute usage to that model.
+        if (turnId && method === 'turn/started' && modelAtReceipt && !this.turnModels.has(turnId)) {
+            this.turnModels.set(turnId, modelAtReceipt);
+        }
+        if (turnId && method === 'model/rerouted' && string(p.toModel)) {
+            this.turnModels.set(turnId, string(p.toModel)!);
+        }
+        const itemId = string(item.id) ?? string(p.itemId);
+        if (!this.parentThreadId && (method === 'item/started' || method === 'item/completed') && item.type === 'userMessage') {
+            const id = string(item.clientId ?? item.clientUserMessageId) ?? (itemId ? `codex:${this.threadId}:user:${itemId}` : undefined);
+            if (id) {
+                const firstInTurn = turnId ? [...this.turns].find(([, value]) => value === turnId)?.[0] : undefined;
+                if (turnId) this.turns.set(id, turnId);
+                await this.committed(id);
+                const text = inputText(item.content);
+                if (text) this.session.sendUserMessage(text, undefined, id);
+                this.session.updateMetadata(metadata => ({ ...metadata, conversationHistoryTurns: Object.fromEntries(this.turns),
+                    ...(turnId && (!firstInTurn || firstInTurn === id) ? { conversationHistoryPoints: { ...metadata.conversationHistoryPoints, [id]: true } } : {})
+                }));
+            }
+        }
+        if (this.parentThreadId && (method === 'turn/started' || method === 'turn/completed')) {
+            send({ type: 'agent-run-update', agentId: this.threadId, cardId: `codex-agent:${this.threadId}`,
+                status: method === 'turn/started' ? 'running' : record(p.turn).status === 'completed' ? 'completed' : 'failed'
+            }, `lifecycle:${turnId}:${method}`);
+        }
+        const events = this.converter.handleNotification(method, params);
+        for (const event of events) {
+            const callId = string(event.call_id);
+            const key = `${turnId ?? 'thread'}:${itemId ?? callId ?? createHash('sha256').update(JSON.stringify(event)).digest('hex')}:${event.type}`;
+            if (event.type === 'agent_message') send({ type: 'message', message: event.message }, key);
+            else if (event.type === 'agent_reasoning') send({ type: 'reasoning', message: event.text }, key);
+            else if (event.type === 'exec_command_begin' && callId) {
+                send({ type: 'tool-call', name: 'CodexBash', callId, input: event }, key);
+            } else if (event.type === 'exec_command_end' && callId) {
+                send({ type: 'tool-call-result', callId, output: { ...event, stdout: event.output } }, key);
+            } else if (event.type === 'patch_apply_begin' && callId) {
+                send({ type: 'tool-call', name: 'CodexPatch', callId, input: { changes: event.changes, auto_approved: event.auto_approved } }, key);
+            } else if (event.type === 'patch_apply_end' && callId) {
+                send({ type: 'tool-call-result', callId, output: { stdout: event.stdout, stderr: event.stderr, success: event.success } }, key);
+            } else if (event.type === 'mcp_tool_call_begin' && callId) {
+                const invocation = record(event.invocation);
+                send({ type: 'tool-call', name: `mcp__${invocation.server}__${invocation.tool}`, callId, input: invocation.arguments ?? {} }, key);
+            } else if (event.type === 'mcp_tool_call_end' && callId) {
+                const result = record(event.result);
+                send({ type: 'tool-call-result', callId, output: result.Ok ?? result.Err ?? event.result, is_error: 'Err' in result }, key);
+            } else if (event.type === 'codex_tool_call_begin' && callId) {
+                send({ type: 'tool-call', name: event.name, callId, input: event.input ?? event.arguments }, key);
+            } else if (event.type === 'codex_tool_call_end' && callId) {
+                send({ type: 'tool-call-result', callId, output: event.output, is_error: event.is_error }, key);
+            } else if (event.type === 'compaction_started') {
+                // History replay re-projects every completed item's start;
+                // a finished compaction must not announce a live status.
+                if (fromHistory) continue;
+                if (this.parentThreadId) {
+                    send({ type: 'compaction_started', statusText: '📦 Compaction started' }, key);
+                } else {
+                    // Status UI listens on session events; an agent message
+                    // would render as a normal assistant bubble instead.
+                    // Dedup is in-memory only (this.emitted set).
+                    if (this.emitted.has(key)) continue;
+                    this.emitted.add(key);
+                    this.session.sendSessionEvent({ type: 'message', message: '📦 Compaction started' });
+                }
+            } else if (event.type === 'token_count' || event.type === 'context_compacted' || event.type.startsWith('thread_goal_')) {
+                const model = event.type === 'token_count' && turnId ? this.turnModels.get(turnId) : undefined;
+                send({ ...event, ...(model ? { model } : {}), flavor: 'codex', scope: { role: 'parent', threadId: this.threadId }, scope_role: 'parent', thread_id: this.threadId }, key);
+            } else if (event.type === 'proposed_plan' && turnId && itemId) {
+                const planId = codexPlanProposalId(this.threadId, turnId, itemId);
+                send({ type: 'tool-call', name: 'ExitPlanMode', callId: planId, input: { plan: event.plan } }, key);
+                // A proposal is durable content, not a native approval request.
+                send({ type: 'tool-call-result', callId: planId, output: null }, `${key}:result`);
+            } else if (event.type === 'plan_update') {
+                const callId = turnId ? `codex-plan-state:${turnId}` : 'codex-plan-state';
+                send({ type: 'tool-call', name: 'update_plan', callId, input: { plan: event.plan, source: 'codex' } }, key);
+                send({ type: 'tool-call-result', callId, output: { plan: event.plan, source: 'codex', status: 'updated' } }, `${key}:result`);
+            } else if (event.type === 'generated_image' && typeof event.saved_path === 'string') {
+                const image = await registerGeneratedImageFromPath({ path: event.saved_path, id: createHash('sha256').update(`${this.threadId}:${key}`).digest('hex'), fileName: string(event.file_name) });
+                if (image) send({ type: 'generated-image', imageId: image.id, fileName: image.fileName, mimeType: image.mimeType }, key);
+            } else if (event.type === 'task_failed') {
+                send({ type: 'message', message: `Codex error: ${event.error ?? event.message ?? 'Turn failed'}` }, key);
+            }
+        }
+        if (item.type === 'collabAgentToolCall') {
+            const states = record(item.agentsStates);
+            for (const [agentId, state] of Object.entries(states)) {
+                const status = string(record(state).status) ?? 'running';
+                send({ type: 'agent-run-update', agentId, cardId: `codex-agent:${agentId}`,
+                    status: status === 'completed' ? 'completed' : status === 'errored' ? 'failed' : 'running',
+                    summary: record(state).message, input: item, scope: { role: 'child', threadId: agentId, parentThreadId: this.threadId }, scope_role: 'child', thread_id: agentId
+                }, `agent:${agentId}:${itemId}:${method}:${JSON.stringify(state)}`);
+            }
+        }
+    }
+
+    async history(thread: unknown): Promise<void> {
+        const turns = record(thread).turns;
+        if (!Array.isArray(turns)) return;
+        const titleRevision = this.titleRevision;
+        let latestTitle: string | undefined;
+        for (const value of turns) {
+            const turn = record(value);
+            if (!Array.isArray(turn.items)) continue;
+            for (const item of turn.items) {
+                const params = { threadId: this.threadId, turnId: turn.id, item };
+                const titleKey = `${string(turn.id) ?? 'thread'}:${record(item).id}`;
+                const pendingTitle = requestedTitle(record(item));
+                if (!this.parentThreadId && string(record(item).id) && pendingTitle && !this.completedTitles.has(titleKey)) {
+                    this.pendingTitles.set(titleKey, pendingTitle);
+                }
+                await this.project('item/started', params, undefined, true);
+                // Active snapshots can contain partial assistant text. Do not
+                // settle it under the final stable id and suppress completion.
+                if (turn.status !== 'inProgress' || record(item).status === 'completed' || record(item).type === 'userMessage') {
+                    if (!this.parentThreadId) {
+                        const title = successfulTitle(record(item));
+                        if (title && string(record(item).id)) {
+                            latestTitle = title;
+                            this.completedTitles.add(titleKey);
+                        }
+                        this.pendingTitles.delete(titleKey);
+                    }
+                    await this.project('item/completed', params, undefined, true);
+                }
+            }
+        }
+        // Repair sessions created while remote title projection was missing.
+        // Recheck inside the metadata lock: live updates may still be queued,
+        // and a replay must never replace an existing or newer display title.
+        if (latestTitle && titleRevision === this.titleRevision && !metadataHasDisplayTitle(this.session.getMetadata())) {
+            const title = latestTitle;
+            this.session.updateMetadata(metadata => {
+                if (titleRevision !== this.titleRevision || metadataHasDisplayTitle(metadata)) {
+                    return metadata;
+                }
+                const normalized = normalizeSessionDisplayTitle(title);
+                if (!normalized) return metadata;
+                return { ...metadata, name: normalized };
+            });
+        }
+    }
+}

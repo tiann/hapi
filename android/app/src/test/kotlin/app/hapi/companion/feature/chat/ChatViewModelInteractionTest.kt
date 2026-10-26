@@ -43,6 +43,7 @@ import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
 import app.hapi.protocol.wire.SendMessageRequest
 import app.hapi.protocol.wire.Session
 import app.hapi.protocol.wire.SessionMetadata
+import app.hapi.protocol.wire.SessionCapabilities
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SlashCommand
 import app.hapi.protocol.wire.SlashCommandsResponse
@@ -51,6 +52,7 @@ import app.hapi.protocol.wire.SyncEvent
 import app.hapi.protocol.wire.UploadFileResponse
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -216,6 +218,17 @@ private class RecordingChatApi : ChatSessionApi {
 
     override suspend fun abortSession(sessionId: String) {
         configCalls.value = configCalls.value + "abort:$sessionId"
+    }
+
+    override suspend fun clearConversation(sessionId: String): ResumeSessionResponse = error("Unexpected clear")
+
+    val planCalls = MutableStateFlow<List<Pair<String, String>>>(emptyList())
+    var planGate: CompletableDeferred<Unit>? = null
+    val planFailures = ArrayDeque<Exception?>()
+    override suspend fun implementCodexPlan(sessionId: String, planId: String) {
+        planCalls.value = planCalls.value + (sessionId to planId)
+        planGate?.await()
+        planFailures.removeFirstOrNull()?.let { throw it }
     }
 
     override suspend fun resumeSession(sessionId: String, permissionMode: String?): ResumeSessionResponse {
@@ -424,6 +437,7 @@ private class InteractionHarness(
         drafts = drafts,
         scratchlist = scratchlist,
         pipelineDispatcher = StandardTestDispatcher(testScope.testScheduler),
+        uiDispatcher = StandardTestDispatcher(testScope.testScheduler),
         draftSaveDebounceMs = 10,
         now = { 1_000L },
         localIdGenerator = { "local-${++localIdCounter}" },
@@ -435,6 +449,127 @@ private class InteractionHarness(
 // ------------------------------------------------------------------ tests --
 
 class ChatViewModelInteractionTest {
+
+    private fun planDetail(): Session = detail(
+        flavor = "codex", agentState = AgentState(codexPlanProposalId = "plan-1"),
+    ).copy(
+        metadata = SessionMetadata(path = "/repo", host = "host", flavor = "codex",
+                                   capabilities = SessionCapabilities(concurrentClients = true)),
+        collaborationMode = "plan",
+    )
+
+    @Test fun `only the active shared current Codex proposal is actionable`() = runTest {
+        val harness = InteractionHarness(this, planDetail())
+        val vm = harness.viewModel
+        testScheduler.runCurrent()
+        assertTrue(vm.codexPlanActions.value.forPlan("plan-1").canAct)
+        assertFalse(vm.codexPlanActions.value.forPlan("history").isVisible)
+        assertFalse(vm.codexPlanActions.value.forPlan("child-plan").isVisible)
+        for (session in listOf(
+            planDetail().copy(active = false),
+            planDetail().copy(metadata = planDetail().metadata!!.copy(flavor = "claude")),
+            planDetail().copy(metadata = planDetail().metadata!!.copy(capabilities = null)),
+            planDetail().copy(agentState = AgentState()),
+            planDetail().copy(agentState = AgentState(codexPlanProposalId = "newer-plan")),
+        )) {
+            harness.sessionStore.setDetail(session)
+            // Even before the combined flow catches up, callbacks check live state.
+            vm.implementCodexPlan("plan-1")
+            vm.continueCodexPlan("plan-1")
+            testScheduler.runCurrent()
+            assertFalse(vm.codexPlanActions.value.forPlan("plan-1").isVisible)
+        }
+        assertTrue(harness.api.planCalls.value.isEmpty())
+        assertEquals(0L, vm.composer.value.focusRequest)
+    }
+
+    @Test fun `continue planning dismisses actions and preserves the draft and mode without a request`() = runTest {
+        val harness = InteractionHarness(this, planDetail())
+        harness.viewModel.setComposerText("Refine step two")
+        harness.viewModel.continueCodexPlan("plan-1")
+        testScheduler.runCurrent()
+        assertEquals(1L, harness.viewModel.composer.value.focusRequest)
+        assertEquals("Refine step two", harness.viewModel.composer.value.text)
+        assertEquals("plan", harness.sessionStore.currentDetail(IX_SESSION)?.collaborationMode)
+        assertTrue(harness.api.planCalls.value.isEmpty())
+        assertTrue(harness.api.sendCalls.value.isEmpty())
+        assertTrue(harness.api.approveCalls.value.isEmpty())
+        assertTrue(harness.api.configCalls.value.isEmpty())
+        assertFalse(harness.viewModel.codexPlanActions.value.forPlan("plan-1").isVisible)
+        harness.viewModel.continueCodexPlan("plan-1")
+        harness.viewModel.implementCodexPlan("plan-1")
+        harness.sessionStore.setDetail(planDetail())
+        testScheduler.runCurrent()
+        assertEquals(1L, harness.viewModel.composer.value.focusRequest)
+        assertTrue(harness.api.planCalls.value.isEmpty())
+        assertFalse(harness.viewModel.codexPlanActions.value.forPlan("plan-1").isVisible)
+        harness.sessionStore.setDetail(planDetail().copy(agentState = AgentState(codexPlanProposalId = "plan-2")))
+        testScheduler.runCurrent()
+        assertTrue(harness.viewModel.codexPlanActions.value.forPlan("plan-2").canAct)
+    }
+
+    @Test fun `plan implementation is single flight and acceptance survives stale refresh`() = runTest {
+        val harness = InteractionHarness(this, planDetail())
+        val vm = harness.viewModel
+        harness.api.planGate = CompletableDeferred()
+        vm.setComposerText("Keep this draft")
+        vm.implementCodexPlan("plan-1")
+        vm.implementCodexPlan("plan-1")
+        vm.continueCodexPlan("plan-1")
+        testScheduler.runCurrent()
+        assertTrue(vm.codexPlanActions.value.forPlan("plan-1").pending)
+        assertFalse(vm.codexPlanActions.value.forPlan("plan-1").canAct)
+        assertEquals(0L, vm.composer.value.focusRequest)
+        harness.sessionStore.setDetail(planDetail().copy(agentState = AgentState()))
+        testScheduler.runCurrent()
+        assertTrue(vm.codexPlanActions.value.forPlan("plan-1").pending)
+        assertFalse(vm.codexPlanActions.value.forPlan("plan-1").available)
+        harness.api.planGate!!.complete(Unit)
+        testScheduler.runCurrent()
+        // The refresh deliberately serves the old id: accepted actions stay hidden.
+        assertFalse(vm.codexPlanActions.value.forPlan("plan-1").isVisible)
+        vm.implementCodexPlan("plan-1")
+        testScheduler.runCurrent()
+        assertEquals(listOf(IX_SESSION to "plan-1"), harness.api.planCalls.value)
+        assertEquals(1, harness.sessionStore.calls.value.count { it == "loadDetail:$IX_SESSION" })
+        assertEquals("Keep this draft", vm.composer.value.text)
+        assertTrue(harness.api.sendCalls.value.isEmpty())
+        assertTrue(harness.api.approveCalls.value.isEmpty())
+        assertTrue(harness.api.configCalls.value.isEmpty())
+    }
+
+    @Test fun `plan errors survive withdrawal and do not automatically resubmit`() = runTest {
+        for ((status, code) in listOf(409 to "stale_plan", 409 to "unavailable", 502 to "failed", 503 to "indeterminate")) {
+            val harness = InteractionHarness(this, planDetail())
+            harness.api.planFailures.add(ApiError.from(status, """{"ok":false,"code":"$code","error":"Not confirmed"}"""))
+            harness.sessionStore.detailToLoad = planDetail().copy(agentState = AgentState())
+            harness.viewModel.implementCodexPlan("plan-1")
+            testScheduler.runCurrent()
+            val state = harness.viewModel.codexPlanActions.value.forPlan("plan-1")
+            assertEquals("Not confirmed", state.error?.detail)
+            assertTrue(state.isVisible)
+            assertFalse(state.available || state.canAct || state.pending)
+            assertEquals(1, harness.api.planCalls.value.size)
+            assertEquals(1, harness.sessionStore.calls.value.count { it == "loadDetail:$IX_SESSION" })
+            assertEquals("plan", harness.sessionStore.currentDetail(IX_SESSION)?.collaborationMode)
+        }
+    }
+
+    @Test fun `confirmed failure allows an explicit retry and clears its error`() = runTest {
+        val harness = InteractionHarness(this, planDetail())
+        harness.api.planFailures.add(ApiError.from(502, """{"code":"failed","error":"Try again"}"""))
+        harness.viewModel.implementCodexPlan("plan-1")
+        testScheduler.runCurrent()
+        assertTrue(harness.viewModel.codexPlanActions.value.forPlan("plan-1").canAct)
+        harness.api.planGate = CompletableDeferred()
+        harness.viewModel.implementCodexPlan("plan-1")
+        testScheduler.runCurrent()
+        assertNull(harness.viewModel.codexPlanActions.value.forPlan("plan-1").error)
+        harness.api.planGate!!.complete(Unit)
+        testScheduler.runCurrent()
+        assertFalse(harness.viewModel.codexPlanActions.value.forPlan("plan-1").isVisible)
+        assertEquals(2, harness.api.planCalls.value.size)
+    }
 
     // ---------------------------------------------------------------- send --
 
@@ -506,6 +641,9 @@ class ChatViewModelInteractionTest {
         harness.api.sendFailures += ApiError(409, code = "session_inactive")
         harness.api.resumeResult = ResumeSessionResponse(sessionId = IX_SESSION)
         harness.viewModel.start()
+        // Entry loading crosses the UI/worker boundary; finish it before
+        // testing an action that intentionally changes the server snapshot.
+        harness.sessionStore.calls.first { "loadDetail:$IX_SESSION" in it }
 
         harness.viewModel.setComposerText("wake up")
         harness.viewModel.sendMessage()
@@ -902,6 +1040,7 @@ class ChatViewModelInteractionTest {
         val harness = InteractionHarness(this, detail(permissionMode = "default"))
         harness.api.configFailure = ApiError(409, code = "apply_failed")
         harness.viewModel.start()
+        harness.sessionStore.calls.first { "loadDetail:$IX_SESSION" in it }
 
         var notice: ChatNotice? = null
         val collector = launch(start = CoroutineStart.UNDISPATCHED) {
@@ -918,6 +1057,67 @@ class ChatViewModelInteractionTest {
         assertEquals("default", harness.sessionStore.currentDetail(IX_SESSION)?.permissionMode)
         assertTrue(harness.sessionStore.calls.value.count { it == "loadDetail:$IX_SESSION" } >= 2)
         assertEquals(listOf("mode:acceptEdits"), harness.api.configCalls.value)
+    }
+
+    @Test
+    fun `permission mode switch is withheld for terminal-controlled copilot sessions`() = runTest {
+        val harness = InteractionHarness(
+            this,
+            detail(
+                flavor = "copilot",
+                permissionMode = "read-only",
+                agentState = AgentState(controlledByUser = true),
+            ),
+        )
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { "loadDetail:$IX_SESSION" in it }
+
+        harness.viewModel.setPermissionMode(PermissionMode.Yolo)
+        testScheduler.advanceUntilIdle()
+
+        // Web parity: the switcher callback is withheld (SessionChat.tsx:
+        // 2159-2163) — no request, no optimistic flip.
+        assertTrue(harness.api.configCalls.value.none { it.startsWith("mode:") })
+        assertEquals("read-only", harness.sessionStore.currentDetail(IX_SESSION)?.permissionMode)
+    }
+
+    @Test
+    fun `permission mode switch survives terminal control outside copilot and shared-clients copilot`() = runTest {
+        val sharedClients = detail(
+            flavor = "copilot",
+            permissionMode = "read-only",
+            agentState = AgentState(controlledByUser = true),
+        ).copy(
+            metadata = SessionMetadata(
+                path = "/repo", host = "devbox", flavor = "copilot",
+                capabilities = SessionCapabilities(concurrentClients = true),
+            ),
+        )
+        val harness = InteractionHarness(this, sharedClients)
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { "loadDetail:$IX_SESSION" in it }
+
+        harness.viewModel.setPermissionMode(PermissionMode.Yolo)
+        harness.api.configCalls.first { "mode:yolo" in it }
+        testScheduler.advanceUntilIdle()
+
+        // Terminal-controlled claude keeps the switcher: only copilot loses
+        // it on web (controlledByUser derivation matches SessionChat.tsx:996).
+        harness.sessionStore.setDetail(
+            detail(flavor = "claude", agentState = AgentState(controlledByUser = true)),
+        )
+        harness.viewModel.setPermissionMode(PermissionMode.AcceptEdits)
+        harness.api.configCalls.first { "mode:acceptEdits" in it }
+    }
+
+    @Test
+    fun `permission mode switch stays available for inactive sessions`() = runTest {
+        val harness = InteractionHarness(this, detail(active = false, permissionMode = "default"))
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { "loadDetail:$IX_SESSION" in it }
+
+        harness.viewModel.setPermissionMode(PermissionMode.AcceptEdits)
+        harness.api.configCalls.first { "mode:acceptEdits" in it }
     }
 
     @Test

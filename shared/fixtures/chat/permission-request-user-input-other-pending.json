@@ -1,0 +1,185 @@
+{
+    "description": "Codex isOther survives the pipeline without modifying the original options or inventing an answer.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "shared-user",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Choose an option."
+            },
+            {
+                "createdAt": 1755000001000,
+                "id": "other-call",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "other-call",
+                    "input": {
+                        "isBlocking": true,
+                        "questions": [
+                            {
+                                "header": "Choice",
+                                "id": "choice",
+                                "isOther": true,
+                                "options": [
+                                    {
+                                        "description": "First choice",
+                                        "label": "A"
+                                    },
+                                    {
+                                        "description": "Second choice",
+                                        "label": "B"
+                                    }
+                                ],
+                                "question": "Which option?"
+                            }
+                        ]
+                    },
+                    "name": "request_user_input",
+                    "permission": {
+                        "status": "pending"
+                    },
+                    "state": "running"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "shared-user",
+                "kind": "user-text",
+                "localId": null,
+                "text": "Choose an option."
+            },
+            {
+                "createdAt": 1755000001000,
+                "id": "other-call",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "other-call",
+                    "input": {
+                        "isBlocking": true,
+                        "questions": [
+                            {
+                                "header": "Choice",
+                                "id": "choice",
+                                "isOther": true,
+                                "options": [
+                                    {
+                                        "description": "First choice",
+                                        "label": "A"
+                                    },
+                                    {
+                                        "description": "Second choice",
+                                        "label": "B"
+                                    }
+                                ],
+                                "question": "Which option?"
+                            }
+                        ]
+                    },
+                    "name": "request_user_input",
+                    "permission": {
+                        "status": "pending"
+                    },
+                    "state": "running"
+                }
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": {
+            "requests": {
+                "other-request": {
+                    "arguments": {
+                        "isBlocking": true,
+                        "questions": [
+                            {
+                                "header": "Choice",
+                                "id": "choice",
+                                "isOther": true,
+                                "options": [
+                                    {
+                                        "description": "First choice",
+                                        "label": "A"
+                                    },
+                                    {
+                                        "description": "Second choice",
+                                        "label": "B"
+                                    }
+                                ],
+                                "question": "Which option?"
+                            }
+                        ]
+                    },
+                    "createdAt": 1755000001100,
+                    "tool": "request_user_input",
+                    "toolCallId": "other-call"
+                }
+            }
+        },
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "text": "Choose an option.",
+                        "type": "text"
+                    },
+                    "role": "user"
+                },
+                "createdAt": 1755000000000,
+                "id": "shared-user",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "other-call",
+                            "input": {
+                                "isBlocking": true,
+                                "questions": [
+                                    {
+                                        "header": "Choice",
+                                        "id": "choice",
+                                        "isOther": true,
+                                        "options": [
+                                            {
+                                                "description": "First choice",
+                                                "label": "A"
+                                            },
+                                            {
+                                                "description": "Second choice",
+                                                "label": "B"
+                                            }
+                                        ],
+                                        "question": "Which option?"
+                                    }
+                                ]
+                            },
+                            "name": "request_user_input",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000001000,
+                "id": "other-question",
+                "localId": null,
+                "seq": 2
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "permission-request-user-input-other-pending"
+}

@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
+    CURSOR_AUTO_MODEL_ID,
     cursorCliSkuBaseId,
+    cursorSpawnModelId,
+    cursorModelBaseMatches,
     findBestCliSkuForAcpWire,
     isCursorAcpCatalogModelId,
     isCursorAcpWireModelId,
+    isCursorAutoModelId,
     isCursorCliSkuVariantId,
     matchCliSkuToAcpWireId,
     parseCursorAvailableModelsFromRejection,
+    parseCursorSkuParamHints,
     remapStaleCursorModelId
 } from './cursorCliSku';
 
@@ -18,6 +23,19 @@ const cursorGrokCatalog = [
     { modelId: 'cursor-grok-4.5-medium-fast' },
     { modelId: 'cursor-grok-4.5-high-fast' },
 ];
+
+describe('cursorSpawnModelId', () => {
+    it('pins Auto as the CLI auto id and omits unset models', () => {
+        expect(isCursorAutoModelId('auto')).toBe(true);
+        expect(isCursorAutoModelId('default[]')).toBe(true);
+        expect(isCursorAutoModelId('composer-2.5')).toBe(false);
+        expect(cursorSpawnModelId('auto')).toBe(CURSOR_AUTO_MODEL_ID);
+        expect(cursorSpawnModelId('default')).toBe(CURSOR_AUTO_MODEL_ID);
+        expect(cursorSpawnModelId('default[]')).toBe(CURSOR_AUTO_MODEL_ID);
+        expect(cursorSpawnModelId(null)).toBeNull();
+        expect(cursorSpawnModelId('composer-2.5[fast=true]')).toBe('composer-2.5[fast=true]');
+    });
+});
 
 describe('cursorCliSkuBaseId', () => {
     it('strips effort/speed suffixes from CLI skus', () => {
@@ -270,6 +288,29 @@ describe('round-trip (regression for #883: "selected but no response")', () => {
         const slow = simulateRoundTrip('composer-2.5').sessionModel;
         const fast = simulateRoundTrip('composer-2.5-fast').sessionModel;
         expect(slow).not.toBe(fast);
+    });
+});
+
+describe('cursorModelBaseMatches', () => {
+    it('matches bases across the legacy cursor- CLI family prefix', () => {
+        expect(cursorModelBaseMatches('cursor-grok-4.6', 'grok-4.6')).toBe(true);
+        expect(cursorModelBaseMatches('grok-4.6', 'cursor-grok-4.6')).toBe(true);
+        expect(cursorModelBaseMatches('cursor-grok-4.5', 'cursor-grok-4.5')).toBe(true);
+        expect(cursorModelBaseMatches('composer-2.5', 'composer-2.5')).toBe(true);
+        expect(cursorModelBaseMatches('grok-4.6', 'grok-4.5')).toBe(false);
+        expect(cursorModelBaseMatches('claude-opus-4-8', 'claude-opus-5')).toBe(false);
+    });
+
+    it('parses parameter hints from CLI sku suffixes', () => {
+        expect(parseCursorSkuParamHints('cursor-grok-4.6-low')).toMatchObject({
+            effort: 'low',
+            fast: 'false'
+        });
+        expect(parseCursorSkuParamHints('gpt-5.5-extra-high-fast')).toMatchObject({
+            reasoning: 'extra-high',
+            fast: 'true'
+        });
+        expect(parseCursorSkuParamHints('composer-2.5')).toMatchObject({ fast: 'false' });
     });
 });
 

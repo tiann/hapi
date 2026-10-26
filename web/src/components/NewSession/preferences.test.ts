@@ -47,7 +47,7 @@ describe('NewSession preferences', () => {
             cursorSelectedBase: 'auto',
             effort: 'auto',
             modelReasoningEffort: 'xhigh',
-            permissionMode: 'safe-yolo'
+            permissionMode: 'read-only'
         })
         savePreferredLaunchSettings('machine-1', 'claude', {
             model: 'opus',
@@ -67,7 +67,7 @@ describe('NewSession preferences', () => {
             cursorSelectedBase: 'auto',
             effort: 'auto',
             modelReasoningEffort: 'xhigh',
-            permissionMode: 'safe-yolo'
+            permissionMode: 'read-only'
         })
         expect(loadPreferredLaunchSettings('machine-1', 'claude')).toEqual({
             model: 'opus',
@@ -81,6 +81,16 @@ describe('NewSession preferences', () => {
             effort: 'auto',
             modelReasoningEffort: 'max'
         })
+    })
+
+    it('drops stale Safe Yolo preferences for new Codex sessions', () => {
+        const stale = { model: 'auto', cursorSelectedBase: 'auto', effort: 'auto',
+            modelReasoningEffort: 'default', permissionMode: 'safe-yolo' } as const
+        savePreferredLaunchSettings('machine-1', 'codex', stale)
+        const loaded = loadPreferredLaunchSettings('machine-1', 'codex')
+        expect(loaded?.permissionMode).toBe('default')
+        expect(resolvePreferredLaunchSettings('codex', loaded, true).permissionMode).toBe('default')
+        expect(resolvePreferredLaunchSettings('codex', stale, true).permissionMode).toBe('default')
     })
 
     it('returns null when no launch settings were saved for the target', () => {
@@ -151,6 +161,24 @@ describe('NewSession preferences', () => {
             effort: 'auto',
             modelReasoningEffort: 'xhigh',
             permissionMode: 'read-only'
+        })
+    })
+
+    it('does not reset a remembered Kimi alias against the static Default-only list', () => {
+        // Kimi's catalog is dynamic; validating against MODEL_OPTIONS.kimi
+        // (only 'auto') must not turn a saved alias back into Default before
+        // the real catalog arrives.
+        expect(resolvePreferredLaunchSettings('kimi', {
+            model: 'GLM-5.3-flash',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default'
+        })).toEqual({
+            model: 'GLM-5.3-flash',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            permissionMode: 'default'
         })
     })
 

@@ -805,7 +805,7 @@ class NewSessionViewModel(
         val permission: PermissionUi = when {
             agent == "pi" || agent == "dsh" -> PermissionUi.Managed
             usesNativePermissionSelect(agent) -> PermissionUi.NativeSelect(
-                PermissionModes.forFlavor(agent).map { OptionItem(it.wireId, it.label) },
+                PermissionModes.forLaunch(agent).map { OptionItem(it.wireId, it.label) },
             )
             else -> PermissionUi.YoloToggle(hapiYoloNativeMode(agent)?.label)
         }

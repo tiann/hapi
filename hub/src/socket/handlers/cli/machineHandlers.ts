@@ -25,6 +25,10 @@ const machineUpdateMetadataSchema = z.object({
     metadata: z.unknown()
 })
 
+const machineAgyModelsChangedSchema = z.object({
+    machineId: z.string().min(1)
+})
+
 const machineUpdateStateSchema = z.object({
     machineId: z.string(),
     expectedVersion: z.number().int(),
@@ -138,6 +142,20 @@ export function registerMachineHandlers(socket: CliSocketWithData, deps: Machine
             onWebappEvent?.({ type: 'machine-updated', machineId: id })
         }
     }
+
+    socket.on('machine-agy-models-changed', (data: unknown) => {
+        const parsed = machineAgyModelsChangedSchema.safeParse(data)
+        if (!parsed.success) {
+            return
+        }
+        const id = parsed.data.machineId
+        const machineAccess = resolveMachineAccess(id)
+        if (!machineAccess.ok) {
+            emitAccessError('machine', id, machineAccess.reason)
+            return
+        }
+        onWebappEvent?.({ type: 'machine-agy-models-updated', machineId: id })
+    })
 
     socket.on('machine-update-metadata', handleMachineMetadataUpdate)
     socket.on('machine-update-state', handleMachineStateUpdate)

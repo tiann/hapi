@@ -81,8 +81,8 @@ export type StoredFcmDevice = {
     deviceId: string
     /**
      * base64 of the device-generated 32-byte E2E push encryption key.
-     * Required for `ios` rows (PUSH SPEC v1 envelope); always null for
-     * phone/wear rows.
+     * Required for `ios`, optional for `phone` (relay capable clients),
+     * null for legacy phone/Wear registrations.
      */
     pushKey: string | null
     createdAt: number

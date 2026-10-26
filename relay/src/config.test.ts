@@ -16,14 +16,28 @@ function baseEnv(): Record<string, string | undefined> {
 }
 
 describe('loadConfigFromEnv', () => {
+    test('supports Android-only and dual-provider deployments; requires at least one provider', () => {
+        expect(loadConfigFromEnv({ RELAY_FCM_SERVICE_ACCOUNT_PATH: '/fcm.json' })).toMatchObject({
+            apns: null, fcm: { serviceAccountPath: '/fcm.json', packageName: 'run.hapi.companion' }
+        })
+        const both = loadConfigFromEnv({ ...baseEnv(), RELAY_FCM_SERVICE_ACCOUNT_PATH: '/fcm.json', RELAY_FCM_PACKAGE_NAME: 'my.app' })
+        expect(both.apns).not.toBeNull()
+        expect(both.fcm?.packageName).toBe('my.app')
+        expect(() => loadConfigFromEnv({})).toThrow('Configure APNs')
+        expect(() => loadConfigFromEnv({ RELAY_FCM_SERVICE_ACCOUNT_PATH: '/fcm.json', RELAY_APNS_KEY_ID: 'incomplete' }))
+            .toThrow('RELAY_APNS_KEY_P8_PATH')
+    })
     test('parses a full environment with defaults applied', () => {
         const config = loadConfigFromEnv(baseEnv())
         expect(config).toEqual({
-            apnsKeyP8Path: '/keys/AuthKey_ABC123DEF4.p8',
-            apnsKeyId: 'ABC123DEF4',
-            apnsTeamId: 'TEAM123456',
-            apnsBundleId: 'app.hapi.ios',
-            apnsEnv: 'production',
+            apns: {
+                apnsKeyP8Path: '/keys/AuthKey_ABC123DEF4.p8',
+                apnsKeyId: 'ABC123DEF4',
+                apnsTeamId: 'TEAM123456',
+                apnsBundleId: 'app.hapi.ios',
+                apnsEnv: 'production'
+            },
+            fcm: null,
             port: DEFAULT_RELAY_PORT,
             trustProxy: false
         })
@@ -34,7 +48,7 @@ describe('loadConfigFromEnv', () => {
         expect(APNS_HOSTS.production).toBe('https://api.push.apple.com')
         expect(APNS_HOSTS.sandbox).toBe('https://api.sandbox.push.apple.com')
         const config = loadConfigFromEnv({ ...baseEnv(), RELAY_APNS_ENV: 'sandbox' })
-        expect(config.apnsEnv).toBe('sandbox')
+        expect(config.apns?.apnsEnv).toBe('sandbox')
     })
 
     test('rejects an unknown RELAY_APNS_ENV', () => {

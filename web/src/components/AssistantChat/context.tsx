@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { createContext, useContext } from 'react'
+import { createContext, useContext, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { TerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
 import type { SessionMetadataSummary } from '@/types/api'
@@ -15,6 +15,9 @@ export type HappyChatContextValue = {
     showSessionSummaryInChat: boolean
     disabled: boolean
     onRefresh: () => void
+    codexPlanProposalId?: string | null
+    onContinuePlan?: (planId: string) => void
+    continuedPlanIds?: ReadonlySet<string>
     onRetryMessage?: (localId: string) => void
     historyActionPending?: boolean
     onForkConversation?: (messageLocalId?: string) => Promise<void>
@@ -35,8 +38,22 @@ export type HappyChatContextValue = {
 const HappyChatContext = createContext<HappyChatContextValue | null>(null)
 
 export function HappyChatProvider(props: { value: HappyChatContextValue; children: ReactNode }) {
+    // Keep dismissal outside virtualized cards so recycling cannot revive a menu.
+    const [continued, setContinued] = useState<{ sessionId: string; ids: ReadonlySet<string> }>({
+        sessionId: props.value.sessionId, ids: new Set()
+    })
+    const ids = continued.sessionId === props.value.sessionId ? continued.ids : new Set<string>()
+    const value: HappyChatContextValue = {
+        ...props.value,
+        continuedPlanIds: ids,
+        onContinuePlan: props.value.onContinuePlan ? (planId) => {
+            if (props.value.disabled || props.value.codexPlanProposalId !== planId || ids.has(planId)) return
+            setContinued({ sessionId: props.value.sessionId, ids: new Set([...ids, planId]) })
+            props.value.onContinuePlan?.(planId)
+        } : undefined
+    }
     return (
-        <HappyChatContext.Provider value={props.value}>
+        <HappyChatContext.Provider value={value}>
             {props.children}
         </HappyChatContext.Provider>
     )

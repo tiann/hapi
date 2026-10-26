@@ -166,6 +166,8 @@ data class RegisterDeviceRequest(
     val platform: String,
     /** Any stable 1–128-char install id (persisted UUID). */
     val deviceId: String,
+    /** Base64 of the install's 32-byte AES-GCM key; required for relay delivery. */
+    val pushKey: String,
 )
 
 /** `DELETE /api/devices/register`. */

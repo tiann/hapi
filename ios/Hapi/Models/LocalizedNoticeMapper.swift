@@ -34,6 +34,13 @@ enum LocalizedNoticeMapper {
         "Draft parked to scratchlist",
         "Scratchlist is full (200 entries)",
         "Couldn't park the draft — check the hub connection",
+        "Drafts can contain at most 10,000 characters — shorten the text before saving",
+        "Couldn't prepare the attachments — retry or remove the failed files",
+        "The attachments exceed the scratchlist limits — remove a file or choose a smaller one",
+        "Your input changed — review it and try again",
+        "Couldn't queue the draft — retry",
+        "Draft added to the send queue",
+        "Already queued — couldn't remove the draft. Retry removal only.",
         // DictationController
         "Could not start recording",
         "Could not reach the hub",
@@ -42,6 +49,7 @@ enum LocalizedNoticeMapper {
         "Transcription failed",
         // NewSessionLogic
         "Name needs at least one letter or digit",
+        "Path is outside workspace roots",
         // MessageWindowController (degraded-sync banner)
         "Failed to synchronize messages",
         "Failed to load older messages",

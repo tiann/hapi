@@ -82,6 +82,20 @@ describe('classifySessionAttention', () => {
         expect(attention).toEqual({ kind: 'permission' })
     })
 
+    it('ignores pending requests left on an archived session', () => {
+        const attention = classifySessionAttention(
+            makeSummary({
+                id: 'a',
+                active: false,
+                pendingRequestKinds: ['permission'],
+                pendingRequestsCount: 1,
+                updatedAt: 5000
+            }),
+            { selected: false, lastSeenAt: 5000 }
+        )
+        expect(attention).toBeNull()
+    })
+
     it('handles summaries from older APIs without pendingRequestKinds', () => {
         const legacySummary = makeSummary({ id: 'legacy', updatedAt: 5000 }) as unknown as SessionSummary
         delete (legacySummary as Partial<SessionSummary>).pendingRequestKinds

@@ -25,6 +25,25 @@ function createApp(store: Store) {
 }
 
 describe('devices routes', () => {
+    it('validates and stores phone keys and replaces the legacy install identity without duplicates', async () => {
+        const store = new Store(':memory:')
+        store.fcm.upsertDevice('default', { token: 'same-token', platform: 'phone', deviceId: 'old-datastore-id' })
+        const app = createApp(store)
+        const headers = { ...await authHeaders(), 'content-type': 'application/json' }
+        for (const pushKey of ['', '!!!!' + 'a'.repeat(43), Buffer.alloc(31).toString('base64')]) {
+            expect((await app.request('/api/devices/register', { method: 'POST', headers,
+                body: JSON.stringify({ token: 'same-token', platform: 'phone', deviceId: 'new-id', pushKey }) })).status).toBe(400)
+        }
+        const pushKey = Buffer.alloc(32, 3).toString('base64')
+        for (const token of ['same-token', 'rotated-token']) {
+            expect((await app.request('/api/devices/register', { method: 'POST', headers,
+                body: JSON.stringify({ token, platform: 'phone', deviceId: 'new-id', pushKey: pushKey.replace(/=+$/, '') }) })).status).toBe(200)
+        }
+        const devices = store.fcm.getDevicesByNamespace('default')
+        expect(devices).toHaveLength(1)
+        expect(devices[0]).toMatchObject({ deviceId: 'new-id', token: 'rotated-token', pushKey })
+        store.close()
+    })
     it('registers and unregisters FCM devices for namespace', async () => {
         const store = new Store(':memory:')
         const app = createApp(store)
@@ -54,7 +73,7 @@ describe('devices routes', () => {
         expect(store.fcm.getDevicesByNamespace('default')).toHaveLength(0)
     })
 
-    it('phone/wear registration is unchanged: no pushKey required, extra pushKey ignored', async () => {
+    it('old phone registration remains usable without a pushKey', async () => {
         const store = new Store(':memory:')
         const app = createApp(store)
         const headers = await authHeaders()
@@ -65,8 +84,7 @@ describe('devices routes', () => {
             body: JSON.stringify({
                 token: 'fcm-tok-2',
                 platform: 'phone',
-                deviceId: 'pixel-1',
-                pushKey: 'not-validated-for-android'
+                deviceId: 'pixel-1'
             })
         })
         expect(register.status).toBe(200)

@@ -114,6 +114,354 @@ describe('getOrCreateSession: requested identity', () => {
         )).toThrow(SessionIdentityConflictError)
         store.close()
     })
+
+    it('reproduces hub-prealloc vs CLI-tag conflict (machine-spawn stub, #1911)', () => {
+        // Hub preallocates with tag machine-spawn:<uuid>; CLI create used a random
+        // tag + the same id → 409. This documents the bug adopt must fix.
+        const store = makeStore()
+        const allocatedId = randomUUID()
+        store.sessions.getOrCreateSession(
+            `machine-spawn:${allocatedId}`,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                machineId: 'machine-1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+            },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            allocatedId
+        )
+
+        expect(() => store.sessions.getOrCreateSession(
+            randomUUID(), // CLI bootstrap tag
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                machineId: 'machine-1',
+                startedBy: 'runner',
+                hostPid: 12345,
+            },
+            {},
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            allocatedId
+        )).toThrow(SessionIdentityConflictError)
+        store.close()
+    })
+
+    it('adopts a machine-spawn preallocated stub and overwrites tag + metadata', () => {
+        const store = makeStore()
+        const allocatedId = randomUUID()
+        const cliTag = randomUUID()
+        store.sessions.getOrCreateSession(
+            `machine-spawn:${allocatedId}`,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                machineId: 'machine-1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+            },
+            null,
+            'default',
+            'stub-model',
+            undefined,
+            undefined,
+            allocatedId
+        )
+
+        const adopted = store.sessions.adoptPreallocatedSession(
+            allocatedId,
+            cliTag,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                machineId: 'machine-1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+                hostPid: 4242,
+            },
+            { controlledByUser: false },
+            'default',
+            'claude-sonnet',
+            undefined,
+            undefined
+        )
+
+        expect(adopted.id).toBe(allocatedId)
+        expect(adopted.tag).toBe(cliTag)
+        expect(adopted.model).toBe('claude-sonnet')
+        const meta = adopted.metadata as { hostPid?: number }
+        expect(meta.hostPid).toBe(4242)
+        // Idempotent adopt with same tag returns the row
+        const again = store.sessions.adoptPreallocatedSession(
+            allocatedId,
+            cliTag,
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            {},
+            'default'
+        )
+        expect(again.id).toBe(allocatedId)
+        expect(again.tag).toBe(cliTag)
+        store.close()
+    })
+
+    it('rejects adopt when the row is not a preallocated stub', () => {
+        const store = makeStore()
+        const id = randomUUID()
+        store.sessions.getOrCreateSession(
+            'live-terminal-tag',
+            { path: '/tmp', startedBy: 'terminal' },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            id
+        )
+
+        expect(() => store.sessions.adoptPreallocatedSession(
+            id,
+            randomUUID(),
+            { path: '/tmp', startedBy: 'runner' },
+            {},
+            'default'
+        )).toThrow(/not a preallocated stub|not adoptable/i)
+        store.close()
+    })
+
+    it('releases machine-spawn stub tag on metadata update (reopen-flavor path)', () => {
+        // codex/cursor/pi/… use --existing-session-id → bootstrapExistingSession
+        // → updateMetadata, never adopt. Stub tag must not stick forever.
+        const store = makeStore()
+        const allocatedId = randomUUID()
+        const created = store.sessions.getOrCreateSession(
+            `machine-spawn:${allocatedId}`,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'cursor',
+                machineId: 'm1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+            },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            allocatedId
+        )
+        expect(created.tag).toBe(`machine-spawn:${allocatedId}`)
+
+        const updated = store.sessions.updateSessionMetadata(
+            allocatedId,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'cursor',
+                machineId: 'm1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+                hostPid: 999,
+            },
+            created.metadataVersion,
+            'default'
+        )
+        expect(updated.result).toBe('success')
+        const row = store.sessions.getSession(allocatedId)
+        expect(row?.tag).not.toMatch(/^machine-spawn:/)
+        expect((row?.metadata as { hostPid?: number } | null)?.hostPid).toBe(999)
+
+        // Live row must no longer be adoptable.
+        expect(() => store.sessions.adoptPreallocatedSession(
+            allocatedId,
+            randomUUID(),
+            { path: '/tmp', flavor: 'cursor' },
+            {},
+            'default'
+        )).toThrow(/not a preallocated stub|not adoptable/i)
+        store.close()
+    })
+
+    it('rejects adopt of an archived preallocated stub', () => {
+        const store = makeStore()
+        const allocatedId = randomUUID()
+        store.sessions.getOrCreateSession(
+            `machine-spawn:${allocatedId}`,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                startedBy: 'runner',
+                startedFromRunner: true,
+                lifecycleState: 'archived',
+                archivedBy: 'hub',
+                archiveReason: 'user archived while booting',
+            },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            allocatedId
+        )
+
+        expect(() => store.sessions.adoptPreallocatedSession(
+            allocatedId,
+            randomUUID(),
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            {},
+            'default'
+        )).toThrow(/archived|not adoptable/i)
+        const row = store.sessions.getSession(allocatedId)
+        expect(row?.tag).toBe(`machine-spawn:${allocatedId}`)
+        expect((row?.metadata as { lifecycleState?: string } | null)?.lifecycleState).toBe('archived')
+        store.close()
+    })
+})
+
+describe('updateSessionMetadata: refuse un-archive (#1911 M1)', () => {
+    it('merge-preserves hub archive on unauthorized running write (success, not mismatch)', () => {
+        const store = makeStore()
+        const allocatedId = randomUUID()
+        const session = store.sessions.getOrCreateSession(
+            `machine-spawn:${allocatedId}`,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                lifecycleState: 'archived',
+                archivedBy: 'hub',
+                archiveReason: 'KillSession miss',
+                startedBy: 'runner',
+                startedFromRunner: true,
+            },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            allocatedId
+        )
+
+        const preserved = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                lifecycleState: 'running',
+            },
+            session.metadataVersion,
+            'default'
+        )
+        expect(preserved.result).toBe('success')
+        if (preserved.result !== 'success') throw new Error('expected success')
+        expect((preserved.value as { lifecycleState?: string; archivedBy?: string } | null)?.lifecycleState)
+            .toBe('archived')
+        expect((preserved.value as { archivedBy?: string } | null)?.archivedBy).toBe('hub')
+        expect(getMetadata(store, session.id)?.lifecycleState).toBe('archived')
+        expect(getMetadata(store, session.id)?.archivedBy).toBe('hub')
+        // Tag may already be released by archive-via-metadata; assert archive held.
+        expect(store.sessions.getSession(session.id)?.tag).toBe(`machine-spawn:${allocatedId}`)
+
+        const allowed = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                lifecycleStateSince: Date.now(),
+            },
+            // version advanced by preserve write
+            (preserved.version),
+            'default',
+            { allowUnarchive: true }
+        )
+        expect(allowed.result).toBe('success')
+        expect(getMetadata(store, session.id)?.lifecycleState).toBeUndefined()
+        store.close()
+    })
+
+    it('does not preserve CLI self-archive (archivedBy=cli) when writing running', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'cli-self-archive',
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                lifecycleState: 'archived',
+                archivedBy: 'cli',
+                archiveReason: 'clean exit',
+            },
+            null,
+            'default'
+        )
+
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                lifecycleState: 'running',
+            },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+        expect(getMetadata(store, session.id)?.lifecycleState).toBe('running')
+        store.close()
+    })
+
+    it('still allows non-lifecycle updates while hub-archived', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'archived-keep-fields',
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                lifecycleState: 'archived',
+                archivedBy: 'hub',
+                archiveReason: 'inactivity',
+            },
+            null,
+            'default'
+        )
+
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                lifecycleState: 'archived',
+                archivedBy: 'hub',
+                archiveReason: 'inactivity',
+                hostPid: 4242,
+            },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+        expect(getMetadata(store, session.id)?.lifecycleState).toBe('archived')
+        expect(getMetadata(store, session.id)?.hostPid).toBe(4242)
+        store.close()
+    })
 })
 
 describe('updateSessionMetadata: protocol resume token preservation', () => {

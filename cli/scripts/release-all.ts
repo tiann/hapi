@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * Unified release script that handles the complete release flow:
- * 1. Bump version
+ * 1. Bump CLI, shared, iOS, and Android versions
  * 2. Build binaries (with embedded web assets)
  * 3. Publish platform packages first (so lockfile can resolve them)
  * 4. Verify all platform packages are live on npm
@@ -11,13 +11,12 @@
  */
 
 import { execSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { updateReleaseVersions } from './release-version';
 
 const scriptDir = import.meta.dir;
 const projectRoot = join(scriptDir, '..');
 const repoRoot = join(projectRoot, '..');
-const buildInfoPath = join(repoRoot, 'shared', 'src', 'buildInfo.ts');
 
 // 解析参数
 const args = process.argv.slice(2);
@@ -40,22 +39,6 @@ function run(cmd: string, cwd = projectRoot): void {
     console.log(`\n$ ${cmd}`);
     if (!dryRun) {
         execSync(cmd, { cwd, stdio: 'inherit' });
-    }
-}
-
-function updateBuildInfoVersion(nextVersion: string): void {
-    const content = readFileSync(buildInfoPath, 'utf-8');
-    const updated = content.replace(
-        /export const APP_VERSION = ['"][^'"]+['"]/,
-        `export const APP_VERSION = '${nextVersion}'`
-    );
-
-    if (updated === content) {
-        throw new Error(`Could not update APP_VERSION in ${buildInfoPath}`);
-    }
-
-    if (!dryRun) {
-        writeFileSync(buildInfoPath, updated);
     }
 }
 
@@ -107,7 +90,7 @@ async function runWithTimeoutRetry(cmd: string, cwd = projectRoot): Promise<void
     }
 }
 
-async function main(): Promise<void> {
+async function main(version: string): Promise<void> {
     const flags = [dryRun && 'dry-run', publishNpm && 'publish-npm', skipBuild && 'skip-build'].filter(Boolean);
     console.log(`\n🚀 Starting release v${version}${flags.length ? ` (${flags.join(', ')})` : ''}\n`);
 
@@ -133,16 +116,9 @@ async function main(): Promise<void> {
         console.log('   ✓ Skipping npm login check (dry-run)');
     }
 
-    // Step 1: Update package.json version
-    console.log('📦 Step 1: Updating package.json version...');
-    const pkgPath = join(projectRoot, 'package.json');
-    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
-    const oldVersion = pkg.version;
-    pkg.version = version;
-    if (!dryRun) {
-        writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
-    }
-    updateBuildInfoVersion(version);
+    // Step 1: Update all release versions before building or publishing.
+    console.log('📦 Step 1: Updating CLI, shared, iOS, and Android versions...');
+    const oldVersion = updateReleaseVersions(repoRoot, version, dryRun);
     console.log(`   ${oldVersion} → ${version}`);
 
     // Step 2: Build all platform binaries (with embedded web assets)
@@ -197,7 +173,7 @@ async function main(): Promise<void> {
     console.log(`\n✅ Release v${version} completed!`);
 }
 
-main().catch(err => {
+main(version).catch(err => {
     console.error('Release failed:', err);
     process.exit(1);
 });

@@ -16,6 +16,8 @@ const val HISTORY_WINDOW_SIZE: Int = 600
 const val OLDER_LOAD_WINDOW_SIZE: Int = 800
 const val AGENT_RUN_WINDOW_SIZE: Int = 800
 const val PAGE_SIZE: Int = 200
+/** Request size for a genuinely cold latest page, prioritizing first paint. */
+const val INITIAL_PAGE_SIZE: Int = 20
 
 enum class MessageViewMode(val wire: String) {
     /** Following the live bottom; trims from the top. */
@@ -52,6 +54,7 @@ sealed interface OlderLoadOutcome {
         Invalidated("invalidated"),
         EpochReset("epoch-reset"),
         Exhausted("exhausted"),
+        CursorDidNotAdvance("cursor-did-not-advance"),
     }
 }
 
@@ -76,6 +79,8 @@ data class MessageWindowState(
     val isLoadingMore: Boolean = false,
     val warning: String? = null,
     val viewMode: MessageViewMode = MessageViewMode.Tail,
+    /** Local presentation policy, never persisted or sent to the hub. */
+    val historyRetentionLimit: Int = HISTORY_WINDOW_SIZE,
     /** Bumped whenever the [messages] list instance changes. */
     val messagesVersion: Long = 0,
     /** Bumped per applied older page (scroll-anchoring handle). */

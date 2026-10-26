@@ -122,7 +122,7 @@ Hub-side delivery (`SSEManager.shouldSend`):
 | `toast` | every **visible** connection in the namespace, regardless of filter (no `id`, never replayed) |
 | `message-received`, `scheduled-matured` | `all=true` connections + matching `sessionId` connections |
 | `session-added` / `session-updated` / `session-removed` / `session-ended` / `messages-invalidated` / `messages-consumed` / `messages-indeterminate` / `messages-requeued` / `message-cancelled` | `all=true` connections + matching `sessionId` connections |
-| `machine-updated` | `all=true` connections + matching `machineId` connections |
+| `machine-updated`, `machine-agy-models-updated` | `all=true` connections + matching `machineId` connections |
 
 **The global connection must also handle the message-stream events** (`message-received`, `messages-consumed`, `messages-indeterminate`, `messages-requeued`, `message-cancelled`, `scheduled-matured`): while a session connection is down (reconnect gap) or the session isn't open, the global pipe is the only one alive, and it must still keep queued/optimistic bookkeeping correct — mark local messages consumed, remove cancelled rows, and refresh session-list scheduled counts. The session-scoped connection additionally ingests `message-received` into the message window.
 
@@ -130,7 +130,7 @@ The two connections have **no ordering relationship with each other** — the sa
 
 ---
 
-## SyncEvent union (15 types)
+## SyncEvent union (16 types)
 
 Schema: `SyncEventSchema` in `shared/src/schemas.ts` (discriminated on `type`). All events except `connection-changed` carry `namespace?: string`. Ignore unknown event types.
 
@@ -144,9 +144,10 @@ Schema: `SyncEventSchema` in `shared/src/schemas.ts` (discriminated on `type`). 
 | `scheduled-matured` | `sessionId` | A scheduled message became due and was handed to the agent. Refetch list/queue indicators. |
 | `session-ended` | `sessionId`, `reason?: 'completed'\|'terminated'\|'error'\|'handoff'\|'cleared'` | Session lifecycle signal (the `session-updated` flow still carries the state change). |
 | `machine-updated` | `machineId`, `data?: Machine \| MachinePatch \| null` | Full `Machine`: upsert (remove when `active:false`). `null`: machine removed. Patch `{active?, activeAt?, updatedAt?}`: `active:false` ⇒ remove, otherwise refetch machines. `data` absent ⇒ refetch. |
+| `machine-agy-models-updated` | `machineId` | The machine's `agy models` listing changed on a background re-check. Refetch `GET /api/machines/:id/agy-models` for that machine (answered from the machine's cache; it starts no `agy` run and produces no further event). Emitted when the re-check changes what that route would answer — a different listing, or a sign-in warning that appeared or cleared — never for the machine's first listing. |
 | `toast` | `data: {title, body, sessionId, url}` | Show as in-app toast/banner. Only delivered to visible connections (see [Visibility](#visibility)). |
 | `messages-consumed` | `sessionId`, `localIds: string[]`, `invokedAt: number` | The agent consumed queued user messages: stamp `invokedAt`, flip status to `sent`, remove from the queued bar. |
-| `messages-indeterminate` | `sessionId`, `localIds: string[]` | A steer was dispatched but its outcome is unknown. Keep the row uninvoked, show an explicit Retry/Cancel resolution, and do not auto-replay it. |
+| `messages-indeterminate` | `sessionId`, `localIds: string[]` | A native dispatch/queue mutation has an unknown outcome. Keep the row uninvoked, show an explicit Retry/Cancel resolution, and do not auto-replay it. Shared-engine Retry/Cancel can remain unavailable until reconciliation proves the outcome. |
 | `messages-requeued` | `sessionId`, `localIds: string[]` | An explicit Retry restored delivery to the normal queue. Clear the indeterminate marker. |
 | `message-cancelled` | `sessionId`, `messageId`, `localId?` | A queued message was cancelled: remove the row (match by `messageId` **or** `localId`). |
 | `heartbeat` | `data?: {timestamp}` | Feed the staleness watchdog. No other action. **Carries no `id`.** |
@@ -185,15 +186,38 @@ The CLI keep-alive makes the hub re-broadcast a patch roughly **every 10 s per a
 
 Reference list sort (web): `globalPinned` > `pinned` > `active` > `pendingRequestsCount` (among active) > `updatedAt` desc.
 
+### `active` is transport liveness, not agent health
+
+Two different signals travel on a `Session` and clients routinely conflate them (tiann/hapi#1820):
+
+| Signal | Means | Refreshed by |
+|---|---|---|
+| `active` / `activeAt` | the CLI socket is connected and reachable | the `session-alive` keep-alive, every ~2 s |
+| `metadata.lifecycleState` | what the agent behind that socket is actually doing | lifecycle transitions only |
+
+A session can keep `active: true` indefinitely on keep-alives alone, with no messages and no thinking, for days. That is a live socket in front of an idle agent, not a working session.
+
+`metadata.lifecycleState` is the health signal:
+
+- `running` — live working session (stamped by the CLI at session start)
+- `idle` — the hub has seen nothing but keep-alives for `HAPI_SESSION_IDLE_TIMEOUT_MS` (default 12 h). Reversible and non-destructive: `active` stays `true`, and the next message, queued prompt or background task flips it back to `running` within one hub tick
+- `archived` — session closed
+
+Client rules:
+
+- Treat both `running` and `idle` as "a CLI still owns this session". Comparing against the `'running'` literal makes an `idle` session read as a dead row.
+- Surface `idle` distinctly from `active`-and-recently-working, so an operator can tell a busy fleet from a pile of keep-alive zombies (web: the `idle` bucket in `SessionList`).
+- Sessions that are meant to sit quiet indefinitely can set `metadata.idleReconcileExempt: true` to opt out of reconciliation entirely.
+
 ---
 
 ## Visibility
 
 `POST /api/visibility` with body `{"subscriptionId": "<from connection-changed>", "visibility": "visible" | "hidden"}` → `{"ok": true}`. Errors: `400` invalid body, `404` unknown `subscriptionId` (or namespace mismatch), `503` hub not ready. Each new connection has a **new** `subscriptionId` — re-report after every reconnect (the web reference reports both of its connections on every foreground/background transition and retries a failed report after 2 s).
 
-Semantics (`hub/src/visibility/visibilityTracker.ts`, `hub/src/push/pushNotificationChannel.ts`): when **any** connection in the namespace is visible, the hub delivers notification events (ready / permission request / task result) as in-app **`toast` SSE frames to the visible connections** and suppresses Web Push for the namespace; Web Push fires only when no visible connection exists (or toast delivery reached zero connections). Native FCM devices (`POST /api/devices/register`) are independent of visibility and fire unconditionally — see [native-companion-contract](../native-companion-contract.md).
+Semantics (`hub/src/visibility/visibilityTracker.ts`, `hub/src/push/pushNotificationChannel.ts`): Android/iOS native delivery is independent of Web visibility. When a native provider accepts a notification for at least one device, the hub skips the Web Push/toast duplicate for that dispatch. Otherwise, if **any** connection in the namespace is visible, the hub first sends **`toast` SSE frames to visible connections**. Web Push is the fallback when no connection is visible or toast delivery reaches zero connections. Provider acceptance is not a handset delivery receipt — see the [native companion contract](../native-companion-contract.md).
 
-Native rule: report `visible` on foreground and `hidden` on background, every time. A native client that stays `visible` while backgrounded suppresses its own (and every PWA's) hub-side push for the namespace, and receives its notifications only as toast frames nobody is looking at.
+Native rule: report `visible` on foreground and `hidden` on background, every time. A stale `visible` report can divert the namespace's Web Push fallback into unseen toast frames; it does not disable native push. The native app separately suppresses its local notification when the corresponding chat is already open in the foreground.
 
 ---
 

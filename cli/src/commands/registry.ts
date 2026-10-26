@@ -21,12 +21,12 @@ import { notifyCommand } from './notify'
 import { hubCommand } from './hub'
 import { pingPeerCommand } from './pingPeer'
 import { inspectPeerCommand } from './inspectPeer'
+import { setModeCommand } from './setMode'
 import type { CommandContext, CommandDefinition } from './types'
 
 // Gemini CLI was sunset (Google stopped serving the consumer Gemini CLI on
 // 2026-06-18) so the agent is no longer launchable. Keep an explicit tombstone
-// command so `hapi gemini` reports a clear error instead of falling through to
-// the default Claude command with "gemini" as a forwarded argument.
+// command so `hapi gemini` explains why the agent is no longer available.
 const removedGeminiCommand: CommandDefinition = {
     name: 'gemini',
     requiresRuntimeAssets: false,
@@ -42,6 +42,7 @@ const removedGeminiCommand: CommandDefinition = {
 const COMMANDS: CommandDefinition[] = [
     agyCommand,
     authCommand,
+    claudeCommand,
     connectCommand,
     codexCommand,
     dshCommand,
@@ -62,7 +63,8 @@ const COMMANDS: CommandDefinition[] = [
     runnerCommand,
     notifyCommand,
     pingPeerCommand,
-    inspectPeerCommand
+    inspectPeerCommand,
+    setModeCommand
 ]
 
 const commandMap = new Map<string, CommandDefinition>()
@@ -70,18 +72,17 @@ for (const command of COMMANDS) {
     commandMap.set(command.name, command)
 }
 
-export function resolveCommand(args: string[]): { command: CommandDefinition; context: CommandContext } {
+export function resolveCommand(args: string[]): { command: CommandDefinition; context: CommandContext } | null {
     const subcommand = args[0]
     const command = subcommand ? commandMap.get(subcommand) : undefined
-    const resolvedCommand = command ?? claudeCommand
-    const commandArgs = command ? args.slice(1) : args
+    if (!command) return null
 
     return {
-        command: resolvedCommand,
+        command,
         context: {
             args,
             subcommand,
-            commandArgs
+            commandArgs: args.slice(1)
         }
     }
 }

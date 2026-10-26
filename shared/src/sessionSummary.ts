@@ -46,11 +46,16 @@ export type SessionSummaryMetadata = {
 }
 
 export type SessionSummary = {
+    hasConversationContent?: boolean
     id: string
     active: boolean
     thinking: boolean
     activeAt: number
     updatedAt: number
+    /** Epoch ms when the session was created. Drives the fixed-order session
+     *  list sort. Optional because summaries from an older hub lack it —
+     *  consumers fall back to `updatedAt` via the session-order key. */
+    createdAt?: number
     pinned?: boolean
     globalPinned?: boolean
     metadata: SessionSummaryMetadata | null
@@ -204,11 +209,13 @@ export function toSessionSummaryMetadata(metadata: Metadata | null | undefined):
 
 export function toSessionSummary(session: Session): SessionSummary {
     return {
+        hasConversationContent: session.hasConversationContent ?? false,
         id: session.id,
         active: session.active,
         thinking: session.thinking,
         activeAt: session.activeAt,
         updatedAt: session.updatedAt,
+        createdAt: session.createdAt,
         pinned: session.pinned ?? false,
         globalPinned: session.globalPinned ?? false,
         metadata: toSessionSummaryMetadata(session.metadata),

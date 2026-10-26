@@ -17,6 +17,37 @@ export { VOICE_CHINESE_LANGUAGE_BLOCK } from './voicePromptLayers'
 export const ELEVENLABS_API_BASE = 'https://api.elevenlabs.io/v1'
 export const VOICE_AGENT_NAME = 'Hapi Voice Assistant'
 
+/** ElevenLabs ConvAI accepts conversation caps of 60s..7200s. */
+export const VOICE_MAX_DURATION_MIN_SECONDS = 60
+export const VOICE_MAX_DURATION_MAX_SECONDS = 7200
+/**
+ * Default cap on a single ConvAI conversation. ConvAI bills per minute, so this
+ * also bounds the cost of a dead-but-open conversation; deliberately well below
+ * the 7200s ceiling. ElevenLabs' own default (600s) cuts real conversations off.
+ */
+export const VOICE_MAX_DURATION_DEFAULT_SECONDS = 1800
+
+/**
+ * Resolve the configured conversation cap (env ELEVENLABS_MAX_DURATION_SECONDS).
+ * Unset/blank -> default. Throws a descriptive Error when not an integer in range.
+ */
+export function resolveVoiceMaxDurationSeconds(raw: string | undefined): number {
+    const text = raw?.trim()
+    if (!text) return VOICE_MAX_DURATION_DEFAULT_SECONDS
+    const value = Number(text)
+    if (
+        !Number.isInteger(value)
+        || value < VOICE_MAX_DURATION_MIN_SECONDS
+        || value > VOICE_MAX_DURATION_MAX_SECONDS
+    ) {
+        throw new Error(
+            `ELEVENLABS_MAX_DURATION_SECONDS must be an integer between `
+            + `${VOICE_MAX_DURATION_MIN_SECONDS} and ${VOICE_MAX_DURATION_MAX_SECONDS} (got "${text}")`
+        )
+    }
+    return value
+}
+
 const DEFAULT_COMPOSED_LAYERS: VoicePromptLayerInput = {
     identity: '',
     character: '',
@@ -161,6 +192,9 @@ export interface VoiceAgentConfig {
             turn_timeout: number
             silence_end_call_timeout: number
         }
+        conversation?: {
+            max_duration_seconds: number
+        }
         tts: {
             voice_id: string
             model_id: string
@@ -194,7 +228,7 @@ export interface VoiceAgentConfig {
  * Build the agent configuration for Hapi Voice Assistant.
  * Used by both server-side auto-creation and client-side configuration.
  */
-export function buildVoiceAgentConfig(): VoiceAgentConfig {
+export function buildVoiceAgentConfig(options: { maxDurationSeconds?: number } = {}): VoiceAgentConfig {
     return {
         name: VOICE_AGENT_NAME,
         conversation_config: {
@@ -213,6 +247,11 @@ export function buildVoiceAgentConfig(): VoiceAgentConfig {
                 turn_timeout: 30.0,
                 silence_end_call_timeout: 600.0
             },
+            // Omitted unless provided so clients that PATCH an existing agent
+            // without knowing the hub setting do not clobber its cap.
+            ...(options.maxDurationSeconds !== undefined
+                ? { conversation: { max_duration_seconds: options.maxDurationSeconds } }
+                : {}),
             tts: {
                 voice_id: 'cgSgspJ2msm6clMCkdW9', // Jessica
                 model_id: 'eleven_flash_v2',

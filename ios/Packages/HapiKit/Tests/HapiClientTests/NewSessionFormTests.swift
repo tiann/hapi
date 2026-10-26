@@ -53,7 +53,7 @@ struct NewSessionSpawnBodyTests {
                 agent: .codex,
                 model: "gpt-5.2-codex",
                 modelReasoningEffort: "high",
-                permissionMode: .safeYolo,
+                permissionMode: .readOnly,
                 yolo: true,
                 sessionType: .worktree,
                 worktreeName: "  feature-x  ",
@@ -65,7 +65,7 @@ struct NewSessionSpawnBodyTests {
         #expect(body == """
         {"agent":"codex","collaborationMode":"plan","directory":"/repo",\
         "model":"gpt-5.2-codex","modelReasoningEffort":"high",\
-        "permissionMode":"safe-yolo","serviceTier":"fast",\
+        "permissionMode":"read-only","serviceTier":"fast",\
         "sessionType":"worktree","worktreeName":"feature-x"}
         """)
     }
@@ -160,6 +160,12 @@ struct NewSessionLogicTests {
     }
 
     @Test func windowsDriveAndUNCAutocompletePreserveSeparators() {
+        #expect(NewSessionLogic.directoryAutocompleteQuery(path: "C:\\wo", roots: ["C:\\work"])
+            == .roots(["C:\\work"]))
+        #expect(NewSessionLogic.directoryAutocompleteQuery(path: "\\\\server\\sh", roots: ["\\\\server\\share"])
+            == .roots(["\\\\server\\share"]))
+        #expect(NewSessionLogic.directoryAutocompleteQuery(path: "C:\\work", roots: ["C:\\work"])
+            == .directory(NewSessionLogic.ParentQuery(parent: "C:\\work", prefix: "", separator: "\\")))
         #expect(
             NewSessionLogic.parentQuery(for: "C:\\Users\\pro")
                 == NewSessionLogic.ParentQuery(parent: "C:\\Users", prefix: "pro", separator: "\\")
@@ -269,10 +275,12 @@ struct NewSessionLogicTests {
         )
         #expect(badMode.permissionMode == .default)
 
-        let goodMode = NewSessionLogic.sanitizeDraft(
+        let staleMode = NewSessionLogic.sanitizeDraft(
             NewSessionForm(agent: .codex, permissionMode: .safeYolo)
         )
-        #expect(goodMode.permissionMode == .safeYolo)
+        #expect(staleMode.permissionMode == .default)
+        #expect(AgentFlavor.codex.launchPermissionModes == [.default, .readOnly, .autoReview, .yolo])
+        #expect(NewSessionLogic.sanitizeDraft(NewSessionForm(agent: .kimi, permissionMode: .safeYolo)).permissionMode == .safeYolo)
     }
 
     @Test func draftDecodingToleratesMissingKeysAndRoundTrips() throws {

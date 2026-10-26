@@ -3,7 +3,7 @@ import HapiProtocol
 import HapiUI
 import SwiftUI
 
-/// The chat screen: `ScrollView + LazyVStack` over the reduced
+/// The chat screen: an anchored UIKit transcript over the reduced
 /// `VisibleChatBlock`s, newest at the bottom (M2f), plus the A-M3ab
 /// interaction chrome — composer + queued bar (bottom inset), permission
 /// action footers (via `\.chatInteractions`), the session config sheet
@@ -12,14 +12,16 @@ import SwiftUI
 /// Transcript layout and scroll intent live in `ChatTranscriptView`.
 struct ChatView: View {
     @State private var model: ChatModel
-    /// Session config sheet (toolbar gear).
-    @State private var configSheetOpen = false
+    /// Adaptive session settings (toolbar gear).
+    @State private var configOpen = false
     /// Files browser push (toolbar folder, A-M4a).
     @State private var filesOpen = false
     /// File viewer push for `hapi-file://` chat citations (A-M4a).
     @State private var viewerRoute: FileViewerRoute?
-    /// Scratchlist sheet (toolbar note icon, A-M4b).
+    /// Full inventory; the compact drawer lives with the composer below.
     @State private var scratchlistOpen = false
+    @State private var scratchlistEntry: ScratchlistEntry?
+    @State private var scratchlistStartsEditing = false
 
     /// Resume/reopen handed back a superseding session id — the host swaps
     /// its navigation entry (HomeView replaces the path element).
@@ -34,9 +36,14 @@ struct ChatView: View {
         sessionId: String,
         onNavigateToSession: ((String) -> Void)? = nil
     ) {
-        _model = State(initialValue: ChatModel(session: session, sessionId: sessionId))
+        self.init(session: session, model: ChatModel(session: session, sessionId: sessionId),
+                  onNavigateToSession: onNavigateToSession)
+    }
+
+    init(session: HubSession, model: ChatModel, onNavigateToSession: ((String) -> Void)? = nil) {
+        _model = State(initialValue: model)
         self.session = session
-        self.sessionId = sessionId
+        self.sessionId = model.sessionId
         self.onNavigateToSession = onNavigateToSession
     }
 
@@ -46,7 +53,7 @@ struct ChatView: View {
                 initialLoading
             } else if model.loadFailed {
                 loadFailedState
-            } else if model.blocks.isEmpty {
+            } else if model.blocks.isEmpty && !model.hasMore {
                 emptyState
             } else {
                 ChatTranscriptView(model: model)
@@ -68,7 +75,12 @@ struct ChatView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 QueuedMessagesBarView(interactor: model.interactor)
-                ChatComposerView(interactor: model.interactor, dictation: model.dictation)
+                    .hapiReadingColumn()
+                ChatComposerView(interactor: model.interactor, dictation: model.dictation) { entry, editing in
+                    scratchlistEntry = entry
+                    scratchlistStartsEditing = editing
+                    scratchlistOpen = true
+                }
             }
         }
         .toolbar {
@@ -79,12 +91,9 @@ struct ChatView: View {
             // squeezed the title out): gear for the frequent config
             // switches, everything else behind one menu.
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    configSheetOpen = true
-                } label: {
-                    Image(systemName: "gearshape")
+                SessionConfigButton(isPresented: $configOpen) {
+                    SessionConfigView(interactor: model.interactor, notice: model.notice)
                 }
-                .accessibilityLabel("Session settings")
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -94,7 +103,7 @@ struct ChatView: View {
                         Label("Session files", systemImage: "folder")
                     }
                     Button {
-                        scratchlistOpen = true
+                        model.interactor.setComposerDestination(.scratchlist)
                     } label: {
                         let count = model.interactor.scratchlistCount
                         if count > 0 {
@@ -113,9 +122,6 @@ struct ChatView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $configSheetOpen) {
-            SessionConfigView(interactor: model.interactor)
-        }
         .navigationDestination(isPresented: $filesOpen) {
             FilesView(session: session, sessionId: sessionId)
         }
@@ -141,24 +147,22 @@ struct ChatView: View {
                 store: model.scratchlist,
                 sessionId: model.sessionId,
                 attachments: model.scratchlistAttachments,
-                interactor: model.interactor
+                interactor: model.interactor,
+                initialEntry: scratchlistEntry,
+                initiallyEditing: scratchlistStartsEditing
             )
         }
+        .toolPresentations(model: model, session: session, owner: "chat") { path in
+            viewerRoute = FileViewerRoute(sessionId: sessionId, path: path, mode: .file)
+        }
         .environment(\.chatMedia, model.imageLoader)
+        .environment(\.chatPresentationState, model.presentationState)
+        .environment(\.hapiMarkdownCache, model.markdownCache)
         .environment(\.chatInteractions, model.interactor)
         .onChange(of: model.supersededSessionId) {
             if let superseding = model.supersededSessionId {
                 onNavigateToSession?(superseding)
             }
-        }
-        .onAppear {
-            model.start()
-        }
-        .onDisappear {
-            // Closed, or a files/viewer push covered the chat — either way
-            // the pipe parks; start() rebuilds fresh wiring at the saved
-            // cursor when the screen returns.
-            model.stop()
         }
     }
 

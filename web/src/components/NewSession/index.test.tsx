@@ -21,9 +21,14 @@ const mocks = vi.hoisted(() => ({
     codexModelsLoading: false,
     agyModelsLoading: false,
     agyModels: [{ modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }],
+    dshModels: [] as Array<{ modelId: string; name?: string }>,
+    dshModelsLoading: false,
     directoryExists: undefined as boolean | undefined,
     copilotModels: [] as Array<{ modelId: string; name?: string }>,
     copilotModelsLoading: false,
+    kimiModels: [] as Array<{ modelId: string; name?: string; provider?: string }>,
+    kimiModelsLoading: false,
+    kimiModelsError: null as string | null,
     opencodeModels: [] as Array<{ modelId: string; name?: string }>,
     opencodeCurrentModelId: null as string | null,
     opencodeModelsLoading: false,
@@ -117,6 +122,20 @@ vi.mock('@/hooks/queries/useAgyModels', () => ({
         refetch: vi.fn()
     })
 }))
+vi.mock('@/hooks/queries/useDshModels', () => ({
+    useDshModelsForMachine: () => ({
+        availableModels: mocks.dshModels,
+        currentModelId: null,
+        isLoading: mocks.dshModelsLoading,
+        error: null
+    }),
+    useDshModelsForSession: () => ({
+        availableModels: mocks.dshModels,
+        currentModelId: null,
+        isLoading: mocks.dshModelsLoading,
+        error: null
+    })
+}))
 vi.mock('@/hooks/queries/useCursorModelsForMachine', () => ({
     useCursorModelsForMachine: () => ({
         availableModels: [],
@@ -161,6 +180,14 @@ vi.mock('@/hooks/queries/useCopilotModelsForCwd', () => ({
         currentModelId: null,
         isLoading: mocks.copilotModelsLoading,
         error: null
+    })
+}))
+vi.mock('@/hooks/queries/useKimiModelsForCwd', () => ({
+    useKimiModelsForCwd: () => ({
+        availableModels: mocks.kimiModels,
+        currentModelId: null,
+        isLoading: mocks.kimiModelsLoading,
+        error: mocks.kimiModelsError
     })
 }))
 vi.mock('@/hooks/queries/usePiModelsForMachine', () => ({
@@ -300,6 +327,9 @@ describe('NewSession launch preferences', () => {
         mocks.directoryExists = true
         mocks.copilotModels = []
         mocks.copilotModelsLoading = false
+        mocks.kimiModels = []
+        mocks.kimiModelsLoading = false
+        mocks.kimiModelsError = null
         mocks.opencodeModels = [{ modelId: 'provider/current', name: 'Current' }]
         mocks.opencodeCurrentModelId = 'provider/current'
         mocks.opencodeModelsLoading = false
@@ -388,7 +418,7 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => {
             expect(screen.getByTestId('model')).toHaveTextContent('gpt-5.6-sol')
             expect(screen.getByTestId('reasoning')).toHaveTextContent('xhigh')
-            expect(screen.getByTestId('permission-mode')).toHaveTextContent('safe-yolo')
+            expect(screen.getByTestId('permission-mode')).toHaveTextContent('default')
         })
     })
 
@@ -480,6 +510,92 @@ describe('NewSession launch preferences', () => {
         )
 
         await waitFor(() => expect(screen.getByTestId('create')).toBeDisabled())
+    })
+
+    it('shows dynamic Kimi models with Default for the selected directory', async () => {
+        mocks.kimiModels = [
+            { modelId: 'GLM-5.3-flash', name: 'thehive / GLM-5.3-flash', provider: 'thehive' },
+            { modelId: 'deepseek-v4.1-flash', name: 'thehive / hive-deepseek', provider: 'thehive' },
+            { modelId: 'hyper-glm-5.3-flash', name: 'charm-hyper / Hyper · GLM-5.3-Flash', provider: 'charm-hyper' },
+            { modelId: 'openrouter-union-alpha', provider: 'openrouter' }
+        ]
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory={'C:\\repo'}
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        fireEvent.click(screen.getByDisplayValue('kimi'))
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model-options')).toHaveTextContent(
+                'Default,thehive — thehive / GLM-5.3-flash,thehive — thehive / hive-deepseek,charm-hyper — charm-hyper / Hyper · GLM-5.3-Flash,openrouter — openrouter-union-alpha'
+            )
+        })
+    })
+
+    it('restores a remembered Kimi alias instead of resetting it to Default', async () => {
+        mocks.kimiModels = [
+            { modelId: 'GLM-5.3-flash', provider: 'thehive' }
+        ]
+        savePreferredAgent('kimi')
+        savePreferredLaunchSettings('machine-1', 'kimi', {
+            model: 'GLM-5.3-flash',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default'
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory={'C:\\repo'}
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('GLM-5.3-flash')
+            expect(screen.getByTestId('create')).toBeEnabled()
+        })
+    })
+
+    it('resets a remembered Kimi alias that the dynamic catalog no longer lists', async () => {
+        mocks.kimiModels = [
+            { modelId: 'GLM-5.3-flash', provider: 'thehive' }
+        ]
+        savePreferredAgent('kimi')
+        savePreferredLaunchSettings('machine-1', 'kimi', {
+            model: 'retired-alias',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default'
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory={'C:\\repo'}
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('auto')
+        })
+        expect(screen.getByTestId('create')).toBeEnabled()
     })
 
     it.each([
@@ -603,6 +719,22 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => expect(screen.getByTestId('agy-model')).toHaveTextContent('auto'))
     })
 
+    it('keeps an AGY model the user picked here when the machine catalog changes under the form', async () => {
+        // The machine refreshes its catalog in the background, so the list can
+        // change while the form is open. A model the user chose is theirs to
+        // keep — unlike a restored one, which the two tests above drop.
+        savePreferredAgent('agy')
+        const view = render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        fireEvent.click(screen.getByTestId('agy-model'))
+        await waitFor(() => expect(screen.getByTestId('agy-model')).toHaveTextContent('gemini-3.6-flash-low'))
+
+        mocks.agyModels = [{ modelId: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)' }]
+        view.rerender(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        await waitFor(() => expect(screen.getByTestId('agy-model')).toHaveTextContent('gemini-3.6-flash-low'))
+    })
+
     it('falls back to Default when a preferred AGY model is no longer advertised', async () => {
         savePreferredAgent('agy')
         savePreferredLaunchSettings('machine-1', 'agy', { model: 'removed-model', cursorSelectedBase: 'auto', effort: 'auto', modelReasoningEffort: 'default' })
@@ -631,6 +763,82 @@ describe('NewSession launch preferences', () => {
             yolo: undefined,
             permissionMode: undefined
         }))
+    })
+
+    it('shows machine DSH models and forwards the opaque tuple on create', async () => {
+        savePreferredAgent('dsh')
+        mocks.dshModels = [
+            { modelId: '["deepseek-official","deepseek-flash"]', name: 'DeepSeek-V41-Flash' },
+            { modelId: '["deepseek-official","deepseek-v4-pro"]', name: 'DeepSeek-V4-Pro' },
+        ]
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'dsh-session' })
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model-options')).toHaveTextContent('DeepSeek-V4-Pro')
+        })
+        mocks.nextModelValue = '["deepseek-official","deepseek-v4-pro"]'
+        fireEvent.click(screen.getByTestId('model'))
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('dsh-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'dsh',
+            model: '["deepseek-official","deepseek-v4-pro"]',
+            yolo: undefined
+        }))
+    })
+
+    it('spawns DSH without a model when Default stays selected', async () => {
+        savePreferredAgent('dsh')
+        mocks.dshModels = [{ modelId: '["deepseek-official","deepseek-flash"]', name: 'DeepSeek-V41-Flash' }]
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'dsh-session' })
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model-options')).toHaveTextContent('DeepSeek-V41-Flash')
+        })
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('dsh-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'dsh',
+            model: undefined
+        }))
+    })
+
+    it('restores a preferred DSH model that is still advertised and forwards it on create', async () => {
+        savePreferredAgent('dsh')
+        savePreferredLaunchSettings('machine-1', 'dsh', { model: '["deepseek-official","deepseek-flash"]', cursorSelectedBase: 'auto', effort: 'auto', modelReasoningEffort: 'default' })
+        mocks.dshModels = [{ modelId: '["deepseek-official","deepseek-flash"]', name: 'DeepSeek-V41-Flash' }]
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'dsh-session' })
+        const view = render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        await waitFor(() => expect(screen.getByTestId('model')).toHaveTextContent('deepseek-flash'))
+
+        // Remount: the remembered tuple must come back from the preferred
+        // launch settings (not just the in-form draft) and survive the
+        // catalog validation effect.
+        view.unmount()
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByTestId('model')).toHaveTextContent('deepseek-flash'))
+
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('dsh-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'dsh',
+            model: '["deepseek-official","deepseek-flash"]',
+            yolo: undefined
+        }))
+    })
+
+    it('falls back to Default when a preferred DSH model is no longer advertised', async () => {
+        savePreferredAgent('dsh')
+        savePreferredLaunchSettings('machine-1', 'dsh', { model: '["deepseek-official","removed-model"]', cursorSelectedBase: 'auto', effort: 'auto', modelReasoningEffort: 'default' })
+        mocks.dshModels = [{ modelId: '["deepseek-official","deepseek-flash"]', name: 'DeepSeek-V41-Flash' }]
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+
+        await waitFor(() => expect(screen.getByTestId('model')).toHaveTextContent('auto'))
     })
 
     it('lets Claude create with a chosen permission mode instead of the global YOLO toggle', async () => {

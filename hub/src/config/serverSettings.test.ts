@@ -39,6 +39,27 @@ describe('loadServerSettings', () => {
         await expect(loadServerSettings(dir)).rejects.toThrow('Unsupported old settings field')
     })
 
+    it('persists Android push mode and honors env over file without replacing the file value', async () => {
+        dir = makeTempDir()
+        const original = process.env.HAPI_ANDROID_PUSH
+        try {
+            process.env.HAPI_ANDROID_PUSH = 'relay'
+            expect((await loadServerSettings(dir)).settings.androidPushMode).toBe('relay')
+            expect(JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8')).androidPushMode).toBe('relay')
+            process.env.HAPI_ANDROID_PUSH = 'off'
+            const overridden = await loadServerSettings(dir)
+            expect(overridden.settings.androidPushMode).toBe('off')
+            expect(overridden.sources.androidPushMode).toBe('env')
+            delete process.env.HAPI_ANDROID_PUSH
+            const restored = await loadServerSettings(dir)
+            expect(restored.settings.androidPushMode).toBe('relay')
+            expect(restored.sources.androidPushMode).toBe('file')
+        } finally {
+            if (original === undefined) delete process.env.HAPI_ANDROID_PUSH
+            else process.env.HAPI_ANDROID_PUSH = original
+        }
+    })
+
     it('defaults ServerChan background-only mode to disabled', async () => {
         dir = makeTempDir()
 

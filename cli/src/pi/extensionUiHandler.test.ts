@@ -30,6 +30,30 @@ function createHarness() {
 describe('PiExtensionUiHandler', () => {
     beforeEach(() => vi.useRealTimers());
 
+    it('applies setTitle as metadata.name rename (overrides spawn name)', () => {
+        let metadata = {
+            path: '/tmp',
+            host: 'localhost',
+            name: 'issue-triage-#54',
+            summary: { text: 'native summary', updatedAt: 1 }
+        };
+        const harness = createHarness();
+        harness.session.updateMetadata.mockImplementation((handler: (current: typeof metadata) => typeof metadata) => {
+            metadata = handler(metadata);
+        });
+
+        harness.handler.handle({
+            type: 'extension_ui_request',
+            id: 'title-1',
+            method: 'setTitle',
+            title: '  Renamed via hapi_change_title  '
+        });
+
+        expect(metadata.name).toBe('Renamed via hapi_change_title');
+        expect(metadata.summary.text).toBe('native summary');
+        expect(harness.session.updateMetadata).toHaveBeenCalledTimes(1);
+    });
+
     it('maps select into request_user_input and returns its selected option', async () => {
         const harness = createHarness();
         harness.handler.handle({ type: 'extension_ui_request', id: 'select-1', method: 'select', title: 'Pick', options: ['one', 'two'] });

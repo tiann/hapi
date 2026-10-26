@@ -2,16 +2,20 @@
 
 Endpoint tables for native clients, grouped by feature. Request/response shapes reference the Zod schemas in `shared/src/schemas.ts` and `shared/src/apiTypes.ts` (package `@hapi/protocol`) — those schemas, not the prose here, are the field-level source of truth. Route behavior is grounded in `hub/src/web/routes/*.ts`; `web/src/api/client.ts` is the reference consumer.
 
+These tables describe the hub interface. The [native app guide](../../guide/native-apps.md#sessions-and-everyday-use)
+records current iOS/Android UI support; an API wrapper or wire field alone
+does not mean the app offers that feature.
+
 ## Conventions
 
-- All paths below are relative to the hub base URL. Everything under `/api` requires `Authorization: Bearer <JWT>` ([Auth](./auth.md)).
+- All paths below are relative to the hub base URL. `/api` routes require `Authorization: Bearer <JWT>` except the `/api/auth` exchange and Telegram `/api/bind` ([Auth](./auth.md)).
 - Path params (`:id`, `:messageId`, …) must be URL-encoded (the web client uses `encodeURIComponent` throughout).
 - Request bodies are JSON (`content-type: application/json`) with **one exception**: `POST /api/voice/transcription` is `multipart/form-data`. Responses are JSON unless noted (generated images and scratchlist attachments return raw bytes).
 - Bodies are validated with Zod; failures return `400` (see [Errors](./errors.md)).
 - **gzip:** the hub gzips `/api/*` JSON responses when `Accept-Encoding` accepts gzip. Negotiation is q-value aware (`acceptsGzip` in `hub/src/web/sseCompression.ts`): `gzip;q=0` is honored as a refusal, `*` counts unless a `gzip` entry overrides it. Send a normal `Accept-Encoding: gzip` and decompress transparently. The SSE stream is gzip-compressed separately with per-event flush — see [SSE](./sse.md). Source: `hub/src/web/server.ts`.
 - Several endpoints are **RPC-wrapped**: the hub forwards to the session's CLI process over Socket.IO and relays the result. These can fail with HTTP 200 + `{success: false, error}` or with 503 — see [Errors](./errors.md#rpc-wrapped-endpoints).
 
-## Tier 1 — required for v1 clients
+## Interactive client API
 
 ### Health
 
@@ -47,6 +51,7 @@ Source: `hub/src/web/routes/sessions.ts`; request schemas in `shared/src/apiType
 | `PATCH /api/sessions/:id/summary` | `{text}` (1–255 chars) | `{ok: true}` |
 | `PUT /api/sessions/:id/pin` | `{mode: 'none'\|'project'\|'global'}` | `{ok: true}` |
 | `POST /api/sessions/:id/switch` | `{}` | `{ok: true}` — hands terminal-controlled session over to remote control |
+| `POST /api/sessions/:id/clear` | `{}` | `{sessionId}` — shared sessions only; resume inactive sessions through the Runner first, then create a new root; navigate only the initiating view |
 | `POST /api/sessions/:id/title-suggestion` | — | `{title}`; errors pass through 422/429/502/503 |
 | `GET /api/sessions/:id/slash-commands` | — | `SlashCommandsResponse` `{success, commands?, error?}` |
 | `GET /api/sessions/:id/skills` | — | `SkillsResponse`-shaped `{success, ...}` |
@@ -55,7 +60,7 @@ Source: `hub/src/web/routes/sessions.ts`; request schemas in `shared/src/apiType
 Both endpoints return the id of the session that now carries the conversation — which **may differ from the id you called them on** (fresh spawn under a new id; the old row is superseded). Clients must migrate composer drafts and replace navigation to the returned id. Reference: `web/src/routes/sessions/followSupersedingSession.ts`; the durable link also appears as `metadata.supersededBySessionId` on the old session.
 :::
 
-Optional for v1 (endpoints exist; the v1 native scope does not require them): `POST /api/sessions/:id/fork` `{messageLocalId?}` → `{sessionId}`, `POST /api/sessions/:id/rewind` `{messageLocalId}` → `{success: true}`, `GET /api/sessions/:id/export` (413 when too large).
+Additional session APIs without a current native UI: `POST /api/sessions/:id/fork` `{messageLocalId?}` → `{sessionId}`, `POST /api/sessions/:id/rewind` `{messageLocalId}` → `{success: true}`, `GET /api/sessions/:id/export` (413 when too large). Availability also depends on session history capabilities.
 
 ### Messages
 
@@ -65,16 +70,21 @@ Source: `hub/src/web/routes/messages.ts`; schemas `MessagesQuerySchema`, `SendMe
 |---|---|---|
 | `GET /api/sessions/:id/messages` | Query: `limit?` (1–200, default 50), cursor pairs `beforeSeq+beforeAt` \| `afterSeq+afterAt` (+ optional `untilSeq+untilAt`, `epoch` with `after`) | `MessagesResponse` `{messages: DecryptedMessage[], page: {direction, limit, epoch, reset, nextBefore*/nextAfter*, snapshotHead*, hasMore}}` — full cursor semantics in [Pagination](./pagination.md) |
 | `POST /api/sessions/:id/messages` | `{text, localId?, attachments?, scheduledAt?, deliveryMode?: 'queue'\|'steer'}` — text or attachments required; `scheduledAt` requires `localId`, must be ≤ 7 days out, excludes attachments and steer | `{ok: true}` — the message itself arrives via SSE (`message-received`), reconciled by `localId` |
-| `DELETE /api/sessions/:id/messages/:messageId` | — | `{status: 'cancelled', localId}` \| `{status: 'invoked', message}` \| `{status: 'busy', localId}` (cancel; `busy` = steer still resolving) |
+| `DELETE /api/sessions/:id/messages/:messageId` | — | `{status: 'cancelled', localId}` \| `{status: 'invoked', message}` \| `{status: 'busy', localId}` (cancel; `busy` = native delivery/removal is unresolved) |
 | `POST /api/sessions/:id/messages/:messageId/steer` | — | `{status: 'steered', localId}` \| `{status: 'invoked', message}` \| `{status: 'failed', error, localId}` |
 | `POST /api/sessions/:id/messages/:messageId/retry` | — | `{status: 'retried', localId}` \| `{status: 'already-queued', localId}` \| `{status: 'retry-unavailable', localId}` \| `{status: 'invoked', message}` \| `{status: 'not-found'}` — explicit retry only; never automatic replay |
-| `POST /api/sessions/:id/messages/queued-state` | `{localIds: string[]}` (≤ 1000, deduped) | `{queuedLocalIds: string[], invokedLocalMessages: [{localId, invokedAt}]}` — resync optimistic sends after reconnect |
+| `POST /api/sessions/:id/messages/queued-state` | `{localIds: string[]}` (≤ 1000, deduped) | `{queuedLocalIds: string[], indeterminateLocalIds: string[], invokedLocalMessages: [{localId, invokedAt}]}` — resync after reconnect; preserve indeterminate rows without auto-replaying them |
 
 The hub stamps `sentFrom: 'webapp'` on REST-sent messages server-side; the request body has no such field.
 
 ### Permissions
 
 Source: `hub/src/web/routes/permissions.ts`. Pending requests are **not messages**: they live in `session.agentState.requests` (keyed by request id) and move to `agentState.completedRequests` when resolved — schemas `AgentStateRequestSchema` / `AgentStateCompletedRequestSchema` in `shared/src/schemas.ts`.
+
+Shared Codex completed requests may have `status: 'resolved'`: native completion
+is known, but the winner/answer is not. Render a neutral status, not Approved or
+an inferred selection. A successful approve HTTP response only submitted a
+candidate. `canceled` can instead mean withdrawal after a transport disconnect.
 
 | Method & path | Request | Response |
 |---|---|---|
@@ -91,22 +101,47 @@ Source: `hub/src/web/routes/sessions.ts`; flavor gates in `shared/src/modes.ts` 
 
 | Method & path | Request | Applies to |
 |---|---|---|
-| `POST /api/sessions/:id/permission-mode` | `{mode: PermissionMode}` | All flavors except `pi` (per-flavor allowed sets in `modes.ts`) |
-| `POST /api/sessions/:id/model` | `{model: string \| {provider, modelId} \| null}` | All flavors (`supportsModelChange` is true for every current flavor); remote-only for codex/cursor/grok |
+| `POST /api/sessions/:id/permission-mode` | `{mode: PermissionMode}` | All flavors except `pi` and `dsh` (per-flavor allowed sets in `modes.ts`) |
+| `POST /api/sessions/:id/model` | `{model: string \| {provider, modelId} \| null}` | Flavors with `supportsModelChange` (not `dsh`); remote-only for codex/cursor/grok |
 | `POST /api/sessions/:id/effort` | `{effort: string \| null}` | claude, grok, pi (`supportsEffort`) |
 | `POST /api/sessions/:id/model-reasoning-effort` | `{modelReasoningEffort: string \| null}` | codex, opencode (remote-only) |
 | `POST /api/sessions/:id/service-tier` | `{serviceTier: 'fast' \| 'standard'}` | codex (remote-only) |
 | `POST /api/sessions/:id/collaboration-mode` | `{mode: 'default' \| 'plan'}` | codex (remote-only) |
 | `POST /api/sessions/:id/copilot-agent-mode` | `{mode}` | copilot (remote-only) |
 
-All respond `{ok: true}`; apply-failures return 409 with a message. Model/effort **catalogs** (RPC-wrapped; all return `{success, ...} \| {success: false, error}`):
+`metadata.capabilities.concurrentClients === true`: ignore the legacy
+`agentState.controlledByUser` input/settings gate. Shared keepalives have no
+ownership mode. `/switch` returns HTTP 409 with
+`code: 'control_mode_not_applicable'`; do not offer takeover. The remote-only
+Codex configuration restrictions above do not apply to these sessions.
+Shared Codex rejects `safe-yolo` even though it remains in the historical
+Codex permission-mode schema; do not offer it for concurrent sessions.
+
+Shared `/clear` has no global `supersededBySessionId` change; clients other than
+the caller stay on the original thread. Fork may return an already-bound shared
+child; the hub must not spawn a second engine. Use advertised history
+capabilities: shared Codex currently supports fork, not in-place rewind.
+
+Shared Codex plan execution: `POST /api/sessions/:id/codex/plan/implement`
+with `{planId}` returns `{ok: true}` after native queue acceptance. Use the
+current `agentState.codexPlanProposalId` to match the transcript proposal's
+tool-call id; `null` withdraws actions without removing content. The CLI
+validates the latest completed Plan-mode turn, switches to Default, and queues
+`Implement the plan.` with a stable submission id. Repeating an accepted
+action does not enqueue it again. This is separate from tool permissions.
+Errors include HTTP 409 (`stale_plan` / `unavailable`), 502 (`failed`) and 503
+(`indeterminate`); error bodies have `{ok: false, code, error}`. Do not
+automatically resend after an unconfirmed result. "Continue planning" is a
+local composer-focus action and does not submit a native approval or message.
+
+The configuration routes in the table above respond `{ok: true}`; apply-failures return 409 with a message. Model/effort **catalogs** (RPC-wrapped; all return `{success, ...} \| {success: false, error}`):
 
 | Method & path | Notes |
 |---|---|
-| `GET /api/sessions/:id/codex-models`, `/opencode-models`, `/cursor-models`, `/grok-models`, `/copilot-models`, `/pi-models` | Active session of the matching flavor; 400 otherwise |
+| `GET /api/sessions/:id/codex-models`, `/opencode-models`, `/cursor-models`, `/grok-models`, `/copilot-models`, `/kimi-models`, `/pi-models` | Active session of the matching flavor; 400 otherwise |
 | `GET /api/sessions/:id/opencode-reasoning-effort-options`, `/grok-reasoning-effort-options` | Same pattern |
-| `GET /api/machines/:id/agy-models`, `/pi-models`, `/codex-models`, `/cursor-models` | Machine-level (pre-spawn pickers) |
-| `GET /api/machines/:id/opencode-models?cwd=`, `/grok-models?cwd=`, `/copilot-models?cwd=` | `cwd` query required (400 without) |
+| `GET /api/machines/:id/agy-models`, `/pi-models`, `/codex-models`, `/cursor-models` | Machine-level (pre-spawn pickers). `agy-models` takes `?refresh=true` to skip the machine's cached catalog, and may answer `success: true` with an advisory `error` (see [Errors](./errors.md#rpc-wrapped-endpoints)) |
+| `GET /api/machines/:id/opencode-models?cwd=`, `/grok-models?cwd=`, `/copilot-models?cwd=`, `/kimi-models?cwd=` | `cwd` query required (400 without) |
 
 ### Machines & spawning
 
@@ -131,6 +166,16 @@ the authoritative availability check as part of spawning, covering changes
 after the form-level query without requiring a duplicate client RPC.
 Availability checks executables and static runner configuration only; it does
 not execute the Agent or verify account/login state.
+
+Directory listing and spawning use the same workspace-root policy. With no
+`metadata.workspaceRoots`, paths are unrestricted beyond the runner account's
+filesystem permissions; `metadata.homeDir` is only a suggested starting location.
+Explicit roots restrict both operations, after canonical symlink resolution.
+Listings classify allowed directory symlinks as directories and omit links
+whose targets escape the configured roots. Dot-prefixed entries require
+`includeHidden: true`. Autocomplete clients can suggest known workspace roots
+from metadata while a user types their prefix, without listing a root's
+out-of-bounds parent.
 
 ### Git & files (RPC-wrapped)
 
@@ -194,7 +239,9 @@ Source: `hub/src/web/routes/voice.ts`.
 | `GET /api/voice/transcription/providers` | — | `{providers: [{id, label, modes}]}` — only providers whose keys are configured on the hub |
 | `POST /api/voice/transcription` | `multipart/form-data`: `file` (audio, ≤ 25 MB, `audio/*` or webm/mp4), `provider` (`openai`\|`elevenlabs`\|`deepgram`\|`groq`\|`openai-compatible`), `mode` = `standard`, `language?` (BCP-47-ish, ≤ 35 chars) | `{text, language?}`; `413` body too large, `400` bad field |
 
-The realtime-token, voice-assistant token, and WebSocket-proxy endpoints under `/api/voice/*` belong to the live voice assistant — out of scope for v1.
+Native apps currently use standard transcription only. Realtime dictation,
+voice-assistant tokens and WebSocket proxies are used by the web voice UI;
+see [Other hub surfaces](#other-hub-surfaces).
 
 ### Usage & storage (owner-only)
 
@@ -205,14 +252,21 @@ Source: `hub/src/web/routes/usage.ts`, `hub/src/web/routes/storage.ts`. Both `40
 | `GET /api/usage/summary` | Query: `range=7d\|30d\|all` (default 7d), `timeZone` (IANA, validated) | `UsageSummaryResponse` `{range, totals, daily[], byAgent[], byModel[], updatedAt}` |
 | `GET /api/storage/sqlite` | — | `{path, databaseBytes, walBytes, shmBytes, totalBytes}` |
 
-### Devices (FCM push)
+### Devices (Android / iOS push)
 
 Source: `hub/src/web/routes/devices.ts`; full push contract in [`native-companion-contract.md`](../native-companion-contract.md).
 
 | Method & path | Request | Response |
 |---|---|---|
-| `POST /api/devices/register` | `{token, platform: 'phone'\|'wear', deviceId}` (deviceId: any stable 1–128-char install id) | `{ok: true}` (upsert) |
+| `POST /api/devices/register` | `{token, platform: 'phone'\|'wear'\|'ios', deviceId, pushKey?}` (deviceId: any stable 1–128-char install id) | `{ok: true}` (upsert) |
 | `DELETE /api/devices/register` | `{token}` | `{ok: true}` |
+
+`pushKey` is base64 of exactly 32 bytes. It is required for iOS; phone
+registrations may omit it for direct FCM, but Android relay delivery requires
+it and the current Android app supplies it. Supplied phone keys are validated;
+Wear ignores the field. Invalid registration bodies return 400. Upserts are
+keyed by `(namespace, deviceId, platform)`. The `wear` protocol value does not
+imply a Wear OS app is included in this repository.
 
 ### Visibility
 
@@ -236,19 +290,22 @@ Source: `hub/src/web/routes/hubSettings.ts`.
 
 `GET /api/events` is the realtime channel — subscription params, resume handshake, and reconnect policy are specified in [SSE](./sse.md). Its gzip behavior differs from the JSON endpoints (streaming compression with per-event flush), also covered there.
 
-## Tier 2 — out of scope for v1
+## Other hub surfaces
 
-These exist on the hub but v1 native clients must not implement or call them:
+These surfaces exist on the hub but are not exposed by the current native
+apps. This is a feature inventory, not a protocol-version ban. Client-type
+restrictions and owner authorization still apply; the CLI plane below is
+internal and must never be used by clients.
 
-| Area | Paths | Why out of scope |
+| Area | Paths | Current use or restriction |
 |------|-------|------------------|
 | Codex Desktop import | `/api/codex/*` (`hub/src/web/routes/codexDesktop.ts`) | Desktop-import tooling |
 | Pi session import | `/api/pi/*`, `/api/sessions/:id/pi-*` (`hub/src/web/routes/piSessions.ts`, `sessions.ts`) | Import tooling (the `pi-models` catalog above is the one exception) |
 | Work graph | `/api/work-graph/*` (`hub/src/web/routes/workGraph.ts`) | Web-only feature |
-| Web Push | `/api/push/*` (`hub/src/web/routes/push.ts`) | Browser Push API; natives use `/api/devices` (FCM) |
+| Web Push | `/api/push/*` (`hub/src/web/routes/push.ts`) | Browser Push API; natives use `/api/devices/register` (Android/iOS push contract) |
 | Hub settings write | `PUT /api/hub-settings` | Owner-only hub administration |
 | Telegram | `POST /api/bind` | Telegram Mini App binding only |
-| Voice assistant | `/api/voice/token`, `/voices`, `/backend`, `/gemini-token`, `/qwen-token`, `/qwen-ws`, `/gemini-ws`, `/transcription/realtime-token`, `/telemetry`, credentials endpoints | Realtime assistant, not v1 dictation |
+| Web voice | `/api/voice/token`, `/voices`, `/backend`, `/gemini-token`, `/qwen-token`, `/qwen-ws`, `/gemini-ws`, `/transcription/realtime-token`, `/telemetry`, credentials endpoints | Realtime assistant/dictation and provider administration; native apps use standard dictation |
 | Cursor maintenance | `/api/sessions/:id/migrate-to-acp`, `/cursor-chat-store` | Desktop store migration |
-| Session export | `GET /api/sessions/:id/export` | Feeds the share/export feature, excluded from v1 |
+| Session export | `GET /api/sessions/:id/export` | Whole-session export through the web; separate from Android's full-text reader file export |
 | **CLI plane** | `/cli/*` (`hub/src/web/routes/cli.ts`) | **Forbidden for clients** — internal CLI↔hub surface; authenticates with the raw access token instead of a JWT and bypasses the client middleware. Never call it from a client, and never send the access token as a bearer anywhere except `POST /api/auth`'s JSON body |
