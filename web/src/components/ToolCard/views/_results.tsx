@@ -6,6 +6,8 @@ import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { ChecklistList, extractTodoChecklist } from '@/components/ToolCard/checklist'
 import { basename, resolveDisplayPath } from '@/utils/path'
 import { getInputStringAny } from '@/lib/toolInputUtils'
+import { isGoalToolName, parseGoalToolResult } from '@/components/ToolCard/goalTools'
+import { GoalView } from '@/components/ToolCard/views/GoalView'
 import {
     getCodexAgentActivity,
     getCodexAgentTargets,
@@ -1070,7 +1072,14 @@ export const toolResultViewRegistry: Record<string, ToolViewComponent> = {
     exit_plan_mode: MarkdownResultView
 }
 
+const GoalResultView: ToolViewComponent = (props) => {
+    return props.block.tool.state === 'completed' && parseGoalToolResult(props.block.tool.result)
+        ? <GoalView {...props} surface={props.surface ?? 'dialog'} />
+        : <GenericResultView {...props} />
+}
+
 export function getToolResultViewComponent(toolName: string): ToolViewComponent {
+    if (isGoalToolName(toolName)) return GoalResultView
     if (toolName.startsWith('mcp__')) {
         return GenericResultView
     }

@@ -11,6 +11,42 @@ function getAgentMessages(actions: CodexConversionAction[]): CodexMessage[] {
 }
 
 describe('convertCodexEvent', () => {
+    const footer = 'AGENT_NOTIFY_SUMMARY {"status":"done","summary":"Finished"}';
+    const assistantEvents = (text: string, phase: string | null | undefined) => [
+        { type: 'event_msg', payload: { type: 'agent_message', message: text, phase } },
+        { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'AgentMessage', id: 'item', text, phase } } },
+        { type: 'response_item', payload: { type: 'message', role: 'assistant', id: 'item', content: [{ type: 'output_text', text }], phase } }
+    ];
+
+    it.each(['commentary', 'partial_answer'])('removes intermediate summaries from every transcript message form (%s)', phase => {
+        for (const event of assistantEvents(`Still working.\n${footer}`, phase)) {
+            expect(convertCodexEvent(event)?.messages).toEqual([
+                expect.objectContaining({ type: 'message', message: 'Still working.' })
+            ]);
+        }
+    });
+
+    it.each(['final_answer', undefined, null, 'unknown'])('preserves transcript summaries with phase %s', phase => {
+        for (const event of assistantEvents(`Finished.\n${footer}`, phase)) {
+            expect(convertCodexEvent(event)?.messages?.[0]).toMatchObject({ message: `Finished.\n${footer}` });
+        }
+    });
+
+    it('suppresses footer-only intermediate transcript messages', () => {
+        for (const event of assistantEvents(footer, 'commentary')) {
+            expect(convertCodexEvent(event)).toBeNull();
+        }
+    });
+
+    it.each([false, true])('deduplicates raw semantic/response mirrors after summary filtering (response first: %s)', responseFirst => {
+        const converter = createCodexEventConverter();
+        const events = assistantEvents(`Still working.\n${footer}`, 'commentary');
+        const pair = [events[1], events[2]];
+        if (responseFirst) pair.reverse();
+        const messages = pair.flatMap(event => getAgentMessages(converter(event)));
+        expect(messages).toEqual([expect.objectContaining({ type: 'message', message: 'Still working.' })]);
+    });
+
     it('extracts session_meta id', () => {
         const result = convertCodexEvent({
             type: 'session_meta',

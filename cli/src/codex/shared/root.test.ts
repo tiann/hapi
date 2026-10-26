@@ -61,6 +61,8 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
     const updateState = vi.fn((fn: (value: AgentState) => AgentState) => { state = fn(state); });
     const rpc = new Map<string, (raw: unknown) => Promise<unknown>>();
     const send = vi.fn();
+    const consumed = vi.fn();
+    const uncertain = vi.fn();
     const hubArchivedListeners: Array<() => void> = [];
     const session = {
         sessionId: 'sid', getMetadata: () => metadata,
@@ -74,7 +76,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
         },
         rpcHandlerManager: { registerHandler: (name: string, handler: (raw: unknown) => Promise<unknown>) => rpc.set(name, handler) },
         sendSessionEvent() {}, sendAgentMessage: send, emitSessionReady() {},
-        sendUserMessage() {}, emitMessagesConsumed() {}, emitSteerIndeterminate() {}, syncNativeQueuedMessage() {},
+        sendUserMessage() {}, emitMessagesConsumed: consumed, emitSteerIndeterminate: uncertain, syncNativeQueuedMessage() {},
         sendSessionDeath() {}, async flush() {}, close() {}
     } as unknown as ApiSessionClient;
     const end = opts?.end ?? (async () => { throw new Error('Unexpected root archive'); });
@@ -94,13 +96,97 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
         abandoned(): void;
     };
     return {
-        root, native, rpc, send, metadata: () => metadata, state: () => state, updateState,
+        root, native, rpc, send, consumed, uncertain, metadata: () => metadata, state: () => state, updateState,
+        drain: () => (root as unknown as { notifications: Promise<void> }).notifications,
         reconnect: () => reconnect?.(),
         emitHubArchived: () => { for (const listener of hubArchivedListeners) listener(); },
         hubArchivedListenerCount: () => hubArchivedListeners.length,
         end,
     };
 }
+
+async function startCompaction(f: Awaited<ReturnType<typeof fixture>>, id = 'input', turnId = 'compacting-turn') {
+    f.native.queue = [{ id: `native-${id}`, clientUserMessageId: id, input: [{ type: 'text', text: id }] }];
+    await f.root.refresh();
+    f.native.queue = [];
+    // Native removes input before announcing the turn and before recording userMessage.
+    f.native.notify('thread/queue/changed', { threadId: 'thread' });
+    await vi.waitFor(() => expect(f.uncertain).toHaveBeenCalledWith(expect.arrayContaining([id])));
+    const turn = { id: turnId, status: 'inProgress', items: [] };
+    f.native.thread.turns.push(turn);
+    f.native.notify('turn/started', { threadId: 'thread', turn });
+    f.native.notify('item/started', { threadId: 'thread', turnId, item: { id: 'compact', type: 'contextCompaction' } });
+    return turn;
+}
+
+describe('compaction delivery confirmation', () => {
+    it('does not turn uncertainty discovered by a cold snapshot into live compaction evidence', async () => {
+        const f = await fixture();
+        f.native.queue = [{ id: 'old-native', clientUserMessageId: 'old', input: [] }];
+        await f.root.refresh();
+        f.native.queue = [];
+        await f.root.refresh();
+        expect(f.uncertain).toHaveBeenCalledWith(['old']);
+        f.native.thread.turns.push({ id: 'later', status: 'inProgress', items: [] });
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'later' } });
+        f.native.notify('item/started', { threadId: 'thread', turnId: 'later', item: { id: 'c', type: 'contextCompaction' } });
+        await f.drain();
+        expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: [] });
+    });
+
+    it('reports only freshly dequeued input as waiting, without acknowledging or replaying it', async () => {
+        const f = await fixture();
+        const request = vi.spyOn(f.root.client, 'request');
+        const turn = await startCompaction(f);
+        await vi.waitFor(() => expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: ['input'] }));
+        expect(f.consumed).not.toHaveBeenCalled();
+        expect(request.mock.calls.some(([method]) => method === 'thread/queue/add')).toBe(false);
+        f.native.notify('item/started', { threadId: 'thread', turnId: turn.id,
+            item: { id: 'user', type: 'userMessage', clientId: 'input', content: [] } });
+        await vi.waitFor(() => expect(f.consumed).toHaveBeenCalledWith(['input'], { steered: undefined }));
+        expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: [] });
+    });
+
+    it.each(['completed', 'interrupted', 'failed'])('restores uncertainty when the turn is %s without consumption', async status => {
+        const f = await fixture();
+        const turn = await startCompaction(f);
+        await vi.waitFor(() => expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: ['input'] }));
+        turn.status = status;
+        f.native.notify('turn/completed', { threadId: 'thread', turn });
+        await vi.waitFor(() => expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: [] }));
+        expect(f.consumed).not.toHaveBeenCalled();
+        await startCompaction(f, 'next', 'next-turn');
+        await vi.waitFor(() => expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: ['next'] }));
+    });
+
+    it('withdraws waiting at compaction completion and ignores child and stale turn events', async () => {
+        const f = await fixture();
+        const turn = await startCompaction(f);
+        await vi.waitFor(() => expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: ['input'] }));
+        for (const [threadId, turnId] of [['child', turn.id], ['thread', 'stale']]) {
+            f.native.notify('item/completed', { threadId, turnId, item: { id: 'other', type: 'contextCompaction' } });
+        }
+        await f.drain();
+        expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: ['input'] });
+        f.native.notify('item/completed', { threadId: 'thread', turnId: turn.id, item: { id: 'compact', type: 'contextCompaction' } });
+        await vi.waitFor(() => expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: [] }));
+        expect(f.consumed).not.toHaveBeenCalled();
+    });
+
+    it('does not keep waiting after native disconnect or stopping', async () => {
+        const f = await fixture();
+        await startCompaction(f);
+        await vi.waitFor(() => expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: ['input'] }));
+        f.native.initialized = false;
+        f.native.abandoned();
+        expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: [] });
+        await vi.waitFor(() => expect(f.native.initialized).toBe(true));
+        await f.root.refresh();
+        expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: [] });
+        f.root.stopAccepting();
+        expect(f.state()).toMatchObject({ codexCompactionPendingMessageIds: [] });
+    });
+});
 
 async function completePlan(f: Awaited<ReturnType<typeof fixture>>, status = 'completed') {
     await f.root.applySettings({ collaborationMode: 'plan' });
@@ -114,6 +200,16 @@ async function completePlan(f: Awaited<ReturnType<typeof fixture>>, status = 'co
     await vi.waitFor(() => expect(f.send).toHaveBeenCalledWith(expect.objectContaining({ name: 'ExitPlanMode' }), expect.any(String)));
     return codexPlanProposalId('thread', turn.id, 'plan-item');
 }
+
+describe('shared permission modes', () => {
+    it('switches native auto-review on and back to the human reviewer', async () => {
+        const f = await fixture();
+        expect((await f.root.applySettings({ permissionMode: 'autoReview' })).applied.permissionMode).toBe('autoReview');
+        expect(f.root.client).toMatchObject({ settings: { approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', sandboxPolicy: { type: 'workspaceWrite' } } });
+        expect((await f.root.applySettings({ permissionMode: 'default' })).applied.permissionMode).toBe('default');
+        expect(f.root.client).toMatchObject({ settings: { approvalsReviewer: 'user' } });
+    });
+});
 
 describe('shared plan actions', () => {
     it('applies remote change_title as metadata.name then lets native terminal rename win', async () => {

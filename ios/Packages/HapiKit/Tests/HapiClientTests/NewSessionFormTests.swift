@@ -279,7 +279,7 @@ struct NewSessionLogicTests {
             NewSessionForm(agent: .codex, permissionMode: .safeYolo)
         )
         #expect(staleMode.permissionMode == .default)
-        #expect(AgentFlavor.codex.launchPermissionModes == [.default, .readOnly, .yolo])
+        #expect(AgentFlavor.codex.launchPermissionModes == [.default, .readOnly, .autoReview, .yolo])
         #expect(NewSessionLogic.sanitizeDraft(NewSessionForm(agent: .kimi, permissionMode: .safeYolo)).permissionMode == .safeYolo)
     }
 

@@ -280,3 +280,27 @@ describe('normalizeAgentRecord — Codex usage provenance', () => {
         })
     })
 })
+
+
+describe('persisted Codex duration provenance', () => {
+    it('accepts an observed zero-duration Codex turn', () => {
+        expect(normalizeAgentRecord('duration', null, 1, { type: 'codex', data: {
+            type: 'turn_duration', flavor: 'codex', turn_id: 'turn', durationMs: 0
+        } })).toMatchObject({ role: 'event', content: { type: 'turn-duration', durationMs: 0, turnId: 'turn' } })
+    })
+    it.each([{ scope_role: 'child' }, { scopeRole: 'child' }, { scope: { role: 'child' } }])('rejects child timing with scope %j', scope => {
+        expect(normalizeAgentRecord('duration', null, 1, { type: 'codex', data: {
+            type: 'turn_duration', flavor: 'codex', turn_id: 'turn', durationMs: 123, ...scope
+        } })).toBeNull()
+    })
+    it.each([-1, NaN, Infinity, '123', undefined])('rejects invalid duration %s', durationMs => {
+        expect(normalizeAgentRecord('duration', null, 1, { type: 'codex', data: {
+            type: 'turn_duration', flavor: 'codex', turn_id: 'turn', durationMs
+        } })).toBeNull()
+    })
+    it('rejects imported history even when it carries a duration', () => {
+        expect(normalizeAgentRecord('duration', null, 1, { type: 'codex', data: {
+            type: 'turn_duration', flavor: 'codex', turn_id: 'turn', durationMs: 123, hapiUsageScope: 'imported-history'
+        } })).toBeNull()
+    })
+})

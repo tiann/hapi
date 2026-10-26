@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { AuthProxyRedirectError } from './authProxy'
 import { ApiClient, ApiError } from './client'
 
 describe('ApiClient error mapping', () => {
@@ -357,5 +358,59 @@ describe('ApiClient Kimi session model discovery', () => {
         const api = new ApiClient('test-token')
         await expect(api.getSessionKimiModels('session/1')).resolves.toEqual(catalog)
         expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/sessions/session%2F1/kimi-models')
+    })
+})
+
+describe('ApiClient auth proxy redirect', () => {
+    let originalFetch: typeof globalThis.fetch
+    let fetchMock: ReturnType<typeof vi.fn>
+
+    beforeEach(() => {
+        originalFetch = globalThis.fetch
+        fetchMock = vi.fn()
+        globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
+    })
+
+    afterEach(() => {
+        globalThis.fetch = originalFetch
+    })
+
+    const opaqueRedirect = () => ({ type: 'opaqueredirect', status: 0, ok: false }) as Response
+
+    // Every hub call site must classify an auth-proxy redirect instead of
+    // surfacing the browser's opaque `Failed to fetch`.
+    const callSites: Array<{ name: string; run: (api: ApiClient) => Promise<unknown> }> = [
+        { name: 'authenticate', run: (api) => api.authenticate({ accessToken: 'token' }) },
+        { name: 'bind', run: (api) => api.bind({ initData: 'init', accessToken: 'token' }) },
+        { name: 'getSessions', run: (api) => api.getSessions() },
+        {
+            name: 'getGeneratedImageBlob',
+            run: (api) => api.getGeneratedImageBlob('session-1', 'image-1')
+        },
+        { name: 'migrateCursorSessionToAcp', run: (api) => api.migrateCursorSessionToAcp('session-1') },
+        {
+            name: 'fetchScratchlistAttachmentBlob',
+            run: (api) => api.fetchScratchlistAttachmentBlob('session-1', 'attachment-1')
+        }
+    ]
+
+    it.each(callSites)('$name rejects with AuthProxyRedirectError', async ({ run }) => {
+        fetchMock
+            .mockResolvedValueOnce(opaqueRedirect())
+            .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+
+        const api = new ApiClient('test-token', { baseUrl: 'https://hub.example' })
+        await expect(run(api)).rejects.toBeInstanceOf(AuthProxyRedirectError)
+    })
+
+    it('getGeneratedImageBlob rejects with AuthProxyRedirectError on the 304 cache re-read', async () => {
+        fetchMock
+            .mockResolvedValueOnce({ type: 'basic', status: 304, ok: false } as Response)
+            .mockResolvedValueOnce(opaqueRedirect())
+            .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+
+        const api = new ApiClient('test-token', { baseUrl: 'https://hub.example' })
+        await expect(api.getGeneratedImageBlob('session-1', 'image-1')).rejects.toBeInstanceOf(AuthProxyRedirectError)
+        expect(fetchMock.mock.calls[1][1]).toMatchObject({ cache: 'force-cache', redirect: 'manual' })
     })
 })

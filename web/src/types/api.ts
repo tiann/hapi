@@ -23,6 +23,8 @@ export type {
     CursorChatStoreStatus,
     DeleteUploadResponse,
     DirectoryEntry,
+    DshModelsResponse,
+    DshModelSummary,
     FileReadResponse,
     GitCommandResponse,
     GrokModelsResponse,

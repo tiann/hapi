@@ -510,3 +510,48 @@ describe('claudeRemote /compact result reporting', () => {
         expect(wireOrder).toEqual(['result', 'Compaction completed', 'ready']);
     }, 15_000);
 });
+
+describe('claudeRemote native permission mode', () => {
+    // A process launched natively in acceptEdits/bypassPermissions never calls
+    // canCallTool, so switching the session back to Default mid-session would
+    // silently keep auto-approving tools.
+    it.each([
+        ['default', 'default'],
+        ['acceptEdits', 'default'],
+        ['bypassPermissions', 'default'],
+        ['plan', 'plan'],
+        ['auto', 'auto'],
+    ] as const)('launches Claude for %s with --permission-mode %s', async (sessionMode, nativeMode) => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        queryMock.mockReturnValueOnce(createAsyncStream([
+            { type: 'result', subtype: 'success' } as unknown as SDKMessage
+        ]));
+
+        let nextCallCount = 0;
+        try {
+            await claudeRemote({
+                sessionId: 'session-1',
+                path: process.cwd(),
+                mcpServers: {},
+                claudeEnvVars: {},
+                claudeArgs: [],
+                allowedTools: [],
+                hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => nextCallCount++ === 0
+                    ? { message: 'A', mode: { permissionMode: sessionMode } }
+                    : null,
+                onReady: () => {},
+                isAborted: () => false,
+                onSessionFound: () => {},
+                onMessage: () => {}
+            });
+
+            expect(queryMock.mock.calls[0][0].options.permissionMode).toBe(nativeMode);
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    });
+});

@@ -405,7 +405,7 @@ class NewSessionLogicTest {
             NewSessionForm(agent = "codex", permissionMode = "safe-yolo"),
         )
         assertEquals("default", staleMode.permissionMode)
-        assertEquals(listOf("default", "read-only", "yolo"), app.hapi.protocol.catalog.PermissionModes.forLaunch("codex").map { it.wireId })
+        assertEquals(listOf("default", "read-only", "autoReview", "yolo"), app.hapi.protocol.catalog.PermissionModes.forLaunch("codex").map { it.wireId })
         assertEquals("safe-yolo", NewSessionLogic.sanitizeDraft(NewSessionForm(agent = "kimi", permissionMode = "safe-yolo")).permissionMode)
     }
 }

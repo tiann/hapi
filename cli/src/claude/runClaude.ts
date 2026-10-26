@@ -180,6 +180,12 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                 }
             }
 
+            // Follow /model switches inside the TUI ("[1m]" kept) for the local
+            // context window; only the local settings file registers this hook.
+            if (currentSession && data.hook_event_name === 'PostModelSwitch' && typeof data.to_model === 'string') {
+                currentSession.localContextModel = data.to_model;
+            }
+
             // Inherit the mode the user picked inside the interactive TUI
             // (shift+tab) so a later local→remote switch keeps it. Only the
             // local settings file registers the hooks that carry

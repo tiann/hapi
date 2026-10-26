@@ -255,6 +255,65 @@ describe('session model', () => {
         expect(survivors).toHaveLength(1)
     })
 
+    it('notifies onSessionMergedAway when dedup collapses a duplicate row', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const mergedAway: Array<[string, string]> = []
+        const cache = new SessionCache(store, createPublisher(events), {
+            onSessionMergedAway: (oldSessionId, newSessionId) => mergedAway.push([oldSessionId, newSessionId])
+        })
+
+        const oldSession = cache.getOrCreateSession(
+            'agy-merge-hook-old',
+            { path: '/tmp/project', host: 'localhost', flavor: 'agy', agySessionId: 'brain-uuid-hook' },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'agy-merge-hook-new',
+            { path: '/tmp/project', host: 'localhost', flavor: 'agy', agySessionId: 'brain-uuid-hook' },
+            null,
+            'default'
+        )
+
+        await cache.deduplicateByAgentSessionId(newSession.id)
+
+        // The hub's enumeration cache keys entries per session id, so a dedup
+        // that silently removes a row would leak its cached catalogs — the
+        // hook must name the removed id and its merge target.
+        expect(mergedAway).toHaveLength(1)
+        expect(mergedAway[0][1]).toBe(newSession.id)
+        expect(mergedAway[0][0]).toBe(oldSession.id)
+        expect(cache.getSession(oldSession.id)).toBeUndefined()
+    })
+
+    it('does not notify onSessionMergedAway for mergeSessionHistory — the source row survives', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const mergedAway: Array<[string, string]> = []
+        const cache = new SessionCache(store, createPublisher(events), {
+            onSessionMergedAway: (oldSessionId, newSessionId) => mergedAway.push([oldSessionId, newSessionId])
+        })
+
+        const oldSession = cache.getOrCreateSession(
+            'merge-hook-hist-old',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'merge-hook-hist-new',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+
+        await cache.mergeSessionHistory(oldSession.id, newSession.id, 'default')
+
+        expect(mergedAway).toHaveLength(0)
+        expect(cache.getSession(oldSession.id)).toBeDefined()
+    })
+
     it('preserves service tier from old session when merging into resumed session', async () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []
@@ -917,6 +976,68 @@ describe('session model', () => {
         expect(activity).toHaveLength(1)
         expect(activity[0].sessionId).toBe(session.id)
         expect(activity[0].updatedAt).toBe(messages[0]?.createdAt)
+    })
+
+    it('sets backgroundTaskCount from Claude background_tasks_changed snapshots', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+        const session = cache.getOrCreateSession(
+            'session-cli-background-tasks',
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+            null,
+            'default'
+        )
+        const handlers = new Map<string, (payload: unknown) => void>()
+
+        registerSessionHandlers({
+            on: (event: string, handler: (payload: unknown) => void) => {
+                handlers.set(event, handler)
+            },
+            to: () => ({ emit: () => {} })
+        } as never, {
+            store,
+            resolveSessionAccess: (sessionId) => {
+                const stored = store.sessions.getSessionByNamespace(sessionId, 'default')
+                return stored ? { ok: true, value: stored } : { ok: false, reason: 'not-found' }
+            },
+            emitAccessError: () => {},
+            onBackgroundTaskCount: (sessionId, count) => cache.setBackgroundTaskCount(sessionId, count)
+        })
+        const send = (data: unknown) => handlers.get('message')?.({
+            sid: session.id,
+            message: JSON.stringify({ role: 'agent', content: { type: 'output', data } })
+        })
+        const snapshot = (taskIds: string[]) => send({
+            type: 'system',
+            subtype: 'background_tasks_changed',
+            uuid: `snapshot-${taskIds.length}`,
+            tasks: taskIds.map((task_id) => ({ task_id, task_type: 'local_bash' }))
+        })
+
+        snapshot(['b1', 'b2'])
+        expect(cache.getSession(session.id)?.backgroundTaskCount).toBe(2)
+
+        // The Bash tool result that announces a background task is not a count signal.
+        send({
+            type: 'user',
+            uuid: 'tool-result',
+            message: {
+                role: 'user',
+                content: [{ type: 'tool_result', tool_use_id: 't1', content: 'Command running in background with ID: b3.' }]
+            }
+        })
+        expect(cache.getSession(session.id)?.backgroundTaskCount).toBe(2)
+
+        snapshot([])
+        expect(cache.getSession(session.id)?.backgroundTaskCount).toBe(0)
+        // Snapshots are session state, not chat rows; only the tool result is stored.
+        expect(store.messages.getMessages(session.id)).toHaveLength(1)
+        expect(events
+            .filter((event) => event.type === 'session-updated' && event.sessionId === session.id)
+            .map((event) => (event as { data?: { backgroundTaskCount?: number } }).data?.backgroundTaskCount)
+            .filter((count) => count !== undefined)
+        ).toEqual([2, 0])
     })
 
     it('records activity only for the first messages-consumed transition while retaining duplicate acknowledgements', () => {

@@ -159,6 +159,23 @@ describe('SDKToLogConverter', () => {
 
             expect((logMessage as any).requestId).toBe('req_123')
         })
+
+        it('keeps the top-level error on synthetic API error messages (#1857)', () => {
+            const sdkMessage: any = {
+                type: 'assistant',
+                message: {
+                    model: '<synthetic>',
+                    role: 'assistant',
+                    content: [{ type: 'text', text: 'Prompt is too long' }]
+                },
+                error: 'invalid_request',
+                is_api_error_message: true
+            }
+
+            const logMessage = converter.convert(sdkMessage)
+
+            expect((logMessage as any).error).toBe('invalid_request')
+        })
     })
 
     describe('System messages', () => {
@@ -201,6 +218,17 @@ describe('SDKToLogConverter', () => {
 
             const logMessage = converter.convert(userMessage)
             expect(logMessage?.sessionId).toBe('updated-session-789')
+        })
+
+        it('keeps the task list on background_tasks_changed snapshots', () => {
+            const tasks = [{ task_id: 'b1', task_type: 'local_bash' }]
+            const logMessage = converter.convert({
+                type: 'system',
+                subtype: 'background_tasks_changed',
+                tasks
+            } as SDKSystemMessage)
+
+            expect(logMessage).toMatchObject({ type: 'system', subtype: 'background_tasks_changed', tasks })
         })
     })
 

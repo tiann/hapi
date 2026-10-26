@@ -6,6 +6,7 @@ import type { ChecklistItem } from '@/components/ToolCard/checklist'
 import { extractTodoChecklist, extractUpdatePlanChecklist } from '@/components/ToolCard/checklist'
 import { basename, resolveDisplayPath } from '@/utils/path'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
+import { getGoalToolName } from '@/components/ToolCard/goalTools'
 import {
     getCodexAgentActivity,
     getCodexAgentPrompt,
@@ -125,6 +126,18 @@ export const knownTools: Record<string, {
     subtitle?: (opts: ToolOpts) => string | null
     minimal?: boolean | ((opts: ToolOpts) => boolean)
 }> = {
+    create_goal: {
+        icon: () => <BulbIcon className={DEFAULT_ICON_CLASS} />,
+        title: () => 'Create goal'
+    },
+    get_goal: {
+        icon: () => <BulbIcon className={DEFAULT_ICON_CLASS} />,
+        title: () => 'Get goal'
+    },
+    update_goal: {
+        icon: () => <BulbIcon className={DEFAULT_ICON_CLASS} />,
+        title: () => 'Update goal'
+    },
     // agy transitional "Inside the task-NNN log…" narration → compact chip.
     // description carries the short "task-NNN log" label from normalizeAgent.
     AgyTaskLog: {
@@ -664,12 +677,13 @@ export function getToolPresentation(
         }
     }
 
-    const known = knownTools[opts.toolName]
+    const goalName = getGoalToolName(opts.toolName)
+    const known = knownTools[goalName ?? opts.toolName]
     if (known) {
         const minimal = typeof known.minimal === 'function' ? known.minimal(opts) : (known.minimal ?? false)
         return {
             icon: known.icon(opts),
-            title: known.title(opts),
+            title: goalName && t ? t(`tool.goal.${goalName}`) : known.title(opts),
             subtitle: known.subtitle ? known.subtitle(opts) : null,
             minimal
         }

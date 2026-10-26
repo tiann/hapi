@@ -733,6 +733,29 @@ export function normalizeAgentRecord(
         if (data.isCompactSummary) return null
         if (!isClaudeChatVisibleMessage({ type: data.type, subtype: data.subtype })) return null
 
+        // Claude Code reports a failed API call ("Prompt is too long", usage
+        // limits, logged out) as a synthetic assistant message with a top-level
+        // `error`. Render it as an error, and keep its all-zero usage out of
+        // the context gauge.
+        if (data.type === 'assistant' && typeof data.error === 'string') {
+            const message = isObject(data.message) ? data.message : null
+            const text = Array.isArray(message?.content)
+                ? message.content
+                    .flatMap((block) => isObject(block) && typeof block.text === 'string' ? [block.text] : [])
+                    .join('\n')
+                : asString(message?.content)
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'event',
+                content: { type: 'error', message: text?.trim() || data.error },
+                isSidechain: Boolean(data.isSidechain),
+                parentToolUseId: asString(data.parentToolUseId) ?? null,
+                meta
+            }
+        }
+
         if (data.type === 'assistant') {
             return normalizeAssistantOutput(messageId, localId, createdAt, data, meta)
         }
@@ -999,6 +1022,8 @@ export function normalizeAgentRecord(
     if (content.type === AGENT_MESSAGE_PAYLOAD_TYPE) {
         const data = isObject(content.data) ? content.data : null
         if (!data || typeof data.type !== 'string') return null
+        const turnId = asString(data.turn_id ?? data.turnId) ?? undefined
+        if (turnId) meta = { ...(isObject(meta) ? meta : {}), codexTurnId: turnId }
 
         if (
             data.type === 'agent-run-start'
@@ -1139,6 +1164,23 @@ export function normalizeAgentRecord(
             }
         }
 
+        if (data.type === 'turn_duration') {
+            const durationMs = nonNegativeNumber(data.durationMs)
+            const scope = isObject(data.scope) ? data.scope : null
+            const scopeRole = asString(data.scope_role ?? data.scopeRole ?? scope?.role)
+            if (data.flavor !== 'codex' || data.hapiUsageScope === 'imported-history'
+                || scopeRole === 'child' || !turnId || durationMs === undefined) return null
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'event',
+                content: { type: 'turn-duration', provider: 'codex', durationMs, turnId },
+                isSidechain: false,
+                meta
+            }
+        }
+
         if (data.type === 'token_count') {
             const usage = normalizeCodexTokenUsage(data.info, data)
             return usage ? {
@@ -1152,6 +1194,7 @@ export function normalizeAgentRecord(
                     ...(data.flavor === 'codex'
                         ? {
                             provider: 'codex' as const,
+                            turnId,
                             model: asString(data.model) ?? undefined
                         }
                         : {})

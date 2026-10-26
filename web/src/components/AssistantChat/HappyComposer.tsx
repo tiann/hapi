@@ -49,7 +49,11 @@ import { useComposerEnterBehavior } from '@/hooks/useComposerEnterBehavior'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { StatusBar } from '@/components/AssistantChat/StatusBar'
-import { ComposerButtons } from '@/components/AssistantChat/ComposerButtons'
+import {
+    ComposerButtons,
+    UnifiedButton,
+    isComposerPrimaryFillHeight,
+} from '@/components/AssistantChat/ComposerButtons'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { SortableComposerAttachments } from '@/components/AssistantChat/SortableComposerAttachments'
 import { ComposerParkingContext } from '@/components/AssistantChat/composerParkingContext'
@@ -1408,14 +1412,13 @@ export function HappyComposer(props: {
 
     const handlePaste = useCallback(async (e: ReactClipboardEvent<HTMLTextAreaElement | HTMLDivElement>) => {
         const files = Array.from(e.clipboardData?.files || [])
-        const imageFiles = files.filter(file => file.type.startsWith('image/'))
 
-        if (imageFiles.length === 0) return
+        if (files.length === 0) return
 
         // The backend rejects scheduledAt + attachments (per-CLI upload dir is
         // torn down before a mature emit could read the files). The button-based
         // attachment flow is disabled by ComposerButtons.hasAttachments, but the
-        // paste path bypasses that — guard here so a pasted image while a
+        // paste path bypasses that — guard here so a pasted file while a
         // schedule is active cannot produce a submission the hub will reject.
         if (pendingSchedule != null) {
             e.preventDefault()
@@ -1425,11 +1428,11 @@ export function HappyComposer(props: {
         e.preventDefault()
 
         try {
-            for (const file of imageFiles) {
+            for (const file of files) {
                 await api.composer().addAttachment(file)
             }
         } catch (error) {
-            console.error('Error adding pasted image:', error)
+            console.error('Error adding pasted file:', error)
         }
     }, [api, pendingSchedule])
 
@@ -1628,6 +1631,13 @@ export function HappyComposer(props: {
     const showAbortButton = true
     const voiceEnabled = Boolean(effectiveVoiceToggle)
     const routesToScratchlist = (props.scratchlistMode ?? false) && pendingSchedule == null
+    const primaryFillHeight = isComposerPrimaryFillHeight({
+        canSend,
+        voiceEnabled,
+        voiceStatus: effectiveVoiceStatus,
+        routesToScratchlist,
+        expanded: isExpanded,
+    })
 
     const invokeDictateHotkey = useCallback(() => {
         if (!shouldInvokeComposerDictateShortcut({
@@ -2269,158 +2279,184 @@ export function HappyComposer(props: {
                     ) : null}
 
                     <div
-                        className={`overflow-hidden rounded-[20px] bg-[var(--app-secondary-bg)] ${
-                            isExpanded ? 'flex min-h-0 flex-1 flex-col' : ''
+                        className={`flex overflow-hidden rounded-[20px] bg-[var(--app-secondary-bg)] ${
+                            isExpanded ? 'min-h-0 flex-1' : ''
                         } ${
                             sendError ? 'ring-1 ring-red-500' : ''
                         }`}
+                        data-testid="composer-card"
                     >
-                        {attachments.length > 0 ? (
-                            <div className={`flex flex-wrap gap-2 px-4 pt-3 ${
-                                isExpanded ? 'max-h-[35%] shrink-0 overflow-y-auto' : ''
-                            }`}>
-                                <SortableComposerAttachments
-                                    attachments={attachments}
-                                    orderedAttachmentIds={orderedAttachmentIds}
-                                    disabled={controlsDisabled}
-                                    onReorder={handleAttachmentReorder}
-                                />
-                            </div>
-                        ) : null}
-
-                        <div className={`flex px-4 py-3 ${
-                            isExpanded ? 'min-h-0 flex-1 items-stretch' : 'items-center'
+                        <div className={`flex min-w-0 flex-1 flex-col ${
+                            isExpanded ? 'min-h-0' : ''
                         }`}>
-                            {richMentionsEnabled ? (
-                                <div
-                                    ref={richComposerFueAnchorRef}
-                                    className="relative flex min-w-0 flex-1"
-                                    data-testid="rich-composer-fue-anchor"
-                                >
-                                    <RichComposerInput
-                                        ref={richInputRef}
-                                        value={composerText}
-                                        autoFocus={!controlsDisabled && !isTouch}
-                                        placeholder={t(resolveComposerPlaceholderKey({
-                                            richMentionsEnabled: true,
-                                            showContinueHint,
-                                        }))}
+                            {attachments.length > 0 ? (
+                                <div className={`flex flex-wrap gap-2 px-4 pt-3 ${
+                                    isExpanded ? 'max-h-[35%] shrink-0 overflow-y-auto' : ''
+                                }`}>
+                                    <SortableComposerAttachments
+                                        attachments={attachments}
+                                        orderedAttachmentIds={orderedAttachmentIds}
                                         disabled={controlsDisabled}
-                                        onValueChange={handleRichValueChange}
-                                        onMirrorChange={handleRichMirrorChange}
+                                        onReorder={handleAttachmentReorder}
+                                    />
+                                </div>
+                            ) : null}
+
+                            <div className={`flex px-4 py-3 ${
+                                isExpanded ? 'min-h-0 flex-1 items-stretch' : 'items-center'
+                            }`}>
+                                {richMentionsEnabled ? (
+                                    <div
+                                        ref={richComposerFueAnchorRef}
+                                        className="relative flex min-w-0 flex-1"
+                                        data-testid="rich-composer-fue-anchor"
+                                    >
+                                        <RichComposerInput
+                                            ref={richInputRef}
+                                            value={composerText}
+                                            autoFocus={!controlsDisabled && !isTouch}
+                                            placeholder={t(resolveComposerPlaceholderKey({
+                                                richMentionsEnabled: true,
+                                                showContinueHint,
+                                            }))}
+                                            disabled={controlsDisabled}
+                                            onValueChange={handleRichValueChange}
+                                            onMirrorChange={handleRichMirrorChange}
+                                            onKeyDown={handleKeyDown}
+                                            onPaste={handlePaste}
+                                            onFocus={() => engageRichComposerFue()}
+                                            resolveSessionMentionTooltip={resolveSessionMentionTooltip}
+                                            onEdit={handleRichEdit}
+                                            className={editorClassName}
+                                        />
+                                        {richComposerFueStatus !== 'acknowledged' ? (
+                                            <FueDot
+                                                pulsing={richComposerFueStatus === 'unseen'}
+                                                ariaLabel={t('fue.newFeatureDot')}
+                                            />
+                                        ) : null}
+                                    </div>
+                                ) : isExpanded ? (
+                                    <ComposerPrimitive.Input
+                                        asChild
+                                        ref={textareaRef}
+                                        autoFocus={!controlsDisabled && !isTouch}
+                                        submitOnEnter={false}
+                                        cancelOnEscape={false}
+                                        onChange={handleChange}
+                                        onSelect={handleSelect}
                                         onKeyDown={handleKeyDown}
                                         onPaste={handlePaste}
-                                        onFocus={() => engageRichComposerFue()}
-                                        resolveSessionMentionTooltip={resolveSessionMentionTooltip}
-                                        onEdit={handleRichEdit}
-                                        className={editorClassName}
-                                    />
-                                    {richComposerFueStatus !== 'acknowledged' ? (
-                                        <FueDot
-                                            pulsing={richComposerFueStatus === 'unseen'}
-                                            ariaLabel={t('fue.newFeatureDot')}
+                                    >
+                                        <textarea
+                                            placeholder={t(resolveComposerPlaceholderKey({
+                                                richMentionsEnabled: false,
+                                                showContinueHint,
+                                            }))}
+                                            disabled={controlsDisabled}
+                                            className="h-full min-h-0 flex-1 resize-none overflow-y-auto bg-transparent text-base leading-snug text-[var(--app-fg)] placeholder-[var(--app-hint)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
                                         />
-                                    ) : null}
-                                </div>
-                            ) : isExpanded ? (
-                                <ComposerPrimitive.Input
-                                    asChild
-                                    ref={textareaRef}
-                                    autoFocus={!controlsDisabled && !isTouch}
-                                    submitOnEnter={false}
-                                    cancelOnEscape={false}
-                                    onChange={handleChange}
-                                    onSelect={handleSelect}
-                                    onKeyDown={handleKeyDown}
-                                    onPaste={handlePaste}
-                                >
-                                    <textarea
+                                    </ComposerPrimitive.Input>
+                                ) : (
+                                    <ComposerPrimitive.Input
+                                        ref={textareaRef}
+                                        autoFocus={!controlsDisabled && !isTouch}
                                         placeholder={t(resolveComposerPlaceholderKey({
                                             richMentionsEnabled: false,
                                             showContinueHint,
                                         }))}
                                         disabled={controlsDisabled}
-                                        className="h-full min-h-0 flex-1 resize-none overflow-y-auto bg-transparent text-base leading-snug text-[var(--app-fg)] placeholder-[var(--app-hint)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                                        maxRows={5}
+                                        submitOnEnter={false}
+                                        cancelOnEscape={false}
+                                        onChange={handleChange}
+                                        onSelect={handleSelect}
+                                        onKeyDown={handleKeyDown}
+                                        onPaste={handlePaste}
+                                        className="flex-1 resize-none bg-transparent text-base leading-snug text-[var(--app-fg)] placeholder-[var(--app-hint)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
                                     />
-                                </ComposerPrimitive.Input>
-                            ) : (
-                                <ComposerPrimitive.Input
-                                    ref={textareaRef}
-                                    autoFocus={!controlsDisabled && !isTouch}
-                                    placeholder={t(resolveComposerPlaceholderKey({
-                                        richMentionsEnabled: false,
-                                        showContinueHint,
-                                    }))}
-                                    disabled={controlsDisabled}
-                                    maxRows={5}
-                                    submitOnEnter={false}
-                                    cancelOnEscape={false}
-                                    onChange={handleChange}
-                                    onSelect={handleSelect}
-                                    onKeyDown={handleKeyDown}
-                                    onPaste={handlePaste}
-                                    className="flex-1 resize-none bg-transparent text-base leading-snug text-[var(--app-fg)] placeholder-[var(--app-hint)] focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                                )}
+                            </div>
+                            {richMentionsEnabled && richComposerFueStatus === 'engaging' ? (
+                                <FueCallout
+                                    title={t('richComposer.fueTitle')}
+                                    body={t('richComposer.fueBody')}
+                                    onDismiss={dismissRichComposerFue}
+                                    dismissLabel={t('fue.gotIt')}
+                                    closeAriaLabel={t('fue.closeAriaLabel')}
+                                    anchorRef={richComposerFueAnchorRef}
+                                    width={288}
                                 />
-                            )}
-                        </div>
-                        {richMentionsEnabled && richComposerFueStatus === 'engaging' ? (
-                            <FueCallout
-                                title={t('richComposer.fueTitle')}
-                                body={t('richComposer.fueBody')}
-                                onDismiss={dismissRichComposerFue}
-                                dismissLabel={t('fue.gotIt')}
-                                closeAriaLabel={t('fue.closeAriaLabel')}
-                                anchorRef={richComposerFueAnchorRef}
-                                width={288}
-                            />
-                        ) : null}
+                            ) : null}
 
-                        <ComposerButtons
-                            canSend={canSend}
-                            controlsDisabled={controlsDisabled}
-                            showSettingsButton={showSettingsButton}
-                            settingsButtonRef={settingsButtonRef}
-                            settingsDisabled={modelEffortControlsDisabled}
-                            modelValueButtonRef={modelValueButtonRef}
-                            effortValueButtonRef={effortValueButtonRef}
-                            onSettingsToggle={handleGearToggle}
-                            expanded={isExpanded}
-                            onExpandedToggle={handleExpandedToggle}
-                            showTerminalButton={showTerminalButton}
-                            terminalDisabled={terminalDisabled}
-                            terminalLabel={terminalLabel}
-                            onTerminal={onTerminal ?? (() => {})}
-                            showAbortButton={showAbortButton}
-                            abortDisabled={abortDisabled}
-                            isAborting={isAborting}
-                            onAbort={handleAbort}
-                            showSwitchButton={showSwitchButton}
-                            switchDisabled={switchDisabled}
-                            isSwitching={isSwitching}
-                            onSwitch={handleSwitch}
-                            voiceEnabled={voiceEnabled}
-                            dictationEnabled={dictationActive}
-                            voiceStatus={effectiveVoiceStatus}
-                            voiceMicMuted={dictationActive ? false : voiceMicMuted}
-                            onVoiceToggle={effectiveVoiceToggle ?? (() => {})}
-                            onVoiceMicToggle={dictationActive ? undefined : onVoiceMicToggle}
-                            onSend={handleSend}
-                            pendingSchedule={pendingSchedule}
-                            onSchedule={handleUserSchedule}
-                            onClearSchedule={onUserClearSchedule}
-                            hasAttachments={blocksScheduling}
-                            modelValueLabel={modelValueLabel}
-                            modelValueDisabled={modelEffortControlsDisabled}
-                            modelValueOpen={showSettings && settingsSection !== 'effort'}
-                            onModelValueToggle={handleModelValueToggle}
-                            effortValueLabel={effortValueLabel}
-                            effortValueDisabled={modelEffortControlsDisabled}
-                            effortValueOpen={showSettings && settingsSection !== 'model'}
-                            onEffortValueToggle={handleEffortValueToggle}
-                            scratchlistMode={props.scratchlistMode}
-                            scratchlistCount={props.scratchlistCount}
-                            onScratchlistToggle={props.onScratchlistToggle}
-                        />
+                            <ComposerButtons
+                                canSend={canSend}
+                                controlsDisabled={controlsDisabled}
+                                showSettingsButton={showSettingsButton}
+                                settingsButtonRef={settingsButtonRef}
+                                settingsDisabled={modelEffortControlsDisabled}
+                                modelValueButtonRef={modelValueButtonRef}
+                                effortValueButtonRef={effortValueButtonRef}
+                                onSettingsToggle={handleGearToggle}
+                                expanded={isExpanded}
+                                onExpandedToggle={handleExpandedToggle}
+                                showTerminalButton={showTerminalButton}
+                                terminalDisabled={terminalDisabled}
+                                terminalLabel={terminalLabel}
+                                onTerminal={onTerminal ?? (() => {})}
+                                showAbortButton={showAbortButton}
+                                abortDisabled={abortDisabled}
+                                isAborting={isAborting}
+                                onAbort={handleAbort}
+                                showSwitchButton={showSwitchButton}
+                                switchDisabled={switchDisabled}
+                                isSwitching={isSwitching}
+                                onSwitch={handleSwitch}
+                                voiceEnabled={voiceEnabled}
+                                dictationEnabled={dictationActive}
+                                voiceStatus={effectiveVoiceStatus}
+                                voiceMicMuted={dictationActive ? false : voiceMicMuted}
+                                onVoiceToggle={effectiveVoiceToggle ?? (() => {})}
+                                onVoiceMicToggle={dictationActive ? undefined : onVoiceMicToggle}
+                                onSend={handleSend}
+                                pendingSchedule={pendingSchedule}
+                                onSchedule={handleUserSchedule}
+                                onClearSchedule={onUserClearSchedule}
+                                hasAttachments={blocksScheduling}
+                                modelValueLabel={modelValueLabel}
+                                modelValueDisabled={modelEffortControlsDisabled}
+                                modelValueOpen={showSettings && settingsSection !== 'effort'}
+                                onModelValueToggle={handleModelValueToggle}
+                                effortValueLabel={effortValueLabel}
+                                effortValueDisabled={modelEffortControlsDisabled}
+                                effortValueOpen={showSettings && settingsSection !== 'model'}
+                                onEffortValueToggle={handleEffortValueToggle}
+                                scratchlistMode={props.scratchlistMode}
+                                scratchlistCount={props.scratchlistCount}
+                                onScratchlistToggle={props.onScratchlistToggle}
+                                omitPrimaryButton
+                            />
+                        </div>
+                        {/* Collapsed card: fill-height primary (empty → voice; draft → Send). Expanded: compact. */}
+                        <div
+                            className={
+                                primaryFillHeight
+                                    ? 'flex shrink-0 self-stretch items-stretch'
+                                    : 'flex shrink-0 items-end self-stretch py-3 pr-3'
+                            }
+                        >
+                            <UnifiedButton
+                                canSend={canSend}
+                                voiceStatus={effectiveVoiceStatus}
+                                voiceEnabled={voiceEnabled}
+                                controlsDisabled={controlsDisabled}
+                                onSend={handleSend}
+                                onVoiceToggle={effectiveVoiceToggle ?? (() => {})}
+                                voiceLabel={dictationActive ? t('composer.dictate') : undefined}
+                                fillHeight={primaryFillHeight}
+                                routesToScratchlist={routesToScratchlist}
+                            />
+                        </div>
                     </div>
                 </ComposerPrimitive.Root>
             </div>

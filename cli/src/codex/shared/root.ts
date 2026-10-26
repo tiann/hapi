@@ -32,7 +32,7 @@ export type RootHost = {
     end(root: SharedCodexRoot, nativeArchive?: boolean): Promise<void>;
 };
 const SettingsSchema = z.object({
-    permissionMode: z.enum(['default', 'read-only', 'safe-yolo', 'yolo']).optional(),
+    permissionMode: z.enum(['default', 'read-only', 'safe-yolo', 'autoReview', 'yolo']).optional(),
     model: z.string().min(1).optional(), modelReasoningEffort: z.string().nullable().optional(),
     collaborationMode: z.enum(['default', 'plan']).optional(),
     serviceTier: z.enum(['fast', 'standard']).nullable().optional(),
@@ -54,6 +54,11 @@ export class SharedCodexRoot {
     private work: Promise<unknown> = Promise.resolve();
     private notifications = Promise.resolve();
     private currentTurn: string | undefined;
+    // Ephemeral observations only: dequeue/compaction never prove acceptance.
+    private readonly dequeuedInputs = new Set<string>();
+    private deliveryTurn?: string;
+    private compactingTurn?: string;
+    private publishedCompactionIds?: string;
     private latestTurn?: { id: string; status: string; planId?: string };
     private publishedPlanId: string | null | undefined;
     private submittingPlan = false;
@@ -107,8 +112,9 @@ export class SharedCodexRoot {
                 }
                 this.publishPlan();
             }
+            const receivedAt = Date.now();
             const modelAtReceipt = record(params).threadId === this.threadId ? this.settings.model ?? undefined : undefined;
-            this.notifications = this.notifications.then(() => this.notification(method, params, modelAtReceipt)).catch(error => logger.debug('[Codex shared] projection', error));
+            this.notifications = this.notifications.then(() => this.notification(method, params, modelAtReceipt, receivedAt)).catch(error => logger.debug('[Codex shared] projection', error));
         });
         this.client.setTransportAbandonedHandler(() => { void this.reconnect(); });
         this.session.onUserMessage((message, localId) => {
@@ -137,6 +143,7 @@ export class SharedCodexRoot {
             this.projection?.reset();
             this.steeringActive = undefined;
             this.publishedPlanId = undefined;
+            this.publishedCompactionIds = undefined;
             void this.refresh().then(() => this.refreshChildren(false)).then(() => this.queue.replay())
                 .catch(error => logger.debug('[Codex shared] hub resync', error));
         });
@@ -186,7 +193,11 @@ export class SharedCodexRoot {
         if (this.threadId && this.threadId !== threadId) throw new Error('Cannot retarget a shared HAPI session');
         this.threadId = threadId;
         this.queue = new SharedCodexQueue(this.client, threadId, join(this.host.directory, `${this.session.sessionId}.queue.json`),
-            (ids, steered) => this.session.emitMessagesConsumed(ids, { steered }), ids => this.session.emitSteerIndeterminate(ids),
+            (ids, steered) => {
+                this.session.emitMessagesConsumed(ids, { steered });
+                for (const id of ids) this.dequeuedInputs.delete(id);
+                this.publishCompaction();
+            }, ids => this.session.emitSteerIndeterminate(ids),
             (id, input) => this.session.syncNativeQueuedMessage(id, input === null ? null : inputText(input)),
             ids => this.session.setSteerDeliveryState(ids, 'queued'));
         await this.queue.load();
@@ -197,7 +208,7 @@ export class SharedCodexRoot {
             // advertise a destructive operation we cannot make atomic yet.
             conversationHistory: { forkCurrent: true, forkAtMessage: true, rewindToMessage: false }
         } }));
-        this.session.updateAgentState(state => ({ ...state, controlledByUser: false, startingMode: undefined, codexPlanProposalId: null, requests: {},
+        this.session.updateAgentState(state => ({ ...state, controlledByUser: false, startingMode: undefined, codexPlanProposalId: null, codexCompactionPendingMessageIds: [], requests: {},
             completedRequests: { ...state.completedRequests, ...Object.fromEntries(Object.entries(state.requests ?? {}).map(([id, request]) =>
                 [id, { ...request, completedAt: Date.now(), status: 'canceled' as const }])) }
         }));
@@ -213,10 +224,20 @@ export class SharedCodexRoot {
         this.heartbeat = setInterval(() => this.alive(), 2_000); this.alive(); this.session.emitSessionReady();
     }
     private publishSteering(): void {
+        this.publishCompaction();
         const active = Boolean(this.currentTurn) && !this.stopping && !this.closed && !this.reconnecting && this.client.isInitialized();
         if (this.steeringActive === active) return;
         this.steeringActive = active;
         this.session.updateAgentState(state => ({ ...state, steeringActive: active }));
+    }
+    private publishCompaction(): void {
+        const active = this.compactingTurn && this.compactingTurn === this.currentTurn
+            && !this.closed && !this.stopping && !this.reconnecting && this.client.isInitialized();
+        const ids = active ? [...this.dequeuedInputs].filter(id => this.queue?.state(id) === 'unknown').sort() : [];
+        const key = JSON.stringify(ids);
+        if (key === this.publishedCompactionIds) return;
+        this.publishedCompactionIds = key;
+        this.session.updateAgentState(state => ({ ...state, codexCompactionPendingMessageIds: ids }));
     }
     private alive(): void {
         this.publishSteering();
@@ -244,14 +265,15 @@ export class SharedCodexRoot {
         const sandbox = record(value.sandboxPolicy ?? value.sandbox).type;
         this.settings = { ...this.settings, model: value.model,
             modelReasoningEffort: string(value.effort ?? value.reasoningEffort) ?? null,
-            ...(sandbox ? { permissionMode: sandbox === 'dangerFullAccess' ? 'yolo' : sandbox === 'readOnly' ? 'read-only' : 'default' } : {}),
+            ...(sandbox ? { permissionMode: sandbox === 'dangerFullAccess' ? 'yolo' : sandbox === 'readOnly' ? 'read-only'
+                : this.settingsNative.approvalsReviewer === 'auto_review' ? 'autoReview' : 'default' } : {}),
             ...('serviceTier' in value ? { serviceTier: value.serviceTier === 'priority' ? 'fast' : 'standard' } : {}),
             ...('collaborationMode' in value ? { collaborationMode: record(value.collaborationMode).mode === 'plan' ? 'plan' as const : 'default' as const } : {})
         };
         for (const listener of this.settingsListeners) listener();
         this.publishPlan();
     }
-    private async notification(method: string, params: unknown, modelAtReceipt?: string): Promise<void> {
+    private async notification(method: string, params: unknown, modelAtReceipt?: string, receivedAt = Date.now()): Promise<void> {
         if (!this.threadId || this.closed) return;
         const p = record(params);
         if (method === 'thread/started') {
@@ -273,8 +295,25 @@ export class SharedCodexRoot {
             const name = p.threadName ?? undefined; this.session.updateMetadata(metadata => ({ ...metadata, name }));
         }
         if (method === 'thread/archived') { await this.host.end(this, false); return; }
-        if (method === 'thread/queue/changed') await this.queue.reconcile();
-        await this.projection.notification(method, params, modelAtReceipt); this.alive();
+        // Process these in notification order: queue removal can precede turn/started.
+        // Older unknown input must not acquire a later turn's compaction status.
+        if (method === 'turn/started') {
+            const id = string(record(p.turn).id);
+            if (this.deliveryTurn && this.deliveryTurn !== id) this.dequeuedInputs.clear();
+            this.deliveryTurn = id;
+            this.compactingTurn = undefined;
+        }
+        if (method === 'turn/completed' && record(p.turn).id === this.deliveryTurn) {
+            this.dequeuedInputs.clear(); this.deliveryTurn = undefined; this.compactingTurn = undefined;
+        }
+        if (p.turnId === this.currentTurn && record(p.item).type === 'contextCompaction') {
+            if (method === 'item/started') this.compactingTurn = string(p.turnId);
+            if (method === 'item/completed') { this.compactingTurn = undefined; this.dequeuedInputs.clear(); }
+        }
+        if (method === 'thread/queue/changed') {
+            for (const id of await this.queue.reconcile()) this.dequeuedInputs.add(id);
+        }
+        await this.projection.notification(method, params, modelAtReceipt, receivedAt); this.publishCompaction(); this.alive();
     }
     async readThread(threadId = this.threadId): Promise<Record<string, unknown>> {
         let thread = record(record(await this.client.request('thread/read', { threadId, includeTurns: false })).thread);
@@ -342,7 +381,9 @@ export class SharedCodexRoot {
     }
     private async reconnect(): Promise<void> {
         if (this.closed || this.stopping || this.reconnecting || !this.threadId) return;
-        this.reconnecting = true; this.publishSteering(); this.publishPlan(); this.permissions.close();
+        this.reconnecting = true;
+        this.dequeuedInputs.clear(); this.deliveryTurn = undefined; this.compactingTurn = undefined;
+        this.publishSteering(); this.publishPlan(); this.permissions.close();
         try {
             while (!this.closed && !this.stopping) {
                 try {
@@ -366,7 +407,7 @@ export class SharedCodexRoot {
     }
     async applySettings(raw: unknown): Promise<{ applied: RuntimeSettings }> {
         const config = SettingsSchema.parse(raw);
-        if (config.permissionMode === 'safe-yolo') throw new Error('safe-yolo is not a native shared permission mode; choose default, read-only, or yolo');
+        if (config.permissionMode === 'safe-yolo') throw new Error('safe-yolo is not a native shared permission mode; choose default, read-only, autoReview, or yolo');
         if (Object.keys(config).length === 0) return { applied: this.settings };
         if (typeof config.modelReasoningEffort === 'string') config.modelReasoningEffort = parseReasoningEffortValue(config.modelReasoningEffort);
         if (config.modelReasoningEffort === null) {
@@ -388,7 +429,8 @@ export class SharedCodexRoot {
             ...(config.personality ? { personality: config.personality } : {}),
             ...(config.modelReasoningEffort !== undefined ? { effort: config.modelReasoningEffort } : {}),
             ...(config.serviceTier !== undefined ? { serviceTier: config.serviceTier === 'fast' ? 'priority' : null } : {}),
-            ...(permission ? { approvalPolicy: permission.approvalPolicy, sandboxPolicy: permission.sandboxPolicy } : {}),
+            ...(permission ? { approvalPolicy: permission.approvalPolicy, sandboxPolicy: permission.sandboxPolicy,
+                approvalsReviewer: config.permissionMode === 'autoReview' ? 'auto_review' : 'user' } : {}),
             ...(config.collaborationMode ? { collaborationMode: { mode: config.collaborationMode, settings: {
                 model: config.model ?? this.settings.model, reasoning_effort: config.modelReasoningEffort ?? this.settings.modelReasoningEffort,
                 developer_instructions: null
@@ -537,7 +579,7 @@ export class SharedCodexRoot {
         if (command === '/exit') { this.notice('/exit closes a native terminal, not this Web view. Use End session to archive this conversation.'); return null; }
         if (!command.startsWith('/')) return text;
         const slash = resolveCodexSlashCommand(text, { commands: await listSlashCommands('codex', this.bootstrap.workingDirectory),
-            permissionMode: this.settings.permissionMode === 'yolo' ? 'yolo' : this.settings.permissionMode === 'read-only' ? 'read-only' : 'default',
+            permissionMode: this.settings.permissionMode === 'yolo' || this.settings.permissionMode === 'read-only' || this.settings.permissionMode === 'autoReview' ? this.settings.permissionMode : 'default',
             collaborationMode: this.settings.collaborationMode ?? 'default', model: this.settings.model ?? undefined,
             modelReasoningEffort: parseReasoningEffortValue(this.settings.modelReasoningEffort), serviceTier: this.settings.serviceTier });
         if (slash.kind === 'passthrough') return text;

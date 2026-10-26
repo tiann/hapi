@@ -48,7 +48,7 @@ struct ToolCallBlockView: View {
             if opensToolProcess(block) {
                 Button { openTool?(block) } label: {
                     Label(
-                        String(format: String(localized: "View process · %lld steps"), Int64(block.children.count)),
+                        String(localized: "View process · \(block.children.count) steps"),
                         systemImage: "arrow.right"
                     )
                     .font(typography.captionFont)

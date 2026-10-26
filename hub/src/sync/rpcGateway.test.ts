@@ -52,6 +52,12 @@ function createGateway() {
 }
 
 describe('RpcGateway RPC timeouts', () => {
+    it('allows Codex startup and preflight to finish before the outer RPC expires', async () => {
+        const { gateway, timeouts } = createGateway()
+        await gateway.spawnSession('machine-1', 'C:\\workspace', 'codex')
+        await gateway.spawnSession('machine-1', 'C:\\workspace', 'claude')
+        expect(timeouts).toEqual([60_000, 30_000])
+    })
     it('uses the default RPC timeout for regular machine RPCs', async () => {
         const { gateway, timeouts } = createGateway()
 

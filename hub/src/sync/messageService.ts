@@ -881,10 +881,13 @@ export class MessageService {
             }
         }
 
+        // Every user message needs an identity: agents echo the turn back under
+        // it (Shared Codex clientUserMessageId), and (session, localId) is the
+        // only dedupe key. A sender that omits one gets a hub-minted id.
         const inserted = this.store.addMessageForCurrentSession(
             sessionId,
             content,
-            payload.localId ?? undefined,
+            payload.localId ?? randomUUID(),
             payload.scheduledAt ?? null
         )
         const actualSessionId = inserted.sessionId

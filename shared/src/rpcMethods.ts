@@ -45,6 +45,8 @@ export const RPC_METHODS = {
     ListCopilotModels: 'listCopilotModels',
     ListKimiModelsForCwd: 'listKimiModelsForCwd',
     ListKimiModels: 'listKimiModels',
+    ListDshModels: 'listDshModels',
+    ListDshModelsForMachine: 'listDshModelsForMachine',
     ListOpencodeReasoningEffortOptions: 'listOpencodeReasoningEffortOptions',
     ListAgyModels: 'listAgyModels',
     ListClaudeModels: 'listClaudeModels',

@@ -211,6 +211,41 @@ describe('sessionScanner', () => {
     expect(result.nextCursor).toBe(Buffer.byteLength(line1 + '\n' + line2))
   })
 
+  it('forwards a Claude API error record with null usage fields and keeps its error flags (#1857)', async () => {
+    const filePath = join(testDir, 'api-error.jsonl')
+    const line = JSON.stringify({
+      type: 'assistant',
+      uuid: 'a1',
+      isSidechain: false,
+      isApiErrorMessage: true,
+      error: 'invalid_request',
+      message: {
+        model: '<synthetic>',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Prompt is too long' }],
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+          service_tier: null,
+          inference_geo: null,
+          speed: null
+        }
+      }
+    })
+    await writeFile(filePath, line + '\n')
+
+    const result = await readSessionLog(filePath, 0)
+    expect(result.events).toHaveLength(1)
+    expect(result.events[0].event).toMatchObject({
+      type: 'assistant',
+      uuid: 'a1',
+      isApiErrorMessage: true,
+      error: 'invalid_request'
+    })
+  })
+
   it('forwards a single complete record with no newline at all', async () => {
     const filePath = join(testDir, 'single-no-newline.jsonl')
     const only = JSON.stringify({ type: 'user', uuid: 'u1', message: { content: 'only' } })
@@ -222,5 +257,31 @@ describe('sessionScanner', () => {
       expect(result.events[0].event.uuid).toBe('u1')
     }
     expect(result.nextCursor).toBe(Buffer.byteLength(only))
+  })
+  it('forwards Claude Code 2.x subagent transcripts tagged with the spawning tool_use id', async () => {
+    const sessionId = 'c0ffee00-0000-4000-8000-000000000001'
+    const subagentDir = join(projectDir, sessionId, 'subagents')
+    await mkdir(subagentDir, { recursive: true })
+    // Already on disk when the scanner starts → treated as seen, like the main log.
+    await writeFile(join(subagentDir, 'agent-old.jsonl'), JSON.stringify({ type: 'user', uuid: 'old', isSidechain: true, parentUuid: null, message: { content: 'old prompt' } }) + '\n')
+    await writeFile(join(projectDir, `${sessionId}.jsonl`), '')
+
+    scanner = await createSessionScanner({
+      sessionId,
+      workingDirectory: testDir,
+      onMessage: (msg) => collectedMessages.push(msg)
+    })
+
+    await writeFile(join(subagentDir, 'agent-a1.meta.json'), JSON.stringify({ agentType: 'general-purpose', toolUseId: 'toolu_parent' }))
+    await writeFile(join(subagentDir, 'agent-a1.jsonl'), [
+      { type: 'user', uuid: 's1', isSidechain: true, parentUuid: null, message: { role: 'user', content: 'sub prompt' } },
+      { type: 'assistant', uuid: 's2', isSidechain: true, parentUuid: 's1', message: { role: 'assistant', content: [{ type: 'text', text: 'sub reply' }] } }
+    ].map((line) => JSON.stringify(line)).join('\n') + '\n')
+    await new Promise(resolve => setTimeout(resolve, 3500))
+
+    expect(collectedMessages.map((m) => m.type === 'user' || m.type === 'assistant' ? [m.uuid, m.parentToolUseId] : null)).toEqual([
+      ['s1', 'toolu_parent'],
+      ['s2', 'toolu_parent']
+    ])
   })
 })

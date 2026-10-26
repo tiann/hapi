@@ -13,6 +13,7 @@ import { useAgyModels } from '@/hooks/queries/useAgyModels'
 import { useClaudeModels } from '@/hooks/queries/useClaudeModels'
 import { getClaudeLaunchModelOptions } from '@/components/AssistantChat/modelOptions'
 import { getClaudeComposerEffortOptions } from '@/components/AssistantChat/claudeEffortOptions'
+import { useDshModelsForMachine } from '@/hooks/queries/useDshModels'
 import { useOpencodeModelsForCwd } from '@/hooks/queries/useOpencodeModelsForCwd'
 import { useOpencodeModelVariants } from '@/hooks/queries/useOpencodeModelVariants'
 import { useGrokModelsForCwd } from '@/hooks/queries/useGrokModelsForCwd'
@@ -256,6 +257,9 @@ export function NewSession(props: {
         setAgySelectedModel(
             draft.agent === 'agy' && draft.model !== 'auto' ? draft.model : null
         )
+        setDshSelectedModel(
+            draft.agent === 'dsh' && draft.model !== 'auto' ? draft.model : null
+        )
         setServiceTier(draft.serviceTier)
         setCollaborationMode(draft.collaborationMode)
         setCopilotAgentMode(draft.copilotAgentMode)
@@ -323,6 +327,7 @@ export function NewSession(props: {
     // this machine); one the user just picked is kept, because the catalog can
     // change under an open form while they are looking at it.
     const agyModelPickedByUserRef = useRef(false)
+    const [dshSelectedModel, setDshSelectedModel] = useState<string | null>(null)
     const runnerSpawnError = useMemo(
         () => formatRunnerSpawnError(selectedMachine),
         [selectedMachine]
@@ -698,6 +703,11 @@ export function NewSession(props: {
         machineId,
         enabled: agent === 'agy' && Boolean(machineId)
     })
+    const dshModelsState = useDshModelsForMachine({
+        api: props.api,
+        machineId,
+        enabled: agent === 'dsh' && Boolean(machineId)
+    })
     const piModelsState = usePiModelsForMachine({
         api: props.api,
         machineId,
@@ -820,7 +830,30 @@ export function NewSession(props: {
         // sticks instead of snapping to the first option.
         agyModelPickedByUserRef.current = false
         setAgySelectedModel(null)
+        setDshSelectedModel(null)
     }, [agent, machineId])
+
+    useEffect(() => {
+        if (
+            agent !== 'dsh'
+            || dshModelsState.isLoading
+            || dshModelsState.error
+            || dshSelectedModel === null
+        ) {
+            return
+        }
+        // Catalog changed under the open form; drop selections it no longer
+        // advertises (a stale tuple would be rejected by the ACP server).
+        if (!dshModelsState.availableModels.some((candidate) => candidate.modelId === dshSelectedModel)) {
+            setDshSelectedModel(null)
+        }
+    }, [
+        agent,
+        dshModelsState.availableModels,
+        dshModelsState.error,
+        dshModelsState.isLoading,
+        dshSelectedModel
+    ])
 
     useEffect(() => {
         if (
@@ -927,6 +960,11 @@ export function NewSession(props: {
         agyModelPickedByUserRef.current = false
         setAgySelectedModel(
             agent === 'agy' && preferred.model !== 'auto' ? preferred.model : null
+        )
+        // Restored DSH tuples are validated against the machine catalog by the
+        // effect above (drops selections the catalog no longer advertises).
+        setDshSelectedModel(
+            agent === 'dsh' && preferred.model !== 'auto' ? preferred.model : null
         )
     }, [agent, legacyYoloAgent, machineId, usesSharedPermissionMode])
 
@@ -1455,7 +1493,9 @@ export function NewSession(props: {
             agent,
             model: agent === 'agy'
                 ? (agySelectedModel ?? 'auto')
-                : agent === 'opencode'
+                : agent === 'dsh'
+                    ? (dshSelectedModel ?? 'auto')
+                    : agent === 'opencode'
                     ? (opencodeSelectedModel ?? 'auto')
                     : model,
             cursorSelectedBase,
@@ -1478,6 +1518,7 @@ export function NewSession(props: {
         model,
         opencodeSelectedModel,
         agySelectedModel,
+        dshSelectedModel,
         cursorSelectedBase,
         machineId,
         effort,
@@ -1604,7 +1645,9 @@ export function NewSession(props: {
                 ? (opencodeSelectedModel ?? undefined)
                 : agent === 'agy'
                     ? (agySelectedModel ?? undefined)
-                    : agent === 'cursor'
+                    : agent === 'dsh'
+                        ? (dshSelectedModel ?? undefined)
+                        : agent === 'cursor'
                         ? (model === 'auto' || !model ? 'auto' : model)
                         : (model !== 'auto' ? model : undefined)
             const resolvedEffort = (agent === 'claude' || agent === 'grok' || agent === 'pi') && effort !== 'auto'
@@ -1616,7 +1659,9 @@ export function NewSession(props: {
             const preferredLaunchSettings = {
                 model: agent === 'agy'
                     ? (agySelectedModel ?? 'auto')
-                    : agent === 'opencode'
+                    : agent === 'dsh'
+                        ? (dshSelectedModel ?? 'auto')
+                        : agent === 'opencode'
                         ? (opencodeSelectedModel ?? 'auto')
                         : model,
                 cursorSelectedBase,
@@ -1747,6 +1792,9 @@ export function NewSession(props: {
         || (agent === 'agy'
             && agySelectedModel !== null
             && agyModelsState.isLoading)
+        || (agent === 'dsh'
+            && dshSelectedModel !== null
+            && dshModelsState.isLoading)
         || (agent === 'cursor'
             && (model !== 'auto' || cursorSelectedBase !== 'auto')
             && cursorModelsState.isLoading)
@@ -1887,7 +1935,27 @@ export function NewSession(props: {
                     onClear={() => setSelectedPiImportSessionId(null)}
                 />
             ) : null}
-            {agent === 'dsh' ? null : agent === 'agy' ? (
+            {agent === 'dsh' ? (
+                <ModelSelector
+                    agent={agent}
+                    model={dshSelectedModel ?? 'auto'}
+                    options={[
+                        { value: 'auto', label: 'Default' },
+                        ...dshModelsState.availableModels.map((entry) => ({
+                            value: entry.modelId,
+                            label: entry.name ?? entry.modelId
+                        }))
+                    ]}
+                    isDisabled={isFormDisabled}
+                    isLoading={dshModelsState.isLoading}
+                    error={dshModelsState.error
+                        ? `${t('newSession.model.loadFailed')}: ${dshModelsState.error}`
+                        : null}
+                    onModelChange={(value) => {
+                        setDshSelectedModel(value === 'auto' ? null : value)
+                    }}
+                />
+            ) : agent === 'agy' ? (
                 <AgyModelSelector
                     machineId={machineId}
                     isLoading={agyModelsState.isLoading}

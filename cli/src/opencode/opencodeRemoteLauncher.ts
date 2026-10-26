@@ -1,5 +1,6 @@
 import React from 'react';
 import { randomUUID } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 import { registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import { logger } from '@/ui/logger';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
@@ -12,8 +13,27 @@ import { OpencodeDisplay } from '@/ui/ink/OpencodeDisplay';
 import type { OpencodeSession } from './session';
 import type { OpencodeMode, PermissionMode } from './types';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
-import { allocateFreePort, createOpencodeBackend } from './utils/opencodeBackend';
-import { captureCompactionMarkerSnapshot, fetchCompactionResult, splitProviderModel, triggerOpencodeCompact } from './utils/opencodeCompactBridge';
+import {
+    allocateFreePort,
+    createOpencodeBackend,
+    detectOpencodeFlavorVersion,
+    discoverOpencodeV2RestPort,
+    findOpencodeServePid,
+    listChildPids,
+    listLoopbackListeners,
+    type OpencodeFlavorVersion
+} from './utils/opencodeBackend';
+import {
+    captureCompactionIdsV2,
+    captureCompactionMarkerSnapshot,
+    fetchCompactionResult,
+    pollCompactionResultV2,
+    type CompactionResult,
+    readOpencodeV2ServerPassword,
+    splitProviderModel,
+    triggerOpencodeCompact,
+    triggerOpencodeCompactV2
+} from './utils/opencodeCompactBridge';
 import { formatOpencodePromptError } from './utils/opencodeErrorText';
 import {
     formatOpencodeRetryStatus,
@@ -135,6 +155,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     /** Subscription to the agent's own server event stream; null until the ACP session id is known, closed in cleanup(). */
     private eventStream: OpencodeEventSubscription | null = null;
     private stallErrorReportedForPrompt = false;
+    /** opencode major version detected once per session; v2 changes spawn args and baseUrl discovery. */
+    private majorVersion: OpencodeFlavorVersion | null = null;
+    /** v2-only REST access discovered after spawn; null unless both port and OPENCODE_PASSWORD were found. */
+    private v2RestInfo: { baseUrl: string; password: string } | null = null;
 
     constructor(
         session: OpencodeSession,
@@ -165,22 +189,41 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         });
         this.happyServer = happyServer;
 
-        // Pre-select a loopback port for the ACP subprocess's internal HTTP
-        // API and pass it explicitly via --port/--hostname. opencode does not
-        // announce the bound port anywhere (stdout/stderr/ACP responses) when
-        // launched with --port 0, so HAPI must choose it up front to be able
-        // to reach that HTTP API later (e.g. for /compact — see
-        // opencodeCompactBridge.ts).
-        const hostname = '127.0.0.1';
-        const port = await allocateFreePort(hostname);
-        const baseUrl = `http://${hostname}:${port}`;
-        this.baseUrl = baseUrl;
+        // opencode v2 dropped the `acp --cwd/--port/--hostname` flags and
+        // binds its internal HTTP API to a random loopback port it exposes
+        // nowhere (verified 2026-10-15), so the spawn strategy and the
+        // baseUrl discovery differ per major version. Detected once per
+        // session; any detection failure falls back to the v1 path.
+        this.majorVersion = await detectOpencodeFlavorVersion();
+        const isV2 = this.majorVersion === 'v2';
 
-        const backend = createOpencodeBackend({
-            cwd: session.path,
-            port,
-            hostname
-        });
+        // v1: pre-select a loopback port for the ACP subprocess's internal
+        // HTTP API and pass it explicitly via --port/--hostname. opencode
+        // does not announce the bound port anywhere (stdout/stderr/ACP
+        // responses) when launched with --port 0, so HAPI must choose it up
+        // front to be able to reach that HTTP API later (e.g. for /compact —
+        // see opencodeCompactBridge.ts).
+        const hostname = '127.0.0.1';
+        let beforeSnapshot: Set<number> | null = null;
+        let v1Port: number | null = null;
+        if (isV2) {
+            beforeSnapshot = await listLoopbackListeners();
+            this.baseUrl = null;
+        } else {
+            v1Port = await allocateFreePort(hostname);
+            this.baseUrl = `http://${hostname}:${v1Port}`;
+        }
+
+        const backend = isV2
+            ? createOpencodeBackend({
+                cwd: session.path,
+                majorVersion: 'v2' as OpencodeFlavorVersion
+            })
+            : createOpencodeBackend({
+                cwd: session.path,
+                port: v1Port!,
+                hostname
+            });
         this.backend = backend;
         registerAcpSessionTitleSync(backend, session.client);
 
@@ -220,6 +263,46 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         session.onSessionFound(acpSessionId);
         this.activeAcpSessionId = acpSessionId;
 
+        // v2: the internal HTTP API port is bound randomly after spawn and
+        // exposed nowhere, so discover it now that the ACP session is up
+        // (the server is listening by then). Both the port and the
+        // OPENCODE_PASSWORD (injected into the serve --stdio child env by
+        // the acp parent) must be found; otherwise /compact stays disabled
+        // exactly like the pre-v2 "not yet supported" fallback.
+        if (isV2) {
+            const acpPid = backend.getProcessPid?.() ?? null;
+            // v2's random port is owned by the `serve --stdio` process, not
+            // the acp parent — and the tree can own OTHER listeners too
+            // (configured MCP servers bind their own ports). Identify the
+            // serve process by its command line and scope the port scan to
+            // it, so an unrelated descendant listener cannot win the
+            // lowest-port race; without a match, fall back to the tree-wide
+            // scan.
+            const descendants = acpPid !== null ? await listChildPids(acpPid) : [];
+            const servePid = acpPid !== null
+                ? await findOpencodeServePid({ rootPids: [acpPid, ...descendants] })
+                : null;
+            const ownerPids = servePid !== null
+                ? [servePid]
+                : acpPid !== null
+                    ? [acpPid, ...descendants]
+                    : undefined;
+            const discoveredPort = await discoverOpencodeV2RestPort({
+                beforeSnapshot: beforeSnapshot ?? new Set(),
+                ownerPids
+            });
+            const password = acpPid !== null ? await readOpencodeV2ServerPassword(acpPid) : null;
+            if (discoveredPort !== null && password) {
+                this.v2RestInfo = { baseUrl: `http://127.0.0.1:${discoveredPort}`, password };
+            } else {
+                logger.warn('[opencode-remote] opencode v2 internal HTTP API discovery failed; /compact disabled for this session');
+                session.sendSessionEvent({
+                    type: 'message',
+                    message: 'OpenCode v2 internal API discovery failed; upstream retry status and /compact are unavailable this session.'
+                });
+            }
+        }
+
         // Upstream retries are announced only on the agent's own event
         // stream — not as ACP notifications and not on stderr. Measured
         // against a provider stubbed to answer 429: 40 minutes, 85 retries,
@@ -233,14 +316,25 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // nothing else, so it is deliberately neither awaited nor
         // error-checked; the subscription reports its own failures at debug
         // level and keeps the session running.
+        // v2 keeps baseUrl null until discovery succeeds above; skipping the
+        // subscription then only degrades upstream-retry visibility.
+        const restBaseUrl = this.v2RestInfo?.baseUrl ?? this.baseUrl;
+        if (restBaseUrl) {
         this.eventStream = subscribeToOpencodeEvents({
-            baseUrl,
+            baseUrl: restBaseUrl,
             // Required. Omitting it yields heartbeats and no session events
             // at all, with no error to notice — see the subscription's doc.
             directory: session.path,
             sessionId: acpSessionId,
+            // opencode v2's internal server is Basic-auth protected; without
+            // the header the subscription is rejected before any event.
+            headers: this.v2RestInfo ? {
+                authorization: 'Basic ' + Buffer.from(`opencode:${this.v2RestInfo.password}`).toString('base64')
+            } : undefined,
+            mode: this.majorVersion ?? 'v1',
             onRetry: (retry) => this.surfaceUpstreamRetry(retry)
         });
+        }
 
         // Seed currentBackendModel from the ACP session metadata so the first
         // batch — whose model the hub mirrors from the just-discovered session —
@@ -304,7 +398,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // here — the same flag requestExit() already set — keeps
         // availability from ever un-flipping once a switch/exit is
         // underway.
-        if (!this.shouldExit) {
+        if (!this.shouldExit && (this.v2RestInfo !== null || this.baseUrl !== null)) {
             this.options.onCompactAvailabilityChange?.(true);
         }
 
@@ -917,7 +1011,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 || this.compactResultSuppressed;
 
             const backend = this.backend;
-            const baseUrl = this.baseUrl;
+            const v2Rest = this.majorVersion === 'v2' ? this.v2RestInfo : null;
+            const baseUrl = v2Rest?.baseUrl ?? this.baseUrl;
             if (!baseUrl || !backend) {
                 if (!isCancelled()) {
                     session.sendSessionEvent({
@@ -943,6 +1038,155 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             if (isCancelled()) {
                 logger.debug('[opencode-remote] /compact skipped before marker snapshot: cancelled or aborted');
                 return;
+            }
+
+            // v2: no marker snapshot boundary exists (the v1 capture is
+            // v1-only); the POST is abortable and verification polls the v2
+            // message GET, feeding the same result switch. Suppression spans
+            // the POST *and* the polling loop: v2 returns from the POST
+            // before the summary exists, and session/update notifications
+            // arriving during the minutes-long poll would otherwise reach
+            // the stale pre-compact handler and duplicate the explicit
+            // summary (the v1 path suppresses for the same reason).
+            //
+            // Phase ordering mirrors v1's distinction, adapted to v2's async
+            // compaction: 'snapshot' (abortable read-only identity capture)
+            // → 'summarize' from just before the POST through the entire
+            // poll, because v2's POST only admits the work — everything
+            // after admission is server-side mutation a plain Stop must
+            // wait out rather than abort as an "interruptible read".
+            if (v2Rest) {
+                // Identity boundary FIRST, in the abortable 'snapshot' phase
+                // (the v2 analogue of v1's marker snapshot): compaction ids
+                // visible before the POST. If the POST response cannot be
+                // read, any compaction entry appearing afterwards must be
+                // ours. Admission is refused without this boundary — a
+                // successful POST admits server-side work, so verifying it
+                // must never depend on guessing. Wire contract verified
+                // against opencode v2.0.29 (release commit 042d0832f):
+                // POST /api/session/:id/compact, GET /api/session/:id/message
+                // ({data: [Session.Message.Compaction...]}), /api/event SSE
+                // with {id, type, data} envelopes, OPENCODE_PASSWORD injected
+                // into the serve child (cli/src/services/standalone.ts).
+                this.compactOperationPhase = 'snapshot';
+                const preExistingIds = await captureCompactionIdsV2({
+                    baseUrl,
+                    sessionId: acpSessionId,
+                    password: v2Rest.password,
+                    signal: compactAbortController.signal
+                });
+                let v2Outcome:
+                    | { ok: true; cancelled: true }
+                    | { ok: false; error: string }
+                    | { ok: true; cancelled: false; result: CompactionResult }
+                    | null = null;
+                if (compactAbortController.signal.aborted) {
+                    // Plain Stop or teardown landed during the read-only
+                    // snapshot: nothing was admitted, so exiting here releases
+                    // no server-side work.
+                    v2Outcome = { ok: true as const, cancelled: true as const };
+                } else if (preExistingIds === null) {
+                    // No recovery basis → no admission. Report a failure
+                    // rather than running a compaction whose outcome could
+                    // never be attributed.
+                    v2Outcome = {
+                        ok: false as const,
+                        error: 'OpenCode v2 compaction identity snapshot failed; refusing to admit without a recovery boundary.'
+                    };
+                } else {
+                    this.compactOperationPhase = 'summarize';
+                    v2Outcome = await backend.suppressUpdatesDuring(async (): Promise<
+                        | { ok: true; cancelled: true }
+                        | { ok: false; error: string }
+                        | { ok: true; cancelled: false; result: CompactionResult }
+                    > => {
+                        const admitted = await triggerOpencodeCompactV2({
+                            baseUrl,
+                            sessionId: acpSessionId,
+                            providerId: split.providerId,
+                            modelId: split.modelId,
+                            password: v2Rest.password,
+                            signal: compactAbortController.signal
+                        });
+                        if (admitted.kind === 'rejected') {
+                            // The server answered and refused: definitive,
+                            // nothing was admitted.
+                            return { ok: false as const, error: admitted.error };
+                        }
+                        if (compactAbortController.signal.aborted) {
+                            // Teardown (switch/exit) aborted the operation itself:
+                            // the POST/poll is dead, nothing server-side to await.
+                            return { ok: true as const, cancelled: true as const };
+                        }
+                        // A plain Stop that landed while the POST was pending only
+                        // asked for output suppression — the POST merely admitted
+                        // the request and the server-side compaction is still
+                        // pending, so verification MUST continue (barrier held)
+                        // rather than releasing the queue mid-compaction. The
+                        // suppression applies to the terminal outcome below.
+                        const admittedId = admitted.kind === 'admitted' ? admitted.compactionId : null;
+                        if (admitted.kind === 'transport-error') {
+                            // Admission is UNCERTAIN (the server may have accepted
+                            // before the connection died): run identity recovery
+                            // instead of failing — the exclude-list path below
+                            // waits for a NEW compaction entry. Without a
+                            // snapshot basis the unverified result still leaves
+                            // after the (barrier-covered) wait, which is the
+                            // best a no-basis recovery can do.
+                            logger.debug(`[opencode-remote] v2 compact admission uncertain (${admitted.message}); recovering via pre-POST snapshot`);
+                        }
+                        // The poll is bounded — but the bound is a STALL cap (see
+                        // pollCompactionResultV2): a visible pending compaction is
+                        // genuine server work that legitimately holds the barrier,
+                        // while an entry that never appears must not hold the
+                        // session forever.
+                        const v2Result = await pollCompactionResultV2({
+                            baseUrl,
+                            sessionId: acpSessionId,
+                            password: v2Rest.password,
+                            signal: compactAbortController.signal,
+                            expectedCompactionId: admittedId,
+                            excludeCompactionIds: admittedId === null ? preExistingIds : null
+                        });
+                        return { ok: true as const, cancelled: false as const, result: v2Result };
+                    });
+                }
+                this.compactOperationPhase = 'idle';
+                if (!v2Outcome.ok) {
+                    if (!isCancelled()) {
+                        session.sendSessionEvent({ type: 'message', message: `📦 Compaction failed: ${v2Outcome.error}` });
+                    } else {
+                        logger.debug('[opencode-remote] /compact failure suppressed: cancelled or aborted before it resolved');
+                    }
+                    return;
+                }
+                if (v2Outcome.cancelled || isCancelled()) {
+                    logger.debug('[opencode-remote] /compact result suppressed: cancelled or aborted before it resolved');
+                    return;
+                }
+                switch (v2Outcome.result.status) {
+                    case 'success': {
+                        session.sendSessionEvent({ type: 'message', message: '📦 Compaction completed' });
+                        // Native provider compaction completes with an empty
+                        // summary (the context checkpoint lives in
+                        // providerContext on 2.0.x and native.messages on 2.1
+                        // on the server) — skip the synthetic summary message
+                        // in that case.
+                        if (v2Outcome.result.text.trim().length > 0) {
+                            const converted = convertAgentMessage({ type: 'reasoning', text: v2Outcome.result.text, id: randomUUID() });
+                            if (converted) {
+                                session.sendAgentMessage(converted);
+                            }
+                        }
+                        return;
+                    }
+                    case 'failed':
+                        session.sendSessionEvent({ type: 'message', message: `📦 Compaction failed: ${v2Outcome.result.reason}` });
+                        return;
+                    case 'unverified':
+                        session.sendSessionEvent({ type: 'message', message: '📦 Compaction result could not be verified.' });
+                        return;
+                }
             }
 
             // The pre-POST marker snapshot is a read-only GET. A plain Stop

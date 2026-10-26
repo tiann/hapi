@@ -17,6 +17,7 @@ import { getCliArgs } from '@/utils/cliArgs';
 import { getProcessStartMarker, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid } from '@/utils/process';
 import { findStopSessionOrphanTargets, reapRunnerSpawnedOrphans } from '@/runner/orphanReap';
 import { decideUntrackedRunnerWebhook } from '@/runner/lateRunnerWebhook';
+import { cleanupFailedStartupAfterExit, sessionStartupTimeout, waitForRecoverableStartup } from './sessionStartup';
 import {
     decideKeepWrapperArchive,
     decideRawPidStop,
@@ -66,7 +67,7 @@ export function createSpawnDeduplicator(
   const childState = new Map<string, 'alive' | 'stopping'>();
 
   const dedupe = async (options: SpawnSessionOptions): Promise<SpawnSessionResult> => {
-    const key = options.existingSessionId;
+    const key = options.existingSessionId ?? options.reservedSessionId;
     if (!key) {
       return await spawnOnce(options);
     }
@@ -399,18 +400,6 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     }
     persistResumeProcesses();
 
-    // Webhook timeout tolerance. Opus 1M + --resume can legitimately take
-    // longer than the default 15s to reach the "Session started" webhook
-    // (observed real-world durations of 30s – 60min under rate-limit /
-    // heavy session restore). Allow advanced users to raise this ceiling
-    // so that slow starts no longer leave orphaned child processes which
-    // later report back as ghost sessions.
-    const envWebhookTimeout = Number(process.env.HAPI_RUNNER_WEBHOOK_TIMEOUT_MS);
-    const webhookTimeoutMs =
-      Number.isFinite(envWebhookTimeout) && envWebhookTimeout > 0
-        ? envWebhookTimeout
-        : 15_000;
-
     // Session spawning awaiter system
     const pidToAwaiter = new Map<number, (session: TrackedSession) => void>();
     const pidToErrorAwaiter = new Map<number, (errorMessage: string) => void>();
@@ -461,6 +450,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         existingSession.sharedSessions[sessionId] = sessionMetadata;
         invalidateVerifiedExit(sessionId);
         // Native /new or /fork cannot replace the primary spawn confirmation.
+        if (pidToAwaiter.has(pid) && existingSession.requestedHappySessionId
+          && existingSession.requestedHappySessionId !== sessionId) return;
         if (existingSession.happySessionId && existingSession.happySessionId !== sessionId) return;
       }
 
@@ -869,6 +860,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         }
         invalidateVerifiedExit(`PID-${pid}`);
         logger.debug(`[RUNNER RUN] Spawned process with PID ${pid}`);
+        const webhookTimeoutMs = sessionStartupTimeout(options.agent, process.env.HAPI_RUNNER_WEBHOOK_TIMEOUT_MS);
         let observedExitCode: number | null = null;
         let observedExitSignal: NodeJS.Signals | null = null;
         const buildWebhookFailureMessage = (reason: 'timeout' | 'exit-before-webhook' | 'process-error-before-webhook'): string => {
@@ -878,7 +870,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           } else if (reason === 'process-error-before-webhook') {
             message = `Session process error before webhook for PID ${pid}`;
           } else {
-            message = `Session webhook timeout for PID ${pid}`;
+            message = `Session webhook timeout for PID ${pid} after ${webhookTimeoutMs}ms`;
           }
 
           if (observedExitCode !== null || observedExitSignal) {
@@ -887,6 +879,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             } else {
               message += ` (signal ${observedExitSignal})`;
             }
+          }
+
+          if (reason === 'timeout') {
+            message += '. Adjust HAPI_RUNNER_WEBHOOK_TIMEOUT_MS on the runner host and restart the runner to change this wait';
           }
 
           const trimmedTail = stderrTail.trim();
@@ -954,7 +950,37 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         // Wait for webhook to populate session with happySessionId
         logger.debug(`[RUNNER RUN] Waiting for session webhook for PID ${pid}`);
 
-        const spawnResult = await new Promise<SpawnSessionResult>((resolve) => {
+        const recoverableStartup = options.agent === 'codex' ? waitForRecoverableStartup<TrackedSession>({
+          timeoutMs: webhookTimeoutMs,
+          timeoutMessage: `Codex startup is still unconfirmed for PID ${pid}; the process remains tracked. Wait for the existing session instead of creating another, or stop it explicitly.`,
+          sessionId: session => session.happySessionId!,
+          onLateReady: session => {
+            if (trackHubId) spawnSession.recoverChild(trackHubId, { type: 'success', sessionId: session.happySessionId! });
+            reportSpawnOutcomeToHub?.({ type: 'success' });
+            logger.debug(`[RUNNER RUN] Late startup confirmed for PID ${pid}`);
+          },
+          onLateFailure: message => {
+            reportSpawnOutcomeToHub?.({ type: 'error', details: { message, pid } });
+            if (worktreeInfo && happyProcess) cleanupFailedStartupAfterExit(
+              happyProcess,
+              () => !trackedSession.happySessionId,
+              () => { void cleanupWorktree().catch(error => logger.debug('[RUNNER RUN] Late startup worktree cleanup failed', error)); },
+            );
+          },
+        }) : null;
+        if (recoverableStartup) {
+          // Keep both callbacks and all PID bindings after the caller deadline.
+          // A shared wrapper can already own roots; expiry is not exit evidence.
+          pidToAwaiter.set(pid, session => {
+            pidToAwaiter.delete(pid); pidToErrorAwaiter.delete(pid);
+            recoverableStartup.confirm(session);
+          });
+          pidToErrorAwaiter.set(pid, message => {
+            pidToAwaiter.delete(pid); pidToErrorAwaiter.delete(pid);
+            recoverableStartup.fail(message);
+          });
+        }
+        const spawnResult = recoverableStartup ? await recoverableStartup.result : await new Promise<SpawnSessionResult>((resolve) => {
           // Set timeout for webhook. Default is 15s but can be raised via
           // HAPI_RUNNER_WEBHOOK_TIMEOUT_MS for users on slow models
           // (e.g. opus[1m] --resume).
@@ -1519,6 +1545,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
     // Handle child process exit
     const onChildExited = (pid: number) => {
+      pidToErrorAwaiter.get(pid)?.(`Session process PID ${pid} exited before startup was confirmed`);
       const session = pidToTrackedSession.get(pid);
       for (const id of Object.keys(session?.sharedSessions ?? {})) rememberVerifiedExit(id);
       const requestedSessionId = session?.requestedHappySessionId ?? pidToRequestedSessionId.get(pid);

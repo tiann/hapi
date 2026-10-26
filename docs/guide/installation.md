@@ -190,6 +190,7 @@ On first run, HAPI:
 | `HAPI_EXPERIMENTAL` | - | - | CLI: enable experimental features (`true`/`1`/`yes`) |
 | `ELEVENLABS_API_KEY` | - | Settings / env | ElevenLabs API key for voice + dictation |
 | `ELEVENLABS_AGENT_ID` | Auto-created | - | Custom ElevenLabs agent ID |
+| `ELEVENLABS_MAX_DURATION_SECONDS` | `1800` | - | Max length of one ElevenLabs voice conversation (60-7200) |
 | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | - | Settings / env | Gemini Live voice assistant |
 | `DASHSCOPE_API_KEY` / `QWEN_API_KEY` | - | Settings / env | Qwen Realtime voice assistant |
 | `VOICE_BACKEND` | Auto-detected | - | Default assistant backend: `elevenlabs`, `gemini-live`, or `qwen-realtime` |
@@ -318,6 +319,10 @@ hapi runner start
 ```
 
 Session CLI may export an **explicit** non-default `HAPI_API_URL` (from env or settings) into child env so shell helpers hit the same remote hub. It does **not** mirror `CLI_API_TOKEN` into wrapped agents (settings/prompt-backed secrets stay out of agent env; a fresh `hapi` re-reads `~/.hapi/settings.json`, and systemd/env tokens already inherit). Prefer MCP `list_peers` inside a session. Web terminal PTYs still strip hub secrets. If `--list` fails with an auth/URL error, the message points at `hapi auth login` and the configured hub URL.
+
+##### Disabling peer tools on a runner
+
+Set `HAPI_DISABLE_PEER_TOOLS=1` (also `true`/`yes`) in the runner environment to stop wrapped agents from browsing or messaging other HAPI sessions — for example when one agent digging through the session list and pinging peers pollutes other sessions' contexts. The switch is not advertised-then-refused: the `list_peers` / `inspect_peer` / `ping_peer` MCP tools are not registered on the session MCP server and not passed to `--allowedTools` / `--tools`, the peer steer block is dropped from agent system prompts (a pasted `/sessions/<id>` citation only reminds the agent it is a hub path, not a local file), and the peer core refuses with an explicit `disabled` error as defense in depth — so `hapi ping-peer` / `hapi inspect-peer` from inside a wrapped agent shell fails loudly too. Scope the env to the runner (systemd unit, launchd plist, or runner guard script); operators who leave it unset in their interactive terminal keep full `hapi ping-peer` CLI access.
 
 Additional runner commands:
 

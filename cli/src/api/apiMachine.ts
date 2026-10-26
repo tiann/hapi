@@ -45,6 +45,10 @@ import {
     type ListGrokModelsForCwdResponse
 } from '../modules/common/grokModels'
 import {
+    listDshModelsForMachine,
+    type ListDshModelsForMachineResponse
+} from '../modules/common/dshModels'
+import {
     listCopilotModelsForCwd,
     type ListCopilotModelsForCwdRequest,
     type ListCopilotModelsForCwdResponse
@@ -296,6 +300,15 @@ export class ApiMachineClient {
                 }
 
                 return await listGrokModelsForCwd(resolvedCwd)
+            }
+        )
+
+        // DSH models are machine-global, so unlike the cwd-scoped probes above
+        // this handler takes no parameters.
+        this.rpcHandlerManager.registerHandler<undefined, ListDshModelsForMachineResponse>(
+            RPC_METHODS.ListDshModelsForMachine,
+            async () => {
+                return await listDshModelsForMachine()
             }
         )
 

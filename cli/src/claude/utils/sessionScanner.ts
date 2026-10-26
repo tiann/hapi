@@ -1,6 +1,6 @@
 import { RawJSONLines, RawJSONLinesSchema } from "../types";
-import { basename, join } from "node:path";
-import { open, stat } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
+import { open, readdir, readFile, stat } from "node:fs/promises";
 import { logger } from "@/ui/logger";
 import { getProjectPath } from "./path";
 import { BaseSessionScanner, SessionFileScanEntry, SessionFileScanResult, SessionFileScanStats } from "@/modules/common/session/BaseSessionScanner";
@@ -49,6 +49,8 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
     private readonly pendingSessions = new Set<string>();
     private currentSessionId: string | null;
     private readonly scannedSessions = new Set<string>();
+    // Subagent transcript path → spawning Agent/Task tool_use id, from its meta.json.
+    private readonly subagentParents = new Map<string, string>();
 
     constructor(opts: { sessionId: string | null; workingDirectory: string; onMessage: (message: RawJSONLines) => void }) {
         super({ intervalMs: 3000 });
@@ -88,6 +90,11 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
         const keys = events.map((entry) => messageKey(entry.event));
         this.seedProcessedKeys(keys);
         this.setCursor(sessionFile, nextCursor);
+        for (const subagentFile of await this.subagentFilePaths(this.currentSessionId)) {
+            const existing = await readSessionLog(subagentFile, 0);
+            this.seedProcessedKeys(existing.events.map((entry) => messageKey(entry.event)));
+            this.setCursor(subagentFile, existing.nextCursor);
+        }
     }
 
     protected async beforeScan(): Promise<void> {
@@ -102,6 +109,14 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
         if (this.currentSessionId && !this.pendingSessions.has(this.currentSessionId)) {
             files.add(this.sessionFilePath(this.currentSessionId));
         }
+        for (const sessionFile of [...files]) {
+            const sessionId = sessionIdFromPath(sessionFile);
+            if (sessionId) {
+                for (const subagentFile of await this.subagentFilePaths(sessionId)) {
+                    files.add(subagentFile);
+                }
+            }
+        }
         for (const watched of this.getWatchedFiles()) {
             files.add(watched);
         }
@@ -109,6 +124,18 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
     }
 
     protected async parseSessionFile(filePath: string, cursor: number): Promise<SessionFileScanResult<RawJSONLines>> {
+        if (isSubagentFile(filePath)) {
+            const { events, nextCursor } = await readSessionLog(filePath, cursor);
+            const parentToolUseId = await this.subagentParentToolUseId(filePath);
+            if (parentToolUseId) {
+                for (const { event } of events) {
+                    if (event.isSidechain && !event.parentToolUseId) {
+                        event.parentToolUseId = parentToolUseId;
+                    }
+                }
+            }
+            return { events, nextCursor };
+        }
         const sessionId = sessionIdFromPath(filePath);
         if (sessionId) {
             this.scannedSessions.add(sessionId);
@@ -147,6 +174,39 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
 
     private sessionFilePath(sessionId: string): string {
         return join(this.projectDir, `${sessionId}.jsonl`);
+    }
+
+    // Claude Code 2.x writes each subagent to <session>/subagents/agent-*.jsonl
+    // instead of the main session log.
+    private async subagentFilePaths(sessionId: string): Promise<string[]> {
+        const dir = join(this.projectDir, sessionId, 'subagents');
+        try {
+            return (await readdir(dir))
+                .filter((name) => name.startsWith('agent-') && name.endsWith('.jsonl'))
+                .map((name) => join(dir, name));
+        } catch {
+            return [];
+        }
+    }
+
+    // The transcript lines carry no parent tool_use id; the sibling meta.json
+    // records it as `toolUseId`. Without it the web tracer can only fall back
+    // to matching the subagent prompt against the Agent tool input.
+    private async subagentParentToolUseId(filePath: string): Promise<string | undefined> {
+        const cached = this.subagentParents.get(filePath);
+        if (cached) {
+            return cached;
+        }
+        try {
+            const meta = JSON.parse(await readFile(filePath.slice(0, -'.jsonl'.length) + '.meta.json', 'utf-8'));
+            if (typeof meta?.toolUseId === 'string') {
+                this.subagentParents.set(filePath, meta.toolUseId);
+                return meta.toolUseId;
+            }
+        } catch {
+            // meta.json not written yet
+        }
+        return undefined;
     }
 }
 
@@ -284,6 +344,10 @@ export async function readSessionLog(filePath: string, startByte: number): Promi
         }
     }
     return { events: messages, nextCursor };
+}
+
+function isSubagentFile(filePath: string): boolean {
+    return basename(dirname(filePath)) === 'subagents';
 }
 
 function sessionIdFromPath(filePath: string): string | null {

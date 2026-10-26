@@ -1,4 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { normalizeDecryptedMessage } from '@/chat/normalize'
+import { reduceChatBlocks } from '@/chat/reducer'
+import type { NormalizedMessage } from '@/chat/types'
+import { aggregateResponseGroups } from '@/lib/assistant-runtime'
+import { buildVisibleChatBlocks } from '@/chat/toolGroups'
 import type { ApiClient } from '@/api/client'
 import type { DecryptedMessage, MessagesResponse } from '@/types/api'
 import {
@@ -250,7 +255,155 @@ afterEach(() => {
     vi.restoreAllMocks()
 })
 
+function makeToolMessages(count: number, firstSeq: number): DecryptedMessage[] {
+    return Array.from({ length: count }, (_, index) => {
+        const seq = firstSeq + index
+        const callId = `call-${Math.floor(index / 2)}`
+        return {
+            id: `tool-${seq}`,
+            seq,
+            localId: null,
+            content: {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: index % 2 === 0
+                        ? { type: 'tool-call', callId, name: 'Read', input: { file_path: `/f${index}` } }
+                        : { type: 'tool-call-result', callId, output: 'ok' }
+                }
+            },
+            createdAt: seq * 1_000,
+            invokedAt: seq * 1_000
+        } as DecryptedMessage
+    })
+}
+
 describe('message tail synchronization', () => {
+    it('fetches one older context page before first paint when the cold page is tool-only', async () => {
+        const id = sessionId('cold-tool-only-context')
+        const tools = makeToolMessages(INITIAL_PAGE_SIZE, 10)
+        const context = makeAgentMessage({ id: 'context', seq: 9, at: 9_000 })
+        const older = deferred<MessagesResponse>()
+        const getMessages = vi.fn()
+            .mockResolvedValueOnce(latestResponse(tools, {
+                epoch: 1,
+                hasMore: true,
+                nextBeforeAt: 10_000,
+                nextBeforeSeq: 10
+            }))
+            .mockReturnValueOnce(older.promise)
+
+        const syncing = syncTailMessages(createApi(getMessages), id)
+        await vi.waitFor(() => expect(getMessages).toHaveBeenCalledTimes(2))
+        expect(getMessages.mock.calls[1]?.[1]).toEqual({ beforeAt: 10_000, beforeSeq: 10, limit: 200 })
+        expect(getMessageWindowState(id)).toMatchObject({ isSyncingTail: true, messages: [] })
+
+        older.resolve(beforeResponse([context], {
+            epoch: 1,
+            hasMore: true,
+            nextBeforeAt: 9_000,
+            nextBeforeSeq: 9
+        }))
+        await syncing
+
+        const state = getMessageWindowState(id)
+        expect(state.isSyncingTail).toBe(false)
+        expect(state.hasMore).toBe(true)
+        expect(state.messages.map((message) => message.id)).toEqual([
+            'context',
+            ...tools.map((message) => message.id)
+        ])
+    })
+
+    it('releases a tool-only cold page when the context page exceeds the wait budget', async () => {
+        vi.useFakeTimers()
+        try {
+            const id = sessionId('cold-tool-only-timeout')
+            const tools = makeToolMessages(INITIAL_PAGE_SIZE, 10)
+            const getMessages = vi.fn()
+                .mockResolvedValueOnce(latestResponse(tools, {
+                    epoch: 1,
+                    hasMore: true,
+                    nextBeforeAt: 10_000,
+                    nextBeforeSeq: 10
+                }))
+                .mockReturnValueOnce(new Promise(() => {}))
+
+            const syncing = syncTailMessages(createApi(getMessages), id)
+            await vi.advanceTimersByTimeAsync(500)
+            await syncing
+
+            const state = getMessageWindowState(id)
+            expect(state.isSyncingTail).toBe(false)
+            expect(state.messages).toHaveLength(INITIAL_PAGE_SIZE)
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('ignores queued prompts when classifying a tool-only cold page', async () => {
+        const id = sessionId('cold-tool-only-queued')
+        const tools = makeToolMessages(INITIAL_PAGE_SIZE, 10)
+        const queued = makeUserMessage({ id: 'queued', localId: 'queued', createdAt: 99_000, invokedAt: null })
+        const getMessages = vi.fn()
+            .mockResolvedValueOnce(latestResponse([...tools, queued], {
+                epoch: 1,
+                hasMore: true,
+                nextBeforeAt: 10_000,
+                nextBeforeSeq: 10
+            }))
+            .mockResolvedValueOnce(beforeResponse([], { epoch: 1, nextBeforeAt: null, nextBeforeSeq: null }))
+
+        await syncTailMessages(createApi(getMessages), id)
+
+        expect(getMessages).toHaveBeenCalledTimes(2)
+        expect(getMessageWindowState(id).messages.map((message) => message.id)).toContain('queued')
+    })
+
+    it('does not fetch context on cached re-entry with a tool-only latest page', async () => {
+        const id = sessionId('reentry-tool-only')
+        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+            messages: [makeAgentMessage({ id: 'cached', seq: 5, at: 5_000 })],
+            hasMore: true,
+            oldestPositionAt: 5_000,
+            oldestPositionSeq: 5,
+            newestPositionAt: 5_000,
+            newestPositionSeq: 5,
+            epoch: 1
+        }))
+        activateMessageWindow(id)
+        const getMessages = vi.fn().mockResolvedValueOnce(latestResponse(makeToolMessages(INITIAL_PAGE_SIZE, 10), {
+            epoch: 1,
+            hasMore: true,
+            nextBeforeAt: 10_000,
+            nextBeforeSeq: 10
+        }))
+
+        await syncTailMessages(createApi(getMessages), id)
+
+        expect(getMessages).toHaveBeenCalledTimes(1)
+        expect(getMessages).toHaveBeenCalledWith(id, { limit: 20 })
+    })
+
+    it('does not fetch context when the cold page has conversation text', async () => {
+        const id = sessionId('cold-text-no-context')
+        const messages = [
+            makeAgentMessage({ id: 'text', seq: 9, at: 9_000 }),
+            ...makeToolMessages(INITIAL_PAGE_SIZE - 1, 10)
+        ]
+        const getMessages = vi.fn().mockResolvedValueOnce(latestResponse(messages, {
+            epoch: 1,
+            hasMore: true,
+            nextBeforeAt: 9_000,
+            nextBeforeSeq: 9
+        }))
+
+        await syncTailMessages(createApi(getMessages), id)
+
+        expect(getMessages).toHaveBeenCalledTimes(1)
+        expect(getMessageWindowState(id).messages).toHaveLength(INITIAL_PAGE_SIZE)
+    })
+
     it('uses a small cold latest page while keeping older loads at full page size', async () => {
         const id = sessionId('cold-initial-page')
         const latestMessages = Array.from({ length: INITIAL_PAGE_SIZE }, (_, index) =>
@@ -423,6 +576,39 @@ describe('message tail synchronization', () => {
         expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(['latest'])
         expect(getMessageWindowState(id).hasMore).toBe(true)
         expect('pending' in getMessageWindowState(id)).toBe(false)
+    })
+
+    it('retains Codex round duration through persisted re-entry and a user-free latest tail', async () => {
+        const id = sessionId('codex-round-duration')
+        const tail: DecryptedMessage[] = [
+            { type: 'message', message: 'completed answer' },
+            { type: 'token_count', flavor: 'codex', model: 'gpt-5.4',
+                info: { last_token_usage: { input_tokens: 100, output_tokens: 10 } } },
+            { type: 'turn_duration', flavor: 'codex', durationMs: 39_426 }
+        ].map((data, index) => ({ id: `round-${index}`, seq: 40 + index, localId: null,
+            createdAt: 40_000 + index, content: { role: 'agent', content: { type: 'codex', data: { ...data, turn_id: 'round' } } } }))
+        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+            messages: tail, hasMore: true, oldestPositionAt: 40_000, oldestPositionSeq: 40,
+            newestPositionAt: 40_002, newestPositionSeq: 42, epoch: 3
+        }))
+        const assertDuration = () => {
+            const messages = getMessageWindowState(id).messages
+            expect(messages.map(message => message.id)).toEqual(['round-0', 'round-1', 'round-2'])
+            const normalized = messages.map(normalizeDecryptedMessage).filter((message): message is NormalizedMessage => message !== null)
+            const { blocks } = reduceChatBlocks(normalized, null)
+            const visible = buildVisibleChatBlocks(blocks, { hasMoreMessages: true })
+            expect(aggregateResponseGroups(visible).get('round-0:0')?.roundSummary).toMatchObject({
+                durationMs: 39_426, numTurns: 1, usage: { input_tokens: 100, output_tokens: 10 }
+            })
+        }
+        assertDuration()
+        activateMessageWindow(id)
+        const getMessages = vi.fn(async () => latestResponse(JSON.parse(JSON.stringify(tail)) as DecryptedMessage[], {
+            epoch: 3, limit: 20, hasMore: true, nextBeforeAt: 40_000, nextBeforeSeq: 40
+        }))
+        await syncTailMessages(createApi(getMessages), id)
+        expect(getMessages).toHaveBeenCalledWith(id, { limit: 20 })
+        assertDuration()
     })
 
     it('preserves queued rows while replacing stale server rows on re-entry', async () => {

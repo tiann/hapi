@@ -150,7 +150,7 @@ Lifecycle:
 6. **`messages-requeued {localIds}`** (SSE): an explicit Retry restored normal queue delivery; clear `deliveryState`.
 7. **`message-cancelled {messageId, localId?}`** (SSE): remove the row (match either id).
 
-**Queued semantics**: a user message is "queued" iff `invokedAt === null` **strictly**, `deliveryState !== 'indeterminate'`, and `status !== 'failed'`. An indeterminate row remains visible in the unresolved-delivery bar but is not eligible for automatic delivery. `undefined` means already-invoked (rows from pre-V8 hubs omit the field) — only rows explicitly carrying `null` belong in the queued bar. Server-side, rows sent without a `localId` are stamped invoked at insert and can never be queued.
+**Queued semantics**: a user message is "queued" iff `invokedAt === null` **strictly**, `deliveryState !== 'indeterminate'`, and `status !== 'failed'`. An indeterminate row remains visible in the unresolved-delivery bar but is not eligible for automatic delivery. `undefined` means already-invoked (rows from pre-V8 hubs omit the field) — only rows explicitly carrying `null` belong in the queued bar. Server-side, a send without a `localId` gets a hub-minted one, so every REST send follows the queue/ack path; only agent-originated rows without a `localId` are stamped invoked at insert.
 
 ### Queued-state recovery
 
@@ -170,7 +170,7 @@ After a reconnect whose handshake said `resume: 'gap'` (an `ok` resume replayed 
 | Field | Type | Rules |
 |---|---|---|
 | `text` | string | Required (route also accepts empty text when `attachments` is non-empty). |
-| `localId` | string | Optional but **required for `scheduledAt`**, and required in practice: without it the row is stamped invoked at insert (no queue/ack/cancel path). |
+| `localId` | string | Optional but **required for `scheduledAt`**. When omitted the hub mints one; send your own to reconcile an optimistic row with its stored copy. |
 | `attachments` | `AttachmentMetadata[]` | Optional. Not allowed with `scheduledAt`. |
 | `scheduledAt` | epoch ms | Optional. Must be ≤ now + **7 days**; requires `localId`; no attachments; never `steer`. |
 | `deliveryMode` | `'queue'` \| `'steer'` | Optional, default `queue`. `steer` is honored only for **Pi-flavor** sessions and never for scheduled sends — the hub silently normalizes everything else to `queue`, and deferred/replayed delivery (reconnect backfill, retries, scheduled release) always degrades `steer` to `queue`. |
