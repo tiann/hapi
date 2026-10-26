@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { configuration } from '@/configuration'
 import type { Session } from '@/api/types'
 
 const {
@@ -59,6 +63,16 @@ import {
     buildMachineMetadata,
     buildSessionMetadata
 } from './sessionFactory'
+
+let capacityHome: string
+beforeEach(() => {
+    capacityHome = mkdtempSync(join(tmpdir(), 'hapi-bootstrap-capacity-'))
+    Object.assign(configuration, { happyHomeDir: capacityHome })
+})
+afterEach(() => {
+    rmSync(capacityHome, { recursive: true, force: true })
+    vi.unstubAllEnvs()
+})
 
 function createSession(): Session {
     return {
@@ -121,7 +135,7 @@ describe('bootstrapExistingSession', () => {
         expect(result.sessionInfo.id).toBe('hapi-session-1')
         expect(process.env[HAPI_SESSION_ID_ENV]).toBe('hapi-session-1')
         expect(result.workingDirectory).toBe('/tmp/project')
-        expect(sessionSyncClientMock).toHaveBeenCalledWith(session)
+        expect(sessionSyncClientMock).toHaveBeenCalledWith(session, { onClose: expect.any(Function) })
         expect(sessionClient.updateMetadata).toHaveBeenCalledOnce()
         expect(notifyRunnerSessionStartedMock).toHaveBeenCalledWith(
             'hapi-session-1',
@@ -515,5 +529,43 @@ describe('buildMachineMetadata runner-only capabilities', () => {
         const metadata = buildMachineMetadata({ asRunner: true })
         expect(metadata.capabilities).toEqual(expect.arrayContaining(['stop-runner']))
         expect(metadata.supervisedRestart).toBe(false)
+    })
+})
+
+describe('bootstrap session capacity', () => {
+    beforeEach(() => {
+        getSessionMock.mockReset()
+        getOrCreateSessionMock.mockReset()
+        getOrCreateMachineMock.mockReset()
+        sessionSyncClientMock.mockReset()
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+        vi.stubEnv('HAPI_MAX_LIVE_SESSIONS', '1')
+    })
+
+    it.each(['fresh', 'existing', 'lazy'] as const)('gates %s bootstrap before hub calls and releases on close', async kind => {
+        getSessionMock.mockResolvedValue(createSession())
+        getOrCreateSessionMock.mockResolvedValue(createSession())
+        sessionSyncClientMock.mockReturnValue({ updateMetadata: vi.fn() })
+        const options = { flavor: 'codex', workingDirectory: '/tmp/project' }
+        const start = () => kind === 'existing'
+            ? bootstrapExistingSession({ ...options, sessionId: 'hapi-session-1' })
+            : kind === 'lazy' ? bootstrapLazySession(options) : bootstrapSession(options)
+        await start()
+        const calls = getOrCreateMachineMock.mock.calls.length
+        await expect(start()).rejects.toThrow('Live session limit reached (1/1)')
+        expect(getOrCreateMachineMock).toHaveBeenCalledTimes(calls)
+        const [, clientOptions] = sessionSyncClientMock.mock.calls[0]
+        clientOptions.onClose()
+        clientOptions.onClose()
+        await expect(start()).resolves.toBeDefined()
+    })
+
+    it('releases a slot after bootstrap fails', async () => {
+        getOrCreateMachineMock.mockRejectedValueOnce(new Error('hub unavailable'))
+        await expect(bootstrapSession({ flavor: 'claude' })).rejects.toThrow('hub unavailable')
+        expect(readdirSync(join(capacityHome, 'live-sessions')).filter(name => name.endsWith('.json'))).toEqual([])
+        getOrCreateSessionMock.mockResolvedValue(createSession())
+        sessionSyncClientMock.mockReturnValue({})
+        await expect(bootstrapSession({ flavor: 'claude' })).resolves.toBeDefined()
     })
 })
