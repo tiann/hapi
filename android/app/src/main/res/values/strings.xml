@@ -752,4 +752,15 @@
     <string name="terminal_paste">Paste</string>
     <string name="terminal_direct_type_input">Terminal keyboard input</string>
     <string name="terminal_direct_type_placeholder">Type here — keys go straight to the terminal</string>
+    <string name="agent_terminal_menu">Agent terminal</string>
+    <string name="agent_terminal_hide">Hide</string>
+    <string name="agent_terminal_status_connected">Agent terminal connected</string>
+    <string name="agent_terminal_status_connecting">Connecting…</string>
+    <string name="agent_terminal_status_idle">Agent terminal idle</string>
+    <string name="agent_terminal_status_error">Error: %1$s</string>
+    <string name="agent_terminal_gate_loading">Loading session…</string>
+    <string name="agent_terminal_gate_not_pty">This session has no agent terminal. Agent terminals are available for PTY sessions only.</string>
+    <string name="agent_terminal_gate_inactive">This session has ended, so its agent terminal is no longer live.</string>
+    <string name="agent_terminal_quick_keys">Agent terminal quick keys</string>
+    <string name="agent_terminal_long_press_format">%1$s (long press: %2$s)</string>
 </resources>

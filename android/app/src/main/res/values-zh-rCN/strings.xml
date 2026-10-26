@@ -759,4 +759,15 @@
     <string name="terminal_paste">粘贴</string>
     <string name="terminal_direct_type_input">终端键盘输入</string>
     <string name="terminal_direct_type_placeholder">在此输入 — 按键直接发送到终端</string>
+    <string name="agent_terminal_menu">Agent 终端</string>
+    <string name="agent_terminal_hide">隐藏</string>
+    <string name="agent_terminal_status_connected">Agent 终端已连接</string>
+    <string name="agent_terminal_status_connecting">连接中…</string>
+    <string name="agent_terminal_status_idle">Agent 终端空闲</string>
+    <string name="agent_terminal_status_error">错误:%1$s</string>
+    <string name="agent_terminal_gate_loading">正在加载会话…</string>
+    <string name="agent_terminal_gate_not_pty">此会话没有 Agent 终端。Agent 终端仅对 PTY 会话开放。</string>
+    <string name="agent_terminal_gate_inactive">会话已结束,Agent 终端不再可用。</string>
+    <string name="agent_terminal_quick_keys">Agent 终端快捷键</string>
+    <string name="agent_terminal_long_press_format">%1$s(长按:%2$s)</string>
 </resources>

@@ -285,8 +285,14 @@ private fun UnsupportedBody(modifier: Modifier = Modifier) {
 
 // --------------------------------------------------------------------- grid --
 
+/**
+ * Shared by the terminal screen and the chat-embedded agent-terminal panel:
+ * monospace cell grid + auto-scroll with follow-pause (scrolling up
+ * stops following; back at the bottom resumes). Pure function of the snapshot,
+ * so the agent panel feeds it a synthesized [TerminalUiState].
+ */
 @Composable
-private fun TerminalGrid(
+internal fun TerminalGrid(
     state: TerminalUiState,
     onGridMeasured: (cols: Int, rows: Int) -> Unit,
     modifier: Modifier = Modifier,

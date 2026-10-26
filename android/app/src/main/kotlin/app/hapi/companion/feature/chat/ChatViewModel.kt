@@ -135,6 +135,13 @@ data class ChatHeaderUi(
      * terminal screen re-checks and shows unsupported state).
      */
     val terminalSupported: Boolean = true,
+    /**
+     * `detail.metadata.startingMode === 'pty'` (web `canViewAgentTerminal`) —
+     * gates the agent-terminal panel entry. Detail-only like the web's full
+     * session object: the list summary carries no startingMode, so an unloaded
+     * detail hides the entry (the panel itself re-checks and shows a reason).
+     */
+    val agentPty: Boolean = false,
 )
 
 /** Optimistic-permission UI state layered over the reduced blocks (M3b). */
@@ -2305,6 +2312,7 @@ class ChatViewModel(
             active = detail?.active ?: summary?.active ?: false,
             thinking = detail?.thinking ?: summary?.thinking ?: false,
             terminalSupported = detail?.metadata?.capabilities?.terminal ?: true,
+            agentPty = detail?.metadata?.startingMode == "pty",
         )
     }
 

@@ -752,4 +752,15 @@
     <string name="terminal_paste">Вставить</string>
     <string name="terminal_direct_type_input">Ввод с клавиатуры терминала</string>
     <string name="terminal_direct_type_placeholder">Введите здесь — клавиши идут прямо в терминал</string>
+    <string name="agent_terminal_menu">Терминал агента</string>
+    <string name="agent_terminal_hide">Скрыть</string>
+    <string name="agent_terminal_status_connected">Терминал агента подключён</string>
+    <string name="agent_terminal_status_connecting">Подключение…</string>
+    <string name="agent_terminal_status_idle">Терминал агента в простое</string>
+    <string name="agent_terminal_status_error">Ошибка: %1$s</string>
+    <string name="agent_terminal_gate_loading">Загрузка сессии…</string>
+    <string name="agent_terminal_gate_not_pty">У этой сессии нет терминала агента: он доступен только для сессий PTY.</string>
+    <string name="agent_terminal_gate_inactive">Сессия завершена, поэтому терминал агента больше не активен.</string>
+    <string name="agent_terminal_quick_keys">Быстрые клавиши терминала агента</string>
+    <string name="agent_terminal_long_press_format">%1$s (долгое нажатие: %2$s)</string>
 </resources>
