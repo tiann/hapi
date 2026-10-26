@@ -212,5 +212,7 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.turbine)
     // Generated media fetch tests: real HTTP round-trip against localhost.
+    // Terminal socket client frame-layer tests drive a real OkHttp WebSocket
+    // against MockWebServer (same pattern as :core:data gateway tests).
     testImplementation(libs.okhttp.mockwebserver)
 }
