@@ -135,6 +135,21 @@ describe('deduplicateSessionsByAgentId', () => {
         expect(result[0].id).toBe('a') // active wins despite older updatedAt
     })
 
+    it('keeps a live session over a keepalive-idle duplicate, and idle over disconnected (tiann/hapi#1820)', () => {
+        const idleMetadata = { path: '/p', agentSessionId: 'thread-1', lifecycleState: 'idle' } as SessionSummary['metadata']
+        const liveOverIdle = deduplicateSessionsByAgentId([
+            makeSession({ id: 'idle', active: true, metadata: idleMetadata, updatedAt: 300 }),
+            makeSession({ id: 'live', active: true, metadata: { path: '/p', agentSessionId: 'thread-1', lifecycleState: 'running' } as SessionSummary['metadata'], updatedAt: 100 })
+        ])
+        expect(liveOverIdle.map((s) => s.id)).toEqual(['live'])
+
+        const idleOverInactive = deduplicateSessionsByAgentId([
+            makeSession({ id: 'inactive', metadata: { path: '/p', agentSessionId: 'thread-1' }, updatedAt: 300 }),
+            makeSession({ id: 'idle', active: true, metadata: idleMetadata, updatedAt: 100 })
+        ])
+        expect(idleOverInactive.map((s) => s.id)).toEqual(['idle'])
+    })
+
     it('prefers selected session among inactive duplicates', () => {
         const sessions = [
             makeSession({ id: 'a', metadata: { path: '/p', agentSessionId: 'thread-1' }, updatedAt: 100 }),
