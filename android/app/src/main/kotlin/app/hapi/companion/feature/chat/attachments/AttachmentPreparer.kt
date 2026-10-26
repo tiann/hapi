@@ -118,6 +118,15 @@ class AttachmentPreparer(
         prepareBytes(filename, mimeType, original.bytes)
     }
 
+    /**
+     * Fetched-bytes variant for scratchlist rehydration (web
+     * `rehydrateScratchlistAttachmentsToComposer`): the same policy pipeline
+     * as a picked file (over-cap rejects; oversized images recompress) over
+     * bytes that already live in memory.
+     */
+    suspend fun prepareFetched(filename: String, mimeType: String, bytes: ByteArray): PrepareResult =
+        withContext(ioDispatcher) { prepareBytes(filename, mimeType, bytes) }
+
     private class CappedRead(val bytes: ByteArray, val overflowed: Boolean)
 
     /** Read the full stream, or stop with `overflowed` once [cap] bytes are exceeded. */

@@ -311,6 +311,8 @@
     <string name="chat_notice_draft_parked">草稿已存入草稿夹</string>
     <string name="chat_notice_scratchlist_full">草稿夹已满（200 条）</string>
     <string name="chat_notice_park_failed">无法暂存草稿 — 请检查 hub 连接</string>
+    <string name="chat_notice_scratchlist_stage_failed">无法准备笔记的附件 — 请检查 hub 连接</string>
+    <string name="chat_notice_scratchlist_rehydrate_failed">部分附件无法恢复到输入框</string>
     <string name="chat_notice_attachments_uploading">附件仍在上传 — 请稍候，或重试/移除失败的附件</string>
     <string name="chat_notice_resume_failed">会话已停止，且无法恢复</string>
     <string name="chat_notice_abort_failed">中止失败</string>
@@ -355,6 +357,10 @@
     <string name="chat_composer_mic">开始语音输入</string>
     <string name="chat_composer_stop_recording">停止录音</string>
     <string name="chat_composer_send">发送</string>
+    <string name="chat_composer_send_to_scratchlist">存入草稿夹</string>
+    <string name="chat_composer_scratchlist_toggle">草稿夹 — 暂存笔记与草稿</string>
+    <string name="chat_scratchlist_held_label">暂存 · 未发送</string>
+    <string name="chat_scratchlist_mode_hint">发送会存入草稿夹而不是发到对话。再次点击便签图标可退出。</string>
     <string name="chat_composer_abort">中止当前回合</string>
     <string name="chat_mention_suggestions">提及建议</string>
     <string name="chat_send_steer">发送并插入当前回合</string>
@@ -566,6 +572,7 @@
     <string name="scratchlist_new_note">新建笔记</string>
     <string name="scratchlist_edit_note">编辑笔记</string>
     <string name="scratchlist_to_composer">复制到输入框</string>
+    <string name="scratchlist_action_promote_to_queue">加入发送队列</string>
     <string name="scratchlist_attachment_only">仅附件</string>
     <string name="scratchlist_placeholder">笔记、草稿或想法…</string>
     <string name="scratchlist_add_photo">添加图片</string>
@@ -587,6 +594,7 @@
     <string name="scratchlist_notice_needs_content">笔记需要文字或附件 — 如需移除请使用“删除”</string>
     <string name="scratchlist_notice_save_failed">无法保存笔记 — 请检查 hub 连接</string>
     <string name="scratchlist_notice_delete_failed">无法删除笔记 — 请检查 hub 连接</string>
+    <string name="scratchlist_notice_promote_failed">无法将笔记加入发送队列 — 请检查 hub 连接</string>
     <string name="scratchlist_notice_attach_failed">无法附加文件 — 请检查 hub 连接</string>
     <string name="scratchlist_notice_remove_attachment_failed">无法移除附件 — 请检查 hub 连接</string>
     <string name="scratchlist_notice_too_large">该文件超过 hub 的单文件大小上限</string>

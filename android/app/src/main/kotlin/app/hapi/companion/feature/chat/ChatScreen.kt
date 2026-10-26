@@ -125,6 +125,7 @@ internal fun ChatScreen(
     val jumpingLatest by viewModel.jumpingLatest.collectAsState()
     val composerState by viewModel.composer.collectAsState()
     val pendingSchedule by viewModel.pendingSchedule.collectAsState()
+    val scratchlistCount by viewModel.scratchlistCount.collectAsState()
     val codexPlanActions by viewModel.codexPlanActions.collectAsState()
     val queuedRows by viewModel.queuedRows.collectAsState()
     val configState by viewModel.config.collectAsState()
@@ -308,7 +309,6 @@ internal fun ChatScreen(
                     IconButton(onClick = { configSheetOpen = true }) {
                         Icon(Icons.Filled.Settings, contentDescription = stringResource(R.string.chat_open_settings))
                     }
-                    val scratchlistCount by viewModel.scratchlistCount.collectAsState()
                     SessionOverflowMenu(
                         active = state.header.active,
                         onOpenFiles = onOpenFiles,
@@ -381,6 +381,12 @@ internal fun ChatScreen(
                         dictation = if (dictationAvailable) dictationState else null,
                         onDictationToggle = onDictationToggle,
                         onDictationCancel = { dictation?.cancel() },
+                        scratchlistCount = scratchlistCount,
+                        onToggleScratchlist = if (viewModel.scratchlistEnabled) {
+                            { viewModel.setScratchlistMode(!composerState.routesToScratchlist) }
+                        } else {
+                            null
+                        },
                     )
                 }
             }
@@ -713,6 +719,10 @@ internal fun chatNoticeText(context: Context, notice: ChatNotice): String = when
     ChatNotice.DraftParked -> context.getString(R.string.chat_notice_draft_parked)
     ChatNotice.ScratchlistFull -> context.getString(R.string.chat_notice_scratchlist_full)
     ChatNotice.ScratchlistParkFailed -> context.getString(R.string.chat_notice_park_failed)
+    ChatNotice.ScratchlistPromoteStagingFailed ->
+        context.getString(R.string.chat_notice_scratchlist_stage_failed)
+    ChatNotice.ScratchlistRehydratePartial ->
+        context.getString(R.string.chat_notice_scratchlist_rehydrate_failed)
     ChatNotice.AttachmentsUploading -> context.getString(R.string.chat_notice_attachments_uploading)
     ChatNotice.ResumeFailed -> context.getString(R.string.chat_notice_resume_failed)
     ChatNotice.QueuedEditKeptDraft -> context.getString(R.string.chat_notice_edit_kept_draft)
