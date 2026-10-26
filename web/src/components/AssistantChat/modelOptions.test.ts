@@ -78,6 +78,20 @@ describe('getModelOptionsForFlavor', () => {
         ])
     })
 
+    it('offers a 1M variant the CLI lists as its own row', () => {
+        const options = getModelOptionsForFlavor('claude', null, [
+            { value: 'opus[1m]', label: 'Opus (1M context)' },
+            { value: 'claude-fable-5[1m]', label: 'Fable' },
+            { value: 'sonnet', label: 'Sonnet' },
+        ])
+        expect(options).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'opus[1m]', label: 'Opus (1M context)' },
+            { value: 'claude-fable-5[1m]', label: 'Fable' },
+            { value: 'sonnet', label: 'Sonnet' },
+        ])
+    })
+
     it('keeps the group of each Claude catalog option', () => {
         const options = getModelOptionsForFlavor('claude', null, [
             { value: 'opus', label: 'Opus 5.5' },

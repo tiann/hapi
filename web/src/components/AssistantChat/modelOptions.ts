@@ -55,8 +55,10 @@ function getClaudeModelOptions(currentModel?: string | null, customOptions?: Mod
     }
 
     // The machine's catalog is the CLI's own /model list, so it replaces the
-    // built-in presets rather than extending them. A saved model it does not
-    // list stays as the current model.
+    // built-in presets rather than extending them. A CLI that offers a 1M
+    // variant as a separate choice lists it as its own row (`opus[1m]`), so
+    // the built-in `[1m]` presets would only add choices the CLI does not
+    // offer. A saved model it does not list stays as the current model.
     const listed: ModelOption[] = []
     for (const option of customOptions) {
         const value = normalizeCurrentModel(option.value)
