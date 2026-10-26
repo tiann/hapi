@@ -190,6 +190,9 @@ describe('SessionList time filter', () => {
             />
         )
 
+        // Inactive groups start collapsed and do not mount their rows.
+        fireEvent.click(screen.getByTitle('/work/recent'))
+        fireEvent.click(screen.getByTitle('/work/old'))
         expect(screen.getByRole('button', { name: /Recent session/ })).toBeInTheDocument()
         expect(screen.getByRole('button', { name: /Old session/ })).toBeInTheDocument()
 
@@ -353,6 +356,9 @@ describe('SessionList action menu parity', () => {
             />
         )
 
+        if (!active) {
+            fireEvent.click(screen.getByTitle('/home/ubuntu'))
+        }
         fireEvent.contextMenu(screen.getByRole('button', { name: new RegExp(active ? 'Running session' : 'Closed session') }))
         fireEvent.click(screen.getByRole('menuitem', { name: 'Export conversation' }))
 
@@ -863,6 +869,53 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByRole('button', { name: /Matching task 4/ })).toBeInTheDocument()
     })
 
+    it('mounts collapsed group rows only while open or closing', () => {
+        const sessions = [makeSession({
+            id: 'session-closed',
+            updatedAt: 100,
+            metadata: { path: '/work/hapi', name: 'Closed task', flavor: 'codex' },
+        })]
+        render(renderSessionList(sessions, null))
+
+        const header = screen.getByTitle('/work/hapi')
+        expect(screen.queryByRole('button', { name: /Closed task/ })).toBeNull()
+
+        fireEvent.click(header)
+        const row = screen.getByRole('button', { name: /Closed task/ })
+
+        fireEvent.click(header)
+        expect(row).toBeInTheDocument()
+        const panel = row.closest('.collapsible-panel')!
+        fireEvent.transitionEnd(panel.querySelector('.collapsible-inner')!)
+        expect(row).toBeInTheDocument()
+        fireEvent.transitionEnd(panel)
+        expect(screen.queryByRole('button', { name: /Closed task/ })).toBeNull()
+    })
+
+    it('keeps a collapsing row mounted while its rename dialog is open', () => {
+        const sessions = [makeSession({
+            id: 'session-closed',
+            updatedAt: 100,
+            metadata: { path: '/work/hapi', name: 'Closed task', flavor: 'codex' },
+        })]
+        render(renderSessionList(sessions, null))
+
+        const header = screen.getByTitle('/work/hapi')
+        fireEvent.click(header)
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Closed task/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }))
+        expect(screen.getByRole('dialog', { name: 'Rename Session' })).toBeInTheDocument()
+
+        fireEvent.click(header)
+        const panel = document.querySelector('.collapsible-panel')!
+        fireEvent.transitionEnd(panel)
+        expect(screen.getByRole('dialog', { name: 'Rename Session' })).toBeInTheDocument()
+
+        fireEvent.keyDown(screen.getByRole('dialog', { name: 'Rename Session' }), { key: 'Escape' })
+        expect(screen.queryByRole('dialog', { name: 'Rename Session' })).toBeNull()
+        expect(screen.queryByRole('button', { name: /Closed task/ })).toBeNull()
+    })
+
     it('expands and collapses the session preview one batch at a time', () => {
         localStorage.setItem('hapi-session-preview-limit', '2')
         const sessions = Array.from({ length: 6 }, (_, index) => makeSession({
@@ -876,6 +929,7 @@ describe('SessionList collapse behavior', () => {
         }))
 
         render(renderSessionList(sessions, null))
+        fireEvent.click(screen.getByTitle('/work/hapi'))
 
         expect(screen.getByRole('button', { name: 'Expand 2' })).toBeInTheDocument()
         expect(screen.queryByRole('button', { name: 'Collapse 2' })).toBeNull()
@@ -911,6 +965,7 @@ describe('SessionList collapse behavior', () => {
         const sessions = Array.from({ length: 4 }, (_, index) => makeSession({
             id: `session-${index + 1}`,
             updatedAt: 100 - index,
+            active: index > 0,
             pendingRequestsCount: index > 0 ? 1 : 0,
             metadata: {
                 path: '/work/hapi',
@@ -941,6 +996,7 @@ describe('SessionList collapse behavior', () => {
         const sessions = Array.from({ length: 8 }, (_, index) => makeSession({
             id: `session-${index + 1}`,
             updatedAt: 100 - index,
+            active: index < 5,
             pendingRequestsCount: index < 5 ? 1 : 0,
             metadata: {
                 path: '/work/hapi',

@@ -28,7 +28,7 @@ enum class PermissionMode(
     Plan("plan", "Plan Mode", PermissionModeTone.Info),
     Ask("ask", "Ask Mode", PermissionModeTone.Info),
     Debug("debug", "Debug Mode", PermissionModeTone.Info),
-    AutoReview("autoReview", "Auto-review", PermissionModeTone.Warning),
+    AutoReview("autoReview", "Auto", PermissionModeTone.Warning),
     ReadOnly("read-only", "Read Only", PermissionModeTone.Warning),
     SafeYolo("safe-yolo", "Safe Yolo", PermissionModeTone.Warning),
     Yolo("yolo", "Yolo", PermissionModeTone.Danger),
@@ -54,8 +54,14 @@ object PermissionModes {
         PermissionMode.BypassPermissions, PermissionMode.Plan,
     )
 
-    /** `CODEX_PERMISSION_MODES` (gemini/kimi/copilot share the same list). */
+    /** `CODEX_PERMISSION_MODES`. */
     val CODEX = listOf(
+        PermissionMode.Default, PermissionMode.ReadOnly,
+        PermissionMode.SafeYolo, PermissionMode.AutoReview, PermissionMode.Yolo,
+    )
+
+    /** `GEMINI_PERMISSION_MODES` (kimi/copilot share the same list). */
+    val GEMINI = listOf(
         PermissionMode.Default, PermissionMode.ReadOnly,
         PermissionMode.SafeYolo, PermissionMode.Yolo,
     )
@@ -82,9 +88,9 @@ object PermissionModes {
      */
     fun forFlavor(flavor: String?): List<PermissionMode> = when (flavor) {
         "codex" -> CODEX
-        "gemini" -> CODEX
-        "kimi" -> CODEX
-        "copilot" -> CODEX
+        "gemini" -> GEMINI
+        "kimi" -> GEMINI
+        "copilot" -> GEMINI
         "grok" -> GROK
         "opencode" -> OPENCODE
         "dsh" -> emptyList()

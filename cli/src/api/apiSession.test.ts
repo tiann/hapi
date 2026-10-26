@@ -956,3 +956,21 @@ describe('IncomingMessageFilter (HAPI Bot R3 finding #1)', () => {
         expect(filter.accept({ id: 'b', seq: 9 })).toBe(true)
     })
 })
+
+describe('ApiSessionClient runtime heartbeat', () => {
+    it('replays the latest runtime when the socket connects (#2053)', () => {
+        const client = new ApiSessionClient('token', createSession())
+        const socket = socketHarness.sockets.at(-1)!
+        socket.connected = false
+        socket.emitted.length = 0
+
+        client.keepAlive(true, 'remote', { permissionMode: 'bypassPermissions' })
+        expect(socket.emitted).toEqual([])
+
+        socket.triggerConnect()
+        expect(socket.emitted.filter((entry) => entry.event === 'session-alive').map((entry) => entry.args[0])).toEqual([
+            { sid: client.sessionId, time: expect.any(Number), thinking: true, mode: 'remote', permissionMode: 'bypassPermissions' }
+        ])
+        client.close()
+    })
+})

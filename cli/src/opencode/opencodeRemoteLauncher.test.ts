@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import type { OpencodeMode, PermissionMode } from './types';
 
 const harness = vi.hoisted(() => ({
+    servePid: null as number | null,
+    servePidCalls: [] as number[][],
     setModelArgs: [] as Array<{ sessionId: string; modelId: string; flavor?: string }>,
     setConfigOptionArgs: [] as Array<{ sessionId: string; configId: string; value: string }>,
     promptCount: 0,
@@ -48,7 +50,16 @@ const harness = vi.hoisted(() => ({
         sessionId: string;
         onRetry: (retry: { attempt: number; message: string }) => void;
     }>,
-    eventStreamCloseCount: 0
+    eventStreamCloseCount: 0,
+    // v2-compat harness: flavor detection + port/password discovery stubs.
+    detectedVersion: null as null | 'v1' | 'v2',
+    loopbackListeners: [] as number[],
+    discoveredPort: null as null | number,
+    discoveredPassword: null as null | string,
+    backendPid: 4242 as null | number,
+    createBackendArgs: [] as Array<Record<string, unknown>>,
+    v2DiscoveryCalls: [] as Array<{ beforeSnapshot: Set<number>; ownerPids?: number[] | null }>,
+    v2PasswordCalls: [] as Array<{ pid: number }>
 }));
 
 // Captures the RemoteLauncherDisplayContext (including onExit/
@@ -70,7 +81,9 @@ vi.mock('ink', () => ({
 
 vi.mock('./utils/opencodeBackend', () => ({
     allocateFreePort: vi.fn(async () => 48273),
-    createOpencodeBackend: vi.fn(() => ({
+    createOpencodeBackend: vi.fn((opts?: Record<string, unknown>) => {
+        harness.createBackendArgs.push(opts ?? {});
+        return {
         initialize: vi.fn(async () => {}),
         newSession: vi.fn(async () => {
             if (harness.newSessionImpl) {
@@ -152,9 +165,21 @@ vi.mock('./utils/opencodeBackend', () => ({
         // handler around `fn`; that detail is irrelevant to these
         // launcher-level tests (which never assert on ACP session/update
         // forwarding), so the stub is a transparent pass-through.
-        suppressUpdatesDuring: vi.fn(async <T>(fn: () => Promise<T>): Promise<T> => fn())
-    }))
-}));
+        suppressUpdatesDuring: vi.fn(async <T>(fn: () => Promise<T>): Promise<T> => fn()),
+        getProcessPid: vi.fn(() => harness.backendPid)
+        };
+    }),
+    listChildPids: vi.fn(async () => []),
+    detectOpencodeFlavorVersion: vi.fn(async () => harness.detectedVersion ?? 'v1'),
+    listLoopbackListeners: vi.fn(async () => new Set(harness.loopbackListeners)),
+    discoverOpencodeV2RestPort: vi.fn(async (opts: { beforeSnapshot: Set<number>; ownerPids?: number[] }) => {
+        harness.v2DiscoveryCalls.push({ beforeSnapshot: opts.beforeSnapshot, ownerPids: opts.ownerPids ?? null });
+        return harness.discoveredPort;
+    }),
+    findOpencodeServePid: vi.fn(async (opts: { rootPids: number[] }) => {
+        harness.servePidCalls.push(opts.rootPids);
+        return harness.servePid;
+    }),}));
 
 vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
     buildHapiMcpBridge: async (_client: unknown, options?: { enableChangeTitle?: boolean; skillLookup?: { workingDirectory: string; flavor: string } }) => {
@@ -178,6 +203,12 @@ vi.mock('@/ui/ink/OpencodeDisplay', () => ({
 
 const compactHarness = vi.hoisted(() => ({
     calls: [] as Array<{ baseUrl: string; sessionId: string; providerId: string; modelId: string; signal?: AbortSignal }>,
+    v2Calls: [] as Array<{ baseUrl: string; sessionId: string; providerId: string; modelId: string; password: string; signal?: AbortSignal }>,
+    v2VerifyCalls: [] as Array<{ baseUrl: string; sessionId: string; password: string; signal?: AbortSignal }>,
+    v2VerifyResult: { status: 'success', text: 'v2 summary text' } as
+        | { status: 'success'; text: string }
+        | { status: 'failed'; reason: string }
+        | { status: 'unverified'; reason: string },
     operationEvents: [] as string[],
     result: { ok: true } as { ok: true } | { ok: false; error: string },
     markerSnapshotCalls: [] as Array<{ baseUrl: string; sessionId: string; signal?: AbortSignal }>,
@@ -194,6 +225,16 @@ const compactHarness = vi.hoisted(() => ({
     // needed to test that handleAbort() actually unblocks an in-flight
     // /compact instead of the default immediate-resolve behavior below.
     triggerImpl: null as null | ((opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; signal?: AbortSignal }) => Promise<{ ok: true } | { ok: false; error: string }>),
+    triggerV2Impl: null as null | ((opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; password: string; signal?: AbortSignal }) => Promise<{ kind: 'admitted'; compactionId: string | null } | { kind: 'rejected'; error: string } | { kind: 'transport-error'; message: string }>),
+    preExistingCompactionIds: [] as string[] | null,
+    servePid: null as number | null,
+    servePidCalls: [] as number[][],
+    snapshotV2Impl: null as null | ((signal: AbortSignal | null) => Promise<string[] | null>),
+    pollImpl: null as null | ((opts: { baseUrl: string; sessionId: string; password: string; signal?: AbortSignal; expectedCompactionId?: string | null; excludeCompactionIds?: string[] | null }) => Promise<
+        | { status: 'success'; text: string }
+        | { status: 'failed'; reason: string }
+        | { status: 'unverified'; reason: string }
+    >),
     // Same idea, for semantic-result GET that runs after a successful POST.
     resultImpl: null as null | ((opts: { baseUrl: string; sessionId: string; markerIdsBefore: string[] | null; signal?: AbortSignal }) => Promise<
         | { status: 'success'; text: string }
@@ -222,6 +263,37 @@ vi.mock('./utils/opencodeEventStream', async (importOriginal) => ({
 }));
 
 vi.mock('./utils/opencodeCompactBridge', () => ({
+    readOpencodeV2ServerPassword: vi.fn(async (pid: number) => {
+        harness.v2PasswordCalls.push({ pid });
+        return harness.discoveredPassword;
+    }),
+    captureCompactionIdsV2: vi.fn(async (opts?: { signal?: AbortSignal }) => {
+        if (compactHarness.snapshotV2Impl) {
+            return compactHarness.snapshotV2Impl(opts?.signal ?? null);
+        }
+        return compactHarness.preExistingCompactionIds ?? null;
+    }),
+    triggerOpencodeCompactV2: vi.fn(async (opts: { baseUrl: string; sessionId: string; providerId: string; modelId: string; password: string; signal?: AbortSignal }) => {
+        compactHarness.operationEvents.push('triggerV2');
+        compactHarness.v2Calls.push(opts);
+        if (compactHarness.triggerV2Impl) {
+            return compactHarness.triggerV2Impl(opts);
+        }
+        return { kind: 'admitted' as const, compactionId: 'msg_admitted_1' };
+    }),
+    fetchCompactionResultV2: vi.fn(async (opts: { baseUrl: string; sessionId: string; password: string }) => {
+        compactHarness.operationEvents.push('verifyV2');
+        compactHarness.v2VerifyCalls.push(opts);
+        return compactHarness.v2VerifyResult;
+    }),
+    pollCompactionResultV2: vi.fn(async (opts: { baseUrl: string; sessionId: string; password: string; signal?: AbortSignal; expectedCompactionId?: string | null; excludeCompactionIds?: string[] | null }) => {
+        compactHarness.operationEvents.push('verifyV2');
+        compactHarness.v2VerifyCalls.push(opts);
+        if (compactHarness.pollImpl) {
+            return compactHarness.pollImpl(opts);
+        }
+        return compactHarness.v2VerifyResult;
+    }),
     splitProviderModel: (combined: string | null | undefined) => {
         if (!combined) return null;
         const idx = combined.indexOf('/');
@@ -395,7 +467,7 @@ function createClearMode(): OpencodeMode {
 }
 
 describe('opencodeRemoteLauncher inline model switch', () => {
-    afterEach(() => {
+    afterEach(async () => {
         harness.setModelArgs = [];
         harness.setConfigOptionArgs = [];
         harness.promptCount = 0;
@@ -409,10 +481,17 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.thoughtLevelOption = null;
         harness.thoughtLevelLookups = [];
         harness.stderrHandler = null;
+        harness.servePid = null;
+        harness.servePidCalls = [];
         harness.hangPrompt = false;
         harness.resolvePrompt = null;
         harness.cancelPrompt.mockClear();
         compactHarness.calls = [];
+        compactHarness.v2Calls = [];
+        compactHarness.v2VerifyCalls = [];
+        compactHarness.v2VerifyResult = { status: 'success', text: 'v2 summary text' };
+        compactHarness.triggerImpl = null;
+        compactHarness.pollImpl = null;
         compactHarness.operationEvents = [];
         compactHarness.result = { ok: true };
         compactHarness.markerSnapshotCalls = [];
@@ -431,7 +510,20 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         harness.serverStopError = null;
         harness.eventStreamOptions = [];
         harness.eventStreamCloseCount = 0;
+        harness.detectedVersion = null;
+        harness.loopbackListeners = [];
+        harness.discoveredPort = null;
+        harness.discoveredPassword = null;
+        harness.backendPid = 4242;
+        harness.createBackendArgs = [];
+        harness.v2DiscoveryCalls = [];
+        harness.v2PasswordCalls = [];
         inkHarness.lastRenderProps = null;
+        const backendModule = await import('./utils/opencodeBackend');
+        const backendModuleFns = backendModule as unknown as Record<string, ReturnType<typeof vi.fn>>;
+        for (const name of ['createOpencodeBackend', 'detectOpencodeFlavorVersion', 'discoverOpencodeV2RestPort', 'listLoopbackListeners']) {
+            backendModuleFns[name]?.mockClear();
+        }
     });
 
     it('reaches /clear only after the earlier prompt settles, without starting another OpenCode turn', async () => {
@@ -2406,5 +2498,448 @@ describe('selectAbortStatusMessage', () => {
         });
 
         expect(decision).toEqual({ message: 'Turn aborted', shouldClearThinking: true });
+    });
+});
+
+function backendHarnessCreateArgs(): Record<string, unknown> {
+    return harness.createBackendArgs[0] ?? {};
+}
+
+function backendCreateArgsIncludePortFlags(): boolean {
+    const args = harness.createBackendArgs[0] as { port?: number; hostname?: string } | undefined;
+    return args?.port !== undefined || args?.hostname !== undefined;
+}
+
+describe('opencodeRemoteLauncher v2 flavor wiring', () => {
+    afterEach(async () => {
+        harness.detectedVersion = null;
+        harness.loopbackListeners = [];
+        harness.discoveredPort = null;
+        harness.discoveredPassword = null;
+        harness.backendPid = 4242;
+        harness.createBackendArgs = [];
+        harness.v2DiscoveryCalls = [];
+        harness.v2PasswordCalls = [];
+        harness.servePid = null;
+        harness.servePidCalls = [];
+        harness.events = [];
+        harness.sessionModelsMetadata = undefined;
+        harness.promptCount = 0;
+        harness.promptImpl = null;
+        harness.newSessionImpl = null;
+        compactHarness.calls = [];
+        compactHarness.v2Calls = [];
+        compactHarness.v2VerifyCalls = [];
+        compactHarness.v2VerifyResult = { status: 'success', text: 'v2 summary text' };
+        compactHarness.operationEvents = [];
+        compactHarness.result = { ok: true };
+        compactHarness.markerSnapshot = { markerIds: ['before-this-request'] };
+        const backendModule = await import('./utils/opencodeBackend');
+        const backendModuleFns = backendModule as unknown as Record<string, ReturnType<typeof vi.fn>>;
+        for (const name of ['createOpencodeBackend', 'detectOpencodeFlavorVersion', 'discoverOpencodeV2RestPort', 'listLoopbackListeners']) {
+            backendModuleFns[name]?.mockClear();
+        }
+    });
+
+    it('v2: spawns with only [acp] args + majorVersion and discovers the REST port after the session is established', async () => {
+        harness.detectedVersion = 'v2';
+        harness.loopbackListeners = [1000];
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'pw-secret';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const { session } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+
+        const availability: boolean[] = [];
+        const launcherPromise = opencodeRemoteLauncher(session as never, {
+            onCompactAvailabilityChange: (available: boolean) => availability.push(available)
+        });
+        while (compactHarness.v2Calls.length === 0) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        await launcherPromise;
+
+        expect(backendHarnessCreateArgs()).toMatchObject({ majorVersion: 'v2', cwd: '/tmp/hapi-opencode-test' });
+        expect(backendCreateArgsIncludePortFlags()).toBe(false);
+        expect(harness.v2DiscoveryCalls.length).toBe(1);
+        expect(harness.v2DiscoveryCalls[0]?.beforeSnapshot.has(1000)).toBe(true);
+        expect(harness.v2PasswordCalls).toEqual([{ pid: 4242 }]);
+        expect(compactHarness.v2Calls[0]?.baseUrl).toBe('http://127.0.0.1:41234');
+        expect(compactHarness.v2Calls[0]?.password).toBe('pw-secret');
+        expect(availability[0]).toBe(true);
+        expect(harness.v2PasswordCalls).toEqual([{ pid: 4242 }]);
+    });
+
+    it('v2: scopes port discovery to the serve process so an unrelated descendant listener cannot win', async () => {
+        // GPT finding: the tree can own other listeners (e.g. a configured
+        // MCP server with a lower port). Discovery must scan the serve
+        // process only, not the lowest port across the whole tree.
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 47777;
+        harness.discoveredPassword = 'pw-secret';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        harness.servePid = 999;
+        harness.backendPid = 4242;
+        compactHarness.preExistingCompactionIds = [];
+        compactHarness.triggerV2Impl = async () => ({ kind: 'admitted' as const, compactionId: 'msg_1' });
+        compactHarness.pollImpl = async () => ({ status: 'success', text: 'v2 summary text' });
+        const { session, sessionEvents } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+
+        await opencodeRemoteLauncher(session as never, {});
+
+        // The owned scan was scoped to the serve pid alone (no acpPid, no
+        // other descendants).
+        // findOpencodeServePid received the whole tree; the owned scan was
+        // then scoped to the serve pid it returned (no acpPid, no other
+        // descendants).
+        expect(harness.servePidCalls).toEqual([[4242]]);
+        expect(harness.v2DiscoveryCalls.at(-1)?.ownerPids).toEqual([999]);
+        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(true);
+    });
+
+    it('v2: falls back to compact-unavailable when port discovery or password lookup fails', async () => {
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = null;
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const { session, sessionEvents } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+
+        const availability: boolean[] = [];
+        await opencodeRemoteLauncher(session as never, {
+            onCompactAvailabilityChange: (available: boolean) => availability.push(available)
+        });
+
+        expect(compactHarness.calls).toHaveLength(0);
+        expect(availability).not.toContain(true);
+        expect(sessionEvents.some((event) => String((event as { message?: string }).message ?? '').includes('base URL is not available'))).toBe(true);
+        const loggerModule = await import('@/ui/logger');
+        expect((loggerModule.logger.warn as unknown as ReturnType<typeof vi.fn>).mock.calls.some((call) => String(call[0]).includes('v2 internal HTTP API discovery failed'))).toBe(true);
+    });
+
+    it('v1: keeps the legacy allocateFreePort + --port/--hostname spawn path untouched', async () => {
+        harness.detectedVersion = 'v1';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const { session } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+
+        await opencodeRemoteLauncher(session as never, {});
+
+        expect(backendHarnessCreateArgs()).toMatchObject({ port: 48273, hostname: '127.0.0.1' });
+        expect(harness.v2DiscoveryCalls).toHaveLength(0);
+        expect(harness.v2PasswordCalls).toHaveLength(0);
+        expect(compactHarness.calls[0]?.baseUrl).toBe('http://127.0.0.1:48273');
+    });
+});
+
+describe('opencodeRemoteLauncher v2 compact verification and discovery notice', () => {
+    beforeEach(() => {
+        compactHarness.calls = [];
+        compactHarness.v2Calls = [];
+        compactHarness.v2VerifyCalls = [];
+        compactHarness.v2VerifyResult = { status: 'success', text: 'v2 summary text' };
+        compactHarness.triggerImpl = null;
+        compactHarness.triggerV2Impl = null;
+        compactHarness.pollImpl = null;
+        compactHarness.snapshotV2Impl = null;
+        compactHarness.preExistingCompactionIds = [];
+        compactHarness.operationEvents = [];
+        compactHarness.markerSnapshotCalls = [];
+        compactHarness.resultCalls = [];
+    });
+
+    afterEach(async () => {
+        harness.detectedVersion = null;
+        harness.loopbackListeners = [];
+        harness.discoveredPort = null;
+        harness.discoveredPassword = null;
+        harness.backendPid = 4242;
+        harness.createBackendArgs = [];
+        harness.v2DiscoveryCalls = [];
+        harness.v2PasswordCalls = [];
+        harness.events = [];
+        harness.sessionModelsMetadata = undefined;
+        harness.promptCount = 0;
+        harness.promptImpl = null;
+        compactHarness.calls = [];
+        compactHarness.v2Calls = [];
+        compactHarness.v2VerifyCalls = [];
+        compactHarness.v2VerifyResult = { status: 'success', text: 'v2 summary text' };
+        compactHarness.operationEvents = [];
+        compactHarness.markerSnapshotCalls = [];
+        compactHarness.resultCalls = [];
+        const backendModule = await import('./utils/opencodeBackend');
+        const backendModuleFns = backendModule as unknown as Record<string, ReturnType<typeof vi.fn>>;
+        for (const name of ['createOpencodeBackend', 'detectOpencodeFlavorVersion', 'discoverOpencodeV2RestPort', 'listLoopbackListeners']) {
+            backendModuleFns[name]?.mockClear();
+        }
+    });
+
+    it('v2: verifies the compact via the v2 message GET and never calls the v1 snapshot/result bridge', async () => {
+        harness.detectedVersion = 'v2';
+        harness.loopbackListeners = [1000];
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'pw-secret';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const { session, sessionEvents, sentAgentMessages } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+
+        await opencodeRemoteLauncher(session as never, {});
+
+        expect(compactHarness.v2Calls).toHaveLength(1);
+        expect(compactHarness.v2Calls[0]?.signal).toBeDefined();
+        expect(compactHarness.v2VerifyCalls).toEqual([
+            { baseUrl: 'http://127.0.0.1:41234', sessionId: 'acp-session-1', password: 'pw-secret', signal: compactHarness.v2VerifyCalls[0]?.signal, expectedCompactionId: 'msg_admitted_1', excludeCompactionIds: null }
+        ]);
+        expect(compactHarness.markerSnapshotCalls).toHaveLength(0);
+        expect(compactHarness.resultCalls).toHaveLength(0);
+        expect(compactHarness.operationEvents).toEqual(['triggerV2', 'verifyV2']);
+        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(true);
+        expect(JSON.stringify(sentAgentMessages)).toContain('v2 summary text');
+    });
+
+    it('v2: the poll signal stays live between POST admission and verification start (no spurious abort)', async () => {
+        // Narrow scope (honest, per sandbox review): this only pins that no
+        // abort fires between POST admission and the poll starting. The
+        // plain-Stop barrier contract itself is pinned by the dedicated
+        // Stop-during-poll test below.
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'pw-secret';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const signalsByPhase: Array<{ phase: string; aborted: boolean }> = [];
+        compactHarness.triggerV2Impl = (opts) => {
+            signalsByPhase.push({ phase: 'trigger', aborted: opts.signal!.aborted });
+            return Promise.resolve({ kind: 'admitted' as const, compactionId: 'msg_admitted_1' });
+        };
+        compactHarness.pollImpl = (opts) => {
+            signalsByPhase.push({ phase: 'poll', aborted: opts.signal!.aborted });
+            return Promise.resolve({ status: 'success', text: 'v2 summary text' });
+        };
+        const { session, sessionEvents } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+
+        await opencodeRemoteLauncher(session as never, {});
+
+        expect(signalsByPhase).toEqual([
+            { phase: 'trigger', aborted: false },
+            { phase: 'poll', aborted: false }
+        ]);
+        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(true);
+    });
+
+    it('v2: a plain Stop during the poll holds the barrier — waiting message, thinking kept, no abort; the suppressed outcome never renders', async () => {
+        // Decisive barrier test (sandbox review round): with the buggy code
+        // (phase advancing to 'verification'), a plain Stop WOULD abort the
+        // poll signal and this test fails at the abort assertion. The poll
+        // hangs until the test explicitly resolves it, so no timing
+        // dependence — the suppression assertion is reached through the
+        // actual isCancelled() path, not test cleanup.
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'pw-secret';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        let pollSignal: AbortSignal | undefined;
+        let resolvePoll: ((result: { status: string; text?: string; reason?: string }) => void) | null = null;
+        compactHarness.pollImpl = (opts) => new Promise((resolve) => {
+            pollSignal = opts.signal;
+            resolvePoll = resolve as typeof resolvePoll;
+        });
+        const { session, sessionEvents, rpcHandlers } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+        const launcherPromise = opencodeRemoteLauncher(session as never, { onCompactAvailabilityChange: () => {} });
+
+        while (!pollSignal) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        expect(pollSignal.aborted).toBe(false);
+
+        const abortHandler = rpcHandlers.get('abort') as (() => Promise<void>) | undefined;
+        expect(abortHandler).toBeDefined();
+        await Promise.race([
+            abortHandler!(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('plain Stop did not settle during v2 poll')), 2000))
+        ]);
+
+        // Barrier held: a plain Stop must NOT abort the poll signal. On the
+        // buggy pre-fix code the phase would be 'verification' and this
+        // signal would be aborted — making this the regression guard.
+        expect(pollSignal.aborted).toBe(false);
+        // The waiting decision keeps thinking on (server work continues).
+        expect(session.thinking).toBe(true);
+        expect(sessionEvents.filter((event) => event.type === 'message').map((event) => event.message))
+            .toEqual(['📦 Compaction started']);
+
+        // Settle the poll with a terminal success: the outcome must be
+        // suppressed by the Stop (isCancelled), never rendered.
+        resolvePoll!({ status: 'success', text: 'late v2 summary' });
+        session.queue.close();
+        await Promise.race([
+            launcherPromise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('launcher did not finish after suppressed poll')), 5000))
+        ]);
+        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(false);
+        expect(sessionEvents.some((event) => (event as { message?: string }).message?.includes('late v2 summary'))).toBe(false);
+    });
+
+    it('v2: a plain Stop landing before POST admission does not skip verification — barrier held until terminal', async () => {
+        // Bot round-2 finding: suppress-only Stop (no abort) used to exit
+        // between admission and polling, releasing the FIFO barrier while
+        // the server-side compaction was still pending. The poll must run
+        // even when compactResultSuppressed is already set.
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'pw-secret';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const postGate: { resolve: (() => void) | null } = { resolve: null };
+        let pollStarted = false;
+        compactHarness.triggerV2Impl = () => new Promise((resolve) => {
+            postGate.resolve = () => resolve({ kind: 'admitted' as const, compactionId: 'msg_admitted_1' });
+        });
+        compactHarness.pollImpl = () => {
+            pollStarted = true;
+            return Promise.resolve({ status: 'success', text: 'v2 summary text' });
+        };
+        const { session, sessionEvents, rpcHandlers } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+        const launcherPromise = opencodeRemoteLauncher(session as never, { onCompactAvailabilityChange: () => {} });
+
+        while (!postGate.resolve) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+
+        // Plain Stop lands while the POST is still pending.
+        const abortHandler = rpcHandlers.get('abort') as (() => Promise<void>) | undefined;
+        await Promise.race([
+            abortHandler!(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('plain Stop did not settle during POST')), 2000))
+        ]);
+        expect(session.thinking).toBe(true);
+
+        // Admission returns after the Stop: verification must still run.
+        postGate.resolve!();
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(pollStarted).toBe(true);
+        session.queue.close();
+        await Promise.race([
+            launcherPromise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('launcher did not finish after suppressed compact')), 5000))
+        ]);
+
+        // The terminal outcome is suppressed (Stop asked for that), but the
+        // barrier was held through the poll — no early 'idle' release.
+        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(false);
+    });
+
+    it('v2: recovers the admitted compaction via the pre-POST snapshot when the POST body is unreadable — barrier held, no guessing', async () => {
+        // Bot round-3 finding: exiting unverified on an unreadable POST body
+        // released the barrier while the admitted compaction was still
+        // running. The pre-POST id snapshot recovers identity: the next new
+        // compaction entry must be ours, and the poll waits for it.
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'pw-secret';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        compactHarness.preExistingCompactionIds = ['msg_before_1'];
+        compactHarness.triggerV2Impl = async () => ({ kind: 'admitted' as const, compactionId: null });
+        compactHarness.pollImpl = (opts) => {
+            // The bridge would exclude msg_before_1; simulate recovery: poll
+            // resolves with the summary once "our" entry lands.
+            expect(opts.expectedCompactionId).toBeNull();
+            expect(opts.excludeCompactionIds).toEqual(['msg_before_1']);
+            return Promise.resolve({ status: 'success', text: 'recovered summary' });
+        };
+        const { session, sessionEvents, sentAgentMessages } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+
+        await opencodeRemoteLauncher(session as never, {});
+
+        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(true);
+        expect(JSON.stringify(sentAgentMessages)).toContain('recovered summary');
+    });
+
+    it('v2: a failed pre-POST snapshot refuses admission — no POST, no poll, failure reported', async () => {
+        // Bot round-3 Major: admitting without a recovery boundary released
+        // the barrier while server-side compaction ran. Admission is now
+        // refused up front.
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'pw-secret';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        compactHarness.preExistingCompactionIds = null;
+        let postCalled = false;
+        let pollCalled = false;
+        compactHarness.triggerV2Impl = () => {
+            postCalled = true;
+            return Promise.resolve({ kind: 'admitted' as const, compactionId: 'msg_x' });
+        };
+        compactHarness.pollImpl = () => {
+            pollCalled = true;
+            return Promise.resolve({ status: 'success', text: 'should never be used' });
+        };
+        const { session, sessionEvents } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+
+        await opencodeRemoteLauncher(session as never, {});
+
+        expect(postCalled).toBe(false);
+        expect(pollCalled).toBe(false);
+        expect(sessionEvents.some((event) => (event as { message?: string }).message?.includes('identity snapshot failed'))).toBe(true);
+        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(false);
+    });
+
+    it('v2: a plain Stop during the identity snapshot exits cancelled — no POST, no refusal failure rendered', async () => {
+        // Pins the abort ordering: signal.aborted must be checked before the
+        // null-snapshot refusal, or a user abort would render
+        // "identity snapshot failed".
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'pw-secret';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const snapshotGate: { signal: AbortSignal | null } = { signal: null };
+        compactHarness.snapshotV2Impl = (signal: AbortSignal | null) => new Promise((resolve) => {
+            snapshotGate.signal = signal;
+            signal?.addEventListener('abort', () => resolve(null));
+        });
+        const { session, sessionEvents, rpcHandlers } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+        const launcherPromise = opencodeRemoteLauncher(session as never, { onCompactAvailabilityChange: () => {} });
+
+        while (!snapshotGate.signal) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+
+        const abortHandler = rpcHandlers.get('abort') as (() => Promise<void>) | undefined;
+        await Promise.race([
+            abortHandler!(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('plain Stop did not settle during v2 snapshot')), 2000))
+        ]);
+
+        expect(snapshotGate.signal?.aborted).toBe(true);
+        session.queue.close();
+        await Promise.race([
+            launcherPromise,
+            new Promise((_, reject) => setTimeout(() => reject(new Error('launcher did not finish after snapshot abort')), 5000))
+        ]);
+        // Nothing was admitted and no refusal failure rendered for the abort.
+        expect(compactHarness.v2Calls).toHaveLength(0);
+        expect(sessionEvents.some((event) => (event as { message?: string }).message?.includes('identity snapshot failed'))).toBe(false);
+        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction failed')).toBe(false);
+    });
+
+    it('v2: reports the verified failure reason through the same state machine', async () => {
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'pw-secret';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        compactHarness.v2VerifyResult = { status: 'failed', reason: 'provider exploded' };
+        const { session, sessionEvents } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+
+        await opencodeRemoteLauncher(session as never, {});
+
+        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction failed: provider exploded')).toBe(true);
+        expect(sessionEvents.some((event) => (event as { message?: string }).message === '📦 Compaction completed')).toBe(false);
+    });
+
+    it('v2: notifies the session once when discovery fails, without compact availability', async () => {
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = null;
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const { session, sessionEvents } = createSessionStub([{ message: '', mode: createCompactMode('ollama/x') }]);
+
+        await opencodeRemoteLauncher(session as never, {});
+
+        const notice = sessionEvents.find((event) => String((event as { message?: string }).message ?? '').includes('OpenCode v2 internal API discovery failed'));
+        expect(notice).toBeDefined();
+        expect(String((notice as { message?: string }).message)).toContain('upstream retry status and /compact are unavailable');
     });
 });

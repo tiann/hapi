@@ -367,6 +367,8 @@ html:has(.chat-scroll-y) #root {
     bottom: 0;
     z-index: 10;
     width: 10px;
+    /* Stale thumb geometry during resize must not create outer scrollbars. */
+    overflow: hidden;
     pointer-events: none;
 }
 

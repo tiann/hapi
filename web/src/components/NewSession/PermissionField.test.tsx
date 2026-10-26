@@ -23,7 +23,7 @@ describe('PermissionField', () => {
     it('offers only native shared permission modes for Codex', () => {
         renderField({ agent: 'codex' })
         expect(screen.getAllByRole('option').map(option => (option as HTMLOptionElement).value))
-            .toEqual(['default', 'read-only', 'yolo'])
+            .toEqual(['default', 'read-only', 'autoReview', 'yolo'])
     })
     it('renders native permission modes for codex-family agents', () => {
         const onChange = vi.fn()

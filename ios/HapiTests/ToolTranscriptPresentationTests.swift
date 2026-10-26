@@ -236,6 +236,8 @@ final class ToolTranscriptPresentationTests: XCTestCase {
         host.view.layoutIfNeeded()
         try await eventually { findCollection(host.view) != nil }
         let collection = try XCTUnwrap(findCollection(host.view))
+        // Force recycling instead of retaining offscreen cells in UIKit's prefetch cache.
+        collection.isPrefetchingEnabled = false
         try await eventually { collection.numberOfItems(inSection: 0) == model.blocks.count + 1 }
         collection.delegate?.scrollViewWillBeginDragging?(collection)
         collection.scrollToItem(at: IndexPath(item: index, section: 0), at: .top, animated: false)
@@ -259,12 +261,12 @@ final class ToolTranscriptPresentationTests: XCTestCase {
         try await eventually { (collection.cellForItem(at: IndexPath(item: index, section: 0))?.frame.height ?? 0) > initialHeight + 100 }
         XCTAssertEqual(cell.frame.minY - collection.contentOffset.y, anchorY, accuracy: 1)
         let count = collection.numberOfItems(inSection: 0)
+        collection.delegate?.scrollViewWillBeginDragging?(collection)
         collection.scrollToItem(at: IndexPath(item: count - 1, section: 0), at: .bottom, animated: false)
-        try await Task.sleep(for: .milliseconds(150))
-        XCTAssertNil(collection.cellForItem(at: IndexPath(item: index, section: 0)))
+        try await eventually { collection.cellForItem(at: IndexPath(item: index, section: 0)) == nil }
         collection.delegate?.scrollViewWillBeginDragging?(collection)
         collection.scrollToItem(at: IndexPath(item: index, section: 0), at: .top, animated: false)
-        try await Task.sleep(for: .milliseconds(200))
+        try await eventually { collection.cellForItem(at: IndexPath(item: index, section: 0)) != nil }
         let returned = try XCTUnwrap(collection.cellForItem(at: IndexPath(item: index, section: 0)))
         XCTAssertGreaterThan(returned.frame.height, initialHeight + 100)
         let restoredY = returned.frame.minY - collection.contentOffset.y
@@ -280,12 +282,12 @@ final class ToolTranscriptPresentationTests: XCTestCase {
         XCTAssertFalse(model.followsTail)
     }
 
-    private func eventually(_ condition: () -> Bool) async throws {
+    private func eventually(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
         for _ in 0..<150 {
             if condition() { return }
             try await Task.sleep(for: .milliseconds(20))
         }
-        XCTFail("Transcript did not settle")
+        XCTFail("Transcript did not settle", file: file, line: line)
     }
 
     private func findCollection(_ view: UIView) -> UICollectionView? {

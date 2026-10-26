@@ -4,7 +4,9 @@ import {
     type KeyboardEvent as ReactKeyboardEvent,
     type MouseEvent as ReactMouseEvent,
     type PointerEvent as ReactPointerEvent,
+    createContext,
     useCallback,
+    useContext,
     useEffect,
     useMemo,
     useRef,
@@ -38,6 +40,16 @@ type AttachmentDropTarget = {
     id: string
     position: AttachmentDropPosition
 }
+
+const AttachmentDragHandleContext = createContext<AttachmentDragHandleProps | undefined>(undefined)
+
+function SortableAttachmentItem() {
+    const dragHandleProps = useContext(AttachmentDragHandleContext)
+    return <AttachmentItem dragHandleProps={dragHandleProps} />
+}
+
+// Updating drag handlers must not replace the attachment component and reset its image viewer.
+const SORTABLE_ATTACHMENT_COMPONENTS = { Attachment: SortableAttachmentItem }
 
 function findAttachmentDropTarget(clientX: number, clientY: number): AttachmentDropTarget | null {
     if (typeof document.elementsFromPoint !== 'function') return null
@@ -97,11 +109,7 @@ function SortableComposerAttachment(props: SortableComposerAttachmentProps) {
                 onSurfaceContextMenu: handleContextMenu,
                 onSurfaceClick: handleClick,
             },
-        [attachment.name, disabled, handleKeyDown, handlePointerDown],
-    )
-    const AttachmentWithHandle = useCallback(
-        () => <AttachmentItem dragHandleProps={dragHandleProps} />,
-        [dragHandleProps],
+        [attachment.name, disabled, handleClick, handleContextMenu, handleKeyDown, handlePointerDown, handleSurfacePointerDown],
     )
 
     return (
@@ -110,10 +118,12 @@ function SortableComposerAttachment(props: SortableComposerAttachmentProps) {
             data-hapi-composer-attachment-dragging={isDragging || undefined}
             className={isDragging ? 'opacity-60' : undefined}
         >
-            <ComposerPrimitive.AttachmentByIndex
-                index={index}
-                components={{ Attachment: AttachmentWithHandle }}
-            />
+            <AttachmentDragHandleContext.Provider value={dragHandleProps}>
+                <ComposerPrimitive.AttachmentByIndex
+                    index={index}
+                    components={SORTABLE_ATTACHMENT_COMPONENTS}
+                />
+            </AttachmentDragHandleContext.Provider>
         </div>
     )
 }
