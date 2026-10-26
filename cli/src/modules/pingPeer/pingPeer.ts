@@ -17,8 +17,8 @@ import {
     isObject,
     isSteeringSupportedForSession,
     hasActiveSteeringTurn,
-    type MessageDeliveryMode,
-} from '@hapi/protocol'
+    type MessageDeliveryMode,,
+    isSessionId} from '@hapi/protocol'
 import { normalizeSessionIdPrefix } from '@hapi/protocol/sessionCitation'
 import { configuration } from '@/configuration'
 import { isPeerToolsDisabled } from '@/modules/common/peerTools'
@@ -93,6 +93,13 @@ export type PingPeerOptions = {
      * targets are refused so stale/unrelated peers are not relaunched.
      */
     wake?: boolean
+    /**
+     * Calling session id (MCP / HAPI_SESSION_ID). When set, uses
+     * `POST /cli/sessions/:source/peer-messages` for a soft nametag chip/From
+     * line (#1203). Same namespace-token trust as other CLI session routes —
+     * not a proof. Bare `hapi ping-peer` omits this → unattributed peer rows.
+     */
+    authenticatedSourceSessionId?: string
     waitActiveSecs?: number
     /**
      * Fresh spawn: poll until active instead of POST /resume on the first
@@ -243,6 +250,78 @@ export function authHeaders(jwt: string): Record<string, string> {
     })
 }
 
+function readAgentSessionId(session: PingPeerSessionSummary): string {
+    const raw = session.metadata?.agentSessionId
+    return typeof raw === 'string' ? raw.trim() : ''
+}
+
+function readAgentSessionScope(session: PingPeerSessionSummary): string | null {
+    const agentSessionId = readAgentSessionId(session).toLowerCase()
+    const flavor = session.metadata?.flavor?.trim().toLowerCase() ?? ''
+    if (!agentSessionId || !flavor) {
+        return null
+    }
+    if (flavor !== 'pi') {
+        return `${flavor}:${agentSessionId}`
+    }
+    const machineId = session.metadata?.machineId?.trim().toLowerCase() ?? ''
+    return machineId ? `${flavor}:${machineId}:${agentSessionId}` : null
+}
+
+function throwPeerResolveNotFound(trimmed: string, sessions: PingPeerSessionSummary[]): never {
+    const sample = sessions.slice(0, 3).map(formatPeerResolveHint).join('; ')
+    const hint = sample ? ` Sample: ${sample}.` : ''
+    throw new PingPeerError(
+        'not_found',
+        `no session matching '${trimmed}'. Try a longer hub id prefix or agentSessionId prefix.${hint}`
+    )
+}
+
+function throwPeerResolveAmbiguous(
+    trimmed: string,
+    matches: PingPeerSessionSummary[],
+    kind: string
+): never {
+    const sample = matches.slice(0, 5).map(formatPeerResolveHint).join('; ')
+    throw new PingPeerError(
+        'ambiguous',
+        `'${trimmed}' matches ${matches.length} sessions by ${kind} (${sample}${matches.length > 5 ? '; …' : ''}); use a longer prefix`
+    )
+}
+
+function pickAgentSessionMatch(
+    matches: PingPeerSessionSummary[],
+    trimmed: string,
+    kind: string
+): PingPeerSessionSummary {
+    if (matches.length === 0) {
+        throw new PingPeerError('not_found', `no session matching '${trimmed}'`)
+    }
+    if (matches.length === 1) {
+        return matches[0]!
+    }
+    const scopes = matches.map(readAgentSessionScope)
+    if (scopes.some((scope) => scope === null) || new Set(scopes).size > 1) {
+        throwPeerResolveAmbiguous(trimmed, matches, kind)
+    }
+    const sorted = sortPeersActiveThenUpdated(matches)
+    const top = sorted[0]!
+    const tied = sorted.filter(
+        (session) =>
+            session.active === top.active
+            && (session.updatedAt ?? 0) === (top.updatedAt ?? 0)
+    )
+    if (tied.length > 1) {
+        throwPeerResolveAmbiguous(trimmed, tied, kind)
+    }
+    return top
+}
+
+/**
+ * Resolve a peer session by hub id prefix or durable `metadata.agentSessionId`.
+ * Hub ids are ephemeral; agentSessionId survives hub-row churn (#1203).
+ * POST/resume always use the resolved hub `id` (current row).
+ */
 export function resolveSessionByPrefix(
     sessions: PingPeerSessionSummary[],
     prefix: string
@@ -252,24 +331,37 @@ export function resolveSessionByPrefix(
         throw new PingPeerError('bad_args', 'session id prefix is required')
     }
 
-    const exact = sessions.filter((session) => session.id === trimmed)
-    if (exact.length === 1) {
-        return exact[0]!
+    const exactHub = sessions.filter((session) => session.id === trimmed)
+    if (exactHub.length === 1) {
+        return exactHub[0]!
     }
 
-    const matches = sessions.filter((session) => session.id.startsWith(trimmed))
-    if (matches.length === 0) {
-        throw new PingPeerError('not_found', `no session matching prefix '${trimmed}'`)
+    const hubPrefixMatches = sessions.filter((session) => session.id.startsWith(trimmed))
+    if (hubPrefixMatches.length === 1) {
+        return hubPrefixMatches[0]!
     }
-    if (matches.length > 1) {
-        const sample = matches.slice(0, 5).map((session) => session.id.slice(0, 8)).join(', ')
-        throw new PingPeerError(
-            'ambiguous',
-            `prefix '${trimmed}' matches ${matches.length} sessions (${sample}${matches.length > 5 ? ', ...' : ''}); use a longer prefix`
-        )
+    if (hubPrefixMatches.length > 1) {
+        throwPeerResolveAmbiguous(trimmed, hubPrefixMatches, 'hub id prefix')
     }
-    return matches[0]!
+
+    const needleLower = trimmed.toLowerCase()
+    const agentExact = sessions.filter(
+        (session) => readAgentSessionId(session).toLowerCase() === needleLower
+    )
+    if (agentExact.length > 0) {
+        return pickAgentSessionMatch(agentExact, trimmed, 'agentSessionId')
+    }
+
+    const agentPrefixMatches = sessions.filter((session) =>
+        readAgentSessionId(session).toLowerCase().startsWith(needleLower)
+    )
+    if (agentPrefixMatches.length > 0) {
+        return pickAgentSessionMatch(agentPrefixMatches, trimmed, 'agentSessionId prefix')
+    }
+
+    throwPeerResolveNotFound(trimmed, sessions)
 }
+
 
 async function listSessions(
     apiUrl: string,
@@ -445,7 +537,76 @@ async function sendMessage(
     deliveryMode: MessageDeliveryMode,
     autoSteerFallback = false,
     onProgress?: (message: string) => void
-): Promise<{ delivery: PingPeerResult['delivery']; steerNote?: string }> {
+): Promise<{ delivery: PingPeerResult['delivery']; steerNote?: string }
+
+/**
+ * Attributed peer send: CLI token + path source id. Hub ignores any body
+ * sourceSessionId and fills sourceName from the store. localId + deliveryMode
+ * match the unattributed JWT path so steer confirmation stays available.
+ */
+async function sendAttributedPeerMessage(
+    apiUrl: string,
+    cliToken: string,
+    sourceSessionId: string,
+    targetSessionId: string,
+    message: string,
+    localId: string,
+    http: AxiosInstance,
+    jwt: string,
+    deliveryMode: MessageDeliveryMode
+): Promise<PingPeerResult['delivery']> {
+    const response = await http.post(
+        `${apiUrl}/cli/sessions/${encodeURIComponent(sourceSessionId)}/peer-messages`,
+        // Omit deliveryMode: Pi hub-native-steers body deliveryMode=steer on
+        // emit, which races the follow-up /steer confirmation (false send_failed).
+        // Match unattributed JWT sends: queue row + optional /steer ACK.
+        { targetSessionId, text: message, localId },
+        {
+            headers: buildHubRequestHeaders({
+                Authorization: `Bearer ${cliToken}`,
+                'Content-Type': 'application/json'
+            }),
+            timeout: 30_000,
+            validateStatus: () => true
+        }
+    ).catch((error: unknown) => {
+        if (deliveryMode !== 'steer') throw error
+        const detail = error instanceof Error ? error.message : String(error)
+        throw unconfirmedSendError(localId, detail)
+    })
+    if (response.status >= 200 && response.status < 300 && response.data?.ok === true) {
+        if (deliveryMode === 'queue') return 'accepted'
+        try {
+            const steer = await http.post(
+                `${apiUrl}/api/sessions/${encodeURIComponent(targetSessionId)}/messages/${encodeURIComponent(localId)}/steer`,
+                {},
+                { headers: authHeaders(jwt), timeout: 30_000, validateStatus: () => true }
+            )
+            if (steer.status >= 200 && steer.status < 300) {
+                if (steer.data?.status === 'steered') return 'steered'
+                if (steer.data?.status === 'invoked') return 'invoked'
+            }
+            throw new Error(typeof steer.data?.error === 'string' ? steer.data.error : `HTTP ${steer.status}`)
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error)
+            throw new PingPeerError(
+                'send_failed',
+                `Message accepted (localId=${localId}), but steer was not confirmed: ${detail}. ` +
+                'It may remain queued or already be consumed; inspect the target before retrying. Do not resend automatically.'
+            )
+        }
+    }
+    const detail = typeof response.data?.error === 'string'
+        ? response.data.error
+        : typeof response.data?.code === 'string'
+            ? response.data.code
+            : `HTTP ${response.status}`
+    if (deliveryMode === 'steer') {
+        throw unconfirmedSendError(localId, detail)
+    }
+    throw new PingPeerError('send_failed', `send failed: ${detail}`)
+}
+> {
     // The existing queued-message steer action accepts localId as well as id.
     // Both modes retain the peer identity so only runtime ACKs prove delivery.
     const response = await http.post(
@@ -808,9 +969,28 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
         throw new PingPeerError('bad_args', steeringError)
     }
 
-    onProgress?.(`sending message (${message.length} chars, ${deliveryMode}${requestedDeliveryMode === 'auto' ? ' via auto' : ''})...`)
+    const sourceId = options.authenticatedSourceSessionId?.trim() ?? ''
+    const attributed = Boolean(sourceId && isSessionId(sourceId))
+    const attributionTag = attributed ? ', attributed' : ', unattributed'
+    onProgress?.(
+        `sending message (${message.length} chars, ${deliveryMode}${requestedDeliveryMode === 'auto' ? ' via auto' : ''}${attributionTag})...`
+    )
     const localId = createPeerMessageLocalId()
-    const sent = await sendMessage(apiUrl, jwt, matched.id, message, localId, http, deliveryMode, requestedDeliveryMode === 'auto', onProgress)
+    const sent = attributed
+        ? {
+            delivery: await sendAttributedPeerMessage(
+                apiUrl,
+                accessToken,
+                sourceId,
+                matched.id,
+                message,
+                localId,
+                http,
+                jwt,
+                deliveryMode
+            )
+        }
+        : await sendMessage(apiUrl, jwt, matched.id, message, localId, http, deliveryMode, requestedDeliveryMode === 'auto', onProgress)
     // Auto queued without trying: say why, so a caller can tell it from a steer that failed.
     const steerNote = sent.steerNote ?? (requestedDeliveryMode === 'auto' && deliveryMode === 'queue'
         ? `steer not attempted: ${resumed ? 'target was just resumed' : !matched.active ? 'target was not active' : ineligibility ? AUTO_NOT_ATTEMPTED[ineligibility] : 'steering unavailable'}`

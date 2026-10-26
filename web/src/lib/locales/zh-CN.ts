@@ -30,6 +30,8 @@ export default {
   "branch.create": "创建分支",
   "branch.source": "分叉来源（可见文本）",
   "branch.uncertain": "启动结果不确定。请先检查此会话和排队指令，再创建其他分支。",
+  'message.peerFromUnknown': '来自对等会话（未知会话）',
+  'message.peerUnknownChip': '@peer',
   'message.fork': '分叉',
   'message.rewind': '回退',
   'message.fork.confirmTitle': '分叉对话',

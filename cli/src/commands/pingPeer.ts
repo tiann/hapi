@@ -3,6 +3,7 @@ import chalk from 'chalk'
 import { PeerDeliveryModeSchema, type PeerDeliveryMode } from '@/modules/pingPeer/deliveryMode'
 import { HAPI_SESSION_ID_ENV } from '@/agent/hapiSessionEnv'
 import { initializeToken } from '@/ui/tokenInit'
+import { HAPI_SESSION_ID_ENV } from '@/agent/hapiSessionEnv'
 import {
     PingPeerError,
     exitCodeForPingPeerError,
@@ -39,7 +40,9 @@ ${chalk.bold('Usage:')}
 
 ${chalk.bold('Notes:')}
   Do not reinvent JWT + curl for peer handoffs. Prefer this command or MCP ping_peer / list_peers.
-  Resolves by id prefix (8 chars OK). Same hub token/namespace as this CLI.
+  Resolves by hub session id prefix (8 chars OK) or durable metadata.agentSessionId.
+  POST always targets the current hub row after resolve (hub ids rotate).
+  Same hub token/namespace as this CLI.
   Message only peers tied to your task; never broadcast to the --list output.
   Inactive targets are refused (exit 5) unless --wake, which resumes them via
   POST /api/sessions/:id/resume first. Wake only when the peer must act, not for FYI.
@@ -231,6 +234,8 @@ export async function handlePingPeerCommand(args: string[]): Promise<void> {
         deliveryMode: parsed.deliveryMode,
         wake: parsed.wake,
         waitActiveSecs: parsed.waitActiveSecs ?? envWaitActiveSecs(),
+        // Inside a wrapped session, soft nametag via /cli/.../peer-messages (#1203).
+        authenticatedSourceSessionId: process.env[HAPI_SESSION_ID_ENV]?.trim() || undefined,
         onProgress: (line) => console.log(`hapi ping-peer: ${line}`)
     })
 

@@ -2047,7 +2047,11 @@ export class SyncEngine {
                 path: string
                 previewUrl?: string
             }>
-            sentFrom?: 'telegram-bot' | 'webapp' | 'hapi-system'
+            sentFrom?: 'telegram-bot' | 'webapp' | 'hapi-system' | 'peer'
+            peer?: {
+                sourceSessionId?: string
+                sourceName?: string
+            }
             scheduledAt?: number | null
             deliveryMode?: MessageDeliveryMode
         }

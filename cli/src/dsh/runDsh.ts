@@ -5,6 +5,7 @@ import { registerLocalHandoffHandler } from '@/agent/localHandoff'
 import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle'
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory'
 import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc'
+import { formatUserMessageForAgent } from '@/utils/attachmentFormatter'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { logger } from '@/ui/logger'
 import type { AgentState, SessionPermissionMode } from '@/api/types'
@@ -78,10 +79,12 @@ export async function runDsh(opts: {
 
     session.onUserMessage((message, localId) => {
         queue.push(
-            // Non-image attachments keep the @path text form; inline-capable
-            // images ride the mode and become ACP image content blocks at
-            // prompt time (utils/dshPromptContent).
-            formatDshUserMessage(message.content.text, message.content.attachments),
+            // Peer From: via formatUserMessageForAgent; inline images ride ACP mode.
+            formatUserMessageForAgent(
+                message.content.text,
+                message.content.attachments,
+                message.meta
+            ),
             {
                 ...dshModeForPreference(currentModel),
                 ...(currentReasoningEffort !== undefined ? { modelReasoningEffort: currentReasoningEffort } : {}),
