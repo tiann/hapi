@@ -82,7 +82,50 @@ private class FakeRecorder : DictationRecorder {
     }
 }
 
-private class Harness(testScope: kotlinx.coroutines.test.TestScope) {
+private class FakeRealtimeEngine(override val supportedProviders: Set<String> = setOf("deepgram")) : RealtimeDictationEngine {
+    val starts = mutableListOf<String>()
+    val sessions = mutableListOf<FakeRealtimeSession>()
+    var startFailure: Exception? = null
+
+    override suspend fun start(
+        provider: String,
+        language: String?,
+        callbacks: RealtimeTranscriptionCallbacks,
+    ): RealtimeTranscriptionSession {
+        starts += provider
+        startFailure?.let { throw it }
+        val session = FakeRealtimeSession(callbacks)
+        sessions += session
+        callbacks.onConnected() // the real engine fires this from within start
+        return session
+    }
+}
+
+private class FakeRealtimeSession(private val callbacks: RealtimeTranscriptionCallbacks) : RealtimeTranscriptionSession {
+    var stopCalls = 0
+    var cancelCalls = 0
+    var pendingFinal: String? = null
+    var stopFailure: Exception? = null
+
+    override suspend fun stop() {
+        stopCalls += 1
+        stopFailure?.let { throw it }
+        pendingFinal?.let { callbacks.onFinal(it) }
+    }
+
+    override fun cancel() {
+        cancelCalls += 1
+    }
+
+    fun partial(text: String) = callbacks.onPartial(text)
+
+    fun fail(error: Throwable) = callbacks.onError(error)
+}
+
+private class Harness(
+    testScope: kotlinx.coroutines.test.TestScope,
+    engine: RealtimeDictationEngine? = null,
+) {
     val api = FakeDictationApi()
     val recorder = FakeRecorder()
     val events = mutableListOf<DictationEvent>()
@@ -91,6 +134,7 @@ private class Harness(testScope: kotlinx.coroutines.test.TestScope) {
         recorder = recorder,
         scope = testScope.backgroundScope,
         now = { 42_000L },
+        realtimeEngine = engine,
     )
 
     init {
@@ -313,6 +357,146 @@ class DictationControllerTest {
         assertEquals(1, harness.recorder.cancelCalls)
         assertEquals(0, harness.recorder.stopCalls)
         assertTrue(harness.api.transcribeCalls.isEmpty())
+        assertTrue(harness.events.isEmpty())
+    }
+
+    // ------------------------------------------------ realtime (slice C-③) --
+
+    @Test
+    fun `realtime provider is preferred and streams partials into the final transcript`() = runTest {
+        val engine = FakeRealtimeEngine()
+        val harness = Harness(this, engine)
+        harness.api.providersResult = TranscriptionProvidersResponse(
+            providers = listOf(
+                TranscriptionProviderInfo(id = "groq", label = "Groq", modes = listOf("standard")),
+                TranscriptionProviderInfo(id = "deepgram", label = "Deepgram", modes = listOf("realtime")),
+            ),
+        )
+
+        harness.controller.toggle()
+        val recording = harness.controller.state.first { it is DictationState.Recording } as DictationState.Recording
+        assertEquals(listOf("deepgram"), engine.starts)
+        assertEquals(0, harness.recorder.startCalls)
+        assertEquals("", recording.partial)
+
+        engine.sessions.single().partial("hel")
+        assertEquals("hel", (harness.controller.state.value as DictationState.Recording).partial)
+        engine.sessions.single().partial("hello")
+
+        engine.sessions.single().pendingFinal = "hello there"
+        harness.controller.toggle()
+        harness.controller.state.first { it is DictationState.Idle }
+
+        assertEquals(1, engine.sessions.single().stopCalls)
+        assertEquals(0, harness.api.transcribeCalls.size)
+        assertEquals(listOf<DictationEvent>(DictationEvent.Transcribed("hello there")), harness.events)
+    }
+
+    @Test
+    fun `unsupported realtime provider falls back to standard upload`() = runTest {
+        val engine = FakeRealtimeEngine() // supports deepgram only
+        val harness = Harness(this, engine)
+        harness.api.providersResult = TranscriptionProvidersResponse(
+            providers = listOf(
+                TranscriptionProviderInfo(id = "openai", label = "OpenAI", modes = listOf("standard", "realtime")),
+                TranscriptionProviderInfo(id = "groq", label = "Groq", modes = listOf("standard")),
+            ),
+        )
+
+        harness.controller.toggle()
+        harness.controller.state.first { it is DictationState.Recording }
+        harness.controller.toggle()
+        harness.controller.state.first { it is DictationState.Idle }
+
+        assertTrue(engine.starts.isEmpty())
+        // openai carries realtime mode but the engine only supports deepgram,
+        // so discovery falls through to the first standard-capable provider.
+        assertEquals("openai", harness.api.transcribeCalls.single().provider)
+    }
+
+    @Test
+    fun `realtime connect failure surfaces as a start error`() = runTest {
+        val engine = FakeRealtimeEngine()
+        engine.startFailure = RuntimeException("no route to hub")
+        val harness = Harness(this, engine)
+        harness.api.providersResult = TranscriptionProvidersResponse(
+            providers = listOf(
+                TranscriptionProviderInfo(id = "deepgram", label = "Deepgram", modes = listOf("realtime")),
+            ),
+        )
+
+        harness.controller.toggle()
+        harness.controller.state.first { it is DictationState.Idle }
+
+        assertEquals(
+            listOf<DictationEvent>(DictationEvent.Error(DictationErrorKind.StartFailed, "no route to hub")),
+            harness.events,
+        )
+        assertEquals(0, harness.recorder.startCalls)
+    }
+
+    @Test
+    fun `realtime engine error mid take emits a transcription error`() = runTest {
+        val engine = FakeRealtimeEngine()
+        val harness = Harness(this, engine)
+        harness.api.providersResult = TranscriptionProvidersResponse(
+            providers = listOf(
+                TranscriptionProviderInfo(id = "deepgram", label = "Deepgram", modes = listOf("realtime")),
+            ),
+        )
+
+        harness.controller.toggle()
+        harness.controller.state.first { it is DictationState.Recording }
+        engine.sessions.single().fail(RuntimeException("socket died"))
+        yield() // let the events collector receive the synchronous emission
+
+        assertIs<DictationState.Idle>(harness.controller.state.value)
+        assertEquals(
+            listOf<DictationEvent>(DictationEvent.Error(DictationErrorKind.TranscriptionFailed, "socket died")),
+            harness.events,
+        )
+    }
+
+    @Test
+    fun `realtime stop failure emits a transcription error and returns to idle`() = runTest {
+        val engine = FakeRealtimeEngine()
+        val harness = Harness(this, engine)
+        harness.api.providersResult = TranscriptionProvidersResponse(
+            providers = listOf(
+                TranscriptionProviderInfo(id = "deepgram", label = "Deepgram", modes = listOf("realtime")),
+            ),
+        )
+
+        harness.controller.toggle()
+        harness.controller.state.first { it is DictationState.Recording }
+        engine.sessions.single().stopFailure = RuntimeException("flush broke")
+        harness.controller.toggle()
+        harness.controller.state.first { it is DictationState.Idle }
+
+        assertEquals(
+            listOf<DictationEvent>(DictationEvent.Error(DictationErrorKind.TranscriptionFailed, "flush broke")),
+            harness.events,
+        )
+    }
+
+    @Test
+    fun `cancel on a realtime take abandons the session without a transcript`() = runTest {
+        val engine = FakeRealtimeEngine()
+        val harness = Harness(this, engine)
+        harness.api.providersResult = TranscriptionProvidersResponse(
+            providers = listOf(
+                TranscriptionProviderInfo(id = "deepgram", label = "Deepgram", modes = listOf("realtime")),
+            ),
+        )
+
+        harness.controller.toggle()
+        harness.controller.state.first { it is DictationState.Recording }
+        harness.controller.cancel()
+
+        assertIs<DictationState.Idle>(harness.controller.state.value)
+        assertEquals(1, engine.sessions.single().cancelCalls)
+        assertEquals(0, engine.sessions.single().stopCalls)
+        assertEquals(0, harness.recorder.cancelCalls)
         assertTrue(harness.events.isEmpty())
     }
 }
