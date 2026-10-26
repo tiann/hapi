@@ -66,6 +66,80 @@ object NewSessionLogic {
         flavor == "claude" || flavor == "grok" || usesCodexFamilyPermissionModes(flavor)
 
     /**
+     * Flavors whose create-form permission choice lives in the single
+     * `permissionMode` field that launch preferences remember (web
+     * `usesSharedPermissionModeState`). Grok renders the same native select
+     * but its Auto option depends on a machine capability, so its mode stays
+     * out of the remembered launch settings on both platforms.
+     */
+    fun usesSharedPermissionModeState(flavor: String?): Boolean =
+        usesNativePermissionSelect(flavor) && flavor != "grok"
+
+    // ------------------------------------------------- launch preferences --
+
+    /**
+     * Capture of the form's launch defaults at spawn success (web builds
+     * `preferredLaunchSettings` inline in `handleCreate`): the model/effort
+     * fields verbatim, the permission mode only for shared-mode flavors.
+     */
+    fun launchPreferenceFrom(form: NewSessionForm): PreferredLaunchSettings = PreferredLaunchSettings(
+        model = form.model,
+        effort = form.effort,
+        modelReasoningEffort = form.modelReasoningEffort,
+        permissionMode = form.permissionMode.takeIf { usesSharedPermissionModeState(form.agent) },
+    )
+
+    /**
+     * Validation pass over a stored preference before prefill (web
+     * `resolvePreferredLaunchSettings`):
+     * - claude's static lists reject stale ids → sentinels; every other
+     *   flavor passes the stored model through for the live-catalog
+     *   reconciliation ([reconcileCodexSelections] is codex's settled-catalog
+     *   equivalent; the remaining flavors have no v1 picker, so their value
+     *   is always `'auto'` anyway);
+     * - opencode's reasoning effort validates against the static list minus
+     *   `xhigh` (web drops that row for opencode);
+     * - a stored permission mode that is absent from the flavor's launch
+     *   catalog falls back to `'default'` — never to a stale toggle; non
+     *   shared-mode flavors resolve to null (not remembered).
+     */
+    fun resolvePreferredLaunchSettings(
+        agent: String?,
+        stored: PreferredLaunchSettings?,
+    ): PreferredLaunchSettings {
+        val model = if (agent == "claude") {
+            stored?.model?.takeIf { it in NewSessionCatalogs.CLAUDE_MODELS.map(OptionItem::value) } ?: "auto"
+        } else {
+            stored?.model ?: "auto"
+        }
+        val effort = if (agent == "claude") {
+            stored?.effort?.takeIf { it in NewSessionCatalogs.CLAUDE_EFFORTS.map(OptionItem::value) } ?: "auto"
+        } else {
+            stored?.effort ?: "auto"
+        }
+        val modelReasoningEffort = if (agent == "opencode") {
+            stored?.modelReasoningEffort
+                ?.takeIf { it in NewSessionCatalogs.CODEX_REASONING_EFFORTS.map(OptionItem::value) - "xhigh" }
+                ?: "default"
+        } else {
+            stored?.modelReasoningEffort ?: "default"
+        }
+        val permissionMode = if (usesSharedPermissionModeState(agent)) {
+            stored?.permissionMode
+                ?.takeIf { mode -> PermissionModes.forLaunch(agent).any { it.wireId == mode } }
+                ?: "default"
+        } else {
+            null
+        }
+        return PreferredLaunchSettings(
+            model = model,
+            effort = effort,
+            modelReasoningEffort = modelReasoningEffort,
+            permissionMode = permissionMode,
+        )
+    }
+
+    /**
      * Exact spawn body (`POST /api/machines/:id/spawn`), field-for-field port
      * of the web `handleCreate` mapping:
      * - `model`/`effort` only for flavors whose picker exists in this v1

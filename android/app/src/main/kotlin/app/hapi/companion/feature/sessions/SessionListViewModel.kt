@@ -6,6 +6,7 @@ import app.hapi.data.store.MachineListStore
 import app.hapi.data.store.SessionListStore
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.SessionSummary
+import app.hapi.protocol.wire.sortSessionSummaries
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -66,8 +67,11 @@ data class SessionListUiState(
     val hasLoaded: Boolean,
     /** Last refresh failed — show the offline banner over snapshot data. */
     val isOffline: Boolean,
+    /** Live search-box text; blank = no filtering/ranking. */
+    val searchQuery: String = "",
 ) {
     val hasMachineFilters: Boolean get() = machineFilters.size >= 2
+    val isSearching: Boolean get() = searchQuery.isNotBlank()
 }
 
 /**
@@ -92,6 +96,8 @@ class SessionListViewModel(
     private val hubKey: String = "default",
 ) {
     private val machineFilter = MutableStateFlow<String?>(null)
+    private val searchQuery = MutableStateFlow("")
+    private val selectedSessionId = MutableStateFlow<String?>(null)
     private val isRefreshing = MutableStateFlow(false)
     private val isOffline = MutableStateFlow(false)
     private val hasRefreshedOnce = MutableStateFlow(false)
@@ -137,19 +143,23 @@ class SessionListViewModel(
     }
 
     val uiState: StateFlow<SessionListUiState> = combine(
-        sessionStore.sessions,
-        machineStore.machines,
-        lastSeenStore.state,
-        machineFilter,
+        combine(sessionStore.sessions, machineStore.machines, lastSeenStore.state) { sessions, machines, lastSeen ->
+            Triple(sessions, machines, lastSeen.lastSeen)
+        },
+        combine(machineFilter, searchQuery, selectedSessionId) { filter, query, selected ->
+            Triple(filter, query, selected)
+        },
         combine(isRefreshing, isOffline, hasRefreshedOnce) { refreshing, offline, loaded ->
             Triple(refreshing, offline, loaded)
         },
-    ) { sessions, machines, lastSeen, filter, (refreshing, offline, refreshedOnce) ->
+    ) { (sessions, machines, lastSeen), (filter, query, selected), (refreshing, offline, refreshedOnce) ->
         buildUiState(
             sessions = sessions,
             machines = machines,
-            lastSeen = lastSeen.lastSeen,
+            lastSeen = lastSeen,
             filter = filter,
+            searchQuery = query,
+            selectedSessionId = selected,
             isRefreshing = refreshing,
             isOffline = offline,
             hasLoaded = refreshedOnce || sessions.isNotEmpty(),
@@ -220,8 +230,14 @@ class SessionListViewModel(
         machineFilter.value = machineId
     }
 
+    /** Search-box input; blank disables filtering/ranking entirely. */
+    fun setSearchQuery(query: String) {
+        searchQuery.value = query
+    }
+
     /** Call when navigating into a session: stamps the last-seen watermark. */
     fun onSessionOpened(sessionId: String) {
+        selectedSessionId.value = sessionId
         val summary = sessionStore.sessions.value.firstOrNull { it.id == sessionId } ?: return
         lastSeenStore.markSeen(sessionId, summary.updatedAt)
     }
@@ -311,6 +327,8 @@ class SessionListViewModel(
         machines: List<Machine>,
         lastSeen: Map<String, Long>,
         filter: String?,
+        searchQuery: String,
+        selectedSessionId: String?,
         isRefreshing: Boolean,
         isOffline: Boolean,
         hasLoaded: Boolean,
@@ -356,11 +374,34 @@ class SessionListViewModel(
             sessions.filter { (it.metadata?.machineId ?: UNKNOWN_MACHINE_ID) == activeFilter }
         }
 
+        // Sidebar list body, matching the web list: collapse duplicate
+        // agent-session views (resume/reopen chains) and hide fresh "new
+        // session" stubs, then re-apply the canonical order — dedup regroups
+        // rows and must not leave the store's pinned/active ordering behind.
+        val prepared = sortSessionSummaries(
+            SessionListFilters.prepareSidebarSessions(visible, selectedSessionId),
+        )
+
+        // Text search: relevance ranking over the already-prepared corpus,
+        // pins kept contiguous ahead of ordinary rows.
+        val searched = if (searchQuery.isBlank()) {
+            prepared
+        } else {
+            val machineLabels = filters.associate { it.id to it.label }
+            val index = SessionListSearch.buildSessionSearchScoreIndex(prepared, searchQuery) { machineId ->
+                machineLabels[machineId ?: UNKNOWN_MACHINE_ID] ?: ""
+            }
+            SessionListSearch.sortSessionsBySearchRelevancePreservingPins(
+                prepared.filter { it.id in index.matchedIds },
+                index,
+            )
+        }
+
         // With one machine — or a machine filter active — every visible row
         // shares the machine, so repeating it per row is noise.
         val showMachine = filters.size >= 2 && activeFilter == null
 
-        val rows = visible.map { summary ->
+        val rows = searched.map { summary ->
             val title = sessionTitle(summary)
             val summaryText = summary.metadata?.summary?.text?.takeIf { it.isNotBlank() }
             SessionRowUi(
@@ -381,6 +422,7 @@ class SessionListViewModel(
             rows = rows,
             machineFilters = filters,
             activeMachineFilter = activeFilter,
+            searchQuery = searchQuery,
             isRefreshing = isRefreshing,
             hasLoaded = hasLoaded,
             isOffline = isOffline,

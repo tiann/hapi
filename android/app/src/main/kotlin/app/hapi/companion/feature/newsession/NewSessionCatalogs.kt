@@ -1,7 +1,11 @@
 package app.hapi.companion.feature.newsession
 
-/** A `(wire value, display label)` pair for the option pickers. */
-data class OptionItem(val value: String, val label: String)
+/**
+ * A `(wire value, display label)` pair for the option pickers. [enabled]
+ * covers per-option gating (grok's Auto mode when the machine reports the
+ * capability as false); every static catalog keeps the default.
+ */
+data class OptionItem(val value: String, val label: String, val enabled: Boolean = true)
 
 /**
  * Static option catalogs for the create form — data ports of
