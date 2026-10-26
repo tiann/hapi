@@ -15,6 +15,8 @@ data class SessionSummary(
     val thinking: Boolean = false,
     val activeAt: Long = 0,
     val updatedAt: Long = 0,
+    /** Hub: this session has conversation content (list hides fresh "new session" stubs). */
+    val hasConversationContent: Boolean = false,
     val pinned: Boolean? = null,
     val globalPinned: Boolean? = null,
     val metadata: SessionSummaryMetadata? = null,

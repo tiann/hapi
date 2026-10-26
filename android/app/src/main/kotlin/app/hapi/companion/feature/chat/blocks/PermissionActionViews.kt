@@ -1,5 +1,7 @@
 package app.hapi.companion.feature.chat.blocks
 
+import android.content.Context
+import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,19 +32,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 import app.hapi.companion.R
 import app.hapi.companion.feature.chat.PermissionAction
 import app.hapi.companion.feature.chat.PermissionRowOverride
 import app.hapi.companion.feature.chat.permissions.AskQuestion
 import app.hapi.companion.feature.chat.permissions.isCursorAskQuestionToolName
 import app.hapi.companion.feature.chat.permissions.isRequestUserInputAnswered
+import app.hapi.companion.feature.chat.permissions.isRequestUserInputUrlConfirmed
 import app.hapi.companion.feature.chat.permissions.parseAskUserQuestions
-import app.hapi.companion.feature.chat.permissions.parseRequestUserInputQuestions
+import app.hapi.companion.feature.chat.permissions.parseRequestUserInput
 import app.hapi.companion.feature.chat.permissions.requestUserInputAnswerValues
 import app.hapi.companion.feature.chat.permissions.selectRequestUserInputOption
 import app.hapi.companion.ui.theme.HapiTheme
@@ -390,6 +395,7 @@ private fun AskQuestionSection(
             onValueChange = onOtherText,
             enabled = enabled,
             placeholder = { Text(stringResource(R.string.chat_perm_other)) },
+            minLines = 2,
             modifier = Modifier.fillMaxWidth(),
         )
     }
@@ -400,8 +406,10 @@ private fun AskQuestionSection(
 /**
  * request_user_input answer form: per-field option rows plus a free-text
  * note; answers post nested `{fieldId: {answers: [labels…, "user_note: …"]}}`
- * (`RequestUserInputFooter.tsx` parity; the web-only URL confirmation flow is
- * not ported).
+ * (`RequestUserInputFooter.tsx` parity). Sign-in requests carry a validated
+ * `input.url`: submit requires the `__mcp_url_confirmation` option to be
+ * selected and then opens the page (ACTION_VIEW) alongside submitting — the
+ * native analogue of web's opener-null `window.open`.
  */
 @Composable
 private fun RequestUserInputFooter(
@@ -416,7 +424,9 @@ private fun RequestUserInputFooter(
         return
     }
     val resolving = override == PermissionRowOverride.Resolving
-    val questions = remember(tool.id, tool.input) { parseRequestUserInputQuestions(tool.input) }
+    val context = LocalContext.current
+    val parsed = remember(tool.id, tool.input) { parseRequestUserInput(tool.input) }
+    val questions = parsed.questions
 
     val selected = rememberSaveable(tool.id) { mutableStateOf(mapOf<String, Set<String>>()) }
     val notes = rememberSaveable(tool.id) {
@@ -498,6 +508,7 @@ private fun RequestUserInputFooter(
                     },
                     enabled = !resolving,
                     placeholder = { Text(question.placeholder ?: stringResource(R.string.chat_perm_add_note)) },
+                    minLines = 2,
                     modifier = Modifier.fillMaxWidth()
                         .focusRequester(noteFocusRequester)
                         .testTag("request-input-${question.id}-note"),
@@ -522,6 +533,7 @@ private fun RequestUserInputFooter(
                 CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
             } else {
                 val answerEveryRequired = stringResource(R.string.chat_perm_answer_required)
+                val openFailed = stringResource(R.string.chat_perm_open_signin_failed)
                 TextButton(onClick = {
                     for (question in questions) {
                         val questionSelected = (selected.value[question.id] ?: emptySet()).toList()
@@ -531,9 +543,23 @@ private fun RequestUserInputFooter(
                             return@TextButton
                         }
                     }
+                    // Sign-in flow: the URL must be explicitly confirmed, then
+                    // the page opens together with submitting (web shows the
+                    // same select-option error for the unconfirmed case).
+                    if (parsed.url != null) {
+                        if (!isRequestUserInputUrlConfirmed(parsed, selected.value.mapValues { it.value.toList() })) {
+                            validationError = answerEveryRequired
+                            return@TextButton
+                        }
+                        if (!openRequestUserInputUrl(context, parsed.url)) {
+                            validationError = openFailed
+                            return@TextButton
+                        }
+                    }
                     val answers = linkedMapOf<String, List<String>>()
                     questions.forEach { question ->
                         answers[question.id] = requestUserInputAnswerValues(
+                            question = question,
                             selected = (selected.value[question.id] ?: emptySet()).toList(),
                             note = notes.value[question.id].orEmpty(),
                         )
@@ -548,6 +574,18 @@ private fun RequestUserInputFooter(
 }
 
 // -------------------------------------------------------------- previews --
+
+/**
+ * `openRequestUserInputUrl` native twin: web's opener-null `window.open` has
+ * no tab-nabbing surface on Android, so a plain view intent is the analogue.
+ * False (≈ web's popup-blocked return) when no handler takes the intent.
+ */
+private fun openRequestUserInputUrl(context: Context, url: String): Boolean = try {
+    context.startActivity(Intent(Intent.ACTION_VIEW, url.toUri()))
+    true
+} catch (_: Exception) {
+    false
+}
 
 @Preview(showBackground = true)
 @Composable
