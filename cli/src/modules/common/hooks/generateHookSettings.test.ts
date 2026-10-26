@@ -2,10 +2,16 @@ import { describe, expect, it } from 'vitest'
 import { buildHookSettings } from './generateHookSettings'
 
 describe('buildHookSettings', () => {
-    it('registers only SessionStart by default', () => {
+    it('observes automatic compaction in both remote and local settings', () => {
         const settings = buildHookSettings('forward-cmd')
-        expect(Object.keys(settings.hooks)).toEqual(['SessionStart'])
+        expect(Object.keys(settings.hooks)).toEqual(['SessionStart', 'PreCompact'])
         expect(settings.hooks.SessionStart[0].hooks[0].command).toBe('forward-cmd')
+        for (const settings of [buildHookSettings('forward-cmd'), buildHookSettings('forward-cmd', undefined, true, true)]) {
+            expect(settings.hooks).toHaveProperty('PreCompact', [{
+                matcher: 'auto',
+                hooks: [{ type: 'command', command: 'forward-cmd' }]
+            }])
+        }
     })
 
     it('adds permission-mode-carrying hooks when trackPermissionMode is set', () => {

@@ -10,6 +10,7 @@ import { getEnvironmentInfo } from '@/ui/doctor';
 import { startHappyServer, toClaudeAllowedHapiMcpTools } from '@/claude/utils/startHappyServer';
 import { startHookServer } from '@/claude/utils/startHookServer';
 import { generateHookSettingsFile, cleanupHookSettingsFile } from '@/modules/common/hooks/generateHookSettings';
+import { forwardClaudeAutoCompactionStart } from './utils/autoCompactionHook';
 import { registerKillSessionHandler } from './registerKillSessionHandler';
 import type { Session } from './session';
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory';
@@ -171,6 +172,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             logger.debug(`[START] Session hook received: ${sessionId}`, data);
 
             const currentSession = currentSessionRef.current;
+            forwardClaudeAutoCompactionStart(currentSession, sessionId, data);
             currentSession?.localPermissionBridge.onHook(data);
             if (currentSession && (data.hook_event_name === 'SessionStart' || data.hook_event_name === undefined)) {
                 const previousSessionId = currentSession.sessionId;
@@ -218,7 +220,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     // The interactive TUI gets a separate settings file that also forwards
     // UserPromptSubmit/PreToolUse (their payloads carry permission_mode), so a
     // mode picked via shift+tab is inherited on local→remote switch. The
-    // remote SDK process keeps the SessionStart-only file: these extra hooks
+    // remote SDK process keeps only the session/compaction observers: these extra hooks
     // block Claude per prompt/tool call, and remote mode state is owned by the
     // hub/RPC path.
     const localHookSettingsPath = generateHookSettingsFile(hookServer.port, hookServer.token, {
