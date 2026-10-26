@@ -308,6 +308,7 @@ class SocketIoClient(
                     // and leave the retry decision to the UI.
                     givenUp.set(true)
                     stopRetries()
+                    watchdogJob?.cancel()
                     webSocket?.close(NORMAL_CLOSE_CODE, "connect_error")
                     listener.onDisconnected("connect_error: $message")
                 } else {

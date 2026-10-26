@@ -454,7 +454,10 @@ class TerminalEmulator(
                 val line = activeBuffer.lineAt(cursorY)
                 val count = param(0, 1)
                 val from = cursorX.coerceAtMost(line.cellCount)
-                repeat(count) { line.cells.add(from, TerminalCell.BLANK) }
+                // Clamp to the remaining width: an unclamped 16-bit param on
+                // a narrow line would materialise ~65k blank cells.
+                val blanks = count.coerceAtMost(cols - from).coerceAtLeast(0)
+                repeat(blanks) { line.cells.add(from, TerminalCell.BLANK) }
             }
             'L' -> insertLines(param(0, 1))
             'M' -> deleteLines(param(0, 1))
