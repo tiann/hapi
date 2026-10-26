@@ -77,6 +77,11 @@ import app.hapi.companion.feature.settings.StorageScreen
 import app.hapi.companion.feature.settings.StorageViewModel
 import app.hapi.companion.feature.settings.UsageScreen
 import app.hapi.companion.feature.settings.UsageViewModel
+import app.hapi.companion.feature.terminal.SharedPrefsTerminalFontPrefs
+import app.hapi.companion.feature.terminal.SocketIoTerminalGateway
+import app.hapi.companion.feature.terminal.TerminalEventListener
+import app.hapi.companion.feature.terminal.TerminalScreen
+import app.hapi.companion.feature.terminal.TerminalViewModel
 import app.hapi.data.auth.AuthTerminalReason
 import app.hapi.data.sse.SseSubscriptionKey
 import java.util.Base64
@@ -137,6 +142,11 @@ object Routes {
     const val SCRATCHLIST = "chat/{sessionId}/scratchlist"
 
     fun scratchlist(sessionId: String) = "chat/$sessionId/scratchlist"
+
+    /** Interactive remote terminal, pushed above its chat. */
+    const val TERMINAL = "chat/{sessionId}/terminal"
+
+    fun terminal(sessionId: String) = "chat/$sessionId/terminal"
 
     /** New-session form (B-M3d); optional machine preselect. */
     const val NEW_SESSION = "newSession?machineId={machineId}"
@@ -242,7 +252,7 @@ fun HapiNavigation() {
             }
         } else if (
             navController.currentDestination?.route in
-                setOf(Routes.CHAT, Routes.FILES, Routes.FILE_VIEWER, Routes.SCRATCHLIST)
+                setOf(Routes.CHAT, Routes.FILES, Routes.FILE_VIEWER, Routes.SCRATCHLIST, Routes.TERMINAL)
         ) {
             navController.popBackStack(Routes.HOME, inclusive = false)
         }
@@ -515,6 +525,7 @@ fun HapiNavigation() {
                     navController.navigate(Routes.fileViewer(sessionId, path, mode = "file", line = line))
                 },
                 onOpenScratchlist = { navController.navigate(Routes.scratchlist(sessionId)) },
+                onOpenTerminal = { navController.navigate(Routes.terminal(sessionId)) },
             )
         }
 
@@ -632,6 +643,23 @@ fun HapiNavigation() {
                         navController.popBackStack()
                     }
                 },
+            )
+        }
+
+        composable(
+            route = Routes.TERMINAL,
+            arguments = listOf(navArgument("sessionId") { type = NavType.StringType }),
+        ) { entry ->
+            val sessionId = entry.arguments?.getString("sessionId") ?: return@composable
+            val hubGraph = activeHubGraph ?: return@composable
+            val appContext = LocalContext.current.applicationContext
+            val holder = viewModel<TerminalViewModelHolder>(
+                key = "terminal:${hubGraph.hubUrl}:$sessionId",
+                factory = viewModelFactory { TerminalViewModelHolder(hubGraph, sessionId, appContext) },
+            )
+            TerminalScreen(
+                viewModel = holder.viewModel,
+                onBack = { navController.popBackStack() },
             )
         }
 
@@ -986,6 +1014,44 @@ private class ScratchlistViewModelHolder(
 
     override fun onCleared() {
         viewModel.stop()
+        scope.cancel()
+    }
+}
+
+/** Shell for the interactive remote terminal. */
+private class TerminalViewModelHolder(
+    hubGraph: HubGraph,
+    sessionId: String,
+    appContext: Context,
+) : ViewModel() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    val viewModel = TerminalViewModel(
+        sessionId = sessionId,
+        sessionStore = hubGraph.sessionStore,
+        // Factory-injection solves VM↔gateway ordering: the gateway gets the
+        // event listener the VM constructs it with.
+        gatewayFactory = { listener: TerminalEventListener ->
+            SocketIoTerminalGateway(
+                baseUrl = hubGraph.hubUrl,
+                sessionId = sessionId,
+                tokenProvider = {
+                    // Store reads may block; the fallback exchange is network
+                    // I/O (same pattern as the settings holder).
+                    withContext(Dispatchers.IO) {
+                        hubGraph.session.authenticator.currentJwt() ?: hubGraph.session.ensureFreshToken()
+                    }
+                },
+                listener = listener,
+                scope = scope,
+            )
+        },
+        fontPrefs = SharedPrefsTerminalFontPrefs(appContext),
+        scope = scope,
+    )
+
+    override fun onCleared() {
+        viewModel.close()
         scope.cancel()
     }
 }

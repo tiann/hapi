@@ -147,6 +147,10 @@ class SocketIoClient(
         webSocket?.send(frame)
     }
 
+    /** True while the namespace CONNECT handshake is complete (emit gate). */
+    val isNamespaceConnected: Boolean
+        get() = namespaceConnected
+
     // ------------------------------------------------------------ attempts --
 
     @Synchronized
