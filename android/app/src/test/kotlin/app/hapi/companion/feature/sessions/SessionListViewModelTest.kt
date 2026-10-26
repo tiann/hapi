@@ -104,19 +104,26 @@ private fun summary(
     summaryText: String? = null,
     path: String = "/repo/app",
     worktree: WorktreeMetadata? = null,
+    flavor: String = "claude",
+    agentSessionId: String? = null,
+    pinned: Boolean? = null,
+    hasConversationContent: Boolean = true,
 ): SessionSummary = SessionSummary(
     id = id,
     active = active,
     thinking = false,
     activeAt = 0,
     updatedAt = updatedAt,
+    hasConversationContent = hasConversationContent,
+    pinned = pinned,
     metadata = SessionSummaryMetadata(
         name = name,
         path = path,
         machineId = machineId,
         summary = summaryText?.let { SummaryText(it) },
-        flavor = "claude",
+        flavor = flavor,
         worktree = worktree,
+        agentSessionId = agentSessionId,
     ),
     metadataVersion = 0,
     agentStateVersion = 0,
@@ -440,5 +447,89 @@ class SessionListViewModelTest {
         val error = seen
         assertTrue(error is SessionListError.ReopenFailed)
         assertEquals("Cannot reopen (missing: cursorSessionId)", error.message)
+    }
+
+    // --------------------------------------------- search / dedup / stubs --
+
+    @Test
+    fun `search filters rows, reports no results, and clears back to the full list`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("s1", updatedAt = 900, name = "Home Assistant setup"),
+            summary("s2", updatedAt = 800, name = "Refactor parser"),
+        )
+        viewModel.uiState.first { it.rows.size == 2 }
+
+        viewModel.setSearchQuery("home ass")
+        var state = viewModel.uiState.first { it.isSearching }
+        assertEquals(listOf("s1"), state.rows.map { it.id })
+
+        viewModel.setSearchQuery("zzz")
+        state = viewModel.uiState.first { it.isSearching && it.rows.isEmpty() }
+
+        viewModel.setSearchQuery("")
+        state = viewModel.uiState.first { !it.isSearching }
+        assertEquals(2, state.rows.size)
+    }
+
+    @Test
+    fun `search ranks a title boundary hit above a newer path-only match`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("path-hit", updatedAt = 900, name = "Unrelated", path = "/repo/home-lab"),
+            summary("title-hit", updatedAt = 100, name = "Home Assistant setup"),
+        )
+        viewModel.setSearchQuery("home")
+        val state = viewModel.uiState.first { it.isSearching && it.rows.size == 2 }
+        // Recency alone would order [path-hit, title-hit]; the title weight +
+        // boundary bonus must outrank it.
+        assertEquals(listOf("title-hit", "path-hit"), state.rows.map { it.id })
+    }
+
+    @Test
+    fun `duplicate agent-session views collapse to the newest view`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("stale", updatedAt = 500, agentSessionId = "agent-1", name = "Old view"),
+            summary("fresh", updatedAt = 900, agentSessionId = "agent-1", name = "New view"),
+            summary("other", updatedAt = 700, agentSessionId = "agent-2", name = "Other"),
+        )
+        val state = viewModel.uiState.first { it.rows.size == 2 }
+        assertEquals(listOf("fresh", "other"), state.rows.map { it.id })
+    }
+
+    @Test
+    fun `the active view wins dedup even when older`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("old-active", updatedAt = 100, active = true, agentSessionId = "agent-1", name = "Old"),
+            summary("new-idle", updatedAt = 900, agentSessionId = "agent-1", name = "New"),
+        )
+        val state = viewModel.uiState.first { it.rows.size == 1 }
+        assertEquals("old-active", state.rows.single().id)
+    }
+
+    @Test
+    fun `same agent id across flavors stays two rows`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("claude-view", updatedAt = 900, flavor = "claude", agentSessionId = "shared-1", name = "Claude view"),
+            summary("codex-view", updatedAt = 800, flavor = "codex", agentSessionId = "shared-1", name = "Codex view"),
+        )
+        val state = viewModel.uiState.first { it.rows.size == 2 }
+        assertEquals(setOf("claude-view", "codex-view"), state.rows.map { it.id }.toSet())
+    }
+
+    @Test
+    fun `fresh empty-session stubs hide until they gain a title signal`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("stub", hasConversationContent = false),
+            summary("named-stub", hasConversationContent = false, name = "Named"),
+            summary("content", hasConversationContent = true),
+            summary("agent-stub", hasConversationContent = false, agentSessionId = "agent-9"),
+        )
+        val state = viewModel.uiState.first { it.rows.size == 3 }
+        assertEquals(setOf("named-stub", "content", "agent-stub"), state.rows.map { it.id }.toSet())
     }
 }

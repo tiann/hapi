@@ -34,15 +34,20 @@ function createHttpMock(options: { flavor: string; active: boolean; shared?: boo
 const base = { accessToken: 'tok', apiUrl: 'http://hub.test' }
 
 describe('setPeerPermissionMode', () => {
-    it('resolves a prefix and posts the mode to the permission-mode route', async () => {
-        const http = createHttpMock({ flavor: 'codex', active: true })
+    it.each([
+        { mode: 'yolo', shared: false },
+        { mode: 'yolo', shared: true },
+        { mode: 'autoReview', shared: false },
+        { mode: 'autoReview', shared: true }
+    ])('resolves a prefix and posts $mode to the permission-mode route (shared: $shared)', async ({ mode, shared }) => {
+        const http = createHttpMock({ flavor: 'codex', active: true, shared })
 
-        const result = await setPeerPermissionMode({ ...base, sessionIdPrefix: '7d55ed21', mode: 'yolo', http: http as never })
+        const result = await setPeerPermissionMode({ ...base, sessionIdPrefix: '7d55ed21', mode, http: http as never })
 
-        expect(result).toEqual({ sessionId, name: 'worker', flavor: 'codex', mode: 'yolo', active: true })
+        expect(result).toEqual({ sessionId, name: 'worker', flavor: 'codex', mode, active: true })
         expect(http.post).toHaveBeenCalledWith(
             `http://hub.test/api/sessions/${sessionId}/permission-mode`,
-            { mode: 'yolo' },
+            { mode },
             expect.anything()
         )
     })
@@ -55,7 +60,7 @@ describe('setPeerPermissionMode', () => {
 
         expect(error).toBeInstanceOf(PingPeerError)
         expect((error as PingPeerError).code).toBe('bad_args')
-        expect((error as PingPeerError).message).toContain('allowed: default, read-only, safe-yolo, yolo')
+        expect((error as PingPeerError).message).toContain('allowed: default, read-only, safe-yolo, autoReview, yolo')
         expect(http.post).toHaveBeenCalledTimes(1)
     })
 
@@ -63,7 +68,7 @@ describe('setPeerPermissionMode', () => {
         const http = createHttpMock({ flavor: 'codex', active: false, shared: true })
 
         await expect(setPeerPermissionMode({ ...base, sessionIdPrefix: sessionId, mode: 'safe-yolo', http: http as never }))
-            .rejects.toMatchObject({ code: 'bad_args', message: "invalid mode 'safe-yolo' for codex; allowed: default, read-only, yolo" })
+            .rejects.toMatchObject({ code: 'bad_args', message: "invalid mode 'safe-yolo' for codex; allowed: default, read-only, autoReview, yolo" })
         expect(http.post).toHaveBeenCalledTimes(1)
     })
 

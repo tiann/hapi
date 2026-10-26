@@ -3,9 +3,12 @@ package app.hapi.companion.feature.newsession
 import app.hapi.companion.feature.directorybrowser.RemoteDirectoryBrowserController
 import app.hapi.companion.feature.directorybrowser.RemoteDirectoryPath
 import app.hapi.companion.feature.newsession.NewSessionLogic.buildSpawnRequest
+import app.hapi.companion.feature.newsession.NewSessionLogic.launchPreferenceFrom
 import app.hapi.companion.feature.newsession.NewSessionLogic.parentQuery
 import app.hapi.companion.feature.newsession.NewSessionLogic.pushRecent
+import app.hapi.companion.feature.newsession.NewSessionLogic.resolvePreferredLaunchSettings
 import app.hapi.companion.feature.newsession.NewSessionLogic.usesNativePermissionSelect
+import app.hapi.companion.feature.newsession.NewSessionLogic.usesSharedPermissionModeState
 import app.hapi.companion.feature.newsession.NewSessionLogic.worktreeNameError
 import app.hapi.data.api.ApiError
 import app.hapi.data.store.MachineListStore
@@ -75,6 +78,8 @@ class NewSessionStrings(
     val runnerUpgradeRequired: String = "Upgrade and restart this machine's HAPI runner before creating sessions.",
     val noAvailableAgents: String = "No supported Agents are installed on this machine.",
     val selectedAgentUnavailable: String = "The selected Agent is not available on this machine.",
+    /** Appended to the grok `Auto` option label as `Auto (<value>)` when gated. */
+    val grokAutoUnavailable: String = "unavailable",
 )
 
 /** Which permission control the current flavor renders (web `PermissionField`). */
@@ -131,6 +136,8 @@ data class NewSessionUiState(
     /** Codex reasoning-effort options; null hides the field. */
     val reasoningEffortOptions: List<OptionItem>?,
     val permission: PermissionUi,
+    /** Grok create-form gate: `true` renders the Auto-unavailable hint (web `PermissionField`). */
+    val grokAutoUnavailable: Boolean,
     val showCollaborationMode: Boolean,
     val collaborationModeOptions: List<OptionItem>,
     val showFastMode: Boolean,
@@ -156,8 +163,9 @@ data class NewSessionUiState(
  *   discovery is TODO — spawn omits `model` so the agent default applies.
  * - effort: claude static levels; codex reasoning effort from the catalog.
  *   grok/pi effort ships with their model discovery.
- * - grok's `auto` availability probe (directory-scoped grok-models) is
- *   deferred; all catalog modes are offered.
+ * - grok's `auto` availability IS probed (directory-scoped grok-models,
+ *   `autoPermissionModeSupported`); the rest of that response (model/effort
+ *   catalogs) stays deferred with model discovery.
  * - `startingMode` stays unset → the runner spawns `'remote'` (pty deferred).
  */
 class NewSessionViewModel(
@@ -173,6 +181,8 @@ class NewSessionViewModel(
     private val prefsData = MutableStateFlow(NewSessionPrefsData())
     private val codexModels = MutableStateFlow<CodexModelsUi>(CodexModelsUi.Hidden)
     private val agentAvailability = MutableStateFlow<AgentAvailabilityUi>(AgentAvailabilityUi.Loading)
+    /** Grok Auto gate: `null` = unknown/loading (never disables), `false` = unsupported. */
+    private val grokAutoSupport = MutableStateFlow<Boolean?>(null)
     private val suggestions = MutableStateFlow<List<String>>(emptyList())
     private val pathExistence = MutableStateFlow<Map<String, Boolean>>(emptyMap())
     private val outsideWorkspaceRoots = MutableStateFlow<Set<String>>(emptySet())
@@ -196,10 +206,20 @@ class NewSessionViewModel(
     private var codexJob: Job? = null
     private var availabilityJob: Job? = null
     private var defaultDirectoryJob: Job? = null
+    private var grokAutoJob: Job? = null
     private var codexFetchedForMachine: String? = null
+
+    /** `(machineId, cwd)` already probed — a failed probe never retries (web `retry: false`). */
+    private var grokAutoProbedFor: Pair<String, String>? = null
     private var suppressSuggestions = false
     private var spawnInFlight = false
     private var directoryRequestVersion = 0L
+
+    /**
+     * A restored draft outranks the remembered launch defaults until the
+     * user switches agent or machine (web `preserveRestoredDraftRef`).
+     */
+    private var draftRestored = false
 
     /** Parent-listing cache: retyping within the same parent re-filters locally. */
     private var cachedListing: Pair<Pair<String, String>, List<MachineDirectoryEntry>>? = null
@@ -209,16 +229,19 @@ class NewSessionViewModel(
             prefsData.value = runCatching { prefs.readPrefs() }.getOrDefault(NewSessionPrefsData())
             val draft = runCatching { prefs.readDraft() }.getOrNull()?.let(NewSessionLogic::sanitizeDraft)
             var initial = draft ?: NewSessionForm()
+            draftRestored = draft != null
             if (initialMachineId != null) {
                 if (draft?.machineId != null && draft.machineId != initialMachineId) {
                     // Draft belongs to another machine (web `newSessionDraftMatchesMachine`).
                     initial = NewSessionForm(machineId = initialMachineId)
+                    draftRestored = false
                     runCatching { prefs.clearDraft() }
                 } else {
                     initial = initial.copy(machineId = initialMachineId)
                 }
             }
             form.value = initial
+            if (!draftRestored) applyPreferredLaunchSettings(initial.machineId, initial.agent)
             refreshAgentAvailability()
             refreshCodexModelsIfNeeded()
             // A restored directory should probe existence but not pop the
@@ -241,7 +264,7 @@ class NewSessionViewModel(
                     if (machines.isEmpty()) return@collect
                     val current = form.value.machineId
                     if (current != null && machines.any { it.id == current }) {
-                        if (form.value.directory.isBlank()) applyMachineSelection(current, resetDirectory = true)
+                        if (form.value.directory.isBlank()) initializeMachineDirectory(current)
                         return@collect
                     }
                     val lastUsed = prefsData.value.lastMachineId
@@ -268,7 +291,9 @@ class NewSessionViewModel(
     val uiState: StateFlow<NewSessionUiState> = combine(
         form,
         machineStore.machines,
-        combine(codexModels, agentAvailability) { codex, availability -> CatalogState(codex, availability) },
+        combine(codexModels, agentAvailability, grokAutoSupport) { codex, availability, grokAuto ->
+            CatalogState(codex, availability, grokAuto)
+        },
         combine(suggestions, pathExistence, prefsData, outsideWorkspaceRoots, directoryLookupError) {
                 s, exists, stored, outside, lookupError ->
             DirectoryData(s, exists, stored, outside, lookupError)
@@ -285,7 +310,7 @@ class NewSessionViewModel(
         initialValue = buildUiState(
             form.value,
             machineStore.machines.value,
-            CatalogState(codexModels.value, agentAvailability.value),
+            CatalogState(codexModels.value, agentAvailability.value, grokAutoSupport.value),
             DirectoryData(emptyList(), emptyMap(), prefsData.value, emptySet(), null),
             SpawnFlags(isSpawning = false, spawnError = null, confirmed = false, machinesSettled = false),
         ),
@@ -301,6 +326,7 @@ class NewSessionViewModel(
     private data class CatalogState(
         val codex: CodexModelsUi,
         val availability: AgentAvailabilityUi,
+        val grokAutoSupported: Boolean?,
     )
 
     private data class DirectoryData(
@@ -315,12 +341,14 @@ class NewSessionViewModel(
 
     fun setMachine(machineId: String) {
         if (machineId == form.value.machineId) return
+        draftRestored = false
         applyMachineSelection(machineId, resetDirectory = true)
     }
 
     fun setDirectory(value: String) {
         suppressSuggestions = false
         confirmCreateDirectory.value = false
+        clearGrokAutoSupport()
         form.update { it.copy(directory = value) }
         scheduleDirectoryWork()
     }
@@ -346,7 +374,10 @@ class NewSessionViewModel(
     fun setAgent(agent: String) {
         if (agent == form.value.agent) return
         // Web parity: switching agents resets every agent-dependent field
-        // (yolo is a cross-flavor preference and survives).
+        // (yolo is a cross-flavor preference and survives), then the
+        // remembered launch defaults for the new (machine, agent) dimension
+        // prefill the reset fields.
+        draftRestored = false
         form.update {
             it.copy(
                 agent = agent,
@@ -359,7 +390,9 @@ class NewSessionViewModel(
                 copilotAgentMode = "interactive",
             )
         }
+        applyPreferredLaunchSettings(form.value.machineId, agent)
         refreshCodexModelsIfNeeded()
+        refreshGrokAutoSupportIfNeeded()
     }
 
     fun setModel(model: String) {
@@ -453,7 +486,7 @@ class NewSessionViewModel(
                 val request = buildSpawnRequest(current, codexFastTierVisible(current))
                 val result = gateway.spawn(machineId, request)
                 if (result.type == "success" && result.sessionId != null) {
-                    persistOnSuccess(machineId, directory)
+                    persistOnSuccess(machineId, directory, current)
                     _spawned.tryEmit(result.sessionId!!)
                 } else {
                     spawnError.value = when (result.code) {
@@ -487,12 +520,41 @@ class NewSessionViewModel(
         suppressSuggestions = true
         confirmCreateDirectory.value = false
         suggestions.value = emptyList()
+        clearGrokAutoSupport()
         form.update { it.copy(directory = path) }
         scheduleDirectoryWork()
     }
 
     private fun recentPathsFor(machineId: String?): List<String> =
         machineId?.let { prefsData.value.recentPaths[it] }.orEmpty()
+
+    /**
+     * Launch-preference restore (web restore effect on agent/machineId
+     * change): refills the agent-dependent defaults from the remembered
+     * `(machine, agent)` entry — or the sentinels when nothing is stored.
+     * The codex model/effort are validated again once the live catalog
+     * settles ([reconcileCodexSelections]); grok keeps its form field out of
+     * the remembered settings entirely.
+     */
+    private fun applyPreferredLaunchSettings(machineId: String?, agent: String) {
+        if (machineId == null) return
+        val resolved = resolvePreferredLaunchSettings(
+            agent,
+            prefsData.value.launchSettings[machineId]?.get(agent),
+        )
+        form.update { current ->
+            current.copy(
+                model = resolved.model,
+                effort = resolved.effort,
+                modelReasoningEffort = resolved.modelReasoningEffort,
+                permissionMode = if (usesSharedPermissionModeState(agent)) {
+                    resolved.permissionMode ?: "default"
+                } else {
+                    current.permissionMode
+                },
+            )
+        }
+    }
 
     private fun resolveDefaultDirectory(machineId: String, fallback: String) {
         defaultDirectoryJob?.cancel()
@@ -524,24 +586,31 @@ class NewSessionViewModel(
         suggestions.value = emptyList()
         cachedListing = null
         confirmCreateDirectory.value = false
+        clearGrokAutoSupport()
         // The seeded recent path is a pick, not typing — no dropdown.
         suppressSuggestions = true
-        val machine = machineStore.machines.value.firstOrNull { it.id == machineId }
-        val fallback = machine?.let(RemoteDirectoryPath::browseRoots)?.firstOrNull().orEmpty()
         form.update { current ->
             current.copy(
                 machineId = machineId,
                 model = "auto",
-                directory = if (resetDirectory) {
-                    fallback
-                } else {
-                    current.directory
-                },
             )
         }
-        if (resetDirectory) resolveDefaultDirectory(machineId, fallback)
+        // Remembered launch defaults follow the machine dimension too (web
+        // restore effect re-runs on machineId change) — unless a restored
+        // draft still owns the form.
+        if (!draftRestored) applyPreferredLaunchSettings(machineId, form.value.agent)
         refreshAgentAvailability(force = true)
         refreshCodexModelsIfNeeded()
+        if (resetDirectory) initializeMachineDirectory(machineId) else scheduleDirectoryWork()
+    }
+
+    /** Roster updates may seed a directory without replacing current launch choices. */
+    private fun initializeMachineDirectory(machineId: String) {
+        val machine = machineStore.machines.value.firstOrNull { it.id == machineId }
+        val fallback = machine?.let(RemoteDirectoryPath::browseRoots)?.firstOrNull().orEmpty()
+        suppressSuggestions = true
+        form.update { it.copy(directory = fallback) }
+        resolveDefaultDirectory(machineId, fallback)
         scheduleDirectoryWork()
     }
 
@@ -608,6 +677,14 @@ class NewSessionViewModel(
                     pathExistence.update { it + result.exists }
                     outsideWorkspaceRoots.update { currentOutside ->
                         (currentOutside - trimmed) + result.outsideWorkspaceRoots.orEmpty()
+                    }
+                    // Grok Auto gate rides the positive-existence probe (web
+                    // `shouldEnableGrokModelDiscovery`): unknown cwd → back to
+                    // unknown capability, existing cwd → probe once.
+                    if (result.exists[trimmed] == true) {
+                        refreshGrokAutoSupportIfNeeded()
+                    } else {
+                        clearGrokAutoSupport()
                     }
                 }
             }
@@ -697,6 +774,54 @@ class NewSessionViewModel(
         }
     }
 
+    /**
+     * Grok Auto-mode capability probe (web `useGrokModelsForCwd` +
+     * `shouldEnableGrokModelDiscovery`): fires only for the grok agent with a
+     * machine selected and a directory that exists. `null` (unknown) or `true`
+     * never disables; a literal `false` gates the option and resets an `auto`
+     * selection back to `default` (web `NewSession` reset effect).
+     */
+    private fun refreshGrokAutoSupportIfNeeded() {
+        val current = form.value
+        if (current.agent != "grok") return
+        val machineId = current.machineId ?: return
+        val cwd = current.trimmedDirectory
+        if (cwd.isEmpty()) return
+        if (pathExistence.value[cwd] != true) return
+        val target = machineId to cwd
+        if (grokAutoProbedFor == target) return
+        grokAutoProbedFor = target
+        grokAutoJob?.cancel()
+        grokAutoJob = scope.launch {
+            val supported = try {
+                val response = gateway.grokModels(machineId, cwd)
+                if (response.success) response.autoPermissionModeSupported else null
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                null
+            }
+            if (form.value.machineId != machineId) return@launch
+            grokAutoSupport.value = supported
+            if (supported == false) {
+                form.update { formValue ->
+                    if (formValue.agent == "grok" && formValue.permissionMode == "auto") {
+                        formValue.copy(permissionMode = "default")
+                    } else {
+                        formValue
+                    }
+                }
+            }
+        }
+    }
+
+    /** Back to unknown capability — new cwd/machine, or the cwd stopped existing. */
+    private fun clearGrokAutoSupport() {
+        grokAutoJob?.cancel()
+        grokAutoProbedFor = null
+        grokAutoSupport.value = null
+    }
+
     private fun reconcileCodexSelections(current: NewSessionForm): NewSessionForm {
         val loaded = codexModels.value as? CodexModelsUi.Loaded ?: return current
         var next = current
@@ -722,11 +847,18 @@ class NewSessionViewModel(
     private fun worktreeNameBlocks(current: NewSessionForm): Boolean =
         current.sessionType == SESSION_TYPE_WORKTREE && worktreeNameError(current.worktreeName) != null
 
-    private suspend fun persistOnSuccess(machineId: String, directory: String) {
+    private suspend fun persistOnSuccess(machineId: String, directory: String, created: NewSessionForm) {
         val updated = prefsData.value.let { stored ->
             stored.copy(
                 lastMachineId = machineId,
                 recentPaths = stored.recentPaths + (machineId to pushRecent(stored.recentPaths[machineId].orEmpty(), directory)),
+                // Remember this (machine, agent) dimension's launch defaults
+                // for the next prefill (web `savePreferredLaunchSettings` on
+                // every create-success path).
+                launchSettings = stored.launchSettings + (
+                    machineId to ((stored.launchSettings[machineId] ?: emptyMap()) +
+                        (created.agent to launchPreferenceFrom(created)))
+                    ),
             )
         }
         prefsData.value = updated
@@ -802,10 +934,20 @@ class NewSessionViewModel(
             null
         }
 
+        // Grok Auto gate (web PermissionField): only a literal false disables —
+        // null (not probed/omitted/failed) keeps the option fully available.
+        val grokAutoUnavailable = agent == "grok" && catalogs.grokAutoSupported == false
         val permission: PermissionUi = when {
             agent == "pi" || agent == "dsh" -> PermissionUi.Managed
             usesNativePermissionSelect(agent) -> PermissionUi.NativeSelect(
-                PermissionModes.forLaunch(agent).map { OptionItem(it.wireId, it.label) },
+                PermissionModes.forLaunch(agent).map { mode ->
+                    val unavailable = grokAutoUnavailable && mode == PermissionMode.Auto
+                    OptionItem(
+                        value = mode.wireId,
+                        label = mode.label + if (unavailable) " (${strings.grokAutoUnavailable})" else "",
+                        enabled = !unavailable,
+                    )
+                },
             )
             else -> PermissionUi.YoloToggle(hapiYoloNativeMode(agent)?.label)
         }
@@ -841,6 +983,7 @@ class NewSessionViewModel(
             effortOptions = if (agent == "claude") NewSessionCatalogs.CLAUDE_EFFORTS else null,
             reasoningEffortOptions = reasoningEffortOptions,
             permission = permission,
+            grokAutoUnavailable = grokAutoUnavailable,
             showCollaborationMode = agent == "codex",
             collaborationModeOptions = CodexCollaborationMode.entries.map { OptionItem(it.wireId, it.label) },
             showFastMode = showFastMode,

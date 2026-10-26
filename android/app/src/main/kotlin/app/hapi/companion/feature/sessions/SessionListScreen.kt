@@ -22,6 +22,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
@@ -30,6 +32,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -68,8 +71,11 @@ import app.hapi.protocol.wire.TodoProgress
  * outside; taps surface through [onOpenSession].
  *
  * Inventory (mirrors the web sidebar semantics):
- * - offline banner over snapshot data, machine filter chips (≥ 2 machines),
- *   pull-to-refresh, empty state;
+ * - offline banner over snapshot data, search box (relevance-ranked, port of
+ *   the web sidebar search), machine filter chips (≥ 2 machines),
+ *   pull-to-refresh, empty state + no-search-results state;
+ * - duplicate agent-session views are collapsed and fresh "new session"
+ *   stubs hidden (ViewModel pipeline, web sidebar parity);
  * - pinned section first (the sort already puts globalPinned/pinned rows on
  *   top; a header + divider make the boundary visible);
  * - per row: flavor brand icon + title, spinner while a turn is in flight,
@@ -144,6 +150,11 @@ fun SessionListScreen(
             if (state.isOffline) {
                 OfflineBanner()
             }
+            SearchField(
+                query = state.searchQuery,
+                onQueryChange = viewModel::setSearchQuery,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            )
             state.machineFilters.find { it.id == state.activeMachineFilter }?.let { filter ->
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(stringResource(R.string.sessions_filter_summary, machineFilterLabel(filter)),
@@ -159,7 +170,11 @@ fun SessionListScreen(
                     .weight(1f),
             ) {
                 if (state.rows.isEmpty()) {
-                    EmptyState(hasLoaded = state.hasLoaded, isOffline = state.isOffline)
+                    if (state.isSearching) {
+                        SearchEmptyState(query = state.searchQuery)
+                    } else {
+                        EmptyState(hasLoaded = state.hasLoaded, isOffline = state.isOffline)
+                    }
                 } else {
                     SessionRows(
                         rows = state.rows,
@@ -459,6 +474,56 @@ private fun OfflineBanner() {
             text = stringResource(R.string.sessions_offline_banner),
             style = MaterialTheme.typography.labelMedium,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+        )
+    }
+}
+
+/** Live search box — filters + relevance-ranks the list (web sidebar parity). */
+@Composable
+private fun SearchField(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = onQueryChange,
+        modifier = modifier,
+        singleLine = true,
+        placeholder = { Text(stringResource(R.string.sessions_search_hint)) },
+        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+        trailingIcon = {
+            if (query.isNotEmpty()) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = stringResource(R.string.sessions_search_clear),
+                    modifier = Modifier.clickable { onQueryChange("") },
+                )
+            }
+        },
+    )
+}
+
+/** Search active but nothing matched — distinct from the plain empty list. */
+@Composable
+private fun SearchEmptyState(query: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = stringResource(R.string.sessions_search_no_results, query),
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Spacer(modifier = Modifier.size(8.dp))
+        Text(
+            text = stringResource(R.string.sessions_search_no_results_hint),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }
