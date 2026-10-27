@@ -125,6 +125,12 @@ class MentionsTest {
         assertNull(Mentions.mentionQueryOf("/cmd"))
         assertNull(Mentions.mentionQueryOf("@a.b"))
         assertNull(Mentions.mentionQueryOf("@a b c"))
+        // Web trigger prefixes ['@', '/', '$']: a boundary-legal '/' or '$'
+        // word stops the backward scan, so the tail word routes to the
+        // slash/skill domain instead of joining a multi-word mention query.
+        assertNull(Mentions.mentionQueryOf("@ref /tmp"))
+        assertNull(Mentions.mentionQueryOf("@ref \$cost"))
+        assertEquals("/tmp", Mentions.findActiveWord("@ref /tmp", 8, 8)?.word)
     }
 
     @Test
