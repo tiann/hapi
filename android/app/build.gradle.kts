@@ -80,7 +80,7 @@ android {
             value.toInt().also { require(it > 0) { "hapiVersionCode must be positive" } }
         }.orElse(1).get()
         // Tracks the hapi CLI/hub release train.
-        versionName = providers.gradleProperty("hapiVersionName").orElse("0.31.2").get()
+        versionName = providers.gradleProperty("hapiVersionName").orElse("0.31.3").get()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

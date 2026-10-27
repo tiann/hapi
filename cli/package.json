@@ -1,6 +1,6 @@
 {
   "name": "@twsxtd/hapi",
-  "version": "0.31.2",
+  "version": "0.31.3",
   "description": "App for agentic coding - access coding agent anywhere",
   "author": "Kirill Dubovitskiy & weishu",
   "license": "AGPL-3.0-only",
@@ -25,13 +25,6 @@
       "default": "./src/runtime/embeddedAssets.stub.ts"
     }
   },
-  "optionalDependencies": {
-    "@twsxtd/hapi-darwin-arm64": "0.31.2",
-    "@twsxtd/hapi-darwin-x64": "0.31.2",
-    "@twsxtd/hapi-linux-arm64": "0.31.2",
-    "@twsxtd/hapi-linux-x64": "0.31.2",
-    "@twsxtd/hapi-win32-x64": "0.31.2"
-  },
   "scripts": {
     "postinstall": "node -e \"try{require('fs').chmodSync(require('path').join(__dirname,'bin','hapi.cjs'),0o755)}catch(e){}\"",
     "typecheck": "tsc --noEmit",
@@ -50,7 +43,8 @@
     "dev": "bun src/index.ts",
     "dev:local-server": "bun --env-file .env.dev-local-server src/index.ts",
     "dev:integration-test-env": "bun --env-file .env.integration-test src/index.ts",
-    "release-all": "bun run scripts/release-all.ts"
+    "release-all": "bun run scripts/release-all.ts",
+    "publish-npm": "bun run scripts/publish-npm.ts"
   },
   "dependencies": {
     "@hapi/protocol": "workspace:*",

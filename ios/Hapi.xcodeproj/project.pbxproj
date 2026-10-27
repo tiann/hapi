@@ -408,7 +408,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.31.2;
+				MARKETING_VERSION = 0.31.3;
 				PRODUCT_BUNDLE_IDENTIFIER = run.hapi.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -439,7 +439,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.31.2;
+				MARKETING_VERSION = 0.31.3;
 				PRODUCT_BUNDLE_IDENTIFIER = run.hapi.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -463,7 +463,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.31.2;
+				MARKETING_VERSION = 0.31.3;
 				PRODUCT_BUNDLE_IDENTIFIER = run.hapi.app.HapiNotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -488,7 +488,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 0.31.2;
+				MARKETING_VERSION = 0.31.3;
 				PRODUCT_BUNDLE_IDENTIFIER = run.hapi.app.HapiNotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
