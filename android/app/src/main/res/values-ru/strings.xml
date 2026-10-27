@@ -314,6 +314,16 @@
     <string name="session_status_subagent_error">Ошибка</string>
     <string name="session_status_task_empty">(пусто)</string>
 
+    <!-- Team roster panel (subagent team members / tasks / messages) -->
+    <string name="team_roster_title">Команда: %1$s</string>
+    <string name="team_roster_members_one">Участников: 1</string>
+    <string name="team_roster_members_many">Участников: %1$d</string>
+    <string name="team_roster_active_members">(активных: %1$d)</string>
+    <string name="team_roster_task_progress">Задачи: %1$d/%2$d</string>
+    <string name="team_roster_members_section">Участники</string>
+    <string name="team_roster_tasks_section">Задачи</string>
+    <string name="team_roster_messages_section">Последние сообщения</string>
+
     <!-- Chat snackbar notices (semantic ChatNotice resolution) -->
     <string name="chat_notice_no_transcription">На хабе не настроен провайдер транскрипции</string>
     <string name="chat_notice_mic_permission">Для диктовки нужен доступ к микрофону</string>

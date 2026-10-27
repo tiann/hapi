@@ -398,6 +398,11 @@ internal fun ChatScreen(
                 state.sessionStatus?.let { status ->
                     SessionStatusPanel(status = status)
                 }
+                // Roster of the session's subagent team; null while the
+                // session carries no team state.
+                state.teamRoster?.let { roster ->
+                    TeamRosterPanel(roster = roster)
+                }
                 Box(modifier = Modifier.weight(1f)) {
                     when {
                         state.isInitialLoading -> InitialLoading()

@@ -314,6 +314,16 @@
     <string name="session_status_subagent_error">Error</string>
     <string name="session_status_task_empty">(empty)</string>
 
+    <!-- Team roster panel (subagent team members / tasks / messages) -->
+    <string name="team_roster_title">Team: %1$s</string>
+    <string name="team_roster_members_one">1 member</string>
+    <string name="team_roster_members_many">%1$d members</string>
+    <string name="team_roster_active_members">(%1$d active)</string>
+    <string name="team_roster_task_progress">%1$d/%2$d tasks</string>
+    <string name="team_roster_members_section">Members</string>
+    <string name="team_roster_tasks_section">Tasks</string>
+    <string name="team_roster_messages_section">Recent Messages</string>
+
     <!-- Chat snackbar notices (semantic ChatNotice resolution) -->
     <string name="chat_notice_no_transcription">No transcription provider configured on hub</string>
     <string name="chat_notice_mic_permission">Microphone permission is needed for dictation</string>

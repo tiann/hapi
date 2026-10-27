@@ -321,6 +321,16 @@
     <string name="session_status_subagent_error">错误</string>
     <string name="session_status_task_empty">（空）</string>
 
+    <!-- Team roster panel (subagent team members / tasks / messages) -->
+    <string name="team_roster_title">团队：%1$s</string>
+    <string name="team_roster_members_one">%1$d 名成员</string>
+    <string name="team_roster_members_many">%1$d 名成员</string>
+    <string name="team_roster_active_members">（%1$d 个活跃）</string>
+    <string name="team_roster_task_progress">%1$d/%2$d 个任务</string>
+    <string name="team_roster_members_section">成员</string>
+    <string name="team_roster_tasks_section">任务</string>
+    <string name="team_roster_messages_section">近期消息</string>
+
     <!-- Chat snackbar notices (semantic ChatNotice resolution) -->
     <string name="chat_notice_no_transcription">Hub 未配置转录提供商</string>
     <string name="chat_notice_mic_permission">语音输入需要麦克风权限</string>
