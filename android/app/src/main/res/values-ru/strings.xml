@@ -291,6 +291,7 @@
     <string name="chat_notice_delete_failed">Не удалось удалить сессию</string>
     <string name="chat_notice_cancel_failed">Не удалось отменить сообщение в очереди</string>
     <string name="chat_notice_edit_kept_draft">Сообщение отменено — текущий черновик сохранён</string>
+    <string name="chat_notice_edit_schedule_dropped">Расписание убрано — вложения нельзя отправить по расписанию</string>
     <string name="chat_notice_already_delivered">Уже доставлено агенту</string>
     <string name="chat_notice_steer_failed">Не удалось направить сообщение</string>
     <string name="chat_notice_request_already_handled">Запрос уже обработан</string>

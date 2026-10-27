@@ -111,7 +111,9 @@ object ScheduleSend {
     /**
      * Web `scheduledTime.ts#formatScheduledTime` twin: an absolute fire time
      * like "Oct 25, 2:30 PM"; the year appears only when it differs from the
-     * current year in [zone]. Locale/zone/[now] injectable for tests.
+     * current year in [zone]. The hour cycle follows the locale like web Intl:
+     * 24-hour for the shipped ru/zh locales ("25 окт., 14:30"), 12-hour AM/PM
+     * elsewhere. Locale/zone/[now] injectable for tests.
      */
     fun formatScheduledTime(
         scheduledAt: Long,
@@ -121,7 +123,22 @@ object ScheduleSend {
     ): String {
         val fireTime = Instant.ofEpochMilli(scheduledAt).atZone(zone)
         val currentYear = Instant.ofEpochMilli(now()).atZone(zone).year
-        val pattern = if (fireTime.year == currentYear) "MMM d, h:mm a" else "MMM d, yyyy, h:mm a"
+        // Date section + hour cycle follow web Intl output per locale:
+        // ru "25 окт., 14:30", zh "10月25日 14:30", en "Oct 25, 2:30 PM".
+        val dateAndTimePattern = when (locale.language) {
+            "ru" -> "d MMM, HH:mm"
+            "zh" -> "M月d日 HH:mm"
+            else -> "MMM d, h:mm a"
+        }
+        val pattern = if (fireTime.year == currentYear) {
+            dateAndTimePattern
+        } else {
+            when (locale.language) {
+                "ru" -> "d MMM, yyyy, HH:mm"
+                "zh" -> "yyyy年M月d日 HH:mm"
+                else -> "MMM d, yyyy, h:mm a"
+            }
+        }
         return fireTime.format(DateTimeFormatter.ofPattern(pattern, locale))
     }
 }

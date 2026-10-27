@@ -70,6 +70,7 @@ import app.hapi.protocol.wire.objOrNull
 import app.hapi.protocol.wire.stringOrNull
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CompletableDeferred
@@ -249,6 +250,7 @@ sealed interface ChatNotice {
     data object AttachmentsUploading : ChatNotice
     data object ResumeFailed : ChatNotice
     data object QueuedEditKeptDraft : ChatNotice
+    data object QueuedEditScheduleDropped : ChatNotice
     data object QueuedAlreadyDelivered : ChatNotice
     data object PermissionAlreadyHandled : ChatNotice
 
@@ -483,7 +485,13 @@ class ChatViewModel(
 
     /** The composer clock-button state; collected by [ChatScreen]. */
     val pendingSchedule: StateFlow<PendingSchedule?> = mutablePendingSchedule.asStateFlow()
-    private var pendingScheduleExpiryJob: Job? = null
+    /**
+     * Expiry auto-clear job for the pending schedule pick. Atomic: set/clear
+     * race across the main thread (clock pick / send) and the edit-restore
+     * coroutine on [Dispatchers.Default] — a plain `var` could leak a stale
+     * job that clears a newer pick at its deadline.
+     */
+    private val pendingScheduleExpiryJob = AtomicReference<Job?>(null)
 
     /**
      * Composer attachment tray (B-M3f). The screen feeds prepared picks in
@@ -1130,8 +1138,7 @@ class ChatViewModel(
      * never expire on a timer.
      */
     fun setPendingSchedule(pending: PendingSchedule?) {
-        pendingScheduleExpiryJob?.cancel()
-        pendingScheduleExpiryJob = null
+        pendingScheduleExpiryJob.getAndSet(null)?.cancel()
         mutablePendingSchedule.value = pending
         if (!ScheduleSend.shouldAutoClearPendingSchedule(pending)) return
         val ms = (pending as PendingSchedule.Absolute).ms
@@ -1140,10 +1147,10 @@ class ChatViewModel(
             mutablePendingSchedule.value = null
             return
         }
-        pendingScheduleExpiryJob = scope.launch {
+        pendingScheduleExpiryJob.set(scope.launch {
             delay(remaining)
             mutablePendingSchedule.value = null
-        }
+        })
     }
 
     /**
@@ -1207,7 +1214,10 @@ class ChatViewModel(
         scope.launch {
             try {
                 drafts?.let { runCatching { it.clear(sessionId) } }
-                if (attachmentMetadata == null && (text == "/clear" || text == "/new") &&
+                // A scheduled /clear|/new goes out as a queued message like any
+                // other scheduled text (web gates the shortcut the same way).
+                if (attachmentMetadata == null && scheduledAt == null &&
+                    (text == "/clear" || text == "/new") &&
                     sessionStore.sessionDetail(sessionId).first()?.metadata?.capabilities?.concurrentClients == true) {
                     sendInFlight.value = true
                     try {
@@ -1543,10 +1553,19 @@ class ChatViewModel(
      * meanwhile). B-M16b: a future `scheduledAt` re-arms the pending schedule
      * as an absolute pick so a re-send keeps (or adjusts) the fire time;
      * past/null clears it so the re-send goes out immediately (web
-     * `computeEditPendingSchedule`, restored unconditionally like the web's
-     * onEdit → updatePendingSchedule).
+     * `computeEditPendingSchedule`). The restore is guarded twice, like the
+     * web's snapshot+revision check in `onEdit`: a pick made during the
+     * cancel round-trip wins over the restore, and the restore is skipped
+     * (with a notice) when the attachment tray is non-empty — a schedule
+     * cannot carry attachments on the wire and the clock button is disabled
+     * while the tray is non-empty, so re-arming would arm a state the
+     * operator can neither see nor clear, and the send would crash on the
+     * scheduledAt+attachments invariant.
      */
     fun editQueuedMessage(messageId: String) {
+        // Snapshot on the calling thread: a pick re-made after the tap (while
+        // the cancel is in flight) must win over the restore below.
+        val pickAtEdit = mutablePendingSchedule.value
         scope.launch {
             val store = awaitWindowStore()
             val row = store.state.value.messages.firstOrNull { it.id == messageId } ?: return@launch
@@ -1561,7 +1580,13 @@ class ChatViewModel(
                     } else {
                         _events.tryEmit(ChatEvent.Notice(ChatNotice.QueuedEditKeptDraft))
                     }
-                    setPendingSchedule(restoredSchedule)
+                    if (mutablePendingSchedule.value == pickAtEdit) {
+                        if (restoredSchedule != null && attachments.items.value.isNotEmpty()) {
+                            _events.tryEmit(ChatEvent.Notice(ChatNotice.QueuedEditScheduleDropped))
+                        } else {
+                            setPendingSchedule(restoredSchedule)
+                        }
+                    }
                 }
                 "invoked" -> _events.tryEmit(ChatEvent.Notice(ChatNotice.QueuedAlreadyDelivered))
                 else -> Unit

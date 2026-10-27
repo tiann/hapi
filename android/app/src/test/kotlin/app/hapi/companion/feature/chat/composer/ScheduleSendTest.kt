@@ -191,9 +191,26 @@ class ScheduleSendTest {
             "Dec 31, 11:30 PM",
             ScheduleSend.formatScheduledTime(fire, ZoneOffset.UTC, Locale.US, now = { now }),
         )
+    }
+
+    @Test
+    fun `formatScheduledTime uses the 24-hour cycle and locale date order for ru and zh`() {
+        val now = Instant.parse("2026-06-01T00:00:00Z").toEpochMilli()
+        val fire = Instant.parse("2026-10-25T14:30:00Z").toEpochMilli()
         assertEquals(
-            "Jan 1, 2027, 8:30 AM",
-            ScheduleSend.formatScheduledTime(fire, ZoneId.of("Asia/Tokyo"), Locale.US, now = { now }),
+            "25 окт., 14:30",
+            ScheduleSend.formatScheduledTime(fire, ZoneOffset.UTC, Locale("ru"), now = { now }),
+        )
+        assertEquals(
+            "10月25日 14:30",
+            ScheduleSend.formatScheduledTime(fire, ZoneOffset.UTC, Locale.SIMPLIFIED_CHINESE, now = { now }),
+        )
+        assertEquals(
+            "25 окт., 2027, 14:30",
+            ScheduleSend.formatScheduledTime(
+                Instant.parse("2027-10-25T14:30:00Z").toEpochMilli(),
+                ZoneOffset.UTC, Locale("ru"), now = { now },
+            ),
         )
     }
 }

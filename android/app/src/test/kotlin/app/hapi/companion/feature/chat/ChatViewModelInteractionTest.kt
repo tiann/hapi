@@ -1161,6 +1161,79 @@ class ChatViewModelInteractionTest {
         harness.viewModel.pendingSchedule.first { it == null }
     }
 
+    @Test
+    fun `edit drops the schedule restore while attachments sit in the tray`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+        harness.window().ingestSseMessages(
+            listOf(
+                app.hapi.protocol.window.WindowMessage(
+                    queuedServerRow("srv-6", "l-6", "with tray", scheduledAt = 77_777),
+                ),
+            ),
+        )
+        harness.viewModel.queuedRows.first { rows -> rows.any { it.id == "srv-6" } }
+        // Any chip (even mid-upload) blocks the restore: the clock button is
+        // disabled with a non-empty tray, so an armed pick would be invisible
+        // and un-clearable, and the send would trip the scheduled+attachments
+        // wire invariant.
+        harness.viewModel.attachments.add(preparedShot())
+
+        // Subscribe before the edit so the zero-replay event flow keeps it.
+        val notice = async {
+            harness.viewModel.events.filterIsInstance<ChatEvent.Notice>().first().notice
+        }
+        harness.viewModel.editQueuedMessage("srv-6")
+        harness.viewModel.composer.first { it.text == "with tray" }
+        assertNull(harness.viewModel.pendingSchedule.value)
+        assertEquals(ChatNotice.QueuedEditScheduleDropped, notice.await())
+    }
+
+    @Test
+    fun `edit keeps a schedule pick re-made while the edit is in flight`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.viewModel.start()
+        harness.window().ingestSseMessages(
+            listOf(
+                app.hapi.protocol.window.WindowMessage(
+                    queuedServerRow("srv-7", "l-7", "mid-flight pick", scheduledAt = 88_888),
+                ),
+            ),
+        )
+        harness.viewModel.queuedRows.first { rows -> rows.any { it.id == "srv-7" } }
+
+        // The edit snapshots the pick at tap time (null); the operator
+        // re-picks on the clock while the cancel round-trip is in flight.
+        harness.viewModel.editQueuedMessage("srv-7")
+        harness.viewModel.setPendingSchedule(PendingSchedule.Preset("+1h"))
+
+        harness.viewModel.composer.first { it.text == "mid-flight pick" }
+        assertEquals(PendingSchedule.Preset("+1h"), harness.viewModel.pendingSchedule.value)
+    }
+
+    @Test
+    fun `a scheduled clear queues instead of the concurrent shortcut`() = runTest {
+        val concurrent = detail().copy(
+            metadata = SessionMetadata(
+                path = "/repo/app", host = "devbox", flavor = "claude",
+                capabilities = SessionCapabilities(concurrentClients = true),
+            ),
+        )
+        val harness = InteractionHarness(this, concurrent)
+        harness.viewModel.start()
+
+        harness.viewModel.setComposerText("/clear")
+        harness.viewModel.setPendingSchedule(PendingSchedule.Preset("+5m"))
+        harness.viewModel.sendMessage()
+
+        // With a schedule pending the /clear goes out as a queued scheduled
+        // message (web gates the shortcut on scheduledAt == null); the fake's
+        // clearConversation throws, so a regression would surface as no send.
+        val (_, request) = harness.api.sendCalls.first { it.isNotEmpty() }.single()
+        assertNotNull(request.scheduledAt)
+        assertEquals("queue", request.deliveryMode)
+    }
+
     // --------------------------------------------------------- permissions --
 
     private fun approvedBodies(harness: InteractionHarness): List<String> =
