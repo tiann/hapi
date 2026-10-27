@@ -331,6 +331,17 @@
     <string name="team_roster_tasks_section">任务</string>
     <string name="team_roster_messages_section">近期消息</string>
 
+    <!-- Conversation outline panel (jump-to-message list) -->
+    <string name="outline_open">会话大纲</string>
+    <string name="outline_close">关闭大纲</string>
+    <string name="outline_title">大纲</string>
+    <string name="outline_load_older">加载更早</string>
+    <string name="outline_empty">已加载消息中暂无大纲项</string>
+    <string name="outline_search_hint">搜索大纲</string>
+    <string name="outline_search_label">搜索大纲条目</string>
+    <string name="outline_search_results">%1$d/%2$d 个条目</string>
+    <string name="outline_no_search_results">没有匹配的大纲条目</string>
+
     <!-- Chat snackbar notices (semantic ChatNotice resolution) -->
     <string name="chat_notice_no_transcription">Hub 未配置转录提供商</string>
     <string name="chat_notice_mic_permission">语音输入需要麦克风权限</string>

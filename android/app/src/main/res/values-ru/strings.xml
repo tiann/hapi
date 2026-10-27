@@ -324,6 +324,17 @@
     <string name="team_roster_tasks_section">Задачи</string>
     <string name="team_roster_messages_section">Последние сообщения</string>
 
+    <!-- Conversation outline panel (jump-to-message list) -->
+    <string name="outline_open">План диалога</string>
+    <string name="outline_close">Закрыть план</string>
+    <string name="outline_title">План</string>
+    <string name="outline_load_older">Загрузить более ранние</string>
+    <string name="outline_empty">В загруженных сообщениях нет элементов плана</string>
+    <string name="outline_search_hint">Поиск по плану</string>
+    <string name="outline_search_label">Поиск элементов плана</string>
+    <string name="outline_search_results">%1$d из %2$d элементов</string>
+    <string name="outline_no_search_results">Нет подходящих элементов плана</string>
+
     <!-- Chat snackbar notices (semantic ChatNotice resolution) -->
     <string name="chat_notice_no_transcription">На хабе не настроен провайдер транскрипции</string>
     <string name="chat_notice_mic_permission">Для диктовки нужен доступ к микрофону</string>

@@ -324,6 +324,17 @@
     <string name="team_roster_tasks_section">Tasks</string>
     <string name="team_roster_messages_section">Recent Messages</string>
 
+    <!-- Conversation outline panel (jump-to-message list) -->
+    <string name="outline_open">Conversation outline</string>
+    <string name="outline_close">Close outline</string>
+    <string name="outline_title">Outline</string>
+    <string name="outline_load_older">Load earlier</string>
+    <string name="outline_empty">No outline items in loaded messages</string>
+    <string name="outline_search_hint">Search outline</string>
+    <string name="outline_search_label">Search outline items</string>
+    <string name="outline_search_results">%1$d of %2$d items</string>
+    <string name="outline_no_search_results">No matching outline items</string>
+
     <!-- Chat snackbar notices (semantic ChatNotice resolution) -->
     <string name="chat_notice_no_transcription">No transcription provider configured on hub</string>
     <string name="chat_notice_mic_permission">Microphone permission is needed for dictation</string>
