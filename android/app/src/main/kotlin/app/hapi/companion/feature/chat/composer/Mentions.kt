@@ -161,13 +161,18 @@ object Mentions {
     /**
      * Cursor-aware mirror of `findActiveWord.ts` — returns the prefixed word
      * under a collapsed cursor, or null. A bare prefix (just `@`) still returns
-     * a result so suggestions pop immediately.
+     * a result so suggestions pop immediately. The default prefix set mirrors
+     * the web trigger set `['@', '/', '$']` (`HappyComposer.tsx`): a boundary-
+     * legal `/` or `$` word stops the backward scan too, so `@ref /tmp` yields
+     * the `/tmp` word (routed to the slash/skill domain) instead of swallowing
+     * the whole `@ref /tmp` span as a mention query — [mentionQueryOf] still
+     * gates on the `@` prefix.
      */
     fun findActiveWord(
         content: String,
         selectionStart: Int,
         selectionEnd: Int,
-        prefixes: Set<Char> = setOf('@'),
+        prefixes: Set<Char> = setOf('@', '/', '$'),
     ): ActiveWord? {
         // Only detect when the cursor is at a single point (no selection).
         if (selectionStart != selectionEnd) return null
@@ -289,9 +294,18 @@ object Mentions {
         return sb.toString()
     }
 
+    /**
+     * JS `/\s+/` equivalent: `\s` there matches Unicode whitespace (NBSP,
+     * U+3000 ideographic space, U+2028/2029, U+FEFF, ...) which Kotlin's
+     * default ASCII `\s` does not — the explicit class keeps collapsing
+     * byte-identical to the web for CJK titles.
+     */
+    private val JS_WHITESPACE_REGEX =
+        Regex("[\\t\\n\\u000B\\u000C\\r \\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]+")
+
     /** Whitespace-normalize + trim + 120-grapheme cap (`sanitizeSessionReferenceTitle`). */
     internal fun sanitizeSessionReferenceTitle(sessionTitle: String): String =
-        truncateGraphemes(sessionTitle.replace(Regex("\\s+"), " ").trim(), 120)
+        truncateGraphemes(sessionTitle.replace(JS_WHITESPACE_REGEX, " ").trim(), 120)
 
     /** `JSON.stringify` string quoting (V8 escape set, lowercase `\u00xx`). */
     internal fun jsonQuote(value: String): String {
