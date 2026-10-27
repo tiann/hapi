@@ -344,6 +344,9 @@ internal fun ChatScreen(
                         onEdit = viewModel::editQueuedMessage,
                         onCancel = viewModel::cancelQueuedMessage,
                     )
+                    // Context-remaining readout; rides the same strip as the
+                    // mode chip and hides until the thread reports usage.
+                    ContextUsageChip(indicator = state.contextUsage)
                     // Web StatusBar parity: the current permission mode rides
                     // directly above the composer; tapping opens the config
                     // sheet that hosts the switcher (the web span itself is

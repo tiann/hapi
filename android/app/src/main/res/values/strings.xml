@@ -577,6 +577,9 @@
     <string name="chat_history_continue">Continue loading history</string>
     <string name="chat_history_load">Load older messages</string>
     <string name="chat_history_beginning">Beginning of conversation</string>
+    <string name="chat_context_usage">ctx %1$s · %2$d%% left</string>
+    <string name="chat_context_usage_no_window">ctx %1$s</string>
+    <string name="chat_context_details">Context details</string>
     <string name="chat_message_details">Message details</string>
     <string name="chat_message_details_close">Close</string>
     <string name="chat_copy_full_content">Copy full content</string>
