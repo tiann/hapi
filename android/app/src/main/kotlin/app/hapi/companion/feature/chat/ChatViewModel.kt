@@ -15,6 +15,7 @@ import app.hapi.companion.feature.chat.composer.PendingSchedule
 import app.hapi.companion.feature.chat.composer.ScheduleSend
 import app.hapi.companion.feature.chat.composer.SlashCommands
 import app.hapi.companion.feature.chat.composer.appendTranscript
+import app.hapi.companion.feature.chat.share.ShareTurnSessionInfo
 import app.hapi.companion.ui.markdown.MarkdownRenderCache
 import app.hapi.protocol.chat.AgentTextBlock
 import app.hapi.protocol.chat.AgentReasoningBlock
@@ -170,6 +171,8 @@ data class ChatUiState(
     val messageAggregates: Map<String, AggregatedAssistantMeta> = emptyMap(),
     /** Context-remaining readout for the composer strip; null until usage arrives. */
     val contextUsage: ContextUsageIndicator? = null,
+    /** Session facts cited by the shared-turn card header. */
+    val shareTurnInfo: ShareTurnSessionInfo? = null,
 )
 
 /** Composer bar state (M3a). */
@@ -2240,6 +2243,7 @@ class ChatViewModel(
             readThroughRevision = window.readThroughRevision,
             renderedReadState = SessionReadState.merge(inputs.detail?.readState, inputs.summary?.readState),
             contextUsage = contextUsage,
+            shareTurnInfo = buildShareTurnInfo(inputs),
         )
     }
 
@@ -2279,11 +2283,7 @@ class ChatViewModel(
             ?: sessionId.take(8)
 
         val flavor = detail?.metadata?.flavor ?: summary?.metadata?.flavor
-        val machineId = detail?.metadata?.machineId ?: summary?.metadata?.machineId
-        val machineLabel = machineId?.let { id ->
-            val metadata = inputs.machines.firstOrNull { it.id == id }?.metadata
-            metadata?.displayName?.takeIf { it.isNotBlank() } ?: metadata?.host ?: id.take(8)
-        }
+        val machineLabel = machineDisplayName(inputs)
         val worktree = (detail?.metadata?.worktree ?: summary?.metadata?.worktree)
             ?.let { it.name.ifBlank { it.branch } }
         val subtitle = listOfNotNull(flavor?.let(Flavors::label), machineLabel, worktree)
@@ -2307,6 +2307,47 @@ class ChatViewModel(
         metadata.summary?.text?.takeIf { it.isNotEmpty() }?.let { return it }
         return metadata.path.split('/').lastOrNull { it.isNotEmpty() }
     }
+
+    /** Display name of the machine a session runs on; null when unknown. */
+    private fun machineDisplayName(inputs: PipelineInputs): String? {
+        val detail = inputs.detail
+        val summary = inputs.summary
+        val machineId = detail?.metadata?.machineId ?: summary?.metadata?.machineId
+        return machineId?.let { id ->
+            val metadata = inputs.machines.firstOrNull { it.id == id }?.metadata
+            metadata?.displayName?.takeIf { it.isNotBlank() } ?: metadata?.host ?: id.take(8)
+        }
+    }
+
+    /**
+     * Session facts for the shared-turn card header. The title cascade
+     * matches the top bar; every other fact may be absent and simply drops
+     * out of the card caption.
+     */
+    private fun buildShareTurnInfo(inputs: PipelineInputs): ShareTurnSessionInfo {
+        val detail = inputs.detail
+        val summary = inputs.summary
+        return ShareTurnSessionInfo(
+            title = detail?.let(::detailTitle)
+                ?: summary?.let(SessionListViewModel::sessionTitle)
+                ?: sessionId.take(8),
+            flavor = detail?.metadata?.flavor ?: summary?.metadata?.flavor,
+            machineLabel = machineDisplayName(inputs),
+            lastActiveAtMs = positiveTimestamp(
+                detail?.activeAt ?: detail?.updatedAt ?: detail?.createdAt,
+            ) ?: positiveTimestamp(summary?.activeAt ?: summary?.updatedAt),
+            modelId = detail?.model ?: summary?.model,
+            modelReasoningEffort = detail?.modelReasoningEffort ?: summary?.modelReasoningEffort,
+            effort = detail?.effort ?: summary?.effort,
+            serviceTier = detail?.serviceTier,
+            createdAtMs = positiveTimestamp(detail?.createdAt),
+            updatedAtMs = positiveTimestamp(detail?.updatedAt),
+            worktreeBranch = (detail?.metadata?.worktree ?: summary?.metadata?.worktree)
+                ?.let { it.name.ifBlank { it.branch } },
+        )
+    }
+
+    private fun positiveTimestamp(value: Long?): Long? = value?.takeIf { it > 0 }
 
     private companion object {
         /** Web-equivalent render batching for the pipeline (the "sample(100ms)"). */
