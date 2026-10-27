@@ -61,6 +61,16 @@ class RunnerSkewChromeTest {
     private val healthyCaps = listOf("agent-availability", "cursor-chat-store-status")
 
     @Test
+    fun `friendlyRestartError surfaces the hub error field from embedded bodies`() {
+        assertEquals(
+            "runner restart is not available",
+            friendlyRestartError("HTTP 503: {\"error\":\"runner restart is not available\",\"code\":\"UNAVAILABLE\"}"),
+        )
+        assertEquals("HTTP 500: not json", friendlyRestartError("HTTP 500: not json"))
+        assertEquals("", friendlyRestartError(null))
+    }
+
+    @Test
     fun `rows list only skewed machines with host fallback and restart gating`() = runTest {
         val machines = MutableStateFlow(
             listOf(

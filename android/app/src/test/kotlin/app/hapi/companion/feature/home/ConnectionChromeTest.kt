@@ -120,6 +120,29 @@ class ConnectionChromeTest {
     }
 
     @Test
+    fun `a resync restart after the debounce keeps the banner up without blinking`() = runTest {
+        val failure = MutableStateFlow<ConnectionFailure?>(null)
+        val chrome = chromeFor(failure)
+        chrome.notice.test {
+            assertNull(awaitItem())
+            chrome.onResyncEvent(true)
+            advanceTimeBy(300)
+            runCurrent()
+            assertEquals(GlobalConnectionNotice.Syncing, awaitItem())
+            // Second resync starts while the banner is already shown: the web
+            // reshuffles timers with isSyncing staying true — no blink.
+            chrome.onResyncEvent(true)
+            advanceTimeBy(5_000)
+            runCurrent()
+            expectNoEvents()
+            chrome.onResyncEvent(false)
+            chrome.onResyncEvent(false)
+            runCurrent()
+            assertNull(awaitItem())
+        }
+    }
+
+    @Test
     fun `overlapping syncs keep one episode and restart the debounce`() = runTest {
         val failure = MutableStateFlow<ConnectionFailure?>(null)
         val chrome = chromeFor(failure)

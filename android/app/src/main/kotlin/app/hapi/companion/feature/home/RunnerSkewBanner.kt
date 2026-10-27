@@ -3,6 +3,9 @@ package app.hapi.companion.feature.home
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -21,9 +24,13 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
+import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.RunnerSkew
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -133,7 +140,7 @@ class RunnerSkewChrome(
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: Exception) {
-                restartError.value = error.message ?: ""
+                restartError.value = friendlyRestartError(error.message)
             } finally {
                 if (restartingId.value == machineId) restartingId.value = null
             }
@@ -147,9 +154,31 @@ class RunnerSkewChrome(
 }
 
 /**
+ * Surface the hub's own error string from an ApiError message: they embed the
+ * raw body (`HTTP 503: {"error":…,"code":…}`) while the web shows the parsed
+ * `error` field. Falls back to the raw message when nothing parses.
+ */
+internal fun friendlyRestartError(message: String?): String {
+    if (message.isNullOrBlank()) return ""
+    val bodyStart = message.indexOf('{')
+    if (bodyStart >= 0) {
+        runCatching {
+            val obj = HapiJson.parseToJsonElement(message.substring(bodyStart)).jsonObject
+            (obj["error"] ?: obj["message"])?.jsonPrimitive?.contentOrNull
+                ?.takeIf { it.isNotBlank() }
+                ?.let { return it }
+        }
+    }
+    return message
+}
+
+/**
  * The skew banner (slice C-②): expanded amber card listing skewed hosts with
  * a manual restart exit, or a one-line minimized chip. Hidden entirely while
- * snoozed or when nothing is skewed.
+ * snoozed or when nothing is skewed. Declared omissions vs the web card: the
+ * handoff hint paragraph and the disabled-restart button tooltips (hover-only
+ * affordances; the inline needs-newer-binary/needs-supervisor hints cover the
+ * information).
  */
 @Composable
 fun RunnerSkewBanner(chrome: RunnerSkewChrome, modifier: Modifier = Modifier) {
@@ -187,7 +216,15 @@ fun RunnerSkewBanner(chrome: RunnerSkewChrome, modifier: Modifier = Modifier) {
             shape = MaterialTheme.shapes.medium,
             modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
         ) {
-            Column(modifier = Modifier.padding(12.dp)) {
+            Column(
+                // Web caps the expanded card at 40vh with internal scrolling;
+                // a fixed cap keeps many skewed hosts from pushing the
+                // session list off-screen.
+                modifier = Modifier
+                    .heightIn(max = 320.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(12.dp),
+            ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = stringResource(R.string.runner_skew_summary_title, state.rows.size),

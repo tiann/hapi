@@ -67,6 +67,13 @@ class ConnectionChrome(
      * Depth-counted: overlapping resyncs keep one episode open; every start
      * restarts the debounce/max timers (web `doStartSync` clears and
      * reschedules on each call), an end with others still running does not.
+     *
+     * Declared divergence from the web's display policy: `useSyncingState`
+     * only shows for the first connect's force resync and for resyncs started
+     * within 30 s of returning from the background; here every resync episode
+     * (each session pipe's first connect, foreground network flaps) opens a
+     * debounced episode — a strictly more-eager surface, still bounded by the
+     * 300 ms debounce and the 10 s cap.
      */
     fun onResyncEvent(active: Boolean) {
         synchronized(this) {
@@ -83,17 +90,30 @@ class ConnectionChrome(
         }
     }
 
+    /**
+     * Last value this pipeline emitted downstream (volatile: the pre-restart
+     * block reads it after transformLatest cancelled it).
+     */
+    @Volatile private var syncNoticeShown = false
+
     @OptIn(ExperimentalCoroutinesApi::class)
     private val syncingNotice: Flow<Boolean> =
         syncActivity.transformLatest { activity ->
                 if (!activity.active) {
+                    syncNoticeShown = false
                     emit(false)
                 } else {
-                    emit(false)
+                    // A restart while the banner was already shown keeps it
+                    // shown (web `doStartSync` reshuffles timers with
+                    // isSyncing staying true — no blink); only a fresh
+                    // episode debounces up from hidden.
+                    if (!syncNoticeShown) emit(false)
                     delay(SYNC_DEBOUNCE_MS)
+                    syncNoticeShown = true
                     emit(true)
                     delay(SYNC_MAX_DURATION_MS)
                     // Stuck-spinner guard: never show longer than the cap.
+                    syncNoticeShown = false
                     emit(false)
                 }
             }

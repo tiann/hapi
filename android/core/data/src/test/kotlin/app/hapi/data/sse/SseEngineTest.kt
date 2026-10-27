@@ -574,18 +574,21 @@ class SseEngineTest {
     }
 
     @Test
-    fun `a codeless failure is attributed Closed and the failure survives backoff republishes`() = runTest {
+    fun `a codeless failure is attributed TransportError and the failure survives backoff republishes`() = runTest {
+        // DNS/TLS/socket errors carry no HTTP code (mobile's dominant outage
+        // shape); the web maps any onerror to transport-error, so a null-code
+        // Failure must not degrade to a "connection closed" label.
         val h = harness()
         val key = SseSubscriptionKey.Global
         h.engine.subscribe(key)
         h.awaitOpen().fail(null)
         runCurrent()
-        assertEquals(ConnectionFailure(DisconnectReason.Closed), h.engine.connectionState(key).value.lastFailure)
+        assertEquals(ConnectionFailure(DisconnectReason.TransportError, null), h.engine.connectionState(key).value.lastFailure)
 
         // The label rides along while the outage continues ( Connecting →
         // Backoff republishes), until a handshake succeeds.
         h.awaitOpen().connect()
         runCurrent()
-        assertEquals(ConnectionFailure(DisconnectReason.Closed), h.engine.connectionState(key).value.lastFailure)
+        assertEquals(ConnectionFailure(DisconnectReason.TransportError, null), h.engine.connectionState(key).value.lastFailure)
     }
 }

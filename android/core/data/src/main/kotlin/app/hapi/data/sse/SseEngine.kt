@@ -314,6 +314,14 @@ class SseEngine(
         @Volatile var failureCode: Int? = null
 
         /**
+         * Any transport failure was seen this attempt — with or without an
+         * HTTP code. Codeless failures (DNS/TLS/socket errors, the dominant
+         * mobile outage shape) must still attribute as a transport error like
+         * the web's unconditional onerror → transport-error, not as Closed.
+         */
+        @Volatile var sawFailure = false
+
+        /**
          * Set by whoever ends the attempt (watchdog / resume check before
          * cancelling, transport failure, clean EOF) — the last writer wins,
          * resolved at the end of [runAttempt] when null.
@@ -343,7 +351,10 @@ class SseEngine(
                     when (transportEvent) {
                         TransportEvent.Connected -> state.lastActivityAtMs = nowMs()
                         is TransportEvent.Event -> handleRawEvent(key, sub, transportEvent.event, state)
-                        is TransportEvent.Failure -> state.failureCode = transportEvent.code
+                        is TransportEvent.Failure -> {
+                            state.sawFailure = true
+                            state.failureCode = transportEvent.code
+                        }
                     }
                 }
             } catch (cancellation: CancellationException) {
@@ -361,7 +372,9 @@ class SseEngine(
         resumeCheck.cancel()
         if (state.endReason == null) {
             state.endReason = when {
-                state.failureCode != null -> DisconnectReason.TransportError
+                // Any transport failure — coded or codeless — is a transport
+                // error; only a clean EOF with no failure attributes Closed.
+                state.sawFailure -> DisconnectReason.TransportError
                 else -> DisconnectReason.Closed
             }
         }
