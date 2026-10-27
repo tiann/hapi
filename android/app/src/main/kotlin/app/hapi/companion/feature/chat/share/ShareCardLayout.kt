@@ -52,7 +52,7 @@ data class ShareCardBubble(
     val radius: Float,
 )
 
-/** Fully positioned card: draw lines, then bubbles' rounded rects, then the footer rule. */
+/** Fully positioned card: draw bubbles' rounded rects, then text lines, then the footer rule. */
 data class ShareCard(
     val width: Float,
     val height: Float,
@@ -66,9 +66,10 @@ data class ShareCard(
 /**
  * Layout engine for the shared card: wraps and positions every text run.
  * Greedy word wrap with character fallback keeps unspaced scripts and long
- * tokens inside the card; body segments are placed whole and the card stops
- * early (marking itself truncated) once the height budget runs out, so huge
- * turns cannot produce an unbounded bitmap.
+ * tokens inside the card; body segments are placed whole while the height
+ * budget allows, an oversize leading segment is clipped to the lines that
+ * fit, and the card stops early (marking itself truncated) once the budget
+ * runs out, so huge turns cannot produce an unbounded bitmap.
  */
 object ShareCardLayout {
 
@@ -126,8 +127,10 @@ object ShareCardLayout {
     /**
      * Position the whole card. The header (title + caption line) always
      * renders; body segments are added while they fit whole under
-     * [maxHeightPx] (footer space reserved), then an ellipsis run closes a
-     * cut card. [footerText] renders right-aligned under the closing rule.
+     * [maxHeightPx] (footer space reserved), a lone segment too tall for
+     * the whole budget is clipped to the lines that fit, and an ellipsis
+     * run closes a cut card. [footerText] renders right-aligned under the
+     * closing rule.
      */
     fun layoutShareCard(
         title: String,
@@ -177,9 +180,24 @@ object ShareCardLayout {
                     truncated = true
                     break
                 }
+                var placedLines = wrapped
+                if (!placedAnyBody && y + gap + segmentHeight > bodyBudget) {
+                    // A single oversize leading segment is clipped to the
+                    // lines that fit (reserving space for the ellipsis run)
+                    // instead of overflowing the cap, so the closing rule
+                    // and footer survive inside [maxHeightPx].
+                    val paddingY = if (isUser) 2 * metrics.bubblePaddingY else 0f
+                    val clipBudget = bodyBudget - (y + gap) -
+                        (metrics.segmentGap + bodyLineHeight) - paddingY
+                    val fitCount = (clipBudget / bodyLineHeight).toInt().coerceAtLeast(1)
+                    placedLines = wrapped.take(fitCount)
+                    truncated = true
+                }
+                val placedHeight = placedLines.size * bodyLineHeight +
+                    if (isUser) 2 * metrics.bubblePaddingY else 0f
                 y += gap
                 if (isUser) {
-                    val widest = wrapped.maxOf { measurer.measureText(it, style) }
+                    val widest = placedLines.maxOf { measurer.measureText(it, style) }
                     val bubbleWidth = (widest + 2 * metrics.bubblePaddingX)
                         .coerceAtMost(contentWidth)
                     val bubbleLeft = metrics.width - metrics.padding - bubbleWidth
@@ -187,10 +205,10 @@ object ShareCardLayout {
                         left = bubbleLeft,
                         top = y,
                         right = bubbleLeft + bubbleWidth,
-                        bottom = y + segmentHeight,
+                        bottom = y + placedHeight,
                         radius = metrics.bubbleRadius,
                     )
-                    wrapped.forEachIndexed { index, piece ->
+                    placedLines.forEachIndexed { index, piece ->
                         lines += ShareCardLine(
                             piece, style,
                             bubbleLeft + metrics.bubblePaddingX,
@@ -198,12 +216,13 @@ object ShareCardLayout {
                         )
                     }
                 } else {
-                    wrapped.forEachIndexed { index, piece ->
+                    placedLines.forEachIndexed { index, piece ->
                         lines += ShareCardLine(piece, style, metrics.padding, y + index * bodyLineHeight)
                     }
                 }
-                y += segmentHeight
+                y += placedHeight
                 placedAnyBody = true
+                if (truncated) break
             }
             if (truncated) {
                 y += metrics.segmentGap

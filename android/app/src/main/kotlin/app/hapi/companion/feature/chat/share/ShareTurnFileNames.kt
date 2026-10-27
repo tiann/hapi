@@ -26,13 +26,15 @@ object ShareTurnFileNames {
     private val STAMP_FORMAT = DateTimeFormatter.ofPattern("yyyyMMddHHmmss", Locale.US)
 
     /** Fallback segment when the title carries no usable characters. */
-    const val FALLBACK_TITLE = "Shared-turn"
+    const val FALLBACK_TITLE = "Shared turn"
 
     /**
      * Reduce a session title to a file-name-safe segment: compatibility
-     * normalization, control-character removal, illegal-character and
-     * whitespace replacement, dash collapsing, edge trimming, a fallback
-     * for empty results, and a code-point length cap.
+     * normalization, control-character removal, illegal-character
+     * replacement, whitespace collapsing (runs become one space, kept in
+     * the name like the reference), dash collapsing, edge trimming, a
+     * fallback for empty results, and a code-point length cap with a
+     * final edge trim.
      */
     fun sanitizeTitle(title: String): String {
         val normalized = Normalizer.normalize(title, Normalizer.Form.NFKC)
@@ -46,7 +48,7 @@ object ShareTurnFileNames {
                 }
             }
         }
-        val dashed = DASH_RUN.replace(WHITESPACE.replace(cleaned, "-"), "-")
+        val dashed = DASH_RUN.replace(WHITESPACE.replace(cleaned, " "), "-")
         val trimmed = EDGE_TRIM.replace(dashed, "")
         val usable = trimmed.ifEmpty { FALLBACK_TITLE }
         if (usable.codePointCount(0, usable.length) <= MAX_TITLE_CODE_POINTS) return usable
@@ -59,12 +61,12 @@ object ShareTurnFileNames {
             count++
             index += Character.charCount(codePoint)
         }
-        return builder.toString()
+        return EDGE_TRIM.replace(builder.toString(), "")
     }
 
     /**
      * Full export name with a local-time `yyyyMMddHHmmss` stamp, e.g.
-     * `HAPI-release-notes-20260802103045.png`.
+     * `HAPI-Release Notes-20260802103045.png`.
      */
     fun shareImageFileName(
         title: String,

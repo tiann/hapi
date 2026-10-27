@@ -10,21 +10,21 @@ class ShareTurnFileNamesTest {
 
     // ------------------------------------------------------- sanitizing --
 
-    @Test fun illegalCharactersAndWhitespaceBecomeSingleDashes() {
+    @Test fun illegalCharactersBecomeDashesWhileSpacesSurvive() {
         assertEquals(
-            "My-chat-hello-world",
+            "My -chat- -hello-world",
             ShareTurnFileNames.sanitizeTitle("My <chat>: \"hello/world\"?"),
         )
     }
 
-    @Test fun runsOfSpacesCollapseToOneDash() {
-        assertEquals("a-b-c", ShareTurnFileNames.sanitizeTitle("a   b c"))
+    @Test fun runsOfSpacesCollapseToOneSpace() {
+        assertEquals("a b c", ShareTurnFileNames.sanitizeTitle("a   b c"))
     }
 
     @Test fun titlesWithoutUsableCharactersFallBack() {
-        assertEquals("Shared-turn", ShareTurnFileNames.sanitizeTitle(""))
-        assertEquals("Shared-turn", ShareTurnFileNames.sanitizeTitle("???"))
-        assertEquals("Shared-turn", ShareTurnFileNames.sanitizeTitle(" / "))
+        assertEquals("Shared turn", ShareTurnFileNames.sanitizeTitle(""))
+        assertEquals("Shared turn", ShareTurnFileNames.sanitizeTitle("???"))
+        assertEquals("Shared turn", ShareTurnFileNames.sanitizeTitle(" / "))
     }
 
     @Test fun edgeDashesAndDotsAreTrimmed() {
@@ -36,7 +36,7 @@ class ShareTurnFileNamesTest {
     }
 
     @Test fun compatibilityNormalizationFoldsFullwidthText() {
-        assertEquals("Hello-world", ShareTurnFileNames.sanitizeTitle("Ｈｅｌｌｏ　ｗｏｒｌｄ"))
+        assertEquals("Hello world", ShareTurnFileNames.sanitizeTitle("Ｈｅｌｌｏ　ｗｏｒｌｄ"))
     }
 
     @Test fun veryLongTitlesAreCappedByCodePoints() {
@@ -51,15 +51,15 @@ class ShareTurnFileNamesTest {
 
     @Test fun fileNamesCombinePrefixTitleAndLocalStamp() {
         assertEquals(
-            "HAPI-Release-Notes-20270115080000.png",
+            "HAPI-Release Notes-20270115080000.png",
             ShareTurnFileNames.shareImageFileName("Release Notes", 1_800_000_000_000L, ZoneOffset.UTC),
         )
     }
 
     @Test fun blankTitlesKeepTheFallbackSegment() {
-        // The fallback title runs through the same dash pipeline as any title.
+        // The fallback title runs through the same pipeline as any title.
         assertEquals(
-            "HAPI-Shared-turn-20270115080000.png",
+            "HAPI-Shared turn-20270115080000.png",
             ShareTurnFileNames.shareImageFileName("  ", 1_800_000_000_000L, ZoneOffset.UTC),
         )
     }

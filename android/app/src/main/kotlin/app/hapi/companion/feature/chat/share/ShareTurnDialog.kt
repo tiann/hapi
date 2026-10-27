@@ -237,8 +237,11 @@ private fun buildCaption(context: Context, info: ShareTurnSessionInfo): List<Str
                 is ShareRelativeTime.MinutesAgo ->
                     context.getString(R.string.chat_share_turn_minutes_ago, bucket.minutes)
 
-                is ShareRelativeTime.HoursAgo -> "${bucket.hours}h"
-                is ShareRelativeTime.DaysAgo -> "${bucket.days}d"
+                is ShareRelativeTime.HoursAgo ->
+                    context.getString(R.string.chat_share_turn_hours_ago, bucket.hours)
+
+                is ShareRelativeTime.DaysAgo ->
+                    context.getString(R.string.chat_share_turn_days_ago, bucket.days)
                 is ShareRelativeTime.AbsoluteDate -> ShareTurnMetadata.formatAbsoluteDate(bucket)
                 null -> ""
             }

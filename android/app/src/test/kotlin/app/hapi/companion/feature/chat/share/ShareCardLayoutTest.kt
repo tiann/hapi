@@ -125,6 +125,28 @@ class ShareCardLayoutTest {
         assertTrue(layout.lines.count { it.style == ShareCardTextStyle.AGENT && it.text != "…" } < 200)
     }
 
+    @Test fun singleOversizeSegmentIsClippedInsteadOfCroppingTheFooter() {
+        val measurer = FakeMeasurer()
+        val layout = ShareCardLayout.layoutShareCard(
+            title = "t",
+            metadataLabels = emptyList(),
+            segments = listOf(segment("assistant", "z".repeat(2_000))),
+            measurer = measurer,
+            maxHeightPx = 300f,
+        )
+        assertTrue(layout.truncated)
+        assertTrue(layout.height <= 300f)
+        // The oversize segment was clipped to the lines that fit...
+        val bodyLines = layout.lines.filter { it.style == ShareCardTextStyle.AGENT && it.text != "…" }
+        assertTrue(bodyLines.isNotEmpty())
+        // ...closed by an ellipsis run...
+        assertTrue(layout.lines.any { it.style == ShareCardTextStyle.AGENT && it.text == "…" })
+        // ...with the footer still inside the capped height.
+        val footer = layout.lines.single { it.style == ShareCardTextStyle.FOOTER }
+        assertTrue(footer.top + measurer.lineHeight(ShareCardTextStyle.FOOTER) <= layout.height)
+        assertTrue(layout.dividerTop < footer.top)
+    }
+
     @Test fun emptyTurnsStillProduceAHeaderAndFooter() {
         val layout = ShareCardLayout.layoutShareCard(
             title = "Empty session",

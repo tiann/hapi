@@ -111,16 +111,17 @@ class ShareTurnMetadataTest {
         assertNull(ShareTurnMetadata.reasoningEffortForFlavor("pi", "xhigh", "  "))
     }
 
-    @Test fun codeAgentsAlwaysReportAnEffort() {
+    @Test fun codeAgentsReportAnEffortOnlyWhenSet() {
         assertEquals("high", ShareTurnMetadata.reasoningEffortForFlavor("codex", "high", null))
-        assertEquals("default", ShareTurnMetadata.reasoningEffortForFlavor("codex", null, "max"))
-        assertEquals("default", ShareTurnMetadata.reasoningEffortForFlavor("opencode", " ", null))
+        assertNull(ShareTurnMetadata.reasoningEffortForFlavor("codex", null, "max"))
+        assertNull(ShareTurnMetadata.reasoningEffortForFlavor("opencode", " ", null))
         assertNull(ShareTurnMetadata.reasoningEffortForFlavor("claude", "high", "max"))
     }
 
     @Test fun reasoningLabelPrefixFollowsTheLabelSwitch() {
         assertEquals("reasoning low", ShareTurnMetadata.formatReasoningLabel("low", showLabels = true))
         assertEquals("low", ShareTurnMetadata.formatReasoningLabel("low", showLabels = false))
+        assertEquals("reasoning high", ShareTurnMetadata.formatReasoningLabel(" High ", showLabels = true))
     }
 
     // ------------------------------------------------------ fast tier --

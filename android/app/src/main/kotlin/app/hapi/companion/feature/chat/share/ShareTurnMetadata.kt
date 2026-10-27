@@ -96,28 +96,33 @@ object ShareTurnMetadata {
         tier != null && FAST_SERVICE_TIER.matches(tier.trim())
 
     /**
-     * Reasoning effort a flavor reports: code agents always have one
-     * (unset becomes `default`); pi reports its own `effort` only when set;
-     * other flavors report none.
+     * Reasoning effort a flavor reports: code agents and pi report one
+     * only when it is set (an unset effort drops the whole fact); other
+     * flavors report none.
      */
     fun reasoningEffortForFlavor(
         flavor: String?,
         modelReasoningEffort: String?,
         effort: String?,
     ): String? = when (flavor) {
-        "codex", "opencode" -> modelReasoningEffort?.trim()?.takeIf { it.isNotEmpty() } ?: "default"
+        "codex", "opencode" -> modelReasoningEffort?.trim()?.takeIf { it.isNotEmpty() }
         "pi" -> effort?.trim()?.takeIf { it.isNotEmpty() }
         else -> null
     }
 
-    /** `reasoning X` with the label, bare `X` without. */
-    fun formatReasoningLabel(effort: String, showLabels: Boolean): String =
-        if (showLabels) "reasoning $effort" else effort
+    /** `reasoning X` with the label, bare `X` without; the value is lowercased. */
+    fun formatReasoningLabel(effort: String, showLabels: Boolean): String {
+        val value = effort.trim().lowercase()
+        return if (showLabels) "reasoning $value" else value
+    }
 
     /**
      * Caption entries under the card title, in display order. Time formats
      * arrive as callbacks so the caller resolves localized wording while
-     * this ordering/filtering logic stays testable.
+     * this ordering/filtering logic stays testable. Values are bare (no
+     * `Machine:`-style prefixes) and the agent fact uses the flavor's
+     * display label, matching this app's own header style — a deliberate
+     * divergence from the browser card's prefixed, raw-id form.
      */
     fun buildLabels(
         info: ShareTurnSessionInfo,
