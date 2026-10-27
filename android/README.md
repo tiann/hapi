@@ -61,6 +61,25 @@ CI (`.github/workflows/android.yml`) runs protocol/data/app unit tests,
 `:app:assembleDebug`, `:app:lintDebug`, and Compose instrumentation on API 29
 and API 36 for PRs touching `android/**` or `shared/fixtures/**`.
 
+### Download a CI APK
+
+Open the [Android workflow](https://github.com/tiann/hapi/actions/workflows/android.yml),
+select a run with a successful **build** job, and download
+`hapi-android-debug-<commit SHA>` under **Artifacts**. Sign in to GitHub to
+download artifacts. Extract the ZIP and install `app-debug.apk` on Android 8.0+;
+`app-debug.apk.sha256` contains its SHA-256 checksum. Artifacts expire after 14 days.
+
+Maintainers and fork owners can also use **Run workflow** to build a selected
+branch. Manual runs execute the unit tests, APK assembly and lint; push/PR
+runs additionally execute the existing API 29/36 instrumentation jobs.
+
+This is a debug-signed test build, not an official release. No Firebase or
+signing secrets are required; chat and other session features work, but FCM
+push is unavailable. Debug signing keys can differ between CI runs, so Android
+may require uninstalling an existing HAPI app before installing this APK.
+Uninstalling removes local app data, including paired hubs. Pair with an HTTPS
+hub as described below.
+
 ### Protocol conformance fixtures
 
 `:core:protocol` is the porting target for `web/src/chat/` and is verified
