@@ -70,6 +70,9 @@ import app.hapi.companion.feature.share.ShareScreen
 import app.hapi.companion.feature.share.ShareSessionGateway
 import app.hapi.companion.feature.share.ShareTarget
 import app.hapi.companion.feature.share.ShareTargetController
+import app.hapi.companion.feature.settings.DisplayViewModel
+import app.hapi.companion.feature.settings.SessionHeaderMetadata
+import app.hapi.companion.feature.settings.SettingsDisplayScreen
 import app.hapi.companion.feature.settings.SettingsGeneralScreen
 import app.hapi.companion.feature.settings.SettingsHubScreen
 import app.hapi.companion.feature.settings.SettingsViewModel
@@ -84,6 +87,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
@@ -153,10 +158,12 @@ object Routes {
     /**
      * Settings hub (category directory) + flat subpage routes (B-M4e → P2
      * hub IA). Usage/Storage are owner-only dashboards reached straight from
-     * the hub rows; General holds the uncategorized items.
+     * the hub rows; General holds the uncategorized items, Display the P2
+     * session-list/metadata/font-scale preferences.
      */
     const val SETTINGS = "settings"
     const val SETTINGS_GENERAL = "settings/general"
+    const val SETTINGS_DISPLAY = "settings/display"
     const val SETTINGS_USAGE = "settings/usage"
     const val SETTINGS_STORAGE = "settings/storage"
 }
@@ -357,7 +364,7 @@ fun HapiNavigation() {
             val scope = rememberCoroutineScope()
             val holder = viewModel<SessionListViewModelHolder>(
                 key = "sessions",
-                factory = viewModelFactory { SessionListViewModelHolder() },
+                factory = viewModelFactory { SessionListViewModelHolder(graph.sessionHeaderMetadata) },
             )
             HomeScreen(
                 viewModel = holder.forHub(hubGraph),
@@ -394,6 +401,20 @@ fun HapiNavigation() {
                 factory = viewModelFactory { SettingsViewModelHolder(graph, hubGraph) },
             )
             SettingsGeneralScreen(
+                viewModel = holder.viewModel,
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(Routes.SETTINGS_DISPLAY) {
+            val hubGraph = activeHubGraph ?: return@composable
+            // Keyed per hub like the sibling subpages, though display prefs
+            // themselves are app-wide; a hub swap just rebuilds from DataStore.
+            val holder = viewModel<DisplayViewModelHolder>(
+                key = "settingsDisplay:${hubGraph.hubUrl}",
+                factory = viewModelFactory { DisplayViewModelHolder(graph) },
+            )
+            SettingsDisplayScreen(
                 viewModel = holder.viewModel,
                 onBack = { navController.popBackStack() },
             )
@@ -789,9 +810,13 @@ private class ShareViewModelHolder : ViewModel() {
  * Androidx-lifecycle shell around the plain [SessionListViewModel]: survives
  * config changes with the nav entry. Retain only the current graph: returning
  * to the same URL creates a new HubGraph and must not revive a closed store
- * or its old filter. The global SSE pipe still belongs to HubGraph.
+ * or its old filter. The global SSE pipe still belongs to HubGraph. The
+ * P2 header-metadata gates arrive as an app-wide flow (default = all visible,
+ * so tests and previews construct without display prefs).
  */
-private class SessionListViewModelHolder : ViewModel() {
+private class SessionListViewModelHolder(
+    private val headerMetadata: Flow<SessionHeaderMetadata> = flowOf(SessionHeaderMetadata()),
+) : ViewModel() {
     private var graph: HubGraph? = null
     private var scope: CoroutineScope? = null
     private var model: SessionListViewModel? = null
@@ -810,12 +835,23 @@ private class SessionListViewModelHolder : ViewModel() {
             scope = nextScope,
             hubKey = hubGraph.hubUrl,
             connectionState = hubGraph.sseEngine.connectionState(SseSubscriptionKey.Global),
+            headerMetadata = headerMetadata,
         ).also { model = it }
     }
 
     override fun onCleared() {
         model?.stop()
         scope?.cancel()
+    }
+}
+
+/** Shell for the Display subpage's [DisplayViewModel] (app-wide prefs, no hub state). */
+private class DisplayViewModelHolder(graph: AppGraph) : ViewModel() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val viewModel = DisplayViewModel(graph.displayPrefs, scope)
+
+    override fun onCleared() {
+        scope.cancel()
     }
 }
 

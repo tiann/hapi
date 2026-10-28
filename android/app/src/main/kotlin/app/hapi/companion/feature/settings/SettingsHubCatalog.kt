@@ -4,6 +4,7 @@ import androidx.annotation.StringRes
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.ui.graphics.vector.ImageVector
 import app.hapi.companion.R
@@ -39,8 +40,9 @@ class SettingsHubEntry(
 /**
  * Declarative category list behind the settings hub. Mirrors the web's
  * `web/src/routes/settings/categories.ts` where the branch has content:
- * general (appearance/language/about) plus the owner-only usage and storage
- * dashboards. Display/Chat/Voice/Machines join here in later slices.
+ * general (appearance/language/about), display (P2: session-list prefs,
+ * header metadata, font scale), plus the owner-only usage and storage
+ * dashboards. Chat/Voice/Machines join here in later slices.
  */
 object SettingsHubCatalog {
 
@@ -50,6 +52,12 @@ object SettingsHubCatalog {
             titleRes = R.string.settings_category_general,
             descriptionRes = R.string.settings_category_general_summary,
             icon = Icons.Default.Settings,
+        ),
+        SettingsHubEntry(
+            route = Routes.SETTINGS_DISPLAY,
+            titleRes = R.string.settings_category_display,
+            descriptionRes = R.string.settings_category_display_summary,
+            icon = Icons.Default.Edit,
         ),
         SettingsHubEntry(
             route = Routes.SETTINGS_USAGE,
