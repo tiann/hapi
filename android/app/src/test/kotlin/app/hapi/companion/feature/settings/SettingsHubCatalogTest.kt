@@ -14,7 +14,7 @@ import kotlin.test.assertTrue
 class SettingsHubCatalogTest {
 
     @Test
-    fun `owners see general display usage and storage in catalog order`() {
+    fun `owners see general display chat usage and storage in catalog order`() {
         val routes = SettingsHubCatalog.visibleEntries(SettingsHubState(isOwner = true))
             .map { it.route }
 
@@ -22,6 +22,7 @@ class SettingsHubCatalogTest {
             listOf(
                 Routes.SETTINGS_GENERAL,
                 Routes.SETTINGS_DISPLAY,
+                Routes.SETTINGS_CHAT,
                 Routes.SETTINGS_USAGE,
                 Routes.SETTINGS_STORAGE,
             ),
@@ -30,11 +31,14 @@ class SettingsHubCatalogTest {
     }
 
     @Test
-    fun `non-owners see the ungated general and display categories`() {
+    fun `non-owners see the ungated general display and chat categories`() {
         val routes = SettingsHubCatalog.visibleEntries(SettingsHubState(isOwner = false))
             .map { it.route }
 
-        assertEquals(listOf(Routes.SETTINGS_GENERAL, Routes.SETTINGS_DISPLAY), routes)
+        assertEquals(
+            listOf(Routes.SETTINGS_GENERAL, Routes.SETTINGS_DISPLAY, Routes.SETTINGS_CHAT),
+            routes,
+        )
     }
 
     @Test

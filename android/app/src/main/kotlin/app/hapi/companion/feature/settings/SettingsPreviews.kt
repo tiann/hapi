@@ -23,8 +23,9 @@ import java.time.LocalDate
  * non-owner gating), the General subpage it drills into (stock and under a
  * color theme preset), the expressive choice dialogs that subpage opens
  * (theme swatches in light and dark, color-theme cards with accent strips,
- * language cards without swatches), and the Display subpage (session-list
- * prefs, metadata switches, font tiers).
+ * language cards without swatches), the Display subpage (session-list
+ * prefs, metadata switches, font tiers), and the Chat subpage (Enter
+ * behavior, collapse defaults, surface-color presets).
  */
 
 private fun bucket(
@@ -196,6 +197,28 @@ private fun SettingsDisplayPreview() {
                 onSetSessionListStatusMode = {},
                 onSetFontScale = {},
                 onSetHeaderMetadata = {},
+                onBack = {},
+            )
+        }
+    }
+}
+
+@Preview(name = "Settings chat", showBackground = true, heightDp = 1100)
+@Composable
+private fun SettingsChatPreview() {
+    HapiTheme(darkTheme = false, dynamicColor = false) {
+        Surface {
+            SettingsChatContent(
+                settings = ChatSettings(
+                    enterBehavior = ComposerEnterBehavior.SEND,
+                    reasoningCollapsed = false,
+                    toolGroupBackground = ChatSurfaceColor.SOFT_BLUE,
+                ),
+                onSetEnterBehavior = {},
+                onSetReasoningCollapsed = {},
+                onSetToolCardsCollapsed = {},
+                onSetToolGroupBackground = {},
+                onSetUserMessageBackground = {},
                 onBack = {},
             )
         }

@@ -8,6 +8,8 @@ import app.hapi.companion.feature.newsession.NewSessionPrefs
 import app.hapi.companion.feature.pairing.PairingClient
 import app.hapi.companion.feature.pairing.PairingClientFactory
 import app.hapi.companion.feature.settings.AppLanguage
+import app.hapi.companion.feature.settings.ChatPrefs
+import app.hapi.companion.feature.settings.DataStoreChatPrefs
 import app.hapi.companion.feature.settings.DataStoreDisplayPrefs
 import app.hapi.companion.feature.settings.DisplayPrefs
 import app.hapi.companion.feature.settings.LanguagePrefs
@@ -133,6 +135,14 @@ class AppGraph(context: Context) {
      * hooks. Same app-wide store as theme/language (web localStorage twin).
      */
     val displayPrefs: DisplayPrefs = DataStoreDisplayPrefs(appContext.hapiDataStore)
+
+    /**
+     * Chat preferences (P2 Chat subpage): composer Enter behavior, the
+     * reasoning/tool-card collapse defaults, and the two surface-color
+     * presets — the web `/settings/chat` twins. Same app-wide store as
+     * theme/language/display; MainActivity feeds the composition locals.
+     */
+    val chatPrefs: ChatPrefs = DataStoreChatPrefs(appContext.hapiDataStore)
 
     /**
      * Eagerly-cached metadata gates for the chat headers (appLanguage

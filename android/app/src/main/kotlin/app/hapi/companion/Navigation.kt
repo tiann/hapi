@@ -70,8 +70,10 @@ import app.hapi.companion.feature.share.ShareScreen
 import app.hapi.companion.feature.share.ShareSessionGateway
 import app.hapi.companion.feature.share.ShareTarget
 import app.hapi.companion.feature.share.ShareTargetController
+import app.hapi.companion.feature.settings.ChatSettingsViewModel
 import app.hapi.companion.feature.settings.DisplayViewModel
 import app.hapi.companion.feature.settings.SessionHeaderMetadata
+import app.hapi.companion.feature.settings.SettingsChatScreen
 import app.hapi.companion.feature.settings.SettingsDisplayScreen
 import app.hapi.companion.feature.settings.SettingsGeneralScreen
 import app.hapi.companion.feature.settings.SettingsHubScreen
@@ -160,11 +162,13 @@ object Routes {
      * Settings hub (category directory) + flat subpage routes (B-M4e → P2
      * hub IA). Usage/Storage are owner-only dashboards reached straight from
      * the hub rows; General holds the uncategorized items, Display the P2
-     * session-list/metadata/font-scale preferences.
+     * session-list/metadata/font-scale preferences, Chat the P2
+     * composer/collapse/surface-color preferences.
      */
     const val SETTINGS = "settings"
     const val SETTINGS_GENERAL = "settings/general"
     const val SETTINGS_DISPLAY = "settings/display"
+    const val SETTINGS_CHAT = "settings/chat"
     const val SETTINGS_USAGE = "settings/usage"
     const val SETTINGS_STORAGE = "settings/storage"
 }
@@ -418,6 +422,20 @@ fun HapiNavigation() {
                 factory = viewModelFactory { DisplayViewModelHolder(graph) },
             )
             SettingsDisplayScreen(
+                viewModel = holder.viewModel,
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(Routes.SETTINGS_CHAT) {
+            val hubGraph = activeHubGraph ?: return@composable
+            // Same app-wide-prefs subpage shape as Display (per-hub key only
+            // so a hub swap rebuilds the holder from DataStore).
+            val holder = viewModel<ChatSettingsViewModelHolder>(
+                key = "settingsChat:${hubGraph.hubUrl}",
+                factory = viewModelFactory { ChatSettingsViewModelHolder(graph) },
+            )
+            SettingsChatScreen(
                 viewModel = holder.viewModel,
                 onBack = { navController.popBackStack() },
             )
@@ -853,6 +871,16 @@ private class SessionListViewModelHolder(
 private class DisplayViewModelHolder(graph: AppGraph) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val viewModel = DisplayViewModel(graph.displayPrefs, scope)
+
+    override fun onCleared() {
+        scope.cancel()
+    }
+}
+
+/** Same shell for the Chat subpage's [ChatSettingsViewModel] (app-wide prefs). */
+private class ChatSettingsViewModelHolder(graph: AppGraph) : ViewModel() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val viewModel = ChatSettingsViewModel(graph.chatPrefs, scope)
 
     override fun onCleared() {
         scope.cancel()
