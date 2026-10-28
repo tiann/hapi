@@ -94,8 +94,8 @@ export async function withThreadOwnership<T>(home: string, threadId: string, own
     });
 }
 
-export async function findRuntime(sessionId: string): Promise<CodexRuntimeRecord | undefined> {
-    return (await readRuntimes()).find(record => record.hub === configuration.apiUrl && record.authHash === runtimeAuthHash()
+export async function findRuntime(sessionId: string, options?: { strict?: boolean }): Promise<CodexRuntimeRecord | undefined> {
+    return (await readRuntimes(options)).find(record => record.hub === configuration.apiUrl && record.authHash === runtimeAuthHash()
         && record.sessions[sessionId]?.active && runtimeAlive(record));
 }
 
