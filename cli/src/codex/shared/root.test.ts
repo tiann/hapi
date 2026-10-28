@@ -119,6 +119,54 @@ async function startCompaction(f: Awaited<ReturnType<typeof fixture>>, id = 'inp
     return turn;
 }
 
+describe('optional bounded history replay', () => {
+    it.each([
+        { selected: true, fullHistory: false, bounded: true },
+        { selected: true, fullHistory: true, bounded: false },
+        { selected: false, fullHistory: false, bounded: false },
+    ])('reads the expected history window: %j', async ({ selected, fullHistory, bounded }) => {
+        const f = await fixture();
+        vi.stubEnv('HAPI_CODEX_LAZY_HISTORY_IDS', selected ? ' other, thread ' : 'other');
+        const request = vi.spyOn(f.root.client, 'request');
+        request.mockResolvedValueOnce({ thread: { id: 'thread', historyMode: 'paginated' } });
+        if (bounded) request.mockResolvedValueOnce({ data: [{ id: 'new', items: [] }], nextCursor: 'older' });
+        else request.mockResolvedValueOnce({ data: [{ id: 'old', items: [] }], nextCursor: 'next' })
+            .mockResolvedValueOnce({ data: [{ id: 'new', items: [] }] });
+        try {
+            expect((await f.root.readThread('thread', fullHistory)).turns).toEqual(
+                bounded ? [{ id: 'new', items: [] }] : [{ id: 'old', items: [] }, { id: 'new', items: [] }]);
+            const calls = request.mock.calls.filter(([method]) => method === 'thread/turns/list');
+            expect(calls).toHaveLength(bounded ? 1 : 2);
+            expect(calls[0]?.[1]).toMatchObject(bounded
+                ? { sortDirection: 'desc', limit: 1, itemsView: 'full' }
+                : { sortDirection: 'asc', itemsView: 'full' });
+        } finally { request.mockRestore(); vi.unstubAllEnvs(); }
+    });
+
+    it('retains legacy history reads when the native thread does not support pagination', async () => {
+        const f = await fixture();
+        vi.stubEnv('HAPI_CODEX_LAZY_HISTORY_IDS', 'thread');
+        const request = vi.spyOn(f.root.client, 'request');
+        request.mockResolvedValueOnce({ thread: { id: 'thread' } })
+            .mockResolvedValueOnce({ thread: { id: 'thread', turns: [{ id: 'old', items: [] }] } });
+        try {
+            expect((await f.root.readThread()).turns).toEqual([{ id: 'old', items: [] }]);
+            expect(request).toHaveBeenLastCalledWith('thread/read', { threadId: 'thread', includeTurns: true });
+        } finally { request.mockRestore(); vi.unstubAllEnvs(); }
+    });
+
+    it.each([true, false])('preserves initial subscription and selects child replay; selected root: %s', async selected => {
+        const f = await fixture();
+        vi.stubEnv('HAPI_CODEX_LAZY_HISTORY_IDS', selected ? 'thread' : 'other');
+        const request = vi.spyOn(f.root.client, 'request');
+        try {
+            await f.root.bind('thread', {}, true);
+            expect(request).toHaveBeenCalledWith('thread/resume', { threadId: 'thread' });
+            expect(request.mock.calls.some(([method]) => method === 'thread/list')).toBe(!selected);
+        } finally { request.mockRestore(); vi.unstubAllEnvs(); }
+    });
+});
+
 describe('compaction delivery confirmation', () => {
     it('does not turn uncertainty discovered by a cold snapshot into live compaction evidence', async () => {
         const f = await fixture();

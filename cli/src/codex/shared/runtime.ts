@@ -104,7 +104,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 try {
                     await initializeSharedClient(control);
                     // Roots remain loaded by their independent side-clients.
-                    for (const threadId of roots.keys()) await control.request('thread/resume', { threadId });
+                    for (const threadId of roots.keys()) await control.request('thread/resume', { threadId, excludeTurns: true });
                     return;
                 } catch (error) {
                     logger.debug('[Codex shared] control reconnect', error);
@@ -212,7 +212,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         assertRunning();
         // Cold-resumed threads predate the control connection's automatic
         // new-thread subscription. Subscribe once without changing settings.
-        await control.request('thread/resume', { threadId });
+        await control.request('thread/resume', { threadId, excludeTurns: true });
         await root.activate(initialOptions);
         await root.session.flush();
         await persist();
@@ -363,7 +363,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 const root = await prepare(launch.cwd, existing);
                 await reserveRecord(root, threadId); return root;
             });
-            const params = root.config({ ...launch.threadParams, threadId });
+            const params = root.config({ ...launch.threadParams, threadId, excludeTurns: true });
             let response: Record<string, unknown>;
             try {
                 response = record(await root.client.request('thread/resume', params));

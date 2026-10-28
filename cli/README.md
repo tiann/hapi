@@ -296,6 +296,28 @@ For an all-in-one binary that also embeds the web app:
 bun run build:single-exe
 ```
 
+## Large Codex thread recovery
+
+Cold resumes and established internal subscriptions exclude inline turns; HAPI
+reads history separately. The initial root subscription retains the existing
+response behavior so empty native threads can initialize their history source.
+This does not truncate the native rollout or reduce the context restored by Codex.
+
+For exceptionally large threads, set `HAPI_CODEX_LAZY_HISTORY_IDS` to a
+comma-separated list of native Codex thread IDs in the Runner environment before
+starting the Runner. Only these roots replay their newest turn when reading
+paginated history and skip child history replay. Other threads retain full replay;
+legacy native threads without paginated history still use the full-history path.
+
+This option favors recovery latency over Hub history completeness. It does not
+implement UI-driven pagination or asynchronous backfill. Older turns and child
+traces missing from the Hub may remain missing after reconnect; messages with an
+uncertain delivery state may need manual inspection if their acceptance evidence
+is in an older turn. Native rollout files remain intact. Historical fork checks
+still read complete history when the message-to-turn mapping is already known;
+older messages without that mapping cannot be forked through the Hub. A single
+turn can still be large, so this is a turn limit rather than a byte limit.
+
 ## Source structure
 
 - `src/api/` - Hub communication (Socket.IO + REST).
