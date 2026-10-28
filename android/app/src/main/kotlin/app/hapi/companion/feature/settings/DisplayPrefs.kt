@@ -75,10 +75,11 @@ object SessionPreviewLimit {
 /**
  * Per-field visibility for session metadata (web `hapi-session-header-metadata`
  * JSON blob: ten booleans, defaults below). Web gates its chat-header items
- * with these; on this branch the switches gate the session-row meta elements
- * that already exist (agent flavor icon, `machine`/`worktree` meta segments,
- * the relative `lastActive` stamp) — the remaining fields persist here and
- * gain gates as their Android surfaces land.
+ * with these (the session-list rows consume nothing); on Android they gate
+ * the chat header's subtitle segments — agent flavor label ← `agent`,
+ * machine ← `machine`, worktree ← `worktree`. The remaining fields persist
+ * here (web consumes them in header segments Android's origin/main header
+ * does not render) and gain gates as their Android surfaces land.
  */
 data class SessionHeaderMetadata(
     val showLabels: Boolean = true,

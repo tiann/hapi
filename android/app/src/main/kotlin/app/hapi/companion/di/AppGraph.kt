@@ -135,9 +135,10 @@ class AppGraph(context: Context) {
     val displayPrefs: DisplayPrefs = DataStoreDisplayPrefs(appContext.hapiDataStore)
 
     /**
-     * Eagerly-cached metadata gates for the session list (appLanguage
-     * precedent): the list ViewModel combines this flow so its rows re-render
-     * when a Display switch flips, without each hub scoping its own read.
+     * Eagerly-cached metadata gates for the chat headers (appLanguage
+     * precedent): each session's ChatViewModel combines this flow so its
+     * header subtitle re-renders when a Display switch flips, without each
+     * nav entry scoping its own read.
      */
     val sessionHeaderMetadata: StateFlow<SessionHeaderMetadata> = displayPrefs.settings
         .map { it.headerMetadata }

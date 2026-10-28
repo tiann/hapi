@@ -1,6 +1,5 @@
 package app.hapi.companion.feature.sessions
 
-import app.hapi.companion.feature.settings.SessionHeaderMetadata
 import app.hapi.data.sse.ConnectionState
 import app.hapi.data.store.LastSeenStore
 import app.hapi.data.store.MachineListStore
@@ -22,9 +21,7 @@ import kotlin.test.assertTrue
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
@@ -175,7 +172,6 @@ private fun TestScope.buildViewModel(
     machines: FakeMachineStore = FakeMachineStore(),
     zoneProvider: () -> ZoneId = { ZoneId.of("UTC") },
     connection: MutableStateFlow<ConnectionState> = MutableStateFlow(ConnectionState(ConnectionState.Phase.Connected)),
-    headerMetadata: Flow<SessionHeaderMetadata> = flowOf(SessionHeaderMetadata()),
 ): Triple<SessionListViewModel, FakeSessionStore, FakeMachineStore> {
     val viewModel = SessionListViewModel(
         sessionStore = sessions,
@@ -186,7 +182,6 @@ private fun TestScope.buildViewModel(
         zoneProvider = zoneProvider,
         connectionState = connection,
         nowMs = { currentTime },
-        headerMetadata = headerMetadata,
     )
     return Triple(viewModel, sessions, machines)
 }
@@ -852,61 +847,5 @@ class SessionListViewModelTest {
         )
         val state = viewModel.uiState.first { it.rows.size == 3 }
         assertEquals(setOf("named-stub", "content", "agent-stub"), state.rows.map { it.id }.toSet())
-    }
-
-    // ------------------------------------------- P2 display gates --
-
-    @Test
-    fun `header metadata switches gate the worktree and machine row segments`() = runTest {
-        val metadata = MutableStateFlow(SessionHeaderMetadata())
-        val (viewModel, sessions, machines) = buildViewModel(headerMetadata = metadata)
-        machines.backing.value = listOf(machine("m1", "one"), machine("m2", "two"))
-        sessions.set(
-            summary(
-                "s1",
-                updatedAt = 900,
-                machineId = "m1",
-                path = "/data/worktrees/231",
-                worktree = WorktreeMetadata(basePath = "/data/github/hapi", branch = "fix/insets", name = "231"),
-            ),
-            summary("s2", updatedAt = 800, machineId = "m2"),
-        )
-
-        // Defaults (all wired gates on): worktree segment present, machine named.
-        val initial = viewModel.uiState.first { it.rows.size == 2 }
-        val s1 = initial.rows.first { it.id == "s1" }
-        assertEquals("github/hapi · 231", s1.meta)
-        assertEquals("m1", s1.machine?.id)
-
-        metadata.value = SessionHeaderMetadata(worktree = false, machine = false)
-        val gated = viewModel.uiState.first { it.rows.first { r -> r.id == "s1" }.meta == "github/hapi" }
-        val gatedS1 = gated.rows.first { it.id == "s1" }
-        // Project segment stays (it is the web group name, switch-less); the
-        // worktree segment and the machine chip drop.
-        assertEquals("github/hapi", gatedS1.meta)
-        assertNull(gatedS1.machine)
-        // The same emission carries the flags for the screen-side gates
-        // (agent flavor icon, last-active stamp).
-        assertFalse(gatedS1.headerMetadata.worktree)
-        assertFalse(gatedS1.headerMetadata.machine)
-        assertTrue(gatedS1.headerMetadata.agent)
-        assertTrue(gatedS1.headerMetadata.lastActive)
-    }
-
-    @Test
-    fun `rows carry header metadata for the screen-side agent and last-active gates`() = runTest {
-        val metadata = MutableStateFlow(SessionHeaderMetadata(agent = false, lastActive = false))
-        val (viewModel, sessions, machines) = buildViewModel(headerMetadata = metadata)
-        machines.backing.value = listOf(machine("m1", "one"), machine("m2", "two"))
-        sessions.set(summary("s1", machineId = "m1"), summary("s2", machineId = "m2"))
-
-        val state = viewModel.uiState.first { it.rows.size == 2 && it.rows.all { r -> !r.headerMetadata.agent } }
-        state.rows.forEach { row ->
-            assertFalse(row.headerMetadata.agent)
-            assertFalse(row.headerMetadata.lastActive)
-            // Unchanged fields keep flowing through untouched.
-            assertTrue(row.headerMetadata.machine)
-            assertTrue(row.headerMetadata.worktree)
-        }
     }
 }
