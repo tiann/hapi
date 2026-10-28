@@ -144,6 +144,14 @@ service-account JSON in the APK, repository, or user hub configuration.
 | `RELAY_PORT`             | no       | `8790`       | listen port                                                 |
 | `RELAY_TRUST_PROXY`      | no       | off          | `1`/`true`: rate-limit by first `x-forwarded-for` hop. Only behind a proxy that overwrites the header. |
 
+### Outbound proxy
+
+FCM sends use `fetch()` and honor `HTTPS_PROXY` / `NO_PROXY` under Bun. APNs
+uses a persistent HTTP/2 connection to Apple, which does not read proxy
+environment variables: run the relay with direct egress to Apple's push hosts,
+or provide a network-level tunnel. Setting `HTTPS_PROXY` alone does not cover
+APNs traffic.
+
 ## Deploying
 
 Any container host works — the relay is a single stateless process (rate
