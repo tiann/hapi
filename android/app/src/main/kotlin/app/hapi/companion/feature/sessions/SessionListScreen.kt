@@ -108,7 +108,9 @@ import kotlinx.coroutines.delay
  *   right-aligned relative `updatedAt` (unread: semibold title + accent
  *   time, no dot), summary line, `project · worktree · machine` meta line
  *   (machine only when it disambiguates) with todo chip and pending badge
- *   trailing. Disconnected rows are not dimmed and have no spinner;
+ *   trailing. Disconnected rows are not dimmed and have no spinner. The
+ *   icon, stamp, and `worktree`/`machine` meta segments hide per the P2
+ *   Display "session metadata" switches;
  * - swipe: start→end pin/unpin (project), end→start archive (live) or
  *   delete with confirmation (inactive); the row snaps back;
  * - long-press → actions sheet: mark read (unread rows), pin
@@ -438,8 +440,12 @@ private fun SessionRow(
         // The agent owns a two-line-tall leading column; its presence badge
         // marks connected sessions (pulsing while running) instead of
         // dimming every disconnected row.
-        AgentIconWithPresence(row)
-        Spacer(modifier = Modifier.width(ICON_SPACING))
+        // P2 display gate: the icon column is the row's agent marker
+        // (`agent` switch).
+        if (row.headerMetadata.agent) {
+            AgentIconWithPresence(row)
+            Spacer(modifier = Modifier.width(ICON_SPACING))
+        }
         // The divider starts under the text column, as in Mail/Messages.
         Column(modifier = Modifier.weight(1f)) {
             Column(modifier = Modifier.padding(end = 16.dp, top = 10.dp, bottom = 10.dp)) {
@@ -528,13 +534,16 @@ private fun TitleLine(row: SessionRowUi) {
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(
-            text = localizedRelativeAge(row.summary.updatedAt),
-            style = MaterialTheme.typography.bodySmall,
-            fontWeight = if (row.unread) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (row.unread) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        // P2 display gate: the relative stamp is the row's `lastActive`.
+        if (row.headerMetadata.lastActive) {
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = localizedRelativeAge(row.summary.updatedAt),
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = if (row.unread) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (row.unread) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
