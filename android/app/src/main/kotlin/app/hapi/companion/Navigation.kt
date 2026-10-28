@@ -89,6 +89,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
@@ -364,7 +365,9 @@ fun HapiNavigation() {
             val scope = rememberCoroutineScope()
             val holder = viewModel<SessionListViewModelHolder>(
                 key = "sessions",
-                factory = viewModelFactory { SessionListViewModelHolder() },
+                factory = viewModelFactory {
+                    SessionListViewModelHolder(graph.displayPrefs.settings.map { it.showActiveSessionsOnly })
+                },
             )
             HomeScreen(
                 viewModel = holder.forHub(hubGraph),
@@ -810,9 +813,13 @@ private class ShareViewModelHolder : ViewModel() {
  * Androidx-lifecycle shell around the plain [SessionListViewModel]: survives
  * config changes with the nav entry. Retain only the current graph: returning
  * to the same URL creates a new HubGraph and must not revive a closed store
- * or its old filter. The global SSE pipe still belongs to HubGraph.
+ * or its old filter. The global SSE pipe still belongs to HubGraph. The P2
+ * display "active sessions only" lens arrives as an app-wide flow (default
+ * off, so tests and previews construct without display prefs).
  */
-private class SessionListViewModelHolder() : ViewModel() {
+private class SessionListViewModelHolder(
+    private val showActiveSessionsOnly: Flow<Boolean> = flowOf(false),
+) : ViewModel() {
     private var graph: HubGraph? = null
     private var scope: CoroutineScope? = null
     private var model: SessionListViewModel? = null
@@ -831,6 +838,7 @@ private class SessionListViewModelHolder() : ViewModel() {
             scope = nextScope,
             hubKey = hubGraph.hubUrl,
             connectionState = hubGraph.sseEngine.connectionState(SseSubscriptionKey.Global),
+            showActiveSessionsOnly = showActiveSessionsOnly,
 
         ).also { model = it }
     }
