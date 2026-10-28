@@ -308,6 +308,8 @@ comma-separated list of native Codex thread IDs in the Runner environment before
 starting the Runner. Only these roots replay their newest turn when reading
 paginated history and skip child history replay. Other threads retain full replay;
 legacy native threads without paginated history still use the full-history path.
+Descendant discovery and subscriptions to loaded children are retained, including
+after reconnect, so pending questions and live child events can still reach HAPI.
 
 This option favors recovery latency over Hub history completeness. It does not
 implement UI-driven pagination or asynchronous backfill. Older turns and child

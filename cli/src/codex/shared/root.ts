@@ -360,8 +360,8 @@ export class SharedCodexRoot {
         await this.projection.history(thread); await this.queue.reconcile(); this.alive();
     }
     private async refreshChildren(subscribe: boolean): Promise<void> {
-        // 快速恢复不回放子代理历史；已接入的实时通知仍走正常处理链路。
-        if (this.lazyHistory()) return;
+        // 历史回放可省略，子代理发现与实时订阅仍需在重连后恢复。
+        const replayHistory = !this.lazyHistory();
         let cursor: string | undefined;
         do {
             const page = record(await this.client.request('thread/list', { ancestorThreadId: this.threadId, cursor,
@@ -385,7 +385,9 @@ export class SharedCodexRoot {
             // Replaying a completed/unloaded child must not start its engine.
             try {
                 if (subscribe && loaded.has(id)) await this.client.request('thread/resume', { threadId: id, excludeTurns: true });
-                projection.reset(); await projection.history(await this.readThread(id));
+                if (replayHistory) {
+                    projection.reset(); await projection.history(await this.readThread(id));
+                }
             } catch (error) { logger.debug('[Codex shared] child history unavailable', { id, error }); }
         }
     }
