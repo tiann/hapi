@@ -45,7 +45,11 @@ export function createBindRoutes(jwtSecret: Uint8Array, store: Store): Hono<WebA
         if (existingUser && existingUser.namespace !== namespace) {
             return c.json({ error: 'already_bound' }, 409)
         }
-        store.users.addUser('telegram', telegramUserId, namespace)
+        store.users.addUser('telegram', telegramUserId, namespace, result.user.language_code ?? null)
+        // addUser keeps an existing row, so refresh the language for re-binds too.
+        if (result.user.language_code) {
+            store.users.setUserLanguage('telegram', telegramUserId, result.user.language_code)
+        }
 
         const userId = await getOrCreateOwnerId()
 

@@ -58,6 +58,8 @@ export type StoredUser = {
     platform: string
     platformUserId: string
     namespace: string
+    /** Last seen Telegram/BCP-47 language tag, if the platform reports one. */
+    language: string | null
     createdAt: number
 }
 
@@ -67,6 +69,8 @@ export type StoredPushSubscription = {
     endpoint: string
     p256dh: string
     auth: string
+    /** BCP-47 tag reported by the browser at subscribe time, if any. */
+    language: string | null
     createdAt: number
 }
 
@@ -85,6 +89,8 @@ export type StoredFcmDevice = {
      * null for legacy phone/Wear registrations.
      */
     pushKey: string | null
+    /** BCP-47 tag reported by the native app at registration time, if any. */
+    language: string | null
     createdAt: number
     updatedAt: number
 }

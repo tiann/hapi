@@ -32,12 +32,16 @@ export function androidRelayPlaintext(data: FcmSendPayload['data']): string | nu
 export class AndroidRelayService implements AndroidPushSender {
     constructor(private readonly transport: EncryptedPushTransport, private readonly store: Store) {}
 
-    async sendToNamespace(namespace: string, payload: FcmSendPayload): Promise<FcmSendResult> {
+    async sendToNamespace(
+        namespace: string,
+        payload: FcmSendPayload | ((language: string | null) => FcmSendPayload)
+    ): Promise<FcmSendResult> {
         const devices = this.store.fcm.getDevicesByNamespace(namespace, ['phone'])
         const result: FcmSendResult = { sent: 0, failed: 0, invalidTokens: [] }
         if (!devices.length) return result
-        const plaintext = androidRelayPlaintext(payload.data)
         await Promise.all(devices.map(async device => {
+            const resolved = typeof payload === 'function' ? payload(device.language) : payload
+            const plaintext = androidRelayPlaintext(resolved.data)
             const key = device.pushKey ? Buffer.from(device.pushKey, 'base64') : null
             // Old registrations heal on app upgrade/start. Missing keys and
             // oversized content say nothing about the lifetime of a token.

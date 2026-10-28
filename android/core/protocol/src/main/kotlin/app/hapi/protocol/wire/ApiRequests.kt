@@ -168,6 +168,8 @@ data class RegisterDeviceRequest(
     val deviceId: String,
     /** Base64 of the install's 32-byte AES-GCM key; required for relay delivery. */
     val pushKey: String,
+    /** BCP-47 device language; the hub localizes notification text with it. */
+    val language: String? = null,
 )
 
 /** `DELETE /api/devices/register`. */

@@ -67,7 +67,7 @@ export function App() {
 }
 
 function AppInner() {
-    const { t } = useTranslation()
+    const { t, locale } = useTranslation()
     const { serverUrl, baseUrl, setServerUrl, clearServerUrl } = useServerUrl()
     const { authSource, isLoading: isAuthSourceLoading, setAccessToken } = useAuthSource(baseUrl)
     const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, bind } = useAuth(authSource, baseUrl)
@@ -192,7 +192,7 @@ function AppInner() {
         isLoading: appBadgeSessionsLoading,
         hasError: Boolean(appBadgeSessionsError),
     })
-    const { isSupported: isPushSupported, permission: pushPermission, requestPermission, subscribe } = usePushNotifications(api)
+    const { isSupported: isPushSupported, permission: pushPermission, requestPermission, subscribe } = usePushNotifications(api, locale)
 
     useEffect(() => {
         if (baseUrlRef.current === baseUrl) {
