@@ -7,7 +7,7 @@ import { getUsageSummary } from '../../sync/usageService'
 export function createUsageRoutes(store: Store): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
-    app.get('/usage/summary', (c) => {
+    app.get('/usage/summary', async (c) => {
         if (c.get('namespace') !== 'default') {
             return c.json({ error: 'Usage summary is only available to the hub owner' }, 403)
         }
@@ -21,7 +21,7 @@ export function createUsageRoutes(store: Store): Hono<WebAppEnv> {
         } catch {
             return c.json({ error: 'Invalid timeZone' }, 400)
         }
-        const response: UsageSummaryResponse = getUsageSummary(store, c.get('namespace'), range, timeZone)
+        const response: UsageSummaryResponse = await getUsageSummary(store, c.get('namespace'), range, timeZone)
         c.header('Cache-Control', 'no-store')
         return c.json(response)
     })
