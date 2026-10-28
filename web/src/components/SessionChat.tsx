@@ -1295,6 +1295,7 @@ function SessionChatInner(props: SessionChatProps) {
         setPermissionMode,
         setCollaborationMode,
         setCopilotAgentMode,
+        setOpencodeAgent,
         setModel,
         setModelReasoningEffort,
         setEffort,
@@ -1592,6 +1593,17 @@ function SessionChatInner(props: SessionChatProps) {
             console.error('Failed to set Copilot agent mode:', e)
         }
     }, [setCopilotAgentMode, props.onRefresh, haptic])
+
+    const handleOpencodeAgentChange = useCallback(async (agentId: string) => {
+        try {
+            await setOpencodeAgent(agentId)
+            haptic.notification('success')
+            props.onRefresh()
+        } catch (e) {
+            haptic.notification('error')
+            console.error('Failed to set OpenCode agent:', e)
+        }
+    }, [setOpencodeAgent, props.onRefresh, haptic])
 
     // Model mode change handler
     const handleModelChange = useCallback(async (model: SessionModelSelection) => {
@@ -2088,6 +2100,7 @@ function SessionChatInner(props: SessionChatProps) {
                         permissionMode={props.session.permissionMode}
                         collaborationMode={codexCollaborationModeSupported ? props.session.collaborationMode : undefined}
                         copilotAgentMode={agentFlavor === 'copilot' ? props.session.copilotAgentMode : undefined}
+                        opencodeAgent={agentFlavor === 'opencode' ? props.session.opencodeAgent : undefined}
                         model={props.session.model}
                         modelReasoningEffort={agentFlavor === 'codex' || agentFlavor === 'opencode' ? props.session.modelReasoningEffort : undefined}
                         effort={props.session.effort}
@@ -2157,6 +2170,14 @@ function SessionChatInner(props: SessionChatProps) {
                         onCopilotAgentModeChange={
                             agentFlavor === 'copilot' && props.session.active && !controlledByUser
                                 ? handleCopilotAgentModeChange
+                                : undefined
+                        }
+                        opencodeAgentOptions={
+                            agentFlavor === 'opencode' ? opencodeModelsState.availableAgents : undefined
+                        }
+                        onOpencodeAgentChange={
+                            agentFlavor === 'opencode' && props.session.active && !controlledByUser
+                                ? handleOpencodeAgentChange
                                 : undefined
                         }
                         onPermissionModeChange={

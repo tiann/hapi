@@ -44,6 +44,7 @@ export type {
     MessagesResponse,
     OpencodeModelsResponse,
     OpencodeModelSummary,
+    OpencodeAgentSummary,
     OpencodeModelVariantsResponse,
     PathExistsResponse,
     PiModelSummary,

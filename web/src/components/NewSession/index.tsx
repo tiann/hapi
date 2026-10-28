@@ -56,6 +56,7 @@ import { FastModeSelector } from './FastModeSelector'
 import { MachineSelector } from './MachineSelector'
 import { ModelSelector } from './ModelSelector'
 import { OpencodeModelSelector } from './OpencodeModelSelector'
+import { OpencodeAgentSelector } from './OpencodeAgentSelector'
 import { EffortField } from './EffortField'
 import { shouldEnableOpencodeModelDiscovery } from './opencodeModelsGate'
 import { buildGrokEffortOptions, buildGrokModelOptions, shouldEnableGrokModelDiscovery } from './grokModels'
@@ -120,6 +121,7 @@ export function NewSession(props: {
     const [effort, setEffort] = useState<LaunchEffort>('auto')
     const [modelReasoningEffort, setModelReasoningEffort] = useState<CodexReasoningEffort>('default')
     const [opencodeSelectedModel, setOpencodeSelectedModel] = useState<string | null | undefined>(undefined)
+    const [opencodeSelectedAgent, setOpencodeSelectedAgent] = useState<string | undefined>(undefined)
     const [serviceTier, setServiceTier] = useState<NewSessionServiceTier>('standard')
     const [collaborationMode, setCollaborationMode] = useState<CodexCollaborationMode>('default')
     const [copilotAgentMode, setCopilotAgentMode] = useState<CopilotAgentMode>('interactive')
@@ -259,6 +261,7 @@ export function NewSession(props: {
         setServiceTier(draft.serviceTier)
         setCollaborationMode(draft.collaborationMode)
         setCopilotAgentMode(draft.copilotAgentMode)
+        setOpencodeSelectedAgent(draft.opencodeAgent)
         setYoloMode(draft.yoloMode)
         setNativePermissionMode(draft.nativePermissionMode)
         setGrokPermissionMode(draft.grokPermissionMode)
@@ -891,12 +894,40 @@ export function NewSession(props: {
         machineId
     ])
     useEffect(() => {
+        if (
+            agent !== 'opencode'
+            || deferredDirectoryExists !== true
+            || opencodeModelsState.isLoading
+            || opencodeModelsState.error
+        ) {
+            return
+        }
+        if (opencodeSelectedAgent !== undefined) {
+            return
+        }
+        const fallback = opencodeModelsState.currentAgentId
+            ?? opencodeModelsState.availableAgents?.[0]?.agentId
+            ?? undefined
+        if (fallback) {
+            setOpencodeSelectedAgent(fallback)
+        }
+    }, [
+        agent,
+        deferredDirectoryExists,
+        opencodeModelsState.availableAgents,
+        opencodeModelsState.currentAgentId,
+        opencodeModelsState.error,
+        opencodeModelsState.isLoading,
+        opencodeSelectedAgent
+    ])
+    useEffect(() => {
         // Reset selection when agent / machine / directory changes; new probe = new defaults.
         // `undefined` = uninitialized (probe again); `null` = explicit Default choice.
         if (preserveRestoredDraftRef.current) {
             return
         }
         setOpencodeSelectedModel(undefined)
+        setOpencodeSelectedAgent(undefined)
     }, [agent, machineId, deferredDirectory])
 
     const usesNativeSelect = usesNativePermissionSelect(agent)
@@ -1471,6 +1502,7 @@ export function NewSession(props: {
             serviceTier,
             collaborationMode,
             copilotAgentMode,
+            opencodeAgent: opencodeSelectedAgent,
             yoloMode,
             nativePermissionMode,
             grokPermissionMode,
@@ -1725,6 +1757,7 @@ export function NewSession(props: {
                 serviceTier: resolvedServiceTier,
                 collaborationMode: resolvedCollaborationMode,
                 copilotAgentMode: agent === 'copilot' ? copilotAgentMode : undefined,
+                opencodeAgent: agent === 'opencode' ? opencodeSelectedAgent : undefined,
             })
 
 
@@ -1937,17 +1970,25 @@ export function NewSession(props: {
                     onRetry={agyModelsState.refetch}
                 />
             ) : agent === 'opencode' ? (
-                <OpencodeModelSelector
-                    cwd={deferredDirectory}
-                    machineId={machineId}
-                    isLoading={opencodeModelsState.isLoading}
-                    error={opencodeModelsState.error}
-                    availableModels={opencodeModelsState.availableModels}
-                    currentModelId={opencodeModelsState.currentModelId}
-                    selectedModel={opencodeSelectedModel}
-                    onModelChange={setOpencodeSelectedModel}
-                    onRetry={opencodeModelsState.refetch}
-                />
+                <>
+                    <OpencodeModelSelector
+                        cwd={deferredDirectory}
+                        machineId={machineId}
+                        isLoading={opencodeModelsState.isLoading}
+                        error={opencodeModelsState.error}
+                        availableModels={opencodeModelsState.availableModels}
+                        currentModelId={opencodeModelsState.currentModelId}
+                        selectedModel={opencodeSelectedModel}
+                        onModelChange={setOpencodeSelectedModel}
+                        onRetry={opencodeModelsState.refetch}
+                    />
+                    <OpencodeAgentSelector
+                        value={opencodeSelectedAgent}
+                        availableAgents={opencodeModelsState.availableAgents}
+                        isDisabled={isFormDisabled}
+                        onChange={setOpencodeSelectedAgent}
+                    />
+                </>
             ) : (
                 agent === 'cursor' ? (
                     <>

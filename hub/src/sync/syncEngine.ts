@@ -2149,6 +2149,7 @@ export class SyncEngine {
             serviceTier?: string | null
             collaborationMode?: CodexCollaborationMode
             copilotAgentMode?: CopilotAgentMode
+            opencodeAgent?: string | null
         }
     ): Promise<void> {
         const session = this.sessionCache.getSession(sessionId)
@@ -2174,6 +2175,7 @@ export class SyncEngine {
                 serviceTier?: Session['serviceTier']
                 collaborationMode?: Session['collaborationMode']
                 copilotAgentMode?: Session['copilotAgentMode']
+                opencodeAgent?: Session['opencodeAgent']
             }
         }
         if (typeof obj.error === 'string' && obj.error.trim().length > 0) {
@@ -2213,7 +2215,8 @@ export class SyncEngine {
         startingMode?: 'remote' | 'pty',
         // Required for fresh machine spawns so the runner stamps the HAPI id on
         // argv before the first webhook (#1911 Major: unreapable window).
-        namespace?: string
+        namespace?: string,
+        opencodeAgent?: string
     ): ReturnType<RpcGateway['spawnSession']> {
         // Fresh machine spawns historically omitted existingSessionId, so
         // buildCliArgs could not stamp --hapi-session-id / --existing-session-id.
@@ -2268,7 +2271,8 @@ export class SyncEngine {
                 copilotAgentMode,
                 startingMode,
                 undefined,
-                preallocated ? allocatedSessionId : undefined
+                preallocated ? allocatedSessionId : undefined,
+                opencodeAgent
             )
         } catch (error) {
             // Ambiguous post-dispatch failure — keep the stub (child may exist).
@@ -2824,7 +2828,8 @@ export class SyncEngine {
                 modelReasoningEffort: session.modelReasoningEffort ?? null,
                 permissionMode: session.permissionMode,
                 collaborationMode: session.collaborationMode,
-                copilotAgentMode: session.copilotAgentMode
+                copilotAgentMode: session.copilotAgentMode,
+                opencodeAgent: session.opencodeAgent
             }
         }
     }
@@ -2851,6 +2856,7 @@ export class SyncEngine {
                     permissionMode: target.permissionMode,
                     collaborationMode: target.collaborationMode,
                     copilotAgentMode: target.copilotAgentMode,
+                    opencodeAgent: target.opencodeAgent,
                     updatedAt: session?.updatedAt ?? 0,
                     name: session?.metadata?.name,
                     summary: session?.metadata?.summary?.text,
