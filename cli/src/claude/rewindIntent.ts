@@ -8,6 +8,7 @@ const Intent = z.object({
     requestedLocalId: z.string().min(1),
     cutoffSeq: z.number().int().nonnegative(),
     phase: z.enum(['pending', 'applied']),
+    stagedInput: z.object({ localIds: z.array(z.string()), textHash: z.string() }).optional(),
     hubSessionId: z.string(),
     nativeSessionId: z.string(),
     workingDirectory: z.string(),

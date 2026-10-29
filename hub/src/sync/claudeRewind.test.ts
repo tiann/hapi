@@ -29,6 +29,119 @@ function applied(store: Store, sid: string) {
 }
 
 describe('durable Claude rewind', () => {
+    it('blocks terminal remote-to-local handoff from durable pending state without an in-flight lock', async () => {
+        const { store, engine, sid } = setup()
+        try {
+            const calls: string[] = []
+            ;(engine as any).rpcGateway.switchSession = async (_sid: string, to: string) => { calls.push(to) }
+            for (const phase of ['requested', 'pending', 'applied', 'unknown', 'committed', 'rejected'] as const) {
+                const current = store.sessions.getSession(sid)!
+                store.sessions.updateSessionMetadata(sid, { ...(current.metadata as Metadata), startedBy: 'terminal', claudeRewind: {
+                    operationId: 'op', phase, requestedLocalId: 'boundary', cutoffSeq: 1
+                } }, current.metadataVersion, 'default')
+                expect((engine as any).historyActionsInFlight.has(sid)).toBe(false)
+                const before = calls.length
+                if (['committed', 'rejected'].includes(phase)) {
+                    await engine.switchSession(sid, 'local')
+                    expect(calls.slice(before)).toEqual(['local'])
+                } else {
+                    await expect(engine.switchSession(sid, 'local')).rejects.toThrow('while Claude rewind is pending')
+                    expect(calls.length).toBe(before)
+                }
+                await engine.switchSession(sid, 'remote')
+                expect(calls.at(-1)).toBe('remote')
+            }
+        } finally { engine.stop() }
+    })
+
+    it('allows a rejected -> clear/new native ID update through ordinary metadata CAS', async () => {
+        const { store, engine, sid } = setup()
+        try {
+            ;(engine as any).rpcGateway.rewindConversation = async (_: string, params: { operationId: string }) => ({
+                success: false, outcome: 'pending', operationId: params.operationId,
+                nativeSessionId: 'native', keepBoundary: 'uuid', truncateFromLocalId: 'boundary'
+            })
+            await engine.rewindConversation(sid, 'default', 'boundary')
+            const proof = applied(store, sid)
+            expect(engine.commitClaudeRewind(sid, { ...proof.metadata, claudeRewind: {
+                ...proof.metadata.claudeRewind, phase: 'rejected'
+            } }, proof.version).result).toBe('success')
+            const handlers = new Map<string, (...args: any[]) => void>()
+            let proofCalls = 0
+            registerSessionHandlers({ on: (name: string, fn: (...args: any[]) => void) => handlers.set(name, fn), to: () => ({ emit() {} }) } as never, {
+                store, resolveSessionAccess: () => ({ ok: true, value: store.sessions.getSession(sid)! }), emitAccessError() {},
+                onClaudeRewindApplied: (id, metadata, version) => { proofCalls++; return engine.commitClaudeRewind(id, metadata, version) }
+            })
+            await engine.sendMessage(sid, { text: '/clear', localId: 'clear-after-rejection' })
+            const current = store.sessions.getSession(sid)!
+            const metadata = current.metadata as Metadata
+            // Reordering JSON properties must not turn an unchanged marker into proof.
+            const carried = Object.fromEntries(Object.entries(metadata.claudeRewind!).reverse())
+            const update = { ...metadata, claudeSessionId: 'new-native-after-clear', claudeRewind: carried }
+            const send = (expectedVersion: number) => {
+                let ack: any
+                handlers.get('update-metadata')!({ sid, expectedVersion, metadata: update }, (result: any) => { ack = result })
+                return ack
+            }
+            expect(send(current.metadataVersion - 1).result).toBe('version-mismatch')
+            expect(send(current.metadataVersion)).toMatchObject({ result: 'success', metadata: {
+                claudeSessionId: 'new-native-after-clear', claudeRewind: metadata.claudeRewind
+            } })
+            expect(proofCalls).toBe(0)
+            expect(store.sessions.getSession(sid)!.metadata).toMatchObject({ claudeSessionId: 'new-native-after-clear', claudeRewind: metadata.claudeRewind })
+            await engine.sendMessage(sid, { text: '/new', localId: 'new-after-rejection' })
+            const afterNew = store.sessions.getSession(sid)!
+            let newAck: any
+            handlers.get('update-metadata')!({ sid, expectedVersion: afterNew.metadataVersion, metadata: {
+                ...(afterNew.metadata as Metadata), claudeSessionId: 'new-native-after-new'
+            } }, (result: any) => { newAck = result })
+            expect(newAck).toMatchObject({ result: 'success', metadata: { claudeSessionId: 'new-native-after-new', claudeRewind: metadata.claudeRewind } })
+            expect(proofCalls).toBe(0)
+            expect(store.messages.getAllMessages(sid)).toHaveLength(3)
+        } finally { engine.stop() }
+    })
+
+    it('allows unchanged unknown metadata echoes but validates changed reports and re-ACKs explicit applied retries', async () => {
+        const { store, engine, sid } = setup()
+        try {
+            ;(engine as any).rpcGateway.rewindConversation = async () => ({ error: 'lost response' })
+            await engine.rewindConversation(sid, 'default', 'boundary')
+            const handlers = new Map<string, (...args: any[]) => void>()
+            let proofCalls = 0
+            registerSessionHandlers({ on: (name: string, fn: (...args: any[]) => void) => handlers.set(name, fn), to: () => ({ emit() {} }) } as never, {
+                store, resolveSessionAccess: () => ({ ok: true, value: store.sessions.getSession(sid)! }), emitAccessError() {},
+                onClaudeRewindApplied: (id, metadata, version) => { proofCalls++; return engine.commitClaudeRewind(id, metadata, version) }
+            })
+            const send = (metadata: unknown, expectedVersion = store.sessions.getSession(sid)!.metadataVersion) => {
+                let ack: any
+                handlers.get('update-metadata')!({ sid, expectedVersion, metadata }, (result: any) => { ack = result })
+                return ack
+            }
+            const current = store.sessions.getSession(sid)!
+            const metadata = current.metadata as Metadata
+            // Hub-created unknown may lack journal identity. Merely carrying it
+            // must not make unrelated updates enter an impossible retry loop.
+            expect(send({ ...metadata, name: 'ordinary update' })).toMatchObject({ result: 'success', metadata: {
+                name: 'ordinary update', claudeRewind: metadata.claudeRewind, conversationHistoryDiverged: true
+            } })
+            expect(proofCalls).toBe(0)
+            const proof = applied(store, sid)
+            expect(send({ ...proof.metadata, claudeRewind: { ...proof.metadata.claudeRewind, phase: 'unknown', operationId: 'forged' } }).result).toBe('error')
+            expect(send({ ...proof.metadata, claudeRewind: { ...proof.metadata.claudeRewind, phase: 'unknown', keepBoundary: 'changed', cutoffSeq: 999 } }).result).toBe('error')
+            const forged = send({ ...proof.metadata, claudeRewind: { ...proof.metadata.claudeRewind, phase: 'committed' } })
+            expect(forged.result).toBe('success')
+            expect(forged.metadata.claudeRewind.phase).toBe('unknown')
+            expect(store.messages.getAllMessages(sid)).toHaveLength(1)
+            const fresh = applied(store, sid)
+            expect(send(fresh.metadata, fresh.version).metadata.claudeRewind.phase).toBe('committed')
+            const epoch = store.messages.getMessageEpoch(sid)
+            const version = store.sessions.getSession(sid)!.metadataVersion
+            expect(send(fresh.metadata, fresh.version)).toMatchObject({ result: 'success', version, metadata: { claudeRewind: { phase: 'committed' } } })
+            expect(store.messages.getMessageEpoch(sid)).toBe(epoch)
+            expect(proofCalls).toBe(4)
+        } finally { engine.stop() }
+    })
+
     it('blocks clear/new in every pending phase at the durable send layer while preserving normal input', async () => {
         for (const phase of ['requested', 'pending', 'applied', 'unknown', 'committed', 'rejected'] as const) {
             const { store, engine, sid } = setup()

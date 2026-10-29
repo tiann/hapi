@@ -30,7 +30,7 @@ import {
     CLAUDE_CONVERSATION_HISTORY,
     toConversationHistoryCapabilities
 } from '@hapi/protocol/conversationHistory';
-import { hasDurableRewindBranch, readNativeTurns, readTranscriptUuids, resolveRewindPlan, supportsNativeRewind } from './conversationHistory';
+import { hasDurableRewindBranch, hashRewindInput, readNativeTurns, readTranscriptUuids, resolveRewindPlan, supportsNativeRewind } from './conversationHistory';
 import { listSkills, type SkillSummary } from '@/modules/common/skills';
 import { configuration } from '@/configuration';
 import { RewindIntentStore, type RewindIntent } from './rewindIntent';
@@ -337,9 +337,9 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         }
         return filtered.length > 0 ? filtered : undefined
     }
-    const branchIsDurable = (intent: RewindIntent) => hasDurableRewindBranch(
+    const branchIsDurable = (intent: RewindIntent) => Boolean(intent.stagedInput) && hasDurableRewindBranch(
         workingDirectory, intent.nativeSessionId, intent.keepBoundary,
-        new Set(intent.baselineUuids), intent.droppedPrompts
+        new Set(intent.baselineUuids), intent.droppedPrompts, intent.stagedInput?.textHash
     )
     const reportRewind = async (intent: RewindIntent, phase: 'applied' | 'rejected' | 'unknown') => {
         session.updateMetadata(metadata => ({
@@ -449,7 +449,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
 
         claudeSession.rewindProof = boundary => boundary === intent.keepBoundary
             && claudeSession.sessionId === nativeSessionId
-            && hasDurableRewindBranch(workingDirectory, nativeSessionId, boundary, transcriptUuidBaseline, intent.droppedPrompts)
+            && Boolean(pendingRewind && branchIsDurable(pendingRewind))
         await claudeSession.requestRemoteRestart()
         // Durable intent is pending, not applied. The hub retains its old
         // suffix until a real input selects the native branch and its applied
@@ -759,7 +759,33 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
 
     let loopError: unknown = null;
     let loopFailed = false;
+    let recoveredUnstagedNativeId: string | undefined;
     try {
+        const recoveryMetadata = session.getMetadata() ?? sessionInfo.metadata
+        const abandoned = recoveryMetadata?.claudeRewind
+        if (!pendingRewind && abandoned && ['requested', 'unknown'].includes(abandoned.phase)
+            && !abandoned.nativeSessionId) {
+            // Reservation may survive a crash before RPC receipt/journal write.
+            // Only reject it as unchanged when the current native tail is still
+            // one of the hub's completed, persisted prompts. A new/unmapped tail
+            // is indeterminate and must not be launched on the old branch.
+            const nativeSessionId = recoveryMetadata?.claudeSessionId
+            const turns = nativeSessionId ? readNativeTurns(workingDirectory, nativeSessionId) : []
+            const knownPrompts = new Set(Object.values(recoveryMetadata?.conversationHistoryEntryIds ?? {}))
+            const promptUuid = recoveryMetadata?.conversationHistoryEntryIds?.[abandoned.requestedLocalId]
+            if (!nativeSessionId || !promptUuid || !turns.at(-1) || !knownPrompts.has(turns.at(-1)!.promptUuid)) {
+                throw new Error('Unstaged rewind reservation cannot be reconciled with the native tail')
+            }
+            const plan = resolveRewindPlan(turns, promptUuid)
+            await reportRewind({
+                operationId: abandoned.operationId, requestedLocalId: abandoned.requestedLocalId,
+                cutoffSeq: abandoned.cutoffSeq, phase: 'pending', hubSessionId: sessionInfo.id,
+                nativeSessionId, workingDirectory, keepBoundary: plan.resumeSessionAt!,
+                dropFromLocalId: abandoned.requestedLocalId, droppedPrompts: [], baselineUuids: []
+            }, 'rejected')
+            recoveredUnstagedNativeId = nativeSessionId
+            session.sendSessionEvent({ type: 'message', message: 'Rewind was interrupted before durable staging; the original conversation is unchanged. Retry the rewind request.' })
+        }
         await loop({
             path: workingDirectory,
             model: currentModel,
@@ -784,9 +810,18 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                     const recovered = pendingRewind
                     sessionInstance.rewindProof = boundary => boundary === recovered.keepBoundary
                         && sessionInstance.sessionId === recovered.nativeSessionId
-                        && branchIsDurable(recovered)
+                        && Boolean(pendingRewind && pendingRewind.operationId === recovered.operationId && branchIsDurable(pendingRewind))
                 }
                 sessionInstance.onRewindBranchApplied = commitPendingRewind
+                sessionInstance.stageRewindInput = (localIds, text) => {
+                    if (!pendingRewind) return
+                    pendingRewind = { ...pendingRewind, stagedInput: { localIds: [...localIds], textHash: hashRewindInput(text) } }
+                    rewindStore.write(pendingRewind)
+                }
+                sessionInstance.isRewindInputAccepted = (localIds, text) => Boolean(pendingRewind
+                    && JSON.stringify(pendingRewind.stagedInput?.localIds) === JSON.stringify(localIds)
+                    && pendingRewind.stagedInput?.textHash === hashRewindInput(text)
+                    && branchIsDurable(pendingRewind))
                 sessionInstance.prepareHistoryAttempt = async () => {
                     if (!pendingRewind) return
                     if (sessionInstance.sessionId !== pendingRewind.nativeSessionId) {
@@ -869,7 +904,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             claudeEnvVars: options.claudeEnvVars,
             claudeArgs: options.claudeArgs,
             startedBy,
-            resumeSessionId: pendingRewind?.nativeSessionId ?? options.resumeSessionId,
+            resumeSessionId: pendingRewind?.nativeSessionId ?? recoveredUnstagedNativeId ?? options.resumeSessionId,
             hookSettingsPath,
             localHookSettingsPath
         });

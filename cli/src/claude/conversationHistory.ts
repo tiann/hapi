@@ -1,5 +1,6 @@
 import { closeSync, existsSync, fsyncSync, openSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 import { getProjectPath } from './utils/path'
 import { isExternalUserMessage } from '@/api/apiSession'
 import type { RawJSONLines } from '@/claude/types'
@@ -184,13 +185,31 @@ export function readTranscriptUuids(workingDirectory: string, sessionId: string)
  * alone is not enough. Sync the native file before committing the hub side. */
 export function hasDurableRewindBranch(
     workingDirectory: string, sessionId: string, boundary: string,
-    baseline: ReadonlySet<string>, droppedPrompts: readonly string[]
+    baseline: ReadonlySet<string>, droppedPrompts: readonly string[], expectedTextHash?: string
 ): boolean {
     if (!hasRewindProof(workingDirectory, sessionId, boundary, baseline)) return false
     const turns = readNativeTurns(workingDirectory, sessionId)
     if (!turns.some(turn => !baseline.has(turn.promptUuid))
         || turns.some(turn => droppedPrompts.includes(turn.promptUuid))) return false
+    if (expectedTextHash) {
+        const freshPrompts = new Set(turns.filter(turn => !baseline.has(turn.promptUuid)).map(turn => turn.promptUuid))
+        const entries = readFileSync(join(getProjectPath(workingDirectory), `${sessionId}.jsonl`), 'utf8').split('\n')
+        const matches = entries.some(line => {
+            let entry: TranscriptEntry
+            try { entry = JSON.parse(line) } catch { return false }
+            if (typeof entry.uuid !== 'string' || !freshPrompts.has(entry.uuid)) return false
+            const content = entry.message?.content
+            const text = typeof content === 'string' ? content : Array.isArray(content)
+                ? content.filter(block => block?.type === 'text').map(block => block.text).join('\n') : ''
+            return hashRewindInput(text) === expectedTextHash
+        })
+        if (!matches) return false
+    }
     const fd = openSync(join(getProjectPath(workingDirectory), `${sessionId}.jsonl`), 'r')
     try { fsyncSync(fd) } finally { closeSync(fd) }
     return true
+}
+
+export function hashRewindInput(text: string): string {
+    return createHash('sha256').update(text).digest('hex')
 }

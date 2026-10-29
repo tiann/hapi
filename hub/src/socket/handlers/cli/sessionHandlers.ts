@@ -1,6 +1,7 @@
 import type { ClientToServerEvents } from '@hapi/protocol'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import type { CopilotAgentMode } from '@hapi/protocol'
 import type { AgentState, BackgroundTask, CodexCollaborationMode, Metadata, PermissionMode } from '@hapi/protocol/types'
 import { getReasoningStreamId, isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
@@ -298,7 +299,15 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         const report = metadata && typeof metadata === 'object'
             ? (metadata as Record<string, unknown>).claudeRewind as { phase?: string } | undefined
             : undefined
-        const result = report && ['applied', 'unknown', 'rejected'].includes(report.phase ?? '')
+        const currentRewind = (sessionAccess.value.metadata as Metadata | null)?.claudeRewind
+        // Ordinary CLI writes spread their current metadata, including the
+        // Hub-owned rewind marker. An unchanged failure marker is not fresh
+        // native proof (and may refer to the session before a later /clear).
+        // Applied always remains a proof submission, including a lost-ACK retry
+        // against a committed marker, which must re-ACK without truncating.
+        const carriedFailure = report && ['unknown', 'rejected'].includes(report.phase ?? '')
+            && isDeepStrictEqual(report, currentRewind)
+        const result = report && !carriedFailure && ['applied', 'unknown', 'rejected'].includes(report.phase ?? '')
             ? deps.onClaudeRewindApplied?.(sid, {
                 ...(preserveHubOwnedMetadata(metadata, sessionAccess.value.metadata) as object),
                 claudeRewind: report

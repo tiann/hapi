@@ -55,6 +55,8 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     onRewindBranchApplied: (() => Promise<void>) | null = null;
     onRewindFailure: ((error: string, unchanged: boolean) => Promise<void>) | null = null;
     prepareHistoryAttempt: (() => Promise<void>) | null = null;
+    stageRewindInput: ((localIds: string[], text: string) => void) | null = null;
+    isRewindInputAccepted: ((localIds: string[], text: string) => boolean) | null = null;
 
     constructor(opts: {
         api: ApiClient;

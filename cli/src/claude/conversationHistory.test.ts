@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readNativeTurns, readTranscriptUuids, resolveRewindPlan, supportsNativeRewind, hasRewindProof, hasDurableRewindBranch } from './conversationHistory'
+import { readNativeTurns, readTranscriptUuids, resolveRewindPlan, supportsNativeRewind, hasRewindProof, hasDurableRewindBranch, hashRewindInput } from './conversationHistory'
 import { getProjectPath } from './utils/path'
 
 const CWD = '/tmp/rewind-fixture-project'
@@ -98,6 +98,8 @@ describe('rewind native acceptance proof', () => {
             expect(hasDurableRewindBranch(CWD, 'session-a', 'as1', baseline, ['dropped'])).toBe(false)
             appendFileSync(file, line({ type: 'user', uuid: 'new', parentUuid: 'as1', message: { role: 'user', content: 'count' } }) + '\n')
             expect(hasDurableRewindBranch(CWD, 'session-a', 'as1', baseline, ['dropped'])).toBe(true)
+            expect(hasDurableRewindBranch(CWD, 'session-a', 'as1', baseline, ['dropped'], hashRewindInput('count'))).toBe(true)
+            expect(hasDurableRewindBranch(CWD, 'session-a', 'as1', baseline, ['dropped'], hashRewindInput('different input'))).toBe(false)
             expect(hasDurableRewindBranch(CWD, 'other-native', 'as1', baseline, ['dropped'])).toBe(false)
             expect(hasDurableRewindBranch(CWD, 'session-a', 'other-keep', baseline, ['dropped'])).toBe(false)
             appendFileSync(file, line({ type: 'user', uuid: 'wrong-branch', parentUuid: 'dropped', message: { role: 'user', content: 'bad' } }) + '\n')

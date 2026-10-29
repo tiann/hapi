@@ -1975,7 +1975,7 @@ export class SyncEngine {
                     }
                     return this.store.sessions.updateSessionMetadata(sessionId, {
                         ...next, claudeRewind: report,
-                        conversationHistoryDiverged: report.phase === 'unknown' ? true : metadata.conversationHistoryDiverged
+                        conversationHistoryDiverged: report.phase === 'unknown'
                     }, expectedVersion, current.namespace)
                 }
                 if (!['requested', 'pending', 'applied', 'unknown'].includes(prior.phase)) throw new Error('Rewind is not pending')
@@ -2377,6 +2377,10 @@ export class SyncEngine {
 
     async switchSession(sessionId: string, to: 'remote' | 'local'): Promise<void> {
         if (this.getSession(sessionId)?.metadata?.capabilities?.concurrentClients) throw new Error('control_mode_not_applicable')
+        const rewind = (this.store.sessions.getSession(sessionId)?.metadata as Metadata | null)?.claudeRewind
+        if (to === 'local' && rewind && ['requested', 'pending', 'applied', 'unknown'].includes(rewind.phase)) {
+            throw new Error('Cannot switch to local mode while Claude rewind is pending')
+        }
         if (this.historyActionsInFlight.has(sessionId)) {
             throw new Error('Conversation history action already in progress')
         }

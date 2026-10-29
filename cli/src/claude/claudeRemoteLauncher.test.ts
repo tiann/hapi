@@ -14,7 +14,8 @@ const harness = vi.hoisted(() => ({
     initialMessages: [] as string[],
     triggerSwitch: null as (() => void) | null,
     switchAfterCall: 2,
-    compactContextTokens: null as number | null
+    compactContextTokens: null as number | null,
+    remoteImplementation: null as ((opts: any) => Promise<void>) | null
 }))
 
 vi.mock('./claudeRemote', () => ({
@@ -23,6 +24,7 @@ vi.mock('./claudeRemote', () => ({
 
         harness.callCount += 1
         harness.claudeArgsPerCall.push(opts.claudeArgs ? [...opts.claudeArgs] : opts.claudeArgs)
+        if (harness.remoteImplementation) return harness.remoteImplementation(opts)
 
         const initial = await opts.nextMessage()
         if (!initial) {
@@ -128,7 +130,8 @@ const RESUME_ARGS = ['--resume', 'original-session-id']
 // no-resume test a --resume flag it is supposed to be running without.
 function createSession(
     client: ReturnType<typeof createClientStub>,
-    claudeArgs: string[] | undefined
+    claudeArgs: string[] | undefined,
+    startedBy: 'runner' | 'terminal' = 'runner'
 ) {
     const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode))
     const session = new Session({
@@ -144,7 +147,7 @@ function createSession(
         onModeChange: () => {},
         allowedTools: [],
         mode: 'remote',
-        startedBy: 'runner',
+        startedBy,
         startingMode: 'remote',
         hookSettingsPath: '/tmp/hook.json',
         permissionMode: 'default'
@@ -161,7 +164,7 @@ describe('claudeRemoteLauncher resume anchor', () => {
         session.rewindProof = () => false
         harness.compactContextTokens = 100
         harness.switchAfterCall = 1
-        harness.triggerSwitch = () => { client.rpcHandlers.get(RPC_METHODS.Switch)?.() }
+        harness.triggerSwitch = () => { session.rewindProof = null; client.rpcHandlers.get(RPC_METHODS.Switch)?.() }
         queue.push('follow-up', { permissionMode: 'default' }, 'local-follow-up')
         try {
             await claudeRemoteLauncher(session as any)
@@ -177,7 +180,73 @@ describe('claudeRemoteLauncher resume anchor', () => {
         harness.triggerSwitch = null
         harness.switchAfterCall = 2
         harness.compactContextTokens = null
+        harness.remoteImplementation = null
         vi.clearAllMocks()
+    })
+
+    it('restores a later unaccepted batch after the rewound batch completed in the same attempt', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        const delivered: string[] = []
+        session.onRewindBranchApplied = async () => {}
+        queue.push('rewound input', { permissionMode: 'default' }, 'q1')
+        harness.remoteImplementation = async opts => {
+            if (harness.callCount === 1) {
+                delivered.push((await opts.nextMessage()).message)
+                await opts.onRewindBranchApplied()
+                await opts.onReady()
+                queue.push('later input', { permissionMode: 'default' }, 'q2')
+                delivered.push((await opts.nextMessage()).message)
+                throw new Error('stream failed before later input acceptance')
+            }
+            delivered.push(queue.size() > 0 ? (await opts.nextMessage()).message : 'missing later input')
+            await opts.onReady()
+            void client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+        }
+        try {
+            await claudeRemoteLauncher(session as any)
+            expect(delivered).toEqual(['rewound input', 'later input', 'later input'])
+            expect(queue.size()).toBe(0)
+        } finally { session.stopKeepAlive() }
+    })
+
+    it.each([true, false])('checks exact native batch acceptance before poll on failure (accepted=%s)', async accepted => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        const ownership = vi.fn((ids: string[], text: string) => accepted && ids.join(',') === 'q1' && text === 'one input')
+        session.isRewindInputAccepted = ownership
+        session.stageRewindInput = vi.fn()
+        queue.push('one input', { permissionMode: 'default' }, 'q1')
+        harness.remoteImplementation = async opts => {
+            if (harness.callCount === 1) {
+                await opts.nextMessage()
+                // Native write precedes this failure; no applied callback ran.
+                throw new Error('stream failed before first proof tick')
+            }
+            void client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+        }
+        try {
+            await claudeRemoteLauncher(session as any)
+            expect(session.stageRewindInput).toHaveBeenCalledWith(['q1'], 'one input')
+            expect(queue.size()).toBe(accepted ? 0 : 1)
+        } finally { session.stopKeepAlive() }
+    })
+
+    it('blocks the shared terminal/RPC local-switch handler until pending rewind settles', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined, 'terminal')
+        session.rewindProof = () => false
+        queue.push('one input', { permissionMode: 'default' }, 'q1')
+        harness.remoteImplementation = async opts => {
+            await opts.nextMessage()
+            await client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            expect(opts.signal.aborted).toBe(false)
+            session.rewindProof = null
+            void client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            expect(opts.signal.aborted).toBe(true)
+        }
+        try { expect(await claudeRemoteLauncher(session as any)).toBe('switch') }
+        finally { session.stopKeepAlive() }
     })
 
     it('keeps --resume available for the launch that actually captures the session id', async () => {

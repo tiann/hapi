@@ -98,6 +98,11 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleSwitchRequest(): Promise<void> {
+        const rewind = this.session.client.getMetadata?.()?.claudeRewind;
+        if (this.session.rewindProof || (rewind && ['requested', 'pending', 'applied', 'unknown'].includes(rewind.phase))) {
+            this.session.client.sendSessionEvent({ type: 'message', message: 'Complete the pending rewind before switching to local mode' });
+            return;
+        }
         logger.debug('[remote]: doSwitch');
         await this.requestExit('switch', async () => {
             await this.abort();
@@ -462,6 +467,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                     deliveredText,
                                     p.items.flatMap((item) => item.localId ? [item.localId] : [])
                                 )
+                                rewindInputAccepted = false;
+                                session.stageRewindInput?.(p.items.flatMap(item => item.localId ? [item.localId] : []), deliveredText);
                                 return { ...p, message: deliveredText };
                             }
 
@@ -493,6 +500,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 deliveredMessageThisAttempt = true;
                                 const deliveredText = session.expandSkillReference(msg.message)
                                 inFlightMessage = { items: msg.items, mode: msg.mode, isolate: msg.isolate, deliveredText };
+                                rewindInputAccepted = false;
+                                session.stageRewindInput?.(msg.items.flatMap(item => item.localId ? [item.localId] : []), deliveredText);
                                 session.client.notePendingHubPromptEcho(
                                     deliveredText,
                                     msg.items.flatMap((item) => item.localId ? [item.localId] : [])
@@ -562,6 +571,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             const completedLocalIds = inFlightMessage?.items
                                 .flatMap((item) => item.localId ? [item.localId] : []) ?? [];
                             inFlightMessage = null;
+                            rewindInputAccepted = false;
                             if (completedLocalIds.length > 0) {
                                 await session.onUserTurnCompleted?.(completedLocalIds);
                             }
@@ -665,6 +675,15 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     }
                 } catch (e) {
                     logger.debug('[remote]: launch error', e);
+                    // The stream can fail between the native write and the
+                    // next proof tick. Check this exact batch before restoring
+                    // it; elapsed polling time never determines ownership.
+                    if (inFlightMessage && !rewindInputAccepted) {
+                        rewindInputAccepted = session.isRewindInputAccepted?.(
+                            inFlightMessage.items.flatMap(item => item.localId ? [item.localId] : []),
+                            inFlightMessage.deliveredText
+                        ) === true;
+                    }
                     if (rewindInputAccepted) inFlightMessage = null;
                     // Reporting an unknown outcome must not bypass the queue's
                     // restore decision when the hub is temporarily unreachable.
