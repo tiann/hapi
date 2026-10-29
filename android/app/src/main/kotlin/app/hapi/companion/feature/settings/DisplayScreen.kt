@@ -319,7 +319,6 @@ private fun StepperRow(
     }
 }
 
-private data class ChoiceOption<T>(val label: String, val value: T)
 
 /** One-of-N segmented picker under its label (web SettingsChoiceGroup twin). */
 @OptIn(ExperimentalMaterial3Api::class)
