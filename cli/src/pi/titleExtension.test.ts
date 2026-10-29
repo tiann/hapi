@@ -103,6 +103,9 @@ describe('materializePiTitleExtension', () => {
         });
         expect(setTitle).toHaveBeenCalledWith('Fix login bug');
         expect(result.content[0].text).toContain('Fix login bug');
+        expect(result.content[0].text).toContain('Title update requested');
+        expect(result.content[0].text).toContain('locked');
+        expect(result.content[0].text).not.toContain('Session title set');
 
         // Legacy Pi call order (id, params, onUpdate, ctx, signal) with RPC
         // reporting hasUI: false — the context must still be normalized and

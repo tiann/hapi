@@ -14,6 +14,7 @@ import {
     type ControlResponseHandler,
     type SDKControlRequest,
     type ControlRequest,
+    type SetPermissionModeRequest,
     type SDKControlResponse,
     type CanCallToolCallback,
     type CanUseToolControlRequest,
@@ -28,6 +29,7 @@ import { killProcessByChildProcess } from '@/utils/process'
 import { stripNewlinesForWindowsShellArg } from '@/utils/shellEscape'
 import type { Writable } from 'node:stream'
 import { logger } from '@/ui/logger'
+import type { ClaudePermissionMode } from '@hapi/protocol/types'
 import { appendMcpConfigArg } from '../utils/mcpConfig'
 
 const DEFAULT_PROMPT_FAILURE_CLEANUP_TIMEOUT_MS = 3_000
@@ -176,6 +178,20 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
         await this.request({
             subtype: 'interrupt'
         }, this.childStdin)
+    }
+
+    /**
+     * Change Claude's native permission mode without restarting the process
+     */
+    async setPermissionMode(mode: ClaudePermissionMode): Promise<void> {
+        if (!this.childStdin) {
+            throw new Error('setPermissionMode requires --input-format stream-json')
+        }
+
+        await this.request({
+            subtype: 'set_permission_mode',
+            mode
+        } as SetPermissionModeRequest, this.childStdin)
     }
 
     /**

@@ -940,7 +940,7 @@ class NewSessionViewModel(
         val permission: PermissionUi = when {
             agent == "pi" || agent == "dsh" -> PermissionUi.Managed
             usesNativePermissionSelect(agent) -> PermissionUi.NativeSelect(
-                PermissionModes.forLaunch(agent).map { mode ->
+                PermissionModes.forFlavor(agent).map { mode ->
                     val unavailable = grokAutoUnavailable && mode == PermissionMode.Auto
                     OptionItem(
                         value = mode.wireId,

@@ -170,13 +170,21 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     const prepare = async (cwd: string, existingSessionId?: string, parent?: SharedCodexRoot): Promise<SharedCodexRoot> => {
         assertRunning();
         const shared = { flavor: 'codex', startedBy: options.startedBy ?? 'terminal', workingDirectory: cwd,
-            exportSessionEnv: false, reportStarted: false, metadataOverrides: { capabilities: { terminal: true, concurrentClients: true },
+            exportSessionEnv: false, reportStarted: false, metadataOverrides: { capabilities: {
+                terminal: true,
+                concurrentClients: true,
+                ...(existingSessionId ? { conversationHistory: undefined } : {})
+            },
                 ...(parent ? { forkedFrom: parent.session.sessionId } : {}) } } as const;
         // reservedSessionId names one preallocated hub row — single-use. A second
         // create()/fork must mint a fresh row, not re-adopt (#1911 Opus Major).
         const reservedSessionId = takeReservedSessionId(options);
         const bootstrap = existingSessionId
-            ? await bootstrapExistingSession({ ...shared, sessionId: existingSessionId })
+            ? await bootstrapExistingSession({
+                ...shared,
+                sessionId: existingSessionId,
+                requireMetadataFlush: metadata => Boolean(metadata?.capabilities?.conversationHistory)
+            })
             : await bootstrapSession({
                 ...shared,
                 reservedSessionId,
@@ -216,7 +224,11 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         await root.activate(initialOptions);
         await root.session.flush();
         await persist();
-        await notifyRunnerSessionStarted(root.session.sessionId, root.session.getMetadata() ?? root.bootstrap.metadata);
+        // The hub's view of the metadata is what the hub kept of it: a hub
+        // without the field strips hostStartMarker, and the runner ignores an
+        // untracked runner-started webhook that cannot prove its process
+        // generation. The marker therefore comes from the local bootstrap.
+        await notifyRunnerSessionStarted(root.session.sessionId, { ...(root.session.getMetadata() ?? root.bootstrap.metadata), hostStartMarker: root.bootstrap.metadata.hostStartMarker });
     };
     const create = (method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot, initialOptions?: SharedLaunchOptions): Promise<SharedCodexRoot> => operation(async () => {
         const root = await prepare(string(params.cwd) ?? launch.cwd, undefined, parent);

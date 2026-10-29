@@ -35,6 +35,7 @@ data class Session(
     val seq: Long,
     val createdAt: Long,
     val updatedAt: Long,
+    val lastUserMessageAt: Long? = null,
     val pinned: Boolean? = null,
     val globalPinned: Boolean? = null,
     val active: Boolean,

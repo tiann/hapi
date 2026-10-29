@@ -344,6 +344,76 @@ describe('AgyHeadlessDriver', () => {
         );
     });
 
+    it('reports the failure reason instead of echoing the answer', async () => {
+        const { session, queue, client } = createSession();
+        // A failed envelope still carries the answer in `response` (agy fills it
+        // from the completed buffer). Surfacing that as the failure text repeats
+        // the whole answer in the chat; the reason lives in `error`.
+        const stream = [
+            '{"event":"init","conversation_id":"c-e","init":{}}',
+            '{"event":"step_update","step_update":{"conversation_id":"c-e","step_index":2,"state":"ACTIVE","step_type":"agent_response","text_delta":"the answer"}}',
+            '{"event":"step_update","step_update":{"conversation_id":"c-e","step_index":2,"state":"DONE","step_type":"agent_response","text_delta":""}}',
+            '{"event":"result","result":{"conversation_id":"c-e","status":"ERROR","response":"the answer","error":"quota exceeded"}}',
+        ];
+        const driver = new AgyHeadlessDriver({ session, spawnAgy: () => fakeAgyProcess(stream) });
+
+        queue.push('hello', { permissionMode: 'request-review' }, 'local-1');
+        const launchPromise = driver.launch();
+        await new Promise((r) => setTimeout(r, 500));
+        queue.close();
+        session.stopKeepAlive();
+        await launchPromise;
+
+        expect(client.sendSessionEvent).toHaveBeenCalledWith(
+            expect.objectContaining({ type: 'error', message: 'quota exceeded' })
+        );
+        const echoed = client.sendSessionEvent.mock.calls
+            .filter(([e]) => e.type === 'error' && typeof e.message === 'string' && e.message.includes('the answer'));
+        expect(echoed).toHaveLength(0);
+    });
+
+    it('falls back to the status when a failed envelope carries no reason', async () => {
+        const { session, queue, client } = createSession();
+        const stream = [
+            '{"event":"init","conversation_id":"c-n","init":{}}',
+            '{"event":"step_update","step_update":{"conversation_id":"c-n","step_index":2,"state":"ACTIVE","step_type":"agent_response","text_delta":"the answer"}}',
+            '{"event":"step_update","step_update":{"conversation_id":"c-n","step_index":2,"state":"DONE","step_type":"agent_response","text_delta":""}}',
+            '{"event":"result","result":{"conversation_id":"c-n","status":"ERROR","response":"the answer"}}',
+        ];
+        const driver = new AgyHeadlessDriver({ session, spawnAgy: () => fakeAgyProcess(stream) });
+
+        queue.push('hello', { permissionMode: 'request-review' }, 'local-1');
+        const launchPromise = driver.launch();
+        await new Promise((r) => setTimeout(r, 500));
+        queue.close();
+        session.stopKeepAlive();
+        await launchPromise;
+
+        expect(client.sendSessionEvent).toHaveBeenCalledWith(
+            expect.objectContaining({ type: 'error', message: 'agy turn failed: ERROR' })
+        );
+    });
+
+    it('surfaces a timeout reason from a failed envelope', async () => {
+        const { session, queue, client } = createSession();
+        const stream = [
+            '{"event":"init","conversation_id":"c-t","init":{}}',
+            '{"event":"result","result":{"conversation_id":"c-t","status":"ERROR","response":"","error":"timeout waiting for response"}}',
+        ];
+        const driver = new AgyHeadlessDriver({ session, spawnAgy: () => fakeAgyProcess(stream) });
+
+        queue.push('hello', { permissionMode: 'request-review' }, 'local-1');
+        const launchPromise = driver.launch();
+        await new Promise((r) => setTimeout(r, 500));
+        queue.close();
+        session.stopKeepAlive();
+        await launchPromise;
+
+        expect(client.sendSessionEvent).toHaveBeenCalledWith(
+            expect.objectContaining({ type: 'error', message: 'timeout waiting for response' })
+        );
+    });
+
     it('does NOT ack the delivery when the turn fails before accepting the prompt', async () => {
         const { session, queue, client } = createSession();
         // Exit non-zero with no user_input step and no result: the prompt was

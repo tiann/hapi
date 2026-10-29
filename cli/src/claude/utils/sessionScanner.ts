@@ -2,7 +2,7 @@ import { RawJSONLines, RawJSONLinesSchema } from "../types";
 import { basename, dirname, join } from "node:path";
 import { open, readdir, readFile, stat } from "node:fs/promises";
 import { logger } from "@/ui/logger";
-import { getProjectPath } from "./path";
+import { getClaudeProjectsDir, getProjectPath } from "./path";
 import { BaseSessionScanner, SessionFileScanEntry, SessionFileScanResult, SessionFileScanStats } from "@/modules/common/session/BaseSessionScanner";
 
 /**
@@ -51,6 +51,8 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
     private readonly scannedSessions = new Set<string>();
     // Subagent transcript path → spawning Agent/Task tool_use id, from its meta.json.
     private readonly subagentParents = new Map<string, string>();
+    // Session id → transcript path, once Claude Code has relocated it.
+    private readonly sessionFiles = new Map<string, string>();
 
     constructor(opts: { sessionId: string | null; workingDirectory: string; onMessage: (message: RawJSONLines) => void }) {
         super({ intervalMs: 3000 });
@@ -84,13 +86,13 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
         if (!this.currentSessionId) {
             return;
         }
-        const sessionFile = this.sessionFilePath(this.currentSessionId);
+        const sessionFile = await this.resolveSessionFile(this.currentSessionId);
         const { events, nextCursor } = await readSessionLog(sessionFile, 0);
         logger.debug(`[SESSION_SCANNER] Marking ${events.length} existing messages as processed from session ${this.currentSessionId}`);
         const keys = events.map((entry) => messageKey(entry.event));
         this.seedProcessedKeys(keys);
         this.setCursor(sessionFile, nextCursor);
-        for (const subagentFile of await this.subagentFilePaths(this.currentSessionId)) {
+        for (const subagentFile of await this.subagentFilePaths(sessionFile)) {
             const existing = await readSessionLog(subagentFile, 0);
             this.seedProcessedKeys(existing.events.map((entry) => messageKey(entry.event)));
             this.setCursor(subagentFile, existing.nextCursor);
@@ -104,17 +106,14 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
     protected async findSessionFiles(): Promise<string[]> {
         const files = new Set<string>();
         for (const sessionId of this.pendingSessions) {
-            files.add(this.sessionFilePath(sessionId));
+            files.add(await this.resolveSessionFile(sessionId));
         }
         if (this.currentSessionId && !this.pendingSessions.has(this.currentSessionId)) {
-            files.add(this.sessionFilePath(this.currentSessionId));
+            files.add(await this.resolveSessionFile(this.currentSessionId));
         }
         for (const sessionFile of [...files]) {
-            const sessionId = sessionIdFromPath(sessionFile);
-            if (sessionId) {
-                for (const subagentFile of await this.subagentFilePaths(sessionId)) {
-                    files.add(subagentFile);
-                }
+            for (const subagentFile of await this.subagentFilePaths(sessionFile)) {
+                files.add(subagentFile);
             }
         }
         for (const watched of this.getWatchedFiles()) {
@@ -172,14 +171,38 @@ class ClaudeSessionScanner extends BaseSessionScanner<RawJSONLines> {
         }
     }
 
-    private sessionFilePath(sessionId: string): string {
-        return join(this.projectDir, `${sessionId}.jsonl`);
+    // Claude Code moves the transcript to the project dir of the new cwd when
+    // the session enters or leaves a git worktree, so look for it by session id
+    // across all project dirs once the known path is gone.
+    private async resolveSessionFile(sessionId: string): Promise<string> {
+        const known = this.sessionFiles.get(sessionId) ?? join(this.projectDir, `${sessionId}.jsonl`);
+        if (await isFile(known)) {
+            return known;
+        }
+        const projectsDir = getClaudeProjectsDir();
+        let newest: { path: string; mtimeMs: number } | null = null;
+        for (const dir of await readdir(projectsDir).catch(() => [])) {
+            const candidate = join(projectsDir, dir, `${sessionId}.jsonl`);
+            const mtimeMs = await stat(candidate).then((s) => s.mtimeMs, () => null);
+            if (mtimeMs !== null && (!newest || mtimeMs > newest.mtimeMs)) {
+                newest = { path: candidate, mtimeMs };
+            }
+        }
+        if (!newest || newest.path === known) {
+            return known;
+        }
+        logger.debug(`[SESSION_SCANNER] Session ${sessionId} transcript moved to ${newest.path}`);
+        this.sessionFiles.set(sessionId, newest.path);
+        // Re-read the moved file from the top; processed event keys drop what was already sent.
+        this.setCursor(newest.path, 0);
+        this.pruneWatchers(this.getWatchedFiles().filter((file) => file !== known));
+        return newest.path;
     }
 
     // Claude Code 2.x writes each subagent to <session>/subagents/agent-*.jsonl
     // instead of the main session log.
-    private async subagentFilePaths(sessionId: string): Promise<string[]> {
-        const dir = join(this.projectDir, sessionId, 'subagents');
+    private async subagentFilePaths(sessionFile: string): Promise<string[]> {
+        const dir = join(sessionFile.slice(0, -'.jsonl'.length), 'subagents');
         try {
             return (await readdir(dir))
                 .filter((name) => name.startsWith('agent-') && name.endsWith('.jsonl'))
@@ -344,6 +367,10 @@ export async function readSessionLog(filePath: string, startByte: number): Promi
         }
     }
     return { events: messages, nextCursor };
+}
+
+async function isFile(filePath: string): Promise<boolean> {
+    return stat(filePath).then((s) => s.isFile(), () => false);
 }
 
 function isSubagentFile(filePath: string): boolean {

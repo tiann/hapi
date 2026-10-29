@@ -804,7 +804,8 @@ export class AcpSdkBackend implements AgentBackend {
      */
     beginSoftSteerPrompt(sessionId: string, content: PromptContent[]): {
         dispatched: Promise<void>;
-        completed: Promise<void>;
+        /** Resolves with the ACP stopReason (`cancelled` after session/cancel). */
+        completed: Promise<string | null>;
     } {
         if (!this.transport) {
             throw new Error('ACP transport not initialized');
@@ -821,7 +822,8 @@ export class AcpSdkBackend implements AgentBackend {
         }, { timeoutMs: Infinity, dispatchTimeoutMs: 20_000 });
         const completed = (async () => {
             try {
-                await request.completed;
+                const response = await request.completed;
+                return isObject(response) ? asString(response.stopReason) : null;
             } finally {
                 try {
                     await this.waitForSessionUpdateQuiet(

@@ -108,6 +108,8 @@
 
     <!-- Settings scaffold (B-M4e) -->
     <string name="settings_title">Настройки</string>
+    <string name="settings_category_general">Основные</string>
+    <string name="settings_category_general_summary">Внешний вид, язык и о приложении</string>
     <string name="settings_back">Назад</string>
     <string name="settings_cancel">Отмена</string>
     <string name="settings_retry">Повторить</string>

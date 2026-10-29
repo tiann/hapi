@@ -1,7 +1,8 @@
 import React from "react";
 import { Session } from "./session";
 import { RemoteModeDisplay } from "@/ui/ink/RemoteModeDisplay";
-import { claudeRemote } from "./claudeRemote";
+import { claudeRemote, type CompactSummaryPayload } from "./claudeRemote";
+import { convertAgentMessage } from "@/agent/messageConverter";
 import { PermissionHandler } from "./utils/permissionHandler";
 import { Future } from "@/utils/future";
 import { SDKAssistantMessage, SDKMessage, SDKUserMessage } from "./sdk";
@@ -12,7 +13,7 @@ import { PLAN_FAKE_REJECT } from "./sdk/prompts";
 import { EnhancedMode } from "./loop";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
 import type { ClaudePermissionMode } from "@hapi/protocol/types";
-import { applySessionTitleFallback } from './utils/sessionTitleFallback';
+import { applySessionTitleFallback, readNativeSessionTitle, stripAttachmentReferences } from './utils/sessionTitleFallback';
 import {
     RemoteLauncherBase,
     type RemoteLauncherDisplayContext,
@@ -388,6 +389,13 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         mcpServers: session.mcpServers,
                         hookSettingsPath: session.hookSettingsPath,
                         canCallTool: permissionHandler.handleToolCall,
+                        setPermissionModeListener: session.setPermissionModeListener,
+                        onPermissionModeRejected: (mode, reason) => {
+                            session.setPermissionMode(mode);
+                            session.pushKeepAlive();
+                            session.client.sendSessionEvent({ type: 'permission-mode-changed', mode });
+                            session.client.sendSessionEvent({ type: 'message', message: reason });
+                        },
                         bootstrapMode: {
                             permissionMode: session.getPermissionMode() ?? 'default',
                             model: session.getModel() ?? undefined,
@@ -490,7 +498,20 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         claudeArgs: session.claudeArgs,
                         onMessage,
                         onFirstResult: (initialMessage) => {
-                            applySessionTitleFallback(session.client, initialMessage);
+                            // SDK streams omit Claude Code's native ai-title; it is only in the transcript.
+                            const sessionId = session.sessionId;
+                            void (sessionId ? readNativeSessionTitle(session.path, sessionId) : Promise.resolve(null))
+                                .then((nativeTitle) => applySessionTitleFallback(
+                                    session.client,
+                                    nativeTitle ?? stripAttachmentReferences(initialMessage)
+                                ));
+                        },
+                        onCompactResultAccepted: () => {
+                            // The command has completed at the SDK boundary even
+                            // if transcript summary lookup is still pending. A
+                            // later stream failure must not replay /compact.
+                            reachedReadyThisAttempt = true;
+                            inFlightMessage = null;
                         },
                         onCompletionEvent: (message: string) => {
                             logger.debug(`[remote]: Completion event: ${message}`);
@@ -507,7 +528,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // just asked to clear.
                             session.consumeOneTimeFlags();
                         },
-                        onReady: async (completionEvent?: string) => {
+                        onReady: async (completionEvent?: string, compactSummary?: CompactSummaryPayload, compactContextTokens?: number) => {
                             // Reaching ready at all means this attempt is not an
                             // immediate/deterministic failure -- reset the
                             // respawn-storm guard. The turn that led here is no
@@ -520,6 +541,36 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             if (completionEvent) {
                                 logger.debug(`[remote]: Completion event: ${completionEvent}`);
                                 session.client.sendSessionEvent({ type: 'message', message: completionEvent });
+                            }
+                            if (compactSummary) {
+                                logger.debug(`[remote]: Compact summary promoted (${compactSummary.summary.length} chars)`);
+                                session.client.sendSessionEvent({
+                                    type: 'compact-summary',
+                                    summary: compactSummary.summary,
+                                    tokensBefore: compactSummary.tokensBefore,
+                                    estimatedTokensAfter: compactSummary.tokensAfter
+                                });
+                            }
+                            if (compactContextTokens !== undefined) {
+                                // The status bar keeps the last pre-compaction
+                                // usage until the next model response; refresh
+                                // it with the boundary's post-tokens the same
+                                // way the Pi launcher does. Carry the resolved
+                                // context window along: the reducer replaces
+                                // latestUsage wholesale, so a context-only
+                                // sample would otherwise drop a known window
+                                // (e.g. 1M) and fall back to the heuristic.
+                                const convertedUsage = convertAgentMessage(
+                                    {
+                                        type: 'usage',
+                                        inputTokens: 0,
+                                        outputTokens: 0,
+                                        contextTokens: compactContextTokens,
+                                        contextWindow: sdkToLogConverter.currentContextWindow()
+                                    },
+                                    session.getModel()
+                                );
+                                if (convertedUsage) session.client.sendAgentMessage(convertedUsage);
                             }
 
                             logger.debug(

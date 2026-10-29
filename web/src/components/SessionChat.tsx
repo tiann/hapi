@@ -9,6 +9,7 @@ import { ApiError, type ApiClient } from '@/api/client'
 import type {
     AgyModelSummary,
     AttachmentMetadata,
+    ClaudeModelSummary,
     CodexCollaborationMode,
     CodexModelSummary,
     CopilotAgentMode,
@@ -28,6 +29,7 @@ import { buildVisibleChatBlocks, isToolGroupBlock, type ToolGroupBlock } from '@
 import { useUnseenBlockCount } from '@/hooks/useUnseenBlockCount'
 import { useCodexExplorationCollapse } from '@/hooks/useCodexExplorationCollapse'
 import { isQueuedForInvocation } from '@/lib/messages'
+import { sendVoiceMessage } from '@/lib/dictationSend'
 import { inactiveSessionCanResume } from '@/lib/sessionResume'
 import {
     getCodexModelReasoningEfforts,
@@ -61,6 +63,8 @@ import {
 } from '@/lib/messageDelivery'
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import { isSteeringSupportedForSession } from '@hapi/protocol'
+import { getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
+import { getClaudeCatalogOptions } from '@/components/AssistantChat/modelOptions'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
 import { rewindMessageWindow, type OlderLoadOutcome } from '@/lib/message-window-store'
 import { ShareSeedConsumer } from '@/components/ShareSeedConsumer'
@@ -91,11 +95,13 @@ import { TeamPanel } from '@/components/TeamPanel'
 import { SessionStatusPanel } from '@/components/SessionStatusPanel'
 import { buildSessionStatusData } from '@/chat/sessionStatus'
 import { usePlatform } from '@/hooks/usePlatform'
+import { getToolCardDisplayPresentation, useToolCardDisplayMode } from '@/hooks/useToolCardDisplayMode'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useCursorModels } from '@/hooks/queries/useCursorModels'
 import { useCursorModelsForMachine } from '@/hooks/queries/useCursorModelsForMachine'
 import { useAgyModels } from '@/hooks/queries/useAgyModels'
+import { useClaudeModels } from '@/hooks/queries/useClaudeModels'
 import {
     mergeCursorCliModelSkus,
     resolveCursorBaseFromWire
@@ -179,6 +185,23 @@ export function buildAgyComposerModelOptions(
         value: model.modelId,
         label: model.name ?? model.modelId
     }))
+}
+
+/**
+ * The effort to send along with a model change, or undefined to leave it.
+ * Only a Claude catalog carries per-model effort levels, so other flavors
+ * (whose catalog here is empty) never get one.
+ */
+export function resolveEffortForModelChange(args: {
+    currentEffort: string | null
+    model: SessionModelSelection
+    claudeModels: readonly ClaudeModelSummary[]
+}): { effort: string | null } | undefined {
+    if (typeof args.model === 'object' && args.model !== null) {
+        return undefined
+    }
+    const effort = resolveClaudeEffortForModel(args.currentEffort, args.model, args.claudeModels)
+    return effort === args.currentEffort ? undefined : { effort }
 }
 
 export async function applyModelChangeWithReasoningRollback(args: {
@@ -596,6 +619,10 @@ type SessionChatProps = {
     ) => Promise<SendMessageAcceptance | false>
     resolveSessionIdForUpload?: (sessionId: string) => Promise<string>
     onUploadSessionResolved?: (sessionId: string) => void
+    /** Inactive-session resume for voice dictation direct-sends; see HappyComposer. */
+    resolveSessionIdForVoice?: (sessionId: string) => Promise<{ sessionId: string; resumed: boolean }>
+    /** Navigate/seed after a voice direct-send resumed an inactive session. */
+    onVoiceSessionResolved?: (sessionId: string) => void
     onViewModeChange: (mode: 'tail' | 'history') => void
     onRetryMessage?: (localId: string) => void
     autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
@@ -639,6 +666,8 @@ function SessionChatInner(props: SessionChatProps) {
     const { t } = useTranslation()
     const { codexExplorationCollapsed } = useCodexExplorationCollapse()
     const navigate = useNavigate()
+    const { toolCardDisplayMode } = useToolCardDisplayMode()
+    const { groupingMode: toolGroupingMode } = getToolCardDisplayPresentation(toolCardDisplayMode)
     const [historyActionPending, setHistoryActionPending] = useState(false)
     const [rewindForkFallback, setRewindForkFallback] = useState<string | null>(null)
 
@@ -701,6 +730,7 @@ function SessionChatInner(props: SessionChatProps) {
     const focusComposerRef = useRef<(() => void) | null>(null)
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
     const visibleGroupsRef = useRef<ToolGroupBlock[]>([])
+    const visibleGroupsModeRef = useRef(toolGroupingMode)
     const [rememberedTailBoundary, setRememberedTailBoundary] = useState<{
         id: string | null
         tailRevision: number
@@ -1000,6 +1030,7 @@ function SessionChatInner(props: SessionChatProps) {
         api: props.api,
         sessionId: props.session.id,
         machineId: props.session.metadata?.machineId ?? null,
+        preferSession: props.session.metadata?.capabilities?.concurrentClients === true,
         enabled: agentFlavor === 'codex' && props.session.active && !controlledByUser
     })
     const effectiveCodexServiceTier = agentFlavor === 'codex'
@@ -1152,8 +1183,7 @@ function SessionChatInner(props: SessionChatProps) {
             machineModels: machineCursorModelsState.availableModels,
             cliModelSkus: sessionCliModelSkus,
             sessionModel: props.session.model,
-            sessionCurrentModelId: cursorModelsState.currentModelId,
-            autoRestartLabel: t('session.modelChange.cursorAutoRestart')
+            sessionCurrentModelId: cursorModelsState.currentModelId
         })
     }, [
         agentFlavor,
@@ -1161,8 +1191,7 @@ function SessionChatInner(props: SessionChatProps) {
         cursorModelsState.currentModelId,
         machineCursorModelsState.availableModels,
         sessionCliModelSkus,
-        props.session.model,
-        t
+        props.session.model
     ])
     const agyModelsState = useAgyModels({
         api: props.api,
@@ -1177,6 +1206,24 @@ function SessionChatInner(props: SessionChatProps) {
             ? buildAgyComposerModelOptions(agyModelsState.availableModels)
             : undefined
     ), [agentFlavor, agyModelsState.availableModels])
+    const claudeModelsState = useClaudeModels({
+        api: props.api,
+        machineId: sessionMachineId,
+        enabled: agentFlavor === 'claude' && props.session.active && Boolean(sessionMachineId)
+    })
+    // Until the catalog arrives (or on a runner without discovery) this stays
+    // undefined and the composer keeps its built-in Claude presets.
+    const claudeModelOptions = useMemo(() => (
+        agentFlavor === 'claude' && claudeModelsState.availableModels.length > 0
+            ? getClaudeCatalogOptions(claudeModelsState.availableModels, t('misc.otherModels'))
+            : undefined
+    ), [agentFlavor, claudeModelsState.availableModels, t])
+    // Levels the current Claude model accepts; undefined when unknown (no
+    // catalog, or a model it does not list), which keeps every level.
+    const claudeEffortOptions = useMemo(() => (
+        getClaudeEffortLevelsForModel(props.session.model ?? null, claudeModelsState.availableModels)
+            ?.map((level) => ({ value: level }))
+    ), [props.session.model, claudeModelsState.availableModels])
     const piModelsState = usePiModels({
         api: props.api,
         sessionId: props.session.id,
@@ -1313,15 +1360,38 @@ function SessionChatInner(props: SessionChatProps) {
     // Register session store for voice client tools
     useEffect(() => {
         registerSessionStore({
-            getSession: () => props.session as { agentState?: { requests?: Record<string, unknown> } } | null,
-            sendMessage: (_sessionId: string, message: string) => props.onSend(message),
-            approvePermission: async (_sessionId: string, requestId: string) => {
-                await props.api.approvePermission(props.session.id, requestId)
-                props.onRefresh()
+            getSession: async (sessionId: string) => {
+                if (sessionId === props.session.id) {
+                    return props.session as unknown as { agentState?: { requests?: Record<string, unknown> } }
+                }
+                try {
+                    const res = await props.api.getSession(sessionId)
+                    return res.session as unknown as { agentState?: { requests?: Record<string, unknown> } }
+                } catch {
+                    return null
+                }
             },
-            denyPermission: async (_sessionId: string, requestId: string) => {
-                await props.api.denyPermission(props.session.id, requestId)
-                props.onRefresh()
+            sendMessage: async (sessionId: string, message: string) => {
+                if (sessionId === props.session.id) {
+                    const accepted = await props.onSend(message)
+                    if (!accepted) {
+                        throw new Error('Message was not accepted')
+                    }
+                } else {
+                    await sendVoiceMessage(props.api, sessionId, message)
+                }
+            },
+            approvePermission: async (sessionId: string, requestId: string) => {
+                await props.api.approvePermission(sessionId, requestId)
+                if (sessionId === props.session.id) {
+                    props.onRefresh()
+                }
+            },
+            denyPermission: async (sessionId: string, requestId: string) => {
+                await props.api.denyPermission(sessionId, requestId)
+                if (sessionId === props.session.id) {
+                    props.onRefresh()
+                }
             }
         })
     }, [props.session, props.api, props.onSend, props.onRefresh])
@@ -1479,15 +1549,13 @@ function SessionChatInner(props: SessionChatProps) {
             goal: reduced.latestGoal,
             tasks: props.session.todos,
             blocks: reconciled.blocks,
-            messages: normalizedMessages,
-            backgroundTaskCount: props.session.backgroundTaskCount
+            backgroundTasks: props.session.backgroundTasks
         }),
         [
             reduced.latestGoal,
             props.session.todos,
-            props.session.backgroundTaskCount,
-            reconciled.blocks,
-            normalizedMessages
+            props.session.backgroundTasks,
+            reconciled.blocks
         ]
     )
     const hasRunningChildAgent = useMemo(
@@ -1503,9 +1571,11 @@ function SessionChatInner(props: SessionChatProps) {
         () => buildVisibleChatBlocks(reconciled.blocks, {
             hasMoreMessages: props.hasMoreMessages,
             previousGroups: visibleGroupsRef.current,
+            previousGroupingMode: visibleGroupsModeRef.current,
+            groupingMode: toolGroupingMode,
             codexExplorationCollapsed
         }),
-        [reconciled.blocks, props.hasMoreMessages, codexExplorationCollapsed]
+        [reconciled.blocks, props.hasMoreMessages, toolGroupingMode, codexExplorationCollapsed]
     )
 
     // Fork-current must compare against assistant-ui message ids (`kind:id`),
@@ -1546,8 +1616,9 @@ function SessionChatInner(props: SessionChatProps) {
     }, [latestCompletedBoundaryId])
 
     useEffect(() => {
+        visibleGroupsModeRef.current = toolGroupingMode
         visibleGroupsRef.current = visibleBlocks.filter(isToolGroupBlock)
-    }, [visibleBlocks])
+    }, [toolGroupingMode, visibleBlocks])
 
     // "N new messages" counts rendered blocks, not raw messages: a subagent run
     // is dozens of sidechain messages but a single Task card, and a tool_use +
@@ -1602,13 +1673,20 @@ function SessionChatInner(props: SessionChatProps) {
             codexModels: codexModelsState.models,
             model
         })
+        // Sent in the same request so the session never runs the new model
+        // with an effort it does not offer.
+        const effortChange = resolveEffortForModelChange({
+            currentEffort: props.session.effort ?? null,
+            model,
+            claudeModels: claudeModelsState.availableModels
+        })
 
         try {
             await applyModelChangeWithReasoningRollback({
                 model,
                 previousModelReasoningEffort,
                 shouldClearReasoningEffort,
-                setModel,
+                setModel: (nextModel) => setModel(nextModel, effortChange),
                 setModelReasoningEffort
             })
             haptic.notification('success')
@@ -1620,6 +1698,8 @@ function SessionChatInner(props: SessionChatProps) {
     }, [
         agentFlavor,
         codexModelsState.models,
+        claudeModelsState.availableModels,
+        props.session.effort,
         props.session.modelReasoningEffort,
         setModelReasoningEffort,
         setModel,
@@ -2092,7 +2172,6 @@ function SessionChatInner(props: SessionChatProps) {
                         modelReasoningEffort={agentFlavor === 'codex' || agentFlavor === 'opencode' ? props.session.modelReasoningEffort : undefined}
                         effort={props.session.effort}
                         agentFlavor={agentFlavor}
-                        concurrentClients={props.session.metadata?.capabilities?.concurrentClients}
                         availableModelOptions={
                             agentFlavor === 'codex'
                                 ? codexModelOptions
@@ -2121,8 +2200,9 @@ function SessionChatInner(props: SessionChatProps) {
                                         // cycler (getNextModelForFlavor) post a bare modelId string,
                                         // which loses the provider and can pick the wrong cached
                                         // match or throw in runPi. undefined makes the shortcut a no-op
-                                        // so Pi model changes go through the settings sheet only.
-                                        : undefined
+                                        // so Pi model changes go through the settings sheet only;
+                                        // claudeModelOptions is undefined for every non-Claude flavor.
+                                        : claudeModelOptions
                         }
                         piModels={piModels}
                         piSelectedModel={agentFlavor === 'pi' ? piSelectedModel : undefined}
@@ -2136,10 +2216,12 @@ function SessionChatInner(props: SessionChatProps) {
                         availableEffortOptions={
                             agentFlavor === 'grok' && grokEffortState.options.length > 0
                                 ? grokEffortState.options
-                                : undefined
+                                : claudeEffortOptions
                         }
                         active={props.session.active}
                         allowSendWhenInactive
+                        resolveSessionIdForVoice={props.resolveSessionIdForVoice}
+                        onVoiceSessionResolved={props.onVoiceSessionResolved}
                         onResumeStoredDraft={() => handleSend('', undefined, null)}
                         thinking={props.session.thinking}
                         agentState={props.session.agentState}

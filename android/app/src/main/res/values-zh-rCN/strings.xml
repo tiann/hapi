@@ -115,6 +115,8 @@
 
     <!-- Settings scaffold (B-M4e) -->
     <string name="settings_title">设置</string>
+    <string name="settings_category_general">通用</string>
+    <string name="settings_category_general_summary">外观、语言与关于</string>
     <string name="settings_back">返回</string>
     <string name="settings_cancel">取消</string>
     <string name="settings_retry">重试</string>
@@ -338,6 +340,7 @@
     <string name="chat_tool_approved_allow_all_edits">✓ 已批准：允许所有编辑</string>
     <string name="chat_tool_denied">✕ 已拒绝</string>
     <string name="chat_tool_aborted">✕ 已中止</string>
+    <string name="chat_tool_resolved">已处理</string>
     <string name="chat_tool_canceled">— 已取消</string>
     <string name="chat_tool_status_pending">等待中</string>
     <string name="chat_tool_status_error">错误</string>
@@ -417,6 +420,8 @@
     <string name="tool_todo_list">任务清单</string>
     <string name="tool_plan">计划</string>
     <string name="tool_plan_proposal">计划提案</string>
+    <string name="chat_plan_implement">执行计划</string>
+    <string name="chat_plan_continue">继续规划</string>
     <string name="tool_skill">技能</string>
     <string name="tool_skill_named">技能：%1$s</string>
     <string name="tool_reasoning">思考</string>
@@ -596,7 +601,4 @@
     <string name="sessions_time_filter_recent_activity">近期活动</string>
     <string name="privacy_policy">隐私政策</string>
     <string name="privacy_open_failed">没有可打开此链接的应用。</string>
-    <string name="chat_tool_resolved">已处理</string>
-    <string name="chat_plan_implement">执行计划</string>
-    <string name="chat_plan_continue">继续规划</string>
 </resources>

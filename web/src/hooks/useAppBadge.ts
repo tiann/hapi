@@ -4,6 +4,7 @@ import { sessionIsUnread } from '@/lib/sessionAttention'
 import { shouldShowSessionInSidebar } from '@/components/SessionList'
 import {
     getSessionLastSeenSnapshot,
+    getSessionManualUnreadSnapshot,
     initializeSessionLastSeen,
     useSessionLastSeenVersion,
 } from '@/lib/sessionLastSeen'
@@ -46,14 +47,18 @@ export function canUseAppBadging(): boolean {
     return getAppBadgeNavigator() !== null
 }
 
-/** Count sessions whose activity is newer than their local watermark. */
+/** Count sessions whose completed activity is newer than their local watermark. */
 export function countUnreadSessions(
     sessions: readonly SessionSummary[],
     lastSeenById: Readonly<Record<string, number>>,
+    manualUnreadById: Readonly<Record<string, number>> = {},
 ): number {
     return sessions.reduce(
         (count, session) => count + (
-            sessionIsUnread(session, { lastSeenAt: lastSeenById[session.id] ?? 0 })
+            sessionIsUnread(session, {
+                lastSeenAt: lastSeenById[session.id] ?? 0,
+                manualUnreadAt: manualUnreadById[session.id] ?? null
+            })
                 ? 1
                 : 0
         ),
@@ -137,7 +142,11 @@ export function useAppBadge(options: UseAppBadgeOptions): void {
         // Match the session list's first-load baseline so existing sessions do
         // not all appear unread when a user installs the PWA for the first time.
         initializeSessionLastSeen(options.scope, eligibleSessions)
-        const count = countUnreadSessions(eligibleSessions, getSessionLastSeenSnapshot())
+        const count = countUnreadSessions(
+            eligibleSessions,
+            getSessionLastSeenSnapshot(),
+            getSessionManualUnreadSnapshot()
+        )
         syncBadge(appBadgeNavigator, count, lastAppliedCountRef)
     }, [
         lastSeenVersion,

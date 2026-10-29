@@ -140,6 +140,18 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
         ])
     })
 
+    it.each(['queue', 'steer'])('advertises and forwards ping_peer delivery mode %s', async (deliveryMode) => {
+        await runHappyMcpStdioBridge(['--url', 'http://127.0.0.1:43006', '--tools', 'ping_peer'])
+        const schema = harness.configs.get('ping_peer')?.inputSchema as {
+            parse(input: unknown): unknown
+        }
+        const args = { sessionIdPrefix: 'peer-id', message: 'hello', deliveryMode }
+        expect(schema.parse(args)).toEqual(args)
+        expect(() => schema.parse({ ...args, deliveryMode: 'interrupt' })).toThrow()
+        await harness.tools.get('ping_peer')?.(args)
+        expect(harness.callTool).toHaveBeenCalledWith({ name: 'ping_peer', arguments: args })
+    })
+
     it('registers inspect_peer when included in --tools', async () => {
         await runHappyMcpStdioBridge([
             '--url',
