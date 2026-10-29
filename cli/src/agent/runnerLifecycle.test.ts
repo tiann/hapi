@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createRunnerLifecycle } from './runnerLifecycle';
 import type { RunnerLifecycle } from './runnerLifecycle';
+import { restoreTerminalState } from '@/ui/terminalState';
 
 // Mock heavy deps
 vi.mock('@/ui/logger', () => ({
@@ -49,6 +50,19 @@ describe('createRunnerLifecycle', () => {
             session: createMockApiSession(),
             logTag: 'test',
         });
+    });
+
+    it('leaves a shared native terminal untouched when only its HAPI binding closes', async () => {
+        const session = createMockApiSession();
+        const shared = createRunnerLifecycle({ session, logTag: 'shared', restoreTerminal: false });
+        await shared.cleanup();
+        expect(restoreTerminalState).not.toHaveBeenCalled();
+        expect(session.close).toHaveBeenCalledOnce();
+    });
+
+    it('keeps restoring the terminal for ordinary wrappers', async () => {
+        await lifecycle.cleanup();
+        expect(restoreTerminalState).toHaveBeenCalledOnce();
     });
 
     // --- D-9: hasExplicitSessionEndReason ---

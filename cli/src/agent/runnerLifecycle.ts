@@ -9,6 +9,8 @@ type RunnerLifecycleOptions = {
     stopKeepAlive?: () => void
     onBeforeClose?: () => Promise<void> | void
     onAfterClose?: () => Promise<void> | void
+    /** A shared native TUI may still own this terminal while one row closes. */
+    restoreTerminal?: boolean
 }
 
 export type RunnerLifecycle = {
@@ -77,7 +79,7 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
         cleanupStarted = true
         cleanupPromise = (async () => {
             logger.debug(`${logPrefix} Cleanup start`)
-            restoreTerminalState()
+            if (options.restoreTerminal !== false) restoreTerminalState()
 
             try {
                 options.stopKeepAlive?.()
@@ -103,7 +105,7 @@ export function createRunnerLifecycle(options: RunnerLifecycleOptions): RunnerLi
         cleanupStarted = true
         if (!confirmedCleanupPrepared) {
             logger.debug(`${logPrefix} Confirmed cleanup start`)
-            restoreTerminalState()
+            if (options.restoreTerminal !== false) restoreTerminalState()
             options.stopKeepAlive?.()
             await options.onBeforeClose?.()
             options.session.updateMetadata((currentMetadata) => ({

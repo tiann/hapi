@@ -25,6 +25,7 @@ import type { ListSkillsResponse, SkillSummary } from '@/modules/common/skills';
 import type { AttachmentMetadata } from '@/api/types';
 import { readBoundedAttachmentFile } from '@/modules/common/attachmentFile';
 import { MAX_UPLOAD_BYTES } from '@/modules/common/attachmentLimits';
+import { shouldUsePiNativeTui } from './runPiNative';
 import { isAuthorizedUploadFile, isPathWithinUploadDir, type UploadFileIdentity } from '@/modules/common/handlers/uploads';
 
 // Grace period before force-draining prompts buffered during Pi startup when no
@@ -197,15 +198,16 @@ export async function runPi(opts: {
     reservedSessionId?: string;
     workingDirectory?: string;
 } = {}): Promise<void> {
+    if (shouldUsePiNativeTui(opts)) {
+        const { runPiNative } = await import('./runPiNative');
+        return runPiNative(opts);
+    }
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd();
     const startedBy = opts.startedBy ?? 'terminal';
-    // Pi only runs as `pi --mode rpc` with piped stdio — there is no local
-    // terminal/TUI input path (unlike Claude/Codex). Defaulting a terminal
-    // launch to 'local' would mark the session local-controlled while the user
-    // cannot drive it from the terminal, leaving it stuck until a web switch.
-    // Default to 'remote' so the session is immediately drivable from the web;
-    // an explicit opts.startingMode (e.g. runner) still takes precedence.
-    const startingMode: 'local' | 'remote' = opts.startingMode ?? 'remote';
+    // RPC uses piped stdio without a terminal input path. Only the native TUI
+    // branch above can advertise local control; Runner/headless launches must
+    // remain remotely drivable even if their caller requested local mode.
+    const startingMode: 'local' | 'remote' = 'remote';
 
     logger.debug(`[pi] Starting with options: startedBy=${startedBy}, startingMode=${startingMode}`);
 

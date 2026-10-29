@@ -21,7 +21,7 @@ agent's integration; their supported syntax varies by agent.
 | OpenCode | `hapi opencode` | ACP (`opencode acp`) | ✓ | ✓ | `default` `plan` `yolo` | ✓ |
 | DeepSeek Harness | `hapi dsh` | ACP (`dsh --profile acp` or configured server) | — | ✓ | Managed by DSH ACP composition | — |
 | Antigravity (agy) | `hapi agy` | Headless print mode (per-turn `agy -p` + NDJSON) | — | ✓ | `request-review` `always-proceed` | ✓ |
-| Pi | `hapi pi` | `pi --mode rpc` (JSON-line RPC over stdio) | — | ✓ | none (always auto-approve) | ✓ |
+| Pi | `hapi pi` | Native TUI + extension bridge (terminal); JSON-line RPC (Runner / headless) | ✓ | ✓ | none (always auto-approve) | ✓ |
 | Gemini CLI | — | **Removed** — Google sunset the consumer Gemini CLI (2026-06-18) | — | — | — | — |
 
 Gemini is no longer launchable: `hapi gemini` is kept as a tombstone command that prints a clear error, and existing Gemini sessions remain viewable in the web UI but cannot be resumed.
@@ -38,7 +38,7 @@ Permission modes are per-agent — each flavor exposes its own set (see the matr
 
 ### Local and remote mode
 
-Work **locally** in the terminal or **remotely** from web/phone, keeping the same conversation when you hand off. The support matrix shows which interfaces each agent offers; DSH, Pi, and Antigravity accept input only through HAPI's remote interface.
+Work **locally** in the terminal or **remotely** from web/phone, keeping the same conversation when you hand off. The support matrix shows which interfaces each agent offers; DSH and Antigravity accept input only through HAPI's remote interface. Pi native terminal sessions share input with HAPI without a handoff; see [Pi native sessions](./pi-native-sessions.md).
 
 - **Remote → local:** continue in the terminal. If it shows the remote-control screen, press double-space to return to local input.
 - **Local → remote:** send a message from the web UI or phone; HAPI handles the handoff.
@@ -52,7 +52,7 @@ hapi resume                # Interactive picker of resumable sessions on this ma
 hapi resume <session-id>   # Resume a specific HAPI session
 ```
 
-`hapi resume` reopens the conversation on this machine, including active sessions you were using from your phone. Gemini and fresh-session-only DSH cannot be resumed. Pi and Antigravity resume with input still controlled from HAPI rather than the terminal.
+`hapi resume` reopens the conversation on this machine, including active sessions you were using from your phone. Gemini and fresh-session-only DSH cannot be resumed. Inactive Pi conversations reopen in the native TUI when both streams are terminals; active native Pi sessions cannot attach a second terminal. Antigravity resumes with input still controlled from HAPI.
 
 ### Mathematical formulas in HAPI Markdown
 
@@ -309,9 +309,9 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
 - **Kimi** (`hapi kimi`) — Moonshot AI's Kimi CLI over ACP (`kimi acp`). [MoonshotAI/kimi-cli](https://github.com/MoonshotAI/kimi-cli)
 - **OpenCode** (`hapi opencode`) — the open-source OpenCode agent over ACP (`opencode acp`). [opencode.ai](https://opencode.ai)
 - **Antigravity** (`hapi agy`) — Google's Antigravity CLI (`agy`), driven headlessly via print mode: every turn spawns `agy -p <msg> --conversation <uuid> --output-format stream-json`, and NDJSON events (init / step_update / result) are streamed into the chat. There is no PTY/TUI wrapper and no hook-based permission bridge: permission handling uses agy's own `settings.json` allow/deny rules (`request-review`) or `--dangerously-skip-permissions` (`always-proceed`). Tool calls that lack an allow-rule are auto-denied by agy and surfaced as a chat hint. MCP servers are configured the standard agy way — in the user's global `~/.gemini/config/mcp_config.json` or a workspace `.agents/mcp_config.json` — and are loaded natively by agy in headless mode (no HAPI injection). Remote-only — there is no local terminal input path. [Google Antigravity](https://antigravity.google)
-- **Pi** (`hapi pi`) — the Pi coding agent running as `pi --mode rpc` (JSON-line RPC over piped stdio); remote-control only, no local TUI input path. [earendil-works/pi](https://github.com/earendil-works/pi)
+- **Pi** (`hapi pi`) — native TUI with concurrent HAPI input in an interactive terminal (Pi 1.4.0); Runner and headless launches retain `pi --mode rpc`. Native bridge slash commands and extension dialogs remain terminal-only; see [Pi native sessions](./pi-native-sessions.md). [earendil-works/pi](https://github.com/earendil-works/pi)
 
-  HAPI translates a subset of Pi's TUI slash commands to native Pi RPC calls, so they work from the web chat as well:
+  In **RPC mode**, HAPI translates a subset of Pi's TUI slash commands to native Pi RPC calls, so they work from the web chat as well:
 
   - `/compact [instructions]` — manually compact context with optional custom summary instructions (runs Pi's `compact` RPC; the summary is rendered as a dedicated block in the chat with the token delta in its header).
   - `/session` — show session stats (messages, tokens, cost, context usage).

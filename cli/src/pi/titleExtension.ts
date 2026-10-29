@@ -56,10 +56,10 @@ export default function hapiTitleExtension(pi) {
             if (!title) {
                 return { content: [{ type: 'text', text: 'Error: title must not be empty' }], details: {} };
             }
-            // HAPI only launches this extension in RPC mode; do not gate on
-            // ctx.hasUI, which older RPC releases report as false even though
-            // ctx.ui.setTitle() emits the extension UI event.
-            if (ctx && ctx.ui) ctx.ui.setTitle(title);
+            // Native sessions publish their durable Pi name through the bridge.
+            // RPC keeps its existing one-way UI title notification.
+            if (ctx && ctx.mode === 'tui') pi.setSessionName(title);
+            else if (ctx && ctx.ui) ctx.ui.setTitle(title);
             // Pi's setTitle RPC is one-way: do not claim Hub persistence.
             return { content: [{ type: 'text', text: 'Title update requested: ' + title + '. HAPI keeps the current title if the user has locked it.' }], details: {} };
         }
