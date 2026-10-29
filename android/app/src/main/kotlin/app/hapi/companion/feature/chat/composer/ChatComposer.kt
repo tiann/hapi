@@ -53,7 +53,9 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -80,7 +82,8 @@ import kotlinx.coroutines.delay
 @Composable
 fun ChatComposer(
     state: ComposerUiState,
-    onTextChange: (String) -> Unit,
+    /** User edit (text + live selection start/end) from the field's TextFieldValue, as one atomic report. */
+    onTextChange: (String, Int, Int) -> Unit,
     onSend: () -> Unit,
     onSendSteer: () -> Unit,
     onAbort: () -> Unit,
@@ -108,6 +111,22 @@ fun ChatComposer(
             handledFocusRequest = state.focusRequest
             focusRequester.requestFocus()
             keyboard?.show()
+        }
+    }
+    // The field owns the caret; the text stays VM-driven (draft prefill,
+    // send-clear, slash/mention inserts). External text edits adopt the VM's
+    // resting caret ([ComposerUiState.caretPosition] — a mention insert lands
+    // mid-draft, other programmatic sets rest at the tail); user edits and
+    // caret moves never adopt, so typing mid-draft keeps its position.
+    var field by remember { mutableStateOf(TextFieldValue(state.text)) }
+    LaunchedEffect(state.text) {
+        if (field.text != state.text) {
+            val caret = if (state.caretPosition >= 0) {
+                state.caretPosition.coerceIn(0, state.text.length)
+            } else {
+                state.text.length
+            }
+            field = TextFieldValue(state.text, TextRange(caret))
         }
     }
     Surface(color = MaterialTheme.colorScheme.surface, modifier = modifier.fillMaxWidth()) {
@@ -163,9 +182,12 @@ fun ChatComposer(
                         )
                     }
                     BasicTextField(
-                        value = state.text,
+                        value = field,
                         enabled = !state.isImportingShare,
-                        onValueChange = onTextChange,
+                        onValueChange = { value ->
+                            field = value
+                            onTextChange(value.text, value.selection.start, value.selection.end)
+                        },
                         textStyle = app.hapi.companion.ui.theme.HapiTypography.body.copy(
                             color = MaterialTheme.colorScheme.onSurface,
                         ),
@@ -652,12 +674,12 @@ private fun ChatComposerPreview() {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 ChatComposer(
                     state = ComposerUiState(text = "", isSending = false, canSteer = false),
-                    onTextChange = {}, onSend = {}, onSendSteer = {}, onAbort = {},
+                    onTextChange = { _, _, _ -> }, onSend = {}, onSendSteer = {}, onAbort = {},
                     dictation = DictationState.Idle,
                 )
                 ChatComposer(
                     state = ComposerUiState(text = "", isSending = false, canSteer = true),
-                    onTextChange = {}, onSend = {}, onSendSteer = {}, onAbort = {},
+                    onTextChange = { _, _, _ -> }, onSend = {}, onSendSteer = {}, onAbort = {},
                     onAddAttachment = {},
                     dictation = DictationState.Idle,
                 )
@@ -667,12 +689,12 @@ private fun ChatComposerPreview() {
                         isSending = false,
                         canSteer = true,
                     ),
-                    onTextChange = {}, onSend = {}, onSendSteer = {}, onAbort = {},
+                    onTextChange = { _, _, _ -> }, onSend = {}, onSendSteer = {}, onAbort = {},
                     dictation = DictationState.Idle,
                 )
                 ChatComposer(
                     state = ComposerUiState(text = "Sending…", isSending = true, canSteer = false),
-                    onTextChange = {}, onSend = {}, onSendSteer = {}, onAbort = {},
+                    onTextChange = { _, _, _ -> }, onSend = {}, onSendSteer = {}, onAbort = {},
                     onAddAttachment = {},
                     attachments = listOf(
                         ComposerAttachmentUi(
@@ -697,7 +719,7 @@ private fun AttachmentChipsComposerPreview() {
         Surface {
             ChatComposer(
                 state = ComposerUiState(text = "", isSending = false, canSteer = true),
-                onTextChange = {}, onSend = {}, onSendSteer = {}, onAbort = {},
+                onTextChange = { _, _, _ -> }, onSend = {}, onSendSteer = {}, onAbort = {},
                 onAddAttachment = {},
                 attachments = listOf(
                     ComposerAttachmentUi(
@@ -737,7 +759,7 @@ private fun RecordingComposerPreview() {
         Surface {
             ChatComposer(
                 state = ComposerUiState(text = "", isSending = false, canSteer = false),
-                onTextChange = {}, onSend = {}, onSendSteer = {}, onAbort = {},
+                onTextChange = { _, _, _ -> }, onSend = {}, onSendSteer = {}, onAbort = {},
                 dictation = DictationState.Recording(startedAtMs = System.currentTimeMillis() - 42_000),
             )
         }
@@ -751,7 +773,7 @@ private fun SlashDropdownComposerPreview() {
         Surface {
             ChatComposer(
                 state = ComposerUiState(text = "/co", isSending = false, canSteer = false),
-                onTextChange = {}, onSend = {}, onSendSteer = {}, onAbort = {},
+                onTextChange = { _, _, _ -> }, onSend = {}, onSendSteer = {}, onAbort = {},
                 dictation = DictationState.Idle,
                 slashSuggestions = listOf(
                     SlashCommand(
@@ -778,7 +800,7 @@ private fun MentionDropdownComposerPreview() {
         Surface {
             ChatComposer(
                 state = ComposerUiState(text = "@ref", isSending = false, canSteer = false),
-                onTextChange = {}, onSend = {}, onSendSteer = {}, onAbort = {},
+                onTextChange = { _, _, _ -> }, onSend = {}, onSendSteer = {}, onAbort = {},
                 dictation = DictationState.Idle,
                 mentionSuggestions = listOf(
                     MentionSuggestion.SessionMention(

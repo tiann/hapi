@@ -48,11 +48,10 @@ sealed interface MentionSuggestion {
  *
  * Web 同构/分歧:
  * - Trigger mirrors `web/src/utils/findActiveWord.ts` byte-for-byte (hard-stop
- *   scan, `@` boundary rule, `.`/`/` path continuation, bare-`@` popup) — with
- *   one divergence: the Android composer is a plain `String` field without a
- *   cursor API, so [mentionQueryOf] evaluates the word at the END of the text
- *   (the web evaluates at the real cursor). The full cursor-aware mirror is
- *   still exposed as [findActiveWord] for future `TextFieldValue` wiring.
+ *   scan, `@` boundary rule, `.`/`/` path continuation, bare-`@` popup) and
+ *   evaluates at the composer caret: [mentionQueryOf] takes the live selection
+ *   reported through the composer's `TextFieldValue` (collapsed caret ⇒
+ *   detect; a selected range suppresses suggestions, like the web).
  * - Like the web, there is NO code-fence awareness — a ``` block suppresses
  *   nothing; the character rules above are the whole anti-false-trigger set.
  * - Session ranking mirrors `web/src/lib/sessionReference.ts
@@ -204,17 +203,25 @@ object Mentions {
         if (activeWord.length > 1) activeWord.substring(1) else ""
 
     /**
-     * The active `@` mention query for the composer text, evaluated at the end
-     * of the input (cursor divergence — see object kdoc). Returns the search
-     * term after `@` (may be empty for a bare `@`), or null when no mention
-     * word is active.
+     * The active `@` mention query for the composer text, evaluated at the
+     * [selectionStart]/[selectionEnd] caret reported by the composer's
+     * `TextFieldValue` (a non-collapsed selection suppresses detection, like
+     * the web). Returns the search term after `@` (may be empty for a bare
+     * `@`), or null when no mention word is active. Selection values outside
+     * the text are clamped — the mirror can briefly lag a programmatic text
+     * swap.
      */
-    fun mentionQueryOf(text: String): String? {
+    fun mentionQueryOf(text: String, selectionStart: Int, selectionEnd: Int): String? {
         if (text.isEmpty()) return null
-        val activeWord = findActiveWord(text, text.length, text.length) ?: return null
+        val start = selectionStart.coerceIn(0, text.length)
+        val end = selectionEnd.coerceIn(start, text.length)
+        val activeWord = findActiveWord(text, start, end) ?: return null
         if (!activeWord.activeWord.startsWith('@')) return null
         return activeWordQuery(activeWord.activeWord)
     }
+
+    /** Tail-evaluated convenience for callers without a live selection. */
+    fun mentionQueryOf(text: String): String? = mentionQueryOf(text, text.length, text.length)
 
     /** Result of [applySuggestion]: the new text + cursor resting position. */
     data class TextEdit(val text: String, val cursorPosition: Int)

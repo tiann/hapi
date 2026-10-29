@@ -285,9 +285,12 @@ private class RecordingChatApi : ChatSessionApi {
 
     var fileSearchResult: FileSearchResponse = FileSearchResponse(success = false, error = "not scripted")
     var fileSearchFailure: Exception? = null
+    /** Non-null ⇒ the file RPC records its call then parks until completed. */
+    var fileSearchGate: CompletableDeferred<Unit>? = null
     val fileSearchCalls = MutableStateFlow<List<Triple<String, String, Int?>>>(emptyList())
     override suspend fun searchSessionFiles(sessionId: String, query: String, limit: Int?): FileSearchResponse {
         fileSearchCalls.value = fileSearchCalls.value + Triple(sessionId, query, limit)
+        fileSearchGate?.await()
         fileSearchFailure?.let { throw it }
         return fileSearchResult
     }
@@ -1604,6 +1607,83 @@ class ChatViewModelInteractionTest {
 
         assertEquals(emptyList(), harness.viewModel.mentionSuggestions.value)
         assertEquals(emptyList(), harness.api.fileSearchCalls.value)
+    }
+
+    @Test
+    fun `mention detection follows the caret instead of the text tail`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "codex"))
+        harness.sessionStore.summaries.value = listOf(peerSummary("sess-peer-01"))
+        harness.viewModel.start()
+
+        // Draft whose tail is plain text — tail-only detection would miss it.
+        harness.viewModel.onComposerChange("a @peer b", 7, 7) // caret right after "@peer"
+        val rows = harness.viewModel.mentionSuggestions.first { it.isNotEmpty() }
+        assertEquals(listOf("session:sess-peer-01"), rows.map { it.key })
+
+        // Caret moves inside the word keep the same query (no refire)…
+        harness.viewModel.onComposerChange("a @peer b", 5, 5)
+        // …stepping off it (the space before '@') closes the dropdown…
+        harness.viewModel.onComposerChange("a @peer b", 2, 2)
+        harness.viewModel.mentionSuggestions.first { it.isEmpty() }
+        // …and a selected range suppresses detection entirely (web rule).
+        harness.viewModel.onComposerChange("a @peer b", 3, 8)
+        harness.viewModel.mentionSuggestions.first { it.isEmpty() }
+        testScheduler.advanceUntilIdle()
+        // One caret-anchored query only — caret moves inside the word do not refire.
+        assertEquals(listOf(Triple(IX_SESSION, "peer", 50)), harness.api.fileSearchCalls.value)
+    }
+
+    @Test
+    fun `selecting a mention mid-draft swaps that word and rests the caret after it`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "claude"))
+        harness.sessionStore.summaries.value = listOf(peerSummary("sess-peer-01"))
+        harness.viewModel.start()
+
+        harness.viewModel.onComposerChange("a @peer b", 7, 7)
+        val row = harness.viewModel.mentionSuggestions.first { it.isNotEmpty() }.single()
+
+        harness.viewModel.selectMentionSuggestion(row)
+
+        val expected = "a " + row.insertText + " b"
+        val state = harness.viewModel.composer.first { it.text == expected }
+        // Caret rests right after the inserted prose — before the pre-existing
+        // space, not teleported to the draft tail.
+        assertEquals(expected.length - 2, state.caretPosition)
+        harness.viewModel.mentionSuggestions.first { it.isEmpty() }
+    }
+
+    @Test
+    fun `query change drops the previous query's file rows before the new RPC settles`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "codex"))
+        harness.sessionStore.summaries.value = listOf(peerSummary("sess-peer-01"))
+        harness.api.fileSearchResult = FileSearchResponse(
+            success = true,
+            files = listOf(
+                FileSearchItem(fileName = "notes.md", filePath = "docs", fullPath = "docs/notes.md", fileType = "file"),
+            ),
+        )
+        harness.viewModel.start()
+
+        harness.viewModel.setComposerText("@peer")
+        harness.viewModel.mentionSuggestions.first { it.size == 2 }
+
+        // Retype with the next file RPC held in flight: the previous query's
+        // file row must vanish immediately (session-only interim state), and
+        // the new file row only lands once the RPC settles.
+        val gate = CompletableDeferred<Unit>()
+        harness.api.fileSearchGate = gate
+        harness.viewModel.setComposerText("@Peer")
+        val interim = harness.viewModel.mentionSuggestions.first { rows ->
+            rows.isNotEmpty() && rows.none { it.key == "@\"docs/notes.md\"" }
+        }
+        assertEquals(listOf("session:sess-peer-01"), interim.map { it.key })
+
+        gate.complete(Unit)
+        harness.viewModel.mentionSuggestions.first { rows -> rows.size == 2 && rows[1].key == "@\"docs/notes.md\"" }
+        assertEquals(
+            listOf(Triple(IX_SESSION, "peer", 50), Triple(IX_SESSION, "Peer", 50)),
+            harness.api.fileSearchCalls.value,
+        )
     }
 
     // ------------------------------------------------------------ dictation --

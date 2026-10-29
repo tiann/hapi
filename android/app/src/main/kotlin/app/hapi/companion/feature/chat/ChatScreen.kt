@@ -341,7 +341,7 @@ internal fun ChatScreen(
                     )
                     ChatComposer(
                         state = composerState,
-                        onTextChange = viewModel::setComposerText,
+                        onTextChange = viewModel::onComposerChange,
                         onSend = { viewModel.sendMessage() },
                         onSendSteer = { viewModel.sendMessage(steer = true) },
                         onAbort = viewModel::abortSession,
