@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import { CLAUDE_PERMISSION_MODES } from '@hapi/protocol/modes'
 import { isDeepStrictEqual } from 'node:util'
+import type { ClaudeRewind } from '@hapi/protocol/types'
+import type { RewindConversationRpcResult } from '@hapi/protocol/apiTypes'
 
 export const RewindDeliverySchema = z.object({
     deliveredText: z.string(),
@@ -38,6 +40,25 @@ const Intent = z.object({
     }
 })
 export type RewindIntent = z.infer<typeof Intent>
+
+export function assertRewindCorrelation(intent: RewindIntent, operation: ClaudeRewind | undefined): asserts operation is ClaudeRewind {
+    if (!operation || operation.operationId !== intent.operationId
+        || operation.requestedLocalId !== intent.requestedLocalId || operation.cutoffSeq !== intent.cutoffSeq
+        || (operation.nativeSessionId !== undefined && operation.nativeSessionId !== intent.nativeSessionId)
+        || (operation.keepBoundary !== undefined && operation.keepBoundary !== intent.keepBoundary)
+        || (operation.truncateFromLocalId !== undefined && operation.truncateFromLocalId !== intent.dropFromLocalId)) {
+        throw new Error('Rewind durable operation correlation mismatch')
+    }
+}
+
+export function pendingRewindRpcResult(intent: RewindIntent, request: {
+    operationId: string; messageLocalId: string; cutoffSeq: number
+}): Extract<RewindConversationRpcResult, { outcome: 'pending' }> {
+    if (intent.operationId !== request.operationId || intent.requestedLocalId !== request.messageLocalId
+        || intent.cutoffSeq !== request.cutoffSeq) throw new Error('Pending rewind retry correlation mismatch')
+    return { success: false, outcome: 'pending', operationId: intent.operationId,
+        nativeSessionId: intent.nativeSessionId, keepBoundary: intent.keepBoundary, truncateFromLocalId: intent.dropFromLocalId }
+}
 
 /** An unresolved owner is immutable, including its execution settings. */
 export function withStagedRewindInput(intent: RewindIntent, value: RewindDelivery): RewindIntent {

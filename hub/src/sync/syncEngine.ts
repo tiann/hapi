@@ -1846,10 +1846,15 @@ export class SyncEngine {
                 ...(claude ? { operationId: operation.operationId, cutoffSeq: operation.cutoffSeq } : {})
             })
         } catch (error) {
+            const latest = (this.store.sessions.getSession(sessionId)?.metadata as Metadata | null)?.claudeRewind
+            if (claude && latest?.operationId === operation.operationId) {
+                if (latest.phase === 'committed') return { type: 'success' }
+                if (latest.phase === 'applied') return { type: 'success', pending: true }
+                if (['unknown', 'rejected'].includes(latest.phase)) {
+                    return { type: 'error', message: `Native rewind outcome is ${latest.phase}`, ...(latest.phase === 'unknown' ? { hydrateFailed: true } : {}) }
+                }
+            }
             if (!(error instanceof RpcTargetMissingError)) {
-                const latest = (this.store.sessions.getSession(sessionId)?.metadata as Metadata | null)?.claudeRewind
-                if (claude && latest?.operationId === operation.operationId && latest.phase === 'committed') return { type: 'success' }
-                if (claude && latest?.operationId === operation.operationId && latest.phase === 'rejected') return { type: 'error', message: 'Native rewind was rejected' }
                 if (claude) persistPhase('unknown')
                 this.markConversationHistoryDiverged(sessionId, namespace)
                 return {
@@ -1864,6 +1869,7 @@ export class SyncEngine {
 
         const latest = (this.store.sessions.getSession(sessionId)?.metadata as Metadata | null)?.claudeRewind
         if (claude && latest?.operationId === operation.operationId && latest.phase === 'committed') return { type: 'success' }
+        if (claude && latest?.operationId === operation.operationId && latest.phase === 'applied') return { type: 'success', pending: true }
         if (claude && latest?.operationId === operation.operationId && ['unknown', 'rejected'].includes(latest.phase)) {
             return { type: 'error', message: `Native rewind outcome is ${latest.phase}`, ...(latest.phase === 'unknown' ? { hydrateFailed: true } : {}) }
         }
@@ -1969,13 +1975,16 @@ export class SyncEngine {
                 ) throw new Error('Invalid canonical rewind boundary')
                 this.assertInvokedHistoryBoundary(sessionId, report.truncateFromLocalId)
                 if (report.phase !== 'applied') {
+                    if (prior.phase === 'unknown' && report.phase === 'rejected') {
+                        throw new Error('Unknown rewind requires applied proof to reconcile')
+                    }
                     if (!['requested', 'pending', 'unknown'].includes(prior.phase)
                         && !(prior.phase === 'rejected' && report.phase === 'rejected')) {
                         throw new Error('Rewind failure contradicts durable phase')
                     }
                     return this.store.sessions.updateSessionMetadata(sessionId, {
                         ...next, claudeRewind: report,
-                        conversationHistoryDiverged: report.phase === 'unknown'
+                        conversationHistoryDiverged: report.phase === 'unknown' ? true : metadata.conversationHistoryDiverged
                     }, expectedVersion, current.namespace)
                 }
                 if (!['requested', 'pending', 'applied', 'unknown'].includes(prior.phase)) throw new Error('Rewind is not pending')

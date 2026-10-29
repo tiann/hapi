@@ -33,7 +33,7 @@ import {
 import { hasDurableRewindBranch, hashRewindInput, readNativeTurns, readTranscriptUuids, resolveRewindPlan, supportsNativeRewind } from './conversationHistory';
 import { listSkills, type SkillSummary } from '@/modules/common/skills';
 import { configuration } from '@/configuration';
-import { withStagedRewindInput, withoutCancelledRewindInput, RewindIntentStore, type RewindDelivery, type RewindIntent } from './rewindIntent';
+import { assertRewindCorrelation, pendingRewindRpcResult, withStagedRewindInput, withoutCancelledRewindInput, RewindIntentStore, type RewindDelivery, type RewindIntent } from './rewindIntent';
 
 export interface StartOptions {
     model?: string
@@ -351,21 +351,35 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         for (const id of staged.stagedInput!.localIds) rewindOwnedLocalIds.add(id)
     }
     const reportRewind = async (intent: RewindIntent, phase: 'applied' | 'rejected' | 'unknown') => {
-        session.updateMetadata(metadata => ({
-            ...metadata,
-            claudeRewind: {
+        session.updateMetadata(metadata => {
+            const current = metadata.claudeRewind
+            if (phase !== 'applied' && current?.operationId === intent.operationId
+                && ['unknown', 'applied', 'committed', 'rejected'].includes(current.phase)) {
+                // This is an exact ordinary metadata echo, not a settlement.
+                // In particular a delayed rejection never unlocks unknown.
+                return metadata
+            }
+            return { ...metadata, claudeRewind: {
                 operationId: intent.operationId, phase,
                 requestedLocalId: intent.requestedLocalId, cutoffSeq: intent.cutoffSeq,
                 nativeSessionId: intent.nativeSessionId, keepBoundary: intent.keepBoundary,
                 truncateFromLocalId: intent.dropFromLocalId
-            }
-        }))
+            } }
+        })
         if (!await session.flushMetadata()) throw new Error('Rewind metadata acknowledgment unavailable')
         const acknowledgment = session.getMetadata()?.claudeRewind
-        const expectedPhase = phase === 'applied' ? 'committed' : phase
-        if (acknowledgment?.operationId !== intent.operationId || acknowledgment.phase !== expectedPhase) {
+        assertRewindCorrelation(intent, acknowledgment)
+        if (phase === 'applied' && acknowledgment.phase !== 'committed') {
             throw new Error('Rewind hub commit acknowledgment mismatch')
         }
+        return acknowledgment
+    }
+    const readCurrentRewindMetadata = async () => {
+        // A no-op versioned write obtains a fresh authoritative ordinary ACK;
+        // it does not change the server-owned phase, divergence or locators.
+        session.updateMetadata(metadata => metadata)
+        if (!await session.flushMetadata()) throw new Error('Rewind correlation acknowledgment unavailable')
+        return session.getMetadata()
     }
     let rewindCommit: Promise<void> | null = null
     const commitPendingRewind = async () => {
@@ -394,14 +408,18 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     }
     session.rpcHandlerManager.registerHandler(RPC_METHODS.RewindConversation, async (payload: unknown) => {
         const rejected = (error: string) => ({ success: false as const, outcome: 'rejected' as const, error })
-        if (pendingRewind) return rejected('A rewind branch is pending durable reconciliation')
         if (!payload || typeof payload !== 'object' || typeof (payload as { messageLocalId?: unknown }).messageLocalId !== 'string') {
+            if (pendingRewind) throw new Error('Pending rewind retry has invalid correlation')
             return rejected('messageLocalId is required')
         }
         const messageLocalId = (payload as { messageLocalId: string }).messageLocalId
         const { operationId, cutoffSeq } = payload as { operationId?: unknown; cutoffSeq?: unknown }
         if (typeof operationId !== 'string' || !operationId || !Number.isInteger(cutoffSeq) || (cutoffSeq as number) < 0) {
+            if (pendingRewind) throw new Error('Pending rewind retry has invalid correlation')
             return rejected('A durable hub rewind operation is required')
+        }
+        if (pendingRewind) {
+            return pendingRewindRpcResult(pendingRewind, { operationId, messageLocalId, cutoffSeq: cutoffSeq as number })
         }
         // Known pre-mutation rejections must use success:false — throwing would make
         // the hub treat the outcome as unknown and diverge the session history.
@@ -770,16 +788,19 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
 
     let loopError: unknown = null;
     let loopFailed = false;
-    let recoveredUnstagedNativeId: string | undefined;
     try {
-        const recoveryMetadata = session.getMetadata() ?? sessionInfo.metadata
+        const observed = session.getMetadata()?.claudeRewind ?? sessionInfo.metadata?.claudeRewind
+        const recoveryMetadata = pendingRewind || (observed && ['requested', 'pending', 'applied', 'unknown'].includes(observed.phase))
+            ? await readCurrentRewindMetadata() : session.getMetadata() ?? sessionInfo.metadata
         const abandoned = recoveryMetadata?.claudeRewind
-        if (!pendingRewind && abandoned && ['requested', 'unknown'].includes(abandoned.phase)
-            && !abandoned.nativeSessionId) {
+        if (!pendingRewind && abandoned && ['requested', 'pending', 'applied', 'unknown'].includes(abandoned.phase)) {
+            if (abandoned.nativeSessionId || !['requested', 'unknown'].includes(abandoned.phase)) {
+                throw new Error('Bound rewind operation is missing its durable CLI journal')
+            }
             // Reservation may survive a crash before RPC receipt/journal write.
-            // Only reject it as unchanged when the current native tail is still
-            // one of the hub's completed, persisted prompts. A new/unmapped tail
-            // is indeterminate and must not be launched on the old branch.
+            // Re-stage the SAME reserved operation only while its native tail
+            // is still a known completed prompt. Unknown is never converted to
+            // rejected here; only a real same-operation branch commit resolves it.
             const nativeSessionId = recoveryMetadata?.claudeSessionId
             const turns = nativeSessionId ? readNativeTurns(workingDirectory, nativeSessionId) : []
             const knownPrompts = new Set(Object.values(recoveryMetadata?.conversationHistoryEntryIds ?? {}))
@@ -788,14 +809,18 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                 throw new Error('Unstaged rewind reservation cannot be reconciled with the native tail')
             }
             const plan = resolveRewindPlan(turns, promptUuid)
-            await reportRewind({
+            const restored: RewindIntent = {
                 operationId: abandoned.operationId, requestedLocalId: abandoned.requestedLocalId,
                 cutoffSeq: abandoned.cutoffSeq, phase: 'pending', hubSessionId: sessionInfo.id,
                 nativeSessionId, workingDirectory, keepBoundary: plan.resumeSessionAt!,
-                dropFromLocalId: abandoned.requestedLocalId, droppedPrompts: [], baselineUuids: []
-            }, 'rejected')
-            recoveredUnstagedNativeId = nativeSessionId
-            session.sendSessionEvent({ type: 'message', message: 'Rewind was interrupted before durable staging; the original conversation is unchanged. Retry the rewind request.' })
+                dropFromLocalId: abandoned.requestedLocalId,
+                droppedPrompts: turns.slice(turns.findIndex(turn => turn.promptUuid === promptUuid)).map(turn => turn.promptUuid),
+                baselineUuids: [...readTranscriptUuids(workingDirectory, nativeSessionId)]
+            }
+            assertRewindCorrelation(restored, abandoned)
+            rewindStore.write(restored)
+            pendingRewind = restored
+            session.sendSessionEvent({ type: 'message', message: 'Pending rewind restored with its original operation and cutoff; send a regular message to complete it.' })
         }
         await loop({
             path: workingDirectory,
@@ -857,8 +882,24 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                     && branchIsDurable(pendingRewind))
                 sessionInstance.prepareHistoryAttempt = async () => {
                     if (!pendingRewind) return
-                    if (sessionInstance.sessionId !== pendingRewind.nativeSessionId) {
+                    const metadata = await readCurrentRewindMetadata()
+                    if (!pendingRewind) return // an in-flight committed ACK retired it while reading
+                    const operation = metadata?.claudeRewind
+                    assertRewindCorrelation(pendingRewind, operation)
+                    if (sessionInstance.sessionId !== pendingRewind.nativeSessionId
+                        || metadata?.claudeSessionId !== pendingRewind.nativeSessionId) {
                         throw new Error('Pending rewind native session mismatch')
+                    }
+                    if (operation.phase === 'rejected') {
+                        if (pendingRewind.phase === 'applied' || branchIsDurable(pendingRewind)) {
+                            throw new Error('Hub rejection contradicts durable native rewind input')
+                        }
+                        rewindStore.write(null)
+                        pendingRewind = null
+                        sessionInstance.rewindProof = null
+                        sessionInstance.recoveredRewindInput = null
+                        sessionInstance.claudeArgs = stripRewindFlags(sessionInstance.claudeArgs)
+                        return
                     }
                     if (pendingRewind.phase === 'applied' || branchIsDurable(pendingRewind)) {
                         await commitPendingRewind()
@@ -872,8 +913,8 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                     if (!pendingRewind) return
                     const intent = pendingRewind
                     const safelyUnchanged = unchanged && !branchIsDurable(intent)
-                    await reportRewind(intent, safelyUnchanged ? 'rejected' : 'unknown')
-                    if (safelyUnchanged) {
+                    const acknowledgment = await reportRewind(intent, safelyUnchanged ? 'rejected' : 'unknown')
+                    if (safelyUnchanged && acknowledgment.phase === 'rejected') {
                         rewindStore.write(null)
                         pendingRewind = null
                         sessionInstance.rewindProof = null
@@ -941,7 +982,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             claudeEnvVars: options.claudeEnvVars,
             claudeArgs: options.claudeArgs,
             startedBy,
-            resumeSessionId: pendingRewind?.nativeSessionId ?? recoveredUnstagedNativeId ?? options.resumeSessionId,
+            resumeSessionId: pendingRewind?.nativeSessionId ?? options.resumeSessionId,
             hookSettingsPath,
             localHookSettingsPath
         });

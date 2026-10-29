@@ -7,6 +7,7 @@ import { registerSessionHandlers } from '../socket/handlers/cli/sessionHandlers'
 import { Hono } from 'hono'
 import { createMessagesRoutes } from '../web/routes/messages'
 import type { WebAppEnv } from '../web/middleware/auth'
+import { RpcTargetMissingError } from './rpcGateway'
 
 function setup() {
     const store = new Store(':memory:')
@@ -32,6 +33,71 @@ function applied(store: Store, sid: string) {
 }
 
 describe('durable Claude rewind', () => {
+    it('cannot reconcile serialized-error unknown with late exact rejection, only same-op applied proof', async () => {
+        const { store, engine, sid } = setup()
+        try {
+            ;(engine as any).rpcGateway.rewindConversation = async () => ({ error: 'serialized error' })
+            await engine.rewindConversation(sid, 'default', 'boundary')
+            const before = store.sessions.getSession(sid)!
+            const rows = store.messages.getAllMessages(sid)
+            const report = applied(store, sid)
+            const rejected = { ...report.metadata, conversationHistoryDiverged: false,
+                claudeRewind: { ...report.metadata.claudeRewind, phase: 'rejected' as const } }
+            const events: any[] = []
+            const publisher = (engine as any).eventPublisher
+            const emit = publisher.emit.bind(publisher)
+            publisher.emit = (event: unknown) => { events.push(event); emit(event) }
+            expect(engine.commitClaudeRewind(sid, rejected, report.version).result).toBe('error')
+            expect(store.sessions.getSession(sid)!.metadata).toEqual(before.metadata)
+            expect(store.sessions.getSession(sid)!.metadataVersion).toBe(before.metadataVersion)
+            expect(store.messages.getAllMessages(sid)).toEqual(rows)
+            expect(events.some(event => event.type === 'messages-invalidated')).toBe(false)
+            await expect(engine.switchSession(sid, 'local')).rejects.toThrow('rewind is pending')
+            expect(await engine.rewindConversation(sid, 'default', 'boundary')).toMatchObject({ type: 'error' })
+            expect(engine.commitClaudeRewind(sid, report.metadata, report.version).result).toBe('success')
+            expect(store.sessions.getSession(sid)!.metadata).toMatchObject({
+                claudeRewind: { operationId: report.metadata.claudeRewind.operationId, phase: 'committed' }, conversationHistoryDiverged: false
+            })
+            expect(events.some(event => event.type === 'messages-invalidated' && event.namespace === 'default')).toBe(true)
+        } finally { engine.stop() }
+    })
+
+    for (const phase of ['unknown', 'rejected', 'applied', 'committed'] as const) {
+        it(`preserves durable ${phase} across every late RPC result or error`, async () => {
+            for (const path of ['pending', 'serialized-error', 'rejected', 'success', 'transport-error', 'target-missing'] as const) {
+                const { store, engine, sid } = setup()
+                try {
+                    let before: unknown
+                    let rows: ReturnType<Store['messages']['getAllMessages']> = []
+                    ;(engine as any).rpcGateway.rewindConversation = async (_: string, params: { operationId: string }) => {
+                        const report = applied(store, sid)
+                        if (phase === 'applied') {
+                            expect(store.sessions.updateSessionMetadata(sid, report.metadata, report.version, 'default').result).toBe('success')
+                        } else {
+                            const proof = { ...report.metadata, claudeRewind: {
+                                ...report.metadata.claudeRewind, phase: phase === 'committed' ? 'applied' as const : phase
+                            } }
+                            expect(engine.commitClaudeRewind(sid, proof, report.version).result).toBe('success')
+                        }
+                        before = store.sessions.getSession(sid)!.metadata
+                        rows = store.messages.getAllMessages(sid)
+                        if (path === 'transport-error') throw new Error('late disconnect')
+                        if (path === 'target-missing') throw new RpcTargetMissingError('rewind', 'handler-not-registered')
+                        if (path === 'serialized-error') return { error: 'late serialized error' }
+                        if (path === 'rejected') return { success: false, outcome: 'rejected', error: 'late native rejection' }
+                        if (path === 'success') return { success: true, truncateFromLocalId: 'boundary' }
+                        return { success: false, outcome: 'pending', operationId: params.operationId,
+                            nativeSessionId: 'native', keepBoundary: 'uuid', truncateFromLocalId: 'boundary' }
+                    }
+                    const result = await engine.rewindConversation(sid, 'default', 'boundary')
+                    expect(result.type).toBe(['applied', 'committed'].includes(phase) ? 'success' : 'error')
+                    expect(store.sessions.getSession(sid)!.metadata).toEqual(before)
+                    expect(store.messages.getAllMessages(sid)).toEqual(rows)
+                } finally { engine.stop() }
+            }
+        })
+    }
+
     for (const alreadyInvoked of [false, true]) {
         it(`reports offline staged-Q withdrawal authoritatively (consumed before crash: ${alreadyInvoked})`, async () => {
             const { store, engine, sid } = setup()
@@ -132,7 +198,8 @@ describe('durable Claude rewind', () => {
             const metadata = current.metadata as Metadata
             // Reordering JSON properties must not turn an unchanged marker into proof.
             const carried = Object.fromEntries(Object.entries(metadata.claudeRewind!).reverse())
-            const update = { ...metadata, claudeSessionId: 'new-native-after-clear', claudeRewind: carried }
+            const update = { ...metadata, claudeSessionId: 'new-native-after-clear', claudeRewind: carried,
+                conversationHistoryPoints: {}, conversationHistoryEntryIds: {} }
             const send = (expectedVersion: number) => {
                 let ack: any
                 handlers.get('update-metadata')!({ sid, expectedVersion, metadata: update }, (result: any) => { ack = result })
@@ -144,6 +211,8 @@ describe('durable Claude rewind', () => {
             } })
             expect(proofCalls).toBe(0)
             expect(store.sessions.getSession(sid)!.metadata).toMatchObject({ claudeSessionId: 'new-native-after-clear', claudeRewind: metadata.claudeRewind })
+            expect((store.sessions.getSession(sid)!.metadata as Metadata).conversationHistoryPoints).toEqual({})
+            expect((store.sessions.getSession(sid)!.metadata as Metadata).conversationHistoryEntryIds).toEqual({})
             await engine.sendMessage(sid, { text: '/new', localId: 'new-after-rejection' })
             const afterNew = store.sessions.getSession(sid)!
             let newAck: any
@@ -161,6 +230,10 @@ describe('durable Claude rewind', () => {
         try {
             ;(engine as any).rpcGateway.rewindConversation = async () => ({ error: 'lost response' })
             await engine.rewindConversation(sid, 'default', 'boundary')
+            const events: any[] = []
+            const publisher = (engine as any).eventPublisher
+            const emit = publisher.emit.bind(publisher)
+            publisher.emit = (event: unknown) => { events.push(event); emit(event) }
             const handlers = new Map<string, (...args: any[]) => void>()
             let proofCalls = 0
             registerSessionHandlers({ on: (name: string, fn: (...args: any[]) => void) => handlers.set(name, fn), to: () => ({ emit() {} }) } as never, {
@@ -176,24 +249,54 @@ describe('durable Claude rewind', () => {
             const metadata = current.metadata as Metadata
             // Hub-created unknown may lack journal identity. Merely carrying it
             // must not make unrelated updates enter an impossible retry loop.
-            expect(send({ ...metadata, name: 'ordinary update' })).toMatchObject({ result: 'success', metadata: {
-                name: 'ordinary update', claudeRewind: metadata.claudeRewind, conversationHistoryDiverged: true
+            const echo = { ...metadata, name: 'ordinary update', conversationHistoryDiverged: false,
+                conversationHistoryPoints: { forged: true }, conversationHistoryIndexes: { forged: 7 },
+                conversationHistoryTurns: { forged: 'turn' }, conversationHistoryEntryIds: { forged: 'entry' } }
+            expect(send(echo, current.metadataVersion - 1).result).toBe('version-mismatch')
+            const echoAck = send(echo)
+            expect(echoAck).toMatchObject({ result: 'success', metadata: {
+                name: 'ordinary update', claudeRewind: metadata.claudeRewind, conversationHistoryDiverged: true,
+                conversationHistoryPoints: { boundary: true }
             } })
+            expect(echoAck.metadata.conversationHistoryIndexes).toBeUndefined()
+            expect(echoAck.metadata.conversationHistoryTurns).toBeUndefined()
+            expect(echoAck.metadata.conversationHistoryEntryIds).toBeUndefined()
             expect(proofCalls).toBe(0)
+            const { claudeRewind: _omitted, ...sparse } = echo
+            const omittedAck = send({ ...sparse, name: 'omitted marker update' })
+            expect(omittedAck).toMatchObject({ result: 'success', metadata: {
+                name: 'omitted marker update', claudeRewind: metadata.claudeRewind,
+                conversationHistoryDiverged: true, conversationHistoryPoints: { boundary: true }
+            } })
+            expect(omittedAck.metadata.conversationHistoryIndexes).toBeUndefined()
+            expect(proofCalls).toBe(0)
+            // Old pending snapshots refresh before being interpreted as new
+            // proof, then the exact unknown echo can advance unrelated fields.
+            const stalePending = { ...echo, claudeRewind: { ...metadata.claudeRewind!, phase: 'pending' } }
+            const refresh = send(stalePending, current.metadataVersion)
+            expect(refresh).toMatchObject({ result: 'version-mismatch', metadata: { claudeRewind: { phase: 'unknown' }, conversationHistoryDiverged: true } })
+            expect(send({ ...refresh.metadata, name: 'after refresh' }, refresh.version).result).toBe('success')
+            expect(proofCalls).toBe(0)
+            expect(send({ ...metadata, claudeRewind: { ...metadata.claudeRewind!, nativeSessionId: undefined } }).result).toBe('error')
             const proof = applied(store, sid)
             expect(send({ ...proof.metadata, claudeRewind: { ...proof.metadata.claudeRewind, phase: 'unknown', operationId: 'forged' } }).result).toBe('error')
             expect(send({ ...proof.metadata, claudeRewind: { ...proof.metadata.claudeRewind, phase: 'unknown', keepBoundary: 'changed', cutoffSeq: 999 } }).result).toBe('error')
+            for (const phase of ['pending', 'requested', 'rejected'] as const) {
+                expect(send({ ...echo, claudeRewind: { ...metadata.claudeRewind!, phase } }).result).toBe('error')
+            }
+            expect(send({ ...echo, claudeRewind: null }).result).toBe('error')
             const forged = send({ ...proof.metadata, claudeRewind: { ...proof.metadata.claudeRewind, phase: 'committed' } })
-            expect(forged.result).toBe('success')
-            expect(forged.metadata.claudeRewind.phase).toBe('unknown')
+            expect(forged.result).toBe('error')
             expect(store.messages.getAllMessages(sid)).toHaveLength(1)
+            expect(events.some(event => event.type === 'messages-invalidated')).toBe(false)
             const fresh = applied(store, sid)
             expect(send(fresh.metadata, fresh.version).metadata.claudeRewind.phase).toBe('committed')
             const epoch = store.messages.getMessageEpoch(sid)
             const version = store.sessions.getSession(sid)!.metadataVersion
-            expect(send(fresh.metadata, fresh.version)).toMatchObject({ result: 'success', version, metadata: { claudeRewind: { phase: 'committed' } } })
+            expect(send(fresh.metadata, fresh.version)).toMatchObject({ result: 'version-mismatch', version, metadata: { claudeRewind: { phase: 'committed' } } })
+            expect(send(fresh.metadata, version)).toMatchObject({ result: 'success', version, metadata: { claudeRewind: { phase: 'committed' } } })
             expect(store.messages.getMessageEpoch(sid)).toBe(epoch)
-            expect(proofCalls).toBe(4)
+            expect(proofCalls).toBe(10)
         } finally { engine.stop() }
     })
 
@@ -299,7 +402,8 @@ describe('durable Claude rewind', () => {
             handlers.get('update-metadata')!({ sid, expectedVersion: report.version, metadata: {
                 ...report.metadata, claudeRewind: { ...report.metadata.claudeRewind, phase: 'committed' }
             } }, (ack: any) => {
-                expect(ack.metadata.claudeRewind.phase).toBe('unknown')
+                expect(ack.result).toBe('error')
+                expect((store.sessions.getSession(sid)!.metadata as Metadata).claudeRewind?.phase).toBe('unknown')
                 expect(store.messages.getAllMessages(sid)).toHaveLength(1)
             })
             const fresh = applied(store, sid)

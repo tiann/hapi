@@ -77,13 +77,20 @@ const HUB_OWNED_METADATA_KEYS = [
     'titleSuggestionTurn'
 ] as const
 
-function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown {
+function preserveHubOwnedMetadata(incoming: unknown, current: unknown, failurePhase?: 'unknown' | 'rejected'): unknown {
     if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) return incoming
     const next = { ...(incoming as Record<string, unknown>) }
     const existing = current && typeof current === 'object' && !Array.isArray(current)
         ? current as Record<string, unknown>
         : {}
-    for (const key of HUB_OWNED_METADATA_KEYS) {
+    // Unknown blocks reconciliation, including ordinary sparse CLI writes.
+    // Rejected allows native reset/new-turn locators to be published again.
+    const keys = [...HUB_OWNED_METADATA_KEYS,
+        ...(failurePhase ? ['conversationHistoryDiverged'] : []),
+        ...(failurePhase === 'unknown' ? ['conversationHistoryPoints', 'conversationHistoryIndexes',
+            'conversationHistoryTurns', 'conversationHistoryEntryIds'] : [])
+    ]
+    for (const key of keys) {
         if (Object.prototype.hasOwnProperty.call(existing, key)) next[key] = existing[key]
         else delete next[key]
     }
@@ -296,25 +303,35 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
-        const report = metadata && typeof metadata === 'object'
-            ? (metadata as Record<string, unknown>).claudeRewind as { phase?: string } | undefined
-            : undefined
+        // Refresh stale CLI snapshots before interpreting a carried operation.
+        // A lost committed ACK can likewise refresh, then replay applied safely.
+        if (expectedVersion !== sessionAccess.value.metadataVersion) {
+            cb({ result: 'version-mismatch', version: sessionAccess.value.metadataVersion, metadata: sessionAccess.value.metadata })
+            return
+        }
+
+        const incoming = metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+            ? metadata as Record<string, unknown> : undefined
+        const report = incoming?.claudeRewind as { phase?: string } | null | undefined
         const currentRewind = (sessionAccess.value.metadata as Metadata | null)?.claudeRewind
         // Ordinary CLI writes spread their current metadata, including the
         // Hub-owned rewind marker. An unchanged failure marker is not fresh
         // native proof (and may refer to the session before a later /clear).
         // Applied always remains a proof submission, including a lost-ACK retry
         // against a committed marker, which must re-ACK without truncating.
-        const carriedFailure = report && ['unknown', 'rejected'].includes(report.phase ?? '')
-            && isDeepStrictEqual(report, currentRewind)
-        const result = report && !carriedFailure && ['applied', 'unknown', 'rejected'].includes(report.phase ?? '')
+        const changedReport = incoming && Object.prototype.hasOwnProperty.call(incoming, 'claudeRewind')
+            && !isDeepStrictEqual(report, currentRewind)
+        const operationReport = report?.phase === 'applied' || changedReport
+        const failurePhase = currentRewind?.phase === 'unknown' || currentRewind?.phase === 'rejected'
+            ? currentRewind.phase : undefined
+        const result = operationReport
             ? deps.onClaudeRewindApplied?.(sid, {
                 ...(preserveHubOwnedMetadata(metadata, sessionAccess.value.metadata) as object),
                 claudeRewind: report
             }, expectedVersion) ?? { result: 'error' as const }
             : store.sessions.updateSessionMetadata(
                 sid,
-                preserveHubOwnedMetadata(metadata, sessionAccess.value.metadata),
+                preserveHubOwnedMetadata(metadata, sessionAccess.value.metadata, failurePhase),
                 expectedVersion,
                 sessionAccess.value.namespace
             )
