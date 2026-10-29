@@ -6,6 +6,7 @@ import { CLAUDE_PERMISSION_MODES } from '@hapi/protocol/modes'
 import { isDeepStrictEqual } from 'node:util'
 import type { ClaudeRewind } from '@hapi/protocol/types'
 import type { RewindConversationRpcResult } from '@hapi/protocol/apiTypes'
+import { fsyncFile } from '@/utils/fsyncFile'
 
 export const RewindDeliverySchema = z.object({
     deliveredText: z.string(),
@@ -131,6 +132,12 @@ export class RewindIntentStore {
             fsyncSync(fd)
         } finally { closeSync(fd) }
         renameSync(temporary, this.file)
+        if (process.platform === 'win32') {
+            // Win32 rejects directory fsync. The rename is synchronous; flush
+            // the final regular file before acknowledging this journal update.
+            fsyncFile(this.file)
+            return
+        }
         const dir = openSync(this.directory, 'r')
         try { fsyncSync(dir) } finally { closeSync(dir) }
     }

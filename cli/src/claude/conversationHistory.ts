@@ -1,6 +1,7 @@
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
+import { fsyncFile } from '@/utils/fsyncFile'
 import { getProjectPath } from './utils/path'
 import { isExternalUserMessage } from '@/api/apiSession'
 import type { RawJSONLines } from '@/claude/types'
@@ -205,8 +206,7 @@ export function hasDurableRewindBranch(
         })
         if (!matches) return false
     }
-    const fd = openSync(join(getProjectPath(workingDirectory), `${sessionId}.jsonl`), 'r')
-    try { fsyncSync(fd) } finally { closeSync(fd) }
+    fsyncFile(join(getProjectPath(workingDirectory), `${sessionId}.jsonl`))
     return true
 }
 
