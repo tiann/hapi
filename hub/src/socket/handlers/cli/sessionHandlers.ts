@@ -314,6 +314,12 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             ? metadata as Record<string, unknown> : undefined
         const report = incoming?.claudeRewind as { phase?: string } | null | undefined
         const currentRewind = (sessionAccess.value.metadata as Metadata | null)?.claudeRewind
+        if (currentRewind && !incoming) {
+            // Legacy nullable metadata must not erase a Hub-owned operation or
+            // its unknown/divergence barrier through an ordinary replacement.
+            cb({ result: 'error' })
+            return
+        }
         // Ordinary CLI writes spread their current metadata, including the
         // Hub-owned rewind marker. An unchanged failure marker is not fresh
         // native proof (and may refer to the session before a later /clear).

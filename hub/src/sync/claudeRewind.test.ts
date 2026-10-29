@@ -33,6 +33,29 @@ function applied(store: Store, sid: string) {
 }
 
 describe('durable Claude rewind', () => {
+    it('cannot erase persisted unknown through a null or non-object ordinary metadata write', async () => {
+        const { store, engine, sid } = setup()
+        try {
+            ;(engine as any).rpcGateway.rewindConversation = async () => ({ error: 'serialized error' })
+            await engine.rewindConversation(sid, 'default', 'boundary')
+            const before = store.sessions.getSession(sid)!
+            const rows = store.messages.getAllMessages(sid)
+            const handlers = new Map<string, (...args: any[]) => void>()
+            registerSessionHandlers({ on: (event: string, handler: (...args: any[]) => void) => handlers.set(event, handler), to: () => ({ emit() {} }) } as never, {
+                store, resolveSessionAccess: () => ({ ok: true, value: store.sessions.getSession(sid)! }), emitAccessError() {},
+                onClaudeRewindApplied: (id, metadata, version) => engine.commitClaudeRewind(id, metadata, version)
+            })
+            for (const metadata of [null, [], 'reset', 0]) {
+                let ack: any
+                handlers.get('update-metadata')!({ sid, expectedVersion: before.metadataVersion, metadata }, (result: unknown) => { ack = result })
+                expect(ack.result).toBe('error')
+                expect(store.sessions.getSession(sid)!.metadata).toEqual(before.metadata)
+                expect(store.sessions.getSession(sid)!.metadataVersion).toBe(before.metadataVersion)
+                expect(store.messages.getAllMessages(sid)).toEqual(rows)
+            }
+        } finally { engine.stop() }
+    })
+
     it('cannot reconcile serialized-error unknown with late exact rejection, only same-op applied proof', async () => {
         const { store, engine, sid } = setup()
         try {
