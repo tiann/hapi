@@ -889,7 +889,7 @@ private fun ScheduledComposerPreview() {
                     isSending = false,
                     canSteer = false,
                 ),
-                onTextChange = {}, onSend = {}, onSendSteer = {}, onAbort = {},
+                onTextChange = { _, _, _ -> }, onSend = {}, onSendSteer = {}, onAbort = {},
                 pendingSchedule = PendingSchedule.Preset("+30m"),
                 onScheduleSelected = {},
                 onClearSchedule = {},
