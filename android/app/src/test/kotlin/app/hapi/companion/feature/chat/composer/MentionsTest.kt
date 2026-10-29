@@ -118,6 +118,20 @@ class MentionsTest {
     }
 
     @Test
+    fun `mentionQueryOf evaluates at the live selection and clamps it to the text`() {
+        // Cursor inside the draft, not at the tail.
+        assertEquals("jo", Mentions.mentionQueryOf("hi @jo bye", 6, 6))
+        // Caret on the space just past the mention word ends the word (a
+        // trailing space is inactive); the tail (10, 10) still queries "jo
+        // bye" because one inner space is tolerated, by design.
+        assertNull(Mentions.mentionQueryOf("hi @jo bye", 7, 7))
+        // A selected range suppresses detection.
+        assertNull(Mentions.mentionQueryOf("hi @jo", 4, 6))
+        // A mirror that briefly lags a programmatic text swap clamps to tail.
+        assertEquals(Mentions.mentionQueryOf("hi @jo"), Mentions.mentionQueryOf("hi @jo", 99, 99))
+    }
+
+    @Test
     fun `mentionQueryOf stays null outside mentions`() {
         assertNull(Mentions.mentionQueryOf(""))
         assertNull(Mentions.mentionQueryOf("hello"))
