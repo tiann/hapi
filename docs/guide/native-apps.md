@@ -1,23 +1,32 @@
 # Native apps (iOS / Android)
 
-HAPI includes native iOS and Android clients for controlling sessions on a hub
+HAPI offers native iOS and Android apps for controlling sessions on a hub
 you run. Agents execute on your CLI/Runner machines; the hub stores the session
 history. The apps connect directly to that hub and share the same conversations
 as the [Web/PWA](./pwa.md).
 
-## Build and install
+The native apps are paid downloads. The [Web/PWA](./pwa.md) is free, works in
+any phone browser and includes features the apps do not have yet; see
+[Features available through the web](#features-available-through-the-web).
 
-The repository provides these build paths:
+## Install
 
-| Platform | Device requirement | Build instructions |
+| Platform | Device requirement | Download |
 |---|---|---|
-| iOS | iOS 17 or newer | [iOS README](https://github.com/tiann/hapi/blob/main/ios/README.md): Xcode 16 or newer, shared `Hapi` scheme; device builds require signing. |
-| Android | Android 8.0 (API 26) or newer | [Android README](https://github.com/tiann/hapi/blob/main/android/README.md): JDK 17+, Android SDK, Gradle wrapper; build/install a debug APK or configure release signing. |
+| iOS / iPadOS | iOS 17 or newer | [App Store](https://apps.apple.com/app/id6805699104) |
+| Android | Android 8.0 (API 26) or newer | [Google Play](https://play.google.com/store/apps/details?id=run.hapi.companion) |
 
-Maintainers can use the [Android Official Build workflow](https://github.com/tiann/hapi/blob/main/.github/workflows/android-release.yml)
-to produce signed APK/AAB artifacts with the official Firebase configuration.
-That workflow does not publish to Google Play. Push setup depends on the build
-you install; see [Notifications](#notifications).
+Store builds include native push through the encrypted push relay; no Firebase
+or Apple developer setup is needed on your hub. See [Notifications](#notifications).
+
+### Build from source (developers)
+
+The app source is in the repository. Development builds follow the
+[iOS README](https://github.com/tiann/hapi/blob/main/ios/README.md) (Xcode 27.1
+or newer, shared `Hapi` scheme; device builds require signing) or the
+[Android README](https://github.com/tiann/hapi/blob/main/android/README.md)
+(JDK 17+, Android SDK, Gradle wrapper). Self-built apps need their own push
+configuration; see [Notifications](#notifications).
 
 ## Pair with your hub
 
@@ -79,13 +88,25 @@ directory browsing and session creation.
 | Capability | Current native behavior |
 |---|---|
 | Chat and permissions | Streaming messages, history, tool inspection, approvals and question answering on both platforms. |
-| Composer | Text, photos/camera/files, drafts, queued-message actions and steering when supported by the session. |
-| Session controls | Both support pin/archive, stopping a turn and sending to resume an inactive session. Android also exposes Rename, Delete and explicit Reopen actions; iOS currently has no corresponding UI for those three actions. |
+| Composer | Text, photos/camera/files, drafts, queued-message actions, `/` command suggestions and steering when supported by the session. |
+| Session controls | Both support pin, rename, stopping a turn and sending to resume an inactive session. Active sessions can be archived; inactive sessions can be reopened explicitly or deleted. |
 | Files and Git | Open **Session files** from the chat menu to browse/search files, inspect Git status and read diffs. |
 | Scratchlist | On iOS, tap the tray beside the composer attachment button to enter **Save draft** mode; Android uses the chat menu. Text and attachments sync within the session. |
 | Dictation | Record audio, transcribe through a configured hub provider, then edit the inserted text before sending. |
 | Usage and storage | Available only to the hub owner (`default` namespace). |
 | Display | English/Simplified Chinese, theme preferences, system text scaling and machine filtering on the session list. |
+
+### Session-list parity
+
+Android and iOS use the shared base session-list order: global-pinned sessions,
+project-pinned sessions, active sessions, pending-request priority among active
+sessions, then `updatedAt` descending. Ties preserve their incoming order. The
+Web sidebar may apply additional directory grouping and client-side search
+ranking; it also exposes text, date-range and unread-only session-list filters.
+Both native apps offer machine filtering and relevance-ranked text search.
+Android adds a date range; iOS adds an unread-only lens and **Mark All as
+Read**. Android and iOS README files describe their platform-specific filter
+presentation and session-row differences.
 
 Selecting an attachment starts its upload after preparation, before you send
 the message or save the Scratchlist entry. Removing it requests cleanup of
@@ -113,10 +134,15 @@ send it automatically. See [Voice input and assistant](./voice-assistant.md).
 ### Features available through the web
 
 Use the web app for the remote terminal, Work Graph, realtime dictation and
-voice assistant, session fork/rewind/export, and the skills picker. These have
-no native UI. Session history actions also depend on the agent's capabilities.
-Native apps display existing scheduled messages but do not provide a form to
-create scheduled sends. Android's full-text file export is a reader action,
+voice assistant, Markdown export, and the skills picker. These have no native
+UI. On iOS, the chat's … menu forks the current conversation, rewinds or forks
+at a user message with a native history point, and exports the session as
+JSON; Android has no fork, rewind or export UI. Session history actions also
+depend on the agent's capabilities.
+Both apps display existing scheduled messages. On iOS, the composer's clock
+schedules a text-only send up to 7 days ahead (relative presets or a specific
+time); Android has no form to create scheduled sends.
+Android's full-text file export is a reader action,
 separate from exporting an entire session.
 
 ## Multiple hubs and sign-out
@@ -138,8 +164,8 @@ is suppressed locally because the conversation is already visible.
 
 | App build | Push requirements |
 |---|---|
-| Official Android Firebase configuration | A current hub uses the encrypted push relay by default when no private FCM credentials are configured. Google Play services and FCM connectivity are required. |
-| Official iOS signing | A current hub uses the encrypted push relay by default. No Apple developer credentials are needed on the user's hub. |
+| Google Play build | A current hub uses the encrypted push relay by default when no private FCM credentials are configured. Google Play services and FCM connectivity are required. |
+| App Store build | A current hub uses the encrypted push relay by default. No Apple developer credentials are needed on the user's hub. |
 | Private Android Firebase project | Bundle that project's client configuration and configure matching Firebase service-account credentials on the hub for direct FCM. |
 | Android without Firebase configuration | Session features work; FCM push is unavailable. |
 | Self-signed iOS build | Configure direct APNs or a self-hosted push relay with credentials matching the app's developer account, bundle ID and APNs environment. Follow the iOS README's signing instructions. |
@@ -151,17 +177,18 @@ FCM delivery uses an unencrypted notification data payload; direct APNs remains
 encrypted. See [Notifications](./notifications.md#native-app-notifications)
 and the [push contract](../api/native-companion-contract.md) for configuration.
 
-Push registration covers every paired hub. Notification taps currently open
-the session against the active hub; if the session cannot be found, switch to
-its owning hub. Background notification actions try paired hubs to resolve
-the session.
+Push registration covers every paired hub. On iOS, a notification tap finds
+the hub that owns the session (active hub first) and switches to it before
+opening the chat. Android opens the session against the active hub; if it
+cannot be found, switch to its owning hub. Background notification actions on
+both platforms try paired hubs to resolve the session.
 
 ## Troubleshooting
 
 | Symptom | Check |
 |---|---|
 | Pairing cannot reach the hub | Use the HTTPS hub origin, verify phone network access and certificate trust, and check the hub's listening address or reverse proxy. |
-| Protocol mismatch | Update the app/hub to compatible builds; both apps require the hub protocol version to equal their supported version. |
+| Protocol mismatch | Update the app from the App Store / Google Play and update the hub; both apps require the hub protocol version to equal their supported version. |
 | Re-pairing requested | Use the current access token, including the intended namespace suffix. |
 | No machines for New Session | Start the Runner, verify its connection and namespace, and check agent availability on that machine. |
 | Microphone missing | Configure a standard transcription provider and ensure the hub is reachable. |

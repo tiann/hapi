@@ -334,6 +334,111 @@ struct SessionListStoreTests {
         #expect(store.sessions.map(\.id) == ["s1"], "failed archive restores the row")
     }
 
+    // MARK: - Rename / delete / reopen
+
+    @Test func renameUpdatesTheNameOptimisticallyAndRollsForwardOnFailure() async throws {
+        let (performer, store) = try makeStore()
+        var named = storeSummary("s1", updatedAt: 900)
+        named.metadata = SessionSummaryMetadata(name: "Old", path: "/repo")
+        await performer.enqueue(json: try sessionsResponseJSON(named, storeSummary("bare", updatedAt: 100)))
+        try await store.refresh()
+
+        await performer.enqueue(json: #"{"ok":true}"#)
+        try await store.renameSession(sessionId: "s1", name: "New")
+        #expect(store.sessions.first { $0.id == "s1" }?.metadata?.name == "New")
+        // A row without metadata has nothing renderable to rename.
+        await performer.enqueue(json: #"{"ok":true}"#)
+        try await store.renameSession(sessionId: "bare", name: "Ignored")
+        #expect(store.sessions.first { $0.id == "bare" }?.metadata == nil)
+
+        await performer.enqueue(status: 500, json: #"{"error":"boom"}"#)
+        await performer.enqueue(json: try sessionsResponseJSON(named, storeSummary("bare", updatedAt: 100)))
+        var thrown = false
+        do {
+            try await store.renameSession(sessionId: "s1", name: "Rejected")
+        } catch {
+            thrown = true
+        }
+        #expect(thrown, "failed rename must rethrow")
+        try await expectEventually {
+            store.sessions.first { $0.id == "s1" }?.metadata?.name == "Old"
+        }
+    }
+
+    @Test func deleteRemovesOptimisticallyRestoresOnConflictAndNotifiesOnlyOnSuccess() async throws {
+        let (performer, store) = try makeStore()
+        var removals: [String] = []
+        store.onSessionRemoved = { removals.append($0) }
+        await performer.enqueue(json: try sessionsResponseJSON(
+            storeSummary("s1", updatedAt: 900),
+            storeSummary("s2", updatedAt: 100)
+        ))
+        try await store.refresh()
+
+        await performer.enqueue(status: 409, json: #"{"error":"Cannot delete active session. Archive it first."}"#)
+        do {
+            try await store.deleteSession(sessionId: "s1")
+            Issue.record("The delete should fail")
+        } catch {
+            #expect(isActiveSessionConflict(error))
+        }
+        #expect(store.sessions.map(\.id) == ["s1", "s2"], "failed delete restores the row in order")
+        #expect(removals.isEmpty)
+
+        await performer.enqueue(json: #"{"ok":true}"#)
+        try await store.deleteSession(sessionId: "s2")
+        #expect(store.sessions.map(\.id) == ["s1"])
+        #expect(removals == ["s2"])
+    }
+
+    @Test func reopenInPlaceMarksTheSessionActiveImmediately() async throws {
+        let (performer, store) = try makeStore()
+        await performer.enqueue(json: try sessionsResponseJSON(
+            storeSummary("live", active: true, updatedAt: 100),
+            storeSummary("old", updatedAt: 900)
+        ))
+        try await store.refresh()
+        #expect(store.sessions.map(\.id) == ["live", "old"])
+
+        await performer.enqueue(json: #"{"ok":true,"sessionId":"old","resumed":true}"#)
+        let response = try await store.reopenSession(sessionId: "old")
+        #expect(response.sessionId == "old")
+        #expect(store.sessions.first?.id == "old", "the reopened row sorts with the active ones")
+        #expect(store.sessions.first?.active == true)
+    }
+
+    @Test func reopenWithASupersedingIdRefetchesTheList() async throws {
+        let (performer, store) = try makeStore()
+        await performer.enqueue(json: try sessionsResponseJSON(storeSummary("old", updatedAt: 900)))
+        try await store.refresh()
+
+        await performer.enqueue(json: #"{"ok":true,"sessionId":"new","resumed":false}"#)
+        await performer.enqueue(json: try sessionsResponseJSON(
+            storeSummary("new", active: true, updatedAt: 1_000),
+            storeSummary("old", updatedAt: 900)
+        ))
+        let response = try await store.reopenSession(sessionId: "old")
+        #expect(response.sessionId == "new")
+        try await expectEventually { store.sessions.first?.id == "new" }
+    }
+
+    @Test func reopenFailureFormatsTheMissingMetadata() async throws {
+        let (performer, store) = try makeStore()
+        await performer.enqueue(
+            status: 422,
+            json: #"{"error":"Session metadata is incomplete","missing":["path"]}"#
+        )
+        do {
+            _ = try await store.reopenSession(sessionId: "s1")
+            Issue.record("The reopen should fail")
+        } catch {
+            #expect(formatReopenError(error) == "Session metadata is incomplete (missing: path)")
+        }
+        #expect(formatReopenError(APIError(status: 503, body: #"{"error":"No machine online"}"#)) == "No machine online")
+        #expect(formatReopenError(APIError(status: 500, body: "Bad Gateway")) == nil)
+        #expect(formatReopenError(URLError(.timedOut)) == nil)
+    }
+
     // MARK: - Snapshot
 
     @Test func removalNotificationsIgnoreFailedArchivesAndListReplacement() async throws {

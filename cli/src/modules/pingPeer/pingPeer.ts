@@ -95,7 +95,24 @@ export type PingPeerResult = {
     sessionId: string
     name: string
     resumed: boolean
-    delivery: 'queued' | 'steered' | 'invoked'
+    delivery: 'accepted' | 'steered' | 'invoked'
+    /**
+     * Known client submit identity for the peer row (`ping-peer-` prefix).
+     * The recipient runtime's consumption ACK is the only delivery proof;
+     * HTTP success below means hub-accepted, which may race that ACK.
+     */
+    localId: string
+}
+
+/**
+ * localId prefix for peer submissions. The recipient hub exempts these rows
+ * from the session-end synthetic sweep, preserving unconsumed peer messages
+ * for replay and keeping invocation timestamps tied to consumption ACKs.
+ */
+export const PEER_MESSAGE_LOCAL_ID_PREFIX = 'ping-peer-'
+
+export function createPeerMessageLocalId(): string {
+    return `${PEER_MESSAGE_LOCAL_ID_PREFIX}${randomUUID()}`
 }
 
 export type ListPeerSessionsOptions = {
@@ -120,7 +137,7 @@ const AUTH_RECOVERY_HINT =
     'or run `hapi auth login` to save the token. Inside a HAPI session prefer MCP ' +
     '`list_peers` / `ping_peer` / `inspect_peer`, which use the session CLI credentials.'
 
-function resolveApiUrl(apiUrl?: string): string {
+export function resolveApiUrl(apiUrl?: string): string {
     const raw = (apiUrl ?? configuration.apiUrl).trim().replace(/\/+$/, '')
     if (!raw) {
         throw new PingPeerError(
@@ -133,7 +150,7 @@ function resolveApiUrl(apiUrl?: string): string {
     return raw
 }
 
-function resolveAccessToken(accessToken?: string): string {
+export function resolveAccessToken(accessToken?: string): string {
     let token = ''
     try {
         token = (accessToken ?? getAuthToken()).trim()
@@ -153,7 +170,7 @@ function authFailedMessage(apiUrl: string, detail: string): string {
     return `failed to exchange access token for JWT (${detail}). Hub URL: ${apiUrl}. ${AUTH_RECOVERY_HINT}`
 }
 
-async function exchangeJwt(
+export async function exchangeJwt(
     apiUrl: string,
     accessToken: string,
     http: AxiosInstance
@@ -187,7 +204,7 @@ async function exchangeJwt(
     }
 }
 
-function authHeaders(jwt: string): Record<string, string> {
+export function authHeaders(jwt: string): Record<string, string> {
     return buildHubRequestHeaders({
         Authorization: `Bearer ${jwt}`,
         'Content-Type': 'application/json'
@@ -384,27 +401,29 @@ async function sendMessage(
     jwt: string,
     sessionId: string,
     message: string,
+    localId: string,
     http: AxiosInstance,
     deliveryMode: MessageDeliveryMode
 ): Promise<PingPeerResult['delivery']> {
     // The existing queued-message steer action accepts localId as well as id.
-    // Keep queue delivery on the existing path; a steer needs an ackable row.
-    const localId = deliveryMode === 'steer' ? randomUUID() : undefined
+    // Both modes retain the peer identity so only runtime ACKs prove delivery.
     const response = await http.post(
         `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages`,
-        { text: message, ...(localId ? { localId } : {}) },
+        { text: message, localId },
         {
             headers: authHeaders(jwt),
             timeout: 30_000,
             validateStatus: () => true
         }
     ).catch((error: unknown) => {
-        if (!localId) throw error
+        if (deliveryMode !== 'steer') throw error
         const detail = error instanceof Error ? error.message : String(error)
         throw unconfirmedSendError(localId, detail)
     })
     if (response.status >= 200 && response.status < 300 && response.data?.ok === true) {
-        if (!localId) return 'queued'
+        // HTTP success means hub-accepted, not proof the row is still queued:
+        // the recipient runtime's consumption ACK may race this response.
+        if (deliveryMode === 'queue') return 'accepted'
         try {
             const steer = await http.post(
                 `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(localId)}/steer`,
@@ -432,7 +451,7 @@ async function sendMessage(
         : typeof response.data?.code === 'string'
             ? response.data.code
             : `HTTP ${response.status}`
-    if (localId) {
+    if (deliveryMode === 'steer') {
         throw unconfirmedSendError(localId, detail)
     }
     throw new PingPeerError('send_failed', `send failed: ${detail}`)
@@ -609,12 +628,14 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
     }
 
     onProgress?.(`sending message (${message.length} chars, ${deliveryMode})...`)
-    const delivery = await sendMessage(apiUrl, jwt, matched.id, message, http, deliveryMode)
+    const localId = createPeerMessageLocalId()
+    const delivery = await sendMessage(apiUrl, jwt, matched.id, message, localId, http, deliveryMode)
 
     return {
         sessionId: matched.id,
         name,
         resumed,
+        localId,
         delivery
     }
 }
@@ -859,9 +880,7 @@ export async function setPeerPermissionMode(options: SetPeerPermissionModeOption
     const live = await getSession(apiUrl, jwt, matched.id, http)
     // Hub treats a missing flavor as claude; mirror it so the allowed list matches.
     const flavor = live.metadata?.flavor ?? matched.metadata?.flavor ?? 'claude'
-    // Shared (concurrentClients) sessions cannot launch with Safe Yolo; same filter as the web picker.
-    const shared = Boolean(live.metadata?.capabilities?.concurrentClients)
-    const allowed: readonly string[] = getPermissionModesForFlavor(flavor).filter((m) => !shared || m !== 'safe-yolo')
+    const allowed: readonly string[] = getPermissionModesForFlavor(flavor)
     if (allowed.length === 0) {
         throw new PingPeerError('bad_args', `${flavor} sessions do not support permission modes`)
     }

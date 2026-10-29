@@ -34,7 +34,17 @@ Source: `hub/src/web/routes/sessions.ts`; shapes `SessionSchema` (`shared/src/sc
 | `GET /api/sessions` | Query: `limit?` (1–500), `order?=updatedAt` | `{sessions: (SessionSummary & {futureScheduledMessageCount, nextScheduledAt})[]}` |
 | `GET /api/sessions/:id` | — | `{session: Session}` (full record incl. `metadata`, `agentState`, `todos`, versions) |
 
-Default list order: globalPinned → pinned → active → pending-request count → `updatedAt` desc; `order=updatedAt` gives pure recency. List badges come from `SessionSummary.pendingRequestsCount` (authoritative total) and `pendingRequests` (capped at 5, oldest-first) — do not derive counts from `pendingRequests.length`.
+Default list order is `globalPinned` → `pinned` → `active` →
+`pendingRequestsCount` (only among active sessions) → `updatedAt` descending.
+`order=updatedAt` bypasses those priority buckets and returns pure `updatedAt`
+recency, which is useful for clients that need a flat newest-first list. The
+Hub's `updatedAt` is the session activity clock; `activeAt` is transport
+keep-alive state and is not the list recency key. The Web session list may
+apply client-side grouping and search ranking after receiving this response;
+`GET /api/sessions` itself has no text-search parameter. List badges come from
+`SessionSummary.pendingRequestsCount` (authoritative total) and
+`pendingRequests` (capped at 5, oldest-first) — do not derive counts from
+`pendingRequests.length`.
 
 ### Sessions — lifecycle
 
@@ -47,8 +57,8 @@ Source: `hub/src/web/routes/sessions.ts`; request schemas in `shared/src/apiType
 | `POST /api/sessions/:id/abort` | `{}` | `{ok: true}` (active sessions only) |
 | `POST /api/sessions/:id/archive` | `{}` | `{ok: true}` or `{ok: true, alreadyArchived: true}`; 409 for a plain inactive session |
 | `DELETE /api/sessions/:id` | — | `{ok: true}`; 409 while active (archive first) |
-| `PATCH /api/sessions/:id` | `{name}` (1–255 chars) | `{ok: true}` (rename) |
-| `PATCH /api/sessions/:id/summary` | `{text}` (1–255 chars) | `{ok: true}` |
+| `PATCH /api/sessions/:id` | `{name?, titleLocked?}` (at least one; name: 1–255 chars; lock: boolean) | `{ok: true}` (rename) |
+| `PATCH /api/sessions/:id/summary` | `{text, titleLocked?}` (text: 1–255 chars; lock: boolean) | `{ok: true}` |
 | `PUT /api/sessions/:id/pin` | `{mode: 'none'\|'project'\|'global'}` | `{ok: true}` |
 | `POST /api/sessions/:id/switch` | `{}` | `{ok: true}` — hands terminal-controlled session over to remote control |
 | `POST /api/sessions/:id/clear` | `{}` | `{sessionId}` — shared sessions only; resume inactive sessions through the Runner first, then create a new root; navigate only the initiating view |
@@ -114,8 +124,6 @@ Source: `hub/src/web/routes/sessions.ts`; flavor gates in `shared/src/modes.ts` 
 ownership mode. `/switch` returns HTTP 409 with
 `code: 'control_mode_not_applicable'`; do not offer takeover. The remote-only
 Codex configuration restrictions above do not apply to these sessions.
-Shared Codex rejects `safe-yolo` even though it remains in the historical
-Codex permission-mode schema; do not offer it for concurrent sessions.
 
 Shared `/clear` has no global `supersededBySessionId` change; clients other than
 the caller stay on the original thread. Fork may return an already-bound shared
@@ -252,6 +260,14 @@ Source: `hub/src/web/routes/usage.ts`, `hub/src/web/routes/storage.ts`. Both `40
 | `GET /api/usage/summary` | Query: `range=7d\|30d\|all` (default 7d), `timeZone` (IANA, validated) | `UsageSummaryResponse` `{range, totals, daily[], byAgent[], byModel[], updatedAt}` |
 | `GET /api/storage/sqlite` | — | `{path, databaseBytes, walBytes, shmBytes, totalBytes}` |
 
+### Agent activity
+
+Source: `hub/src/web/routes/activity.ts`. Scoped to the caller's namespace (not owner-only).
+
+| Method & path | Request | Response |
+|---|---|---|
+| `GET /api/activity` | Query: `since`, `until` (epoch ms; default the 24 h before `until`, which defaults to now; at most 31 days; else `400`) | `AgentActivityResponse` `{since, until, generatedAt, sessions[]}`. Each session: `{id, flavor, agentSessionId, machineId, host, machineName, path, title, turns[], waits[]}`. A turn is `{start, end, endReason, startedBy}` with `end: null` while the agent is still working; turns are persisted when `thinking` flips, so they survive hub restarts. Waits are permission prompts and questions raised during the turns, `{start, end, kind: 'permission'\|'input', tool}`, with `end: null` while still pending. |
+
 ### Devices (Android / iOS push)
 
 Source: `hub/src/web/routes/devices.ts`; full push contract in [`native-companion-contract.md`](../native-companion-contract.md).
@@ -309,3 +325,14 @@ internal and must never be used by clients.
 | Cursor maintenance | `/api/sessions/:id/migrate-to-acp`, `/cursor-chat-store` | Desktop store migration |
 | Session export | `GET /api/sessions/:id/export` | Whole-session export through the web; separate from Android's full-text reader file export |
 | **CLI plane** | `/cli/*` (`hub/src/web/routes/cli.ts`) | **Forbidden for clients** — internal CLI↔hub surface; authenticates with the raw access token instead of a JWT and bypasses the client middleware. Never call it from a client, and never send the access token as a bearer anywhere except `POST /api/auth`'s JSON body |
+
+### Session title protection
+
+`metadata.titleLocked` is an optional, Hub-owned boolean exposed in session detail,
+list summaries and metadata events. Missing means unlocked. The two user title
+PATCH routes above accept `titleLocked` and save it atomically with the title;
+omitting it preserves the existing lock. A lock-only PATCH omits `name` and
+preserves the existing name/summary fields. A manual rename alone does not lock a
+session. Agent metadata writes cannot set or clear this flag. While locked, the
+Hub preserves both `name` and `summary` across agent writes; user title saves
+remain allowed. Unlocking preserves the current title until a future update.

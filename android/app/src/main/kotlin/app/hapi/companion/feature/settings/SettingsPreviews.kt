@@ -7,6 +7,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.ui.theme.HapiTheme
+import app.hapi.protocol.wire.HubHealthResponse
 import app.hapi.protocol.wire.SqliteStorageUsageResponse
 import app.hapi.protocol.wire.UsageSummaryBucket
 import app.hapi.protocol.wire.UsageSummaryRange
@@ -17,7 +18,8 @@ import java.time.LocalDate
 /**
  * Compile-checked previews doubling as visual regressions for the B-M4e
  * dashboards: stat tiles, the daily bar chart, the ranked bar list, and the
- * storage donut — light, dark, and OLED.
+ * storage donut — light, dark, and OLED — plus the P2 settings hub (owner and
+ * non-owner gating) and the General subpage it drills into.
  */
 
 private fun bucket(
@@ -139,5 +141,55 @@ private fun StorageCardPreview() {
 private fun StorageCardOledPreview() {
     HapiTheme(oled = true) {
         Surface { StorageUsageCard(usage = SAMPLE_STORAGE_USAGE) }
+    }
+}
+
+@Preview(name = "Settings hub · owner", showBackground = true)
+@Composable
+private fun SettingsHubOwnerPreview() {
+    HapiTheme(darkTheme = false, dynamicColor = false) {
+        Surface {
+            SettingsHubContent(
+                entries = SettingsHubCatalog.visibleEntries(SettingsHubState(isOwner = true)),
+                onOpenCategory = {},
+                onBack = {},
+            )
+        }
+    }
+}
+
+@Preview(name = "Settings hub · non-owner", showBackground = true)
+@Composable
+private fun SettingsHubNonOwnerPreview() {
+    HapiTheme(darkTheme = false, dynamicColor = false) {
+        Surface {
+            SettingsHubContent(
+                entries = SettingsHubCatalog.visibleEntries(SettingsHubState(isOwner = false)),
+                onOpenCategory = {},
+                onBack = {},
+            )
+        }
+    }
+}
+
+@Preview(name = "Settings general", showBackground = true, heightDp = 1200)
+@Composable
+private fun SettingsGeneralPreview() {
+    HapiTheme(darkTheme = false, dynamicColor = false) {
+        Surface {
+            SettingsGeneralContent(
+                theme = ThemeSettings(mode = ThemeMode.DARK, dynamicColor = false),
+                language = AppLanguage.ENGLISH,
+                hubUrl = "https://hub.example",
+                hubInfo = HubInfoState.Loaded(
+                    HubHealthResponse(status = "ok", protocolVersion = 1),
+                ),
+                onSetThemeMode = {},
+                onSetDynamicColor = {},
+                onSetLanguage = {},
+                onRetryHubInfo = {},
+                onBack = {},
+            )
+        }
     }
 }

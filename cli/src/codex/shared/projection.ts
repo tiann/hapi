@@ -63,7 +63,7 @@ export class SharedCodexProjection {
 
     private applyDisplayRename(title: string, revision: number): void {
         this.session.updateMetadata(metadata => {
-            if (revision !== this.titleRevision) return metadata;
+            if (revision !== this.titleRevision || metadata.titleLocked) return metadata;
             const normalized = normalizeSessionDisplayTitle(title);
             if (!normalized || metadata.name?.trim() === normalized) return metadata;
             return { ...metadata, name: normalized };

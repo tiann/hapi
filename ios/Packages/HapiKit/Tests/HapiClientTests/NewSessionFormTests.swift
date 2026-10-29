@@ -79,13 +79,58 @@ struct NewSessionSpawnBodyTests {
         {"agent":"grok","directory":"/repo","permissionMode":"auto","sessionType":"simple"}
         """)
 
-        // Cursor has no v1 model picker: even a stashed model id is not sent.
+        // Cursor always sends its model (`cursorSpawnModelId`), Auto included.
         let cursor = try canonicalBody(
             NewSessionForm(directory: "/repo", agent: .cursor, model: "sonic", yolo: true),
             codexFastTierVisible: false
         )
         #expect(cursor == """
-        {"agent":"cursor","directory":"/repo","sessionType":"simple","yolo":true}
+        {"agent":"cursor","directory":"/repo","model":"sonic","sessionType":"simple","yolo":true}
+        """)
+        let cursorAuto = try canonicalBody(
+            NewSessionForm(directory: "/repo", agent: .cursor, yolo: false),
+            codexFastTierVisible: false
+        )
+        #expect(cursorAuto == """
+        {"agent":"cursor","directory":"/repo","model":"auto","sessionType":"simple","yolo":false}
+        """)
+    }
+
+    @Test func discoveredCatalogFlavorsSendTheirModelAndEffortFields() throws {
+        let grok = try canonicalBody(
+            NewSessionForm(directory: "/repo", agent: .grok, model: "grok-4", effort: "high",
+                           modelReasoningEffort: "max", permissionMode: .default),
+            codexFastTierVisible: false
+        )
+        #expect(grok == """
+        {"agent":"grok","directory":"/repo","effort":"high","model":"grok-4","permissionMode":"default","sessionType":"simple"}
+        """)
+
+        let opencode = try canonicalBody(
+            NewSessionForm(directory: "/repo", agent: .opencode, model: "openai/gpt-5", effort: "high",
+                           modelReasoningEffort: "max", permissionMode: .default),
+            codexFastTierVisible: false
+        )
+        #expect(opencode == """
+        {"agent":"opencode","directory":"/repo","model":"openai/gpt-5","modelReasoningEffort":"max",\
+        "permissionMode":"default","sessionType":"simple"}
+        """)
+
+        let pi = try canonicalBody(
+            NewSessionForm(directory: "/repo", agent: .pi, model: "anthropic/claude-x", effort: "minimal"),
+            codexFastTierVisible: false
+        )
+        #expect(pi == """
+        {"agent":"pi","directory":"/repo","effort":"minimal","model":"anthropic/claude-x","sessionType":"simple","yolo":false}
+        """)
+
+        // Default sentinels stay off the wire.
+        let kimi = try canonicalBody(
+            NewSessionForm(directory: "/repo", agent: .kimi, permissionMode: .default),
+            codexFastTierVisible: false
+        )
+        #expect(kimi == """
+        {"agent":"kimi","directory":"/repo","permissionMode":"default","sessionType":"simple"}
         """)
     }
 
@@ -279,7 +324,7 @@ struct NewSessionLogicTests {
             NewSessionForm(agent: .codex, permissionMode: .safeYolo)
         )
         #expect(staleMode.permissionMode == .default)
-        #expect(AgentFlavor.codex.launchPermissionModes == [.default, .readOnly, .autoReview, .yolo])
+        #expect(AgentFlavor.codex.permissionModes == [.default, .readOnly, .autoReview, .yolo])
         #expect(NewSessionLogic.sanitizeDraft(NewSessionForm(agent: .kimi, permissionMode: .safeYolo)).permissionMode == .safeYolo)
     }
 

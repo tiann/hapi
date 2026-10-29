@@ -14,7 +14,7 @@ final class SessionConfigModel {
 
     var config: SessionConfigState { interactor.config }
     var isApplying: Bool { interactor.configOpPending }
-    var modelLoadFailed: Bool { interactor.codexModels == .failed }
+    var modelLoadFailed: Bool { config.modelLoadFailed }
     var showsModel: Bool { config.modelOptions != nil || config.modelOptionsLoading }
     var showsEffort: Bool { config.effortOptions?.isEmpty == false }
     var showsCollaborationMode: Bool { config.flavor == "codex" }

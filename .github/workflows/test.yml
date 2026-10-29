@@ -9,8 +9,8 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v4
-            - name: Test PR review automation
-              run: node --test .github/scripts/pr-review.test.cjs
+            - name: Test PR automation
+              run: node --test .github/scripts/pr-review.test.cjs .github/scripts/auto-merge.test.cjs
             - uses: oven-sh/setup-bun@v2
             - run: bun install --frozen-lockfile
             - run: bun typecheck
@@ -18,7 +18,7 @@ jobs:
             # Required by cli/src/utils/windowsProcessTree.pwsh.test.ts — image
             # inspect alone does not pull; silent skip was fake B1 coverage (#1911).
             - run: docker pull mcr.microsoft.com/powershell:latest
-            - run: bun run test:e2e -- terminal-wrap-fidelity.spec.ts composer-copy.spec.ts session-list-scroll.spec.ts cold-initial-tail.spec.ts scrollbar-auto-hide.spec.ts attachment-removal.spec.ts history-navigation-layout.spec.ts
+            - run: bun run test:e2e -- terminal-wrap-fidelity.spec.ts composer-copy.spec.ts session-list-scroll.spec.ts cold-initial-tail.spec.ts scrollbar-auto-hide.spec.ts attachment-removal.spec.ts history-navigation-layout.spec.ts share-turn.spec.ts
             - run: bun run test
 
     # Serial runner-integration suite: starts real detached runner/session

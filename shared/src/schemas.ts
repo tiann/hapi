@@ -57,8 +57,14 @@ export const MetadataSchema = z.object({
     host: z.string(),
     version: z.string().optional(),
     name: z.string().optional(),
+    titleLocked: z.boolean().optional(),
     os: z.string().optional(),
     summary: MetadataSummarySchema.optional(),
+    // Hub-owned marker: the automatic first-turn title fallback has been
+    // attempted for this session. It prevents silent retries after failures.
+    titleSuggestionAutoAttemptedAt: z.number().int().positive().optional(),
+    // Hub-owned lifecycle snapshot used to recognize a first turn after restart.
+    titleSuggestionTurn: z.object({ first: z.boolean(), completed: z.boolean() }).optional(),
     machineId: z.string().optional(),
     claudeSessionId: z.string().optional(),
     // Parent HAPI session id when this session was created by message-level fork
@@ -118,6 +124,10 @@ export const MetadataSchema = z.object({
     happyToolsDir: z.string().optional(),
     startedFromRunner: z.boolean().optional(),
     hostPid: z.number().optional(),
+    // Start marker of the reporting CLI process (cli getProcessStartMarker):
+    // lets the runner refuse to adopt a late webhook whose PID has since been
+    // reused by another process.
+    hostStartMarker: z.string().optional(),
     hapiMcpUrl: z.string().url().optional(),
     startedBy: z.enum(['runner', 'terminal']).optional(),
     // 'running' | 'idle' | 'archived' (see shared/src/sessionLifecycle.ts).
@@ -332,6 +342,15 @@ export const DecryptedMessageSchema = z.object({
 
 export type DecryptedMessage = z.infer<typeof DecryptedMessageSchema>
 
+// One entry of Claude's `system/background_tasks_changed` snapshot.
+export const BackgroundTaskSchema = z.object({
+    id: z.string(),
+    type: z.string(),
+    description: z.string()
+})
+
+export type BackgroundTask = z.infer<typeof BackgroundTaskSchema>
+
 export const SessionSchema = z.object({
     hasConversationContent: z.boolean().optional(),
     id: z.string(),
@@ -352,6 +371,7 @@ export const SessionSchema = z.object({
     thinkingAt: z.number(),
     activeTurnStartedAt: z.number().nullable().optional(),
     backgroundTaskCount: z.number().optional(),
+    backgroundTasks: z.array(BackgroundTaskSchema).optional(),
     todos: TodosSchema.optional(),
     teamState: TeamStateSchema.optional(),
     // Watermarks for structured SSE patches (PR #897). Dual EventSource
@@ -426,6 +446,7 @@ export const SessionPatchSchema = z.object({
     collaborationMode: CodexCollaborationModeSchema.optional(),
     copilotAgentMode: CopilotAgentModeSchema.optional(),
     backgroundTaskCount: z.number().optional(),
+    backgroundTasks: z.array(BackgroundTaskSchema).optional(),
     // tiann/hapi#893 (scratchlist v2). Bumped whenever any entry on the
     // session_scratchlist table mutates. Web client uses the change as a
     // trigger to refetch the entries query - the timestamp itself is the

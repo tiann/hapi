@@ -5,6 +5,9 @@ independent from the web app; shares the
 [client contract](../docs/api/client-contract/index.md) and the web-generated
 golden fixtures (`shared/fixtures/`).
 
+End users: install HAPI from [Google Play](https://play.google.com/store/apps/details?id=run.hapi.companion).
+This README covers development builds.
+
 - **applicationId**: `run.hapi.companion` · **minSdk** 26 · **target/compileSdk** 36
 - **Toolchain**: Gradle 8.14.2 (wrapper) · AGP 8.11.1 · Kotlin 2.1.21 · Compose BOM 2025.05.00 · JDK 17+ (CI uses 21)
 
@@ -175,7 +178,8 @@ for wire details and [relay deployment](../relay/README.md) for maintainer setup
 
 The [Android Official Build workflow](../.github/workflows/android-release.yml)
 is manually dispatched on `main`.
-It tests and uploads signed APK/AAB artifacts; it does not publish to Play.
+It tests and uploads signed APK/AAB workflow artifacts. It does not publish to
+Google Play itself; the maintainer uploads the AAB to the Play Console.
 Provide a new positive `version_code` and the desired `version_name`.
 
 Repository configuration, set once by the maintainer:

@@ -203,7 +203,10 @@ export async function handlePingPeerCommand(args: string[]): Promise<void> {
         onProgress: (line) => console.log(`hapi ping-peer: ${line}`)
     })
 
-    console.log(chalk.green(`hapi ping-peer: OK - ${result.delivery} to ${result.sessionId}`))
+    const receipt = result.delivery === 'accepted'
+        ? `accepted for ${result.sessionId} localId=${result.localId} — delivery shows in the recipient chat when its runtime consumes it`
+        : `${result.delivery} to ${result.sessionId} localId=${result.localId}`
+    console.log(chalk.green(`hapi ping-peer: OK - ${receipt}`))
 }
 
 export const pingPeerCommand: CommandDefinition = {

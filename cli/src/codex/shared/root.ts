@@ -32,7 +32,7 @@ export type RootHost = {
     end(root: SharedCodexRoot, nativeArchive?: boolean): Promise<void>;
 };
 const SettingsSchema = z.object({
-    permissionMode: z.enum(['default', 'read-only', 'safe-yolo', 'autoReview', 'yolo']).optional(),
+    permissionMode: z.enum(['default', 'read-only', 'autoReview', 'yolo']).optional(),
     model: z.string().min(1).optional(), modelReasoningEffort: z.string().nullable().optional(),
     collaborationMode: z.enum(['default', 'plan']).optional(),
     serviceTier: z.enum(['fast', 'standard']).nullable().optional(),
@@ -407,7 +407,6 @@ export class SharedCodexRoot {
     }
     async applySettings(raw: unknown): Promise<{ applied: RuntimeSettings }> {
         const config = SettingsSchema.parse(raw);
-        if (config.permissionMode === 'safe-yolo') throw new Error('safe-yolo is not a native shared permission mode; choose default, read-only, autoReview, or yolo');
         if (Object.keys(config).length === 0) return { applied: this.settings };
         if (typeof config.modelReasoningEffort === 'string') config.modelReasoningEffort = parseReasoningEffortValue(config.modelReasoningEffort);
         if (config.modelReasoningEffort === null) {
@@ -536,10 +535,18 @@ export class SharedCodexRoot {
         });
         rpc.registerHandler(RPC_METHODS.ForkConversation, async raw => {
             const { messageLocalId } = z.object({ messageLocalId: z.string().optional() }).parse(raw);
-            if (this.currentTurn) throw new Error('Session is busy');
+            if (this.currentTurn && !messageLocalId) throw new Error('Session is busy');
             const beforeTurnId = messageLocalId ? this.projection.turnFor(messageLocalId) : undefined;
             if (messageLocalId && !beforeTurnId) throw new Error('No native history point for this message');
-            if (messageLocalId) await this.assertBoundary(messageLocalId, beforeTurnId!);
+            if (messageLocalId) {
+                const thread = await this.assertBoundary(messageLocalId, beforeTurnId!);
+                const turns = (Array.isArray(thread.turns) ? thread.turns : []).map(record);
+                const index = turns.findIndex(turn => turn.id === beforeTurnId);
+                if (index < 0 || turns.slice(0, index + 1).some(turn =>
+                    !['completed', 'interrupted', 'failed'].includes(string(turn.status) ?? ''))) {
+                    throw new Error('Historical fork requires a completed turn and history prefix');
+                }
+            }
             const child = await this.host.create('thread/fork', { ...this.freshParams(), threadId: this.threadId,
                 ...(beforeTurnId ? { beforeTurnId } : {}) }, this);
             await child.initialSettings({ collaborationMode: this.settings.collaborationMode });

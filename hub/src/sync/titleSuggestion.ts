@@ -6,6 +6,7 @@ import {
 } from '@hapi/protocol/messages'
 import { isObject } from '@hapi/protocol'
 import type { Store, StoredMessage } from '../store'
+import { extractMessageEventType } from '../notifications/eventParsing'
 
 export const TITLE_SUGGESTION_MESSAGE_LIMIT = 200
 export const TITLE_SUGGESTION_MAX_INPUT_CHARS = 16_000
@@ -310,6 +311,69 @@ export class TitleSuggestionService {
         this.now = options.now ?? Date.now
         this.rateLimit = options.rateLimit ?? TITLE_SUGGESTION_RATE_LIMIT
         this.rateWindowMs = options.rateWindowMs ?? TITLE_SUGGESTION_RATE_WINDOW_MS
+    }
+
+    isConfigured(): boolean {
+        return this.provider !== null
+    }
+
+    hasTitleResponse(sessionId: string): boolean {
+        let before: { at: number; seq: number } | undefined
+        let assistantSeen = false
+        while (true) {
+            const messages = this.store.messages.getMessagesByPosition(sessionId, TITLE_SUGGESTION_MESSAGE_LIMIT, before)
+            for (let index = messages.length - 1; index >= 0; index -= 1) {
+                const extracted = extractTitleMessage(messages[index]!)
+                if (extracted?.role === 'assistant') assistantSeen = true
+                if (extracted?.role === 'user' && assistantSeen) return true
+            }
+            if (messages.length < TITLE_SUGGESTION_MESSAGE_LIMIT) return false
+            const oldest = messages[0]!
+            before = { at: oldest.invokedAt ?? oldest.createdAt, seq: oldest.seq }
+        }
+    }
+
+    hasCompletedFirstTurn(sessionId: string, observedFirstTurn: boolean = false): boolean {
+        // Scan beyond the provider's bounded prompt window. A long first turn
+        // can have hundreds of tool rows; a later turn must not look like the
+        // first just because the older user message fell outside that window.
+        let before: { at: number; seq: number } | undefined
+        let userSeen = false
+        let assistantSeen = false
+        let answered = false
+        let readySeen = false
+        let interleavedPrompts = false
+        let userSeenAfterAssistant = false
+        while (true) {
+            const messages = this.store.messages.getMessagesByPosition(sessionId, TITLE_SUGGESTION_MESSAGE_LIMIT, before)
+            for (let index = messages.length - 1; index >= 0; index -= 1) {
+                const message = messages[index]!
+                if (extractMessageEventType({ type: 'message-received', sessionId, message }) === 'ready') {
+                    // Reading backwards: a ready before a consumed prompt is
+                    // an earlier completed turn, not part of the current one.
+                    if (userSeen) return false
+                    readySeen = true
+                }
+                const extracted = extractTitleMessage(message)
+                if (extracted?.role === 'assistant') {
+                    assistantSeen = true
+                    if (userSeen) userSeenAfterAssistant = true
+                }
+                if (extracted?.role === 'user') {
+                    if (userSeenAfterAssistant) interleavedPrompts = true
+                    userSeen = true
+                    answered = assistantSeen
+                }
+            }
+            if (messages.length < TITLE_SUGGESTION_MESSAGE_LIMIT) {
+                // Batched prompts are one turn. A single ready boundary also
+                // permits steering after partial assistant output. Without a
+                // durable boundary, keep the conservative legacy-history guard.
+                return userSeen && answered && (observedFirstTurn || readySeen || !interleavedPrompts)
+            }
+            const oldest = messages[0]!
+            before = { at: oldest.invokedAt ?? oldest.createdAt, seq: oldest.seq }
+        }
     }
 
     async suggestTitle(sessionId: string): Promise<string> {

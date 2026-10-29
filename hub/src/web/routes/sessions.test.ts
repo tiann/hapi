@@ -3,6 +3,7 @@ import { Hono } from 'hono'
 import type { Session, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { createSessionsRoutes } from './sessions'
+import { RpcTargetMissingError } from '../../sync/rpcGateway'
 
 function createSession(overrides?: Partial<Session>): Session {
     const baseMetadata = {
@@ -70,6 +71,7 @@ function createApp(session: Session, opts?: {
     implementCodexPlan?: SyncEngine['implementCodexPlan']
     rewindConversation?: SyncEngine['rewindConversation']
     suggestSessionTitle?: SyncEngine['suggestSessionTitle']
+    renameSession?: SyncEngine['renameSession']
     updateSessionSummary?: SyncEngine['updateSessionSummary']
     setSessionPinned?: (sessionId: string, pinned: boolean) => void
     setSessionPinMode?: (sessionId: string, mode: 'none' | 'project' | 'global') => void
@@ -180,6 +182,7 @@ function createApp(session: Session, opts?: {
         implementCodexPlan: opts?.implementCodexPlan,
         rewindConversation: opts?.rewindConversation ?? (async () => ({ type: 'success' })),
         suggestSessionTitle: opts?.suggestSessionTitle ?? (async () => 'Generated title'),
+        renameSession: opts?.renameSession ?? (async () => {}),
         updateSessionSummary: opts?.updateSessionSummary ?? (async () => {})
     } as Partial<SyncEngine>
 
@@ -272,6 +275,47 @@ describe('sessions routes', () => {
         expect(await response.json()).toEqual({ error: 'No Runner online', code: 'no_machine_online' })
         expect(clears).toBe(0)
     })
+    it('accepts a lock-only save without converting a generated title to a manual name', async () => {
+        const calls: unknown[] = []
+        const { app } = createApp(createSession(), { renameSession: async (...args) => { calls.push(args) } })
+        const response = await app.request('/api/sessions/session-1', {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ titleLocked: true })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([['session-1', undefined, true]])
+    })
+
+    it.each([true, false])('passes explicit title lock %s atomically through both user title routes', async (titleLocked) => {
+        const calls: unknown[] = []
+        const { app } = createApp(createSession(), {
+            renameSession: async (...args) => { calls.push(args) },
+            updateSessionSummary: async (...args) => { calls.push(args) }
+        })
+        for (const [suffix, field] of [['', 'name'], ['/summary', 'text']]) {
+            const response = await app.request(`/api/sessions/session-1${suffix}`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ [field]: 'Chosen', titleLocked })
+            })
+            expect(response.status).toBe(200)
+        }
+        expect(calls).toEqual([['session-1', 'Chosen', titleLocked], ['session-1', 'Chosen', titleLocked]])
+    })
+
+    it('rejects invalid lock values and missing-session title saves', async () => {
+        const { app } = createApp(createSession())
+        for (const suffix of ['', '/summary']) {
+            expect((await app.request(`/api/sessions/session-1${suffix}`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: 'Title', text: 'Title', titleLocked: 'true' })
+            })).status).toBe(400)
+        }
+        const other = createApp(createSession(), { sessionExists: false }).app
+        expect((await other.request('/api/sessions/session-1', {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: 'Title', titleLocked: false })
+        })).status).toBe(404)
+    })
+
     it('generates a title suggestion without changing session metadata', async () => {
         const suggest = async (sessionId: string) => {
             expect(sessionId).toBe('session-1')
@@ -369,6 +413,24 @@ describe('sessions routes', () => {
         expect(await response.json()).toEqual({
             success: true,
             models: [{ id: 'gpt-5.5', displayName: 'GPT-5.5', isDefault: true }]
+        })
+    })
+
+    it('returns a stable code when the Codex session model RPC target is absent', async () => {
+        const session = createSession()
+        const { app } = createApp(session, {
+            listCodexModelsForSession: async () => {
+                throw new RpcTargetMissingError('session-1:listCodexModels', 'handler-not-registered')
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/codex-models')
+
+        expect(response.status).toBe(503)
+        expect(await response.json()).toEqual({
+            success: false,
+            error: 'RPC handler not registered: session-1:listCodexModels',
+            code: 'rpc_target_missing'
         })
     })
 
@@ -747,6 +809,53 @@ describe('sessions routes', () => {
         expect(applySessionConfigCalls).toEqual([
             ['session-1', { model: 'gpt-5.5' }]
         ])
+    })
+
+    it('applies a Claude model and the effort it keeps in one session config change', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'haiku', effort: null })
+        })
+
+        expect(response.status).toBe(200)
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { model: 'haiku', effort: null }]
+        ])
+    })
+
+    it('rejects an effort sent with a model change for Pi, which applies the two separately', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'pi' }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gpt-5.6-sol', effort: null })
+        })
+
+        expect(response.status).toBe(400)
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
+    it('rejects an effort sent with a model change for a flavor without effort', async () => {
+        const { app, applySessionConfigCalls } = createApp(createSession())
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gpt-5.5', effort: 'high' })
+        })
+
+        expect(response.status).toBe(400)
+        expect(applySessionConfigCalls).toEqual([])
     })
 
     it('rejects model changes for local Codex sessions', async () => {
@@ -1150,10 +1259,10 @@ describe('sessions routes', () => {
         ])
     })
 
-    it('rejects Safe Yolo for shared sessions', async () => {
+    it('rejects Safe Yolo for Codex', async () => {
         const session = createSession({
             active: false,
-            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex', capabilities: { concurrentClients: true } }
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex' }
         })
         const { app, applySessionConfigCalls } = createApp(session)
 
@@ -1164,7 +1273,7 @@ describe('sessions routes', () => {
         })
 
         expect(response.status).toBe(400)
-        expect(await response.json()).toEqual({ error: 'Safe Yolo is not available for shared sessions' })
+        expect(await response.json()).toEqual({ error: 'Invalid permission mode for session flavor' })
         expect(applySessionConfigCalls).toEqual([])
     })
 

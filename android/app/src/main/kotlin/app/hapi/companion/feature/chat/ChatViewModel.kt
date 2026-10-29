@@ -1671,9 +1671,7 @@ class ChatViewModel(
             active = detail?.active ?: summary?.active ?: false,
             controlledByUser = terminalControlled(detail),
             permissionMode = detail?.permissionMode,
-            permissionModes = PermissionModes.forFlavor(flavor).filter {
-                detail?.metadata?.capabilities?.concurrentClients != true || it != PermissionMode.SafeYolo
-            },
+            permissionModes = PermissionModes.forFlavor(flavor),
             model = model,
             modelOptions = modelOptions,
             modelOptionsLoading = modelOptionsLoading,

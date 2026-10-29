@@ -541,17 +541,10 @@ export function reduceTimeline(
                     && msg.usage.scope_role !== 'child'
                 ) {
                     const model = tokenCount.model ?? undefined
-                    const displayUsage = model
-                        ? msg.usage
-                        : {
-                            ...msg.usage,
-                            cache_creation_input_tokens: undefined,
-                            cache_read_input_tokens: undefined
-                        }
                     attachCodexRoundSummaryToLatestGroup(blocks, {
                         provider: 'codex',
                         turnId: tokenCount.turnId,
-                        usage: displayUsage,
+                        usage: msg.usage,
                         modelUsage: model
                             ? {
                                 [model]: {

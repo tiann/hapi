@@ -11,10 +11,12 @@ import type { ClientToServerEvents, ServerToClientEvents, Update, UpdateMachineB
 import {
     ArchiveCodexSessionRpcRequestSchema,
     ListCodexSessionsRpcRequestSchema,
+    ListOpencodeSessionsRpcRequestSchema,
     ListPiSessionsRpcRequestSchema,
     type ArchiveCodexSessionRpcResponse,
     type AgentAvailabilityResponse,
     type ListCodexSessionsRpcResponse,
+    type ListOpencodeSessionsRpcResponse,
     type ListPiSessionsRpcResponse,
     type MachineDirectoryEntry,
     type MachineListDirectoryResponse,
@@ -29,12 +31,17 @@ import { backoff } from '@/utils/time'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers'
+import { registerWorkspaceFileHandlers } from '../modules/common/workspaceFileHandlers'
 import { setAgyCatalogChangeListener } from '../modules/common/agyModels'
 import {
     listOpencodeModelsForCwd,
     type ListOpencodeModelsForCwdRequest,
     type ListOpencodeModelsForCwdResponse
 } from '../modules/common/opencodeModels'
+import {
+    listLocalOpencodeSessionSummaries,
+    listLocalOpencodeSessionsWithMessagesByIds
+} from '../modules/common/opencodeSessions'
 import {
     listOpencodeModelVariants,
     type ListOpencodeModelVariantsResponse
@@ -133,6 +140,10 @@ export class ApiMachineClient {
         })
 
         registerCommonHandlers(this.rpcHandlerManager, getInvokedCwd())
+        registerWorkspaceFileHandlers(this.rpcHandlerManager, {
+            resolveForCheck: (path) => this.pathPolicy.resolveForCheck(path),
+            isWithinSpawnRoots: (path) => this.pathPolicy.isWithinSpawnRoots(path),
+        })
 
         // Only the machine daemon answers `<machineId>:listAgyModels`, so it is
         // the one process that can tell the hub its catalog moved.
@@ -398,6 +409,35 @@ export class ApiMachineClient {
                 const allSessions = requestedIds
                     ? listLocalPiSessionsWithMessagesByIds(requestedIds)
                     : listLocalPiSessionSummaries()
+                const sessions = []
+                for (const session of allSessions) {
+                    if (await this.isLocalSessionWithinWorkspaceRoots(session)) sessions.push(session)
+                }
+                return { success: true, sessions }
+            }
+        )
+
+        this.rpcHandlerManager.registerHandler<unknown, ListOpencodeSessionsRpcResponse>(
+            RPC_METHODS.ListOpencodeSessions,
+            async (params) => {
+                const parsed = ListOpencodeSessionsRpcRequestSchema.safeParse(params)
+                if (!parsed.success) return { success: false, error: 'Invalid Opencode sessions request' }
+                const rawCwd = typeof parsed.data.cwd === 'string' ? parsed.data.cwd.trim() : ''
+                if (rawCwd) {
+                    const resolvedCwd = await this.pathPolicy.resolveForCheck(rawCwd)
+                    if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
+                        return { success: false, error: 'Path is outside workspace roots' }
+                    }
+                }
+                const requestedIds = parsed.data.sessionIds ? new Set(parsed.data.sessionIds) : null
+                let allSessions
+                try {
+                    allSessions = requestedIds
+                        ? await listLocalOpencodeSessionsWithMessagesByIds(requestedIds)
+                        : await listLocalOpencodeSessionSummaries()
+                } catch (error) {
+                    return { success: false, error: error instanceof Error ? error.message : 'Failed to read local OpenCode sessions' }
+                }
                 const sessions = []
                 for (const session of allSessions) {
                     if (await this.isLocalSessionWithinWorkspaceRoots(session)) sessions.push(session)

@@ -130,6 +130,8 @@ extension SessionPatch: Codable {
         case copilotAgentMode
         case backgroundTaskCount
         case scratchlistUpdatedAt
+        // Web-only status-panel list; accepted so the patch is not refetched.
+        case backgroundTasks
     }
 
     public init(from decoder: Decoder) throws {

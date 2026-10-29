@@ -28,13 +28,28 @@ import { CopyIcon, CheckIcon, WrapIcon } from '@/components/icons'
 import { useTranslation } from '@/lib/use-translation'
 import { useOptionalHappyChatContext } from '@/components/AssistantChat/context'
 import { decodeFilePathCandidateHref, decodeFilePathHref, remarkFilePathLinks } from '@/lib/remark-file-path-links'
-import { classifyNoSchemeHref } from '@/lib/markdown-href-policy'
+import { classifyNoSchemeHref, resolveMarkdownRelativePath } from '@/lib/markdown-href-policy'
+import { useQuery } from '@tanstack/react-query'
+import { useAppContext } from '@/lib/app-context'
+import { queryKeys } from '@/lib/query-keys'
+import { useSessionDirectory } from '@/hooks/queries/useSessionDirectory'
+import { resolveImageMimeType } from '@/lib/file-markdown-preview'
 import { remarkSessionPathLinks } from '@/lib/remark-session-path-links'
 import { buildSessionReferencePath, parseSessionPathHref } from '@/lib/sessionReference'
 import { UriConfirmDialog } from '@/components/UriConfirmDialog'
 import { DEFAULT_OPEN_EXTERNAL_LINKS_IN_NEW_TAB, useOpenExternalLinksInNewTab } from '@/hooks/useOpenExternalLinksInNewTab'
 
 import type { MarkdownTextPrimitiveProps } from '@assistant-ui/react-markdown'
+
+// Session file being previewed; relative links/images resolve against its directory.
+// fileSearch carries the preview's browsing context (origin/tab/query) so Back still returns to it.
+export type MarkdownFileSearch = { origin?: 'chat'; tab?: 'changes' | 'directories'; query?: string }
+export const MarkdownFileBaseContext = createContext<{
+    sessionId: string
+    filePath: string
+    workspacePath: string | null
+    fileSearch: MarkdownFileSearch
+} | null>(null)
 
 // ── Plugin array ────────────────────────────────────────────────────────────
 // Order: remarkGfm → remarkRepairTables → remarkLatexBracketMath → remarkNonHttpsAutolink → remarkStripCjkAutolink → remarkMath → remarkDisableIndentedCode → remarkSessionPathLinks → remarkFilePathLinks
@@ -439,7 +454,7 @@ function CodeHeader(props: CodeHeaderProps) {
     const language = props.language && props.language !== 'unknown' ? props.language : 'text'
 
     return (
-        <div data-hapi-code-header="true" className="aui-code-shell-header flex items-center justify-between gap-3 rounded-t-xl bg-[var(--app-code-header-bg)] px-3 py-2 text-[11px] uppercase tracking-[0.08em] text-[var(--app-code-header-fg)]">
+        <div data-hapi-code-header="true" className="aui-code-shell-header flex items-center justify-between gap-3 rounded-t-xl bg-[var(--app-code-header-bg)] pl-[22px] pr-[10px] py-2 text-[11px] uppercase tracking-[0.08em] text-[var(--app-code-header-fg)]">
             <div className="min-w-0 flex-1 truncate font-mono">
                 {language}
             </div>
@@ -531,11 +546,18 @@ function Code(props: ComponentPropsWithoutRef<'code'>) {
     )
 }
 
-function FilePathAnchor(props: ComponentPropsWithoutRef<'a'> & { filePath: string; sessionId: string }) {
-    const { filePath, sessionId, ...anchorProps } = props
+function FilePathAnchor(props: ComponentPropsWithoutRef<'a'> & {
+    filePath: string
+    sessionId: string
+    fileSearch?: MarkdownFileSearch
+}) {
+    const { filePath, sessionId, fileSearch = { origin: 'chat' }, ...anchorProps } = props
     const navigate = useNavigate()
     const rel = anchorProps.target === '_blank' ? (anchorProps.rel ?? 'noreferrer') : anchorProps.rel
-    const search = new URLSearchParams({ path: encodeBase64(filePath), origin: 'chat' }).toString()
+    const fileRouteSearch = { path: encodeBase64(filePath), ...fileSearch }
+    const search = new URLSearchParams(
+        Object.entries(fileRouteSearch).filter((entry): entry is [string, string] => entry[1] !== undefined)
+    ).toString()
     const href = `/sessions/${encodeURIComponent(sessionId)}/file?${search}`
 
     const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
@@ -547,10 +569,7 @@ function FilePathAnchor(props: ComponentPropsWithoutRef<'a'> & { filePath: strin
         void navigate({
             to: '/sessions/$sessionId/file',
             params: { sessionId },
-            search: {
-                path: encodeBase64(filePath),
-                origin: 'chat',
-            },
+            search: fileRouteSearch,
             ...PRESERVE_SESSION_SIDEBAR_SCROLL,
         })
     }
@@ -645,6 +664,7 @@ function A(props: ComponentPropsWithoutRef<'a'>) {
     const candidatePath =
         typeof props.href === 'string' ? decodeFilePathCandidateHref(props.href) : null
     const targetSessionId = typeof props.href === 'string' ? parseSessionPathHref(props.href) : null
+    const fileBase = useContext(MarkdownFileBaseContext)
     const rel = props.target === '_blank' ? (props.rel ?? 'noreferrer') : props.rel
 
     if (filePath) {
@@ -656,6 +676,20 @@ function A(props: ComponentPropsWithoutRef<'a'>) {
 
     if (targetSessionId) {
         return <SessionPathAnchor {...props} targetSessionId={targetSessionId} />
+    }
+
+    const relativeFilePath = fileBase && typeof props.href === 'string'
+        ? resolveMarkdownRelativePath(fileBase.filePath, props.href, fileBase.workspacePath)
+        : null
+    if (fileBase && relativeFilePath) {
+        return (
+            <FilePathAnchor
+                {...props}
+                filePath={relativeFilePath}
+                sessionId={fileBase.sessionId}
+                fileSearch={fileBase.fileSearch}
+            />
+        )
     }
 
     const { onClick, href, ...rest } = props
@@ -873,7 +907,35 @@ function Em(props: ComponentPropsWithoutRef<'em'>) {
     return <em {...props} className={cn('aui-md-em italic', props.className)} />
 }
 
+// Previews read referenced images automatically; stay well below the hub's RPC payload limit.
+const MAX_MARKDOWN_IMAGE_BYTES = 10 * 1024 * 1024
+
+function SessionFileImage(props: ComponentPropsWithoutRef<'img'> & { sessionId: string; path: string }) {
+    const { sessionId, path, ...imgProps } = props
+    const { api } = useAppContext()
+    const mimeType = resolveImageMimeType(path)
+    const slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+    const directory = useSessionDirectory(api, sessionId, path.slice(0, Math.max(slash, 0)), { enabled: Boolean(mimeType) })
+    const entry = directory.entries.find((candidate) => candidate.name === path.slice(slash + 1))
+    const query = useQuery({
+        queryKey: queryKeys.sessionFile(sessionId, path),
+        queryFn: async () => await api.readSessionFile(sessionId, path),
+        enabled: Boolean(mimeType) && entry?.type === 'file' && (entry.size ?? Infinity) <= MAX_MARKDOWN_IMAGE_BYTES,
+    })
+    const src = query.data?.success && query.data.content && mimeType
+        ? `data:${mimeType};base64,${query.data.content}`
+        : undefined
+    return <img {...imgProps} src={src} className={cn('aui-md-img my-3 max-w-full rounded-xl', props.className)} />
+}
+
 function Image(props: ComponentPropsWithoutRef<'img'>) {
+    const fileBase = useContext(MarkdownFileBaseContext)
+    const path = fileBase && typeof props.src === 'string'
+        ? resolveMarkdownRelativePath(fileBase.filePath, props.src, fileBase.workspacePath)
+        : null
+    if (fileBase && path) {
+        return <SessionFileImage {...props} sessionId={fileBase.sessionId} path={path} />
+    }
     return <img {...props} className={cn('aui-md-img my-3 max-w-full rounded-xl', props.className)} />
 }
 

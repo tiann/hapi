@@ -43,6 +43,7 @@ Choose a supported coding agent from your terminal and control its sessions remo
   DSH is remote-only and its ACP server must be configured separately.
 - `hapi resume [sessionId]` - List resumable sessions for this machine or resume one locally.
 - `hapi ping-peer <session-id-prefix> <message>` - Resume (if needed) and message another session. Prefer this or MCP `ping_peer` / `list_peers` over reinventing JWT+curl. Also `--message-file` / `--list`.
+- `hapi usage [--since 24h|7d|<ISO>|<ms>] [--until …] [--json]` - When agents were working across every machine on the hub, from `GET /api/activity`. `--json` prints one `hapi.activity.v1` report for other tools (time trackers); errors go to stderr with exit codes 2 (arguments), 3 (no token or refused), 4 (hub too old), 1 (other).
 - `hapi inspect-peer <session-id-or-prefix>` - Read-only peer metadata + recent message text (no resume). Prefer this or MCP `inspect_peer` when a user cites `[title](/sessions/<id>)` or Copy-reference `See session "…" (/sessions/<id>) for context`. `/sessions/<id>` is a hub path, not a local file. Optional `--limit`.
 - `hapi set-mode <session-id-or-prefix> <mode>` - Change the permission mode of an existing session, like the web permission picker. Active sessions switch immediately; inactive ones use it on next resume. An invalid mode prints the modes allowed for that agent.
 
@@ -55,6 +56,10 @@ Codex, or Cursor ACP turn. MCP `ping_peer` accepts the same optional
 hapi ping-peer <session-id> 'Run the next check' --delivery-mode queue
 hapi ping-peer <session-id> 'Use the corrected input path' --delivery-mode steer
 ```
+
+Queue success reports `accepted` with a `ping-peer-` localId, not confirmed
+delivery. Delivery is shown in the recipient chat only after its runtime
+acknowledges consumption. Steer messages retain the same peer identity prefix.
 
 Steer rejects unsupported agents, idle targets, and inactive targets before
 sending. It reuses the queued-message Steer action: success reports `steered`,
@@ -136,6 +141,8 @@ Both `start` and `start-sync` accept repeatable `--workspace-root <path>` (or `-
 
 - The web `/browse` page surfaces scoped file trees rooted at those paths.
 - The runner refuses `list-directory` and `spawn-session` requests for paths outside the configured roots.
+- The runner can serve read-only file, Git, and ripgrep requests for inactive
+  sessions through its machine-scoped `workspace-file-access` capability.
 - `~` and `~/foo` are expanded.
 
 Omitting the flag keeps manual session spawning unrestricted and leaves the
@@ -296,7 +303,7 @@ Data is stored in `~/.hapi/` (or `$HAPI_HOME`):
 - Cursor Agent CLI installed (`agent` on PATH) for `hapi cursor`. Install: `curl https://cursor.com/install -fsS | bash` (macOS/Linux), `irm 'https://cursor.com/install?win32=true' | iex` (Windows).
 - Grok Build CLI installed (`grok` on PATH) for `hapi grok`. Authenticate with `grok login --device-auth` on headless runner machines, or set `XAI_API_KEY`.
 - OpenCode CLI installed (`opencode` on PATH).
-- Bun 1.4.0 for building from source.
+- Bun 1.4.4 for building from source.
 
 ## Build from source
 
@@ -343,6 +350,11 @@ uses [Trusted Publishing](https://docs.npmjs.com/trusted-publishers) (OIDC), so 
 token is involved; each `@twsxtd/hapi*` package must list `tiann/hapi` /
 `release.yml` as its trusted publisher on npmjs.com. Packages already on npm are
 skipped, so a failed release can be retried by re-running the workflow.
+
+`setup-bun` reads the build version from the root `package.json`'s `packageManager`.
+Keep local release builds on that version too. Bun 1.4.0 produces invalid
+darwin-arm64 signatures that macOS 27 rejects with `SIGKILL`; Bun 1.4.4 includes
+the [upstream signing fix](https://github.com/oven-sh/bun/pull/39837).
 
 ## Related docs
 

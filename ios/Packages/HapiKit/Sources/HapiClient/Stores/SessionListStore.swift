@@ -31,6 +31,18 @@ public protocol SessionListStoring: AnyObject {
 
     /// `POST /sessions/:id/archive`, optimistic removal.
     func archiveSession(sessionId: String) async throws
+
+    /// `PATCH /sessions/:id` rename, optimistic `metadata.name`; rolls
+    /// forward to server truth on failure.
+    func renameSession(sessionId: String, name: String) async throws
+
+    /// `DELETE /sessions/:id`, optimistic removal; 409 while active
+    /// (restore + rethrow).
+    func deleteSession(sessionId: String) async throws
+
+    /// `POST /sessions/:id/reopen` — the returned id may differ (superseding
+    /// spawn); 422 when required metadata is gone.
+    func reopenSession(sessionId: String) async throws -> ReopenSessionResponse
 }
 
 /// Session list + detail cache for one hub, fed by the global SSE pipe
@@ -85,7 +97,7 @@ public final class SessionListStore: SessionListStoring {
     @ObservationIgnored public var onScratchlistInvalidation: (@MainActor (String) -> Void)?
 
     /// Authoritative removal only: SSE from either pipe, or a successful
-    /// archive. Optimistic list removal/rollback, filters and failed refreshes
+    /// archive/delete. Optimistic list removal/rollback, filters and failed refreshes
     /// must not dismiss a client's currently selected session.
     @ObservationIgnored public var onSessionRemoved: (@MainActor (String) -> Void)?
 
@@ -241,6 +253,75 @@ public final class SessionListStore: SessionListStoring {
             }
             throw error
         }
+    }
+
+    // MARK: - Rename / delete / reopen
+
+    public func renameSession(sessionId: String, name: String) async throws {
+        // Optimistic `metadata.name` on both caches. A row without metadata
+        // has nothing renderable to update; server truth arrives via the
+        // session-updated patch.
+        if let index = sessions.firstIndex(where: { $0.id == sessionId }),
+           sessions[index].metadata != nil {
+            var list = sessions
+            list[index].metadata?.name = name
+            setSessions(list)
+        }
+        updateDetailLocal(sessionId) { $0.metadata?.name = name }
+        do {
+            try await api.renameSession(id: sessionId, name: name)
+        } catch {
+            // Roll forward to server truth (an SSE patch may have moved other
+            // fields since the optimistic write) — same policy as setPinMode.
+            scheduleRefresh()
+            if details[sessionId] != nil {
+                Task { _ = try? await self.loadSessionDetail(sessionId) }
+            }
+            throw error
+        }
+    }
+
+    public func deleteSession(sessionId: String) async throws {
+        let removed = sessions.first { $0.id == sessionId }
+        let removedDetail = details[sessionId]
+        let filtered = sessions.filter { $0.id != sessionId }
+        if filtered.count != sessions.count {
+            setSessions(filtered)
+        }
+        details.removeValue(forKey: sessionId)
+        do {
+            try await api.deleteSession(id: sessionId)
+            onSessionRemoved?(sessionId)
+        } catch {
+            // 409 while active (archive first) or plain failure: restore.
+            if let removed, !sessions.contains(where: { $0.id == sessionId }) {
+                setSessions(sortSessionSummaries(sessions + [removed]))
+            }
+            if let removedDetail, details[sessionId] == nil {
+                details[sessionId] = removedDetail
+            }
+            throw error
+        }
+    }
+
+    public func reopenSession(sessionId: String) async throws -> ReopenSessionResponse {
+        let response = try await api.reopenSession(id: sessionId)
+        // The session-alive SSE may land before or after this answer: show
+        // the RETURNED id active now (web `markSessionActiveInCache`).
+        let now = Int(Date().timeIntervalSince1970 * 1000)
+        if let index = sessions.firstIndex(where: { $0.id == response.sessionId }) {
+            var list = sessions
+            list[index].active = true
+            list[index].activeAt = max(list[index].activeAt, now)
+            setSessions(sortSessionSummaries(list))
+        }
+        updateDetailLocal(response.sessionId) { detail in
+            detail.active = true
+            detail.activeAt = max(detail.activeAt, now)
+        }
+        // A superseding spawn is not in the list yet.
+        scheduleRefresh()
+        return response
     }
 
     // MARK: - Internal

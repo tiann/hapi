@@ -10,16 +10,20 @@ import {
     useMatchRoute,
     useNavigate,
     useParams,
+    useRouter,
     useSearch,
 } from '@tanstack/react-router'
 import { getScrollRestorationKey } from '@/lib/scrollRestorationKey'
 import {
     getSessionListSelectionNavigation,
+    isSessionSidebarHidden,
     PRESERVE_SESSION_SIDEBAR_SCROLL,
+    shouldShowSessionSidebar,
 } from '@/lib/sessionNavigation'
 import { App } from '@/App'
 import { SessionChat } from '@/components/SessionChat'
 import { SessionList } from '@/components/SessionList'
+import { SidebarShowButton } from '@/components/SidebarToggle'
 import { NewSession } from '@/components/NewSession'
 import { WorkspaceBrowser } from '@/components/WorkspaceBrowser'
 import { LoadingState } from '@/components/LoadingState'
@@ -51,6 +55,7 @@ import { transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer
 import { getDraftAttachments } from '@/lib/composer-attachment-drafts'
 import { refreshSessionDetailPreservingActive } from '@/lib/session-detail-optimistic'
 import { inactiveSessionCanResume, resolveCursorReopenGate } from '@/lib/sessionResume'
+import { isOnSessionPage, resolveVoiceSession } from '@/lib/dictationSend'
 import { initializeSessionLastSeen } from '@/lib/sessionLastSeen'
 import { useSelectedSessionSeen } from '@/hooks/useSelectedSessionSeen'
 import { useSessionBrowserTitle } from '@/hooks/useSessionBrowserTitle'
@@ -138,6 +143,7 @@ function SettingsIcon(props: { className?: string }) {
 function SessionsPage() {
     const { api, baseUrl, titleSuggestionAvailable = false } = useAppContext()
     const navigate = useNavigate()
+    const router = useRouter()
     const pathname = useLocation({ select: location => location.pathname })
     const matchRoute = useMatchRoute()
     const { t } = useTranslation()
@@ -189,10 +195,40 @@ function SessionsPage() {
     }, [baseUrl, error, isLoading, sessions])
     useSelectedSessionSeen(selectedSessionId, selectedSession?.updatedAt)
     const isSessionsIndex = pathname === '/sessions' || pathname === '/sessions/'
+    const sidebarSearch = useLocation({ select: location => location.search })
+    const [isSidebarVisible, setIsSidebarVisible] = useState(
+        () => shouldShowSessionSidebar(pathname, sidebarSearch)
+    )
+    useEffect(() => {
+        if (isSessionsIndex) {
+            setIsSidebarVisible(true)
+        } else if (!shouldShowSessionSidebar(pathname, sidebarSearch)) {
+            setIsSidebarVisible(false)
+        }
+    }, [isSessionsIndex, pathname, sidebarSearch])
+    const sidebarHidden = !isSidebarVisible
+    const shouldShowSidebar = isSessionsIndex || isSidebarVisible
+    useEffect(() => {
+        // Child routes and in-session actions can navigate without carrying
+        // the parent session search state. Keep the chat-focused URL explicit
+        // while this layout remains hidden so reloads do not restore the rail.
+        if (isSessionsIndex || !sidebarHidden) return
+        const { pathname: currentPathname, search, hash, state } = router.history.location
+        const searchParams = new URLSearchParams(search)
+        if (searchParams.get('sidebar') === 'hidden') return
+        searchParams.set('sidebar', 'hidden')
+        router.history.replace(
+            `${currentPathname}?${searchParams.toString()}${hash}`,
+            state,
+        )
+    }, [isSessionsIndex, pathname, router, sidebarHidden, sidebarSearch])
     const sidebar = useSidebarResize()
     const handleSelectSession = useCallback((sessionId: string) => {
-        navigate(getSessionListSelectionNavigation(sessionId))
-    }, [navigate])
+        navigate(getSessionListSelectionNavigation(
+            sessionId,
+            isSessionSidebarHidden(sidebarSearch) ? { sidebar: 'hidden' } : undefined,
+        ))
+    }, [navigate, sidebarSearch])
     const handleNewSessionInDirectory = useCallback((args: { machineId: string | null; directory: string }) => {
         navigate({
             to: '/sessions/new',
@@ -202,6 +238,16 @@ function SessionsPage() {
             ...PRESERVE_SESSION_SIDEBAR_SCROLL,
         })
     }, [navigate])
+    const showSidebar = useCallback(() => {
+        if (!sidebarHidden) return
+        setIsSidebarVisible(true)
+        const { pathname: currentPathname, search, hash, state } = router.history.location
+        const searchParams = new URLSearchParams(search)
+        searchParams.delete('sidebar')
+        const nextSearch = searchParams.toString()
+        const nextHref = `${currentPathname}${nextSearch ? `?${nextSearch}` : ''}${hash}`
+        router.history.replace(nextHref, state)
+    }, [router, setIsSidebarVisible, sidebarHidden])
 
     return (
         <>
@@ -210,7 +256,7 @@ function SessionsPage() {
                 // min-w-0: without it, shrink-0 toolbar icons inflate the flex
                 // item's min-content past --sidebar-w and the shed never sees a
                 // tight budget (#2039 desktop overflow past the split).
-                className={`${isSessionsIndex ? 'flex' : 'hidden split:flex'} min-w-0 w-full shrink-0 flex-col bg-[var(--app-bg)]`}
+                className={`${shouldShowSidebar ? (isSessionsIndex ? 'flex' : 'hidden split:flex') : 'hidden'} min-w-0 w-full shrink-0 flex-col bg-[var(--app-bg)]`}
                 style={{ '--sidebar-w': `${sidebar.width}px` } as React.CSSProperties}
             >
                 <div className="flex min-h-0 flex-1 flex-col pt-[env(safe-area-inset-top)]">
@@ -273,14 +319,21 @@ function SessionsPage() {
                 </div>
             </div>
 
-            {/* Resize handle - desktop only */}
-            <div
-                className="sidebar-resize-handle hidden split:block shrink-0"
-                data-dragging={sidebar.isDragging || undefined}
-                onPointerDown={sidebar.onPointerDown}
-            />
+            {shouldShowSidebar ? (
+                <div
+                    className="sidebar-resize-handle hidden split:block shrink-0"
+                    data-dragging={sidebar.isDragging || undefined}
+                    onPointerDown={sidebar.onPointerDown}
+                />
+            ) : null}
 
-            <div className={`${isSessionsIndex ? 'hidden split:flex' : 'flex'} min-w-0 flex-1 flex-col bg-[var(--app-bg)]`}>
+            <div className={`${isSessionsIndex ? 'hidden split:flex' : 'flex'} relative min-w-0 flex-1 flex-col bg-[var(--app-bg)]`}>
+                {!shouldShowSidebar ? (
+                    <SidebarShowButton
+                        showLabel={t('session.sidebar.show')}
+                        onShow={showSidebar}
+                    />
+                ) : null}
                 <div className="flex-1 min-h-0">
                     <Outlet />
                 </div>
@@ -562,6 +615,25 @@ function SessionPage() {
         }
     }, [api, navigate, queryClient, session])
 
+    const resolveVoiceSessionId = useCallback(async (currentSessionId: string) => {
+        if (!api) throw new Error('API unavailable')
+        return resolveVoiceSession(api, currentSessionId)
+    }, [api])
+
+    // Voice dictation direct-sends finish asynchronously after transcription
+    // and may complete long after the operator navigated away (stopAndSend is
+    // designed to survive unmount, #1435). Only navigate to the resumed
+    // session when the operator is still on the source session's page;
+    // otherwise the completed background send would yank them away from where
+    // they moved. The router instance is stable and its state is read live at
+    // callback time — a render-time pathname would be stale once the source
+    // SessionPage unmounts.
+    const router = useRouter()
+    const handleVoiceSessionResolved = useCallback((resolvedSessionId: string) => {
+        if (!isOnSessionPage(router.state.location.pathname, sessionId)) return
+        handleSessionResolved(resolvedSessionId)
+    }, [handleSessionResolved, router, sessionId])
+
     const {
         sendMessage,
         retryMessage,
@@ -794,6 +866,8 @@ function SessionPage() {
             onSend={sendMessage}
             resolveSessionIdForUpload={async (id) => (await resolveSessionId(id)).sessionId}
             onUploadSessionResolved={handleSessionResolved}
+            resolveSessionIdForVoice={resolveVoiceSessionId}
+            onVoiceSessionResolved={handleVoiceSessionResolved}
             onViewModeChange={setViewMode}
             onRetryMessage={retryMessage}
             autocompleteSuggestions={getAutocompleteSuggestions}
@@ -1042,9 +1116,13 @@ const sessionsIndexRoute = createRoute({
 const sessionDetailRoute = createRoute({
     getParentRoute: () => sessionsRoute,
     path: '$sessionId',
-    validateSearch: (search: Record<string, unknown>): { outline?: boolean } => {
+    validateSearch: (search: Record<string, unknown>): { outline?: boolean; sidebar?: 'hidden' } => {
         const outline = search.outline === true || search.outline === 'true'
-        return outline ? { outline: true } : {}
+        const sidebar = search.sidebar === 'hidden' ? 'hidden' : undefined
+        return {
+            ...(outline ? { outline: true } : {}),
+            ...(sidebar ? { sidebar } : {}),
+        }
     },
     component: SessionDetailRoute,
 })

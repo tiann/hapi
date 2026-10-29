@@ -50,7 +50,7 @@ class CatalogTest {
             PermissionModes.forFlavor("claude").map { it.wireId }
         )
         assertEquals(
-            listOf("default", "read-only", "safe-yolo", "autoReview", "yolo"),
+            listOf("default", "read-only", "autoReview", "yolo"),
             PermissionModes.forFlavor("codex").map { it.wireId }
         )
         assertEquals(

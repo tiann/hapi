@@ -1,7 +1,8 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { ApiClient } from '@/api/client'
-import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, PiLocalSessionSummary } from '@/types/api'
+import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, OpencodeLocalSessionSummary, PiLocalSessionSummary } from '@/types/api'
 import type { CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
+import { getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
 import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
@@ -9,6 +10,9 @@ import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
 import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { useCursorModelsForMachine } from '@/hooks/queries/useCursorModelsForMachine'
 import { useAgyModels } from '@/hooks/queries/useAgyModels'
+import { useClaudeModels } from '@/hooks/queries/useClaudeModels'
+import { getClaudeLaunchModelOptions } from '@/components/AssistantChat/modelOptions'
+import { getClaudeComposerEffortOptions } from '@/components/AssistantChat/claudeEffortOptions'
 import { useDshModelsForMachine } from '@/hooks/queries/useDshModels'
 import { useOpencodeModelsForCwd } from '@/hooks/queries/useOpencodeModelsForCwd'
 import { useOpencodeModelVariants } from '@/hooks/queries/useOpencodeModelVariants'
@@ -48,6 +52,7 @@ import { AgentSelector } from './AgentSelector'
 import { CollaborationModeSelector } from './CollaborationModeSelector'
 import { CodexImportActions } from './CodexImportActions'
 import { PiImportActions } from './PiImportActions'
+import { OpencodeImportActions } from './OpencodeImportActions'
 import { clearBatchImportedCodexSelection, resolveCodexImportRedirectSessionId } from './codexImportMerge'
 import { AgyModelSelector } from './AgyModelSelector'
 import { DirectorySection } from './DirectorySection'
@@ -76,6 +81,7 @@ import { PermissionField } from './PermissionField'
 import { usesNativePermissionSelect, usesSharedPermissionModeState } from '@/lib/codexFamilyPermissionAgents'
 import { CodexSessionSyncDialog } from '@/components/CodexSessionSyncDialog'
 import { PiSessionImportDialog } from '@/components/PiSessionImportDialog'
+import { OpencodeSessionImportDialog } from '@/components/OpencodeSessionImportDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { formatRunnerSpawnError } from '../../utils/formatRunnerSpawnError'
 import { markCodexSessionsImported } from '@/lib/codexImportedSessions'
@@ -146,6 +152,15 @@ export function NewSession(props: {
     const [isBulkImportingPiSessions, setIsBulkImportingPiSessions] = useState(false)
     const [isPiImportDialogOpen, setIsPiImportDialogOpen] = useState(false)
     const piLoadGenerationRef = useRef(0)
+    const [opencodeImportSessions, setOpencodeImportSessions] = useState<OpencodeLocalSessionSummary[]>([])
+    const [selectedOpencodeImportSessionId, setSelectedOpencodeImportSessionId] = useState<string | null>(null)
+    const [opencodeImportMachineId, setOpencodeImportMachineId] = useState<string | null>(null)
+    const [isLoadingOpencodeImportSessions, setIsLoadingOpencodeImportSessions] = useState(false)
+    const [opencodeImportError, setOpencodeImportError] = useState<string | null>(null)
+    const [isImportingOpencodeSession, setIsImportingOpencodeSession] = useState(false)
+    const [isBulkImportingOpencodeSessions, setIsBulkImportingOpencodeSessions] = useState(false)
+    const [isOpencodeImportDialogOpen, setIsOpencodeImportDialogOpen] = useState(false)
+    const opencodeLoadGenerationRef = useRef(0)
     const [isCreating, setIsCreating] = useState(false)
     const createInFlightRef = useRef(false)
     const [isBulkImportingCodexSessions, setIsBulkImportingCodexSessions] = useState(false)
@@ -163,6 +178,8 @@ export function NewSession(props: {
         || isBulkImportingCodexSessions
         || isImportingPiSession
         || isBulkImportingPiSessions
+        || isImportingOpencodeSession
+        || isBulkImportingOpencodeSessions
     )
     const worktreeInputRef = useRef<HTMLInputElement>(null)
     const preserveRestoredDraftRef = useRef(false)
@@ -709,6 +726,36 @@ export function NewSession(props: {
         machineId,
         enabled: agent === 'pi' && Boolean(machineId)
     })
+    const claudeModelsState = useClaudeModels({
+        api: props.api,
+        machineId,
+        enabled: agent === 'claude' && Boolean(machineId)
+    })
+    const claudeModelOptions = useMemo(() => (
+        agent === 'claude'
+            ? getClaudeLaunchModelOptions(claudeModelsState.availableModels, model, t('newSession.claudeModel.notListed'), t('misc.otherModels'))
+            : undefined
+    ), [agent, claudeModelsState.availableModels, model, t])
+    const claudeEffortOptions = useMemo(() => {
+        const levels = getClaudeEffortLevelsForModel(model === 'auto' ? null : model, claudeModelsState.availableModels)
+        return levels
+            ? getClaudeComposerEffortOptions(effort, levels).map((option) => ({ value: option.value ?? 'auto', label: option.label }))
+            : undefined
+    }, [claudeModelsState.availableModels, model, effort])
+    // However the model got here (picked, restored from a preference or a
+    // draft, or the catalog arriving after it), an effort that model does not
+    // offer is dropped. Only the Claude catalog carries effort levels, so other
+    // agents keep their effort.
+    useEffect(() => {
+        const nextEffort = resolveClaudeEffortForModel(
+            effort === 'auto' ? null : effort,
+            model === 'auto' ? null : model,
+            claudeModelsState.availableModels
+        )
+        if ((nextEffort ?? 'auto') !== effort) {
+            setEffort('auto')
+        }
+    }, [claudeModelsState.availableModels, model, effort])
     // Pi models are grouped by provider (optionSource: 'machine' in the agent
     // config descriptor). Option values are provider-qualified
     // (`provider/modelId`) so two providers sharing a modelId stay distinct;
@@ -1131,6 +1178,44 @@ export function NewSession(props: {
         return message?.trim() || t('piImport.failed.body')
     }, [t])
 
+    useEffect(() => {
+        opencodeLoadGenerationRef.current += 1
+        setIsLoadingOpencodeImportSessions(false)
+    }, [agent, machineId, trimmedDirectory])
+
+    useEffect(() => () => {
+        opencodeLoadGenerationRef.current += 1
+    }, [])
+
+    const loadOpencodeImportSessions = useCallback(async () => {
+        if (agent !== 'opencode' || !machineId) return
+        const generation = ++opencodeLoadGenerationRef.current
+        setIsLoadingOpencodeImportSessions(true)
+        setOpencodeImportError(null)
+        try {
+            const result = await props.api.getOpencodeSessions(trimmedDirectory || null, machineId)
+            if (generation !== opencodeLoadGenerationRef.current) return
+            if (!result.success) throw new Error(result.error)
+            setOpencodeImportSessions(result.sessions)
+            setOpencodeImportMachineId(result.machineId ?? machineId)
+            setSelectedOpencodeImportSessionId((current) => current && result.sessions.some((session) => session.id === current) ? current : null)
+        } catch (loadError) {
+            if (generation !== opencodeLoadGenerationRef.current) return
+            setOpencodeImportSessions([])
+            setOpencodeImportMachineId(null)
+            setSelectedOpencodeImportSessionId(null)
+            setOpencodeImportError(loadError instanceof Error ? loadError.message : t('opencodeSync.failed.body'))
+        } finally {
+            if (generation === opencodeLoadGenerationRef.current) setIsLoadingOpencodeImportSessions(false)
+        }
+    }, [agent, machineId, props.api, trimmedDirectory, t])
+
+    const formatOpencodeImportError = useCallback((code?: string, message?: string): string => {
+        if (code === 'transcript_diverged') return t('opencodeSync.error.diverged')
+        if (code === 'session_active') return t('opencodeSync.error.active')
+        return message?.trim() || t('opencodeSync.failed.body')
+    }, [t])
+
     const normalizeCodexScriptError = useCallback((message: string | null | undefined, fallback: string): string => {
         const raw = (message ?? '').trim()
         if (!raw) return fallback
@@ -1385,6 +1470,66 @@ export function NewSession(props: {
         trimmedDirectory
     ])
 
+    const handleBulkImportOpencodeSessions = useCallback(async (sessionIds: string[]) => {
+        if (isBulkImportingOpencodeSessions || isLoadingOpencodeImportSessions) return
+        setIsBulkImportingOpencodeSessions(true)
+        try {
+            const result = await props.api.importOpencodeSessions({
+                sessionIds,
+                cwd: trimmedDirectory || null,
+                machineId: opencodeImportMachineId ?? machineId
+            })
+            const importedCount = result.results.filter((item) => item.hapiSessionId && !item.error && (item.action === 'created' || (item.appended ?? 0) > 0)).length
+            const failed = result.results.filter((item) => item.error)
+            if (importedCount > 0) {
+                addToast({
+                    title: t('opencodeSync.success.title'),
+                    body: t('opencodeSync.success.body', { n: importedCount }),
+                    sessionId: '',
+                    url: ''
+                })
+                await refetchSessions()
+                await loadOpencodeImportSessions()
+            }
+            if (failed.length > 0) {
+                const first = failed[0]!.error!
+                addToast({
+                    title: t('opencodeSync.failed.title'),
+                    body: t('opencodeSync.failed.partial', {
+                        failed: failed.length,
+                        reason: formatOpencodeImportError(first.code, first.message)
+                    }),
+                    sessionId: '',
+                    url: ''
+                })
+                return
+            }
+            setIsOpencodeImportDialogOpen(false)
+            setSelectedOpencodeImportSessionId(null)
+        } catch (importError) {
+            addToast({
+                title: t('opencodeSync.failed.title'),
+                body: importError instanceof Error ? importError.message : t('opencodeSync.failed.body'),
+                sessionId: '',
+                url: ''
+            })
+        } finally {
+            setIsBulkImportingOpencodeSessions(false)
+        }
+    }, [
+        addToast,
+        formatOpencodeImportError,
+        isBulkImportingOpencodeSessions,
+        isLoadingOpencodeImportSessions,
+        loadOpencodeImportSessions,
+        machineId,
+        opencodeImportMachineId,
+        props.api,
+        refetchSessions,
+        t,
+        trimmedDirectory
+    ])
+
     const selectedCodexImportSession = useMemo(
         () => codexImportSessions.find((session) => session.id === selectedCodexImportSessionId) ?? null,
         [codexImportSessions, selectedCodexImportSessionId]
@@ -1392,6 +1537,10 @@ export function NewSession(props: {
     const selectedPiImportSession = useMemo(
         () => piImportSessions.find((session) => session.id === selectedPiImportSessionId) ?? null,
         [piImportSessions, selectedPiImportSessionId]
+    )
+    const selectedOpencodeImportSession = useMemo(
+        () => opencodeImportSessions.find((session) => session.id === selectedOpencodeImportSessionId) ?? null,
+        [opencodeImportSessions, selectedOpencodeImportSessionId]
     )
     // Pi history import reopens the native session as-is; the launch-only
     // model/effort controls would silently not apply, so hide them.
@@ -1413,6 +1562,9 @@ export function NewSession(props: {
         setSelectedPiImportSessionId(null)
         setPiImportSessions([])
         setPiImportMachineId(null)
+        setSelectedOpencodeImportSessionId(null)
+        setOpencodeImportSessions([])
+        setOpencodeImportMachineId(null)
         const paths = getRecentPaths(newMachineId)
         if (paths[0]) {
             setDirectory(paths[0])
@@ -1509,6 +1661,11 @@ export function NewSession(props: {
 
     const handleSelectPiImportSession = useCallback((session: PiLocalSessionSummary) => {
         setSelectedPiImportSessionId(session.id)
+        if (session.cwd?.trim()) setDirectory(session.cwd.trim())
+    }, [])
+
+    const handleSelectOpencodeImportSession = useCallback((session: OpencodeLocalSessionSummary) => {
+        setSelectedOpencodeImportSessionId(session.id)
         if (session.cwd?.trim()) setDirectory(session.cwd.trim())
     }, [])
 
@@ -1707,6 +1864,34 @@ export function NewSession(props: {
                 return
             }
 
+            if (agent === 'opencode' && selectedOpencodeImportSession) {
+                setIsImportingOpencodeSession(true)
+                const result = await props.api.importOpencodeSessions({
+                    sessionIds: [selectedOpencodeImportSession.id],
+                    cwd: selectedOpencodeImportSession.cwd ?? trimmedDirectory,
+                    machineId: opencodeImportMachineId ?? machineId,
+                    model: resolvedModel ?? null,
+                    modelReasoningEffort: resolvedModelReasoningEffort ?? null,
+                    permissionMode: nativePermissionMode
+                })
+                const imported = result.results.find((item) => item.opencodeSessionId === selectedOpencodeImportSession.id)
+                if (imported?.error) {
+                    setIsImportingOpencodeSession(false)
+                    haptic.notification('error')
+                    setError(formatOpencodeImportError(imported.error.code, imported.error.message))
+                    return
+                }
+                if (!imported?.hapiSessionId) throw new Error(result.error || t('opencodeSync.failed.body'))
+                const reopened = await props.api.reopenSession(imported.hapiSessionId)
+                haptic.notification('success')
+                savePreferredLaunchSettings(machineId, agent, preferredLaunchSettings)
+                clearNewSessionFormDraft()
+                setLastUsedMachineId(machineId)
+                addRecentPath(machineId, trimmedDirectory)
+                props.onSuccess(reopened.sessionId)
+                return
+            }
+
             const result = await spawnSession({
                 machineId,
                 directory: trimmedDirectory,
@@ -1743,6 +1928,7 @@ export function NewSession(props: {
         } catch (e) {
             setIsImportingCodexSession(false)
             setIsImportingPiSession(false)
+            setIsImportingOpencodeSession(false)
             haptic.notification('error')
             setError(e instanceof Error ? e.message : 'Failed to create session')
         } finally {
@@ -1870,7 +2056,7 @@ export function NewSession(props: {
                         {t('button.retry')}
                     </button>
                 </div>
-            ) : availableAgents.length === 0 ? (
+            ) : machineId && availableAgents.length === 0 ? (
                 <div className="px-3 py-2 text-xs text-red-600">
                     {t('newSession.noAvailableAgents')}
                 </div>
@@ -1899,6 +2085,19 @@ export function NewSession(props: {
                         void loadPiImportSessions()
                     }}
                     onClear={() => setSelectedPiImportSessionId(null)}
+                />
+            ) : null}
+            {agent === 'opencode' ? (
+                <OpencodeImportActions
+                    selectedSession={selectedOpencodeImportSession}
+                    isLoading={isLoadingOpencodeImportSessions}
+                    isDisabled={isFormDisabled}
+                    error={opencodeImportError}
+                    onChooseHistory={() => {
+                        setIsOpencodeImportDialogOpen(true)
+                        void loadOpencodeImportSessions()
+                    }}
+                    onClear={() => setSelectedOpencodeImportSessionId(null)}
                 />
             ) : null}
             {agent === 'dsh' ? (
@@ -2003,7 +2202,7 @@ export function NewSession(props: {
                                             ? kimiModelOptions
                                             : agent === 'pi'
                                                 ? (showPiLaunchConfig ? piModelOptions : undefined)
-                                        : undefined
+                                        : claudeModelOptions
                         }
                         isDisabled={
                             isFormDisabled
@@ -2042,6 +2241,7 @@ export function NewSession(props: {
                     onReasoningEffortChange={setModelReasoningEffort}
                     isDisabled={isFormDisabled || (agent === 'codex' && codexModelsState.isLoading)}
                     grokOptions={agent === 'grok' ? grokEffortOptions : undefined}
+                    claudeOptions={claudeEffortOptions}
                     codexReasoningOptions={agent === 'codex' ? codexReasoningEffortOptions : undefined}
                     opencodeVariantOptions={agent === 'opencode' ? opencodeVariantOptions : undefined}
                     piSelectedModel={agent === 'pi' ? piSelectedModel : null}
@@ -2088,7 +2288,7 @@ export function NewSession(props: {
             ) : null}
 
             <ActionButtons
-                isPending={isCreating || isPending || isImportingCodexSession || isImportingPiSession}
+                isPending={isCreating || isPending || isImportingCodexSession || isImportingPiSession || isImportingOpencodeSession}
                 canCreate={canCreate}
                 isDisabled={isFormDisabled}
                 createLabel={createLabel}
@@ -2138,6 +2338,26 @@ export function NewSession(props: {
                 }}
                 isPending={isBulkImportingPiSessions}
                 isLoading={isLoadingPiImportSessions}
+            />
+            <OpencodeSessionImportDialog
+                isOpen={isOpencodeImportDialogOpen}
+                onClose={() => setIsOpencodeImportDialogOpen(false)}
+                sessions={opencodeImportSessions}
+                currentSessionId={selectedOpencodeImportSessionId}
+                currentWorkDirectory={trimmedDirectory}
+                onConfirm={async (sessionIds) => {
+                    if (sessionIds.length === 1) {
+                        const session = opencodeImportSessions.find((candidate) => candidate.id === sessionIds[0])
+                        if (session) {
+                            handleSelectOpencodeImportSession(session)
+                            setIsOpencodeImportDialogOpen(false)
+                        }
+                        return
+                    }
+                    await handleBulkImportOpencodeSessions(sessionIds)
+                }}
+                isPending={isBulkImportingOpencodeSessions}
+                isLoading={isLoadingOpencodeImportSessions}
             />
             <ConfirmDialog
                 isOpen={isDuplicateMergeConfirmOpen && duplicateSessionGroups.length > 0}

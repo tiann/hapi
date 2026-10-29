@@ -129,10 +129,15 @@ describe('startHappyServer skill_lookup', () => {
         expect(displayImage?.description).toContain('cannot be used to read, inspect, or analyze image contents')
     })
 
-    it.each([undefined, 'queue', 'steer'] as const)('forwards ping_peer delivery mode %s through MCP', async (deliveryMode) => {
+    it.each([
+        [undefined, 'accepted'],
+        ['queue', 'accepted'],
+        ['steer', 'steered'],
+        ['steer', 'invoked']
+    ] as const)('forwards ping_peer mode %s and reports %s through MCP', async (deliveryMode, delivery) => {
         const ping = vi.spyOn(peerMessages, 'pingPeer').mockResolvedValue({
             sessionId: 'peer-id', name: 'Peer', resumed: false,
-            delivery: deliveryMode === 'steer' ? 'steered' : 'queued'
+            localId: 'ping-peer-test', delivery
         })
         try {
             const mcp = await connect(false)
@@ -145,7 +150,9 @@ describe('startHappyServer skill_lookup', () => {
             }) as ToolResult
             expect(result.isError).toBe(false)
             expect(ping).toHaveBeenCalledWith({ sessionIdPrefix: 'peer-id', message: 'hello', deliveryMode })
-            expect(result.content?.[0]?.text).toContain(deliveryMode === 'steer' ? 'steered to peer-id' : 'queued to peer-id')
+            expect(result.content?.[0]?.text).toBe(delivery === 'accepted'
+                ? 'Accepted for peer-id (Peer) localId=ping-peer-test — delivery shows in the recipient chat when its runtime consumes it'
+                : `${delivery} to peer-id (Peer) localId=ping-peer-test`)
         } finally {
             ping.mockRestore()
         }
@@ -259,6 +266,9 @@ describe('startHappyServer change_title', () => {
         const sendClaudeSessionMessage = vi.fn()
         const sessionClient = {
             updateMetadata,
+            refreshMetadata: vi.fn(async () => true),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
             sendAgentMessage: vi.fn(),
             sendClaudeSessionMessage
         } as unknown as ApiSessionClient
@@ -300,10 +310,54 @@ describe('startHappyServer change_title', () => {
         expect(sendClaudeSessionMessage).not.toHaveBeenCalled()
     })
 
+    it.each([false, true])('reports a user lock, including one acquired while the title write is pending (%s)', async (inFlight) => {
+        let locked = !inFlight
+        const updateMetadata = vi.fn()
+        const sessionClient = {
+            updateMetadata,
+            refreshMetadata: vi.fn(async () => true),
+            getMetadata: () => ({ path: '/tmp', host: 'localhost', name: 'Pinned', titleLocked: locked }),
+            flushMetadata: vi.fn(async () => { locked = true; return true }),
+            sendAgentMessage: vi.fn()
+        } as unknown as ApiSessionClient
+        const mcp = await connectChangeTitleServer(sessionClient)
+        updateMetadata.mockClear()
+        const result = await mcp.callTool({ name: 'change_title', arguments: { title: 'Agent' } }) as ToolResult
+        expect(result.isError).toBe(true)
+        expect(result.content?.[0]?.text).toContain('locked by the user')
+        expect(updateMetadata).toHaveBeenCalledTimes(inFlight ? 1 : 0)
+    })
+
+    it('refreshes a stale cached lock before allowing an explicit rename', async () => {
+        let locked = true
+        const sessionClient = {
+            updateMetadata: vi.fn(), refreshMetadata: vi.fn(async () => { locked = false; return true }),
+            getMetadata: () => ({ path: '/tmp', host: 'localhost', titleLocked: locked }),
+            flushMetadata: vi.fn(async () => true), sendAgentMessage: vi.fn()
+        } as unknown as ApiSessionClient
+        const mcp = await connectChangeTitleServer(sessionClient)
+        const result = await mcp.callTool({ name: 'change_title', arguments: { title: 'Unlocked' } }) as ToolResult
+        expect(result.isError).toBe(false)
+        expect(sessionClient.refreshMetadata).toHaveBeenCalled()
+    })
+
+    it('fails without mutating when the Hub lock cannot be read', async () => {
+        const updateMetadata = vi.fn()
+        const sessionClient = { updateMetadata, refreshMetadata: vi.fn(async () => false), sendAgentMessage: vi.fn() } as unknown as ApiSessionClient
+        const mcp = await connectChangeTitleServer(sessionClient)
+        updateMetadata.mockClear()
+        const result = await mcp.callTool({ name: 'change_title', arguments: { title: 'Unknown' } }) as ToolResult
+        expect(result.isError).toBe(true)
+        expect(updateMetadata).not.toHaveBeenCalled()
+    })
+
     it('returns an error for blank titles instead of claiming success', async () => {
         const updateMetadata = vi.fn()
         const sessionClient = {
             updateMetadata,
+            refreshMetadata: vi.fn(async () => true),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
             sendAgentMessage: vi.fn(),
             sendClaudeSessionMessage: vi.fn()
         } as unknown as ApiSessionClient
@@ -326,6 +380,9 @@ describe('startHappyServer change_title', () => {
         const sendClaudeSessionMessage = vi.fn()
         const sessionClient = {
             updateMetadata,
+            refreshMetadata: vi.fn(async () => true),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
             sendAgentMessage: vi.fn(),
             sendClaudeSessionMessage
         } as unknown as ApiSessionClient

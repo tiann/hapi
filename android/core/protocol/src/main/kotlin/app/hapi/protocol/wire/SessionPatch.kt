@@ -67,6 +67,8 @@ object SessionPatches {
         "model", "modelReasoningEffort", "effort", "serviceTier",
         "permissionMode", "collaborationMode", "copilotAgentMode",
         "backgroundTaskCount", "scratchlistUpdatedAt",
+        // Web-only status-panel list; accepted so the patch is not refetched.
+        "backgroundTasks",
     )
 
     /**

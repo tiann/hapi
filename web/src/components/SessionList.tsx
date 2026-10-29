@@ -18,6 +18,8 @@ import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { ArchiveSessionDialog } from '@/components/ArchiveSessionDialog'
+import { DeleteSessionDialog } from '@/components/DeleteSessionDialog'
 import { CopyIcon, CheckIcon, MarkAllReadIcon } from '@/components/icons'
 
 function PinnedSectionIcon(props: { className?: string }) {
@@ -105,10 +107,11 @@ import { formatReopenError } from '@/lib/reopenError'
 import { resolveCursorReopenGate } from '@/lib/sessionResume'
 import { getSessionTitle, hasSessionTitleSignal } from '@/lib/sessionTitle'
 import { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
+import { getSessionProjectLabel, getSessionProjectPath } from '@/lib/sessionProjectLabel'
 import { retargetSharePendingTransfer } from '@/lib/sharePendingState'
 import type { Machine } from '@/types/api'
 import { getMachinePlatform, presentMachineHealth } from '@/lib/machineHealth'
-import { MachineFilterBar, MachineFilterMenu } from '@/components/MachineFilterBar'
+import { MachineFilterBar, MachineFilterMenu, MachineSummaryRow } from '@/components/MachineFilterBar'
 import { useSessionListMachineFilter } from '@/hooks/useSessionListMachineFilter'
 import { useTransientScrollbar } from '@/hooks/useTransientScrollbar'
 import { useCursorChatStoreStatus } from '@/hooks/queries/useCursorChatStoreStatus'
@@ -116,7 +119,6 @@ import { SessionRowSummary } from '@/components/SessionRowSummary'
 import { Spinner } from '@/components/Spinner'
 import { transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { useToast } from '@/lib/toast-context'
-import { getPathDisplayName } from '@/utils/path'
 import {
     shedToolbarSlots,
     toolbarActionBudget,
@@ -400,11 +402,15 @@ export function filterActiveSessionsOnly(sessions: SessionSummary[], selectedSes
 export function filterUnreadSessionsOnly(
     sessions: SessionSummary[],
     selectedSessionId: string | null | undefined,
-    getLastSeenAt: (sessionId: string) => number
+    getLastSeenAt: (sessionId: string) => number,
+    getManualUnreadAt: (sessionId: string) => number | null = () => null,
 ): SessionSummary[] {
     return sessions.filter(session =>
         session.id === selectedSessionId
-        || sessionIsUnread(session, { lastSeenAt: getLastSeenAt(session.id) })
+        || sessionIsUnread(session, {
+            lastSeenAt: getLastSeenAt(session.id),
+            manualUnreadAt: getManualUnreadAt(session.id)
+        })
     )
 }
 
@@ -427,7 +433,7 @@ export function groupSessionsByDirectory(sessions: SessionSummary[], fixedOrder 
     const groups = new Map<string, { directory: string; machineId: string | null; sessions: SessionSummary[] }>()
 
     sessions.forEach(session => {
-        const path = session.metadata?.worktree?.basePath ?? session.metadata?.path ?? 'Other'
+        const path = getSessionProjectPath(session.metadata) ?? 'Other'
         const machineId = session.metadata?.machineId ?? null
         const key = `${machineId ?? UNKNOWN_MACHINE_ID}::${path}`
         if (!groups.has(key)) {
@@ -462,7 +468,7 @@ export function groupSessionsByDirectory(sessions: SessionSummary[], fixedOrder 
             )
             const hasActiveSession = group.sessions.some(s => s.active)
             const hasPinnedSession = group.sessions.some(s => s.pinned)
-            const displayName = getPathDisplayName(group.directory)
+            const displayName = getSessionProjectLabel(group.directory)
 
             return {
                 key,
@@ -1339,6 +1345,8 @@ const SessionItem = memo(function SessionItem(props: {
                     isOpen={true}
                     onClose={() => setRenameOpen(false)}
                     currentName={sessionName}
+                    currentTitleLocked={s.metadata?.titleLocked === true}
+                    sessionId={s.id}
                     onRename={renameSession}
                     onSuggestTitle={api && titleSuggestionAvailable ? suggestSessionTitle : undefined}
                     onUpdateSummary={api && titleSuggestionAvailable ? updateSessionSummary : undefined}
@@ -1356,32 +1364,25 @@ const SessionItem = memo(function SessionItem(props: {
             ) : null}
 
             {archiveOpen ? (
-                <ConfirmDialog
+                <ArchiveSessionDialog
                     isOpen={true}
                     onClose={() => setArchiveOpen(false)}
-                    title={t('dialog.archive.title')}
-                    description={t('dialog.archive.description', { name: sessionName })}
-                    confirmLabel={t('dialog.archive.confirm')}
-                    confirmingLabel={t('dialog.archive.confirming')}
+                    sessionId={s.id}
+                    sessionName={sessionName}
+                    active={s.active}
                     onConfirm={archiveSession}
                     isPending={isPending}
-                    destructive
-                    centerTitle
                 />
             ) : null}
 
             {deleteOpen ? (
-                <ConfirmDialog
+                <DeleteSessionDialog
                     isOpen={true}
+                    sessionId={s.id}
                     onClose={() => setDeleteOpen(false)}
-                    title={t('dialog.delete.title')}
                     description={t('dialog.delete.description', { name: sessionName })}
-                    confirmLabel={t('dialog.delete.confirm')}
-                    confirmingLabel={t('dialog.delete.confirming')}
                     onConfirm={deleteSession}
                     isPending={isPending}
-                    destructive
-                    centerTitle
                 />
             ) : null}
         </>
@@ -1613,6 +1614,28 @@ export function SessionList(props: {
         [machineFilters, machinesById]
     )
     const showMachineFilterBar = machineFilters.length >= 2
+    // With a single machine there is nothing to filter, but health and the
+    // session count still belong in the sidebar: render a compact summary
+    // row instead of the filter bar. The row is derived from session groups,
+    // but those disappear when the sole machine has no visible sessions
+    // (fresh install, or "active only" filtering); fall back to the machines
+    // list so its health stays visible (#1259).
+    const soleRegisteredMachine = machineFilters.length === 0 && Object.keys(machinesById).length === 1
+        ? Object.values(machinesById)[0]
+        : null
+    const singleMachineItem = machineFilters.length === 1
+        ? machineFilterItems[0]
+        : soleRegisteredMachine
+            ? {
+                id: soleRegisteredMachine.id,
+                label: resolveMachineLabel(soleRegisteredMachine.id),
+                sessionCount: 0,
+                healthPresentation: presentMachineHealth(
+                    soleRegisteredMachine.health,
+                    getMachinePlatform(soleRegisteredMachine)
+                )
+            }
+            : null
     // A persisted filter whose machine no longer has sessions falls back to
     // "All"; with at most one machine the bar is hidden and never filters.
     const activeMachineFilter = showMachineFilterBar && machineFilter !== null
@@ -1628,7 +1651,8 @@ export function SessionList(props: {
         return filterUnreadSessionsOnly(
             visibleSessions,
             selectedSessionId,
-            id => lastSeenById[id] ?? 0
+            id => lastSeenById[id] ?? 0,
+            getSessionManualUnreadAt
         )
     }, [lastSeenVersion, visibleSessions, selectedSessionId, showUnreadOnly])
     const machineFilteredSessions = useMemo(
@@ -1700,14 +1724,21 @@ export function SessionList(props: {
     const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
         () => new Map()
     )
+    const [filterCollapseOverrides, setFilterCollapseOverrides] = useState<Map<string, boolean>>(
+        () => new Map()
+    )
     const [runningSectionCollapsed, setRunningSectionCollapsed] = useState(false)
     const [activeSectionCollapsed, setActiveSectionCollapsed] = useState(false)
     const [pinnedSectionCollapsed, setPinnedSectionCollapsed] = useState(false)
     const autoExpandedSelectedSessionKeyRef = useRef<string | null>(null)
     const isGroupCollapsed = (group: SessionGroup): boolean => {
-        if (isFiltering) return false
-        const override = collapseOverrides.get(group.key)
+        const override = isFiltering
+            ? filterCollapseOverrides.get(group.key)
+            : collapseOverrides.get(group.key)
         if (override !== undefined) return override
+        // Keep matching groups open by default while filtering. Explicit
+        // header clicks use a temporary override for the active filter.
+        if (isFiltering) return false
         const hasSelectedSession = selectedSessionId
             ? group.sessions.some(session => session.id === selectedSessionId)
             : false
@@ -1715,12 +1746,18 @@ export function SessionList(props: {
     }
 
     const toggleGroup = (groupKey: string, isCollapsed: boolean) => {
-        setCollapseOverrides(prev => {
+        const setOverrides = isFiltering ? setFilterCollapseOverrides : setCollapseOverrides
+        setOverrides(prev => {
             const next = new Map(prev)
             next.set(groupKey, !isCollapsed)
             return next
         })
     }
+
+    useEffect(() => {
+        if (isFiltering) return
+        setFilterCollapseOverrides(prev => prev.size === 0 ? prev : new Map())
+    }, [isFiltering])
 
     // Per-group reveal cap for paginated session previews. Absent = the configured
     // preview limit; expand/collapse controls move the cap by one preview-sized batch.
@@ -1851,7 +1888,7 @@ export function SessionList(props: {
                                             selected={s.id === selectedSessionId}
                                             showDetailedStatus={showDetailedStatus}
                                             inRunningSection
-                                            projectLabel={getPathDisplayName(s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')}
+                                            projectLabel={getSessionProjectLabel(getSessionProjectPath(s.metadata) ?? 'Other')}
                                             machineLabel={resolveMachineLabel(s.metadata?.machineId ?? null)}
                                             lastSeenVersion={lastSeenVersion}
                                         />
@@ -2035,7 +2072,9 @@ export function SessionList(props: {
             // (e.g. it moved to the pinned "in progress" section). Drop the
             // guard so it auto-expands again when it transitions back into a
             // group later.
-            autoExpandedSelectedSessionKeyRef.current = null
+            if (!isFiltering) {
+                autoExpandedSelectedSessionKeyRef.current = null
+            }
             return
         }
 
@@ -2043,8 +2082,9 @@ export function SessionList(props: {
         if (autoExpandedSelectedSessionKeyRef.current === autoExpandKey) return
         autoExpandedSelectedSessionKeyRef.current = autoExpandKey
 
-        setCollapseOverrides(prev => expandSelectedSessionCollapseOverrides(prev, group))
-    }, [selectedSessionId, groups])
+        const setOverrides = isFiltering ? setFilterCollapseOverrides : setCollapseOverrides
+        setOverrides(prev => expandSelectedSessionCollapseOverrides(prev, group))
+    }, [selectedSessionId, groups, isFiltering])
 
     // Clean up stale collapse overrides
     useEffect(() => {
@@ -2444,6 +2484,8 @@ export function SessionList(props: {
                     value={activeMachineFilter}
                     onChange={setMachineFilter}
                 />
+            ) : singleMachineItem ? (
+                <MachineSummaryRow machine={singleMachineItem} />
             ) : null}
             </div>
 
@@ -2524,7 +2566,7 @@ export function SessionList(props: {
                                             selected={s.id === selectedSessionId}
                                             showDetailedStatus={showDetailedStatus}
                                             inRunningSection
-                                            projectLabel={getPathDisplayName(s.metadata?.worktree?.basePath ?? s.metadata?.path ?? 'Other')}
+                                            projectLabel={getSessionProjectLabel(getSessionProjectPath(s.metadata) ?? 'Other')}
                                             machineLabel={resolveMachineLabel(s.metadata?.machineId ?? null)}
                                             lastSeenVersion={lastSeenVersion}
                                         />

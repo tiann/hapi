@@ -58,6 +58,39 @@ describe('sessionLastSeen', () => {
         expect(getSessionManualUnreadAt('manual')).toBeNull()
     })
 
+    it('does not count a thinking session until it completes', () => {
+        markSessionSeen('session-a', 1000)
+
+        const thinking = [{ id: 'session-a', active: true, updatedAt: 2000, thinking: true }]
+        expect(getUnreadSessionCount(thinking)).toBe(0)
+        expect(markAllSessionsSeen(thinking)).toBe(0)
+        expect(getSessionLastSeenAt('session-a')).toBe(1000)
+
+        const completed = [{ id: 'session-a', updatedAt: 2000, thinking: false }]
+        expect(getUnreadSessionCount(completed)).toBe(1)
+        expect(markAllSessionsSeen(completed)).toBe(1)
+        expect(getSessionLastSeenAt('session-a')).toBe(2000)
+    })
+
+    it('counts an inactive session even when thinking is stale after expiry', () => {
+        markSessionSeen('session-a', 1000)
+
+        const expired = [{ id: 'session-a', active: false, updatedAt: 2000, thinking: true }]
+        expect(getUnreadSessionCount(expired)).toBe(1)
+        expect(markAllSessionsSeen(expired)).toBe(1)
+        expect(getSessionLastSeenAt('session-a')).toBe(2000)
+    })
+
+    it('preserves a manual unread marker across newer generating activity', () => {
+        markSessionUnread('session-a', 2000)
+
+        const thinking = [{ id: 'session-a', active: true, updatedAt: 3000, thinking: true }]
+        expect(getUnreadSessionCount(thinking)).toBe(1)
+        expect(markAllSessionsSeen(thinking)).toBe(1)
+        expect(getSessionManualUnreadAt('session-a')).toBeNull()
+        expect(getSessionLastSeenAt('session-a')).toBe(3000)
+    })
+
     it('notifies consumers once for a batch mark-as-read operation', () => {
         markSessionUnread('session-a', 1000)
         markSessionUnread('session-b', 2000)

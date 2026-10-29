@@ -6,12 +6,14 @@ import UIKit
 /// switcher (switch / add / settings / sign out), the "+" new-session sheet
 /// (A-M3c), the Settings sheet (A-M4e), and a unified session-filter menu.
 /// Degraded connections appear below navigation, not among its actions.
-/// iPhone pushes the chat; iPad selects a stable detail in a native split.
+/// iPhone pushes the chat; iPad and foldable iPhones select a stable detail in
+/// a native split that collapses to a stack when the window is compact.
 /// Spawn, notification and row selection share the same opening path.
 struct HomeView: View {
     let session: HubSession
 
     @Environment(AppModel.self) private var model
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var listModel: SessionListModel
     @State private var confirmSignOut = false
     @State private var showNewSession = false
@@ -19,7 +21,20 @@ struct HomeView: View {
     @State private var path: [String] = []
     @State private var tabletNavigation = SessionNavigationState()
 
-    private var usesSplitNavigation: Bool { UIDevice.current.userInterfaceIdiom == .pad }
+    private var usesSplitNavigation: Bool {
+        UIDevice.current.userInterfaceIdiom == .pad || FoldableDevice.shared.hasHinge
+    }
+
+    /// The sidebar is visible next to the chat (not collapsed into a stack).
+    private var showsSideBySide: Bool {
+        usesSplitNavigation && horizontalSizeClass == .regular
+    }
+
+    /// iPhone Duo outer screen: hub, filter and new session live in the
+    /// system's vertical bar, leaving the top bar to the title alone.
+    private var isFoldedOuterScreen: Bool {
+        FoldableDevice.shared.hasHinge && horizontalSizeClass == .compact
+    }
 
     init(session: HubSession) {
         self.session = session
@@ -44,6 +59,14 @@ struct HomeView: View {
                 }
             }
         }
+        .background(HingeProbe())
+        // The hinge is reported after the first render; carry a chat that was
+        // already pushed (e.g. a cold-start notification) into the split.
+        .onChange(of: usesSplitNavigation) { _, split in
+            guard split else { return }
+            if let sessionId = path.last { openSession(sessionId) }
+            path = []
+        }
         // Notification tap (P3): consume the pending target into this hub's
         // navigation path. `initial: true` covers a tap that cold-started
         // the app before this view existed.
@@ -53,8 +76,13 @@ struct HomeView: View {
             openSession(sessionId)
         }
         .onChange(of: session.sessionRemoval) { _, removal in
-            guard usesSplitNavigation, let removal else { return }
-            tabletNavigation.remove(removal.sessionId)
+            guard let removal else { return }
+            if usesSplitNavigation {
+                tabletNavigation.remove(removal.sessionId)
+            } else if let index = path.firstIndex(of: removal.sessionId) {
+                // Deleted or archived elsewhere: leave the emptied chat.
+                path.removeSubrange(index...)
+            }
         }
         .sheet(isPresented: $model.showAddHub) {
             PairingFlowView(context: .addHub)
@@ -87,12 +115,21 @@ struct HomeView: View {
                 set: { if let id = $0 { openSession(id) } }
             ) : nil, onOpenSession: openSession)
         }
+        .searchable(text: $listModel.searchQuery, prompt: Text("Search sessions"))
+        .onChange(of: tabletNavigation.selectedSessionId, initial: true) { _, sessionId in
+            listModel.selectedSessionId = sessionId
+        }
         .navigationTitle("Sessions")
         .navigationBarTitleDisplayMode(.inline)
+        .modifier(SidebarTitleRemoval(isSidebar: showsSideBySide || isFoldedOuterScreen))
         .toolbar {
             ToolbarItem(placement: .topBarLeading) { hubMenu }
             if listModel.showsFilterMenu {
-                ToolbarItem(placement: .topBarTrailing) { SessionFilterMenu(model: listModel) }
+                // Beside the hub menu when the system sidebar toggle shares
+                // the trailing edge, so the three icons do not bunch up.
+                ToolbarItem(placement: showsSideBySide ? .topBarLeading : .topBarTrailing) {
+                    SessionFilterMenu(model: listModel)
+                }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showNewSession = true } label: {
@@ -194,6 +231,21 @@ struct HomeView: View {
         .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
         .padding(.horizontal, 16)
         .padding(.top, 8)
+    }
+}
+
+/// A side-by-side sidebar's bar already holds hub, filter, new session and the
+/// system sidebar toggle; at 320pt the inline "Sessions" title only got a
+/// truncated sliver. The title stays set for VoiceOver and collapsed stacks.
+private struct SidebarTitleRemoval: ViewModifier {
+    let isSidebar: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content.toolbar(removing: isSidebar ? .title : nil)
+        } else {
+            content
+        }
     }
 }
 

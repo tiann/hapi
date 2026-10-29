@@ -595,6 +595,19 @@ describe('filterUnreadSessionsOnly', () => {
         expect(unreadFiltered.map(s => s.id)).toEqual(['unread-a'])
         expect(machineB).toEqual([])
     })
+
+    it('keeps an explicitly unread generating session in the unread lens', () => {
+        const sessions = [
+            makeSession({ id: 'manual-thinking', active: true, thinking: true, updatedAt: 5000, metadata: { path: '/p' } })
+        ]
+
+        expect(filterUnreadSessionsOnly(
+            sessions,
+            null,
+            () => 5000,
+            () => 5000
+        ).map(s => s.id)).toEqual(['manual-thinking'])
+    })
 })
 
 describe('getNextSessionVisibleCount', () => {
