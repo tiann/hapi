@@ -156,6 +156,69 @@ function createSession(
 }
 
 describe('claudeRemoteLauncher resume anchor', () => {
+    it('does not let a new R replace the staged Q owner after process recreation', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        session.recoveredRewindInput = {
+            deliveredText: 'saved exact Q', items: [{ message: 'saved exact Q', localId: 'q' }],
+            isolate: true, mode: { permissionMode: 'plan', model: 'haiku' }
+        }
+        queue.push('different R', { permissionMode: 'default' }, 'r')
+        const delivered: string[] = []
+        harness.remoteImplementation = async opts => {
+            delivered.push((await opts.nextMessage()).message)
+            void client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+        }
+        try {
+            await claudeRemoteLauncher(session as any)
+            expect(delivered).toEqual(['saved exact Q'])
+            expect(queue.peekByLocalId('r')?.message).toBe('different R')
+        } finally { session.stopKeepAlive() }
+    })
+
+    it('restores exact staged Q before new R, waits for ownership ACK and preserves its mode', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        const saved = {
+            deliveredText: '/skill expanded Q', items: [{ message: '$skill original Q', localId: 'q' }],
+            isolate: true, mode: { permissionMode: 'plan' as const, model: 'haiku', effort: 'low' }
+        }
+        session.recoveredRewindInput = saved
+        queue.push('$skill original Q', { permissionMode: 'default' }, 'q') // stale replay echo
+        queue.push('new R', { permissionMode: 'default' }, 'r')
+        let resolveAck!: () => void
+        const ack = new Promise<void>(resolve => { resolveAck = resolve })
+        session.stageRewindInput = async (ids, _text, delivery) => {
+            if (ids[0] !== 'q') return
+            expect(delivery).toEqual(saved)
+            await ack
+            for (const id of ids) queue.cancelByLocalId(id)
+        }
+        const delivered: string[] = []
+        harness.remoteImplementation = async opts => {
+            if (harness.callCount === 1) {
+                expect(opts.bootstrapMode).toEqual(saved.mode)
+                let handedToSdk = false
+                const first = opts.nextMessage().then((value: { message: string }) => { handedToSdk = true; return value })
+                await new Promise(resolve => setTimeout(resolve, 10))
+                expect(handedToSdk).toBe(false)
+                resolveAck()
+                delivered.push((await first).message)
+                await opts.onReady()
+                expect(await opts.nextMessage()).toBeNull() // R's different mode is parked
+                return
+            }
+            delivered.push((await opts.nextMessage()).message)
+            await opts.onReady()
+            void client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+        }
+        try {
+            await claudeRemoteLauncher(session as any)
+            expect(delivered).toEqual(['/skill expanded Q', 'new R'])
+            expect(queue.size()).toBe(0)
+        } finally { session.stopKeepAlive() }
+    })
+
     it('does not confirm rewind from session discovery or ready without native proof', async () => {
         const client = createClientStub()
         const { session, queue } = createSession(client, ['--resume-session-at', 'kept-boundary'])
@@ -227,7 +290,10 @@ describe('claudeRemoteLauncher resume anchor', () => {
         }
         try {
             await claudeRemoteLauncher(session as any)
-            expect(session.stageRewindInput).toHaveBeenCalledWith(['q1'], 'one input')
+            expect(session.stageRewindInput).toHaveBeenCalledWith(['q1'], 'one input', expect.objectContaining({
+                deliveredText: 'one input', items: [{ message: 'one input', localId: 'q1' }],
+                mode: { permissionMode: 'default' }
+            }))
             expect(queue.size()).toBe(accepted ? 0 : 1)
         } finally { session.stopKeepAlive() }
     })

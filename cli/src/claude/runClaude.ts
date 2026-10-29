@@ -33,7 +33,7 @@ import {
 import { hasDurableRewindBranch, hashRewindInput, readNativeTurns, readTranscriptUuids, resolveRewindPlan, supportsNativeRewind } from './conversationHistory';
 import { listSkills, type SkillSummary } from '@/modules/common/skills';
 import { configuration } from '@/configuration';
-import { RewindIntentStore, type RewindIntent } from './rewindIntent';
+import { withStagedRewindInput, RewindIntentStore, type RewindDelivery, type RewindIntent } from './rewindIntent';
 
 export interface StartOptions {
     model?: string
@@ -322,6 +322,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     const localIdsByPromptUuid = new Map<string, string[]>()
     const rewindStore = new RewindIntentStore(configuration.happyHomeDir, configuration.apiUrl, sessionInfo.id)
     let pendingRewind = rewindStore.read()
+    const rewindOwnedLocalIds = new Set(pendingRewind?.stagedInput?.localIds ?? [])
     if (pendingRewind && pendingRewind.workingDirectory !== workingDirectory) {
         throw new Error('Pending rewind working directory mismatch')
     }
@@ -341,6 +342,14 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         workingDirectory, intent.nativeSessionId, intent.keepBoundary,
         new Set(intent.baselineUuids), intent.droppedPrompts, intent.stagedInput?.textHash
     )
+    const persistStagedInput = (value: RewindDelivery) => {
+        if (!pendingRewind) return
+        const staged = withStagedRewindInput(pendingRewind, value)
+        if (staged === pendingRewind) return
+        rewindStore.write(staged)
+        pendingRewind = staged
+        for (const id of staged.stagedInput!.localIds) rewindOwnedLocalIds.add(id)
+    }
     const reportRewind = async (intent: RewindIntent, phase: 'applied' | 'rejected' | 'unknown') => {
         session.updateMetadata(metadata => ({
             ...metadata,
@@ -502,6 +511,8 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     const deferredMessages: UserMessageArgs[] = [];
     let messagePipelineReady = false;
     const handleUserMessage: UserMessageHandler = (message, localId) => {
+        // A replayed Hub echo cannot create a second owner for journaled input.
+        if (localId && rewindOwnedLocalIds.has(localId)) return
         const sessionPermissionMode = currentSessionRef.current?.getPermissionMode();
         if (sessionPermissionMode && isPermissionModeAllowedForFlavor(sessionPermissionMode, 'claude')) {
             currentPermissionMode = sessionPermissionMode as PermissionMode;
@@ -813,10 +824,21 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                         && Boolean(pendingRewind && pendingRewind.operationId === recovered.operationId && branchIsDurable(pendingRewind))
                 }
                 sessionInstance.onRewindBranchApplied = commitPendingRewind
-                sessionInstance.stageRewindInput = (localIds, text) => {
+                sessionInstance.queue.beforeBatchConsumed = batch => {
                     if (!pendingRewind) return
-                    pendingRewind = { ...pendingRewind, stagedInput: { localIds: [...localIds], textHash: hashRewindInput(text) } }
-                    rewindStore.write(pendingRewind)
+                    persistStagedInput({ ...batch, deliveredText: sessionInstance.expandSkillReference(batch.message) })
+                }
+                sessionInstance.stageRewindInput = async (localIds, text, delivery) => {
+                    if (!pendingRewind) return
+                    persistStagedInput(delivery)
+                    if (pendingRewind.stagedInput?.textHash !== hashRewindInput(text)
+                        || JSON.stringify(pendingRewind.stagedInput.localIds) !== JSON.stringify(localIds)) {
+                        throw new Error('Recovered rewind delivery identity mismatch')
+                    }
+                    if (!await sessionInstance.client.confirmMessagesConsumed(localIds)) {
+                        throw new Error('Rewind input ownership acknowledgment unavailable')
+                    }
+                    for (const id of localIds) sessionInstance.queue.cancelByLocalId(id)
                 }
                 sessionInstance.isRewindInputAccepted = (localIds, text) => Boolean(pendingRewind
                     && JSON.stringify(pendingRewind.stagedInput?.localIds) === JSON.stringify(localIds)
@@ -829,6 +851,10 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                     }
                     if (pendingRewind.phase === 'applied' || branchIsDurable(pendingRewind)) {
                         await commitPendingRewind()
+                    } else if (pendingRewind.stagedInput) {
+                        // No native acceptance: reconstruct the exact delivery,
+                        // ahead of any new input, rather than replacing its owner.
+                        sessionInstance.recoveredRewindInput = pendingRewind.stagedInput.delivery
                     }
                 }
                 sessionInstance.onRewindFailure = async (error, unchanged) => {

@@ -1344,6 +1344,18 @@ export class ApiSessionClient extends EventEmitter {
         this.emitOrQueue(() => this.socket.emit('messages-consumed', payload))
     }
 
+    /** Recovered rewind delivery must be durably owned before SDK input. */
+    async confirmMessagesConsumed(localIds: string[]): Promise<boolean> {
+        if (localIds.length === 0) return true
+        if (this.state !== 'active') return false
+        try {
+            const ack = await this.socket.timeout(5_000).emitWithAck('messages-consumed', {
+                sid: this.sessionId, localIds
+            })
+            return ack?.ok === true
+        } catch { return false }
+    }
+
     /** Persist the durable pre-dispatch/restore state with a hub ACK. */
     async setSteerDeliveryState(localIds: string[], state: 'queued' | 'dispatching'): Promise<boolean> {
         if (localIds.length === 0 || this.state !== 'active') return false

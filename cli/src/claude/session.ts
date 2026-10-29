@@ -7,6 +7,7 @@ import type { SessionEffort, SessionModel } from '@/api/types';
 import type { EnhancedMode } from './loop';
 import type { PermissionMode } from './loop';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
+import type { RewindDelivery } from './rewindIntent';
 
 type LocalLaunchFailure = {
     message: string;
@@ -55,8 +56,9 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     onRewindBranchApplied: (() => Promise<void>) | null = null;
     onRewindFailure: ((error: string, unchanged: boolean) => Promise<void>) | null = null;
     prepareHistoryAttempt: (() => Promise<void>) | null = null;
-    stageRewindInput: ((localIds: string[], text: string) => void) | null = null;
+    stageRewindInput: ((localIds: string[], text: string, delivery: RewindDelivery) => Promise<void>) | null = null;
     isRewindInputAccepted: ((localIds: string[], text: string) => boolean) | null = null;
+    recoveredRewindInput: RewindDelivery | null = null;
 
     constructor(opts: {
         api: ApiClient;

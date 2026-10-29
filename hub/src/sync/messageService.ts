@@ -23,7 +23,7 @@ type MessagePosition = { at: number; seq: number }
 
 export class ClaudeRewindPendingError extends Error {
     constructor() {
-        super('Cannot clear or start a new conversation while Claude rewind is pending')
+        super('Cannot run conversation commands while Claude rewind is pending; send a regular message first')
         this.name = 'ClaudeRewindPendingError'
     }
 }
@@ -867,7 +867,7 @@ export class MessageService {
         const metadata = this.store.sessions.getSession(sessionId)?.metadata as Metadata | null | undefined
         const rewindPhase = metadata?.claudeRewind?.phase
         if (rewindPhase && ['requested', 'pending', 'applied', 'unknown'].includes(rewindPhase)
-            && /^\/(?:clear|new)(?:\s|$)/i.test(payload.text.trim())) {
+            && /^\/(?:clear|new|compact)(?:\s|$)/i.test(payload.text.trim())) {
             throw new ClaudeRewindPendingError()
         }
         // Defence-in-depth invariant for non-REST callers (Telegram bot, MCP,

@@ -443,53 +443,62 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         onSessionReady?.(data)
     })
 
-    socket.on('messages-consumed', (data: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean; steered?: boolean }) => {
+    const handleMessagesConsumed: ClientToServerEvents['messages-consumed'] = (data, callback) => {
         if (!data || typeof data.sid !== 'string' || !Array.isArray(data.localIds)) {
+            callback?.({ ok: false })
             return
         }
         const localIds = data.localIds.filter((id): id is string => typeof id === 'string')
-        if (localIds.length === 0) {
+        if (localIds.length === 0 || (callback && localIds.length !== data.localIds.length)) {
+            callback?.({ ok: false })
             return
         }
-        const sessionAccess = resolveSessionAccess(data.sid)
-        if (!sessionAccess.ok) {
-            emitAccessError('session', data.sid, sessionAccess.reason)
-            return
-        }
-        const invokedAt = Date.now()
-        let sessionUpdatedAt: number
+        let ok = false
         try {
-            sessionUpdatedAt = store.recordMessagesConsumed(
-                data.sid,
-                localIds,
-                invokedAt,
-                sessionAccess.value.namespace
-            )
-        } catch (err) {
-            console.error('recordMessagesConsumed failed', err)
-            return
-        }
+            const sessionAccess = resolveSessionAccess(data.sid)
+            if (!sessionAccess.ok) {
+                emitAccessError('session', data.sid, sessionAccess.reason)
+            } else {
+                if (callback) {
+                    const present = new Set(store.messages.getAllMessages(data.sid).map(message => message.localId))
+                    if (!localIds.every(id => present.has(id))) {
+                        callback({ ok: false })
+                        return
+                    }
+                }
+                const invokedAt = Date.now()
+                const sessionUpdatedAt = store.recordMessagesConsumed(
+                    data.sid,
+                    localIds,
+                    invokedAt,
+                    sessionAccess.value.namespace
+                )
+                let activityNotified = true
+                try {
+                    onSessionActivity?.(data.sid, sessionUpdatedAt)
+                } catch (err) {
+                    activityNotified = false
+                    console.error('onSessionActivity failed', err)
+                }
 
-        try {
-            onSessionActivity?.(data.sid, sessionUpdatedAt)
+                // Only drop the queued-thinking grace when the CLI explicitly
+                // opts in (synchronous handlers that send no thinking keepalive).
+                if (data.clearQueuedThinkingGrace === true) {
+                    onMessagesConsumed?.(data.sid)
+                }
+                // Legacy fire-and-forget unknown-ID batches remain unchanged.
+                // An ownership ACK additionally requires every row to exist.
+                onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds, invokedAt, ...(data.steered === true ? { steered: true } : {}) })
+                ok = activityNotified
+            }
         } catch (err) {
-            console.error('onSessionActivity failed', err)
+            console.error('messages-consumed failed', err)
         }
-
-        // Only drop the queued-thinking grace when the CLI explicitly opts in
-        // (synchronous handlers like slash commands that will never send
-        // their own `thinking=true` keepalive). Normal queue drains still
-        // need the grace so the spinner doesn't flicker between the queue
-        // shift and `backend.prompt` start.
-        if (data.clearQueuedThinkingGrace === true) {
-            onMessagesConsumed?.(data.sid)
-        }
-        // Emit only after the DB transaction succeeds. This is an ACK-level
-        // batch contract, so preserve its original timestamp even when IDs are
-        // heterogeneous, replayed, or unknown. `steered` is a live-only signal
-        // (never persisted) that marks mid-turn delivery for the web badge.
-        onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds, invokedAt, ...(data.steered === true ? { steered: true } : {}) })
-    })
+        // The optional wire ACK follows both the durable transaction and all
+        // engine notifications. Legacy emitters need not provide a callback.
+        callback?.({ ok })
+    }
+    socket.on('messages-consumed', handleMessagesConsumed)
 
     socket.on('messages-indeterminate', (data: { sid: string; localIds: string[] }) => {
         if (!data || typeof data.sid !== 'string' || !Array.isArray(data.localIds)) {

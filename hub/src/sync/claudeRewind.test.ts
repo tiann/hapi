@@ -142,7 +142,7 @@ describe('durable Claude rewind', () => {
         } finally { engine.stop() }
     })
 
-    it('blocks clear/new in every pending phase at the durable send layer while preserving normal input', async () => {
+    it('blocks clear/new/compact in every pending phase at the durable send layer while preserving normal input', async () => {
         for (const phase of ['requested', 'pending', 'applied', 'unknown', 'committed', 'rejected'] as const) {
             const { store, engine, sid } = setup()
             try {
@@ -151,7 +151,7 @@ describe('durable Claude rewind', () => {
                     operationId: 'op', phase, requestedLocalId: 'boundary', cutoffSeq: 1
                 } }, current.metadataVersion, 'default')
                 const blocked = !['committed', 'rejected'].includes(phase)
-                for (const text of ['/clear', ' /new ', '/clear arguments', '/new\nextra']) {
+                for (const text of ['/clear', ' /new ', '/clear arguments', '/new\nextra', '/compact', '/compact focus']) {
                     if (blocked) await expect(engine.sendMessage(sid, { text })).rejects.toThrow('while Claude rewind is pending')
                     else await engine.sendMessage(sid, { text })
                 }

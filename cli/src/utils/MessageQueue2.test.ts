@@ -3,6 +3,27 @@ import { MessageQueue2 } from './MessageQueue2';
 import { hashObject } from './deterministicJson';
 
 describe('MessageQueue2', () => {
+    it('preserves the exact queue and sends no consume ACK when durable staging fails', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const consumed: string[][] = [];
+        queue.onBatchConsumed = ids => { consumed.push(ids); };
+        queue.push('Q', 'saved-mode', 'q');
+        queue.push('R', 'new-mode', 'r');
+        queue.beforeBatchConsumed = batch => {
+            expect(batch.message).toBe('Q');
+            expect(batch.mode).toBe('saved-mode');
+            expect(queue.size()).toBe(2);
+            throw new Error('journal fsync failed');
+        };
+        await expect(queue.waitForMessagesAndGetAsString()).rejects.toThrow('journal fsync failed');
+        expect(queue.size()).toBe(2);
+        expect(consumed).toEqual([]);
+        queue.beforeBatchConsumed = null;
+        expect((await queue.waitForMessagesAndGetAsString())?.items).toEqual([{ message: 'Q', localId: 'q', internal: undefined }]);
+        expect(consumed).toEqual([['q']]);
+        expect(queue.peekByLocalId('r')?.message).toBe('R');
+    });
+
     it('should create a queue', () => {
         const queue = new MessageQueue2<string>(mode => mode);
         expect(queue.size()).toBe(0);

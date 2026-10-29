@@ -13,6 +13,7 @@ import { PLAN_FAKE_REJECT } from "./sdk/prompts";
 import { EnhancedMode } from "./loop";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
 import type { ClaudePermissionMode } from "@hapi/protocol/types";
+import { hashObject } from '@/utils/deterministicJson';
 import { applySessionTitleFallback, readNativeSessionTitle, stripAttachmentReferences } from './utils/sessionTitleFallback';
 import {
     RemoteLauncherBase,
@@ -423,7 +424,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             session.client.sendSessionEvent({ type: 'permission-mode-changed', mode });
                             session.client.sendSessionEvent({ type: 'message', message: reason });
                         },
-                        bootstrapMode: {
+                        bootstrapMode: session.recoveredRewindInput?.mode ?? {
                             permissionMode: session.getPermissionMode() ?? 'default',
                             model: session.getModel() ?? undefined,
                             effort: session.getEffort() ?? undefined,
@@ -442,6 +443,23 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // Drain it before ready so live clients receive the round metadata before
                             // they close out the running turn.
                             await messageQueue.flush();
+
+                            if (session.recoveredRewindInput) {
+                                const recovered = session.recoveredRewindInput;
+                                if (pending && hashObject(pending.items) === hashObject(recovered.items)) pending = null;
+                                inFlightMessage = recovered;
+                                rewindInputAccepted = false;
+                                mode = recovered.mode;
+                                modeHash = hashObject(recovered.mode);
+                                permissionHandler.handleModeChange(recovered.mode.permissionMode);
+                                sdkToLogConverter.updateSelectedModel(recovered.mode.model ?? null);
+                                const ids = recovered.items.flatMap(item => item.localId ? [item.localId] : []);
+                                await session.stageRewindInput?.(ids, recovered.deliveredText, recovered);
+                                session.recoveredRewindInput = null;
+                                deliveredMessageThisAttempt = true;
+                                session.client.notePendingHubPromptEcho(recovered.deliveredText, ids);
+                                return { message: recovered.deliveredText, mode: recovered.mode };
+                            }
 
                             if (pending) {
                                 let p = pending;
@@ -468,7 +486,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                     p.items.flatMap((item) => item.localId ? [item.localId] : [])
                                 )
                                 rewindInputAccepted = false;
-                                session.stageRewindInput?.(p.items.flatMap(item => item.localId ? [item.localId] : []), deliveredText);
+                                await session.stageRewindInput?.(p.items.flatMap(item => item.localId ? [item.localId] : []), deliveredText, inFlightMessage);
                                 return { ...p, message: deliveredText };
                             }
 
@@ -501,7 +519,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 const deliveredText = session.expandSkillReference(msg.message)
                                 inFlightMessage = { items: msg.items, mode: msg.mode, isolate: msg.isolate, deliveredText };
                                 rewindInputAccepted = false;
-                                session.stageRewindInput?.(msg.items.flatMap(item => item.localId ? [item.localId] : []), deliveredText);
+                                await session.stageRewindInput?.(msg.items.flatMap(item => item.localId ? [item.localId] : []), deliveredText, inFlightMessage);
                                 session.client.notePendingHubPromptEcho(
                                     deliveredText,
                                     msg.items.flatMap((item) => item.localId ? [item.localId] : [])
