@@ -21,6 +21,13 @@ import { EventPublisher } from './eventPublisher'
 type StoredMessageForDelivery = ReturnType<Store['messages']['getMessages']>[number]
 type MessagePosition = { at: number; seq: number }
 
+export class ClaudeRewindPendingError extends Error {
+    constructor() {
+        super('Cannot clear or start a new conversation while Claude rewind is pending')
+        this.name = 'ClaudeRewindPendingError'
+    }
+}
+
 /**
  * localId prefix for peer submissions (`hapi ping-peer` / MCP `ping_peer`).
  * Excludes peer rows from the session-end synthetic sweep so their invocation
@@ -857,6 +864,12 @@ export class MessageService {
             deliveryMode?: MessageDeliveryMode
         }
     ): Promise<{ actualSessionId: string; createdAt: number }> {
+        const metadata = this.store.sessions.getSession(sessionId)?.metadata as Metadata | null | undefined
+        const rewindPhase = metadata?.claudeRewind?.phase
+        if (rewindPhase && ['requested', 'pending', 'applied', 'unknown'].includes(rewindPhase)
+            && /^\/(?:clear|new)(?:\s|$)/i.test(payload.text.trim())) {
+            throw new ClaudeRewindPendingError()
+        }
         // Defence-in-depth invariant for non-REST callers (Telegram bot, MCP,
         // internal callers).  Attachment paths live under the CLI session's
         // upload directory which `cleanupUploadDir` purges on session end; a

@@ -637,7 +637,7 @@ export class RpcGateway {
 
     async rewindConversation(
         sessionId: string,
-        params: { messageLocalId: string }
+        params: { messageLocalId: string; operationId?: string; cutoffSeq?: number }
     ): Promise<import('@hapi/protocol/apiTypes').RewindConversationRpcResult> {
         return await this.sessionRpc(
             sessionId,

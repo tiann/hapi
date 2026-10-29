@@ -146,6 +146,7 @@ data class ChatUiState(
     val messagesVersion: Long = 0,
     val requiresLatestReset: Boolean = false,
     val processSteps: Map<String, Int> = emptyMap(),
+    val rewindPending: Boolean = false,
 )
 
 /** Composer bar state (M3a). */
@@ -221,6 +222,7 @@ sealed interface ChatNotice {
     data object ScratchlistFull : ChatNotice
     data object ScratchlistParkFailed : ChatNotice
     data object AttachmentsUploading : ChatNotice
+    data object RewindPending : ChatNotice
     data object ResumeFailed : ChatNotice
     data object QueuedEditKeptDraft : ChatNotice
     data object QueuedAlreadyDelivered : ChatNotice
@@ -929,6 +931,10 @@ class ChatViewModel(
             return
         }
         val text = composerText.value.trim()
+        if (uiState.value.rewindPending && (text == "/clear" || text == "/new")) {
+            _events.tryEmit(ChatEvent.Notice(ChatNotice.RewindPending))
+            return
+        }
         val attachmentMetadata = attachments.consume()
         if (text.isEmpty() && attachmentMetadata == null) return
         composerText.value = ""
@@ -936,6 +942,12 @@ class ChatViewModel(
         sendInFlight.value = true
         scope.launch {
             try {
+                if (attachmentMetadata == null && (text == "/clear" || text == "/new") &&
+                    sessionStore.sessionDetail(sessionId).first()?.metadata?.claudeRewind?.isPending == true) {
+                    composerText.value = text
+                    _events.tryEmit(ChatEvent.Notice(ChatNotice.RewindPending))
+                    return@launch
+                }
                 drafts?.let { runCatching { it.clear(sessionId) } }
                 if (attachmentMetadata == null && (text == "/clear" || text == "/new") &&
                     sessionStore.sessionDetail(sessionId).first()?.metadata?.capabilities?.concurrentClients == true) {
@@ -1828,6 +1840,7 @@ class ChatViewModel(
             loadFailed = isEmpty && syncSettled &&
                 (window.warning != null || inputs.detailLoadFailed),
             warning = window.warning,
+            rewindPending = inputs.detail?.metadata?.claudeRewind?.isPending == true,
             tailRevision = window.tailRevision,
             historyVersion = window.historyVersion,
             messagesVersion = window.messagesVersion,

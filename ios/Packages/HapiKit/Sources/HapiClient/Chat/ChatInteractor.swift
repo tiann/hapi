@@ -81,7 +81,17 @@ public final class ChatInteractor {
     /// One delete/reopen at a time (the Android `sessionOpPending`).
     public private(set) var sessionOpPending = false
     /// One fork/rewind at a time (web `historyActionPending`).
-    public private(set) var historyActionPending = false
+    private var historyRequestPending = false
+    private var acceptedRewind: ClaudeRewind?
+    private var awaitingRewindMetadata = false
+    public static let rewindPendingInstruction = "Rewind will complete when you send your next message"
+    public var rewindPending: Bool {
+        let current = sessionStore.detail(for: sessionId)?.metadata?.claudeRewind
+        if current?.isPending == true { return true }
+        guard let acceptedRewind else { return awaitingRewindMetadata }
+        return !(current?.operationId == acceptedRewind.operationId && current?.isTerminal == true)
+    }
+    public var historyActionPending: Bool { historyRequestPending || rewindPending }
     /// A rewind the hub refused as an ambiguous native boundary; the
     /// screen offers a fork from the same point instead.
     public private(set) var rewindForkFallbackLocalId: String?
@@ -218,6 +228,10 @@ public final class ChatInteractor {
             return
         }
         let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if rewindPending && (text == "/clear" || text == "/new") {
+            emit(.notice(Self.rewindPendingInstruction))
+            return
+        }
         guard !text.isEmpty else { return }
         let createdAt = now()
         let scheduledAt = schedule.resolve(now: createdAt)
@@ -301,6 +315,11 @@ public final class ChatInteractor {
         guard !isSending, !scratchlistBusy else { return }
         if composerDestination == .scratchlist {
             parkComposerDraft()
+            return
+        }
+        let command = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if rewindPending && (command == "/clear" || command == "/new") {
+            emit(.notice(Self.rewindPendingInstruction))
             return
         }
         if let schedule = pendingSchedule {
@@ -1039,6 +1058,7 @@ public final class ChatInteractor {
     /// `forkCurrent`, the session is live, and no Codex turn is running
     /// (web fork-current gate).
     public var canForkCurrentConversation: Bool {
+        guard !historyActionPending else { return false }
         let live = currentSessionState()
         return historyCapabilities?.forkCurrent == true && live.active
             && !(live.thinking && currentFlavor() == "codex")
@@ -1047,6 +1067,7 @@ public final class ChatInteractor {
     /// Message-level history actions for a user message with a native
     /// history point (`metadata.conversationHistoryPoints`).
     public func historyActions(forMessageLocalId localId: String?) -> (fork: Bool, rewind: Bool) {
+        guard !historyActionPending else { return (false, false) }
         guard let localId, !localId.isEmpty,
               let detail = sessionStore.detail(for: sessionId), detail.active,
               detail.metadata?.conversationHistoryPoints?[localId] == true else { return (false, false) }
@@ -1060,11 +1081,11 @@ public final class ChatInteractor {
     /// the new session opens in place of this one.
     public func forkConversation(fromMessageLocalId localId: String? = nil) {
         guard !historyActionPending else { return }
-        historyActionPending = true
+        historyRequestPending = true
         rewindForkFallbackLocalId = nil
         Task { [weak self] in
             guard let self else { return }
-            defer { self.historyActionPending = false }
+            defer { self.historyRequestPending = false }
             do {
                 let forked = try await self.api.forkConversation(sessionId: self.sessionId, messageLocalId: localId)
                 self.sessionStore.scheduleRefresh()
@@ -1079,12 +1100,21 @@ public final class ChatInteractor {
     /// an ambiguous Codex boundary arms ``rewindForkFallbackLocalId``.
     public func rewindConversation(toMessageLocalId localId: String) {
         guard !historyActionPending else { return }
-        historyActionPending = true
+        historyRequestPending = true
         Task { [weak self] in
             guard let self else { return }
-            defer { self.historyActionPending = false }
+            defer { self.historyRequestPending = false }
             do {
-                try await self.api.rewindConversation(sessionId: self.sessionId, messageLocalId: localId)
+                let response = try await self.api.rewindConversation(sessionId: self.sessionId, messageLocalId: localId)
+                if response.pending == true {
+                    self.acceptedRewind = response.session.metadata?.claudeRewind
+                    self.awaitingRewindMetadata = true
+                    self.observeRewindCompletion()
+                    if self.rewindPending { self.emit(.notice(Self.rewindPendingInstruction)) }
+                    return
+                }
+                self.acceptedRewind = nil
+                self.awaitingRewindMetadata = false
                 if let controller = self.controller {
                     await controller.syncTail(ensureAfterCurrent: true, allowingHistoryReset: true)
                 }
@@ -1098,6 +1128,23 @@ public final class ChatInteractor {
 
     public func dismissRewindForkFallback() {
         rewindForkFallbackLocalId = nil
+    }
+
+    /// Keep the HTTP acknowledgement latched until the same operation settles,
+    /// then retire it so later operations from another client can also settle.
+    private func observeRewindCompletion() {
+        guard awaitingRewindMetadata else { return }
+        withObservationTracking {
+            let current = sessionStore.detail(for: sessionId)?.metadata?.claudeRewind
+            if acceptedRewind == nil, current?.isPending == true { acceptedRewind = current }
+            if let acceptedRewind, current?.operationId == acceptedRewind.operationId,
+               current?.isTerminal == true {
+                self.acceptedRewind = nil
+                awaitingRewindMetadata = false
+            }
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in self?.observeRewindCompletion() }
+        }
     }
 
     // MARK: - Session lifecycle

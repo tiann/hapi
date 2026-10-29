@@ -2,6 +2,18 @@ import { describe, expect, it } from 'bun:test'
 import { Store } from './index'
 
 describe('truncateMessagesFromLocalId', () => {
+    it('preserves post-cutoff rows even at the same transcript timestamp and rejects a late boundary', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('bounded', { path: '/tmp' }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user' }, 'old', undefined, 100)
+        const cutoff = store.messages.getAllMessages(session.id)[0]!.seq
+        store.messages.addMessage(session.id, { role: 'user' }, 'late', undefined, 100)
+        expect(() => store.messages.truncateMessagesFromLocalId(session.id, 'late', [], cutoff)).toThrow('newer')
+        expect(store.messages.getAllMessages(session.id)).toHaveLength(2)
+        expect(store.messages.truncateMessagesFromLocalId(session.id, 'old', [], cutoff).deleted).toBe(1)
+        expect(store.messages.getAllMessages(session.id).map(m => m.localId)).toEqual(['late'])
+    })
+
     it('deletes the target and later messages and bumps epoch', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('t', { path: '/tmp' }, null, 'default')

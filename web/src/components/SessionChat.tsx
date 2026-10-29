@@ -67,6 +67,7 @@ import { getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hap
 import { getClaudeCatalogOptions } from '@/components/AssistantChat/modelOptions'
 import { createAttachmentAdapter } from '@/lib/attachmentAdapter'
 import { rewindMessageWindow, type OlderLoadOutcome } from '@/lib/message-window-store'
+import { useRewindPending } from '@/hooks/useRewindPending'
 import { ShareSeedConsumer } from '@/components/ShareSeedConsumer'
 import {
     createScratchlistAttachmentAdapter,
@@ -669,9 +670,11 @@ function SessionChatInner(props: SessionChatProps) {
     const { toolCardDisplayMode } = useToolCardDisplayMode()
     const { groupingMode: toolGroupingMode } = getToolCardDisplayPresentation(toolCardDisplayMode)
     const [historyActionPending, setHistoryActionPending] = useState(false)
+    const { pending: rewindPending, runRewind } = useRewindPending(props.session.metadata)
     const [rewindForkFallback, setRewindForkFallback] = useState<string | null>(null)
 
     const onForkConversation = useCallback(async (messageLocalId?: string) => {
+        if (rewindPending) return
         setHistoryActionPending(true)
         try {
             const result = await props.api.forkConversation(props.session.id, messageLocalId)
@@ -683,19 +686,22 @@ function SessionChatInner(props: SessionChatProps) {
         } finally {
             setHistoryActionPending(false)
         }
-    }, [navigate, props.api, props.session.id])
+    }, [navigate, props.api, props.session.id, rewindPending])
 
     const onRewindConversation = useCallback(async (messageLocalId: string) => {
+        if (rewindPending) return
         setHistoryActionPending(true)
         try {
-            await props.api.rewindConversation(props.session.id, messageLocalId)
-            // Apply the deterministic local part immediately so the removed
-            // suffix cannot flash back while the authoritative refresh runs.
-            rewindMessageWindow(props.session.id, messageLocalId)
-            await props.onRefresh()
-            // Force the same tail behavior as a successful send after the
-            // refreshed message window has been committed.
-            setForceScrollToken((token) => token + 1)
+            await runRewind(
+                () => props.api.rewindConversation(props.session.id, messageLocalId),
+                async () => {
+                    // Only a completed rewind may remove the suffix locally.
+                    // Pending Claude operations await messages-invalidated.
+                    rewindMessageWindow(props.session.id, messageLocalId)
+                    await props.onRefresh()
+                    setForceScrollToken((token) => token + 1)
+                },
+            )
         } catch (error) {
             if (isRewindForkFallbackError(error)) {
                 setRewindForkFallback(messageLocalId)
@@ -705,7 +711,7 @@ function SessionChatInner(props: SessionChatProps) {
         } finally {
             setHistoryActionPending(false)
         }
-    }, [props.api, props.onRefresh, props.session.id])
+    }, [props.api, props.onRefresh, props.session.id, runRewind, rewindPending])
 
     const onRewindForkFallback = useCallback(async () => {
         if (!rewindForkFallback) return
@@ -999,13 +1005,14 @@ function SessionChatInner(props: SessionChatProps) {
             }
             if (!scratchlistMode && scheduledAt == null && !attachments?.length
                 && props.session.metadata?.capabilities?.concurrentClients && /^\/(clear|new)\s*$/.test(text.trim())) {
+                if (rewindPending) throw new Error(t('message.rewind.pending'))
                 const result = await props.api.clearConversation(props.session.id)
                 await navigate({ to: '/sessions/$sessionId', params: { sessionId: result.sessionId }, ...PRESERVE_SESSION_SIDEBAR_SCROLL })
                 return { attemptId: null }
             }
             return props.onSend(text, attachments, scheduledAt, deliveryMode)
         },
-        [props.onSend, props.api, props.session.id, props.session.metadata?.capabilities?.concurrentClients, navigate, scratchlist, scratchlistMode],
+        [props.onSend, props.api, props.session.id, props.session.metadata?.capabilities?.concurrentClients, navigate, scratchlist, scratchlistMode, rewindPending, t],
     )
     const agentFlavor = props.session.metadata?.flavor ?? null
     // The effort-options query is keyed by session only, so a stale option
@@ -2034,6 +2041,12 @@ function SessionChatInner(props: SessionChatProps) {
                 </div>
             ) : null}
 
+            {rewindPending ? (
+                <div role="status" className="mx-auto w-full max-w-content bg-[var(--app-subtle-bg)] p-3 text-center text-sm text-[var(--app-hint)]">
+                    {t('message.rewind.pending')}
+                </div>
+            ) : null}
+
             <AssistantRuntimeProvider runtime={runtime}>
                 <ShareSeedConsumer sessionId={props.session.id} sessionActive={props.session.active} />
                 <AbortRestoreConsumer messages={normalizedMessages} onAbortRestore={props.onAbortRestore ?? (() => {})} />
@@ -2064,7 +2077,7 @@ function SessionChatInner(props: SessionChatProps) {
                         onRefresh={props.onRefresh}
                         onRetryMessage={props.onRetryMessage}
                         onContinuePlan={() => focusComposerRef.current?.()}
-                        historyActionPending={historyActionPending}
+                        historyActionPending={historyActionPending || rewindPending}
                         onForkConversation={controlledByUser ? undefined : onForkConversation}
                         onRewindConversation={controlledByUser ? undefined : onRewindConversation}
                         isLatestCompletedBoundary={isLatestCompletedBoundary}

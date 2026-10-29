@@ -42,18 +42,9 @@ export class Session extends AgentSessionBase<EnhancedMode> {
      * reached). Reports the hub localIds of the completed batch so rewind
      * locators are only recorded for turns that really happened.
      */
-    onUserTurnCompleted: ((localIds: string[]) => void) | null = null;
+    onUserTurnCompleted: ((localIds: string[]) => void | Promise<void>) | null = null;
     /** Invoked when the native session id is dropped (/clear); rewind tracking must reset. */
     onNativeSessionReset: (() => void) | null = null;
-    /**
-     * Armed by the RewindConversation handler before it requests a restart.
-     * The remote launcher resolves it with `true` once the respawned process
-     * reports its session (system/init with the resume flags accepted), or
-     * `false` when the attempt fails while rewinding. The handler must not
-     * report success to the hub before this resolves — the native transcript
-     * is only guaranteed truncated after the new process actually started.
-     */
-    rewindAck: ((applied: boolean, error?: string) => void) | null = null;
     /**
      * Evidence probe for rewind acceptance, set by runClaude before the
      * restart: returns true only when the native transcript contains a
@@ -61,6 +52,9 @@ export class Session extends AgentSessionBase<EnhancedMode> {
      * claudeRemote polls it instead of guessing from a timer.
      */
     rewindProof: ((resumeSessionAt: string) => boolean) | null = null;
+    onRewindBranchApplied: (() => Promise<void>) | null = null;
+    onRewindFailure: ((error: string, unchanged: boolean) => Promise<void>) | null = null;
+    prepareHistoryAttempt: (() => Promise<void>) | null = null;
 
     constructor(opts: {
         api: ApiClient;
@@ -199,6 +193,12 @@ export class Session extends AgentSessionBase<EnhancedMode> {
                 (this.claudeArgs[i] === '--resume-session-at' || this.claudeArgs[i] === '--resume-drops-turn')
                 && i + 1 < this.claudeArgs.length
             ) {
+                if (this.rewindProof) {
+                    // Init does not durably select the branch. Retain the
+                    // boundary across attempts until a real turn commits it.
+                    filteredArgs.push(this.claudeArgs[i], this.claudeArgs[++i]);
+                    continue;
+                }
                 logger.debug(`[Session] Consumed ${this.claudeArgs[i]} flag`);
                 i++; // Skip the uuid value
             } else {

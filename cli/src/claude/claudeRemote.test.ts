@@ -1714,6 +1714,7 @@ describe('claudeRemote rewind acceptance proof', () => {
             onSessionFound: vi.fn(),
             onMessage: vi.fn(),
             rewindProof: vi.fn(() => false),
+            onRewindBranchApplied: vi.fn(async () => {}),
             ...overrides
         };
     }
@@ -1724,7 +1725,7 @@ describe('claudeRemote rewind acceptance proof', () => {
         const opts = makeRewindOpts();
         queryMock.mockReturnValueOnce((async function* () {
             // Attempt stays alive (stream open) but no proof is written yet.
-            await new Promise((resolve) => setTimeout(resolve, 1500));
+            await new Promise((resolve) => setTimeout(resolve, 3500));
         })() as AsyncIterable<SDKMessage>);
         try {
             await claudeRemote(opts as never);
@@ -1737,14 +1738,36 @@ describe('claudeRemote rewind acceptance proof', () => {
         }
     });
 
-    it('fires onReady exactly when the native proof appears, then starts the queue consumer', { timeout: 15_000 }, async () => {
+    it('rejects a native rejection arriving after the former success timer', { timeout: 15_000 }, async () => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        const opts = makeRewindOpts();
+        queryMock.mockReturnValueOnce((async function* () {
+            yield { type: 'system', subtype: 'hook_response' } as unknown as SDKMessage;
+            await new Promise((resolve) => setTimeout(resolve, 3500));
+            yield {
+                type: 'result', subtype: 'error_during_execution',
+                errors: ['Resume rejected by --resume-session-at: invalid boundary']
+            } as unknown as SDKMessage;
+        })() as AsyncIterable<SDKMessage>);
+        try {
+            await expect(claudeRemote(opts as never)).rejects.toThrow('Resume rejected');
+            expect(opts.onReady).not.toHaveBeenCalled();
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    });
+
+    it('commits branch proof without completing the turn or consuming a second input', { timeout: 15_000 }, async () => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
         let proofReady = false;
         const opts = makeRewindOpts({
-            rewindProof: vi.fn(() => proofReady)
+            rewindProof: vi.fn(() => proofReady),
+            nextMessage: vi.fn(async () => null)
         });
-queryMock.mockReturnValueOnce((async function* () {
+        queryMock.mockReturnValueOnce((async function* () {
             yield { type: 'system', subtype: 'hook_response' } as unknown as SDKMessage;
             await new Promise((resolve) => setTimeout(resolve, 1200));
             proofReady = true;
@@ -1754,10 +1777,31 @@ queryMock.mockReturnValueOnce((async function* () {
         try {
             await claudeRemote(opts as never);
             expect(opts.rewindProof).toHaveBeenCalled();
-            expect(opts.onReady).toHaveBeenCalled();
+            expect(opts.onRewindBranchApplied).toHaveBeenCalledTimes(1);
+            expect(opts.onReady).not.toHaveBeenCalled();
+            expect(opts.nextMessage).toHaveBeenCalledTimes(1);
         } finally {
             queryMock.mockReset();
             querySpy.mockRestore();
         }
+    });
+
+    it('completes exactly once at the real result after branch commit', async () => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        const events: string[] = [];
+        const opts = makeRewindOpts({
+            rewindProof: () => true,
+            onRewindBranchApplied: async () => { events.push('hub-committed') },
+            onReady: vi.fn(async () => { events.push('turn-ready') })
+        });
+        queryMock.mockReturnValueOnce((async function* () {
+            yield { type: 'result', subtype: 'success' } as unknown as SDKMessage;
+        })() as AsyncIterable<SDKMessage>);
+        try {
+            await claudeRemote(opts as never);
+            expect(events).toEqual(['hub-committed', 'turn-ready']);
+            expect(opts.onReady).toHaveBeenCalledTimes(1);
+        } finally { queryMock.mockReset(); querySpy.mockRestore(); }
     });
 });

@@ -168,13 +168,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
         const handleSessionFound = (sessionId: string) => {
             sdkToLogConverter.updateSessionId(sessionId);
-            // Rewind restart: system/init means the respawned process started
-            // with the resume flags accepted — the native truncation is real.
-            if (session.rewindAck) {
-                const ack = session.rewindAck;
-                session.rewindAck = null;
-                ack(true);
-            }
+            // Session discovery proves identity, not a durable branch change.
         };
         this.handleSessionFound = handleSessionFound;
         session.addSessionFoundCallback(handleSessionFound);
@@ -361,11 +355,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 // A restart flag only concerns the attempt that was aborted; the
                 // fresh attempt must classify its own aborts normally.
                 this.restartRequested = false;
-                // Rewind confirmation is evidence-driven inside claudeRemote
-                // (rewindProof polls the native transcript for the re-parented
-                // resume marker); the launcher only relays ack(false) when the
-                // attempt dies with a deterministic resume rejection, and the
-                // handler's own timeout reports unconfirmed otherwise.
+                // Native branch evidence and hub commit are separate from
+                // ordinary result/ready completion and survive relaunches.
                 const controller = new AbortController();
                 this.abortController = controller;
                 this.abortFuture = new Future<void>();
@@ -410,7 +401,9 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 // typecheck with "Property 'isolate' does not exist on type
                 // 'never'" (verified against `bun run typecheck`).
                 let inFlightMessage: InFlightMessage | null = null as InFlightMessage | null;
+                let rewindInputAccepted = false;
                 try {
+                    await session.prepareHistoryAttempt?.();
                     await claudeRemote({
                         sessionId: session.sessionId,
                         path: session.path,
@@ -570,7 +563,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 .flatMap((item) => item.localId ? [item.localId] : []) ?? [];
                             inFlightMessage = null;
                             if (completedLocalIds.length > 0) {
-                                session.onUserTurnCompleted?.(completedLocalIds);
+                                await session.onUserTurnCompleted?.(completedLocalIds);
                             }
 
                             await messageQueue.flush();
@@ -614,16 +607,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 `[claudeRemoteLauncher][async-debug] onReady callback ` +
                                 `(hasPending=${Boolean(pending)}, queueSize=${session.queue.size()})`
                             );
-                            // A rewind respawn reports ready only from evidence:
-                            // claudeRemote fires onReady after the rejection
-                            // window settles without a rejection result (or on
-                            // the native proof). That readiness IS the
-                            // acceptance ack — resolve it here, exactly once.
-                            if (session.rewindAck) {
-                                const ack = session.rewindAck;
-                                session.rewindAck = null;
-                                ack(true);
-                            }
+                            // Ready is UI state, not rewind acceptance. Only
+                            // the native transcript proof may resolve the ack.
                             if (!pending && session.queue.size() === 0) {
                                 session.client.sendSessionEvent({ type: 'ready' });
                                 logger.debug('[claudeRemoteLauncher][async-debug] ready event sent to hub');
@@ -633,6 +618,12 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         },
                         signal: controller.signal,
                         rewindProof: session.rewindProof ?? undefined,
+                        onRewindBranchApplied: session.onRewindBranchApplied ? async () => {
+                            // Native accepted this input, but it has not completed.
+                            // A later stream/ACK failure must not replay it.
+                            rewindInputAccepted = true;
+                            await session.onRewindBranchApplied?.();
+                        } : undefined,
                     });
 
                     // Attempt finished cleanly. Rewind ack resolution is evidence
@@ -674,19 +665,16 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     }
                 } catch (e) {
                     logger.debug('[remote]: launch error', e);
-                    // A deterministic resume rejection means the native state is
-                    // unchanged — report failure immediately instead of letting
-                    // the rewind handler time out. The rejection surfaces as
-                    // claudeRemote's thrown "Resume rejected by --resume..."
-                    // (measured: it is the attempt's only result). Other
-                    // failures leave the ack armed (handler timeout reports
-                    // unconfirmed).
-                    if (session.rewindAck) {
-                        const detail0 = e instanceof Error ? e.message : String(e);
-                        if (/Resume rejected by --resume/i.test(detail0)) {
-                            const ack = session.rewindAck;
-                            session.rewindAck = null;
-                            ack(false, detail0);
+                    if (rewindInputAccepted) inFlightMessage = null;
+                    // Reporting an unknown outcome must not bypass the queue's
+                    // restore decision when the hub is temporarily unreachable.
+                    if (session.rewindProof && !controller.signal.aborted) {
+                        const detail = e instanceof Error ? e.message : String(e);
+                        try {
+                            await session.onRewindFailure?.(detail,
+                                /Resume rejected by --resume|No message found with message.uuid/i.test(detail));
+                        } catch (reportError) {
+                            logger.debug('[remote]: rewind failure report not acknowledged; journal retained', reportError);
                         }
                     }
 

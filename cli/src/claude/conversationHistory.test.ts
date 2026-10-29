@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readNativeTurns, readTranscriptUuids, resolveRewindPlan, supportsNativeRewind, hasRewindProof } from './conversationHistory'
+import { readNativeTurns, readTranscriptUuids, resolveRewindPlan, supportsNativeRewind, hasRewindProof, hasDurableRewindBranch } from './conversationHistory'
+import { getProjectPath } from './utils/path'
 
 const CWD = '/tmp/rewind-fixture-project'
 
@@ -83,6 +84,27 @@ describe('readNativeTurns', () => {
 })
 
 describe('rewind native acceptance proof', () => {
+    it('requires a real new turn on the exact active branch, not a startup marker', () => {
+        const root = writeTranscript([
+            line({ type: 'user', uuid: 'u1', parentUuid: null, message: { role: 'user', content: 'ONE' } }),
+            line({ type: 'assistant', uuid: 'as1', parentUuid: 'u1', message: { role: 'assistant', content: [] } }),
+            line({ type: 'user', uuid: 'dropped', parentUuid: 'as1', message: { role: 'user', content: 'TWO' } })
+        ])
+        process.env.CLAUDE_CONFIG_DIR = root.replace(/\/projects$/, '')
+        try {
+            const baseline = readTranscriptUuids(CWD, 'session-a')
+            const file = join(getProjectPath(CWD), 'session-a.jsonl')
+            appendFileSync(file, line({ type: 'attachment', uuid: 'marker', parentUuid: 'as1' }) + '\n')
+            expect(hasDurableRewindBranch(CWD, 'session-a', 'as1', baseline, ['dropped'])).toBe(false)
+            appendFileSync(file, line({ type: 'user', uuid: 'new', parentUuid: 'as1', message: { role: 'user', content: 'count' } }) + '\n')
+            expect(hasDurableRewindBranch(CWD, 'session-a', 'as1', baseline, ['dropped'])).toBe(true)
+            expect(hasDurableRewindBranch(CWD, 'other-native', 'as1', baseline, ['dropped'])).toBe(false)
+            expect(hasDurableRewindBranch(CWD, 'session-a', 'other-keep', baseline, ['dropped'])).toBe(false)
+            appendFileSync(file, line({ type: 'user', uuid: 'wrong-branch', parentUuid: 'dropped', message: { role: 'user', content: 'bad' } }) + '\n')
+            expect(hasDurableRewindBranch(CWD, 'session-a', 'as1', baseline, ['dropped'])).toBe(false)
+        } finally { delete process.env.CLAUDE_CONFIG_DIR }
+    })
+
     function writeProofLines(lines: string[]): string {
         const root = writeTranscript(lines)
         process.env.CLAUDE_CONFIG_DIR = root.replace(/\/projects$/, '')

@@ -153,6 +153,23 @@ function createSession(
 }
 
 describe('claudeRemoteLauncher resume anchor', () => {
+    it('does not confirm rewind from session discovery or ready without native proof', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, ['--resume-session-at', 'kept-boundary'])
+        const ack = vi.fn()
+        session.onRewindBranchApplied = async () => { ack() }
+        session.rewindProof = () => false
+        harness.compactContextTokens = 100
+        harness.switchAfterCall = 1
+        harness.triggerSwitch = () => { client.rpcHandlers.get(RPC_METHODS.Switch)?.() }
+        queue.push('follow-up', { permissionMode: 'default' }, 'local-follow-up')
+        try {
+            await claudeRemoteLauncher(session as any)
+            expect(ack).not.toHaveBeenCalled()
+            expect(session.claudeArgs).toContain('kept-boundary')
+        } finally { session.stopKeepAlive() }
+    })
+
     afterEach(() => {
         harness.callCount = 0
         harness.claudeArgsPerCall = []

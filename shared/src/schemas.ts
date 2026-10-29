@@ -52,7 +52,19 @@ export const WorktreeMetadataSchema = z.object({
 
 export type WorktreeMetadata = z.infer<typeof WorktreeMetadataSchema>
 
+export const ClaudeRewindSchema = z.object({
+    operationId: z.string().min(1),
+    phase: z.enum(['requested', 'pending', 'applied', 'committed', 'unknown', 'rejected']),
+    requestedLocalId: z.string().min(1),
+    truncateFromLocalId: z.string().min(1).optional(),
+    nativeSessionId: z.string().min(1).optional(),
+    keepBoundary: z.string().min(1).optional(),
+    cutoffSeq: z.number().int().nonnegative()
+})
+export type ClaudeRewind = z.infer<typeof ClaudeRewindSchema>
+
 export const MetadataSchema = z.object({
+    claudeRewind: ClaudeRewindSchema.optional(),
     path: z.string(),
     host: z.string(),
     version: z.string().optional(),

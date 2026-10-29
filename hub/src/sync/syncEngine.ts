@@ -13,7 +13,9 @@ import {
     isMachineCapabilitySkewed,
 } from '@hapi/protocol/runnerCapabilities'
 import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
-import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
+import type { Metadata, SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
+import { ClaudeRewindSchema } from '@hapi/protocol/schemas'
+import { extractTodoWriteTodosFromMessageContent } from './todos'
 import type { ImplementCodexPlanResult } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
@@ -1301,6 +1303,10 @@ export class SyncEngine {
     }
 
     private assertConversationHistoryIdle(session: Session, allowRunningHistoricalFork = false): void {
+        const rewind = (this.store.sessions.getSession(session.id)?.metadata as Metadata | null)?.claudeRewind
+        if (rewind && ['requested', 'pending', 'applied', 'unknown'].includes(rewind.phase)) {
+            throw new Error('Conversation rewind is pending reconciliation')
+        }
         if (!session.active) {
             throw new Error('Session must be active')
         }
@@ -1775,7 +1781,7 @@ export class SyncEngine {
         sessionId: string,
         namespace: string,
         messageLocalId: string
-    ): Promise<{ type: 'success' } | { type: 'error'; message: string; code?: RewindConversationErrorCode; hydrateFailed?: boolean }> {
+    ): Promise<{ type: 'success'; pending?: boolean } | { type: 'error'; message: string; code?: RewindConversationErrorCode; hydrateFailed?: boolean }> {
         if (this.historyActionsInFlight.has(sessionId)) {
             return { type: 'error', message: 'Conversation history action already in progress' }
         }
@@ -1791,7 +1797,7 @@ export class SyncEngine {
         sessionId: string,
         namespace: string,
         messageLocalId: string
-    ): Promise<{ type: 'success' } | { type: 'error'; message: string; code?: RewindConversationErrorCode; hydrateFailed?: boolean }> {
+    ): Promise<{ type: 'success'; pending?: boolean } | { type: 'error'; message: string; code?: RewindConversationErrorCode; hydrateFailed?: boolean }> {
         const access = this.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return { type: 'error', message: access.reason === 'not-found' ? 'Session not found' : 'Access denied' }
@@ -1811,11 +1817,40 @@ export class SyncEngine {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
 
+        const durable = this.store.sessions.getSession(sessionId)!
+        const claude = this.resolveFlavor(session) === 'claude'
+        const operation = {
+            operationId: randomUUID(), phase: 'requested' as const, requestedLocalId: messageLocalId,
+            cutoffSeq: this.store.messages.getAllMessages(sessionId).reduce((max, m) => Math.max(max, m.seq), 0)
+        }
+        const persistPhase = (phase: 'pending' | 'unknown' | 'rejected', fields: Partial<typeof operation> & Record<string, unknown> = {}) => {
+            const current = this.store.sessions.getSession(sessionId)!
+            const metadata = current.metadata as Metadata
+            if (metadata.claudeRewind?.operationId !== operation.operationId || metadata.claudeRewind.phase === 'committed') return
+            if (phase === 'pending' && !['requested', 'pending'].includes(metadata.claudeRewind.phase)) return
+            if (phase === 'rejected' && metadata.claudeRewind.phase === 'unknown') return
+            if (phase !== 'pending' && ['applied', 'rejected'].includes(metadata.claudeRewind.phase)) return
+            const updated = this.store.sessions.updateSessionMetadata(sessionId, { ...metadata, claudeRewind: { ...metadata.claudeRewind, ...fields, phase } }, current.metadataVersion, namespace)
+            if (updated.result !== 'success') throw new Error(`Failed to persist rewind ${phase} reservation`)
+            this.sessionCache.refreshSession(sessionId)
+        }
+        if (claude) {
+            const reserved = this.store.sessions.updateSessionMetadata(sessionId, { ...(durable.metadata as Metadata), claudeRewind: operation }, durable.metadataVersion, namespace)
+            if (reserved.result !== 'success') return { type: 'error', message: 'Rewind reservation failed' }
+            this.sessionCache.refreshSession(sessionId)
+        }
         let rpcResult: Awaited<ReturnType<RpcGateway['rewindConversation']>>
         try {
-            rpcResult = await this.rpcGateway.rewindConversation(sessionId, { messageLocalId })
+            rpcResult = await this.rpcGateway.rewindConversation(sessionId, {
+                messageLocalId,
+                ...(claude ? { operationId: operation.operationId, cutoffSeq: operation.cutoffSeq } : {})
+            })
         } catch (error) {
             if (!(error instanceof RpcTargetMissingError)) {
+                const latest = (this.store.sessions.getSession(sessionId)?.metadata as Metadata | null)?.claudeRewind
+                if (claude && latest?.operationId === operation.operationId && latest.phase === 'committed') return { type: 'success' }
+                if (claude && latest?.operationId === operation.operationId && latest.phase === 'rejected') return { type: 'error', message: 'Native rewind was rejected' }
+                if (claude) persistPhase('unknown')
                 this.markConversationHistoryDiverged(sessionId, namespace)
                 return {
                     type: 'error',
@@ -1823,15 +1858,49 @@ export class SyncEngine {
                     message: 'Rewind outcome is unknown; session history requires reconciliation'
                 }
             }
+            if (claude) persistPhase('rejected')
             return { type: 'error', message: error.message }
         }
 
+        const latest = (this.store.sessions.getSession(sessionId)?.metadata as Metadata | null)?.claudeRewind
+        if (claude && latest?.operationId === operation.operationId && latest.phase === 'committed') return { type: 'success' }
+        if (claude && latest?.operationId === operation.operationId && ['unknown', 'rejected'].includes(latest.phase)) {
+            return { type: 'error', message: `Native rewind outcome is ${latest.phase}`, ...(latest.phase === 'unknown' ? { hydrateFailed: true } : {}) }
+        }
         if (rpcResult?.success !== true) {
+            if (rpcResult?.outcome === 'pending') {
+                const pending = ClaudeRewindSchema.safeParse({ ...operation, ...rpcResult, phase: 'pending' })
+                const rows = this.store.messages.getAllMessages(sessionId)
+                const boundary = rows.find(m => m.localId === rpcResult.truncateFromLocalId)
+                const requested = rows.find(m => m.localId === messageLocalId)
+                const metadata = this.store.sessions.getSession(sessionId)?.metadata as Metadata | null
+                if (!claude || rpcResult.operationId !== operation.operationId || !pending.success
+                    || !rpcResult.nativeSessionId || !rpcResult.keepBoundary
+                    || metadata?.claudeSessionId !== rpcResult.nativeSessionId
+                    || !boundary || !requested || boundary.seq > requested.seq || requested.seq > operation.cutoffSeq
+                    || (boundary.invokedAt ?? boundary.createdAt) > (requested.invokedAt ?? requested.createdAt)) {
+                    if (claude) persistPhase('unknown')
+                    this.markConversationHistoryDiverged(sessionId, namespace)
+                    return { type: 'error', message: 'Rewind operation mismatch', hydrateFailed: true }
+                }
+                persistPhase('pending', { nativeSessionId: rpcResult.nativeSessionId, keepBoundary: rpcResult.keepBoundary, truncateFromLocalId: rpcResult.truncateFromLocalId })
+                return { type: 'success', pending: true }
+            }
+            const unchanged = rpcResult?.success === false && ['rejected', 'cancelled', 'source_restored'].includes(rpcResult.outcome)
+            if (claude) persistPhase(unchanged ? 'rejected' : 'unknown')
+            if (!unchanged) this.markConversationHistoryDiverged(sessionId, namespace)
             return {
                 type: 'error',
                 message: rpcResult?.error ?? 'Native rewind failed',
+                ...(!unchanged ? { hydrateFailed: true } : {}),
                 ...(rpcResult?.success === false && rpcResult.code ? { code: rpcResult.code } : {})
             }
+        }
+
+        if (claude) {
+            persistPhase('unknown')
+            this.markConversationHistoryDiverged(sessionId, namespace)
+            return { type: 'error', message: 'Claude rewind requires durable applied acknowledgement', hydrateFailed: true }
         }
 
         try {
@@ -1859,6 +1928,96 @@ export class SyncEngine {
                 message: error instanceof Error ? error.message : String(error),
                 hydrateFailed: true
             }
+        }
+    }
+
+    /** Called synchronously by update-metadata before its ACK. All durable
+     * changes share a transaction, so a replay cannot delete a later turn. */
+    commitClaudeRewind(sessionId: string, incoming: unknown, expectedVersion: number): ReturnType<Store['sessions']['updateSessionMetadata']> {
+        try {
+            const result = this.store.runInTransaction(() => {
+                const current = this.store.sessions.getSession(sessionId)
+                if (!current) throw new Error('Session not found')
+                const metadata = current.metadata as Metadata
+                const prior = metadata.claudeRewind
+                const next = incoming as Metadata
+                const report = ClaudeRewindSchema.parse(next.claudeRewind)
+                if (!prior || !['applied', 'unknown', 'rejected'].includes(report.phase)
+                    || prior.operationId !== report.operationId
+                    || prior.requestedLocalId !== report.requestedLocalId
+                    || prior.cutoffSeq !== report.cutoffSeq
+                    || !report.nativeSessionId || !report.keepBoundary || !report.truncateFromLocalId
+                    || metadata.claudeSessionId !== report.nativeSessionId
+                    || (next.claudeSessionId !== undefined && next.claudeSessionId !== report.nativeSessionId)
+                    || (prior.nativeSessionId && prior.nativeSessionId !== report.nativeSessionId)
+                    || (prior.keepBoundary && prior.keepBoundary !== report.keepBoundary)
+                    || (prior.truncateFromLocalId && prior.truncateFromLocalId !== report.truncateFromLocalId)
+                ) throw new Error('Invalid rewind completion')
+                if (prior.phase === 'committed') {
+                    if (report.phase !== 'applied') throw new Error('Committed rewind cannot fail')
+                    return { result: 'success' as const, version: current.metadataVersion, value: current.metadata }
+                }
+                if (current.metadataVersion !== expectedVersion) {
+                    return { result: 'version-mismatch' as const, version: current.metadataVersion, value: current.metadata }
+                }
+                const rows = this.store.messages.getAllMessages(sessionId)
+                const requested = rows.find(m => m.localId === prior.requestedLocalId)
+                const boundary = rows.find(m => m.localId === report.truncateFromLocalId)
+                const position = (row: NonNullable<typeof requested>) => row.invokedAt ?? row.createdAt
+                if (!requested || !boundary || requested.seq > prior.cutoffSeq || boundary.seq > requested.seq
+                    || position(boundary) > position(requested)
+                ) throw new Error('Invalid canonical rewind boundary')
+                this.assertInvokedHistoryBoundary(sessionId, report.truncateFromLocalId)
+                if (report.phase !== 'applied') {
+                    if (!['requested', 'pending', 'unknown'].includes(prior.phase)
+                        && !(prior.phase === 'rejected' && report.phase === 'rejected')) {
+                        throw new Error('Rewind failure contradicts durable phase')
+                    }
+                    return this.store.sessions.updateSessionMetadata(sessionId, {
+                        ...next, claudeRewind: report,
+                        conversationHistoryDiverged: report.phase === 'unknown' ? true : metadata.conversationHistoryDiverged
+                    }, expectedVersion, current.namespace)
+                }
+                if (!['requested', 'pending', 'applied', 'unknown'].includes(prior.phase)) throw new Error('Rewind is not pending')
+                this.store.messages.truncateMessagesFromLocalId(sessionId, report.truncateFromLocalId, [], prior.cutoffSeq)
+                // This path must not touch SessionCache inside the transaction:
+                // refreshSession publishes SSE immediately, before SQLite commits.
+                const remaining = this.store.messages.getAllMessages(sessionId)
+                const localIds = new Set(remaining.flatMap(row => row.localId ? [row.localId] : []))
+                const committed: Metadata = {
+                    ...metadata, ...next, claudeRewind: { ...report, phase: 'committed' }, conversationHistoryDiverged: false
+                }
+                for (const key of ['conversationHistoryPoints', 'conversationHistoryIndexes', 'conversationHistoryTurns', 'conversationHistoryEntryIds'] as const) {
+                    const locators = committed[key]
+                    if (!locators) continue
+                    const kept = Object.entries(locators).filter(([localId]) => localIds.has(localId))
+                    if (kept.length > 0) Object.assign(committed, { [key]: Object.fromEntries(kept) })
+                    else delete committed[key]
+                }
+                let todos: ReturnType<typeof extractTodoWriteTodosFromMessageContent> = null
+                for (let i = remaining.length - 1; i >= 0; i--) {
+                    todos = extractTodoWriteTodosFromMessageContent(remaining[i]!.content)
+                    if (todos) break
+                }
+                const updated = this.store.sessions.updateSessionMetadata(sessionId, committed, expectedVersion, current.namespace)
+                if (updated.result !== 'success') throw new Error('Rewind metadata write failed')
+                if (!this.store.sessions.replaceSessionTodos(sessionId, todos, current.namespace)) {
+                    throw new Error('Rewind todos write failed')
+                }
+                const stored = this.store.sessions.getSession(sessionId)!
+                return { result: 'success' as const, version: stored.metadataVersion, value: stored.metadata }
+            })
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(sessionId)
+                const stored = this.store.sessions.getSession(sessionId)!
+                if ((stored.metadata as Metadata).claudeRewind?.phase === 'committed') {
+                    this.eventPublisher.emit({ type: 'messages-invalidated', sessionId, namespace: stored.namespace, reason: 'rewind' })
+                }
+            }
+            return result
+        } catch {
+            this.sessionCache.refreshSession(sessionId)
+            return { result: 'error' }
         }
     }
 

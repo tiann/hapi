@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { getProjectPath } from './utils/path'
 import { isExternalUserMessage } from '@/api/apiSession'
@@ -88,11 +88,8 @@ export type RewindPlan = {
 
 /**
  * Native `--resume-session-at` truncation landed in Claude Code v2.1.223.
- * `--resume-drops-turn` is deliberately NOT used: its multi-turn validation
- * is off-by-one broken in current Claude Code (measured on 2.1.312 — every
- * declaration of two or more dropped turns is rejected with "range does not
- * start with the declared turn prompt" even for a contiguous drop range),
- * while `--resume-session-at` alone truncates every turn after the boundary.
+ * The selected branch is materialized by a subsequent real input; the hub
+ * separately commits its reserved suffix only after native branch evidence.
  */
 export const NATIVE_REWIND_MIN_VERSION = [2, 1, 223] as const
 
@@ -143,9 +140,8 @@ export function resolveRewindPlan(turns: NativeTurn[], dropFromPromptUuid: strin
  * transcript write re-parents onto the kept boundary
  * (`parentUuid === resumeSessionAt` — observed on the next user turn's
  * `attachment prompt_snapshot`). An accepted respawn that receives no user
- * input writes nothing, so before the next turn this proof cannot exist and
- * acceptance is inferred in-stream (no rejection result past the settle
- * window). A rejected resume exits without writing anything.
+ * input writes nothing, so before the next turn this proof cannot exist.
+ * Silence never implies acceptance. A rejected resume writes no branch proof.
  * `knownUuids` must be the full uuid set read BEFORE the respawn so only
  * post-respawn writes count.
  */
@@ -182,4 +178,19 @@ export function readTranscriptUuids(workingDirectory: string, sessionId: string)
         }
     }
     return uuids
+}
+
+/** A real new user turn must select the requested branch; a startup marker
+ * alone is not enough. Sync the native file before committing the hub side. */
+export function hasDurableRewindBranch(
+    workingDirectory: string, sessionId: string, boundary: string,
+    baseline: ReadonlySet<string>, droppedPrompts: readonly string[]
+): boolean {
+    if (!hasRewindProof(workingDirectory, sessionId, boundary, baseline)) return false
+    const turns = readNativeTurns(workingDirectory, sessionId)
+    if (!turns.some(turn => !baseline.has(turn.promptUuid))
+        || turns.some(turn => droppedPrompts.includes(turn.promptUuid))) return false
+    const fd = openSync(join(getProjectPath(workingDirectory), `${sessionId}.jsonl`), 'r')
+    try { fsyncSync(fd) } finally { closeSync(fd) }
+    return true
 }

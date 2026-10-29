@@ -30,8 +30,10 @@ import {
     CLAUDE_CONVERSATION_HISTORY,
     toConversationHistoryCapabilities
 } from '@hapi/protocol/conversationHistory';
-import { hasRewindProof, readNativeTurns, readTranscriptUuids, resolveRewindPlan, supportsNativeRewind } from './conversationHistory';
+import { hasDurableRewindBranch, readNativeTurns, readTranscriptUuids, resolveRewindPlan, supportsNativeRewind } from './conversationHistory';
 import { listSkills, type SkillSummary } from '@/modules/common/skills';
+import { configuration } from '@/configuration';
+import { RewindIntentStore, type RewindIntent } from './rewindIntent';
 
 export interface StartOptions {
     model?: string
@@ -318,10 +320,11 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     // scrubs truncated entries automatically via `conversationHistoryPoints`.
     const promptUuidByLocalId = new Map<string, string>()
     const localIdsByPromptUuid = new Map<string, string[]>()
-    // Bounded by the respawn itself: the ack resolves in ~REWIND_SETTLE_MS
-    // (silence past the rejection window) or immediately on a stream rejection
-    // result; only a hung respawn reaches this timeout.
-    const REWIND_ACK_TIMEOUT_MS = 15_000
+    const rewindStore = new RewindIntentStore(configuration.happyHomeDir, configuration.apiUrl, sessionInfo.id)
+    let pendingRewind = rewindStore.read()
+    if (pendingRewind && pendingRewind.workingDirectory !== workingDirectory) {
+        throw new Error('Pending rewind working directory mismatch')
+    }
     const stripRewindFlags = (args: string[] | undefined): string[] | undefined => {
         if (!args) return undefined
         const filtered: string[] = []
@@ -334,12 +337,63 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         }
         return filtered.length > 0 ? filtered : undefined
     }
+    const branchIsDurable = (intent: RewindIntent) => hasDurableRewindBranch(
+        workingDirectory, intent.nativeSessionId, intent.keepBoundary,
+        new Set(intent.baselineUuids), intent.droppedPrompts
+    )
+    const reportRewind = async (intent: RewindIntent, phase: 'applied' | 'rejected' | 'unknown') => {
+        session.updateMetadata(metadata => ({
+            ...metadata,
+            claudeRewind: {
+                operationId: intent.operationId, phase,
+                requestedLocalId: intent.requestedLocalId, cutoffSeq: intent.cutoffSeq,
+                nativeSessionId: intent.nativeSessionId, keepBoundary: intent.keepBoundary,
+                truncateFromLocalId: intent.dropFromLocalId
+            }
+        }))
+        if (!await session.flushMetadata()) throw new Error('Rewind metadata acknowledgment unavailable')
+        const acknowledgment = session.getMetadata()?.claudeRewind
+        const expectedPhase = phase === 'applied' ? 'committed' : phase
+        if (acknowledgment?.operationId !== intent.operationId || acknowledgment.phase !== expectedPhase) {
+            throw new Error('Rewind hub commit acknowledgment mismatch')
+        }
+    }
+    let rewindCommit: Promise<void> | null = null
+    const commitPendingRewind = async () => {
+        if (rewindCommit) return rewindCommit
+        if (!pendingRewind) return
+        const intent = pendingRewind
+        if (!branchIsDurable(intent)) throw new Error('Native rewind branch is not durable')
+        rewindCommit = (async () => {
+            pendingRewind = { ...intent, phase: 'applied' }
+            rewindStore.write(pendingRewind)
+            await reportRewind(pendingRewind, 'applied')
+            // The hub transaction deleted only the reserved old suffix. Its
+            // committed ACK is required before retiring the recovery journal.
+            rewindStore.write(null)
+            pendingRewind = null
+            const current = currentSessionRef.current
+            if (current) {
+                current.rewindProof = null
+                current.claudeArgs = stripRewindFlags(current.claudeArgs)
+            }
+            for (const [localId, uuid] of promptUuidByLocalId) {
+                if (intent.droppedPrompts.includes(uuid)) promptUuidByLocalId.delete(localId)
+            }
+        })()
+        try { await rewindCommit } finally { rewindCommit = null }
+    }
     session.rpcHandlerManager.registerHandler(RPC_METHODS.RewindConversation, async (payload: unknown) => {
         const rejected = (error: string) => ({ success: false as const, outcome: 'rejected' as const, error })
+        if (pendingRewind) return rejected('A rewind branch is pending durable reconciliation')
         if (!payload || typeof payload !== 'object' || typeof (payload as { messageLocalId?: unknown }).messageLocalId !== 'string') {
             return rejected('messageLocalId is required')
         }
         const messageLocalId = (payload as { messageLocalId: string }).messageLocalId
+        const { operationId, cutoffSeq } = payload as { operationId?: unknown; cutoffSeq?: unknown }
+        if (typeof operationId !== 'string' || !operationId || !Number.isInteger(cutoffSeq) || (cutoffSeq as number) < 0) {
+            return rejected('A durable hub rewind operation is required')
+        }
         // Known pre-mutation rejections must use success:false — throwing would make
         // the hub treat the outcome as unknown and diverge the session history.
         const claudeSession = currentSessionRef.current
@@ -376,91 +430,32 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         const batchLocalIds = localIdsByPromptUuid.get(promptUuid)
         const truncateFromLocalId = batchLocalIds?.[0] ?? messageLocalId
 
-        // One-shot flags consumed by the respawned process; Session.consumeOneTimeFlags
-        // strips them after onSessionFound so they never leak into later launches.
-        // NOTE: `--resume-session-at` alone IS the truncation — claude 2.1.312
-        // accepts it for any number of dropped turns and re-parents the next
-        // turn onto the boundary, leaving the dropped turns orphaned in the
-        // file. `--resume-drops-turn` additionally requires per-turn slices and
-        // its multi-turn validation is off-by-one broken (measured: every
-        // multi-drop declaration is rejected with "range does not start with
-        // the declared turn prompt"), so the drop flags are not used.
+        // Keep the resume boundary armed until a real native input selects
+        // the branch and the hub commits the corresponding suffix deletion.
         const flags = ['--resume', nativeSessionId]
         if (plan.resumeSessionAt) flags.push('--resume-session-at', plan.resumeSessionAt)
+        const transcriptUuidBaseline = readTranscriptUuids(workingDirectory, nativeSessionId)
+        const intent: RewindIntent = {
+            operationId, requestedLocalId: messageLocalId, cutoffSeq: cutoffSeq as number, phase: 'pending',
+            hubSessionId: sessionInfo.id, nativeSessionId, workingDirectory,
+            keepBoundary: plan.resumeSessionAt!, dropFromLocalId: truncateFromLocalId,
+            droppedPrompts: turns.slice(turns.findIndex(t => t.promptUuid === promptUuid)).map(t => t.promptUuid),
+            baselineUuids: [...transcriptUuidBaseline]
+        }
+        // Persist before mutating arguments or aborting the running attempt.
+        rewindStore.write(intent)
+        pendingRewind = intent
         claudeSession.claudeArgs = [...(claudeSession.claudeArgs ?? []), ...flags]
 
-        // Acceptance evidence has two parts. (1) Immediate, in-stream: a
-        // REJECTED resume ends the stream with a result whose errors[] say
-        // "Resume rejected by --resume..." — claudeRemote turns that into
-        // ack(false) deterministically. An ACCEPTED respawn stays silent and
-        // writes nothing until the next user turn, so (2) the proof of true
-        // truncation is Claude's own first post-rewind write: the next turn's
-        // user entry re-parented onto the keep boundary. The rewindProof probe
-        // (below) reports that lazily and claudeRemote acks(true) as soon as
-        // it appears — but the rewind RPC cannot wait for a user turn, so the
-        // ack resolves once the stream has settled past the rejection window
-        // (REWIND_SETTLE_MS) with no rejection result. The settle is a grace
-        // bound on the deterministic negative path, not an acceptance guess:
-        // claude exits almost immediately on rejection, so silence after the
-        // window means the resume was accepted and is streaming idle.
-        const transcriptUuidBaseline = readTranscriptUuids(workingDirectory, nativeSessionId)
-        claudeSession.rewindProof = (resumeSessionAt: string) => {
-            const ok = hasRewindProof(workingDirectory, nativeSessionId, resumeSessionAt, transcriptUuidBaseline)
-            if (ok && claudeSession.rewindAck) {
-                // Native acceptance proven: resolve the ack exactly here so the
-                // hub truncates only against the verified marker.
-                const ack = claudeSession.rewindAck
-                claudeSession.rewindAck = null
-                ack(true)
-            }
-            return ok
-        }
-
-        let confirmed = false
-        // Arm the ack BEFORE requesting the restart: the launcher respawns
-        // synchronously during the abort and needs the armed callback then.
-        const ackPromise = new Promise<{ applied: boolean; error?: string }>((resolve) => {
-            claudeSession.rewindAck = (applied, error) => resolve({ applied, error })
-        })
-        try {
-            await claudeSession.requestRemoteRestart()
-            const result = await Promise.race([
-                ackPromise,
-                new Promise<{ applied: boolean; error?: string }>((resolve) => {
-                    setTimeout(() => resolve({ applied: false, error: 'unconfirmed' }), REWIND_ACK_TIMEOUT_MS)
-                })
-            ])
-            if (!result.applied) {
-                // Disarm and strip any unconsumed flags so state stays "not rewound".
-                claudeSession.rewindAck = null
-                claudeSession.claudeArgs = stripRewindFlags(claudeSession.claudeArgs)
-                if (result.error === 'unconfirmed') {
-                    // Cannot prove either way — native may or may not have been
-                    // truncated. Throw outside the rejection conversion below so
-                    // the hub marks history diverged instead of allowing more
-                    // history actions against an unknown state.
-                    throw new Error('Rewind could not be confirmed; session history requires reconciliation')
-                }
-                return rejected(result.error ?? 'Rewind could not be applied')
-            }
-            confirmed = true
-        } finally {
-            claudeSession.rewindAck = null
-            claudeSession.rewindProof = null
-            if (!confirmed) {
-                claudeSession.claudeArgs = stripRewindFlags(claudeSession.claudeArgs)
-            }
-        }
-        // Truncation confirmed: forget the dropped turns' mappings (the hub scrubs
-        // the persisted copies together with its truncated rows).
-        const dropIndex = turns.findIndex((turn) => turn.promptUuid === promptUuid)
-        for (const [localId, uuid] of [...promptUuidByLocalId]) {
-            const keptIndex = turns.findIndex((turn) => turn.promptUuid === uuid)
-            if (keptIndex < 0 || keptIndex >= dropIndex) {
-                promptUuidByLocalId.delete(localId)
-            }
-        }
-        return { success: true as const, truncateFromLocalId }
+        claudeSession.rewindProof = boundary => boundary === intent.keepBoundary
+            && claudeSession.sessionId === nativeSessionId
+            && hasDurableRewindBranch(workingDirectory, nativeSessionId, boundary, transcriptUuidBaseline, intent.droppedPrompts)
+        await claudeSession.requestRemoteRestart()
+        // Durable intent is pending, not applied. The hub retains its old
+        // suffix until a real input selects the native branch and its applied
+        // report is transactionally committed and ACKed by the hub.
+        return { success: false as const, outcome: 'pending' as const,
+            operationId, nativeSessionId, keepBoundary: intent.keepBoundary, truncateFromLocalId }
     })
 
     // Set initial agent state
@@ -770,16 +765,59 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             model: currentModel,
             effort: currentEffort,
             permissionMode: options.permissionMode,
-            startingMode,
+            startingMode: pendingRewind ? 'remote' : startingMode,
             messageQueue,
             api,
             allowedTools: toClaudeAllowedHapiMcpTools(happyServer.toolNames),
             onModeChange: createModeChangeHandler(session),
             onSessionReady: (sessionInstance) => {
                 currentSessionRef.current = sessionInstance;
+                if (pendingRewind) {
+                    if (sessionInstance.sessionId && sessionInstance.sessionId !== pendingRewind.nativeSessionId) {
+                        throw new Error('Pending rewind native session mismatch')
+                    }
+                    sessionInstance.sessionId = pendingRewind.nativeSessionId
+                    sessionInstance.claudeArgs = [
+                        ...(stripRewindFlags(sessionInstance.claudeArgs) ?? []),
+                        '--resume-session-at', pendingRewind.keepBoundary
+                    ]
+                    const recovered = pendingRewind
+                    sessionInstance.rewindProof = boundary => boundary === recovered.keepBoundary
+                        && sessionInstance.sessionId === recovered.nativeSessionId
+                        && branchIsDurable(recovered)
+                }
+                sessionInstance.onRewindBranchApplied = commitPendingRewind
+                sessionInstance.prepareHistoryAttempt = async () => {
+                    if (!pendingRewind) return
+                    if (sessionInstance.sessionId !== pendingRewind.nativeSessionId) {
+                        throw new Error('Pending rewind native session mismatch')
+                    }
+                    if (pendingRewind.phase === 'applied' || branchIsDurable(pendingRewind)) {
+                        await commitPendingRewind()
+                    }
+                }
+                sessionInstance.onRewindFailure = async (error, unchanged) => {
+                    if (!pendingRewind) return
+                    const intent = pendingRewind
+                    const safelyUnchanged = unchanged && !branchIsDurable(intent)
+                    await reportRewind(intent, safelyUnchanged ? 'rejected' : 'unknown')
+                    if (safelyUnchanged) {
+                        rewindStore.write(null)
+                        pendingRewind = null
+                        sessionInstance.rewindProof = null
+                        sessionInstance.claudeArgs = stripRewindFlags(sessionInstance.claudeArgs)
+                    }
+                    sessionInstance.client.sendSessionEvent({ type: 'message', message: `Rewind could not complete: ${error}` })
+                }
                 resolveSessionReady(sessionInstance);
-                sessionInstance.onUserTurnCompleted = (localIds) => {
+                sessionInstance.onUserTurnCompleted = async (localIds) => {
                     if (localIds.length === 0 || !sessionInstance.sessionId) return
+                    if (pendingRewind) {
+                        if (sessionInstance.sessionId !== pendingRewind.nativeSessionId || !branchIsDurable(pendingRewind)) {
+                            throw new Error('Pending rewind branch has not been proven durable')
+                        }
+                        await commitPendingRewind()
+                    }
                     // The just-completed turn is the tail of the active chain.
                     const turn = readNativeTurns(workingDirectory, sessionInstance.sessionId).at(-1)
                     if (!turn) return
@@ -815,7 +853,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                         conversationHistoryEntryIds: {}
                     }))
                 };
-                sessionInstance.rewindProof = null;
+                if (!pendingRewind) sessionInstance.rewindProof = null;
                 if (nativeSkills) {
                     sessionInstance.setNativeSkillNames(nativeSkills.map((skill) => skill.name));
                 }
@@ -831,7 +869,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             claudeEnvVars: options.claudeEnvVars,
             claudeArgs: options.claudeArgs,
             startedBy,
-            resumeSessionId: options.resumeSessionId,
+            resumeSessionId: pendingRewind?.nativeSessionId ?? options.resumeSessionId,
             hookSettingsPath,
             localHookSettingsPath
         });

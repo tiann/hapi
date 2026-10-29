@@ -98,6 +98,7 @@ public struct PiModelReference: Codable, Equatable, Sendable {
 /// the only writer of metadata — natives never round-trip it to the hub, so
 /// dropping fields we do not render is safe.
 public struct SessionMetadata: Codable, Equatable, Sendable {
+    public var claudeRewind: ClaudeRewind?
     /// Working directory of the session (required on the wire).
     public var path: String
     /// Hostname of the machine running the CLI (required on the wire).
@@ -198,4 +199,21 @@ public struct SessionMetadata: Codable, Equatable, Sendable {
         self.piSelectedModel = piSelectedModel
         self.conversationHistoryPoints = conversationHistoryPoints
     }
+}
+
+public struct ClaudeRewind: Codable, Equatable, Sendable {
+    public var operationId: String
+    public var phase: String
+    public var requestedLocalId: String
+    public var cutoffSeq: Int
+
+    public init(operationId: String, phase: String, requestedLocalId: String, cutoffSeq: Int) {
+        self.operationId = operationId
+        self.phase = phase
+        self.requestedLocalId = requestedLocalId
+        self.cutoffSeq = cutoffSeq
+    }
+
+    public var isPending: Bool { ["requested", "pending", "applied", "unknown"].contains(phase) }
+    public var isTerminal: Bool { phase == "committed" || phase == "rejected" }
 }

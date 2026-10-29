@@ -79,7 +79,8 @@ export async function claudeRemote(opts: {
      * Rewind acceptance probe: returns true when the native transcript shows
      * a post-respawn entry re-parented onto the given keep-boundary uuid.
      */
-    rewindProof?: (resumeSessionAt: string) => boolean
+    rewindProof?: (resumeSessionAt: string) => boolean,
+    onRewindBranchApplied?: () => Promise<void>
 }) {
     const debugPrefix = '[claudeRemote][async-debug]';
 
@@ -150,6 +151,7 @@ export async function claudeRemote(opts: {
     // success to the hub. Like --fork-session, start query() without waiting
     // for an initial child prompt; stream-json input stays open for later turns.
     let awaitingRewindInit = resumeSessionAt !== undefined;
+    if (awaitingRewindInit && !startFrom) throw new Error('Pending rewind native session is unavailable');
 
     // Mode starts from the persisted session for fork bootstrap; updated when
     // the first child prompt arrives. plan/auto must be present at process start.
@@ -456,82 +458,48 @@ export async function claudeRemote(opts: {
         })();
     };
 
-    // A rewind respawn starts with no running turn: booting into "thinking"
-    // would leave the session permanently generating. Acceptance evidence:
-    // a REJECTED resume ends the stream with a result whose errors[] contain
-    // "Resume rejected by --resume..." and the process exits (deterministic
-    // negative). An ACCEPTED respawn stays silent — no init, no transcript
-    // write — until the first user turn, so the positive ack cannot come from
-    // the stream or the file before any input. After the resume hooks settle,
-    // a short grace window (REWIND_SETTLE_MS) without a rejection result is
-    // therefore the acceptance signal: the probe poller below also watches
-    // for the real proof (first post-respawn entry re-parented onto the keep
-    // boundary) and acks(true) early when a user turn already arrived. The
-    // poller and timers die with this attempt (finally below).
+    // Silence, elapsed time and system/init are not truncation evidence.
+    // Without a native write bound to this attempt the RPC fails closed.
     const rewindProof = opts.rewindProof;
     let rewindTimersCleared = false;
     let rewindProofPoll: ReturnType<typeof setInterval> | null = null;
-    let rewindRejectTimer: ReturnType<typeof setTimeout> | null = null;
-    let rewindSettleTimer: ReturnType<typeof setTimeout> | null = null;
     const clearRewindTimers = () => {
         if (rewindTimersCleared) return;
         rewindTimersCleared = true;
-        if (rewindSettleTimer) {
-            clearTimeout(rewindSettleTimer);
-            rewindSettleTimer = null;
-        }
-        if (rewindRejectTimer) {
-            clearTimeout(rewindRejectTimer);
-            rewindRejectTimer = null;
-        }
         if (rewindProofPoll) {
             clearInterval(rewindProofPoll);
             rewindProofPoll = null;
         }
     };
-    const finishRewindInit = () => {
-        clearRewindTimers();
-        awaitingRewindInit = false;
-        updateThinking(false);
-        void opts.onReady?.();
-        // No result message will ever arrive for the skipped initial
-        // turn, so the queue consumer must be started here or user
-        // messages sent after the rewind would never reach Claude.
-        scheduleNextMessage();
+    let branchCommit: Promise<void> | null = null;
+    const commitRewindBranch = async () => {
+        if (!awaitingRewindInit) return;
+        if (branchCommit) return branchCommit;
+        if (!resumeSessionAt || !rewindProof?.(resumeSessionAt)) throw new Error('Native rewind branch proof missing');
+        branchCommit = (async () => {
+            await opts.onRewindBranchApplied?.();
+            clearRewindTimers();
+            awaitingRewindInit = false;
+            // Branch selection is not turn completion. Do not change thinking,
+            // call onReady, or consume another queued input here.
+        })();
+        try { await branchCommit } finally { branchCommit = null; }
     };
-    const REWIND_SETTLE_MS = 2_500;
     const REWIND_PROOF_POLL_MS = 500;
-    const REWIND_PROOF_TIMEOUT_MS = 45_000;
     if (awaitingRewindInit && resumeSessionAt && rewindProof) {
-        const startedAt = Date.now();
+        // Input delivery is independent of truncation acknowledgment. A real
+        // follow-up turn may establish the durable branch after an unconfirmed
+        // RPC; merely arming this waiter never reports success to the hub.
+        scheduleNextMessage();
         // Lazy positive proof: the next user turn's snapshot re-parented onto
         // the keep boundary. Resolves ack(true) early when it appears.
         rewindProofPoll = setInterval(() => {
-            try {
-                if (rewindProof(resumeSessionAt)) {
-                    if (rewindProofPoll) {
-                        clearInterval(rewindProofPoll);
-                        rewindProofPoll = null;
-                    }
-                } else if (Date.now() - startedAt > REWIND_PROOF_TIMEOUT_MS) {
-                    if (rewindProofPoll) {
-                        clearInterval(rewindProofPoll);
-                        rewindProofPoll = null;
-                    }
-                }
-            } catch (error) {
+            if (!rewindProof(resumeSessionAt) || branchCommit) return;
+            void commitRewindBranch().catch(error => {
                 logger.debug(`[claudeRemote] rewind proof poll failed: ${error instanceof Error ? error.message : String(error)}`);
-            }
+            });
         }, REWIND_PROOF_POLL_MS);
-        // Negative path: a rejection result ends this attempt's stream with an
-        // error (handled in the result branch below). Silence past the grace
-        // window means claude did not exit with a rejection result, so the
-        // resume was accepted and is streaming idle — report ready.
-        rewindRejectTimer = setTimeout(() => {
-            rewindRejectTimer = null;
-            if (!awaitingRewindInit) return;
-            finishRewindInit();
-        }, REWIND_SETTLE_MS);
+        updateThinking(false);
     } else {
         updateThinking(true);
     }
@@ -702,12 +670,8 @@ export async function claudeRemote(opts: {
                 // Rewind restart: no child prompt was fed, so nothing is running.
                 // Clear the boot-time thinking state and report ready — otherwise
                 // the session looks permanently "generating" until the next turn.
-                if (awaitingRewindInit) {
-                    awaitingRewindInit = false;
-                    updateThinking(false);
-                    if (opts.onReady) {
-                        await opts.onReady();
-                    }
+                if (awaitingRewindInit && resumeSessionAt && rewindProof?.(resumeSessionAt)) {
+                    await commitRewindBranch();
                 }
             }
 
@@ -755,6 +719,8 @@ export async function claudeRemote(opts: {
                         clearRewindTimers();
                         throw new Error(rejectText);
                     }
+                    if (rejectText) throw new Error(rejectText);
+                    await commitRewindBranch();
                 }
                 logger.debug(
                     `${debugPrefix} result #${resultSeq} received; scheduling next user message ` +

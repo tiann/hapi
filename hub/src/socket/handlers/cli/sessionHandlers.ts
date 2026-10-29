@@ -71,6 +71,7 @@ const updateStateSchema = z.object({
 const HUB_OWNED_METADATA_KEYS = [
     'supersededBySessionId',
     'opencodeClearOperation',
+    'claudeRewind',
     'titleSuggestionAutoAttemptedAt',
     'titleSuggestionTurn'
 ] as const
@@ -89,6 +90,7 @@ function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown 
 }
 
 export type SessionHandlersDeps = {
+    onClaudeRewindApplied?: (sid: string, metadata: unknown, expectedVersion: number) => ReturnType<Store['sessions']['updateSessionMetadata']>
     store: Store
     resolveSessionAccess: ResolveSessionAccess
     emitAccessError: EmitAccessError
@@ -293,12 +295,20 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
-        const result = store.sessions.updateSessionMetadata(
-            sid,
-            preserveHubOwnedMetadata(metadata, sessionAccess.value.metadata),
-            expectedVersion,
-            sessionAccess.value.namespace
-        )
+        const report = metadata && typeof metadata === 'object'
+            ? (metadata as Record<string, unknown>).claudeRewind as { phase?: string } | undefined
+            : undefined
+        const result = report && ['applied', 'unknown', 'rejected'].includes(report.phase ?? '')
+            ? deps.onClaudeRewindApplied?.(sid, {
+                ...(preserveHubOwnedMetadata(metadata, sessionAccess.value.metadata) as object),
+                claudeRewind: report
+            }, expectedVersion) ?? { result: 'error' as const }
+            : store.sessions.updateSessionMetadata(
+                sid,
+                preserveHubOwnedMetadata(metadata, sessionAccess.value.metadata),
+                expectedVersion,
+                sessionAccess.value.namespace
+            )
         if (result.result === 'success') {
             cb({ result: 'success', version: result.version, metadata: result.value })
         } else if (result.result === 'version-mismatch') {

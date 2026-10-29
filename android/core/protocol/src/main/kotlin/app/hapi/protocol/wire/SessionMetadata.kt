@@ -45,7 +45,18 @@ data class SessionMetadata(
     val kimiSessionId: String? = null,
     val copilotSessionId: String? = null,
     val piSessionId: String? = null,
+    val claudeRewind: ClaudeRewind? = null,
 )
+
+@Serializable
+data class ClaudeRewind(
+    val operationId: String,
+    val phase: String,
+    val requestedLocalId: String,
+    val cutoffSeq: Long,
+) {
+    val isPending: Boolean get() = phase in setOf("requested", "pending", "applied", "unknown")
+}
 
 /** `metadata.summary` on the detail session (`{text, updatedAt}`). */
 @Serializable

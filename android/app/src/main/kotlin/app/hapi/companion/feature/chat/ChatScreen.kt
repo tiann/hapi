@@ -369,6 +369,15 @@ internal fun ChatScreen(
                     .fillMaxSize()
                     .padding(padding),
             ) {
+                if (state.rewindPending) {
+                    Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+                        Text(
+                            stringResource(R.string.chat_rewind_pending),
+                            modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
                 Box(modifier = Modifier.weight(1f)) {
                     when {
                         state.isInitialLoading -> InitialLoading()
@@ -653,6 +662,7 @@ internal fun chatNoticeText(context: Context, notice: ChatNotice): String = when
     ChatNotice.ScratchlistFull -> context.getString(R.string.chat_notice_scratchlist_full)
     ChatNotice.ScratchlistParkFailed -> context.getString(R.string.chat_notice_park_failed)
     ChatNotice.AttachmentsUploading -> context.getString(R.string.chat_notice_attachments_uploading)
+    ChatNotice.RewindPending -> context.getString(R.string.chat_rewind_pending)
     ChatNotice.ResumeFailed -> context.getString(R.string.chat_notice_resume_failed)
     ChatNotice.QueuedEditKeptDraft -> context.getString(R.string.chat_notice_edit_kept_draft)
     ChatNotice.QueuedAlreadyDelivered -> context.getString(R.string.chat_notice_already_delivered)

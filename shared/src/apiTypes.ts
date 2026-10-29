@@ -636,7 +636,8 @@ export const RewindConversationRequestSchema = z.object({
 export type RewindConversationRequest = z.infer<typeof RewindConversationRequestSchema>
 
 export type RewindConversationResponse = {
-    success: true
+    session: Session
+    pending?: true
 }
 
 /** CLI → hub RPC result for native fork (before HAPI child binding). */
@@ -659,6 +660,15 @@ export type RewindConversationErrorCode =
     | 'ambiguous_native_boundary_fork_safe'
 
 export type RewindConversationRpcResult = {
+    success: false
+    outcome: 'pending'
+    error?: never
+    code?: never
+    operationId: string
+    nativeSessionId: string
+    keepBoundary: string
+    truncateFromLocalId: string
+} | {
     success: true
     /** Truncate HAPI transcript at/after this localId, then accept rehydrated history. */
     truncateFromLocalId: string

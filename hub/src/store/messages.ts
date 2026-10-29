@@ -1139,7 +1139,8 @@ export function truncateMessagesFromLocalId(
         localId?: string | null
         createdAt?: number
         invokedAt?: number | null
-    }> = []
+    }> = [],
+    cutoffSeq?: number
 ): { deleted: number; inserted: number; epoch: number } {
     return db.transaction(() => {
         const target = prepareCached(db, `
@@ -1153,14 +1154,19 @@ export function truncateMessagesFromLocalId(
             throw new Error(`Message not found for localId: ${localId}`)
         }
 
+        if (cutoffSeq !== undefined && target.seq > cutoffSeq) {
+            throw new Error('Rewind boundary is newer than the captured history')
+        }
+
         const deleted = prepareCached(db, `
             DELETE FROM messages
             WHERE session_id = ?
+              AND seq <= ?
               AND (
                 COALESCE(invoked_at, created_at) > ?
                 OR (COALESCE(invoked_at, created_at) = ? AND seq >= ?)
               )
-        `).run(sessionId, target.position_at, target.position_at, target.seq)
+        `).run(sessionId, cutoffSeq ?? Number.MAX_SAFE_INTEGER, target.position_at, target.position_at, target.seq)
 
         let inserted = 0
         for (const message of replacement) {

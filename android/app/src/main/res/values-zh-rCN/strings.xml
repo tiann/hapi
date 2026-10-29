@@ -7,6 +7,7 @@
   matching the web's choices.
 -->
 <resources>
+    <string name="chat_rewind_pending">发送下一条消息时将完成回退</string>
     <string name="app_name">HAPI</string>
 
     <!-- Markdown / code / diff rendering (B-M2d1) -->
