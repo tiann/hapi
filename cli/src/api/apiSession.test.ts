@@ -170,6 +170,28 @@ function triggerIncomingUserMessage(
     })
 }
 
+describe('rewind input ownership acknowledgment', () => {
+    it.each([
+        [{ ok: true }, { ok: true }],
+        [{ ok: false }, { ok: false }],
+        [{ ok: false, missingLocalIds: ['q', 'q'] }, { ok: false, missingLocalIds: ['q'] }],
+        [{ ok: false, missingLocalIds: ['unrequested'] }, { ok: false }],
+        [{ ok: true, missingLocalIds: ['q'] }, { ok: false }],
+        [{ ok: false, missingLocalIds: [] }, { ok: false }]
+    ])('distinguishes authoritative missing IDs from unavailable/invalid ownership (%j)', async (wire, expected) => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]!
+        socket.emitWithAckImpl = async (event, payload) => {
+            expect(event).toBe('messages-consumed')
+            expect(payload).toEqual({ sid: client.sessionId, localIds: ['q'] })
+            return wire
+        }
+        try { expect(await client.confirmMessagesConsumed(['q'])).toEqual(expected) }
+        finally { client.close() }
+    })
+})
+
 describe('ApiSessionClient lazy materialization', () => {
     it('does not connect or materialize without a real user message', async () => {
         socketHarness.sockets.length = 0

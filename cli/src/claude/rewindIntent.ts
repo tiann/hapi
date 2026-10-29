@@ -56,6 +56,29 @@ export function withStagedRewindInput(intent: RewindIntent, value: RewindDeliver
     }
 }
 
+/** Only authoritative Hub absence plus negative native proof permits this
+ * owner transition. Ordinary new input can never replace an unresolved owner. */
+export function withoutCancelledRewindInput(intent: RewindIntent, missingLocalIds: readonly string[]): RewindIntent {
+    const staged = intent.stagedInput
+    if (!staged || intent.phase !== 'pending' || missingLocalIds.length === 0
+        || missingLocalIds.some(id => !staged.localIds.includes(id))) throw new Error('Invalid rewind input cancellation proof')
+    const { delivery } = staged
+    const suffix = delivery.items.slice(1).map(item => item.message).join('\n')
+    if (delivery.items.length > 1 && !delivery.deliveredText.endsWith(`\n${suffix}`)) {
+        throw new Error('Cannot preserve the exact remaining rewind input')
+    }
+    const first = delivery.items.length === 1 ? delivery.deliveredText
+        : delivery.deliveredText.slice(0, -(suffix.length + 1))
+    const parts = [first, ...delivery.items.slice(1).map(item => item.message)]
+    const remaining = delivery.items.flatMap((item, index) => item.localId && missingLocalIds.includes(item.localId)
+        ? [] : [{ item, text: parts[index]! }])
+    const cleared = { ...intent, stagedInput: undefined }
+    if (remaining.length === 0) return cleared
+    return withStagedRewindInput(cleared, {
+        ...delivery, items: remaining.map(entry => entry.item), deliveredText: remaining.map(entry => entry.text).join('\n')
+    })
+}
+
 /** A durable branch intent, scoped to both the hub and native identities.
  * Keep it until a real post-rewind turn is durable; process init is not a commit.
  * Parse and I/O failures deliberately propagate, rather than resuming the old tail.

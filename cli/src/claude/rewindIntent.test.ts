@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { RewindIntentStore, withStagedRewindInput, type RewindDelivery, type RewindIntent } from './rewindIntent'
+import { RewindIntentStore, withStagedRewindInput, withoutCancelledRewindInput, type RewindDelivery, type RewindIntent } from './rewindIntent'
 
 const intent: RewindIntent = {
     operationId: 'operation-a', requestedLocalId: 'local-two', cutoffSeq: 10, phase: 'pending',
@@ -13,6 +13,31 @@ const intent: RewindIntent = {
 }
 
 describe('durable rewind intent', () => {
+    it('resolves authoritative whole/partial cancellation without changing remaining expanded input or mode', () => {
+        const delivery: RewindDelivery = {
+            deliveredText: '/skill exact Q1\nplain Q2', isolate: false,
+            items: [{ message: '$skill exact Q1', localId: 'q1' }, { message: 'plain Q2', localId: 'q2' }],
+            mode: { permissionMode: 'plan', model: 'haiku' }
+        }
+        const staged = withStagedRewindInput(intent, delivery)
+        const firstCancelled = withoutCancelledRewindInput(staged, ['q1'])
+        expect(firstCancelled.stagedInput?.delivery).toEqual({ ...delivery,
+            deliveredText: 'plain Q2', items: [delivery.items[1]] })
+        const secondCancelled = withoutCancelledRewindInput(staged, ['q2'])
+        expect(secondCancelled.stagedInput?.delivery).toEqual({ ...delivery,
+            deliveredText: '/skill exact Q1', items: [delivery.items[0]] })
+        const allCancelled = withoutCancelledRewindInput(staged, ['q1', 'q2'])
+        expect(allCancelled.stagedInput).toBeUndefined()
+        expect(allCancelled.phase).toBe('pending')
+        expect(() => withoutCancelledRewindInput(staged, ['not-owned'])).toThrow()
+        expect(() => withoutCancelledRewindInput({ ...staged, phase: 'applied' }, ['q1'])).toThrow()
+        expect(withStagedRewindInput(allCancelled, { ...delivery, deliveredText: 'new R', items: [{ message: 'new R', localId: 'r' }] }).stagedInput?.textHash)
+            .not.toBe(staged.stagedInput?.textHash)
+        const home = mkdtempSync(join(tmpdir(), 'hapi-rewind-cancel-'))
+        new RewindIntentStore(home, 'server-a', 'hub-a').write(firstCancelled)
+        expect(new RewindIntentStore(home, 'server-a', 'hub-a').read()).toEqual(firstCancelled)
+    })
+
     it('retains exact staged input and mode across writer death and refuses replacement input', () => {
         const home = mkdtempSync(join(tmpdir(), 'hapi-rewind-staged-'))
         const delivery: RewindDelivery = {

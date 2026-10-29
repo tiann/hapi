@@ -156,6 +156,41 @@ function createSession(
 }
 
 describe('claudeRemoteLauncher resume anchor', () => {
+    it('never submits an authoritatively cancelled staged Q and permits new R', async () => {
+        const client = createClientStub()
+        client.notePendingHubPromptEcho = vi.fn()
+        const { session, queue } = createSession(client, undefined)
+        session.recoveredRewindInput = {
+            deliveredText: 'cancelled Q', items: [{ message: 'cancelled Q', localId: 'q' }],
+            isolate: true, mode: { permissionMode: 'plan' }
+        }
+        queue.push('new R', { permissionMode: 'default' }, 'r')
+        session.stageRewindInput = async ids => {
+            if (ids[0] === 'q') {
+                session.recoveredRewindInput = null
+                return false
+            }
+            return true
+        }
+        const delivered: string[] = []
+        harness.remoteImplementation = async opts => {
+            const next = await opts.nextMessage()
+            if (harness.callCount === 1) {
+                if (next) delivered.push(next.message)
+                return
+            }
+            delivered.push(next.message)
+            await opts.onReady()
+            void client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+        }
+        try {
+            await claudeRemoteLauncher(session as any)
+            expect(delivered).toEqual(['new R'])
+            expect(client.notePendingHubPromptEcho).not.toHaveBeenCalledWith('cancelled Q', ['q'])
+            expect(queue.size()).toBe(0)
+        } finally { session.stopKeepAlive() }
+    })
+
     it('does not let a new R replace the staged Q owner after process recreation', async () => {
         const client = createClientStub()
         const { session, queue } = createSession(client, undefined)
@@ -189,10 +224,11 @@ describe('claudeRemoteLauncher resume anchor', () => {
         let resolveAck!: () => void
         const ack = new Promise<void>(resolve => { resolveAck = resolve })
         session.stageRewindInput = async (ids, _text, delivery) => {
-            if (ids[0] !== 'q') return
+            if (ids[0] !== 'q') return true
             expect(delivery).toEqual(saved)
             await ack
             for (const id of ids) queue.cancelByLocalId(id)
+            return true
         }
         const delivered: string[] = []
         harness.remoteImplementation = async opts => {

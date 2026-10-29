@@ -33,7 +33,7 @@ import {
 import { hasDurableRewindBranch, hashRewindInput, readNativeTurns, readTranscriptUuids, resolveRewindPlan, supportsNativeRewind } from './conversationHistory';
 import { listSkills, type SkillSummary } from '@/modules/common/skills';
 import { configuration } from '@/configuration';
-import { withStagedRewindInput, RewindIntentStore, type RewindDelivery, type RewindIntent } from './rewindIntent';
+import { withStagedRewindInput, withoutCancelledRewindInput, RewindIntentStore, type RewindDelivery, type RewindIntent } from './rewindIntent';
 
 export interface StartOptions {
     model?: string
@@ -829,16 +829,27 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                     persistStagedInput({ ...batch, deliveredText: sessionInstance.expandSkillReference(batch.message) })
                 }
                 sessionInstance.stageRewindInput = async (localIds, text, delivery) => {
-                    if (!pendingRewind) return
+                    if (!pendingRewind) return true
                     persistStagedInput(delivery)
                     if (pendingRewind.stagedInput?.textHash !== hashRewindInput(text)
                         || JSON.stringify(pendingRewind.stagedInput.localIds) !== JSON.stringify(localIds)) {
                         throw new Error('Recovered rewind delivery identity mismatch')
                     }
-                    if (!await sessionInstance.client.confirmMessagesConsumed(localIds)) {
+                    const ownership = await sessionInstance.client.confirmMessagesConsumed(localIds)
+                    if (!ownership.ok && ownership.missingLocalIds?.length) {
+                        if (branchIsDurable(pendingRewind)) throw new Error('Native accepted input contradicts Hub cancellation')
+                        const changed = withoutCancelledRewindInput(pendingRewind, ownership.missingLocalIds)
+                        rewindStore.write(changed)
+                        pendingRewind = changed
+                        sessionInstance.recoveredRewindInput = changed.stagedInput?.delivery ?? null
+                        for (const id of localIds) sessionInstance.queue.cancelByLocalId(id)
+                        return false // never hand the obsolete delivery to the SDK
+                    }
+                    if (!ownership.ok) {
                         throw new Error('Rewind input ownership acknowledgment unavailable')
                     }
                     for (const id of localIds) sessionInstance.queue.cancelByLocalId(id)
+                    return true
                 }
                 sessionInstance.isRewindInputAccepted = (localIds, text) => Boolean(pendingRewind
                     && JSON.stringify(pendingRewind.stagedInput?.localIds) === JSON.stringify(localIds)

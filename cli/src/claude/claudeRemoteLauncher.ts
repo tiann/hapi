@@ -454,7 +454,10 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 permissionHandler.handleModeChange(recovered.mode.permissionMode);
                                 sdkToLogConverter.updateSelectedModel(recovered.mode.model ?? null);
                                 const ids = recovered.items.flatMap(item => item.localId ? [item.localId] : []);
-                                await session.stageRewindInput?.(ids, recovered.deliveredText, recovered);
+                                if (await session.stageRewindInput?.(ids, recovered.deliveredText, recovered) === false) {
+                                    inFlightMessage = null;
+                                    return null;
+                                }
                                 session.recoveredRewindInput = null;
                                 deliveredMessageThisAttempt = true;
                                 session.client.notePendingHubPromptEcho(recovered.deliveredText, ids);
@@ -478,15 +481,15 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 // mid-session model switch), so a construction-time snapshot
                                 // would go stale. See SDKToLogConverter.updateSelectedModel.
                                 sdkToLogConverter.updateSelectedModel(p.mode.model ?? null);
-                                deliveredMessageThisAttempt = true;
                                 const deliveredText = session.expandSkillReference(p.message)
                                 inFlightMessage = { items: p.items, mode: p.mode, isolate: p.isolate, deliveredText };
-                                session.client.notePendingHubPromptEcho(
-                                    deliveredText,
-                                    p.items.flatMap((item) => item.localId ? [item.localId] : [])
-                                )
                                 rewindInputAccepted = false;
-                                await session.stageRewindInput?.(p.items.flatMap(item => item.localId ? [item.localId] : []), deliveredText, inFlightMessage);
+                                if (await session.stageRewindInput?.(p.items.flatMap(item => item.localId ? [item.localId] : []), deliveredText, inFlightMessage) === false) {
+                                    inFlightMessage = null;
+                                    return null;
+                                }
+                                deliveredMessageThisAttempt = true;
+                                session.client.notePendingHubPromptEcho(deliveredText, p.items.flatMap(item => item.localId ? [item.localId] : []));
                                 return { ...p, message: deliveredText };
                             }
 
@@ -515,11 +518,14 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 mode = msg.mode;
                                 permissionHandler.handleModeChange(mode.permissionMode);
                                 sdkToLogConverter.updateSelectedModel(mode.model ?? null);
-                                deliveredMessageThisAttempt = true;
                                 const deliveredText = session.expandSkillReference(msg.message)
                                 inFlightMessage = { items: msg.items, mode: msg.mode, isolate: msg.isolate, deliveredText };
                                 rewindInputAccepted = false;
-                                await session.stageRewindInput?.(msg.items.flatMap(item => item.localId ? [item.localId] : []), deliveredText, inFlightMessage);
+                                if (await session.stageRewindInput?.(msg.items.flatMap(item => item.localId ? [item.localId] : []), deliveredText, inFlightMessage) === false) {
+                                    inFlightMessage = null;
+                                    return null;
+                                }
+                                deliveredMessageThisAttempt = true;
                                 session.client.notePendingHubPromptEcho(
                                     deliveredText,
                                     msg.items.flatMap((item) => item.localId ? [item.localId] : [])

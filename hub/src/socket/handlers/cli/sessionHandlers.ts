@@ -449,54 +449,61 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
         const localIds = data.localIds.filter((id): id is string => typeof id === 'string')
-        if (localIds.length === 0 || (callback && localIds.length !== data.localIds.length)) {
+        if (localIds.length === 0 || (callback && (localIds.length !== data.localIds.length || localIds.some(id => id.length === 0)))) {
             callback?.({ ok: false })
             return
         }
-        let ok = false
+        let response: { ok: boolean; missingLocalIds?: string[] } = { ok: false }
         try {
             const sessionAccess = resolveSessionAccess(data.sid)
             if (!sessionAccess.ok) {
                 emitAccessError('session', data.sid, sessionAccess.reason)
             } else {
-                if (callback) {
-                    const present = new Set(store.messages.getAllMessages(data.sid).map(message => message.localId))
-                    if (!localIds.every(id => present.has(id))) {
-                        callback({ ok: false })
-                        return
-                    }
-                }
                 const invokedAt = Date.now()
-                const sessionUpdatedAt = store.recordMessagesConsumed(
+                const record = () => store.recordMessagesConsumed(
                     data.sid,
                     localIds,
                     invokedAt,
                     sessionAccess.value.namespace
                 )
-                let activityNotified = true
-                try {
-                    onSessionActivity?.(data.sid, sessionUpdatedAt)
-                } catch (err) {
-                    activityNotified = false
-                    console.error('onSessionActivity failed', err)
-                }
+                const transition = callback ? store.runInTransaction(() => {
+                    // The access resolver may be memoized. Missing IDs are an
+                    // authoritative absence proof only for a live authorized row.
+                    if (!store.sessions.getSessionByNamespace(data.sid, sessionAccess.value.namespace)) {
+                        throw new Error('Session unavailable for consumption confirmation')
+                    }
+                    const present = new Set(store.messages.getAllMessages(data.sid).map(message => message.localId))
+                    const missingLocalIds = localIds.filter(id => !present.has(id))
+                    return missingLocalIds.length > 0 ? { missingLocalIds } : { sessionUpdatedAt: record() }
+                }) : { sessionUpdatedAt: record() }
+                if ('missingLocalIds' in transition) {
+                    response = { ok: false, missingLocalIds: transition.missingLocalIds }
+                } else {
+                    let activityNotified = true
+                    try {
+                        onSessionActivity?.(data.sid, transition.sessionUpdatedAt)
+                    } catch (err) {
+                        activityNotified = false
+                        console.error('onSessionActivity failed', err)
+                    }
 
-                // Only drop the queued-thinking grace when the CLI explicitly
-                // opts in (synchronous handlers that send no thinking keepalive).
-                if (data.clearQueuedThinkingGrace === true) {
-                    onMessagesConsumed?.(data.sid)
+                    // Only drop the queued-thinking grace when the CLI explicitly
+                    // opts in (synchronous handlers that send no thinking keepalive).
+                    if (data.clearQueuedThinkingGrace === true) {
+                        onMessagesConsumed?.(data.sid)
+                    }
+                    // Legacy fire-and-forget unknown-ID batches remain unchanged.
+                    // An ownership ACK additionally requires every row to exist.
+                    onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds, invokedAt, ...(data.steered === true ? { steered: true } : {}) })
+                    response = { ok: activityNotified }
                 }
-                // Legacy fire-and-forget unknown-ID batches remain unchanged.
-                // An ownership ACK additionally requires every row to exist.
-                onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds, invokedAt, ...(data.steered === true ? { steered: true } : {}) })
-                ok = activityNotified
             }
         } catch (err) {
             console.error('messages-consumed failed', err)
         }
         // The optional wire ACK follows both the durable transaction and all
         // engine notifications. Legacy emitters need not provide a callback.
-        callback?.({ ok })
+        callback?.(response)
     }
     socket.on('messages-consumed', handleMessagesConsumed)
 

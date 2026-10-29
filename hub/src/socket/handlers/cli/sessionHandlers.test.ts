@@ -52,12 +52,42 @@ describe('messages-consumed optional durable ACK', () => {
             let ack: unknown
             const data = { sid: session.id, localIds: ['queued-q', 'cancelled-or-missing'] }
             socket.trigger('messages-consumed', data, response => { ack = response })
-            expect(ack).toEqual({ ok: false })
+            expect(ack).toEqual({ ok: false, missingLocalIds: ['cancelled-or-missing'] })
             expect(store.messages.getAllMessages(session.id)[0]!.invokedAt).toBeNull()
             expect(notifications).toHaveLength(0)
             socket.trigger('messages-consumed', data)
             expect(store.messages.getAllMessages(session.id)[0]!.invokedAt).not.toBeNull()
         } finally { store.close() }
+    })
+
+    it('reports only the exact missing subset and leaves every present queued or invoked row unchanged', () => {
+        const { store, session, socket, notifications } = consumedFixture()
+        try {
+            store.messages.addMessage(session.id, { role: 'user' }, 'already-invoked')
+            store.messages.markMessagesInvoked(session.id, ['already-invoked'], 123)
+            const before = store.messages.getAllMessages(session.id)
+            const updatedAt = store.sessions.getSession(session.id)!.updatedAt
+            let ack: unknown
+            socket.trigger('messages-consumed', { sid: session.id, localIds: ['missing-b', 'queued-q', 'already-invoked', 'missing-a'] }, response => { ack = response })
+            expect(ack).toEqual({ ok: false, missingLocalIds: ['missing-b', 'missing-a'] })
+            expect(store.messages.getAllMessages(session.id)).toEqual(before)
+            expect(store.sessions.getSession(session.id)!.updatedAt).toBe(updatedAt)
+            expect(notifications).toHaveLength(0)
+        } finally { store.close() }
+    })
+
+    it('returns unknown rather than absence proof if the authorized session was deleted', () => {
+        let stale: StoredSession
+        const { store, session, socket, notifications } = consumedFixture({ resolveSessionAccess: () => ({ ok: true, value: stale }) })
+        stale = session
+        const errors = spyOn(console, 'error').mockImplementation(() => {})
+        try {
+            store.sessions.deleteSession(session.id, 'owner')
+            let ack: unknown
+            socket.trigger('messages-consumed', { sid: session.id, localIds: ['queued-q', 'missing'] }, response => { ack = response })
+            expect(ack).toEqual({ ok: false })
+            expect(notifications).toHaveLength(0)
+        } finally { errors.mockRestore(); store.close() }
     })
 
     it('ACKs only after persistence and engine notifications; duplicate ACKs preserve the original invocation', () => {
@@ -87,7 +117,7 @@ describe('messages-consumed optional durable ACK', () => {
         const { store, session, socket, notifications } = consumedFixture()
         try {
             for (const data of [null, {}, { sid: session.id, localIds: 'queued-q' },
-                { sid: session.id, localIds: [] }, { sid: session.id, localIds: ['queued-q', 42] }]) {
+                { sid: session.id, localIds: [] }, { sid: session.id, localIds: [''] }, { sid: session.id, localIds: ['queued-q', 42] }]) {
                 let acks = 0
                 socket.trigger('messages-consumed', data, response => { expect(response).toEqual({ ok: false }); acks++ })
                 expect(acks).toBe(1)
@@ -109,7 +139,7 @@ describe('messages-consumed optional durable ACK', () => {
             })
             try {
                 let acks = 0
-                socket.trigger('messages-consumed', { sid: session.id, localIds: ['queued-q'] }, response => {
+                socket.trigger('messages-consumed', { sid: session.id, localIds: ['queued-q', 'missing-private-row'] }, response => {
                     expect(response).toEqual({ ok: false }); acks++
                 })
                 expect(acks).toBe(1)

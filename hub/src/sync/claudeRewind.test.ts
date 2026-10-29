@@ -4,10 +4,13 @@ import { RpcRegistry } from '../socket/rpcRegistry'
 import { SyncEngine } from './syncEngine'
 import type { Metadata, TodoItem } from '@hapi/protocol/types'
 import { registerSessionHandlers } from '../socket/handlers/cli/sessionHandlers'
+import { Hono } from 'hono'
+import { createMessagesRoutes } from '../web/routes/messages'
+import type { WebAppEnv } from '../web/middleware/auth'
 
 function setup() {
     const store = new Store(':memory:')
-    const engine = new SyncEngine(store, { of: () => ({ to: () => ({ emit() {} }) }) } as never, new RpcRegistry(), { broadcast() {} } as never)
+    const engine = new SyncEngine(store, { of: () => ({ adapter: { rooms: new Map() }, to: () => ({ emit() {} }) }) } as never, new RpcRegistry(), { broadcast() {} } as never)
     const session = engine.getOrCreateSession('claude-rewind', {
         path: '/tmp', host: 'localhost', flavor: 'claude', claudeSessionId: 'native',
         capabilities: { conversationHistory: { rewindToMessage: true, forkCurrent: true } },
@@ -29,6 +32,58 @@ function applied(store: Store, sid: string) {
 }
 
 describe('durable Claude rewind', () => {
+    for (const alreadyInvoked of [false, true]) {
+        it(`reports offline staged-Q withdrawal authoritatively (consumed before crash: ${alreadyInvoked})`, async () => {
+            const { store, engine, sid } = setup()
+            try {
+                ;(engine as any).rpcGateway.rewindConversation = async (_: string, params: { operationId: string }) => ({
+                    success: false, outcome: 'pending', operationId: params.operationId,
+                    nativeSessionId: 'native', keepBoundary: 'uuid', truncateFromLocalId: 'boundary'
+                })
+                expect(await engine.rewindConversation(sid, 'default', 'boundary')).toEqual({ type: 'success', pending: true })
+                await engine.sendMessage(sid, { text: 'staged Q not yet written to native', localId: 'staged-q' })
+                const handlers = new Map<string, (...args: any[]) => void>()
+                const consumed: string[][] = []
+                registerSessionHandlers({ on: (name: string, fn: (...args: any[]) => void) => handlers.set(name, fn), to: () => ({ emit() {} }) } as never, {
+                    store, resolveSessionAccess: () => ({ ok: true, value: store.sessions.getSessionByNamespace(sid, 'default')! }), emitAccessError() {},
+                    onSessionActivity: (id, at) => engine.recordSessionActivity(id, at),
+                    onWebappEvent: event => { if (event.type === 'messages-consumed') consumed.push(event.localIds) }
+                })
+                const confirm = (localIds: string[]) => {
+                    let ack: unknown
+                    handlers.get('messages-consumed')!({ sid, localIds }, (result: unknown) => { ack = result })
+                    return ack
+                }
+                if (alreadyInvoked) expect(confirm(['staged-q'])).toEqual({ ok: true })
+                // The mock CLI room is empty, representing death before (or
+                // after, in the control case) the original consumption ACK.
+                const app = new Hono<WebAppEnv>()
+                app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+                app.route('/api', createMessagesRoutes(() => engine))
+                const row = store.messages.getAllMessages(sid).find(message => message.localId === 'staged-q')!
+                const cancelled = await app.request(`/api/sessions/${sid}/messages/${row.id}`, { method: 'DELETE' })
+                expect(cancelled.status).toBe(200)
+                expect(await cancelled.json()).toMatchObject({ status: alreadyInvoked ? 'invoked' : 'cancelled' })
+                await engine.sendMessage(sid, { text: 'remaining/new R', localId: 'remaining-r' })
+                const before = store.messages.getAllMessages(sid)
+                const count = consumed.length
+                if (alreadyInvoked) {
+                    expect(confirm(['staged-q'])).toEqual({ ok: true })
+                    expect(store.messages.getAllMessages(sid).find(message => message.localId === 'staged-q')!.invokedAt).not.toBeNull()
+                } else {
+                    expect(confirm(['staged-q'])).toEqual({ ok: false, missingLocalIds: ['staged-q'] })
+                    expect(confirm(['staged-q', 'remaining-r'])).toEqual({ ok: false, missingLocalIds: ['staged-q'] })
+                    expect(store.messages.getAllMessages(sid)).toEqual(before)
+                    expect(consumed.length).toBe(count)
+                    expect(confirm(['remaining-r'])).toEqual({ ok: true })
+                    expect(store.messages.getAllMessages(sid).some(message => message.localId === 'staged-q')).toBe(false)
+                    expect(consumed.slice(count)).toEqual([['remaining-r']])
+                }
+                expect((store.sessions.getSession(sid)!.metadata as Metadata).claudeRewind?.phase).toBe('pending')
+            } finally { engine.stop() }
+        })
+    }
+
     it('blocks terminal remote-to-local handoff from durable pending state without an in-flight lock', async () => {
         const { store, engine, sid } = setup()
         try {
