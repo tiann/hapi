@@ -27,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -70,7 +71,6 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import android.content.ClipData
@@ -78,6 +78,8 @@ import android.content.ClipboardManager
 import android.content.Context
 import app.hapi.companion.R
 import app.hapi.companion.feature.sessions.localizedRelativeAge
+import app.hapi.companion.ui.components.HapiNoteGlyph
+import app.hapi.companion.ui.components.HapiPaperclipGlyph
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.data.store.ScratchlistEntryOps
@@ -457,12 +459,21 @@ private fun AttachmentThumb(
                 onClick = onOpen,
             ) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(4.dp)) {
-                    Text(
-                        text = "📎 ${attachment.filename}",
-                        style = MaterialTheme.typography.labelSmall,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = HapiPaperclipGlyph,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Text(
+                            text = attachment.filename,
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
         }
@@ -478,7 +489,11 @@ private fun AttachmentThumb(
                     .size(20.dp),
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Text(text = "✕", fontSize = 11.sp)
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = null,
+                        modifier = Modifier.size(12.dp),
+                    )
                 }
             }
         }
@@ -668,7 +683,12 @@ private fun EmptyScratchlist() {
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text(text = "🗒", fontSize = 34.sp)
+        Icon(
+            imageVector = HapiNoteGlyph,
+            contentDescription = null,
+            tint = MaterialTheme.hapi.hint,
+            modifier = Modifier.size(34.dp),
+        )
         Spacer(modifier = Modifier.height(8.dp))
         Text(text = stringResource(R.string.scratchlist_empty_title), style = MaterialTheme.typography.titleMedium)
         Spacer(modifier = Modifier.height(8.dp))

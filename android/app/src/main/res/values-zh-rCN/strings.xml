@@ -221,6 +221,24 @@
     <string name="sessions_search_close">关闭搜索</string>
     <string name="sessions_search_no_results">没有匹配“%1$s”的会话</string>
     <string name="sessions_search_no_results_hint">换个关键词，或清除搜索。</string>
+    <string name="sessions_grouped_layout">按目录分组</string>
+    <string name="sessions_group_expand">展开分组</string>
+    <string name="sessions_group_collapse">折叠分组</string>
+    <string name="sessions_unread_filter">仅未读</string>
+    <string name="sessions_unread_empty_title">没有未读会话</string>
+    <string name="sessions_unread_empty_hint">全部读完了，有新活动时会出现在这里。</string>
+    <string name="sessions_active_filter">仅活跃</string>
+    <string name="sessions_pin_in_progress">进行中</string>
+    <string name="sessions_active_empty_title">没有活跃会话</string>
+    <string name="sessions_active_empty_hint">连接到 runner 的会话会出现在这里。</string>
+    <string name="sessions_section_running">运行中</string>
+    <string name="sessions_section_pending">待处理</string>
+    <string name="sessions_section_active">活跃</string>
+    <string name="sessions_section_idle">空闲（仅心跳）</string>
+    <string name="sessions_mark_all_read">全部标为已读（%1$d）</string>
+    <string name="sessions_mark_all_read_title">全部标为已读？</string>
+    <string name="sessions_mark_all_read_description">将在这台设备上把 %1$d 个未读会话标为已读。</string>
+    <string name="sessions_mark_all_read_confirm">确认</string>
     <string name="sessions_empty_loading_title">正在加载会话…</string>
     <string name="sessions_empty_offline_title">无法连接 hub</string>
     <string name="sessions_empty_title">还没有会话</string>
@@ -234,11 +252,13 @@
     <string name="sessions_action_pin_project">项目置顶</string>
     <string name="sessions_action_pin_global">全局置顶</string>
     <string name="sessions_action_rename">重命名</string>
+    <string name="sessions_action_mark_unread">标为未读</string>
     <string name="sessions_action_reopen">重新打开</string>
     <string name="sessions_action_archive">归档</string>
     <string name="sessions_action_delete">删除</string>
     <string name="sessions_error_pin">置顶操作失败</string>
     <string name="sessions_error_archive">归档失败</string>
+    <string name="sessions_error_summary">保存生成的标题失败</string>
     <string name="sessions_error_rename">重命名失败</string>
     <string name="sessions_error_delete">删除失败</string>
     <string name="sessions_error_reopen">重新打开失败</string>
@@ -246,6 +266,12 @@
     <string name="sessions_error_delete_active">会话仍在运行 — 请先归档</string>
     <string name="sessions_reopen_failed_fallback">无法重新打开会话</string>
     <string name="sessions_rename_title">重命名会话</string>
+    <string name="sessions_action_rename_save">保存</string>
+    <string name="sessions_action_copy_reference">复制引用</string>
+    <string name="sessions_reference_copied">引用已复制</string>
+    <string name="sessions_rename_suggest">生成</string>
+    <string name="sessions_rename_suggesting">生成中…</string>
+    <string name="sessions_rename_suggest_error">标题生成失败，请重试。</string>
     <string name="sessions_rename_placeholder">会话名称</string>
     <string name="sessions_delete_title">删除会话？</string>
     <string name="sessions_delete_message">“%1$s”及其消息历史将从 hub 永久移除。运行中的会话必须先归档。</string>
@@ -256,7 +282,6 @@
     <string name="chat_back">返回</string>
     <string name="chat_open_files">会话文件</string>
     <string name="chat_open_scratchlist">草稿夹</string>
-    <string name="chat_open_scratchlist_count">草稿夹（%1$d）</string>
     <string name="chat_open_settings">会话设置</string>
     <string name="chat_session_actions">会话操作</string>
     <string name="chat_scratchlist_badge">草稿夹</string>
@@ -268,8 +293,6 @@
     <string name="chat_load_failed_hint">请检查与 hub 的连接后重试。</string>
     <string name="chat_empty_title">还没有消息</string>
     <string name="chat_empty_hint">智能体工作时，消息会显示在这里。</string>
-    <string name="chat_new_messages_one">1 条新消息 ↓</string>
-    <string name="chat_new_messages_many">%1$d 条新消息 ↓</string>
 
     <!-- Chat snackbar notices (semantic ChatNotice resolution) -->
     <string name="chat_notice_no_transcription">Hub 未配置转录提供商</string>
@@ -298,7 +321,7 @@
     <string name="chat_composer_placeholder">输入消息…</string>
     <string name="chat_attachment_uploading">上传中…</string>
     <string name="chat_attachment_failed_retry">失败 — 点按重试</string>
-    <string name="chat_recording">● 录音中…  %1$s</string>
+    <string name="chat_recording">录音中… %1$s</string>
     <string name="chat_cancel">取消</string>
     <string name="chat_park_draft">将草稿存入草稿夹</string>
     <string name="chat_composer_add_attachment">添加附件</string>
