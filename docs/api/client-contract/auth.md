@@ -76,13 +76,25 @@ Failures: `400 {"error": "Invalid body"}`, `401 {"error": "Invalid access token"
 
 `POST /api/bind` (`hub/src/web/routes/bind.ts`) is **Telegram-only** — it binds a Telegram identity to a namespace and requires Telegram `initData`. Native clients never call it.
 
+### Optional Cloudflare Access web exchange
+
+This is a web-only alternative; native pairing continues to use `POST /api/auth`.
+
+- `GET /api/auth/methods` returns `200 {"cloudflareAccess": true|false}` without a HAPI bearer token. It reports capability, not whether the current user is authorized.
+- `GET /api/auth/cloudflare` also requires no HAPI bearer token. It requires the current signed `Cf-Access-Jwt-Assertion` supplied by Cloudflare Access and returns the same `AuthResponse` shape as `POST /api/auth`.
+- Both responses use `Cache-Control: no-store`. The exchange returns 404 when disabled, 401 for a missing/invalid assertion, 403 `Access denied` for an email outside the configured allowlist, and 503 `Authentication service unavailable` when verification keys cannot be obtained.
+- The JWT includes `authMethod: "cloudflareAccess"`, `cfAccessSub` and `cfAccessEmail`, with `ns` from the Hub's email-to-namespace mapping. Its expiry is the earlier of 4 hours and the assertion expiry. Protected REST/SSE requests, terminal handshakes and voice upgrades require a matching current assertion as well as the JWT.
+- Web 401 refresh uses this GET exchange instead of a stored access token; scheduled refreshes are spaced at least 15 seconds apart, while forced 401 refresh is immediate. This flow does not provide a native pairing credential.
+
+See [deployment setup](../../guide/deployment.md#cloudflare-access-optional-web-login) for the opt-in Hub environment variables.
+
 ## The JWT
 
 Source of truth: `hub/src/web/routes/auth.ts` (signing), `hub/src/web/middleware/auth.ts` (verification), `hub/src/config/jwtSecret.ts` (key).
 
 - HS256, signed with a hub-local 32-byte secret (`<dataDir>/jwt-secret.json`).
-- Payload: `{ "uid": <number>, "ns": <string> }` plus standard `iat`/`exp`.
-- **Expires 4 hours** after issue.
+- Payload: `{ "uid": <number>, "ns": <string> }` plus standard `iat`/`exp`; Cloudflare-derived sessions also carry the identity-binding fields described above.
+- Access-token and Telegram JWTs **expire 4 hours** after issue. Cloudflare-derived JWTs may expire sooner, at the Access assertion expiry.
 
 Treat the token as opaque for auth purposes, but clients may base64url-decode the payload to read `exp` for proactive refresh scheduling (the web client does exactly this — `decodeJwtExpMs` in `web/src/hooks/useAuth.ts`).
 
@@ -91,7 +103,7 @@ Treat the token as opaque for auth purposes, but clients may base64url-decode th
 Source of truth: `hub/src/web/middleware/auth.ts`.
 
 - Every `/api/*` request: `Authorization: Bearer <JWT>`.
-- Exceptions: `/api/auth` and `/api/bind` are unauthenticated; `GET /health` is outside `/api` and unauthenticated.
+- Exceptions: `POST /api/auth`, `POST /api/bind`, `GET /api/auth/methods` and `GET /api/auth/cloudflare` do not require a HAPI bearer token. The Cloudflare exchange still requires a valid Access assertion. `GET /health` is outside `/api` and unauthenticated.
 - `GET /api/events` (SSE) **additionally** accepts `?token=<JWT>` as a query param, for HTTP stacks whose EventSource cannot set headers. The header wins when both are present. No other endpoint accepts query-param auth.
 
 ## Silent re-auth (401 handling)
@@ -101,7 +113,7 @@ Native implementations: iOS `HapiClient/Auth/AuthManager.swift` and
 Web reference: `web/src/api/client.ts` (`request()`),
 `web/src/hooks/useAuth.ts` (`refreshAuth`).
 
-The JWT expires every 4 hours, so 401s are routine, not exceptional. The contract:
+For access-token-based clients, the JWT expires every 4 hours, so 401s are routine, not exceptional. The contract:
 
 1. On a 401 from an authenticated client API request, re-exchange the **stored access token** via `POST /api/auth`. The auth exchange itself must not enter this loop.
 2. If the exchange succeeds, retry the original request **exactly once** with the new JWT.
@@ -118,7 +130,7 @@ Implementation notes:
 
 Source of truth: `hub/src/web/middleware/auth.ts` (sets `namespace` from `ns`), `hub/src/web/routes/guards.ts`, `hub/src/web/routes/{usage,storage,hubSettings,voice}.ts`.
 
-Every request executes in the JWT's namespace (`ns` claim, derived from the access-token suffix). Sessions and machines are namespace-scoped: a session in another namespace answers `403 Session access denied` / `404 Session not found` per the guard logic.
+Every request executes in the JWT's namespace (`ns` claim, derived from the access-token suffix or the Cloudflare email mapping). Sessions and machines are namespace-scoped: a session in another namespace answers `403 Session access denied` / `404 Session not found` per the guard logic.
 
 `ns === "default"` is the **hub owner**. Owner-only surfaces (403 for any other namespace):
 
@@ -154,3 +166,5 @@ All are JSON with an `error` string; none carry a `code` field except Telegram's
 | `POST /api/auth` (Telegram path) | `{"error": "not_bound"}` | Telegram-only; not reachable with `accessToken` auth |
 
 The re-auth loop must distinguish the middleware 401s (recoverable via re-exchange) from the `/api/auth` 401 (terminal — do not loop).
+
+For Cloudflare-derived JWTs, protected requests can also return `403 {"error": "Access denied"}` when the current assertion's email is no longer allowed, or `503 {"error": "Authentication service unavailable"}` when verification keys cannot be obtained. These branches do not apply to legacy token or Telegram JWTs.

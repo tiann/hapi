@@ -5,8 +5,9 @@ import type { AuthResponse } from '@/types/api'
 export type AuthSource =
     | { type: 'telegram'; initData: string }
     | { type: 'accessToken'; token: string }
+    | { type: 'cloudflareAccess' }
 
-function decodeJwtExpMs(token: string): number | null {
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
     const parts = token.split('.')
     if (parts.length < 2) return null
 
@@ -18,19 +19,31 @@ function decodeJwtExpMs(token: string): number | null {
 
     try {
         const decoded = globalThis.atob(payloadBase64)
-        const payload = JSON.parse(decoded) as { exp?: unknown }
-        if (typeof payload.exp !== 'number') return null
-        return payload.exp * 1000
+        return JSON.parse(decoded) as Record<string, unknown>
     } catch {
         return null
     }
 }
 
-function getAuthPayload(source: AuthSource): { initData: string } | { accessToken: string } {
-    if (source.type === 'telegram') {
-        return { initData: source.initData }
+function decodeJwtExpMs(token: string): number | null {
+    const payload = decodeJwtPayload(token)
+    if (payload === null) return null
+    if (typeof payload.exp !== 'number') return null
+    return payload.exp * 1000
+}
+
+function isCloudflareToken(token: string): boolean {
+    return decodeJwtPayload(token)?.authMethod === 'cloudflareAccess'
+}
+
+async function authenticateWith(client: ApiClient, source: AuthSource): Promise<AuthResponse> {
+    if (source.type === 'cloudflareAccess') {
+        return await client.authenticateWithCloudflare()
     }
-    return { accessToken: source.token }
+    if (source.type === 'telegram') {
+        return await client.authenticate({ initData: source.initData })
+    }
+    return await client.authenticate({ accessToken: source.token })
 }
 
 function isNotBoundError(error: unknown): boolean {
@@ -101,7 +114,7 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
 
             try {
                 const client = new ApiClient('', { baseUrl })
-                const auth = await client.authenticate(getAuthPayload(currentSource))
+                const auth = await authenticateWith(client, currentSource)
                 tokenRef.current = auth.token
                 setToken(auth.token)
                 setUser(auth.user)
@@ -202,7 +215,7 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
             setNeedsBinding(false)
             try {
                 const client = new ApiClient('', { baseUrl }) // temporary for auth call
-                const auth = await client.authenticate(getAuthPayload(authSource))
+                const auth = await authenticateWith(client, authSource)
                 if (isCancelled) return
                 setToken(auth.token)
                 setUser(auth.user)
@@ -259,7 +272,12 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
             if (timeout) {
                 clearTimeout(timeout)
             }
-            timeout = setTimeout(() => void refresh(), Math.max(0, delayMs))
+            // Cloudflare-derived JWTs expire with the Access assertion, so the
+            // final-60s window can schedule 0 on every changed token and loop
+            // the login endpoint. Bound CF scheduled refreshes to one per 15s;
+            // force/onUnauthorized refreshes stay immediate.
+            const minDelayMs = isCloudflareToken(token) ? 15_000 : 0
+            timeout = setTimeout(() => void refresh(), Math.max(minDelayMs, delayMs))
         }
 
         const refresh = async () => {
