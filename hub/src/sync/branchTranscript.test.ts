@@ -55,6 +55,16 @@ describe('portable branch reference', () => {
         const huge = row(0, { role: 'user', content: 'x'.repeat(BRANCH_CONTEXT_MAX_BYTES) }, 'huge')
         expect(() => buildBranchPrompt([huge, ...messages], request)).toThrow('256 KiB')
     })
+    it('rejects generated and nested tool images rather than serializing their bytes', () => {
+        for (const data of [
+            { type: 'generated-image', imageId: 'image' },
+            { type: 'tool-call-result', output: { content: [{ type: 'image', data: 'BASE64_BYTES' }] } }
+        ]) {
+            const image = row(0, { role: 'agent', content: { type: 'codex', data } })
+            expect(() => buildBranchPrompt([image, ...messages], request)).toThrow('attachments')
+        }
+    })
+
     it('never imports arbitrary system fields or raw private envelopes', () => {
         const hidden = row(0, { role: 'agent', content: { type: 'output', data: {
             type: 'system', systemPrompt: 'PRIVATE_SYSTEM', credentials: 'PRIVATE_TOKEN'
