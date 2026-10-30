@@ -334,6 +334,11 @@ html:has(.chat-scroll-y) #root {
     touch-action: pan-y;
 }
 
+/* Keep the agent details content centered when the modal scrollbar is visible. */
+.agent-details-scroll-y {
+    scrollbar-gutter: stable both-edges;
+}
+
 /* Keep file-preview content aligned to the previous left edge while reserving
  * the scrollbar slot on the right on both touch and pointer devices. */
 .file-preview-scroll-y {
@@ -356,7 +361,6 @@ html:has(.chat-scroll-y) #root {
     max-width: calc(var(--content-max-w, 960px) + var(--file-preview-scrollbar-compensation, 0px));
     left: var(--file-preview-scroll-content-offset, 0px);
 }
-
 /* Keep only the two primary session surfaces visually quiet while idle.
  * Preserve scrollbar width/gutters so hiding the thumb cannot shift content. */
 .scrollbar-auto-hide {

@@ -18,6 +18,7 @@ function stampContextWindow(message: RawJSONLines, contextModel: string | null):
         message.message.usage.context_window ??= 1_000_000;
     }
 }
+import { buildClaudeContextDetails, publishContextDetails } from '@/agent/contextDetails';
 
 function isInterruptMarker(message: RawJSONLines): boolean {
     if (message.type !== 'user' || message.isSidechain) return false;
@@ -28,12 +29,39 @@ function isInterruptMarker(message: RawJSONLines): boolean {
 }
 
 export async function claudeLocalLauncher(session: Session): Promise<'switch' | 'exit'> {
+    let lastSystemModel = session.getModel();
 
     // Create scanner
     const scanner = await createSessionScanner({
         sessionId: session.sessionId,
         workingDirectory: session.path,
         onMessage: (message) => {
+            const rawMessage = message as unknown as Record<string, unknown>;
+            const isSidechain = rawMessage.isSidechain === true;
+            if (!isSidechain) {
+                if (rawMessage.type === 'system' && typeof rawMessage.model === 'string') {
+                    lastSystemModel = rawMessage.model;
+                }
+                const isSyntheticApiError = rawMessage.type === 'assistant' && rawMessage.isApiErrorMessage === true;
+                if (!isSyntheticApiError && (rawMessage.type === 'assistant' || rawMessage.type === 'system' || rawMessage.type === 'result')) {
+                    const nestedMessage = rawMessage.message as Record<string, unknown> | undefined;
+                    const nestedModel = typeof nestedMessage?.model === 'string' ? nestedMessage.model : undefined;
+                    const details = buildClaudeContextDetails({
+                        contextUsage: rawMessage.context_usage,
+                        system: rawMessage.type === 'system' ? rawMessage : undefined,
+                        result: rawMessage.type === 'result' ? rawMessage : undefined,
+                        messageUsage: nestedMessage?.usage ?? rawMessage.usage,
+                        model: nestedModel ?? (typeof rawMessage.model === 'string' ? rawMessage.model : lastSystemModel)
+                    });
+                    if (details) {
+                        if (details.model) {
+                            lastSystemModel = details.model;
+                        }
+                        publishContextDetails(session.client, details);
+                    }
+                }
+            }
+
             session.localPermissionBridge.onTranscript(message);
             // Esc-interrupted turns fire no Stop hook; Claude Code only
             // writes this marker to the transcript. The scanner can deliver it
@@ -65,6 +93,11 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                 return
             }
             stampContextWindow(message, session.localContextModel)
+            if (message.type === 'assistant') {
+                const { context_usage: _contextUsage, ...outboundMessage } = message
+                session.client.sendClaudeSessionMessage(outboundMessage)
+                return
+            }
             session.client.sendClaudeSessionMessage(message)
         }
     });
