@@ -476,9 +476,13 @@ fun HapiNavigation() {
             ChatHost(
                 viewModel = holder.viewModel,
                 media = remember(hubGraph, sessionId) {
-                    ChatMedia(hubGraph.imageLoader) { imageId ->
-                        hubGraph.generatedImageUrl(sessionId, imageId)
-                    }
+                    ChatMedia(
+                        imageLoader = hubGraph.imageLoader,
+                        generatedImageUrl = { imageId ->
+                            hubGraph.generatedImageUrl(sessionId, imageId)
+                        },
+                        hubMediaUrl = { path -> hubGraph.hubMediaUrl(path) },
+                    )
                 },
                 onBack = closeChat,
                 onNavigateToSession = { supersededId ->

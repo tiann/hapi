@@ -71,6 +71,33 @@ class SyncEventDecodingTest {
     }
 
     @Test
+    fun `decodes message-received scheduledAt as epoch millis or absent`() {
+        val scheduled = assertIs<SyncEvent.MessageReceived>(
+            SyncEvents.parse(
+                """
+                {"type":"message-received","sessionId":"s-1","message":
+                  {"id":"m-2","seq":8,"localId":"local-2","createdAt":1000,"invokedAt":null,
+                   "scheduledAt":1761400200000,
+                   "content":{"role":"user","content":{"type":"text","text":"later"}}}}
+                """
+            )
+        )
+        assertEquals(1_761_400_200_000L, scheduled.message.scheduledAt)
+
+        // Absent scheduledAt (every unscheduled send) decodes to null.
+        val plain = assertIs<SyncEvent.MessageReceived>(
+            SyncEvents.parse(
+                """
+                {"type":"message-received","sessionId":"s-1","message":
+                  {"id":"m-3","seq":9,"localId":"local-3","createdAt":1000,"invokedAt":null,
+                   "content":{"role":"user","content":{"type":"text","text":"now"}}}}
+                """
+            )
+        )
+        assertNull(plain.message.scheduledAt)
+    }
+
+    @Test
     fun `decodes messages-consumed and message-cancelled reconciliation events`() {
         val consumed = assertIs<SyncEvent.MessagesConsumed>(
             SyncEvents.parse(

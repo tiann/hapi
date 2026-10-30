@@ -26,16 +26,22 @@ import app.hapi.protocol.chat.VisibleChatBlock
 import coil.ImageLoader
 
 /**
- * Hub-scoped media plumbing for chat blocks: the authed Coil loader plus the
- * generated-image URL builder (both from `HubGraph`). Null loader (previews,
- * tests) degrades to a filename placeholder.
+ * Hub-scoped media plumbing for chat blocks: the authed Coil loader, the
+ * generated-image URL builder, and the hub-relative media resolver used by
+ * markdown inline images (all from `HubGraph`). Null loader (previews,
+ * tests) degrades to a filename placeholder / link fallback.
  */
 data class ChatMedia(
     val imageLoader: ImageLoader?,
     val generatedImageUrl: (imageId: String) -> String?,
+    /**
+     * Resolves a hub-relative markdown image src to an absolute URL for the
+     * authed loader; a null return (or the default) degrades to a link.
+     */
+    val hubMediaUrl: (path: String) -> String? = { null },
 )
 
-val LocalChatMedia = staticCompositionLocalOf { ChatMedia(imageLoader = null) { null } }
+val LocalChatMedia = staticCompositionLocalOf { ChatMedia(imageLoader = null, generatedImageUrl = { null }) }
 
 /** Stable LazyColumn key. */
 val VisibleChatBlock.stableId: String
