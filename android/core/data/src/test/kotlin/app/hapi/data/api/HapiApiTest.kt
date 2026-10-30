@@ -197,6 +197,59 @@ class HapiApiTest {
     }
 
     @Test
+    fun `fork conversation omits messageLocalId for the current head`() {
+        server.enqueue(ok("""{"sessionId":"s2"}"""))
+
+        val response = runBlocking { session.api.forkConversation("s1", messageLocalId = null) }
+
+        assertEquals("s2", response.sessionId)
+        val request = server.takeRequest()
+        assertEquals("/api/sessions/s1/fork", request.path)
+        assertEquals("POST", request.method)
+        val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+        assertNull(body["messageLocalId"], "null messageLocalId must be omitted (web sends {})")
+    }
+
+    @Test
+    fun `fork conversation at a boundary carries the messageLocalId`() {
+        server.enqueue(ok("""{"sessionId":"s3"}"""))
+
+        runBlocking { session.api.forkConversation("s1", messageLocalId = "lm-1") }
+
+        val request = server.takeRequest()
+        assertEquals("/api/sessions/s1/fork", request.path)
+        assertEquals("POST", request.method)
+        val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+        assertEquals("lm-1", body.getValue("messageLocalId").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `rewind conversation posts the boundary messageLocalId`() {
+        server.enqueue(ok("""{"success":true}"""))
+
+        val response = runBlocking { session.api.rewindConversation("s1", messageLocalId = "lm-1") }
+
+        assertTrue(response.success)
+        val request = server.takeRequest()
+        assertEquals("/api/sessions/s1/rewind", request.path)
+        assertEquals("POST", request.method)
+        val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+        assertEquals("lm-1", body.getValue("messageLocalId").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `rewind fork-safe ambiguity surfaces the machine code`() {
+        server.enqueue(
+            MockResponse().setResponseCode(409)
+                .setBody("""{"error":"Native boundary is ambiguous","code":"ambiguous_native_boundary_fork_safe"}""")
+        )
+
+        val error = assertFailsWith<ApiError> { runBlocking { session.api.rewindConversation("s1", "lm-1") } }
+        assertEquals(409, error.status)
+        assertEquals("ambiguous_native_boundary_fork_safe", error.code)
+    }
+
+    @Test
     fun `upload posts json base64 (not multipart) and yields the hub path`() {
         server.enqueue(ok("""{"success":true,"path":"/tmp/uploads/shot.jpg"}"""))
 
@@ -306,6 +359,45 @@ class HapiApiTest {
         assertEquals("claude", body.getValue("agent").jsonPrimitive.content)
         assertEquals("error", response.type)
         assertEquals("No such directory", response.message)
+    }
+
+    @Test
+    fun `restart machine runner posts an empty json body and decodes the message`() {
+        server.enqueue(ok("""{"message":"stop signal sent to supervised runner"}"""))
+
+        val response = runBlocking { session.api.restartMachineRunner("m9") }
+
+        val request = server.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/api/machines/m9/restart-runner", request.path)
+        assertEquals("{}", request.body.readUtf8())
+        assertEquals("stop signal sent to supervised runner", response.message)
+    }
+
+    @Test
+    fun `realtime transcription token posts provider and language and decodes the token`() {
+        server.enqueue(ok("""{"token":"dg-live-123"}"""))
+
+        val response = runBlocking { session.api.fetchRealtimeTranscriptionToken("deepgram", "zh-CN") }
+
+        val request = server.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/api/voice/transcription/realtime-token", request.path)
+        val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+        assertEquals("deepgram", body["provider"]!!.jsonPrimitive.content)
+        assertEquals("zh-CN", body["language"]!!.jsonPrimitive.content)
+        assertEquals("dg-live-123", response.token)
+    }
+
+    @Test
+    fun `realtime transcription token omits a null language`() {
+        server.enqueue(ok("""{"token":"t"}"""))
+
+        runBlocking { session.api.fetchRealtimeTranscriptionToken("deepgram") }
+
+        val body = lastRequestBody()
+        assertEquals("deepgram", body["provider"]!!.jsonPrimitive.content)
+        assertNull(body["language"])
     }
 
     @Test

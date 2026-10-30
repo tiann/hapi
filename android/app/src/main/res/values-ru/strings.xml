@@ -273,6 +273,8 @@
     <string name="chat_notice_draft_parked">Черновик отложен в заметки</string>
     <string name="chat_notice_scratchlist_full">Заметки заполнены (200 записей)</string>
     <string name="chat_notice_park_failed">Не удалось отложить черновик — проверьте подключение к хабу</string>
+    <string name="chat_notice_scratchlist_stage_failed">Не удалось подготовить вложения заметки — проверьте подключение к хабу</string>
+    <string name="chat_notice_scratchlist_rehydrate_failed">Не удалось вернуть часть вложений в поле ввода</string>
     <string name="chat_notice_attachments_uploading">Вложения ещё загружаются — подождите либо повторите или удалите неудачные</string>
     <string name="chat_notice_resume_failed">Сессия неактивна, и её не удалось возобновить</string>
     <string name="chat_notice_abort_failed">Не удалось прервать</string>
@@ -286,6 +288,23 @@
     <string name="chat_notice_request_failed">Запрос не выполнен</string>
     <string name="chat_notice_models_failed">Не удалось загрузить модели</string>
     <string name="chat_notice_config_failed">Не удалось обновить сессию</string>
+    <string name="chat_notice_fork_failed">Не удалось создать форк диалога</string>
+    <string name="chat_notice_rewind_failed">Не удалось откатить диалог</string>
+    <string name="chat_notice_rewind_diverged">Результат отката неизвестен — история этой сессии требует выверки</string>
+
+    <!-- Conversation history: fork / rewind message actions (web message.fork.*) -->
+    <string name="chat_history_fork">Форк</string>
+    <string name="chat_history_fork_confirm_title">Форк диалога</string>
+    <string name="chat_history_fork_confirm_description">Создать новую сессию с этого места?\nТекущая сессия не будет изменена.</string>
+    <string name="chat_history_fork_pending">Создание форка…</string>
+    <string name="chat_history_rewind">Откат</string>
+    <string name="chat_history_rewind_confirm_title">Откат диалога</string>
+    <string name="chat_history_rewind_confirm_description">Откатить эту сессию к этому месту?\nИстория диалога после этого момента будет удалена безвозвратно. Файлы изменены не будут.</string>
+    <string name="chat_history_rewind_pending">Откат…</string>
+    <string name="chat_history_rewind_fallback_title">Откат недоступен</string>
+    <string name="chat_history_rewind_fallback_description">HAPI не изменил эту сессию, поскольку её нативная граница Codex неоднозначна.\nСоздать новую сессию до этого места? Текущая сессия не будет изменена.</string>
+    <string name="chat_history_rewind_fallback_fork">Форк здесь</string>
+    <string name="chat_history_rewind_fallback_pending">Создание форка…</string>
 
     <!-- Composer (B-M3a/ce/f) -->
     <string name="chat_composer_placeholder">Сообщение агенту…</string>
@@ -298,6 +317,10 @@
     <string name="chat_composer_mic">Начать диктовку</string>
     <string name="chat_composer_stop_recording">Остановить запись</string>
     <string name="chat_composer_send">Отправить</string>
+    <string name="chat_composer_send_to_scratchlist">Отправить в заметки</string>
+    <string name="chat_composer_scratchlist_toggle">Заметки — откладывать записи и черновики</string>
+    <string name="chat_scratchlist_held_label">отложено — не отправлено</string>
+    <string name="chat_scratchlist_mode_hint">Отправка добавит текст в заметки, а не в чат. Нажмите значок заметки ещё раз, чтобы выйти.</string>
     <string name="chat_composer_abort">Остановить текущий ход</string>
     <string name="chat_send_steer">Отправить и вклиниться в текущий ход</string>
     <string name="chat_queued_one">1 сообщение в очереди</string>
@@ -489,6 +512,7 @@
     <string name="scratchlist_new_note">Новая заметка</string>
     <string name="scratchlist_edit_note">Редактировать заметку</string>
     <string name="scratchlist_to_composer">В поле ввода</string>
+    <string name="scratchlist_action_promote_to_queue">Отправить в очередь</string>
     <string name="scratchlist_attachment_only">Только вложение</string>
     <string name="scratchlist_placeholder">Заметка, черновик, идея на потом…</string>
     <string name="scratchlist_add_photo">Добавить фото</string>
@@ -510,6 +534,7 @@
     <string name="scratchlist_notice_needs_content">У заметки должен быть текст или вложение — используйте «Удалить», чтобы убрать её</string>
     <string name="scratchlist_notice_save_failed">Не удалось сохранить заметку — проверьте подключение к хабу</string>
     <string name="scratchlist_notice_delete_failed">Не удалось удалить заметку — проверьте подключение к хабу</string>
+    <string name="scratchlist_notice_promote_failed">Не удалось отправить заметку в очередь — проверьте подключение к хабу</string>
     <string name="scratchlist_notice_attach_failed">Не удалось прикрепить файл — проверьте подключение к хабу</string>
     <string name="scratchlist_notice_remove_attachment_failed">Не удалось убрать вложение — проверьте подключение к хабу</string>
     <string name="scratchlist_notice_too_large">Этот файл превышает лимит размера файла на хабе</string>
@@ -627,4 +652,24 @@
     <string name="share_error_title">Не удалось поделиться</string>
     <string name="share_ok">ОК</string>
     <string name="share_pair_first">Подключите хаб, чтобы выбрать сессию для отправки.</string>
+
+    <string name="connection_reconnecting">Переподключение…</string>
+    <string name="connection_syncing">Синхронизация…</string>
+    <string name="connection_reason_heartbeat_timeout">таймаут heartbeat</string>
+    <string name="connection_reason_visibility_recovery">возобновление после фона</string>
+    <string name="connection_reason_connect_timeout">таймаут подключения</string>
+    <string name="connection_reason_transport_error">ошибка потока</string>
+    <string name="connection_reason_closed">поток закрыт</string>
+    <string name="connection_reason_http_code">HTTP %1$d</string>
+    <string name="runner_skew_summary_title">Устаревших раннеров: %1$d</string>
+    <string name="runner_skew_summary_body">Обновите HAPI CLI на каждом хосте ниже, затем перезапустите соответствующий раннер. Сверните или отложите этот баннер, чтобы добраться до сессий под ним.</string>
+    <string name="runner_skew_minimized">Устаревших раннеров: %1$d (%2$s) — нажмите, чтобы развернуть</string>
+    <string name="runner_skew_minimize">Свернуть</string>
+    <string name="runner_skew_dismiss_temp">Отложить на 1 ч</string>
+    <string name="runner_skew_restart">Перезапустить раннер</string>
+    <string name="runner_skew_restart_unavailable">Сначала обновите CLI</string>
+    <string name="runner_skew_restarting">Перезапуск…</string>
+    <string name="runner_skew_binary_updated_hint">(на диске уже более новая версия CLI — раннер скоро перезапустится сам)</string>
+    <string name="runner_skew_upgrade_cli_first">(на диске ещё нет более новой версии CLI — установите/обновите на этом хосте)</string>
+    <string name="runner_skew_restart_failed">Не удалось перезапустить раннер</string>
 </resources>

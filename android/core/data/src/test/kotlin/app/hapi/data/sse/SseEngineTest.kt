@@ -494,4 +494,98 @@ class SseEngineTest {
         assertEquals(1_000L, testScheduler.currentTime)
         assertContains(conn.url, "token=jwt-late")
     }
+
+    // ------------------------------------------------- failure attribution --
+    // The banner labels an outage with why the attempt ended
+    // (`ConnectionFailure`; web `ReconnectingBanner.tsx` reason strings).
+
+    @Test
+    fun `transport failure attributes TransportError with the http code and clears on recovery`() = runTest {
+        val h = harness()
+        val key = SseSubscriptionKey.Global
+        h.engine.subscribe(key)
+        h.awaitOpen().fail(502)
+        runCurrent()
+        assertEquals(ConnectionFailure(DisconnectReason.TransportError, 502), h.engine.connectionState(key).value.lastFailure)
+
+        h.awaitOpen().handshake()
+        runCurrent()
+        assertNull(h.engine.connectionState(key).value.lastFailure, "a successful handshake clears the failure label")
+    }
+
+    @Test
+    fun `clean server EOF attributes Closed without an http code`() = runTest {
+        val h = harness()
+        val key = SseSubscriptionKey.Global
+        h.engine.subscribe(key)
+        val conn = h.awaitOpen()
+        conn.handshake()
+        runCurrent()
+        conn.finish()
+        runCurrent()
+        assertEquals(ConnectionFailure(DisconnectReason.Closed), h.engine.connectionState(key).value.lastFailure)
+    }
+
+    @Test
+    fun `a missed connect deadline attributes ConnectTimeout`() = runTest {
+        val h = harness()
+        val key = SseSubscriptionKey.Global
+        h.engine.subscribe(key)
+        h.awaitOpen() // never handshakes
+        advanceTimeBy(ReconnectPolicy.CONNECT_TIMEOUT_MS)
+        runCurrent()
+        assertEquals(ConnectionFailure(DisconnectReason.ConnectTimeout), h.engine.connectionState(key).value.lastFailure)
+        h.awaitOpen() // absorb the retry so the loop parks in backoff
+    }
+
+    @Test
+    fun `staleness attributes HeartbeatTimeout`() = runTest {
+        val h = harness()
+        val key = SseSubscriptionKey.Global
+        h.engine.subscribe(key)
+        val conn = h.awaitOpen()
+        conn.handshake()
+        runCurrent()
+        advanceTimeBy(ReconnectPolicy.STALE_MS)
+        runCurrent()
+        assertEquals(ConnectionFailure(DisconnectReason.HeartbeatTimeout), h.engine.connectionState(key).value.lastFailure)
+        assertTrue(conn.closed)
+        h.awaitOpen() // absorb the retry
+    }
+
+    @Test
+    fun `a stale foreground resume attributes VisibilityRecovery`() = runTest {
+        val h = harness()
+        val key = SseSubscriptionKey.Global
+        h.engine.subscribe(key)
+        val conn = h.awaitOpen()
+        conn.handshake()
+        runCurrent()
+
+        h.engine.setLifecycleForeground(false)
+        runCurrent()
+        advanceTimeBy(ReconnectPolicy.RESUME_STALE_MS)
+        runCurrent()
+        h.engine.setLifecycleForeground(true)
+        runCurrent()
+        assertEquals(ConnectionFailure(DisconnectReason.VisibilityRecovery), h.engine.connectionState(key).value.lastFailure)
+        assertTrue(conn.closed)
+        h.awaitOpen() // absorb the retry
+    }
+
+    @Test
+    fun `a codeless failure is attributed Closed and the failure survives backoff republishes`() = runTest {
+        val h = harness()
+        val key = SseSubscriptionKey.Global
+        h.engine.subscribe(key)
+        h.awaitOpen().fail(null)
+        runCurrent()
+        assertEquals(ConnectionFailure(DisconnectReason.Closed), h.engine.connectionState(key).value.lastFailure)
+
+        // The label rides along while the outage continues ( Connecting →
+        // Backoff republishes), until a handshake succeeds.
+        h.awaitOpen().connect()
+        runCurrent()
+        assertEquals(ConnectionFailure(DisconnectReason.Closed), h.engine.connectionState(key).value.lastFailure)
+    }
 }

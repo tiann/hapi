@@ -71,11 +71,11 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 
-private const val SESSION_ID = "sess-1"
+internal const val SESSION_ID = "sess-1"
 
 // ------------------------------------------------------------------ fakes --
 
-private class FakeSessionStore : SessionDetailStore {
+internal class FakeSessionStore : SessionDetailStore {
     val summaries = MutableStateFlow<List<SessionSummary>>(emptyList())
     override val sessions: StateFlow<List<SessionSummary>> = summaries
 
@@ -130,7 +130,7 @@ private class FakeSessionStore : SessionDetailStore {
     }
 }
 
-private class FakeMachineStore : MachineListStore {
+internal class FakeMachineStore : MachineListStore {
     override val machines: StateFlow<List<Machine>> = MutableStateFlow(emptyList())
     override suspend fun refresh() {}
     override fun scheduleRefresh() {}
@@ -138,7 +138,7 @@ private class FakeMachineStore : MachineListStore {
 }
 
 /** Scripted [ChatSessionApi]: `latest`/`after` serve [tailResponses] in order, `before` serves [beforePage]. */
-private open class FakeMessagesApi : ChatSessionApi {
+internal open class FakeMessagesApi : ChatSessionApi {
     val queries = MutableStateFlow<List<MessagesQuery>>(emptyList())
     val tailResponses = ArrayDeque<MessagesResponse>()
     var beforePage: MessagesResponse? = null
@@ -185,6 +185,17 @@ private open class FakeMessagesApi : ChatSessionApi {
 
     override suspend fun resumeSession(sessionId: String, permissionMode: String?): ResumeSessionResponse =
         ResumeSessionResponse(sessionId = sessionId)
+
+    override suspend fun forkConversation(
+        sessionId: String,
+        messageLocalId: String?,
+    ): app.hapi.protocol.wire.ForkConversationResponse = error("Unexpected fork")
+
+    override suspend fun rewindConversation(
+        sessionId: String,
+        messageLocalId: String,
+    ): app.hapi.protocol.wire.RewindConversationResponse = error("Unexpected rewind")
+
     override suspend fun approvePermission(sessionId: String, requestId: String, options: ApprovePermissionRequest) {}
     override suspend fun denyPermission(sessionId: String, requestId: String, decision: String?) {}
     override suspend fun setPermissionMode(sessionId: String, mode: String) {}
@@ -206,7 +217,7 @@ private open class FakeMessagesApi : ChatSessionApi {
         app.hapi.protocol.wire.DeleteUploadResponse(success = true)
 }
 
-private fun page(
+internal fun page(
     direction: String,
     hasMore: Boolean,
     nextBeforeAt: Long? = null,
@@ -225,11 +236,11 @@ private fun page(
     hasMore = hasMore,
 )
 
-private fun emptyLatest(direction: String) =
+internal fun emptyLatest(direction: String) =
     MessagesResponse(messages = emptyList(), page = page(direction, hasMore = false))
 
 /** Codex-flavor agent text message (the simplest renderable wire shape). */
-private fun agentMessage(id: String, seq: Long, at: Long, text: String): DecryptedMessage =
+internal fun agentMessage(id: String, seq: Long, at: Long, text: String): DecryptedMessage =
     DecryptedMessage(
         id = id,
         seq = seq,
@@ -246,7 +257,7 @@ private fun agentMessage(id: String, seq: Long, at: Long, text: String): Decrypt
         },
     )
 
-private fun summary(updatedAt: Long): SessionSummary = SessionSummary(
+internal fun summary(updatedAt: Long): SessionSummary = SessionSummary(
     id = SESSION_ID,
     active = true,
     thinking = false,
@@ -255,7 +266,7 @@ private fun summary(updatedAt: Long): SessionSummary = SessionSummary(
     metadata = SessionSummaryMetadata(name = "Chat session", path = "/repo/app", flavor = "codex"),
 )
 
-private fun detailSession(): Session = Session(
+internal fun detailSession(): Session = Session(
     id = SESSION_ID,
     namespace = "default",
     seq = 1,
@@ -269,7 +280,7 @@ private fun detailSession(): Session = Session(
 )
 
 /** Transport that hands each connection a handshake verdict from [verdicts] (last repeats). */
-private class ScriptedTransport(private val verdicts: List<String>) : SseTransport {
+internal class ScriptedTransport(private val verdicts: List<String>) : SseTransport {
     var connects = 0
         private set
 
@@ -302,7 +313,7 @@ private class GatedTransport : SseTransport {
     }
 }
 
-private class Harness(
+internal class Harness(
     testScope: TestScope,
     transport: SseTransport,
     val api: FakeMessagesApi = FakeMessagesApi(),

@@ -38,9 +38,14 @@ import app.hapi.companion.feature.chat.ChatMedia
 import app.hapi.companion.feature.chat.ChatHost
 import app.hapi.companion.feature.chat.ChatViewModel
 import app.hapi.companion.feature.chat.attachments.AttachmentPreparer
+import app.hapi.companion.feature.chat.attachments.PrepareResult
+import app.hapi.companion.feature.chat.attachments.ScratchlistPromoter
+import app.hapi.companion.feature.chat.composer.AudioRecordStreamingSource
+import app.hapi.companion.feature.chat.composer.DeepgramRealtimeDictationEngine
 import app.hapi.companion.feature.chat.composer.DictationController
 import app.hapi.companion.feature.chat.composer.HapiDictationApi
 import app.hapi.companion.feature.chat.composer.MediaRecorderDictation
+import app.hapi.companion.feature.chat.composer.OkHttpProviderSocketFactory
 import app.hapi.companion.feature.files.ApiFilesGateway
 import app.hapi.companion.feature.files.FileViewerScreen
 import app.hapi.companion.feature.files.FileViewerStrings
@@ -77,6 +82,7 @@ import app.hapi.companion.feature.settings.StorageViewModel
 import app.hapi.companion.feature.settings.UsageScreen
 import app.hapi.companion.feature.settings.UsageViewModel
 import app.hapi.data.auth.AuthTerminalReason
+import okhttp3.OkHttpClient
 import java.util.Base64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -367,6 +373,8 @@ fun HapiNavigation() {
                 onOpenSession = { sessionId -> navController.navigate(Routes.chat(sessionId)) },
                 onNewSession = { navController.navigate(Routes.newSession()) },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
+                connectionChrome = hubGraph.connectionChrome,
+                runnerSkewChrome = hubGraph.runnerSkewChrome,
             )
         }
 
@@ -609,10 +617,14 @@ fun HapiNavigation() {
                 onBack = { navController.popBackStack() },
                 onSendToComposer = chatHolder?.let { chat ->
                     { scratchEntry ->
-                        chat.viewModel.insertComposerText(scratchEntry.text)
+                        chat.viewModel.promoteScratchlistEntryToComposer(scratchEntry)
                         navController.popBackStack()
                     }
                 },
+                // "Send to queue" stays on this screen (busy state machine +
+                // entry delete live in the scratchlist ViewModel); true =
+                // hub accepted.
+                onSendToQueue = chatHolder?.let { chat -> chat.viewModel::sendScratchlistEntryToQueue },
             )
         }
 
@@ -806,6 +818,7 @@ private class ChatViewModelHolder(
     appContext: Context,
 ) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val attachmentPreparer = AttachmentPreparer(appContext)
 
     val viewModel = ChatViewModel(
         sessionId = sessionId,
@@ -819,6 +832,24 @@ private class ChatViewModelHolder(
         scope = scope,
         drafts = hubGraph.chatDrafts,
         scratchlist = hubGraph.scratchlistStore,
+        // Scratchlist promote seams (web `scratchlistAttachmentFlow.ts`):
+        // hub blob fetch + the Android pick pipeline for rehydration.
+        scratchlistBlobFetcher = ScratchlistPromoter.AttachmentFetcher { id, attachmentId ->
+            try {
+                hubGraph.session.api.getScratchlistAttachment(id, attachmentId)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                null
+            }
+        },
+        scratchlistPickPreparer = ScratchlistPromoter.PickPreparer { attachment, bytes, mimeType ->
+            val resolved = mimeType.takeIf { it.isNotBlank() } ?: attachment.mimeType
+            when (val prepared = attachmentPreparer.prepareFetched(attachment.filename, resolved, bytes)) {
+                is PrepareResult.Ready -> prepared.attachment
+                else -> null
+            }
+        },
     )
 
     /**
@@ -829,6 +860,11 @@ private class ChatViewModelHolder(
         api = HapiDictationApi(hubGraph.session.api),
         recorder = MediaRecorderDictation(appContext),
         scope = scope,
+        realtimeEngine = DeepgramRealtimeDictationEngine(
+            api = hubGraph.session.api,
+            socketFactory = OkHttpProviderSocketFactory(OkHttpClient()),
+            audioFactory = { AudioRecordStreamingSource() },
+        ),
     )
 
     override fun onCleared() {

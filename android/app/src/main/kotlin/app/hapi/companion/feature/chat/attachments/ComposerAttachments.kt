@@ -59,7 +59,10 @@ data class ComposerAttachmentUi(
  *
  * - [add] uploads immediately (`POST upload`, JSON + base64) and tracks the
  *   chip through [ComposerAttachmentStatus]; failures keep the payload bytes
- *   for [retry], successes drop them (only the small preview stays resident).
+ *   for [retry], successes also retain them — a Ready chip must be able to
+ *   migrate into hub scratchlist storage when the draft is parked (web keeps
+ *   the `File` refs for the same reason; bounded by the 50 MB wire cap and
+ *   pre-compressed images).
  * - [remove] deletes the uploaded file best-effort (`POST upload/delete`);
  *   removing a chip whose upload is still in flight lets the upload finish
  *   and then deletes the orphan (web `cancelledAttachmentIds` semantics).
@@ -91,7 +94,11 @@ class ComposerAttachments(
         val ui: ComposerAttachmentUi,
         /** Hub upload path once Ready. */
         val path: String? = null,
-        /** Upload payload, retained only until the upload succeeds (retry source). */
+        /**
+         * Upload payload. Retained through Ready (park migration source — a
+         * chat upload path cannot become an entry attachment without the
+         * bytes being re-uploaded into hub scratchlist storage).
+         */
         val bytes: ByteArray? = null,
     )
 
@@ -183,6 +190,39 @@ class ComposerAttachments(
     }
 
     /**
+     * Snapshot of one Ready chip for the scratchlist park migration (the
+     * tray itself is untouched — see [parkableChips]).
+     */
+    class ParkableChip(
+        val id: String,
+        val filename: String,
+        val mimeType: String,
+        val bytes: ByteArray,
+        /** Chat upload path behind the chip; the park deletes it on success. */
+        val path: String?,
+    )
+
+    /**
+     * Snapshot the Ready chips for a scratchlist park (web
+     * `prepareScratchlistParkAttachments` source shape): the caller migrates
+     * each into hub scratchlist storage, and only after the entry write is
+     * accepted calls [removeParked] to drop the chips (their chat uploads
+     * became orphans). A rejected park leaves everything in place.
+     */
+    fun parkableChips(): List<ParkableChip> = entries.value
+        .filter { it.ui.status == ComposerAttachmentStatus.Ready }
+        .map { ParkableChip(it.ui.id, it.ui.filename, it.ui.mimeType, it.bytes ?: ByteArray(0), it.path) }
+
+    /**
+     * Drop the chips that migrated into an accepted scratchlist entry —
+     * same cleanup as [remove], so the chat uploads behind the new hub blobs
+     * are deleted best-effort.
+     */
+    fun removeParked(ids: Set<String>) {
+        ids.forEach(::remove)
+    }
+
+    /**
      * Leaving the chat for good (ViewModel holder `onCleared`): un-sent
      * uploads are orphans on the hub — delete them best-effort on a detached
      * scope, because the owning scope is being cancelled right after (same
@@ -221,8 +261,13 @@ class ComposerAttachments(
                 else list.map { entry ->
                     when {
                         entry.ui.id != id -> entry
-                        // Success: drop the payload bytes — only the preview stays.
-                        path != null -> Entry(entry.ui.copy(status = ComposerAttachmentStatus.Ready), path = path)
+                        // Success: keep the payload bytes — park migration
+                        // re-uploads them into hub scratchlist storage.
+                        path != null -> Entry(
+                            entry.ui.copy(status = ComposerAttachmentStatus.Ready),
+                            path = path,
+                            bytes = entry.bytes,
+                        )
                         else -> Entry(entry.ui.copy(status = ComposerAttachmentStatus.Failed), bytes = entry.bytes)
                     }
                 }

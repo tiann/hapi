@@ -106,9 +106,11 @@ private const val COPIED_FEEDBACK_MS: Long = 1_500
 /**
  * Per-session scratchlist workbench (B-M4d): notes/drafts parked until the
  * operator promotes them. Entry cards (text preview, age, attachment thumbs)
- * open an edit sheet; the FAB drafts a new note; "To composer" inserts an
- * entry's text into the chat composer (wired by Navigation to the chat
- * ViewModel below this route).
+ * open an edit sheet; the FAB drafts a new note; "To composer" copies an
+ * entry (text + rehydrated attachments) into the chat composer and "Send to
+ * queue" delivers it as a durable-queue message (both wired by Navigation to
+ * the chat ViewModel below this route; a promote in flight disables the
+ * card's actions — web `busyEntryId`).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -119,9 +121,16 @@ fun ScratchlistScreen(
     modifier: Modifier = Modifier,
     /** null ⇒ the affordance is hidden (no chat composer below this route). */
     onSendToComposer: ((ScratchlistEntry) -> Unit)? = null,
+    /**
+     * "Send to queue" (web `handlePromoteToQueue`): stages attachments +
+     * queue-sends the entry; true = hub accepted (the entry is then deleted).
+     * null ⇒ hidden.
+     */
+    onSendToQueue: (suspend (ScratchlistEntry) -> Boolean)? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
     val editorState by viewModel.editor.collectAsState()
+    val busyPromoteEntryId by viewModel.busyPromoteEntryId.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     var viewerAttachment by remember { mutableStateOf<ScratchlistAttachment?>(null) }
 
@@ -219,8 +228,12 @@ fun ScratchlistScreen(
                             canMoveUp = index > 0,
                             canMoveDown = index < state.entries.lastIndex,
                             copied = copiedEntryId == entry.entryId,
+                            busy = busyPromoteEntryId == entry.entryId,
                             onOpen = { viewModel.openEditor(entry) },
                             onSendToComposer = onSendToComposer?.let { send -> { send(entry) } },
+                            onSendToQueue = onSendToQueue?.let { send ->
+                                { viewModel.promoteToQueue(entry) { send(it) } }
+                            },
                             onOpenAttachment = { viewerAttachment = it },
                             onMoveUp = { viewModel.moveEntry(entry.entryId, ScratchlistMoveDirection.UP) },
                             onMoveDown = { viewModel.moveEntry(entry.entryId, ScratchlistMoveDirection.DOWN) },
@@ -303,8 +316,11 @@ private fun ScratchlistEntryCard(
     canMoveUp: Boolean,
     canMoveDown: Boolean,
     copied: Boolean,
+    /** A "Send to queue" is in flight — every card action disables (web `isBusy`). */
+    busy: Boolean,
     onOpen: () -> Unit,
     onSendToComposer: (() -> Unit)?,
+    onSendToQueue: (() -> Unit)?,
     onOpenAttachment: (ScratchlistAttachment) -> Unit,
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
@@ -344,21 +360,22 @@ private fun ScratchlistEntryCard(
                 )
             }
             // Web row actions: ↑/↓ (adjacent swap, disabled at the edges),
-            // copy (icon swaps to a check while copied), delete.
+            // copy (icon swaps to a check while copied), delete. All of them
+            // disable while a promote-to-queue for this entry is in flight.
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                IconButton(onClick = onMoveUp, enabled = canMoveUp) {
+                IconButton(onClick = onMoveUp, enabled = canMoveUp && !busy) {
                     Icon(
                         Icons.Filled.KeyboardArrowUp,
                         contentDescription = stringResource(R.string.scratchlist_action_move_up),
                     )
                 }
-                IconButton(onClick = onMoveDown, enabled = canMoveDown) {
+                IconButton(onClick = onMoveDown, enabled = canMoveDown && !busy) {
                     Icon(
                         Icons.Filled.KeyboardArrowDown,
                         contentDescription = stringResource(R.string.scratchlist_action_move_down),
                     )
                 }
-                IconButton(onClick = onCopy) {
+                IconButton(onClick = onCopy, enabled = !busy) {
                     if (copied) {
                         Icon(
                             Icons.Filled.Check,
@@ -371,7 +388,7 @@ private fun ScratchlistEntryCard(
                         )
                     }
                 }
-                IconButton(onClick = onDelete) {
+                IconButton(onClick = onDelete, enabled = !busy) {
                     Icon(
                         Icons.Filled.Delete,
                         contentDescription = stringResource(R.string.scratchlist_delete),
@@ -385,8 +402,27 @@ private fun ScratchlistEntryCard(
                     color = MaterialTheme.hapi.hint,
                 )
                 Spacer(modifier = Modifier.weight(1f))
+                if (onSendToQueue != null) {
+                    TextButton(
+                        onClick = onSendToQueue,
+                        enabled = !busy,
+                        modifier = Modifier.testTag("scratchlist-send-to-queue"),
+                    ) {
+                        if (busy) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                        }
+                        Text(
+                            stringResource(R.string.scratchlist_action_promote_to_queue),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
                 if (onSendToComposer != null) {
-                    TextButton(onClick = onSendToComposer) {
+                    TextButton(onClick = onSendToComposer, enabled = !busy) {
                         Text(stringResource(R.string.scratchlist_to_composer), style = MaterialTheme.typography.labelMedium)
                     }
                 }
@@ -713,8 +749,10 @@ private fun ScratchlistEntryCardPreview() {
                     canMoveUp = true,
                     canMoveDown = false,
                     copied = false,
+                    busy = false,
                     onOpen = {},
                     onSendToComposer = {},
+                    onSendToQueue = {},
                     onOpenAttachment = {},
                     onMoveUp = {},
                     onMoveDown = {},
@@ -727,8 +765,10 @@ private fun ScratchlistEntryCardPreview() {
                     canMoveUp = false,
                     canMoveDown = true,
                     copied = true,
+                    busy = false,
                     onOpen = {},
                     onSendToComposer = null,
+                    onSendToQueue = null,
                     onOpenAttachment = {},
                     onMoveUp = {},
                     onMoveDown = {},
@@ -762,6 +802,7 @@ internal fun scratchlistNoticeText(context: Context, notice: ScratchlistNotice):
         context.getString(R.string.scratchlist_notice_remove_attachment_failed)
     ScratchlistNotice.UploadTooLarge -> context.getString(R.string.scratchlist_notice_too_large)
     ScratchlistNotice.UploadFailed -> context.getString(R.string.scratchlist_notice_upload_failed)
+    ScratchlistNotice.PromoteToQueueFailed -> context.getString(R.string.scratchlist_notice_promote_failed)
     is ScratchlistNotice.ImportRejected -> when (val reason = notice.reason) {
         ScratchlistImportRejection.Unreadable -> context.getString(R.string.scratchlist_reject_unreadable)
         ScratchlistImportRejection.ImageTooLarge -> context.getString(R.string.scratchlist_reject_image_too_large)

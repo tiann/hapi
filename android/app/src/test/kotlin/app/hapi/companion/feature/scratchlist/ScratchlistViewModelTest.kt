@@ -13,6 +13,9 @@ import app.hapi.protocol.wire.ScratchlistEntry
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -27,6 +30,7 @@ import kotlinx.coroutines.test.runTest
  */
 private class RecordingScratchlist(entries: List<ScratchlistEntry>) : SessionScratchlist {
     val moves = mutableListOf<Triple<String, String, ScratchlistMoveDirection>>()
+    val deleted = mutableListOf<String>()
     val sessionState = MutableStateFlow(ScratchlistSessionState(entries = entries, loaded = true))
 
     override fun state(sessionId: String): Flow<ScratchlistSessionState> = sessionState
@@ -45,7 +49,10 @@ private class RecordingScratchlist(entries: List<ScratchlistEntry>) : SessionScr
         text: String?,
         attachments: List<ScratchlistAttachment>?,
     ): Boolean = true
-    override suspend fun deleteEntry(sessionId: String, entryId: String): Boolean = true
+    override suspend fun deleteEntry(sessionId: String, entryId: String): Boolean {
+        deleted += entryId
+        return true
+    }
     override fun moveEntry(sessionId: String, entryId: String, direction: ScratchlistMoveDirection) {
         moves += Triple(sessionId, entryId, direction)
         sessionState.value = sessionState.value.copy(
@@ -123,5 +130,83 @@ class ScratchlistViewModelTest {
         advanceUntilIdle()
 
         assertEquals(null, viewModel.editor.value)
+    }
+
+    // ----------------------------------------------- promote-to-queue (B18b) --
+
+    @Test
+    fun `promote to queue accepted deletes the entry and clears the busy flag`() = runTest {
+        val store = RecordingScratchlist(listOf(entry("e1", "ship it")))
+        val viewModel = viewModelWith(store)
+        viewModel.start()
+        advanceUntilIdle()
+
+        viewModel.promoteToQueue(entry("e1", "ship it")) { true }
+        // backgroundScope work only advances while the test body suspends.
+        viewModel.busyPromoteEntryId.first { it == null }
+
+        assertEquals(listOf("e1"), store.deleted)
+        assertEquals(null, viewModel.busyPromoteEntryId.value)
+    }
+
+    @Test
+    fun `promote to queue rejected keeps the entry and notifies`() = runTest {
+        val store = RecordingScratchlist(listOf(entry("e1", "ship it")))
+        val viewModel = viewModelWith(store)
+        viewModel.start()
+        advanceUntilIdle()
+        val notice = backgroundScope.async(start = CoroutineStart.UNDISPATCHED) {
+            viewModel.events.first { (it as? ScratchlistEvent.Notice)?.notice == ScratchlistNotice.PromoteToQueueFailed }
+        }
+
+        viewModel.promoteToQueue(entry("e1", "ship it")) { false }
+        advanceUntilIdle()
+
+        assertTrue(store.deleted.isEmpty(), "a rejected send never deletes the entry")
+        assertEquals(ScratchlistNotice.PromoteToQueueFailed, (notice.await() as ScratchlistEvent.Notice).notice)
+        assertEquals(null, viewModel.busyPromoteEntryId.value)
+    }
+
+    @Test
+    fun `promote to queue marks the entry busy and blocks a second promote until settled`() = runTest {
+        val store = RecordingScratchlist(listOf(entry("e1", "one"), entry("e2", "two")))
+        val viewModel = viewModelWith(store)
+        viewModel.start()
+        advanceUntilIdle()
+        val release = CompletableDeferred<Unit>()
+        val sendEntered = CompletableDeferred<Unit>()
+        var sendCalls = 0
+
+        viewModel.promoteToQueue(entry("e1", "one")) {
+            sendCalls++
+            sendEntered.complete(Unit)
+            release.await()
+            true
+        }
+        sendEntered.await() // suspends the body so the promote coroutine runs
+
+        assertEquals("e1", viewModel.busyPromoteEntryId.value)
+        viewModel.promoteToQueue(entry("e2", "two")) { sendCalls++; true }
+        assertEquals(1, sendCalls)
+
+        release.complete(Unit)
+        viewModel.busyPromoteEntryId.first { it == null }
+
+        assertEquals(listOf("e1"), store.deleted)
+        assertEquals(null, viewModel.busyPromoteEntryId.value)
+    }
+
+    @Test
+    fun `promote to queue treats a throwing send as rejected`() = runTest {
+        val store = RecordingScratchlist(listOf(entry("e1", "boom")))
+        val viewModel = viewModelWith(store)
+        viewModel.start()
+        advanceUntilIdle()
+
+        viewModel.promoteToQueue(entry("e1", "boom")) { throw RuntimeException("hub down") }
+        viewModel.busyPromoteEntryId.first { it == null }
+
+        assertTrue(store.deleted.isEmpty())
+        assertEquals(null, viewModel.busyPromoteEntryId.value)
     }
 }

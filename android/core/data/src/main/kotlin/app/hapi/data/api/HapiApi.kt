@@ -23,15 +23,20 @@ import app.hapi.protocol.wire.MachineListDirectoryResponse
 import app.hapi.protocol.wire.MachinePathsExistsRequest
 import app.hapi.protocol.wire.MachinePathsExistsResponse
 import app.hapi.protocol.wire.MachinesResponse
+import app.hapi.protocol.wire.RestartRunnerResponse
 import app.hapi.protocol.wire.MessagesResponse
 import app.hapi.protocol.wire.QueuedStateRequest
 import app.hapi.protocol.wire.QueuedStateResponse
 import app.hapi.protocol.wire.RegisterDeviceRequest
 import app.hapi.protocol.wire.RenameMachineRequest
 import app.hapi.protocol.wire.RenameSessionRequest
+import app.hapi.protocol.wire.ForkConversationRequest
+import app.hapi.protocol.wire.ForkConversationResponse
 import app.hapi.protocol.wire.ReopenSessionResponse
 import app.hapi.protocol.wire.ResumeSessionRequest
 import app.hapi.protocol.wire.ResumeSessionResponse
+import app.hapi.protocol.wire.RewindConversationRequest
+import app.hapi.protocol.wire.RewindConversationResponse
 import app.hapi.protocol.wire.ScratchlistEntriesResponse
 import app.hapi.protocol.wire.ScratchlistEntryCreateRequest
 import app.hapi.protocol.wire.ScratchlistEntryResponse
@@ -48,6 +53,8 @@ import app.hapi.protocol.wire.SpawnResponse
 import app.hapi.protocol.wire.SpawnSessionRequest
 import app.hapi.protocol.wire.SqliteStorageUsageResponse
 import app.hapi.protocol.wire.SteerQueuedMessageResponse
+import app.hapi.protocol.wire.RealtimeTranscriptionTokenRequest
+import app.hapi.protocol.wire.RealtimeTranscriptionTokenResponse
 import app.hapi.protocol.wire.TranscriptionProvidersResponse
 import app.hapi.protocol.wire.TranscriptionResponse
 import app.hapi.protocol.wire.UnregisterDeviceRequest
@@ -319,6 +326,26 @@ class HapiApi internal constructor(
     suspend fun reopenSession(sessionId: String): ReopenSessionResponse =
         request("POST", url("api", "sessions", sessionId, "reopen").build(), EMPTY_JSON)
 
+    /**
+     * `POST /api/sessions/:id/fork`. `messageLocalId == null` omits the field
+     * (fork the current head — web parity: `messageLocalId ? {messageLocalId} : {}`;
+     * [HapiJson] `explicitNulls = false` already elides nulls).
+     */
+    override suspend fun forkConversation(sessionId: String, messageLocalId: String?): ForkConversationResponse =
+        request(
+            "POST",
+            url("api", "sessions", sessionId, "fork").build(),
+            ForkConversationRequest(messageLocalId).toJsonBody(),
+        )
+
+    /** `POST /api/sessions/:id/rewind` — truncates at the invoked boundary. */
+    override suspend fun rewindConversation(sessionId: String, messageLocalId: String): RewindConversationResponse =
+        request(
+            "POST",
+            url("api", "sessions", sessionId, "rewind").build(),
+            RewindConversationRequest(messageLocalId).toJsonBody(),
+        )
+
     /** `POST /api/sessions/:id/archive` — 409 for a plain inactive session. */
     suspend fun archiveSession(sessionId: String) {
         request<Unit>("POST", url("api", "sessions", sessionId, "archive").build(), EMPTY_JSON)
@@ -494,6 +521,15 @@ class HapiApi internal constructor(
             RenameMachineRequest(displayName).toJsonBody(),
         )
     }
+
+    /**
+     * `POST /api/machines/:id/restart-runner` — the skew banner's manual
+     * exit: the hub stops a supervised runner so its supervisor relaunches it
+     * with the newer on-disk CLI. Fails (HTTP error) when the runner is not
+     * supervised or not newer-on-disk.
+     */
+    suspend fun restartMachineRunner(machineId: String): RestartRunnerResponse =
+        request("POST", url("api", "machines", machineId, "restart-runner").build(), EMPTY_JSON)
 
     /**
      * `POST /api/machines/:id/spawn`. The response discriminates on `type`,
@@ -818,6 +854,20 @@ class HapiApi internal constructor(
             .build()
         return request("POST", url("api", "voice", "transcription").build(), body)
     }
+
+    /**
+     * `POST /api/voice/transcription/realtime-token` — short-lived credential
+     * for a streaming transcription websocket (deepgram on Android, slice C-③).
+     */
+    suspend fun fetchRealtimeTranscriptionToken(
+        provider: String,
+        language: String? = null,
+    ): RealtimeTranscriptionTokenResponse =
+        request(
+            "POST",
+            url("api", "voice", "transcription", "realtime-token").build(),
+            RealtimeTranscriptionTokenRequest(provider, language).toJsonBody(),
+        )
 
     private companion object {
         fun requireHttpsBaseUrl(raw: String): HttpUrl = HubUrls.normalize(raw)

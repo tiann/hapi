@@ -45,6 +45,18 @@ data class SessionMetadata(
     val kimiSessionId: String? = null,
     val copilotSessionId: String? = null,
     val piSessionId: String? = null,
+    /**
+     * `metadata.conversationHistoryPoints` — per-`localId` fork/rewind
+     * boundaries (`z.record(z.string(), z.literal(true))`). Only entries the
+     * client may act on are present, always `true`.
+     */
+    val conversationHistoryPoints: Map<String, Boolean>? = null,
+    /**
+     * `metadata.conversationHistoryDiverged` — set when the hub's native
+     * history and the agent's own session file disagree (rewind outcome
+     * unknown); history actions are refused while set.
+     */
+    val conversationHistoryDiverged: Boolean? = null,
 )
 
 /** `metadata.summary` on the detail session (`{text, updatedAt}`). */
@@ -72,7 +84,7 @@ data class SessionCapabilities(
     val conversationHistory: ConversationHistoryCapabilities? = null,
 )
 
-/** `ConversationHistoryCapabilitiesSchema`. */
+/** `ConversationHistoryCapabilitiesSchema` — all flags gate with `== true`. */
 @Serializable
 data class ConversationHistoryCapabilities(
     val forkCurrent: Boolean? = null,
