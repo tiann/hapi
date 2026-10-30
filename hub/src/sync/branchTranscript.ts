@@ -20,6 +20,19 @@ export function branchSessionId(namespace: string, sourceSessionId: string, requ
 
 type ReferenceEntry = { role: 'user' | 'assistant' | 'tool'; text: string }
 
+function assertTextOnlyObservation(value: unknown, depth = 0): void {
+    if (depth > 64) throw new Error('Branch tool observation is too deeply nested')
+    if (Array.isArray(value)) {
+        for (const item of value) assertTextOnlyObservation(item, depth + 1)
+    } else if (isObject(value)) {
+        if (value.type === 'image' || value.type === 'image_url' || value.type === 'document'
+            || (value.type === 'resource' && isObject(value.resource) && 'blob' in value.resource)) {
+            throw new Error('Portable branches do not transfer attachments in tool observations')
+        }
+        for (const item of Object.values(value)) assertTextOnlyObservation(item, depth + 1)
+    }
+}
+
 function textBlocks(value: unknown): string {
     if (typeof value === 'string') return value
     if (!Array.isArray(value)) return ''
@@ -54,6 +67,7 @@ function referenceEntries(message: StoredMessage): ReferenceEntry[] {
     const content = record.content
     const data = isObject(content.data) ? content.data : null
     if (!data || data.isMeta || data.isCompactSummary) return []
+    if (data.type === 'generated-image') throw new Error('Portable branches do not transfer generated image attachments')
     const entries: ReferenceEntry[] = []
     const prose = extractAssistantPlainText(content)
     if (prose) entries.push({ role: 'assistant', text: prose })
@@ -65,15 +79,19 @@ function referenceEntries(message: StoredMessage): ReferenceEntry[] {
                 throw new Error('Portable branches do not transfer attachments')
             }
             if (block.type === 'tool_use' && typeof block.name === 'string') {
+                assertTextOnlyObservation(block.input)
                 entries.push({ role: 'tool', text: JSON.stringify({ name: block.name, input: block.input }) })
             } else if (block.type === 'tool_result') {
+                assertTextOnlyObservation(block.content)
                 entries.push({ role: 'tool', text: textBlocks(block.content) })
             }
         }
     } else if (content.type === 'codex') {
         if (data.type === 'tool-call') {
+            assertTextOnlyObservation(data.input)
             entries.push({ role: 'tool', text: JSON.stringify({ name: data.name, input: data.input }) })
         } else if (data.type === 'tool-call-result') {
+            assertTextOnlyObservation(data.output)
             // Tool outputs are observations, never replayable native tool records.
             entries.push({ role: 'tool', text: typeof data.output === 'string' ? data.output : JSON.stringify(data.output ?? '') })
         }
