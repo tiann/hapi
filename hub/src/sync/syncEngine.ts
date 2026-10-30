@@ -90,7 +90,6 @@ export type {
     RpcListPiModelsResponse,
     RpcListClaudeModelsResponse,
     RpcListCodexModelsResponse,
-    RpcListPiSessionsResponse,
     RpcListCursorModelsResponse,
     RpcListOpencodeModelsResponse,
     RpcListOpencodeModelVariantsResponse,
@@ -4530,12 +4529,24 @@ export class SyncEngine {
         return await this.rpcGateway.listCodexSessionsForMachine(machineId, cwd, sessionIds)
     }
 
-    async listPiSessionsForMachine(machineId: string, cwd?: string | null, sessionIds?: string[]): Promise<RpcListPiSessionsResponse> {
+    async listPiSessionsForMachine(machineId: string, cwd?: string | null, sessionIds?: string[]) {
         return await this.rpcGateway.listPiSessionsForMachine(machineId, cwd, sessionIds)
     }
 
     async listOpencodeSessionsForMachine(machineId: string, cwd?: string | null, sessionIds?: string[]): Promise<RpcListOpencodeSessionsResponse> {
         return await this.rpcGateway.listOpencodeSessionsForMachine(machineId, cwd, sessionIds)
+    }
+
+    async listClaudeSessionsForMachine(machineId: string, cwd?: string | null, sessionIds?: string[]) {
+        return await this.rpcGateway.listClaudeSessionsForMachine(machineId, cwd, sessionIds)
+    }
+
+    async listCursorImportableSessionsForMachine(machineId: string, candidateWorkspacePaths?: string[], limit?: number) {
+        return await this.rpcGateway.listCursorImportableSessionsForMachine(machineId, candidateWorkspacePaths, limit)
+    }
+
+    async prepareCursorImportForMachine(machineId: string, uuid: string, workspacePath?: string | null) {
+        return await this.rpcGateway.prepareCursorImportForMachine(machineId, uuid, workspacePath)
     }
 
     async archiveCodexSessionForMachine(machineId: string, sessionId: string): Promise<RpcArchiveCodexSessionResponse> {
