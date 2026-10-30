@@ -13,6 +13,7 @@
     <string name="code_copy">复制</string>
     <string name="code_copied">已复制</string>
     <string name="code_plain_fallback">文本</string>
+    <string name="mermaid_render_error">无法渲染图表。</string>
     <string name="diff_binary_file">二进制文件不显示</string>
     <string name="diff_show_more">显示另外 %1$d 行</string>
     <string name="diff_collapse">收起</string>
