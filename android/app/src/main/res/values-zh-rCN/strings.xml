@@ -132,6 +132,25 @@
     <string name="settings_dynamic_color">Material You 配色</string>
     <string name="settings_dynamic_color_description">根据壁纸生成应用配色。</string>
     <string name="settings_dynamic_color_oled_note">在 OLED 纯黑下不可用。</string>
+    <string name="settings_color_theme">颜色主题</string>
+    <string name="settings_color_theme_default">默认</string>
+    <string name="settings_color_theme_notion">Notion</string>
+    <string name="settings_color_theme_one">One</string>
+    <string name="settings_color_theme_proof">Proof</string>
+    <string name="settings_color_theme_raycast">Raycast</string>
+    <string name="settings_color_theme_rose_pine">Rose Pine</string>
+    <string name="settings_color_theme_solarized">Solarized</string>
+    <string name="settings_color_theme_vercel">Vercel</string>
+    <string name="settings_color_theme_vs_code_plus">VS Code Plus</string>
+    <string name="settings_color_theme_xcode">Xcode</string>
+    <string name="settings_color_theme_linear">Linear</string>
+    <string name="settings_color_theme_lobster">Lobster</string>
+    <string name="settings_color_theme_material">Material</string>
+    <string name="settings_color_theme_matrix">Matrix</string>
+    <string name="settings_color_theme_monokai">Monokai</string>
+    <string name="settings_color_theme_night_owl">Night Owl</string>
+    <string name="settings_color_theme_nord">Nord</string>
+    <string name="settings_dynamic_color_preset_note">使用颜色主题时不可用。</string>
 
     <string name="settings_section_language">语言</string>
     <string name="settings_language">应用语言</string>
