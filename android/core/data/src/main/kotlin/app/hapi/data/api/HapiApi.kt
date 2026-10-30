@@ -7,6 +7,9 @@ import app.hapi.protocol.wire.AuthRequest
 import app.hapi.protocol.wire.AuthResponse
 import app.hapi.protocol.wire.CancelMessageResponse
 import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
+import app.hapi.protocol.wire.CodexDesktopScriptResponse
+import app.hapi.protocol.wire.CodexDesktopSyncRequest
+import app.hapi.protocol.wire.CodexLocalSessionsResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.DeleteUploadRequest
 import app.hapi.protocol.wire.DeleteUploadResponse
@@ -547,6 +550,35 @@ class HapiApi internal constructor(
                 .apply { addQueryParameter("cwd", cwd) }
                 .build(),
         )
+    // ------------------------------------------------------ codex sync (A) --
+
+    /**
+     * `GET /api/codex/sessions?cwd=&machineId=` — local Codex sessions on the
+     * target machine (`hub/src/web/routes/codexDesktop.ts`). Query params ride
+     * along only when non-blank after trimming, and the **trimmed** value is
+     * sent (web ref: `getCodexSessions` in `web/src/api/client.ts`). Soft
+     * failures are HTTP 200 `{success:false, sessions:[]}` — decoding only;
+     * policy lives in the caller. Added for A (codex session import).
+     */
+    suspend fun getCodexSessions(
+        cwd: String? = null,
+        machineId: String? = null,
+    ): CodexLocalSessionsResponse {
+        val target = url("api", "codex", "sessions").apply {
+            cwd?.trim()?.takeIf { it.isNotEmpty() }?.let { addQueryParameter("cwd", it) }
+            machineId?.trim()?.takeIf { it.isNotEmpty() }?.let { addQueryParameter("machineId", it) }
+        }
+        return request("GET", target.build())
+    }
+
+    /**
+     * `POST /api/codex/sync-session` — import local Codex sessions into Hapi.
+     * Failures are HTTP 200 with `success:false` (check the flag, not the
+     * status); success carries `syncedCount` + `hapiSessionIds`. Added for A.
+     */
+    suspend fun syncCodexSession(sync: CodexDesktopSyncRequest): CodexDesktopScriptResponse =
+        request("POST", url("api", "codex", "sync-session").build(), sync.toJsonBody())
+
 
     // --------------------------------------------------------- git & files --
     // RAW-stdout contract (`docs/api/client-contract/rest.md` "Git & files"):

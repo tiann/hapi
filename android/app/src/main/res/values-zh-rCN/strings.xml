@@ -634,4 +634,35 @@
     <string name="share_error_title">分享暂不可用</string>
     <string name="share_ok">确定</string>
     <string name="share_pair_first">请先配对 Hub，再选择接收分享内容的会话。</string>
+
+    <!-- Codex session import (slice A) -->
+    <string name="codex_sync_cancel">取消</string>
+    <string name="codex_sync_title">导入 Codex 会话</string>
+    <string name="codex_sync_description">选择需要导入到 Hapi 的 Codex 会话</string>
+    <string name="codex_sync_selected_count_one">已选择 1 个会话</string>
+    <string name="codex_sync_selected_count_many">已选择 %1$d 个会话</string>
+    <string name="codex_sync_clear_all">全取消</string>
+    <string name="codex_sync_select_all">全选</string>
+    <string name="codex_sync_cwd_filter">工作目录</string>
+    <string name="codex_sync_cwd_filter_all">全部工作目录</string>
+    <string name="codex_sync_search">搜索</string>
+    <string name="codex_sync_search_hint">搜索标题、消息、目录、会话 ID</string>
+    <string name="codex_sync_loading">正在读取本地 Codex 会话…</string>
+    <string name="codex_sync_empty">未找到本地 Codex 会话</string>
+    <string name="codex_sync_empty_for_workdir">此工作目录下没有 Codex 会话</string>
+    <string name="codex_sync_import">导入</string>
+    <string name="codex_sync_importing">导入中…</string>
+    <string name="codex_sync_current">当前关联</string>
+    <string name="codex_sync_original">原会话</string>
+    <string name="codex_sync_fork">fork会话</string>
+    <string name="codex_sync_imported">已导入</string>
+    <string name="codex_sync_cwd">工作目录</string>
+    <string name="codex_sync_error_timeout">执行超时</string>
+    <string name="codex_sync_error_active">当前会话仍处于活跃状态，请等待会话结束后重试</string>
+    <string name="codex_sync_failed_body">导入 Codex 会话失败。</string>
+    <string name="codex_sync_failed_body_with_reason">导入失败：%1$s</string>
+    <string name="codex_sync_inline_title">导入 Codex 历史</string>
+    <string name="codex_sync_inline_description">可选：先单选一个本机 Codex 会话，再选择模型/思考强度，点创建时导入。</string>
+    <string name="codex_sync_inline_clear">清除已选历史</string>
+    <string name="codex_sync_inline_choose">选择历史</string>
 </resources>

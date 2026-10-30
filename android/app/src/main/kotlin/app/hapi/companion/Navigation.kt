@@ -51,6 +51,9 @@ import app.hapi.companion.feature.files.FilesViewModel
 import app.hapi.companion.feature.files.ViewerMode
 import app.hapi.companion.feature.home.HomeScreen
 import app.hapi.companion.feature.newsession.ApiNewSessionGateway
+import app.hapi.companion.feature.newsession.CodexImportStrings
+import app.hapi.companion.feature.newsession.CodexImportedSessionsStore
+import app.hapi.companion.feature.newsession.MemoryCodexImportedSessionsStore
 import app.hapi.companion.feature.newsession.NewSessionPrefs
 import app.hapi.companion.feature.newsession.NewSessionScreen
 import app.hapi.companion.feature.newsession.NewSessionStrings
@@ -635,6 +638,8 @@ fun HapiNavigation() {
                     NewSessionViewModelHolder(
                         hubGraph, graph.newSessionPrefs, machineId,
                         newSessionStrings(formContext),
+                        codexImportedSessionsStore = graph.codexImportedSessionsStore,
+                        codexImportStrings = codexImportStrings(formContext),
                     )
                 },
             )
@@ -976,6 +981,8 @@ private class NewSessionViewModelHolder(
     prefs: NewSessionPrefs,
     initialMachineId: String?,
     strings: NewSessionStrings,
+    codexImportedSessionsStore: CodexImportedSessionsStore = MemoryCodexImportedSessionsStore(),
+    codexImportStrings: CodexImportStrings = CodexImportStrings(),
 ) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -986,6 +993,8 @@ private class NewSessionViewModelHolder(
         scope = scope,
         initialMachineId = initialMachineId,
         strings = strings,
+        codexImportStore = codexImportedSessionsStore,
+        codexStrings = codexImportStrings,
     )
 
     override fun onCleared() {
@@ -1075,4 +1084,13 @@ private fun newSessionStrings(context: Context) = NewSessionStrings(
     noAvailableAgents = context.getString(R.string.new_session_error_no_available_agents),
     selectedAgentUnavailable = context.getString(R.string.new_session_error_selected_agent_unavailable),
     grokAutoUnavailable = context.getString(R.string.new_session_grok_auto_unavailable),
+)
+
+/** Resource-resolved [CodexImportStrings] (slice A Strings seam). */
+private fun codexImportStrings(context: Context) = CodexImportStrings(
+    loadFailed = context.getString(R.string.codex_sync_failed_body),
+    importFailedReason = context.getString(R.string.codex_sync_failed_body_with_reason),
+    timeout = context.getString(R.string.codex_sync_error_timeout),
+    sessionActive = context.getString(R.string.codex_sync_error_active),
+    createFailed = context.getString(R.string.new_session_error_create),
 )

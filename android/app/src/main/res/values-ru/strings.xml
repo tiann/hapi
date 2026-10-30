@@ -627,4 +627,35 @@
     <string name="share_error_title">Не удалось поделиться</string>
     <string name="share_ok">ОК</string>
     <string name="share_pair_first">Подключите хаб, чтобы выбрать сессию для отправки.</string>
+
+    <!-- Codex session import (slice A) -->
+    <string name="codex_sync_cancel">Отмена</string>
+    <string name="codex_sync_title">Импорт сессий Codex</string>
+    <string name="codex_sync_description">Выберите сессии Codex для импорта в Hapi</string>
+    <string name="codex_sync_selected_count_one">Выбрана 1 сессия</string>
+    <string name="codex_sync_selected_count_many">Выбрано сессий: %1$d</string>
+    <string name="codex_sync_clear_all">Очистить все</string>
+    <string name="codex_sync_select_all">Выбрать все</string>
+    <string name="codex_sync_cwd_filter">Рабочий каталог</string>
+    <string name="codex_sync_cwd_filter_all">Все рабочие каталоги</string>
+    <string name="codex_sync_search">Поиск</string>
+    <string name="codex_sync_search_hint">Поиск по названию, сообщению, каталогу, ID сессии</string>
+    <string name="codex_sync_loading">Загрузка локальных сессий Codex…</string>
+    <string name="codex_sync_empty">Локальные сессии Codex не найдены</string>
+    <string name="codex_sync_empty_for_workdir">Нет сессий Codex в этом рабочем каталоге</string>
+    <string name="codex_sync_import">Импортировать</string>
+    <string name="codex_sync_importing">Импорт…</string>
+    <string name="codex_sync_current">Связано</string>
+    <string name="codex_sync_original">Исходная</string>
+    <string name="codex_sync_fork">Форк</string>
+    <string name="codex_sync_imported">Импортировано</string>
+    <string name="codex_sync_cwd">Рабочий каталог</string>
+    <string name="codex_sync_error_timeout">Время операции истекло</string>
+    <string name="codex_sync_error_active">Эта сессия ещё активна. Дождитесь её завершения и повторите.</string>
+    <string name="codex_sync_failed_body">Не удалось импортировать сессии Codex.</string>
+    <string name="codex_sync_failed_body_with_reason">Импорт не удался: %1$s</string>
+    <string name="codex_sync_inline_title">Импорт истории Codex</string>
+    <string name="codex_sync_inline_description">Необязательно: выберите одну локальную сессию Codex, затем выберите модель/настройки и нажмите «Создать» для импорта.</string>
+    <string name="codex_sync_inline_clear">Очистить выбранную историю</string>
+    <string name="codex_sync_inline_choose">Выбрать историю</string>
 </resources>

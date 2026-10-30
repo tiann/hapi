@@ -627,4 +627,35 @@
     <string name="share_error_title">Share unavailable</string>
     <string name="share_ok">OK</string>
     <string name="share_pair_first">Pair a hub to choose a session for the shared content.</string>
+
+    <!-- Codex session import (slice A) -->
+    <string name="codex_sync_cancel">Cancel</string>
+    <string name="codex_sync_title">Import Codex sessions</string>
+    <string name="codex_sync_description">Choose Codex sessions to import into Hapi</string>
+    <string name="codex_sync_selected_count_one">1 session selected</string>
+    <string name="codex_sync_selected_count_many">%1$d sessions selected</string>
+    <string name="codex_sync_clear_all">Clear all</string>
+    <string name="codex_sync_select_all">Select all</string>
+    <string name="codex_sync_cwd_filter">Work directory</string>
+    <string name="codex_sync_cwd_filter_all">All work directories</string>
+    <string name="codex_sync_search">Search</string>
+    <string name="codex_sync_search_hint">Search title, message, directory, session id</string>
+    <string name="codex_sync_loading">Loading local Codex sessions…</string>
+    <string name="codex_sync_empty">No local Codex sessions found</string>
+    <string name="codex_sync_empty_for_workdir">No Codex sessions in this work directory</string>
+    <string name="codex_sync_import">Import</string>
+    <string name="codex_sync_importing">Importing…</string>
+    <string name="codex_sync_current">Linked</string>
+    <string name="codex_sync_original">Original</string>
+    <string name="codex_sync_fork">Fork</string>
+    <string name="codex_sync_imported">Imported</string>
+    <string name="codex_sync_cwd">Working directory</string>
+    <string name="codex_sync_error_timeout">Operation timed out</string>
+    <string name="codex_sync_error_active">This session is still active. Please wait until it ends and try again.</string>
+    <string name="codex_sync_failed_body">Failed to import Codex sessions.</string>
+    <string name="codex_sync_failed_body_with_reason">Import failed: %1$s</string>
+    <string name="codex_sync_inline_title">Import Codex history</string>
+    <string name="codex_sync_inline_description">Optional: choose one local Codex session, then pick model/settings and Create to import.</string>
+    <string name="codex_sync_inline_clear">Clear selected history</string>
+    <string name="codex_sync_inline_choose">Choose history</string>
 </resources>
