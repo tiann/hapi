@@ -75,6 +75,39 @@ function reasoningTextOf(message: { content: unknown }): string {
 }
 
 describe('cli session handlers', () => {
+    it('keeps one cumulative answer across reconnect and deduplicates final replay', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('text-reconnect', {}, null, 'default')
+        const events: SyncEvent[] = []
+        const connect = () => {
+            const socket = new FakeSocket()
+            registerSessionHandlers(socket as unknown as CliSocketWithData, {
+                store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
+                onWebappEvent: event => events.push(event)
+            })
+            return socket
+        }
+        const id = 'codex:thread:turn:answer:agent_message'
+        const message = (text: string, live: boolean) => ({ sid: session.id,
+            ...(live ? {} : { localId: id }),
+            message: { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: {
+                type: 'message', id, turn_id: 'turn', message: text,
+                ...(live ? { live: true, streamSnapshot: true } : {})
+            } } }
+        })
+        connect().trigger('message', message('Hello', true))
+        const reconnected = connect()
+        reconnected.trigger('message', message('Hello world', true))
+        expect(store.messages.getAllMessages(session.id).map(reasoningTextOf)).toEqual(['Hello world'])
+        const final = message('Hello world!', false)
+        reconnected.trigger('message', final)
+        connect().trigger('message', final)
+        expect(store.messages.getAllMessages(session.id).map(reasoningTextOf)).toEqual(['Hello world!'])
+        expect(store.messages.getAllMessages(session.id)[0].localId).toBe(id)
+        expect(events.filter(event => event.type === 'message-received')).toHaveLength(3)
+        store.close()
+    })
+
     it.each([undefined, 'terminated', 'error'] as const)('preserves shared Codex pending input on execution exit (%s)', reason => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('shared-end', { flavor: 'codex', capabilities: { concurrentClients: true } }, null, 'default')

@@ -6,6 +6,7 @@ import {
     extractNotifySummary,
     getLiveReasoningStreamId,
     getReasoningStreamId,
+    getMessageStreamIds,
     isRedundantGoalStatusEventContent,
     splitNotifySummary,
     stripNotifySummaryFooter,
@@ -365,6 +366,14 @@ describe('isRedundantGoalStatusEventContent (regression-guard for messages.ts ed
 })
 
 describe('reasoning stream identity', () => {
+    test('identifies both live text snapshots and multi-block Claude finals', () => {
+        const text = { role: 'agent', content: { type: 'codex', data: { type: 'message', id: 'answer', live: true } } }
+        expect(getMessageStreamIds(text, true)).toEqual(['text:answer'])
+        const final = { role: 'agent', content: { type: 'output', data: { type: 'assistant', streamIds: ['a', 'b', '', 42] } } }
+        expect(getMessageStreamIds(final)).toEqual(['text:a', 'text:b'])
+        expect(getMessageStreamIds(final, true)).toEqual([])
+        expect(getMessageStreamIds({ ...text, role: 'user' })).toEqual([])
+    })
     function reasoningContent(overrides: Record<string, unknown> = {}) {
         return {
             role: 'agent',

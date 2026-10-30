@@ -310,7 +310,8 @@ function normalizeAssistantOutput(
         for (const block of modelContent) {
             if (!isObject(block) || typeof block.type !== 'string') continue
             if (block.type === 'text' && typeof block.text === 'string') {
-                blocks.push({ type: 'text', text: block.text, uuid, parentUUID })
+                const streamId = asString(block.streamId)
+                blocks.push({ type: 'text', text: block.text, uuid, parentUUID, ...(streamId ? { streamId } : {}) })
                 continue
             }
             if (block.type === 'thinking' && typeof block.thinking === 'string') {

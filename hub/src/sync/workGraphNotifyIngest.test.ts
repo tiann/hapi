@@ -145,6 +145,30 @@ describe('buildWorkAdFromNotify field mapping', () => {
 })
 
 describe('ingestNotifySummaryFromMessage', () => {
+    it.each(['output', 'codex'])('records only the final %s summary, never live snapshots', (flavor) => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession(`stream-${flavor}`, {}, null, 'default')
+        const text = 'Done.\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"Finished"}'
+        const content = (live: boolean) => ({ role: 'agent', content: { type: flavor, data: {
+            ...(flavor === 'output'
+                ? { type: 'assistant', message: { content: [{ type: 'text', text }] } }
+                : { type: 'message', message: text, id: 'stream-1' }),
+            ...(live ? { live: true } : {})
+        } } })
+        const ingest = (messageId: string, live: boolean) => ingestNotifySummaryFromMessage({
+            store, namespace: 'default', sessionId: session.id, messageId,
+            content: content(live), ts: Date.now(), ownerUserId: 1
+        })
+        expect(ingest('snapshot-1', true)).toBeNull()
+        expect(ingest('snapshot-2', true)).toBeNull()
+        expect(store.workGraph.listByRelatedSession('default', session.id)).toHaveLength(0)
+        expect(ingest('final', false)?.inserted).toBe(true)
+        expect(ingest('final', false)?.inserted).toBe(false)
+        const events = store.workGraph.listByRelatedSession('default', session.id)
+        expect(events).toHaveLength(1)
+        expect(events[0].payloadJson).toMatchObject({ messageId: 'final' })
+    })
+
     it('inserts a work_ad ledger row from a well-formed footer', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('sess-ingest', {}, null, 'alpha')

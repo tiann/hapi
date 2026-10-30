@@ -1,0 +1,163 @@
+{
+    "description": "Partial Claude text and its authoritative final update one block; tool content remains separate.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "claude-text-1",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Hello world!"
+            },
+            {
+                "createdAt": 1755000000200,
+                "id": "read-1",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "read-1",
+                    "input": {
+                        "file_path": "/tmp/test"
+                    },
+                    "name": "Read",
+                    "state": "running"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "claude-text-1",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Hello world!"
+            },
+            {
+                "createdAt": 1755000000200,
+                "id": "read-1",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "read-1",
+                    "input": {
+                        "file_path": "/tmp/test"
+                    },
+                    "name": "Read",
+                    "state": "running"
+                }
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "live": true,
+                            "message": {
+                                "content": [
+                                    {
+                                        "streamId": "claude-text-1",
+                                        "text": "Hel",
+                                        "type": "text"
+                                    }
+                                ],
+                                "role": "assistant"
+                            },
+                            "parentUuid": null,
+                            "streamIds": [
+                                "claude-text-1"
+                            ],
+                            "type": "assistant",
+                            "uuid": "claude-uuid-0"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "claude-stream-0",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "live": true,
+                            "message": {
+                                "content": [
+                                    {
+                                        "streamId": "claude-text-1",
+                                        "text": "Hello",
+                                        "type": "text"
+                                    }
+                                ],
+                                "role": "assistant"
+                            },
+                            "parentUuid": null,
+                            "streamIds": [
+                                "claude-text-1"
+                            ],
+                            "type": "assistant",
+                            "uuid": "claude-uuid-1"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000100,
+                "id": "claude-stream-1",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": {
+                                "content": [
+                                    {
+                                        "streamId": "claude-text-1",
+                                        "text": "Hello world!",
+                                        "type": "text"
+                                    },
+                                    {
+                                        "id": "read-1",
+                                        "input": {
+                                            "file_path": "/tmp/test"
+                                        },
+                                        "name": "Read",
+                                        "type": "tool_use"
+                                    }
+                                ],
+                                "role": "assistant"
+                            },
+                            "parentUuid": null,
+                            "streamIds": [
+                                "claude-text-1"
+                            ],
+                            "type": "assistant",
+                            "uuid": "claude-uuid-2"
+                        },
+                        "type": "output"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000200,
+                "id": "claude-stream-2",
+                "localId": null,
+                "seq": 3
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "claude-text-stream-snapshots"
+}

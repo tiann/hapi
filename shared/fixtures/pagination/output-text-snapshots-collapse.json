@@ -1,0 +1,205 @@
+{
+    "description": "Growing text occupies one window slot; a late old snapshot cannot replace the final.",
+    "expectedState": {
+        "epoch": 0,
+        "hasMore": false,
+        "messages": [
+            {
+                "createdAt": 1000,
+                "id": "before",
+                "invokedAt": 1000,
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 1
+            },
+            {
+                "createdAt": 4000,
+                "id": "text-4",
+                "localId": null,
+                "optimistic": false,
+                "queued": false,
+                "seq": 4
+            }
+        ],
+        "newestCursor": {
+            "at": 4000,
+            "seq": 4
+        },
+        "olderCursor": {
+            "at": 1000,
+            "seq": 1
+        },
+        "viewMode": "tail"
+    },
+    "fixtureVersion": 1,
+    "name": "output-text-snapshots-collapse",
+    "ops": [
+        {
+            "expectedRequests": [
+                {
+                    "limit": 20
+                }
+            ],
+            "op": "sync-tail",
+            "responses": [
+                {
+                    "messages": [
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "message": "before",
+                                        "type": "message"
+                                    },
+                                    "type": "codex"
+                                },
+                                "role": "agent"
+                            },
+                            "createdAt": 1000,
+                            "id": "before",
+                            "invokedAt": 1000,
+                            "localId": null,
+                            "seq": 1
+                        },
+                        {
+                            "content": {
+                                "content": {
+                                    "data": {
+                                        "live": true,
+                                        "message": {
+                                            "content": [
+                                                {
+                                                    "streamId": "answer",
+                                                    "text": "Text 2",
+                                                    "type": "text"
+                                                }
+                                            ]
+                                        },
+                                        "streamIds": [
+                                            "answer"
+                                        ],
+                                        "type": "assistant"
+                                    },
+                                    "type": "output"
+                                },
+                                "role": "agent"
+                            },
+                            "createdAt": 2000,
+                            "id": "text-2",
+                            "localId": null,
+                            "seq": 2
+                        }
+                    ],
+                    "page": {
+                        "direction": "latest",
+                        "epoch": 0,
+                        "hasMore": false,
+                        "limit": 200,
+                        "nextAfterAt": null,
+                        "nextAfterSeq": null,
+                        "nextBeforeAt": 1000,
+                        "nextBeforeSeq": 1,
+                        "reset": false,
+                        "snapshotHeadAt": 2000,
+                        "snapshotHeadSeq": 2
+                    }
+                }
+            ]
+        },
+        {
+            "messages": [
+                {
+                    "content": {
+                        "content": {
+                            "data": {
+                                "live": true,
+                                "message": {
+                                    "content": [
+                                        {
+                                            "streamId": "answer",
+                                            "text": "Text 3",
+                                            "type": "text"
+                                        }
+                                    ]
+                                },
+                                "streamIds": [
+                                    "answer"
+                                ],
+                                "type": "assistant"
+                            },
+                            "type": "output"
+                        },
+                        "role": "agent"
+                    },
+                    "createdAt": 3000,
+                    "id": "text-3",
+                    "localId": null,
+                    "seq": 3
+                },
+                {
+                    "content": {
+                        "content": {
+                            "data": {
+                                "live": false,
+                                "message": {
+                                    "content": [
+                                        {
+                                            "streamId": "answer",
+                                            "text": "Text 4",
+                                            "type": "text"
+                                        }
+                                    ]
+                                },
+                                "streamIds": [
+                                    "answer"
+                                ],
+                                "type": "assistant"
+                            },
+                            "type": "output"
+                        },
+                        "role": "agent"
+                    },
+                    "createdAt": 4000,
+                    "id": "text-4",
+                    "localId": null,
+                    "seq": 4
+                }
+            ],
+            "op": "sse-messages"
+        },
+        {
+            "messages": [
+                {
+                    "content": {
+                        "content": {
+                            "data": {
+                                "live": true,
+                                "message": {
+                                    "content": [
+                                        {
+                                            "streamId": "answer",
+                                            "text": "Text 2",
+                                            "type": "text"
+                                        }
+                                    ]
+                                },
+                                "streamIds": [
+                                    "answer"
+                                ],
+                                "type": "assistant"
+                            },
+                            "type": "output"
+                        },
+                        "role": "agent"
+                    },
+                    "createdAt": 2000,
+                    "id": "text-2",
+                    "localId": null,
+                    "seq": 2
+                }
+            ],
+            "op": "sse-messages"
+        }
+    ]
+}

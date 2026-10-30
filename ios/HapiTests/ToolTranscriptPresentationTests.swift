@@ -213,7 +213,7 @@ final class ToolTranscriptPresentationTests: XCTestCase {
         try await eventually { model.jumpToLatestToken > jump && model.followsTail && !model.showsJumpToLatest }
     }
 
-    func testPlanPublicationUpdatesRecyclingAndInspectorPreserveTheDocumentAndAnchor() async throws {
+    func testPlanPublicationUpdatesOffscreenRoundTripAndInspectorPreserveTheDocumentAndAnchor() async throws {
         let plan = "# Initial proposal\n\nRead the document without opening the inspector."
         let credentials = InMemoryCredentialStore()
         let payload = Data(#"{"uid":1,"exp":4102444800,"ns":"test"}"#.utf8).base64EncodedString()
@@ -261,13 +261,28 @@ final class ToolTranscriptPresentationTests: XCTestCase {
         try await eventually { (collection.cellForItem(at: IndexPath(item: index, section: 0))?.frame.height ?? 0) > initialHeight + 100 }
         XCTAssertEqual(cell.frame.minY - collection.contentOffset.y, anchorY, accuracy: 1)
         let count = collection.numberOfItems(inSection: 0)
+        let planIndexPath = IndexPath(item: index, section: 0)
+        let tailIndexPath = IndexPath(item: count - 1, section: 0)
+        // Match the reader gesture on the return trip below. scrollToItem does
+        // not send drag callbacks, so otherwise a pending update can restore
+        // the old reading anchor over this programmatic departure.
         collection.delegate?.scrollViewWillBeginDragging?(collection)
-        collection.scrollToItem(at: IndexPath(item: count - 1, section: 0), at: .bottom, animated: false)
-        try await eventually { collection.cellForItem(at: IndexPath(item: index, section: 0)) == nil }
+        collection.scrollToItem(at: tailIndexPath, at: .bottom, animated: false)
+        // Since iOS 15, cellForItem can return an offscreen prepared cell.
+        // Assert the visible transition, not UIKit's private cache lifetime.
+        try await eventually {
+            collection.indexPathsForVisibleItems.contains(tailIndexPath)
+                && !collection.indexPathsForVisibleItems.contains(planIndexPath)
+        }
+        let offscreenFrame = try XCTUnwrap(collection.layoutAttributesForItem(at: planIndexPath)).frame
+        XCTAssertFalse(offscreenFrame.intersects(collection.bounds))
         collection.delegate?.scrollViewWillBeginDragging?(collection)
-        collection.scrollToItem(at: IndexPath(item: index, section: 0), at: .top, animated: false)
-        try await eventually { collection.cellForItem(at: IndexPath(item: index, section: 0)) != nil }
-        let returned = try XCTUnwrap(collection.cellForItem(at: IndexPath(item: index, section: 0)))
+        collection.scrollToItem(at: planIndexPath, at: .top, animated: false)
+        try await eventually {
+            collection.indexPathsForVisibleItems.contains(planIndexPath)
+                && (collection.cellForItem(at: planIndexPath)?.frame.height ?? 0) > initialHeight + 100
+        }
+        let returned = try XCTUnwrap(collection.cellForItem(at: planIndexPath))
         XCTAssertGreaterThan(returned.frame.height, initialHeight + 100)
         let restoredY = returned.frame.minY - collection.contentOffset.y
         model.beginContentInspection()

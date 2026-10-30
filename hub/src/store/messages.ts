@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 
-import { getLiveReasoningStreamId } from '@hapi/protocol/messages'
+import { getMessageStreamIds } from '@hapi/protocol/messages'
 
 import type { StoredMessage } from './types'
 import { decodeMessageContent, encodeMessageContent, truncateOversizedMessageContent } from './contentCodec'
@@ -410,14 +410,14 @@ export function getDeliverableMessagesAfter(
 
 /** How far back to look for a stream's replaceable snapshots.
  *
- *  The CLI re-sends a growing reasoning buffer every few hundred milliseconds,
+ *  The CLI re-sends a growing message buffer every few hundred milliseconds,
  *  so the previous snapshot of a stream is always among the newest rows of its
  *  session. Scanning a bounded tail keeps this off the hot path on sessions
  *  with tens of thousands of messages; anything older than the window is left
  *  alone, which errs toward keeping data. */
-const REASONING_SNAPSHOT_LOOKBACK = 50
+const MESSAGE_SNAPSHOT_LOOKBACK = 50
 
-/** Drop the replaceable snapshots of one reasoning stream.
+/** Drop the replaceable snapshots of one message stream.
  *
  *  Only messages explicitly marked live are eligible, and `keepMessageId` is
  *  always spared. Callers run this *after* storing the message that supersedes
@@ -425,7 +425,7 @@ const REASONING_SNAPSHOT_LOOKBACK = 50
  *  two statements are separate transactions, and a crash between them must not
  *  be able to take the whole stream with it. Returns how many rows were
  *  removed. */
-export function deleteLiveReasoningSnapshots(
+export function deleteLiveMessageSnapshots(
     db: Database,
     sessionId: string,
     streamId: string,
@@ -436,11 +436,11 @@ export function deleteLiveReasoningSnapshots(
         WHERE session_id = ?
         ORDER BY seq DESC
         LIMIT ?
-    `).all(sessionId, REASONING_SNAPSHOT_LOOKBACK) as Array<Pick<DbMessageRow, 'id' | 'content'>>
+    `).all(sessionId, MESSAGE_SNAPSHOT_LOOKBACK) as Array<Pick<DbMessageRow, 'id' | 'content'>>
 
     const staleIds = rows
         .filter((row) => row.id !== keepMessageId
-            && getLiveReasoningStreamId(decodeMessageContent(row.content)) === streamId)
+            && getMessageStreamIds(decodeMessageContent(row.content), true).includes(streamId))
         .map((row) => row.id)
     if (staleIds.length === 0) return 0
 

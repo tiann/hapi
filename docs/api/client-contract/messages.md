@@ -136,6 +136,17 @@ Then dispatch on `data.type`:
 
 Other block types are ignored. `message.usage` carries `input_tokens`, `output_tokens`, `cache_creation_input_tokens?`, `cache_read_input_tokens?`, `service_tier?`, `context_window?`.
 
+Remote Claude text may arrive as cumulative snapshots. Each text block carries a stable
+`streamId`; replace the text of that block rather than append another bubble. The entry's
+`streamIds` lists the blocks it updates, and `live: true` marks an intermediate snapshot.
+The normal completed assistant entry carries the same block IDs without `live`, retaining
+its usage and tool blocks. Live entries do not advance Claude's transcript parent chain.
+
+Codex uses the equivalent generic `message` payload with stable `data.id`,
+and `streamSnapshot: true` plus `live: true` on intermediate updates. These are full snapshots, not
+text fragments. The final item is authoritative, including when its text differs from
+the accumulated deltas. Shared Codex keeps the final transport ID stable for history replay.
+
 ### `user`
 
 Despite the name, these arrive through the agent path (tool results and system-injected turns). `data.message.content` cases:

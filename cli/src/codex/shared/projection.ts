@@ -35,7 +35,7 @@ function metadataHasDisplayTitle(metadata: { name?: string; summary?: { text: st
 
 /** Canonical V2 stream only. Stable message IDs also deduplicate snapshot replay at the hub. */
 export class SharedCodexProjection {
-    private converter = new AppServerEventConverter();
+    private converter = new AppServerEventConverter({ streamText: true });
     private readonly roundDuration = new CodexRoundDuration();
     private readonly emitted = new Set<string>();
     private readonly turns = new Map<string, string>();
@@ -50,7 +50,12 @@ export class SharedCodexProjection {
     }
 
     turnFor(id: string): string | undefined { return this.turns.get(id); }
-    reset(): void { this.converter = new AppServerEventConverter(); this.emitted.clear(); }
+    reset(): void {
+        // Hub replay must reset durable deduplication without losing the prefix
+        // of an assistant item that is still receiving deltas.
+        this.converter.reset({ preserveText: true });
+        this.emitted.clear();
+    }
     private send(body: Record<string, unknown>, key: string): void {
         if (this.emitted.has(key)) return;
         this.emitted.add(key);
@@ -101,7 +106,7 @@ export class SharedCodexProjection {
         }
     }
 
-    private async project(method: string, params: unknown, modelAtReceipt?: string, fromHistory = false): Promise<void> {
+    private async project(method: string, params: unknown, modelAtReceipt?: string, fromHistory = false, restoreText = false): Promise<void> {
         if (method.startsWith('codex/event/')) return;
         const p = record(params);
         const item = record(p.item);
@@ -136,11 +141,24 @@ export class SharedCodexProjection {
                 status: method === 'turn/started' ? 'running' : record(p.turn).status === 'completed' ? 'completed' : 'failed'
             }, `lifecycle:${turnId}:${method}`);
         }
-        const events = this.converter.handleNotification(method, params);
+        const events = restoreText ? this.converter.restoreAgentMessage(params) : this.converter.handleNotification(method, params);
         for (const event of events) {
             const callId = string(event.call_id);
             const key = `${turnId ?? 'thread'}:${itemId ?? callId ?? createHash('sha256').update(JSON.stringify(event)).digest('hex')}:${event.type}`;
-            if (event.type === 'agent_message') send({ type: 'message', message: event.message }, key);
+            if (event.type === 'agent_message' && event.stream_id && !this.parentThreadId) {
+                // Transport IDs identify snapshots; body IDs identify the growing block.
+                // The final item keeps the canonical replay ID for reconnect deduplication.
+                const live = event.live === true;
+                if (!live && this.emitted.has(key)) continue;
+                if (!live) this.emitted.add(key);
+                this.session.sendAgentMessage({ type: 'message', message: event.message,
+                    id: event.stream_id, ...(turnId ? { turn_id: turnId } : {}), ...(live ? { streamSnapshot: true, live: true } : {})
+                }, live ? undefined : `codex:${this.threadId}:${key}`);
+            }
+            else if (event.type === 'agent_message') {
+                // Child traces settle through their existing canonical replay path.
+                if (event.live !== true) send({ type: 'message', message: event.message }, key);
+            }
             else if (event.type === 'agent_reasoning') send({ type: 'reasoning', message: event.text }, key);
             else if (event.type === 'exec_command_begin' && callId) {
                 send({ type: 'tool-call', name: 'CodexBash', callId, input: event }, key);
@@ -223,7 +241,8 @@ export class SharedCodexProjection {
                 if (!this.parentThreadId && string(record(item).id) && pendingTitle && !this.completedTitles.has(titleKey)) {
                     this.pendingTitles.set(titleKey, pendingTitle);
                 }
-                await this.project('item/started', params, undefined, true);
+                await this.project('item/started', params, undefined, true,
+                    turn.status === 'inProgress' && record(item).type === 'agentMessage' && record(item).status !== 'completed');
                 // Active snapshots can contain partial assistant text. Do not
                 // settle it under the final stable id and suppress completion.
                 if (turn.status !== 'inProgress' || record(item).status === 'completed' || record(item).type === 'userMessage') {

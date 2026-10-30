@@ -599,7 +599,20 @@ describe('content codec integration', () => {
     })
 })
 
-describe('deleteLiveReasoningSnapshots', () => {
+describe('deleteLiveMessageSnapshots', () => {
+    it.each(['codex', 'output'])('retires %s text snapshots while keeping the final and other streams', (flavor) => {
+        const store = makeStore()
+        const session = makeSession(store, `text-${flavor}`)
+        const content = (id: string, live: boolean) => ({ role: 'agent', content: { type: flavor, data: flavor === 'codex'
+            ? { type: 'message', id, message: 'answer', live }
+            : { type: 'assistant', streamIds: [id], message: { content: [{ type: 'text', text: 'answer', streamId: id }] }, live }
+        } })
+        store.messages.addMessage(session.id, content('answer', true))
+        const other = store.messages.addMessage(session.id, content('other', true))
+        const final = store.messages.addMessage(session.id, content('answer', false))
+        store.messages.deleteLiveMessageSnapshots(session.id, 'text:answer', final.id)
+        expect(store.messages.getAllMessages(session.id).map(row => row.id)).toEqual([other.id, final.id])
+    })
     function reasoningMessage(streamId: string, text: string, live: boolean) {
         return {
             role: 'agent',
@@ -624,7 +637,7 @@ describe('deleteLiveReasoningSnapshots', () => {
 
         for (const text of ['a', 'ab', 'abc']) {
             const stored = store.messages.addMessage(session.id, reasoningMessage('stream-1', text, true))
-            store.messages.deleteLiveReasoningSnapshots(session.id, 'stream-1', stored.id)
+            store.messages.deleteLiveMessageSnapshots(session.id, 'stream-1', stored.id)
         }
 
         expect(reasoningTexts(store, session.id)).toEqual(['abc'])
@@ -636,7 +649,7 @@ describe('deleteLiveReasoningSnapshots', () => {
 
         store.messages.addMessage(session.id, reasoningMessage('stream-1', 'partial', true))
         const settled = store.messages.addMessage(session.id, reasoningMessage('stream-1', 'final', false))
-        store.messages.deleteLiveReasoningSnapshots(session.id, 'stream-1', settled.id)
+        store.messages.deleteLiveMessageSnapshots(session.id, 'stream-1', settled.id)
 
         expect(reasoningTexts(store, session.id)).toEqual(['final'])
     })
@@ -646,7 +659,7 @@ describe('deleteLiveReasoningSnapshots', () => {
         const session = makeSession(store, 'reasoning-settled-kept')
 
         store.messages.addMessage(session.id, reasoningMessage('stream-1', 'final', false))
-        const removed = store.messages.deleteLiveReasoningSnapshots(session.id, 'stream-1')
+        const removed = store.messages.deleteLiveMessageSnapshots(session.id, 'stream-1')
 
         expect(removed).toBe(0)
         expect(reasoningTexts(store, session.id)).toEqual(['final'])
@@ -658,7 +671,7 @@ describe('deleteLiveReasoningSnapshots', () => {
 
         store.messages.addMessage(session.id, reasoningMessage('stream-1', 'first', true))
         const other = store.messages.addMessage(session.id, reasoningMessage('stream-2', 'second', true))
-        store.messages.deleteLiveReasoningSnapshots(session.id, 'stream-2', other.id)
+        store.messages.deleteLiveMessageSnapshots(session.id, 'stream-2', other.id)
 
         expect(reasoningTexts(store, session.id)).toEqual(['first', 'second'])
     })
@@ -669,7 +682,7 @@ describe('deleteLiveReasoningSnapshots', () => {
         const theirs = makeSession(store, 'reasoning-theirs')
 
         store.messages.addMessage(theirs.id, reasoningMessage('stream-1', 'theirs', true))
-        store.messages.deleteLiveReasoningSnapshots(mine.id, 'stream-1')
+        store.messages.deleteLiveMessageSnapshots(mine.id, 'stream-1')
 
         expect(reasoningTexts(store, theirs.id)).toEqual(['theirs'])
     })
@@ -679,7 +692,7 @@ describe('deleteLiveReasoningSnapshots', () => {
         const session = makeSession(store, 'reasoning-keep-replacement')
 
         const replacement = store.messages.addMessage(session.id, reasoningMessage('stream-1', 'newest', true))
-        const removed = store.messages.deleteLiveReasoningSnapshots(session.id, 'stream-1', replacement.id)
+        const removed = store.messages.deleteLiveMessageSnapshots(session.id, 'stream-1', replacement.id)
 
         expect(removed).toBe(0)
         expect(reasoningTexts(store, session.id)).toEqual(['newest'])
@@ -694,7 +707,7 @@ describe('deleteLiveReasoningSnapshots', () => {
         for (const text of ['a', 'ab', 'abc', 'abcd']) {
             const stored = store.messages.addMessage(session.id, reasoningMessage('stream-1', text, true))
             expect(reasoningTexts(store, session.id).length).toBeGreaterThan(0)
-            store.messages.deleteLiveReasoningSnapshots(session.id, 'stream-1', stored.id)
+            store.messages.deleteLiveMessageSnapshots(session.id, 'stream-1', stored.id)
             expect(reasoningTexts(store, session.id)).toEqual([text])
         }
     })
@@ -705,7 +718,7 @@ describe('deleteLiveReasoningSnapshots', () => {
 
         store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'hello' } })
         store.messages.addMessage(session.id, reasoningMessage('stream-1', 'partial', true))
-        store.messages.deleteLiveReasoningSnapshots(session.id, 'stream-1')
+        store.messages.deleteLiveMessageSnapshots(session.id, 'stream-1')
 
         expect(store.messages.getAllMessages(session.id)).toHaveLength(1)
         expect(reasoningTexts(store, session.id)).toEqual([])

@@ -126,6 +126,40 @@ async function startCompaction(f: Awaited<ReturnType<typeof fixture>>, id = 'inp
 }
 
 describe('optional bounded history replay', () => {
+    it.each(['hub', 'native'] as const)('keeps an active answer across %s reconnect and authoritative completion', async transport => {
+        const f = await fixture();
+        await f.root.activate();
+        const scope = { threadId: 'thread', turnId: 'turn', itemId: 'answer' };
+        f.native.thread.turns = [{ id: 'turn', status: 'inProgress', items: [
+            { id: 'answer', type: 'agentMessage', text: 'Hello' }
+        ] }];
+        f.native.notify('item/agentMessage/delta', { ...scope, delta: 'Hello' });
+        await f.drain();
+        expect(f.send.mock.lastCall![0]).toMatchObject({ message: 'Hello', live: true });
+        const id = f.send.mock.lastCall![0].id;
+        f.send.mockClear();
+        // Native history includes content generated while the transport was down.
+        f.native.thread.turns[0].items = [{ id: 'answer', type: 'agentMessage', text: 'Hello during disconnect' }];
+        if (transport === 'hub') f.reconnect();
+        else f.native.abandoned();
+        await vi.waitFor(() => expect(f.send.mock.calls.some(([body]) => body.message === 'Hello during disconnect')).toBe(true));
+        await new Promise(resolve => setTimeout(resolve, 110));
+        f.native.notify('item/agentMessage/delta', { ...scope, delta: ' world' });
+        await f.drain();
+        expect(f.send.mock.lastCall![0]).toMatchObject({ id, message: 'Hello during disconnect world', live: true });
+        const item = { id: 'answer', type: 'agentMessage', text: 'Hello during disconnect world!' };
+        f.native.thread.turns = [{ id: 'turn', status: 'completed', items: [item] }];
+        f.native.notify('item/completed', { ...scope, item });
+        await f.drain();
+        const final = f.send.mock.lastCall!;
+        expect(final[0]).toMatchObject({ id, message: item.text, turn_id: 'turn' });
+        expect(final[0].live).not.toBe(true);
+        expect(final[1]).toBe(id);
+        f.send.mockClear(); f.reconnect();
+        await vi.waitFor(() => expect(f.send.mock.calls).toContainEqual(final));
+        expect(f.send.mock.calls.filter(([body]) => body.type === 'message')).toEqual([final]);
+    });
+
     it.each([
         { selected: true, fullHistory: false, bounded: true },
         { selected: true, fullHistory: true, bounded: false },

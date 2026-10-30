@@ -68,6 +68,8 @@ export const RawJSONLinesSchema = z.discriminatedUnion("type", [
   RawJSONLinesBaseSchema.extend({
     uuid: z.string(),
     type: z.literal("assistant"),
+    streamIds: z.array(z.string()).optional(),
+    live: z.boolean().optional(),
     message: RawMessageSchema.optional(),
     requestId: z.string().optional(),
     // Set on Claude Code's synthetic API error messages (e.g. "Prompt is too long").

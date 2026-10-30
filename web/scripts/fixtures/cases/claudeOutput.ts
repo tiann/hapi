@@ -7,6 +7,21 @@ import { T0, wireMessage } from './support'
  */
 export const claudeOutputCases: FixtureCase[] = [
     {
+        name: 'claude-text-stream-snapshots',
+        description: 'Partial Claude text and its authoritative final update one block; tool content remains separate.',
+        messages: ['Hel', 'Hello', 'Hello world!'].map((text, index) => wireMessage({
+            id: `claude-stream-${index}`, seq: index + 1, createdAt: T0 + index * 100,
+            content: { role: 'agent', content: { type: 'output', data: {
+                type: 'assistant', uuid: `claude-uuid-${index}`, parentUuid: null,
+                streamIds: ['claude-text-1'], ...(index < 2 ? { live: true } : {}),
+                message: { role: 'assistant', content: [
+                    { type: 'text', text, streamId: 'claude-text-1' },
+                    ...(index === 2 ? [{ type: 'tool_use', id: 'read-1', name: 'Read', input: { file_path: '/tmp/test' } }] : [])
+                ] }
+            } } }
+        }))
+    },
+    {
         name: 'claude-assistant-text',
         description: 'Claude output family: plain assistant text with usage. Expects user-text + agent-text blocks and latestUsage derived from message.usage (contextSize = cache_creation + cache_read + input_tokens).',
         messages: [

@@ -1,0 +1,95 @@
+{
+    "description": "Reconnect restores a cumulative active snapshot under the same stream ID. Native projection keeps one answer, then reconciles the authoritative final without changing identity.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "codex:thread:turn:answer:agent_message",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Hello during disconnect world"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "codex:thread:turn:answer:agent_message",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Hello during disconnect world"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "id": "codex:thread:turn:answer:agent_message",
+                            "live": true,
+                            "message": "Hello",
+                            "streamSnapshot": true,
+                            "turn_id": "turn",
+                            "type": "message"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "reconnect-row-0",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "id": "codex:thread:turn:answer:agent_message",
+                            "live": true,
+                            "message": "Hello during disconnect",
+                            "streamSnapshot": true,
+                            "turn_id": "turn",
+                            "type": "message"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000100,
+                "id": "reconnect-row-1",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "id": "codex:thread:turn:answer:agent_message",
+                            "live": true,
+                            "message": "Hello during disconnect world",
+                            "streamSnapshot": true,
+                            "turn_id": "turn",
+                            "type": "message"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000200,
+                "id": "reconnect-row-2",
+                "localId": null,
+                "seq": 3
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "codex-reconnect-text-in-progress"
+}

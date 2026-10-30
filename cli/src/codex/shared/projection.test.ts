@@ -5,6 +5,70 @@ import { codexPlanProposalId } from './plan';
 import { extractNotifySummary } from '@hapi/protocol/messages';
 
 describe('shared history projection', () => {
+    it.each([undefined, 'Hello', 'Hello while disconnected'])(
+        'preserves in-flight text across replay and final reconciliation (history: %s)', async historyText => {
+            const now = vi.spyOn(Date, 'now').mockReturnValue(1000);
+            try {
+                const send = vi.fn();
+                const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+                const projection = new SharedCodexProjection(session, 'thread', async () => {});
+                const scope = { threadId: 'thread', turnId: 'turn', itemId: 'answer' };
+                await projection.notification('item/agentMessage/delta', { ...scope, delta: 'Hello' });
+                const streamId = send.mock.lastCall![0].id;
+                projection.reset();
+                await projection.history({ turns: [{ id: 'turn', status: 'inProgress', items: [
+                    { id: 'answer', type: 'agentMessage', ...(historyText ? { text: historyText } : {}) }
+                ] }] });
+                now.mockReturnValue(1200);
+                await projection.notification('item/agentMessage/delta', { ...scope, delta: ' world' });
+                expect(send.mock.lastCall![0]).toMatchObject({
+                    id: streamId, message: `${historyText ?? 'Hello'} world`, live: true, turn_id: 'turn'
+                });
+                const item = { id: 'answer', type: 'agentMessage', text: 'Authoritative final answer' };
+                await projection.notification('item/completed', { ...scope, item });
+                const final = send.mock.lastCall!;
+                expect(final[0]).toMatchObject({ id: streamId, message: item.text, turn_id: 'turn' });
+                expect(final[0].live).not.toBe(true);
+                expect(final[1]).toBe('codex:thread:turn:answer:agent_message');
+                const count = send.mock.calls.length;
+                await projection.notification('item/completed', { ...scope, item });
+                expect(send).toHaveBeenCalledTimes(count);
+                projection.reset(); send.mockClear();
+                await projection.history({ turns: [{ id: 'turn', status: 'completed', items: [item] }] });
+                expect(send.mock.calls).toEqual([final]);
+            } finally { now.mockRestore(); }
+        });
+
+    it('does not roll back live text when active history arrives late', async () => {
+        const send = vi.fn();
+        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {});
+        const scope = { threadId: 'thread', turnId: 'turn', itemId: 'answer' };
+        await projection.notification('item/agentMessage/delta', { ...scope, delta: 'Hello world' });
+        projection.reset();
+        await projection.history({ turns: [{ id: 'turn', status: 'inProgress', items: [
+            { id: 'answer', type: 'agentMessage', text: 'Hello' }
+        ] }] });
+        expect(send.mock.lastCall![0].message).toBe('Hello world');
+    });
+
+    it('updates one text stream and persists the final under its replay identity', async () => {
+        const send = vi.fn();
+        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {});
+        await projection.notification('item/agentMessage/delta', { threadId: 'thread', turnId: 'turn', itemId: 'answer', delta: 'Hello' });
+        expect(send.mock.calls[0][0]).toMatchObject({ type: 'message', message: 'Hello', live: true });
+        const item = { id: 'answer', type: 'agentMessage', text: 'Hello world!' };
+        await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item });
+        expect(send.mock.calls[1][0].id).toBe(send.mock.calls[0][0].id);
+        expect(send.mock.calls[1][0]).toMatchObject({ message: 'Hello world!' });
+        expect(send.mock.calls[1][0].live).not.toBe(true);
+        const finalTransportId = send.mock.calls[1][1];
+        projection.reset(); send.mockClear();
+        await projection.history({ turns: [{ id: 'turn', status: 'completed', items: [item] }] });
+        expect(send.mock.calls[0][1]).toBe(finalTransportId);
+        expect(send.mock.calls[0][0].id).toBe(finalTransportId);
+    });
     it.each([undefined, 'root'])('projects command outcomes for live output and replay (parent: %s)', async parentThreadId => {
         const send = vi.fn();
         const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
@@ -173,7 +237,7 @@ describe('shared history projection', () => {
         const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
         const projection = new SharedCodexProjection(session, 'thread', async () => {});
         await projection.history({ turns: [{ id: 'turn', status: 'inProgress', items: [{ id: 'item', type: 'agentMessage', text: 'partial' }] }] });
-        expect(send).not.toHaveBeenCalled();
+        expect(send).toHaveBeenCalledWith(expect.objectContaining({ type: 'message', message: 'partial', live: true }), undefined);
         await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item: { id: 'item', type: 'agentMessage', text: 'complete' } });
         expect(send).toHaveBeenCalledWith(expect.objectContaining({ type: 'message', message: 'complete' }), expect.any(String));
     });

@@ -127,53 +127,61 @@ public enum MessageWindowLogic {
         return type == "agent-run-start" || type == "agent-run-update" || type == "agent-run-trace"
     }
 
-    /// Web `getReasoningStreamId`: the stream a reasoning row belongs to, or
-    /// `nil` for anything else. Unrecognised shapes read as `nil`, which means
-    /// "keep it".
-    private static func reasoningStreamId(_ message: WindowMessage) -> String? {
+    /// Web `getMessageStreamIds`: the streams a message row belongs to.
+    /// An empty list leaves the row untouched.
+    private static func messageStreamIds(_ message: WindowMessage) -> [String] {
         guard let outer = message.content.objectValue,
               outer["role"]?.stringValue == "agent",
               let payload = outer["content"]?.objectValue,
-              payload["type"]?.stringValue == "codex",
-              let data = payload["data"]?.objectValue,
-              data["type"]?.stringValue == "reasoning",
-              let id = data["id"]?.stringValue,
-              !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else { return nil }
-        return id
+              let data = payload["data"]?.objectValue else { return [] }
+        if payload["type"]?.stringValue == "codex",
+           let id = data["id"]?.stringValue,
+           !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if data["type"]?.stringValue == "reasoning" { return [id] }
+            if data["type"]?.stringValue == "message" { return ["text:\(id)"] }
+        }
+        if payload["type"]?.stringValue == "output", data["type"]?.stringValue == "assistant",
+           let ids = data["streamIds"]?.arrayValue {
+            return ids.compactMap { value in
+                guard let id = value.stringValue, !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+                return "text:\(id)"
+            }
+        }
+        return []
     }
 
-    /// Web `dropSupersededReasoningSnapshots`: collapse a reasoning stream to
+    /// Web `dropSupersededMessageSnapshots`: collapse a message stream to
     /// the one snapshot that still says something. The CLI re-sends a growing
     /// buffer under a stable stream id every few hundred milliseconds and the
     /// timeline folds those rows into a single block, so spending window
     /// budget on the older ones is what pushes the surrounding conversation
     /// out of reach. Rows with no stream id are left alone.
-    private static func dropSupersededReasoningSnapshots(
+    private static func dropSupersededMessageSnapshots(
         _ messages: [WindowMessage]
     ) -> [WindowMessage] {
         var newestByStream: [String: WindowMessage] = [:]
         for message in messages {
-            guard let streamId = reasoningStreamId(message) else { continue }
-            guard let incumbent = newestByStream[streamId] else {
-                newestByStream[streamId] = message
-                continue
+            for streamId in messageStreamIds(message) {
+                guard let incumbent = newestByStream[streamId] else {
+                    newestByStream[streamId] = message
+                    continue
+                }
+                // Fall back to arrival order when either row predates seq
+                // numbering: `messages` is kept in display order, so later still
+                // means newer.
+                let newer: Bool
+                if let challengerAt = messagePosition(message),
+                   let incumbentAt = messagePosition(incumbent) {
+                    newer = !(challengerAt < incumbentAt)
+                } else {
+                    newer = true
+                }
+                if newer { newestByStream[streamId] = message }
             }
-            // Fall back to arrival order when either row predates seq
-            // numbering: `messages` is kept in display order, so later still
-            // means newer.
-            let newer: Bool
-            if let challengerAt = messagePosition(message),
-               let incumbentAt = messagePosition(incumbent) {
-                newer = !(challengerAt < incumbentAt)
-            } else {
-                newer = true
-            }
-            if newer { newestByStream[streamId] = message }
         }
         if newestByStream.isEmpty { return messages }
         let survivors = Set(newestByStream.values.map(\.id))
-        return messages.filter { reasoningStreamId($0) == nil || survivors.contains($0.id) }
+        return messages.filter { messageStreamIds($0).isEmpty || survivors.contains($0.id) }
     }
 
     /// Trim to `regularLimit` while never dropping queued rows: superseded
@@ -186,7 +194,7 @@ public enum MessageWindowLogic {
         regularLimit: Int,
         mode: TrimMode
     ) -> Trim {
-        let messages = dropSupersededReasoningSnapshots(incoming)
+        let messages = dropSupersededMessageSnapshots(incoming)
         let queued = messages.filter(\.isQueuedForInvocation)
         let queuedIds = Set(queued.map(\.id))
         let nonQueued = messages.filter { !queuedIds.contains($0.id) }
