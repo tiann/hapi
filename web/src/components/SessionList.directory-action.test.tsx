@@ -82,6 +82,30 @@ describe('SessionList directory action', () => {
         await waitFor(() => expect(renameSession).toHaveBeenCalledWith('list-locked', 'New human title', true))
     })
 
+    it('only makes mentionable session rows draggable', () => {
+        renderWithProviders(
+            <SessionList
+                sessions={[
+                    makeSession({ id: 'untitled', createdAt: 2, updatedAt: 2, hasConversationContent: true, metadata: { path: '/work' } }),
+                    makeSession({ id: 'husk', createdAt: 1, updatedAt: 1, hasConversationContent: false, metadata: { path: '/work', name: 'Named empty', agentSessionId: 'thread-husk' } }),
+                ]}
+                selectedSessionId={null}
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+
+        // Inactive groups start collapsed and do not mount their rows.
+        fireEvent.click(screen.getByTitle('/work'))
+        const rows = document.querySelectorAll<HTMLButtonElement>('.session-list-item')
+        expect(rows[0].draggable).toBe(true)
+        expect(rows[1].draggable).toBe(false)
+    })
+
     it('starts a new session with the project machine and directory', () => {
         const onNewSessionInDirectory = vi.fn()
         const session = makeSession({
