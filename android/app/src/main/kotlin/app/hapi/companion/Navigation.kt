@@ -64,6 +64,8 @@ import app.hapi.companion.feature.scratchlist.ContentResolverAttachmentImporter
 import app.hapi.companion.feature.scratchlist.ScratchlistMedia
 import app.hapi.companion.feature.scratchlist.ScratchlistScreen
 import app.hapi.companion.feature.scratchlist.ScratchlistViewModel
+import app.hapi.companion.feature.sessions.ApiSessionExportFetcher
+import app.hapi.companion.feature.sessions.SessionExportSupport
 import app.hapi.companion.feature.sessions.SessionListViewModel
 import app.hapi.companion.feature.share.ShareScreen
 import app.hapi.companion.feature.share.ShareSessionGateway
@@ -367,6 +369,12 @@ fun HapiNavigation() {
                 onOpenSession = { sessionId -> navController.navigate(Routes.chat(sessionId)) },
                 onNewSession = { navController.navigate(Routes.newSession()) },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
+                sessionExport = remember(hubGraph, graph) {
+                    SessionExportSupport(
+                        fetcher = ApiSessionExportFetcher(hubGraph.session.api),
+                        formatStore = graph.sessionExportFormatStore,
+                    )
+                },
             )
         }
 
@@ -496,6 +504,12 @@ fun HapiNavigation() {
                     navController.navigate(Routes.fileViewer(sessionId, path, mode = "file", line = line))
                 },
                 onOpenScratchlist = { navController.navigate(Routes.scratchlist(sessionId)) },
+                sessionExport = remember(hubGraph, graph) {
+                    SessionExportSupport(
+                        fetcher = ApiSessionExportFetcher(hubGraph.session.api),
+                        formatStore = graph.sessionExportFormatStore,
+                    )
+                },
             )
         }
 

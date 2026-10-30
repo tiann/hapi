@@ -597,6 +597,24 @@
     <string name="sessions_time_filter_empty_title">No sessions in this date range</string>
     <string name="sessions_time_filter_empty_hint">Adjust or clear the date filter to see more sessions.</string>
     <string name="sessions_time_filter_recent_activity">Recent activity</string>
+    <string name="sessions_action_export">Export conversation</string>
+    <string name="session_export_title">Export conversation</string>
+    <string name="session_export_description">Choose a format, then export the full visible conversation and scratchlist notes.</string>
+    <string name="session_export_format_json">JSON</string>
+    <string name="session_export_format_json_description">Lossless payload with session metadata, messages, and scratchlist notes (attachment metadata only).</string>
+    <string name="session_export_format_markdown">Markdown</string>
+    <string name="session_export_format_markdown_description">Readable view generated from the same export payload.</string>
+    <string name="session_export_save">Save</string>
+    <string name="session_export_save_anyway">Save anyway</string>
+    <string name="session_export_share">Share</string>
+    <string name="session_export_share_anyway">Share anyway</string>
+    <string name="session_export_progress">Exporting…</string>
+    <string name="session_export_warning_title">Large export</string>
+    <string name="session_export_warning_description">This export contains %1$s messages and is estimated at %2$s. That exceeds the recommended threshold of %3$s messages.</string>
+    <string name="session_export_error_too_large">This export is too large to safely prepare (%1$s messages, %2$s; maximum %3$s).</string>
+    <string name="session_export_error_default">Failed to export conversation</string>
+    <string name="session_export_error_write">Could not write the export file.</string>
+    <string name="session_export_saved">Saved %1$s</string>
     <string name="privacy_policy">Privacy Policy</string>
     <string name="privacy_open_failed">No app can open this link.</string>
     <!-- Incoming Android shares. -->

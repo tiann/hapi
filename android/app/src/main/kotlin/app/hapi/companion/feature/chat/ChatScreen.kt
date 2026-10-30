@@ -75,6 +75,8 @@ import app.hapi.companion.feature.chat.composer.QueuedMessagesBar
 import app.hapi.companion.feature.files.FolderGlyph
 import app.hapi.companion.feature.sessions.DeleteSessionDialog
 import app.hapi.companion.feature.sessions.RenameSessionDialog
+import app.hapi.companion.feature.sessions.SessionExportDialog
+import app.hapi.companion.feature.sessions.SessionExportSupport
 import app.hapi.companion.ui.markdown.LocalMarkdownRenderCache
 import app.hapi.companion.ui.markdown.LocalMarkdownLinkHandler
 import app.hapi.companion.ui.theme.hapi
@@ -108,6 +110,8 @@ internal fun ChatScreen(
     onOpenFile: (path: String, line: Int?) -> Unit = { _, _ -> },
     /** null ⇒ no scratchlist top-bar entry (tests / previews). */
     onOpenScratchlist: (() -> Unit)? = null,
+    /** null ⇒ no export entry in the overflow menu (tests / previews). */
+    sessionExport: SessionExportSupport? = null,
     transcriptList: androidx.compose.foundation.lazy.LazyListState = androidx.compose.foundation.lazy.rememberLazyListState(),
     readingState: TranscriptReadingState = rememberTranscriptReadingState(viewModel.sessionId),
 ) {
@@ -124,6 +128,7 @@ internal fun ChatScreen(
     var configSheetOpen by remember { mutableStateOf(false) }
     var renameDialogOpen by remember { mutableStateOf(false) }
     var deleteDialogOpen by remember { mutableStateOf(false) }
+    var exportDialogOpen by remember { mutableStateOf(false) }
 
     DisposableEffect(viewModel) {
         viewModel.setTranscriptVisible(true)
@@ -295,6 +300,11 @@ internal fun ChatScreen(
                         scratchlistCount = scratchlistCount,
                         onOpenScratchlist = if (viewModel.scratchlistEnabled) onOpenScratchlist else null,
                         onRename = { renameDialogOpen = true },
+                        onExport = if (sessionExport != null) {
+                            { exportDialogOpen = true }
+                        } else {
+                            null
+                        },
                         onReopen = viewModel::reopenSession,
                         onDelete = { deleteDialogOpen = true },
                         // Draft-level action, relocated from the composer's
@@ -436,6 +446,20 @@ internal fun ChatScreen(
             onDismiss = { deleteDialogOpen = false },
         )
     }
+    if (exportDialogOpen && sessionExport != null) {
+        SessionExportDialog(
+            sessionId = viewModel.sessionId,
+            support = sessionExport,
+            onDismiss = { exportDialogOpen = false },
+            onSaved = { filename ->
+                scope.launch {
+                    snackbarHostState.showSnackbar(
+                        context.getString(R.string.session_export_saved, filename),
+                    )
+                }
+            },
+        )
+    }
 }
 
 /**
@@ -454,6 +478,8 @@ private fun SessionOverflowMenu(
     scratchlistCount: Int = 0,
     /** null ⇒ scratchlist row hidden (feature off / tests). */
     onOpenScratchlist: (() -> Unit)? = null,
+    /** null ⇒ hidden (no export support / tests). */
+    onExport: (() -> Unit)? = null,
     /** null ⇒ hidden (scratchlist off or empty composer). */
     onParkDraft: (() -> Unit)? = null,
 ) {
@@ -495,6 +521,15 @@ private fun SessionOverflowMenu(
                 onRename()
             },
         )
+        if (onExport != null) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.sessions_action_export)) },
+                onClick = {
+                    open = false
+                    onExport()
+                },
+            )
+        }
         if (onParkDraft != null) {
             DropdownMenuItem(
                 text = { Text(stringResource(R.string.chat_park_draft)) },

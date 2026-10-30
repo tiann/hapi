@@ -38,7 +38,9 @@ import app.hapi.protocol.wire.ScratchlistEntryResponse
 import app.hapi.protocol.wire.ScratchlistEntryUpdateRequest
 import app.hapi.protocol.wire.ScratchlistLimitsResponse
 import app.hapi.protocol.wire.ScratchlistUploadResponse
+import app.hapi.protocol.wire.SESSION_EXPORT_SCHEMA_VERSION
 import app.hapi.protocol.wire.SendMessageRequest
+import app.hapi.protocol.wire.SessionExportResponse
 import app.hapi.protocol.wire.SessionResponse
 import app.hapi.protocol.wire.SessionsResponse
 import app.hapi.protocol.wire.SetSessionPinRequest
@@ -60,6 +62,7 @@ import java.io.IOException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -201,6 +204,30 @@ class HapiApi internal constructor(
     /** `GET /api/sessions/:id`. */
     suspend fun getSession(sessionId: String): SessionResponse =
         request("GET", url("api", "sessions", sessionId).build())
+
+    /**
+     * `GET /api/sessions/:id/export[?force=true]` — 200 answers either the
+     * full payload ([SessionExportResponse.Full], raw element kept for the
+     * JSON outlet) or the over-limit warning (unforced requests past the
+     * message threshold). The 413 hard cap still throws [ApiError] with code
+     * `session_export_too_large`; parse details via
+     * [app.hapi.protocol.wire.SessionExportTooLarge.fromBody].
+     */
+    suspend fun getSessionExport(sessionId: String, force: Boolean = false): SessionExportResponse {
+        val target = url("api", "sessions", sessionId, "export").apply {
+            if (force) addQueryParameter("force", "true")
+        }
+        val parsed = SessionExportResponse.from(request<JsonElement>("GET", target.build()))
+        if (parsed is SessionExportResponse.Full &&
+            parsed.export.schemaVersion != SESSION_EXPORT_SCHEMA_VERSION
+        ) {
+            // zod's literal(2) rejects mismatches loudly; mirror that.
+            throw SerializationException(
+                "Unsupported session export schema version ${parsed.export.schemaVersion}",
+            )
+        }
+        return parsed
+    }
 
     /**
      * `GET /api/sessions/:id/messages`. Cursors are `(seq, at)` pairs that

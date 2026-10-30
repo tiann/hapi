@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import app.hapi.companion.R
 import app.hapi.companion.feature.sessions.SessionDateRangePickerDialog
+import app.hapi.companion.feature.sessions.SessionExportSupport
 import app.hapi.companion.feature.sessions.SessionFilterSheet
 import app.hapi.companion.feature.sessions.SessionListScreen
 import app.hapi.companion.feature.sessions.SessionListViewModel
@@ -37,6 +38,8 @@ fun HomeScreen(
     onNewSession: (() -> Unit)? = null,
     /** Hub menu → settings scaffold (B-M4e). */
     onOpenSettings: (() -> Unit)? = null,
+    /** null ⇒ no export entry in the session actions sheet (tests / previews). */
+    sessionExport: SessionExportSupport? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
     var searchExpanded by rememberSaveable(activeHubUrl) { mutableStateOf(state.searchQuery.isNotEmpty()) }
@@ -70,6 +73,7 @@ fun HomeScreen(
             onOpenSession = onOpenSession,
             modifier = Modifier.fillMaxSize().padding(padding),
             onNewSession = onNewSession,
+            sessionExport = sessionExport,
         )
     }
 

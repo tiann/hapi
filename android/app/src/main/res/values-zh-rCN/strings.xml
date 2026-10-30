@@ -604,6 +604,24 @@
     <string name="sessions_time_filter_empty_title">此日期范围内没有会话</string>
     <string name="sessions_time_filter_empty_hint">调整或清除日期筛选以查看更多会话。</string>
     <string name="sessions_time_filter_recent_activity">近期活动</string>
+    <string name="sessions_action_export">导出对话</string>
+    <string name="session_export_title">导出对话</string>
+    <string name="session_export_description">选择格式，然后导出完整可见对话与 scratchlist 笔记。</string>
+    <string name="session_export_format_json">JSON</string>
+    <string name="session_export_format_json_description">保留会话元数据、消息与 scratchlist 笔记的无损载荷（附件仅含元数据）。</string>
+    <string name="session_export_format_markdown">Markdown</string>
+    <string name="session_export_format_markdown_description">从同一份导出载荷生成的可读视图。</string>
+    <string name="session_export_save">保存</string>
+    <string name="session_export_save_anyway">仍然保存</string>
+    <string name="session_export_share">分享</string>
+    <string name="session_export_share_anyway">仍然分享</string>
+    <string name="session_export_progress">导出中…</string>
+    <string name="session_export_warning_title">导出内容较大</string>
+    <string name="session_export_warning_description">此导出包含 %1$s 条消息，预计大小为 %2$s，超过建议的 %3$s 条消息阈值。</string>
+    <string name="session_export_error_too_large">导出内容过大，无法安全准备（%1$s 条消息，%2$s；上限 %3$s）。</string>
+    <string name="session_export_error_default">导出对话失败</string>
+    <string name="session_export_error_write">无法写入导出文件。</string>
+    <string name="session_export_saved">已保存 %1$s</string>
     <string name="privacy_policy">隐私政策</string>
     <string name="privacy_open_failed">没有可打开此链接的应用。</string>
     <!-- Incoming Android shares. -->
