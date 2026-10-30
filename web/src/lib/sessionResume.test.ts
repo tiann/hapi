@@ -202,6 +202,32 @@ describe('sessionResume', () => {
         })).toBeUndefined()
     })
 
+    it('resolveAgentSessionIdFromMetadata returns dshSessionId for dsh flavor', () => {
+        expect(resolveAgentSessionIdFromMetadata({
+            path: '/p',
+            host: 'h',
+            flavor: 'dsh',
+            dshSessionId: 'acp-session-1'
+        })).toBe('acp-session-1')
+    })
+
+    it('inactiveSessionCanResume allows dsh resume when dshSessionId exists', () => {
+        expect(inactiveSessionCanResume(makeSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'dsh',
+                dshSessionId: 'acp-session-1',
+            },
+        }), 5)).toBe(true)
+    })
+
+    it('inactiveSessionCanResume rejects dsh with messages but no dshSessionId', () => {
+        expect(inactiveSessionCanResume(makeSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'dsh' },
+        }), 3)).toBe(false)
+    })
+
     it('inactiveSessionCanResume rejects non-recovering flavors with messages but no flavor-specific id', () => {
         expect(inactiveSessionCanResume(makeSession({
             metadata: { path: '/tmp/project', host: 'localhost', flavor: 'grok' },

@@ -230,12 +230,14 @@ export HAPI_DSH_ACP_COMMAND=pnpm
 export HAPI_DSH_ACP_ARGS_JSON='["--dir", "/path/to/deepseek-harness", "run", "demo:acp"]'
 ```
 
-The official ACP entrypoint is fresh-session-only and does not support native
-resume, MCP injection, or live tool/reasoning telemetry. Model selection is
-advertised for DSH: the composition's catalog is listed via the `ListDshModels`
-session RPC and applied per turn with ACP `session/set_config_option`. HAPI
-uses the standard chat and pending one-shot permission surfaces; the ACP
-composition owns the overall permission policy.
+The official ACP entrypoint does not support MCP injection or live
+tool/reasoning telemetry. Native resume is supported: HAPI hands the DSH
+session's native ACP session id to `session/resume`, and sessions without a
+native id report resume as unavailable. Model selection is advertised for DSH:
+the composition's catalog is listed via the `ListDshModels` session RPC and
+applied per turn with ACP `session/set_config_option`. HAPI uses the standard
+chat and pending one-shot permission surfaces; the ACP composition owns the
+overall permission policy.
 
 ### Required
 

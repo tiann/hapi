@@ -197,6 +197,19 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
         return
     }
 
+    if (target.flavor === 'dsh') {
+        const { runDsh } = await import('@/dsh/runDsh')
+        // dsh is remote-only (its command parser forces remote mode) and has
+        // Managed permissions, so no local mode or permission mode to pass.
+        await runDsh({
+            existingSessionId: base.existingSessionId,
+            workingDirectory: base.workingDirectory,
+            resumeSessionId: base.resumeSessionId,
+            startedBy: base.startedBy
+        })
+        return
+    }
+
     const { runCursor } = await import('@/cursor/runCursor')
     await runCursor({
         existingSessionId: base.existingSessionId,

@@ -1,6 +1,7 @@
 import { hashObject } from '@/utils/deterministicJson'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler'
+import { registerLocalHandoffHandler } from '@/agent/localHandoff'
 import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle'
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory'
 import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc'
@@ -20,6 +21,8 @@ export async function runDsh(opts: {
     reservedSessionId?: string
     /** Spawn-time model override (opaque ACP config-option value). */
     model?: string
+    /** Native ACP session id from `--resume`; resumed via session/resume. */
+    resumeSessionId?: string
     workingDirectory?: string
 } = {}): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd()
@@ -92,6 +95,10 @@ export async function runDsh(opts: {
     })
     lifecycle.registerProcessHandlers()
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session)
+    // `hapi resume` hands active sessions over via the HandoffLocal RPC before
+    // dispatching locally; without this registration an active DSH resume fails
+    // with an unregistered-method error instead of archiving the running copy.
+    registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle)
 
     const dshSession = new DshSession({
         api,
@@ -99,6 +106,7 @@ export async function runDsh(opts: {
         path: workingDirectory,
         logPath: logger.getLogPath(),
         model: opts.model,
+        sessionId: opts.resumeSessionId ?? bootstrap.metadata.dshSessionId ?? null,
         messageQueue: queue,
         onModeChange: () => {},
         startedBy
