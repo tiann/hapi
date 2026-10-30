@@ -10,7 +10,12 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -32,6 +37,7 @@ import app.hapi.companion.R
 import app.hapi.companion.feature.chat.LocalChatInteractions
 import app.hapi.companion.feature.chat.permissions.PermissionVerdictLabel
 import app.hapi.companion.feature.chat.permissions.PermissionVerdicts
+import app.hapi.companion.feature.chat.vector
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.ChatToolCall
@@ -60,8 +66,11 @@ fun ToolCallBlockView(block: ToolCallBlock, basePath: String?, modifier: Modifie
     // newly recognized plan, but retain explicit folding across input updates.
     var expanded by rememberSaveable(block.id, planProposal) { mutableStateOf(planProposal) }
 
+    // Flat tint by design — web renders shadow-none cards; the "card" feel
+    // comes from surfaceContainerLow standing out against the background, so
+    // no elevation and no border here (composer card uses the same recipe).
     Surface(
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
         modifier = modifier.fillMaxWidth(),
     ) {
@@ -131,7 +140,12 @@ internal fun ToolSummaryRow(
             .then(Modifier.heightIn(min = 48.dp)).padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(presentation.icon, modifier = Modifier.padding(end = 8.dp))
+            Icon(
+                imageVector = presentation.icon.vector(),
+                contentDescription = null,
+                modifier = Modifier.padding(end = 8.dp).size(18.dp),
+                tint = MaterialTheme.hapi.hint,
+            )
             Column(Modifier.weight(1f)) {
                 Text(presentation.title, style = MaterialTheme.typography.bodyMedium, maxLines = if (stacked) 2 else 1, overflow = TextOverflow.Ellipsis)
                 presentation.subtitle?.let {
@@ -149,7 +163,13 @@ internal fun ToolSummaryRow(
 private fun SummaryStatus(state: String, expanded: Boolean?) {
     Row(Modifier.padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         if (state != ToolState.COMPLETED) ToolStatusIndicator(state)
-        Text(if (expanded == true) "⌄" else "›", modifier = Modifier.padding(start = 8.dp), color = MaterialTheme.hapi.hint)
+        Icon(
+            imageVector = if (expanded == true) Icons.Default.KeyboardArrowDown
+            else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            modifier = Modifier.padding(start = 8.dp).size(16.dp),
+            tint = MaterialTheme.hapi.hint,
+        )
     }
 }
 
@@ -170,10 +190,11 @@ internal fun ToolStatusIndicator(state: String) {
             container = MaterialTheme.colorScheme.errorContainer,
             content = MaterialTheme.colorScheme.onErrorContainer,
         )
-        else -> Text(
-            text = "✓",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.hapi.hint,
+        else -> Icon(
+            imageVector = Icons.Default.Check,
+            contentDescription = null,
+            modifier = Modifier.size(14.dp),
+            tint = MaterialTheme.hapi.hint,
         )
     }
 }

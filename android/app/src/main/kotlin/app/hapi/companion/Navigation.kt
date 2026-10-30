@@ -64,6 +64,8 @@ import app.hapi.companion.feature.scratchlist.ContentResolverAttachmentImporter
 import app.hapi.companion.feature.scratchlist.ScratchlistMedia
 import app.hapi.companion.feature.scratchlist.ScratchlistScreen
 import app.hapi.companion.feature.scratchlist.ScratchlistViewModel
+import app.hapi.companion.feature.sessions.SessionDisplayPrefs
+import app.hapi.companion.feature.sessions.SessionGroupCollapsePrefs
 import app.hapi.companion.feature.sessions.SessionListViewModel
 import app.hapi.companion.feature.share.ShareScreen
 import app.hapi.companion.feature.share.ShareSessionGateway
@@ -355,7 +357,9 @@ fun HapiNavigation() {
             val scope = rememberCoroutineScope()
             val holder = viewModel<SessionListViewModelHolder>(
                 key = "sessions",
-                factory = viewModelFactory { SessionListViewModelHolder() },
+                factory = viewModelFactory {
+                    SessionListViewModelHolder(graph.sessionDisplayPrefs, graph.sessionGroupCollapsePrefs)
+                },
             )
             HomeScreen(
                 viewModel = holder.forHub(hubGraph),
@@ -772,7 +776,10 @@ private class ShareViewModelHolder : ViewModel() {
  * to the same URL creates a new HubGraph and must not revive a closed store
  * or its old filter. The global SSE pipe still belongs to HubGraph.
  */
-private class SessionListViewModelHolder : ViewModel() {
+private class SessionListViewModelHolder(
+    private val displayPrefs: SessionDisplayPrefs? = null,
+    private val groupCollapsePrefs: SessionGroupCollapsePrefs? = null,
+) : ViewModel() {
     private var graph: HubGraph? = null
     private var scope: CoroutineScope? = null
     private var model: SessionListViewModel? = null
@@ -790,6 +797,8 @@ private class SessionListViewModelHolder : ViewModel() {
             lastSeenStore = hubGraph.lastSeenStore,
             scope = nextScope,
             hubKey = hubGraph.hubUrl,
+            displayPrefs = displayPrefs,
+            groupCollapsePrefs = groupCollapsePrefs,
         ).also { model = it }
     }
 
@@ -819,6 +828,7 @@ private class ChatViewModelHolder(
         scope = scope,
         drafts = hubGraph.chatDrafts,
         scratchlist = hubGraph.scratchlistStore,
+        recentSkills = hubGraph.recentSkills,
     )
 
     /**

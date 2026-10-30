@@ -10,11 +10,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
@@ -50,6 +52,8 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import app.hapi.companion.ui.components.HapiSquareCheckGlyph
+import app.hapi.companion.ui.components.HapiSquareGlyph
 import app.hapi.companion.ui.theme.HapiExtendedColors
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.markdown.HrefDecision
@@ -255,12 +259,11 @@ private fun MarkdownList(list: Node, ordered: Boolean, parsed: ParsedMarkdown) {
             if (item is ListItem) {
                 val task = parsed.taskMarkers[item]
                 val marker = when {
-                    task == true -> "☑" // checked box
-                    task == false -> "☐" // empty box
+                    task != null -> null // task rows draw a glyph marker instead
                     ordered -> "$index."
                     else -> "•" // bullet
                 }
-                MarkdownListItem(item, marker, parsed)
+                MarkdownListItem(item, marker, parsed, task = task)
                 index += 1
             }
             item = item.next
@@ -269,16 +272,30 @@ private fun MarkdownList(list: Node, ordered: Boolean, parsed: ParsedMarkdown) {
 }
 
 @Composable
-private fun MarkdownListItem(item: ListItem, marker: String, parsed: ParsedMarkdown) {
+private fun MarkdownListItem(item: ListItem, marker: String?, parsed: ParsedMarkdown, task: Boolean? = null) {
     Row {
-        Text(
-            text = marker,
-            style = LocalTextStyle.current,
-            color = MaterialTheme.hapi.hint,
-            modifier = Modifier
-                .widthIn(min = 22.dp)
-                .padding(end = 4.dp),
-        )
+        if (task != null) {
+            // OEM emoji fonts colorize U+2610/U+2611, so task checkboxes draw
+            // as stroke glyphs instead of text markers.
+            Icon(
+                imageVector = if (task) HapiSquareCheckGlyph else HapiSquareGlyph,
+                contentDescription = null,
+                modifier = Modifier
+                    .widthIn(min = 22.dp)
+                    .padding(end = 4.dp)
+                    .size(14.dp),
+                tint = MaterialTheme.hapi.hint,
+            )
+        } else {
+            Text(
+                text = marker.orEmpty(),
+                style = LocalTextStyle.current,
+                color = MaterialTheme.hapi.hint,
+                modifier = Modifier
+                    .widthIn(min = 22.dp)
+                    .padding(end = 4.dp),
+            )
+        }
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             MarkdownBlockChildren(item, parsed)
         }

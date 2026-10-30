@@ -2,7 +2,10 @@ package app.hapi.companion.feature.chat.blocks
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -13,6 +16,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -20,6 +24,9 @@ import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
 import app.hapi.companion.feature.chat.terminalCommand
 import app.hapi.companion.ui.components.DiffView
+import app.hapi.companion.ui.components.HapiCircleDotGlyph
+import app.hapi.companion.ui.components.HapiSquareCheckGlyph
+import app.hapi.companion.ui.components.HapiSquareGlyph
 import app.hapi.companion.ui.markdown.Markdown
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.ChatToolCall
@@ -188,11 +195,23 @@ private fun ToolInputSection(tool: ChatToolCall) {
             val items = checklistItems(input)
             if (items.isNotEmpty()) {
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    items.forEach { (state, text) ->
-                        Text(
-                            text = "$state $text",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
+                    items.forEach { item ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = when (item.state) {
+                                    ChecklistState.DONE -> HapiSquareCheckGlyph
+                                    ChecklistState.IN_PROGRESS -> HapiCircleDotGlyph
+                                    ChecklistState.PENDING -> HapiSquareGlyph
+                                },
+                                contentDescription = null,
+                                modifier = Modifier.padding(end = 6.dp).size(14.dp),
+                                tint = MaterialTheme.hapi.hint,
+                            )
+                            Text(
+                                text = item.text,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
                     }
                 }
             } else {
@@ -368,8 +387,12 @@ internal fun languageForPath(path: String?): String? {
 
 private fun JsonPrimitive.contentOrNullIfNotString(): String? = if (isString) content else null
 
-/** `(glyph, text)` rows for TodoWrite `todos` / update_plan `plan` items. */
-private fun checklistItems(input: JsonElement?): List<Pair<String, String>> {
+/** Checklist row state + text for TodoWrite `todos` / update_plan `plan` items. */
+private data class ChecklistItem(val state: ChecklistState, val text: String)
+
+private enum class ChecklistState { DONE, IN_PROGRESS, PENDING }
+
+private fun checklistItems(input: JsonElement?): List<ChecklistItem> {
     val obj = input as? JsonObject ?: return emptyList()
     val array = (obj["todos"] as? JsonArray) ?: (obj["plan"] as? JsonArray) ?: return emptyList()
     return array.mapNotNull { entry ->
@@ -378,12 +401,12 @@ private fun checklistItems(input: JsonElement?): List<Pair<String, String>> {
             ?: (item["step"] as? JsonPrimitive)?.contentOrNullIfNotString()
             ?: return@mapNotNull null
         val status = (item["status"] as? JsonPrimitive)?.contentOrNullIfNotString()
-        val glyph = when (status) {
-            "completed", "complete", "done" -> "☑"
-            "in_progress" -> "◐"
-            else -> "☐"
+        val state = when (status) {
+            "completed", "complete", "done" -> ChecklistState.DONE
+            "in_progress" -> ChecklistState.IN_PROGRESS
+            else -> ChecklistState.PENDING
         }
-        glyph to content
+        ChecklistItem(state, content)
     }
 }
 
