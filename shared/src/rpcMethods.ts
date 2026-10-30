@@ -56,6 +56,7 @@ export const RPC_METHODS = {
     ListDshModels: 'listDshModels',
     ListDshModelsForMachine: 'listDshModelsForMachine',
     ListOpencodeReasoningEffortOptions: 'listOpencodeReasoningEffortOptions',
+    ListSessionReasoningEffortOptions: 'listSessionReasoningEffortOptions',
     ListAgyModels: 'listAgyModels',
     ListClaudeModels: 'listClaudeModels',
     /** Deliver one queued message into the active Pi turn (native steer). */

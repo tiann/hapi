@@ -71,15 +71,27 @@ const BUILTIN_DESCRIPTORS: Record<AgentFlavor, AgentConfigFieldDescriptor[]> = {
         { id: 'collaborationMode', section: 'settings', kind: 'select', optionSource: 'static', availability: 'both' }
     ),
     dsh: fields(MANAGED_PERMISSION),
-    copilot: fields({ ...MODEL, optionSource: 'directory' }, PERMISSION),
-    cursor: fields({ id: 'model', section: 'model', kind: 'dependent-select', optionSource: 'machine', availability: 'both' }, PERMISSION),
+    copilot: fields(
+        { ...MODEL, optionSource: 'directory' },
+        { id: 'effort', section: 'effort', kind: 'select', optionSource: 'session', availability: 'session' },
+        PERMISSION
+    ),
+    cursor: fields(
+        { id: 'model', section: 'model', kind: 'dependent-select', optionSource: 'machine', availability: 'both' },
+        { id: 'effort', section: 'effort', kind: 'dependent-select', optionSource: 'model', availability: 'session' },
+        PERMISSION
+    ),
     gemini: fields(MODEL, PERMISSION),
     grok: fields(
         { ...MODEL, optionSource: 'directory' },
         { id: 'effort', section: 'effort', kind: 'select', optionSource: 'model', availability: 'both' },
         PERMISSION
     ),
-    kimi: fields({ ...MODEL, optionSource: 'directory' }, PERMISSION),
+    kimi: fields(
+        { ...MODEL, optionSource: 'directory' },
+        { id: 'effort', section: 'effort', kind: 'select', optionSource: 'session', availability: 'session' },
+        PERMISSION
+    ),
     opencode: fields(
         { ...MODEL, optionSource: 'directory' },
         { id: 'effort', section: 'effort', kind: 'select', optionSource: 'model', availability: 'both' },

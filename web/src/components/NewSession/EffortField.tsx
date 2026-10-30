@@ -34,16 +34,18 @@ export type EffortFieldProps = {
  *
  * One component serves every flavor with an `effort` field:
  * - Claude: the selected model's launch-effort levels, or every level when unknown.
+ * - Antigravity: static low/medium/high launch-effort levels.
  * - Grok: model-dependent launch-effort levels.
  * - Pi: model-dependent thinking levels (filtered by the selected model's
  *   thinkingLevelMap; hidden when the model cannot reason).
  * - Codex / OpenCode: model-dependent reasoning-effort levels.
+ * - ACP Copilot / Kimi effort is session-discovered and appears after launch.
  */
 export function EffortField(props: EffortFieldProps) {
     const { t } = useTranslation()
     const descriptor = getAgentConfigDescriptor(props.agent)
     const field = descriptor.fields.find((candidate) => candidate.id === 'effort')
-    if (!field) {
+    if (!field || field.availability === 'session') {
         return null
     }
 

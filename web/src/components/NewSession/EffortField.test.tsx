@@ -136,6 +136,20 @@ describe('EffortField', () => {
         expect(container.querySelector('select')).toBeNull()
     })
 
+    it('renders nothing for agents without a create-time effort field', () => {
+        const { container } = render(
+            <EffortField {...baseProps} agent="gemini" />
+        )
+        expect(container.querySelector('select')).toBeNull()
+    })
+
+    it('does not duplicate Cursor variants as a create-time effort field', () => {
+        const { container } = render(
+            <EffortField {...baseProps} agent="cursor" />
+        )
+        expect(container.querySelector('select')).toBeNull()
+    })
+
     it('renders OpenCode dynamic variants with a default entry', () => {
         const { container } = render(
             <EffortField {...baseProps} agent="opencode" opencodeVariantOptions={['low', 'high', 'max']} />
