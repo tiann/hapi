@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import type { DshMode } from './types'
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 
 const FLASH = '["deepseek-official","deepseek-flash"]'
 const PRO = '["deepseek-official","deepseek-v4-pro"]'
@@ -16,6 +17,7 @@ const harness = vi.hoisted(() => ({
     } | null,
     setConfigOptionCalls: [] as Array<{ sessionId: string; configId: string; value: string }>,
     configOptionError: null as Error | null,
+    cancelAll: vi.fn(async (_reason?: string) => {}),
     // When set, newSession() parks on this promise — lets tests query the
     // catalog RPC while session/new is still pending.
     newSessionBlocker: null as null | Promise<void>
@@ -55,7 +57,7 @@ vi.mock('./utils/dshBackend', () => ({
 
 vi.mock('@/modules/common/permission/AcpPermissionHandler', () => ({
     AcpPermissionHandler: class {
-        async cancelAll(): Promise<void> {}
+        async cancelAll(reason?: string): Promise<void> { await harness.cancelAll(reason) }
     }
 }))
 
@@ -64,12 +66,12 @@ vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), warn: vi.fn() } }))
 
 import { DshRemoteLauncher } from './dshRemoteLauncher'
 
-function createSessionWithBatches(batches: Array<[string, DshMode]>) {
+function createSessionWithBatches(batches: Array<[string, DshMode]>, close = true) {
     const queue = new MessageQueue2<DshMode>((m) => JSON.stringify(m))
     for (const [message, mode] of batches) {
         queue.push(message, mode)
     }
-    queue.close()
+    if (close) queue.close()
 
     return {
         path: '/tmp/dsh-test',
@@ -98,6 +100,122 @@ describe('DshRemoteLauncher', () => {
         harness.setConfigOptionCalls = []
         harness.configOptionError = null
         harness.newSessionBlocker = null
+        harness.cancelAll.mockReset().mockResolvedValue(undefined)
+    })
+
+    it.each(['continue', 'exit'] as const)('keeps queued model selection across Stop teardown before %s', async action => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        const session = createSessionWithBatches([['first', {}]], false)
+        const launcher = new DshRemoteLauncher(session as never)
+        let finishPrompt!: () => void
+        let releaseTeardown!: () => void
+        const promptGate = new Promise<void>(resolve => { finishPrompt = resolve })
+        const teardownGate = new Promise<void>(resolve => { releaseTeardown = resolve })
+        const done = launcher.launch()
+        let aborted: Promise<unknown> | undefined
+        let exited: Promise<unknown> | undefined
+        try {
+            await vi.waitFor(() => expect(harness.backend).not.toBeNull())
+            harness.backend!.prompt.mockImplementationOnce(async (_id, content) => {
+                harness.prompts.push(content)
+                await promptGate
+            })
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+            session.queue.push('after-stop', { model: PRO }, 'pending-original')
+            session.queue.close()
+            harness.backend!.cancelPrompt.mockImplementation(async () => { finishPrompt() })
+            harness.cancelAll.mockImplementation(async reason => {
+                if (reason === 'User aborted') await teardownGate
+            })
+            const handler = (method: string) => {
+                const call = session.client.rpcHandlerManager.registerHandler.mock.calls.find(c => c[0] === method)
+                expect(call).toBeTruthy()
+                return call![1] as () => Promise<unknown>
+            }
+            aborted = handler(RPC_METHODS.Abort)()
+            await vi.waitFor(() => expect(harness.cancelAll).toHaveBeenCalledWith('User aborted'))
+            expect(session.queue.pendingLocalIds()).toEqual(['pending-original'])
+            expect(harness.prompts).toHaveLength(1)
+            expect(harness.setConfigOptionCalls).toEqual([])
+            if (action === 'exit') exited = handler(RPC_METHODS.Switch)()
+            releaseTeardown()
+            await aborted
+            if (exited) await exited
+            await done
+            expect(session.queue.size()).toBe(0)
+            if (action === 'continue') {
+                expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }], [{ type: 'text', text: 'after-stop' }]])
+                expect(harness.setConfigOptionCalls.map(c => c.value)).toEqual([PRO])
+            } else {
+                expect(harness.prompts).toHaveLength(1)
+                expect(harness.setConfigOptionCalls).toEqual([])
+            }
+        } finally {
+            session.queue.close()
+            finishPrompt?.()
+            releaseTeardown?.()
+            await Promise.allSettled([done, aborted, exited])
+        }
+    })
+
+    it('does not dispatch queued input when process cleanup kills the launcher', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        const session = createSessionWithBatches([['first', {}]], false)
+        const launcher = new DshRemoteLauncher(session as never)
+        let release!: () => void
+        const gate = new Promise<void>(resolve => { release = resolve })
+        const done = launcher.launch()
+        try {
+            await vi.waitFor(() => expect(harness.backend).not.toBeNull())
+            harness.backend!.prompt.mockImplementationOnce(async (_id, content) => {
+                harness.prompts.push(content)
+                await gate
+            })
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+            session.queue.push('must-not-run', { model: PRO }, 'terminal-pending')
+            session.queue.close()
+            harness.backend!.cancelPrompt.mockImplementation(async () => { release() })
+            await launcher.kill()
+            await new Promise<void>(resolve => { setImmediate(resolve) })
+            expect(harness.prompts).toHaveLength(1)
+            expect(harness.setConfigOptionCalls).toEqual([])
+            expect(session.queue.pendingLocalIds()).toEqual([])
+            session.queue.close()
+            await done
+        } finally {
+            session.queue.close()
+            release()
+            await done
+        }
+    })
+
+    it('does not consume input arriving while idle process cleanup is pending', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        const session = createSessionWithBatches([], false)
+        const waitForBatch = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString')
+        const launcher = new DshRemoteLauncher(session as never)
+        let release!: () => void
+        const gate = new Promise<void>(resolve => { release = resolve })
+        const done = launcher.launch()
+        let killed: Promise<void> | undefined
+        try {
+            await vi.waitFor(() => expect(waitForBatch).toHaveBeenCalledTimes(1))
+            harness.backend!.cancelPrompt.mockImplementation(async () => { await gate })
+            killed = launcher.kill()
+            await vi.waitFor(() => expect(harness.backend!.cancelPrompt).toHaveBeenCalledTimes(1))
+            session.queue.push('must-not-run', { model: PRO }, 'arrived-during-exit')
+            await new Promise<void>(resolve => { setImmediate(resolve) })
+            expect(harness.prompts).toEqual([])
+            expect(harness.setConfigOptionCalls).toEqual([])
+            expect(session.queue.pendingLocalIds()).toEqual(['arrived-during-exit'])
+            release()
+            await killed
+            expect(session.queue.pendingLocalIds()).toEqual([])
+        } finally {
+            release()
+            session.queue.close()
+            await Promise.allSettled([done, killed])
+        }
     })
 
     it('creates a fresh ACP session without MCP injection and forwards text prompts', async () => {

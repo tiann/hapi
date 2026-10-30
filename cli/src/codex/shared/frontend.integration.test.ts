@@ -44,6 +44,17 @@ async function eventually<T>(read: () => Promise<T>, accept: (value: T) => boole
     throw new Error(`Timed out: ${description}`);
 }
 
+function hasText(input: unknown, text: string): boolean {
+    return Array.isArray(input) && input.some(part => {
+        const item = record(part);
+        return item.type === 'text' && typeof item.text === 'string' && item.text.includes(text);
+    });
+}
+
+function messagesWithId(value: Record<string, unknown>, id: string): Record<string, unknown>[] {
+    return (Array.isArray(value.messages) ? value.messages : []).map(record).filter(message => message.localId === id);
+}
+
 function hasReply(value: Record<string, unknown>, prompt: string): boolean {
     return (Array.isArray(value.messages) ? value.messages : []).some(message => {
         const text = JSON.stringify(message); return text.includes('MOCK_DONE') && text.includes(prompt);
@@ -229,13 +240,20 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1' || process.platf
             await new Promise(resolve => setTimeout(resolve, 200)); first.stdin.write('\r');
             await eventually(async () => requests, value => JSON.stringify(value).includes('\\"answers\\":[\\"Terminal\\"]'), 'real terminal keyboard answer');
             await eventually(detail, value => record(record(record(record(value.session).agentState).completedRequests)[nativeRequestId]).status === 'resolved', 'terminal answer closes Web controls');
-            await send('CHECK_ROOT_ENV');
-            await eventually(async () => requests, value => JSON.stringify(value).includes(`ROOT=${sessionId}`), 'per-root shell identity');
-            await eventually(async () => webEvents, value => value.includes('CodexBash') && value.includes('tool-call-result') && value.includes(`ROOT=${sessionId}`), 'tool call and result over Web SSE');
-            await eventually(() => api(`/sessions/${sessionId}/messages`), value => JSON.stringify(value).includes('CodexBash'), 'tool call persisted for Web reload');
+            // This fixed, synthetic shell probe tests root identity rather than
+            // kernel sandbox support. Restore the original policy afterwards.
+            await client.request('thread/settings/update', { threadId: nativeThreadId, sandboxPolicy: { type: 'dangerFullAccess' } });
+            try {
+                await send('CHECK_ROOT_ENV');
+                await eventually(async () => requests, value => JSON.stringify(value).includes(`ROOT=${sessionId}`), 'per-root shell identity');
+                await eventually(async () => webEvents, value => value.includes('CodexBash') && value.includes('tool-call-result') && value.includes(`ROOT=${sessionId}`), 'tool call and result over Web SSE');
+                await eventually(() => api(`/sessions/${sessionId}/messages`), value => JSON.stringify(value).includes('CodexBash'), 'tool call persisted for Web reload');
+            } finally {
+                await client.request('thread/settings/update', { threadId: nativeThreadId, sandboxPolicy: { type: 'readOnly' } });
+            }
             const secondOutput = output.length;
             const second = openTerminal(['resume', sessionId]);
-            await eventually(async () => output.slice(secondOutput), text => text.includes('HELLO_SHARED'), 'secondary attach to terminal-owned engine');
+            await eventually(async () => output.slice(secondOutput), text => text.includes('CHECK_ROOT_ENV'), 'secondary attach to terminal-owned engine');
             second.stdin.write('/exit'); await new Promise(resolve => setTimeout(resolve, 150)); second.stdin.write('\r');
             await eventually(async () => second.exitCode, value => value !== null, 'secondary detach');
             expect(record((await detail()).session).active).toBe(true); expect(isProcessAlive(Number(runtime.serverPid))).toBe(true);
@@ -307,13 +325,22 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1' || process.platf
             const queueId = randomUUID();
             await api(`/sessions/${nextId}/messages`, { text: 'NATIVE_QUEUE_EDIT', localId: queueId });
             const queued = await eventually(async () => record(await client!.request('thread/queue/list', { threadId: nextThread })), value =>
-                Array.isArray(value.data) && value.data.some(item => record(item).clientUserMessageId === queueId), 'native busy queue');
-            const submission = (queued.data as unknown[]).map(record).find(item => item.clientUserMessageId === queueId)!;
+                Array.isArray(value.data) && value.data.some(item => hasText(record(item).input, 'NATIVE_QUEUE_EDIT')), 'native busy queue');
+            const submissions = (queued.data as unknown[]).map(record).filter(item => hasText(item.input, 'NATIVE_QUEUE_EDIT'));
+            expect(submissions).toHaveLength(1);
+            const submission = submissions[0];
+            const originalQueued = messagesWithId(await api(`/sessions/${nextId}/messages`), queueId);
+            expect(originalQueued).toHaveLength(1);
+            expect(originalQueued[0].invokedAt).toBeNull();
             await client.request('thread/queue/update', { threadId: nextThread, queuedSubmissionId: submission.id,
                 input: [{ type: 'text', text: 'NATIVE_QUEUE_EDITED', text_elements: [] }] });
-            await eventually(() => api(`/sessions/${nextId}/messages`), value => JSON.stringify(value).includes('NATIVE_QUEUE_EDITED'), 'native queue edit in Web');
+            const edited = await eventually(() => api(`/sessions/${nextId}/messages`), value => {
+                const messages = messagesWithId(value, queueId);
+                return messages.length === 1 && JSON.stringify(messages[0].content).includes('NATIVE_QUEUE_EDITED');
+            }, 'native queue edit in original Web message');
+            expect(messagesWithId(edited, queueId)[0].invokedAt).toBeNull();
             await client.request('thread/queue/delete', { threadId: nextThread, queuedSubmissionId: submission.id });
-            await eventually(() => api(`/sessions/${nextId}/messages`), value => !JSON.stringify(value).includes(queueId), 'confirmed queue deletion in Web');
+            await eventually(() => api(`/sessions/${nextId}/messages`), value => messagesWithId(value, queueId).length === 0, 'confirmed queue deletion in Web');
             await eventually(detail, value => !record(value.session).thinking, 'root idle before fork');
             const fork = await api(`/sessions/${sessionId}/fork`, {});
             const forkSession = record((await api(`/sessions/${fork.sessionId}`)).session);
@@ -333,7 +360,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1' || process.platf
             await api(`/sessions/${sessionId}/messages`, { text: 'PRESERVE_PENDING_ON_EXIT', localId: suspendedInput,
                 attachments: [{ id: randomUUID(), filename: 'pending.txt', mimeType: 'text/plain', size: 18, path: uploadPath }] });
             const nativeThread = String(record(record(runtime.sessions)[sessionId]).threadId);
-            await eventually(async () => record(await client!.request('thread/queue/list', { threadId: nativeThread })), value => JSON.stringify(value).includes(suspendedInput), 'pending native input before suspension');
+            await eventually(async () => record(await client!.request('thread/queue/list', { threadId: nativeThread })), value => Array.isArray(value.data) && value.data.filter(item => hasText(record(item).input, 'PRESERVE_PENDING_ON_EXIT')).length === 1, 'pending native input before suspension');
             const nativeQueuedInput = randomUUID();
             await client.request('thread/queue/add', { threadId: nativeThread, clientUserMessageId: nativeQueuedInput,
                 input: [{ type: 'text', text: 'PRESERVE_NATIVE_QUEUE_ON_EXIT', text_elements: [] }] });
@@ -347,7 +374,9 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1' || process.platf
             expect(await readFile(uploadPath, 'utf8')).toBe('pending attachment');
             await client.disconnect();
             const pendingHistory = await api(`/sessions/${sessionId}/messages`);
-            expect((pendingHistory.messages as unknown[]).map(record).find(message => message.localId === suspendedInput)?.invokedAt).toBeNull();
+            const pendingMessages = messagesWithId(pendingHistory, suspendedInput);
+            expect(pendingMessages).toHaveLength(1);
+            expect(pendingMessages[0].invokedAt).toBeNull();
             output = ''; openTerminal(['resume', sessionId]);
             const recovered = await eventually(async () => {
                 for (const name of await readdir(join(hh, 'codex-runtimes'))) {
@@ -368,8 +397,19 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1' || process.platf
             // also calls the model for background title generation).
             const history = record(await client.request('thread/turns/list', { threadId: nativeThread, itemsView: 'full', sortDirection: 'asc', limit: 100 }));
             const userItems = (history.data as unknown[]).map(record).flatMap(turn => (turn.items as unknown[]).map(record)).filter(item => item.type === 'userMessage');
-            for (const id of [suspendedInput, interruptedInput, nativeQueuedInput]) expect(userItems.filter(item => item.clientId === id)).toHaveLength(1);
-            expect(JSON.stringify(userItems.find(item => item.clientId === suspendedInput))).toContain(uploadPath);
+            // HAPI IDs stay in Hub history; native acceptance uses synthetic batch
+            // IDs. Locate those accepted inputs by content, not the Hub alias.
+            const acceptedPending = userItems.filter(item => hasText(item.content, 'PRESERVE_PENDING_ON_EXIT'));
+            expect(acceptedPending).toHaveLength(1);
+            expect(userItems.filter(item => hasText(item.content, 'ASK_SHARED_SUSPEND'))).toHaveLength(1);
+            expect(userItems.filter(item => item.clientId === nativeQueuedInput)).toHaveLength(1);
+            expect(JSON.stringify(acceptedPending[0])).toContain(uploadPath);
+            const acceptedHistory = await api(`/sessions/${sessionId}/messages`);
+            for (const id of [suspendedInput, interruptedInput, nativeQueuedInput]) {
+                const messages = messagesWithId(acceptedHistory, id);
+                expect(messages).toHaveLength(1);
+                expect(typeof messages[0].invokedAt).toBe('number');
+            }
             const recoveryDetail = record((await detail()).session);
             expect(Object.keys(record(record(recoveryDetail.agentState).requests))).toHaveLength(0);
             await send('AFTER_COLD_RESUME');

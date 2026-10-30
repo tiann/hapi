@@ -18,6 +18,7 @@ export function useSessionActions(
     codexCollaborationModeSupported?: boolean
 ): {
     abortSession: () => Promise<void>
+    isAborting: boolean
     archiveSession: () => Promise<void>
     reopenSession: () => Promise<ReopenSessionResponse>
     switchSession: () => Promise<void>
@@ -294,6 +295,7 @@ export function useSessionActions(
 
     return {
         abortSession: abortMutation.mutateAsync,
+        isAborting: abortMutation.isPending,
         archiveSession: archiveMutation.mutateAsync,
         reopenSession: reopenMutation.mutateAsync,
         switchSession: switchMutation.mutateAsync,
