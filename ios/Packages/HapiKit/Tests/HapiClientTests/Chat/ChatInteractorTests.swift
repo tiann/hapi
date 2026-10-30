@@ -879,7 +879,7 @@ struct ChatInteractorTests {
     }
 
     @Test func permissionModeSwitchAppliesOptimisticallyAndRollsBackToServerTruthOnError() async throws {
-        let harness = try await ChatInteractionHarness(detail: chatDetail(permissionMode: .default))
+        let harness = try await ChatInteractionHarness(detail: chatDetail(permissionMode: .manual))
         await harness.performer.script(
             "POST", "/api/sessions/sess-1/permission-mode",
             status: 409, json: #"{"error":"apply_failed","code":"apply_failed"}"#
@@ -889,9 +889,9 @@ struct ChatInteractorTests {
         // Optimistic flip is visible synchronously in the detail cache.
         #expect(harness.store.detail(for: chatSessionID)?.permissionMode == .acceptEdits)
 
-        // Rollback = reload server truth (served detail carries `default`).
+        // Rollback = reload server truth (served detail carries `manual`).
         #expect(await eventually {
-            harness.store.detail(for: chatSessionID)?.permissionMode == .default
+            harness.store.detail(for: chatSessionID)?.permissionMode == .manual
         })
         #expect(await eventually {
             harness.events.contains { event in

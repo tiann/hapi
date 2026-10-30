@@ -146,7 +146,7 @@ describe('NewSession preferences', () => {
             cursorSelectedBase: 'auto',
             effort: 'auto',
             modelReasoningEffort: 'default',
-            permissionMode: 'default'
+            permissionMode: 'manual'
         })
     })
 
@@ -210,7 +210,7 @@ describe('NewSession preferences', () => {
 
     it('migrates the legacy YOLO preference for Claude to bypassPermissions', () => {
         expect(resolvePreferredLaunchSettings('claude', null, true).permissionMode).toBe('bypassPermissions')
-        expect(resolvePreferredLaunchSettings('claude', null, false).permissionMode).toBe('default')
+        expect(resolvePreferredLaunchSettings('claude', null, false).permissionMode).toBe('manual')
     })
 
     it('round-trips a Claude permission mode through storage', () => {

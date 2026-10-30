@@ -397,7 +397,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             session.client.sendSessionEvent({ type: 'message', message: reason });
                         },
                         bootstrapMode: {
-                            permissionMode: session.getPermissionMode() ?? 'default',
+                            permissionMode: session.getPermissionMode() ?? 'manual',
                             model: session.getModel() ?? undefined,
                             effort: session.getEffort() ?? undefined,
                         },
@@ -423,7 +423,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 // an attempt that starts from `pending` keeps modeHash=null,
                                 // so the next mode switch fails the hash check and its
                                 // messages are fed into a process spawned with the old
-                                // --permission-mode (e.g. auto silently running as default).
+                                // --permission-mode (e.g. auto silently running as manual).
                                 modeHash = p.hash;
                                 mode = p.mode;
                                 permissionHandler.handleModeChange(p.mode.permissionMode);

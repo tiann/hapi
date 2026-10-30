@@ -38,9 +38,9 @@ interface ActiveCompact {
 
 // acceptEdits/bypassPermissions are emulated in canCallTool so they can change
 // mid-session. Launching Claude natively in them skips canCallTool, so a later
-// downgrade (e.g. Yolo -> Default) would never take effect.
+// downgrade (e.g. Yolo -> Manual) would never take effect.
 function nativePermissionMode(mode: PermissionMode): PermissionMode {
-    return mode === 'acceptEdits' || mode === 'bypassPermissions' ? 'default' : mode;
+    return mode === 'acceptEdits' || mode === 'bypassPermissions' ? 'manual' : mode;
 }
 
 export async function claudeRemote(opts: {
@@ -128,7 +128,7 @@ export async function claudeRemote(opts: {
 
     // Mode starts from the persisted session for fork bootstrap; updated when
     // the first child prompt arrives. plan/auto must be present at process start.
-    const bootstrapMode: EnhancedMode = opts.bootstrapMode ?? { permissionMode: 'default' };
+    const bootstrapMode: EnhancedMode = opts.bootstrapMode ?? { permissionMode: 'manual' };
     let mode: EnhancedMode = bootstrapMode;
     let initial: { message: string; mode: EnhancedMode } | null = null;
     let specialCommand: ReturnType<typeof parseSpecialCommand> = { type: null };
@@ -331,7 +331,7 @@ export async function claudeRemote(opts: {
 
     // plan/auto are enforced by Claude itself, so a mid-turn switch into or out
     // of them must reach the running process; otherwise it waits for a restart.
-    let nativeMode = sdkOptions.permissionMode ?? 'default';
+    let nativeMode = sdkOptions.permissionMode ?? 'manual';
     let requestedMode = mode.permissionMode;
     let switchesInFlight = 0;
     let modeChangeSeq = 0;
@@ -562,7 +562,7 @@ export async function claudeRemote(opts: {
                     });
                 }
 
-                // Claude silently starts in default when plan/auto is unavailable
+                // Claude silently starts in manual when plan/auto is unavailable
                 // (e.g. auto disabled by settings); surface it instead of
                 // showing a mode that is not in effect.
                 const launchedMode = systemInit.permissionMode;
@@ -573,8 +573,8 @@ export async function claudeRemote(opts: {
                     && launchedMode !== nativeMode
                 ) {
                     const requested = nativeMode;
-                    nativeMode = 'default';
-                    opts.onPermissionModeRejected?.('default', `Claude could not start in ${requested} mode, so it is running in default mode`);
+                    nativeMode = 'manual';
+                    opts.onPermissionModeRejected?.('manual', `Claude could not start in ${requested} mode, so it is running in manual mode`);
                 }
 
                 // Session id is still in memory, wait until session file is written to disk

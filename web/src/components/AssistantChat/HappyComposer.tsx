@@ -1,4 +1,5 @@
 import {
+    getBasePermissionModeForFlavor,
     getCodexCollaborationModeOptions,
     getCopilotAgentModeOptions,
     getPermissionModeOptionsForFlavor,
@@ -477,7 +478,7 @@ export function HappyComposer(props: {
     } = props
 
     // Use ?? so missing values fall back to default (destructuring defaults only handle undefined)
-    const permissionMode = rawPermissionMode ?? 'default'
+    const permissionMode = rawPermissionMode ?? getBasePermissionModeForFlavor(agentFlavor)
     const collaborationMode = rawCollaborationMode ?? 'default'
     const copilotAgentMode = rawCopilotAgentMode ?? 'interactive'
     const model = rawModel ?? null

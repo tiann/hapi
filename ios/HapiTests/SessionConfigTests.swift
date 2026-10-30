@@ -110,7 +110,7 @@ final class SessionConfigTests: XCTestCase {
     func testSelectionSkipsUnchangedValuesAndGuardsAllEditsWhileApplying() async throws {
         let harness = try await SessionConfigTestHarness(model: "sonnet")
         let model = harness.model
-        model.selectPermission(.default)
+        model.selectPermission(.manual)
         model.selectModel("sonnet")
         model.selectEffort(nil)
         let initialPosts = await harness.http.posts
@@ -171,7 +171,7 @@ final class SessionConfigTests: XCTestCase {
         harness.model.selectPermission(.plan)
         XCTAssertEqual(harness.model.permission, .plan)
         try await configEventually { !harness.model.isApplying }
-        XCTAssertEqual(harness.model.permission, .default)
+        XCTAssertEqual(harness.model.permission, .manual)
         XCTAssertEqual(notices, ["HTTP 409 (Config rejected)"])
     }
 
@@ -243,7 +243,7 @@ final class SessionConfigTestHarness {
             active: true, activeAt: 1,
             metadata: SessionMetadata(path: "/repo/app", host: "test", flavor: flavor),
             metadataVersion: 1, agentState: nil, agentStateVersion: 1,
-            thinking: false, thinkingAt: 0, model: model, permissionMode: .default
+            thinking: false, thinkingAt: 0, model: model, permissionMode: basePermissionMode(forFlavor: flavor)
         )
         let http = SessionConfigTestHTTP(detail: detail)
         self.http = http

@@ -21,7 +21,7 @@ class CatalogTest {
     fun `permission mode ids follow PERMISSION_MODES declaration order`() {
         assertEquals(
             listOf(
-                "default", "acceptEdits", "auto", "bypassPermissions", "plan",
+                "default", "manual", "acceptEdits", "auto", "bypassPermissions", "plan",
                 "ask", "debug", "autoReview", "read-only", "safe-yolo", "yolo",
                 "request-review", "always-proceed",
             ),
@@ -46,7 +46,7 @@ class CatalogTest {
     @Test
     fun `per-flavor mode lists match getPermissionModesForFlavor`() {
         assertEquals(
-            listOf("default", "acceptEdits", "auto", "bypassPermissions", "plan"),
+            listOf("manual", "acceptEdits", "auto", "bypassPermissions", "plan"),
             PermissionModes.forFlavor("claude").map { it.wireId }
         )
         assertEquals(

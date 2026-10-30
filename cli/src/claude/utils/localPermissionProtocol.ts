@@ -22,7 +22,7 @@ export const LocalPermissionDecisionSchema = z.object({
     updatedPermissions: z.array(z.union([
         z.object({
             type: z.literal('setMode'),
-            mode: z.enum(['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan']),
+            mode: z.enum(['manual', 'acceptEdits', 'auto', 'bypassPermissions', 'plan']),
             destination: z.literal('session')
         }),
         z.object({

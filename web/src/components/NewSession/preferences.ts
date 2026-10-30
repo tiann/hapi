@@ -1,5 +1,6 @@
 import {
     CREATABLE_AGENT_FLAVORS,
+    getBasePermissionModeForFlavor,
     getPermissionModesForFlavor,
     resolveHapiYoloPermissionMode,
     type PermissionMode
@@ -86,7 +87,7 @@ export function loadPreferredLaunchSettings(
         const permissionMode = typeof parsed.permissionMode === 'string'
             ? getPermissionModesForFlavor(agent).includes(parsed.permissionMode as PermissionMode)
                 ? parsed.permissionMode as PermissionMode
-                : 'default'
+                : getBasePermissionModeForFlavor(agent)
             : undefined
         return {
             model: parsed.model,
@@ -171,7 +172,7 @@ export function resolvePreferredLaunchSettings(
             ? preferredPermissionMode
             : legacyYoloBridgeMode && availablePermissionModes.includes(legacyYoloBridgeMode)
                 ? legacyYoloBridgeMode
-                : 'default'
+                : getBasePermissionModeForFlavor(agent)
         : undefined
 
     return {

@@ -1,5 +1,6 @@
 import {
     getCodexCollaborationModeLabel,
+    getBasePermissionModeForFlavor,
     getCopilotAgentModeLabel,
     getPermissionModeLabel,
     getPermissionModeTone,
@@ -256,7 +257,7 @@ export function StatusBar(props: {
     // "hide default" parity.
     const displayPermissionMode = permissionMode
         && isPermissionModeAllowedForFlavor(permissionMode, props.agentFlavor)
-        && (permissionMode !== 'default' || props.agentFlavor === 'copilot')
+        && (permissionMode !== getBasePermissionModeForFlavor(props.agentFlavor) || props.agentFlavor === 'copilot')
         ? permissionMode
         : null
 

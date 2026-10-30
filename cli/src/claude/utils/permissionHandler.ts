@@ -34,7 +34,7 @@ interface PermissionResponse {
     receivedAt?: number;
 }
 
-const PLAN_EXIT_MODES: PermissionMode[] = ['default', 'acceptEdits', 'auto', 'bypassPermissions'];
+const PLAN_EXIT_MODES: PermissionMode[] = ['manual', 'acceptEdits', 'auto', 'bypassPermissions'];
 
 function isAskUserQuestionToolName(toolName: string): boolean {
     return toolName === 'AskUserQuestion' || toolName === 'ask_user_question';
@@ -137,7 +137,7 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
     // only on batch boundaries, so web dropdown changes during a turn were
     // silently ignored — see issue #735.
     private get permissionMode(): PermissionMode {
-        return this.session.getPermissionMode() ?? 'default';
+        return this.session.getPermissionMode() ?? 'manual';
     }
 
     /**
@@ -226,7 +226,7 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
                 if (response.mode && PLAN_EXIT_MODES.includes(response.mode)) {
                     this.session.queue.unshift(PLAN_FAKE_RESTART, { permissionMode: response.mode });
                 } else {
-                    this.session.queue.unshift(PLAN_FAKE_RESTART, { permissionMode: 'default' });
+                    this.session.queue.unshift(PLAN_FAKE_RESTART, { permissionMode: 'manual' });
                 }
                 pending.resolve({ behavior: 'deny', message: PLAN_FAKE_REJECT });
             } else {

@@ -1021,7 +1021,7 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('claude-session'))
         expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
             agent: 'claude',
-            permissionMode: 'default'
+            permissionMode: 'manual'
         }))
     })
 
@@ -1050,7 +1050,7 @@ describe('NewSession launch preferences', () => {
         fireEvent.click(screen.getByDisplayValue('claude'))
 
         await waitFor(() => {
-            expect(screen.getByTestId('permission-mode')).toHaveTextContent('default')
+            expect(screen.getByTestId('permission-mode')).toHaveTextContent('manual')
         })
     })
 

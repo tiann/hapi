@@ -22,7 +22,7 @@ export const CREATABLE_AGENT_FLAVORS: readonly AgentFlavor[] = AGENT_FLAVORS.fil
 export const AGY_PERMISSION_MODES = ['request-review', 'always-proceed'] as const
 export type AgyPermissionMode = typeof AGY_PERMISSION_MODES[number]
 
-export const CLAUDE_PERMISSION_MODES = ['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'] as const
+export const CLAUDE_PERMISSION_MODES = ['manual', 'acceptEdits', 'auto', 'bypassPermissions', 'plan'] as const
 export type ClaudePermissionMode = typeof CLAUDE_PERMISSION_MODES[number]
 
 export const CODEX_PERMISSION_MODES = ['default', 'read-only', 'autoReview', 'yolo'] as const
@@ -51,6 +51,7 @@ export type CursorPermissionMode = typeof CURSOR_PERMISSION_MODES[number]
 
 export const PERMISSION_MODES = [
     'default',
+    'manual',
     'acceptEdits',
     'auto',
     'bypassPermissions',
@@ -69,6 +70,7 @@ export type PermissionMode = typeof PERMISSION_MODES[number]
 
 export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
     default: 'Default',
+    manual: 'Manual',
     acceptEdits: 'Accept Edits',
     auto: 'Auto',
     plan: 'Plan Mode',
@@ -87,6 +89,7 @@ export type PermissionModeTone = 'neutral' | 'info' | 'warning' | 'danger'
 
 export const PERMISSION_MODE_TONES: Record<PermissionMode, PermissionModeTone> = {
     default: 'neutral',
+    manual: 'neutral',
     acceptEdits: 'warning',
     auto: 'warning',
     plan: 'info',
@@ -171,6 +174,11 @@ export function getPermissionModeOptionsForFlavor(flavor?: string | null): Permi
         label: getPermissionModeLabel(mode),
         tone: getPermissionModeTone(mode)
     }))
+}
+
+/** Base permission mode: Claude calls it `manual`, other flavors `default`. */
+export function getBasePermissionModeForFlavor(flavor?: string | null): PermissionMode {
+    return getPermissionModesForFlavor(flavor) === CLAUDE_PERMISSION_MODES ? 'manual' : 'default'
 }
 
 export function isPermissionModeAllowedForFlavor(mode: PermissionMode, flavor?: string | null): boolean {

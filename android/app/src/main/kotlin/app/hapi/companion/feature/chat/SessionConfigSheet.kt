@@ -95,7 +95,7 @@ internal fun SessionConfigSheetContent(
             config.permissionModes.forEach { mode ->
                 OptionRow(
                     label = mode.label,
-                    selected = mode.wireId == (config.permissionMode ?: "default"),
+                    selected = mode.wireId == (config.permissionMode ?: PermissionModes.baseForFlavor(config.flavor).wireId),
                     tone = mode.tone,
                     onClick = { onSetPermissionMode(mode) },
                 )

@@ -147,7 +147,7 @@ function createSession(
         startedBy: 'runner',
         startingMode: 'remote',
         hookSettingsPath: '/tmp/hook.json',
-        permissionMode: 'default'
+        permissionMode: 'manual'
     })
     return { session, queue }
 }
@@ -171,7 +171,7 @@ describe('claudeRemoteLauncher resume anchor', () => {
             // Simulate the reopen-then-idle-then-/compact repro: an
             // isolate-triggering message is already queued before the very
             // first claudeRemote() attempt ever runs.
-            queue.pushIsolateAndClear('/compact', { permissionMode: 'default' }, 'local-1')
+            queue.pushIsolateAndClear('/compact', { permissionMode: 'manual' }, 'local-1')
             harness.triggerSwitch = () => {
                 client.rpcHandlers.get(RPC_METHODS.Switch)?.()
             }
@@ -201,8 +201,8 @@ describe('claudeRemoteLauncher resume anchor', () => {
             // it must NOT keep the resume anchor alive: the user asked for the
             // context to be discarded, so the follow-up message has to start a
             // genuinely fresh Claude session rather than resume the cleared one.
-            queue.pushIsolateAndClear('/clear', { permissionMode: 'default' }, 'local-1')
-            queue.push('hello', { permissionMode: 'default' }, 'local-2')
+            queue.pushIsolateAndClear('/clear', { permissionMode: 'manual' }, 'local-1')
+            queue.push('hello', { permissionMode: 'manual' }, 'local-2')
             harness.switchAfterCall = 3
             harness.triggerSwitch = () => {
                 client.rpcHandlers.get(RPC_METHODS.Switch)?.()
@@ -229,7 +229,7 @@ describe('claudeRemoteLauncher resume anchor', () => {
             // Ordinary happy path: a normal (non-isolate) message is already
             // queued, so the very first claudeRemote() attempt captures the
             // session immediately - no relaunch/idle gap involved.
-            queue.push('hello', { permissionMode: 'default' }, 'local-1')
+            queue.push('hello', { permissionMode: 'manual' }, 'local-1')
             harness.switchAfterCall = 1
             harness.triggerSwitch = () => {
                 client.rpcHandlers.get(RPC_METHODS.Switch)?.()
@@ -253,7 +253,7 @@ describe('claudeRemoteLauncher resume anchor', () => {
         const { session, queue } = createSession(client, undefined)
 
         try {
-            queue.push('hello', { permissionMode: 'default' }, 'local-1')
+            queue.push('hello', { permissionMode: 'manual' }, 'local-1')
             harness.switchAfterCall = 1
             harness.triggerSwitch = () => {
                 client.rpcHandlers.get(RPC_METHODS.Switch)?.()
@@ -277,7 +277,7 @@ describe('claudeRemoteLauncher resume anchor', () => {
             session.setNativeSkillNames(['hapi'])
             expect(session.expandSkillReference('$unknown inspect')).toBe('$unknown inspect')
             expect(session.expandSkillReference('ask $hapi')).toBe('ask $hapi')
-            queue.push('$hapi inspect', { permissionMode: 'default' }, 'local-1')
+            queue.push('$hapi inspect', { permissionMode: 'manual' }, 'local-1')
             harness.switchAfterCall = 1
             harness.triggerSwitch = () => {
                 client.rpcHandlers.get(RPC_METHODS.Switch)?.()
@@ -301,7 +301,7 @@ describe('claudeRemoteLauncher resume anchor', () => {
                 '$hapi inspect',
                 '@C:\\Users\\Jane Doe\\input.txt'
             )
-            queue.push(prompt, { permissionMode: 'default' }, 'local-1')
+            queue.push(prompt, { permissionMode: 'manual' }, 'local-1')
             harness.switchAfterCall = 1
             harness.triggerSwitch = () => {
                 client.rpcHandlers.get(RPC_METHODS.Switch)?.()
@@ -328,7 +328,7 @@ describe('claudeRemoteLauncher resume anchor', () => {
         harness.compactContextTokens = 13_681
 
         try {
-            queue.push('hi', { permissionMode: 'default' }, 'local-1')
+            queue.push('hi', { permissionMode: 'manual' }, 'local-1')
             harness.switchAfterCall = 1
             harness.triggerSwitch = () => {
                 client.rpcHandlers.get(RPC_METHODS.Switch)?.()

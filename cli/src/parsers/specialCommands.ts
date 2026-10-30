@@ -13,14 +13,14 @@ export interface ClearCommandResult {
 
 export interface PlanCommandResult {
     isPlan: boolean;
-    mode: 'plan' | 'default';
+    mode: 'plan' | 'manual';
     prompt?: string;
 }
 
 export interface SpecialCommandResult {
     type: 'compact' | 'clear' | 'plan' | null;
     originalMessage?: string;
-    mode?: 'plan' | 'default';
+    mode?: 'plan' | 'manual';
     prompt?: string;
 }
 
@@ -98,7 +98,7 @@ export function parsePlan(message: string): PlanCommandResult {
     if (rawArg.toLowerCase() === 'off') {
         return {
             isPlan: true,
-            mode: 'default'
+            mode: 'manual'
         };
     }
 

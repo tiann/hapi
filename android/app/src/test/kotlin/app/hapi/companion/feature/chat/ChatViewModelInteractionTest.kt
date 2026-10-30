@@ -349,7 +349,7 @@ private fun detail(
     flavor: String = "claude",
     active: Boolean = true,
     thinking: Boolean = false,
-    permissionMode: String? = "default",
+    permissionMode: String? = "manual",
     model: String? = null,
     effort: String? = null,
     agentState: AgentState? = null,
@@ -1154,7 +1154,7 @@ class ChatViewModelInteractionTest {
 
     @Test
     fun `permission mode switch applies optimistically and rolls back to server truth on error`() = runTest {
-        val harness = InteractionHarness(this, detail(permissionMode = "default"))
+        val harness = InteractionHarness(this, detail(permissionMode = "manual"))
         harness.api.configFailure = ApiError(409, code = "apply_failed")
         harness.viewModel.start()
         harness.sessionStore.calls.first { "loadDetail:$IX_SESSION" in it }
@@ -1170,8 +1170,8 @@ class ChatViewModelInteractionTest {
 
         collector.join()
         assertIs<ChatNotice.ConfigUpdateFailed>(notice)
-        // Rollback = reload server truth (scripted detail carries "default").
-        assertEquals("default", harness.sessionStore.currentDetail(IX_SESSION)?.permissionMode)
+        // Rollback = reload server truth (scripted detail carries "manual").
+        assertEquals("manual", harness.sessionStore.currentDetail(IX_SESSION)?.permissionMode)
         assertTrue(harness.sessionStore.calls.value.count { it == "loadDetail:$IX_SESSION" } >= 2)
         assertEquals(listOf("mode:acceptEdits"), harness.api.configCalls.value)
     }
@@ -1229,7 +1229,7 @@ class ChatViewModelInteractionTest {
 
     @Test
     fun `permission mode switch stays available for inactive sessions`() = runTest {
-        val harness = InteractionHarness(this, detail(active = false, permissionMode = "default"))
+        val harness = InteractionHarness(this, detail(active = false, permissionMode = "manual"))
         harness.viewModel.start()
         harness.sessionStore.calls.first { "loadDetail:$IX_SESSION" in it }
 

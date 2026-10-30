@@ -3,6 +3,7 @@ import {
     AGENT_FLAVORS,
     AgentFlavorSchema,
     CREATABLE_AGENT_FLAVORS,
+    getBasePermissionModeForFlavor,
     getPermissionModeLabel,
     getPermissionModeOptionsForFlavor,
     getPermissionModeTone,
@@ -114,6 +115,19 @@ describe('getPermissionModeLabel', () => {
 
     test("default label is 'Default'", () => {
         expect(getPermissionModeLabel('default')).toBe('Default')
+    })
+
+    test("manual label is 'Manual'", () => {
+        expect(getPermissionModeLabel('manual')).toBe('Manual')
+    })
+})
+
+describe('getBasePermissionModeForFlavor', () => {
+    test('Claude (and the null fallback) uses manual; other flavors use default', () => {
+        expect(getBasePermissionModeForFlavor('claude')).toBe('manual')
+        expect(getBasePermissionModeForFlavor(null)).toBe('manual')
+        expect(getBasePermissionModeForFlavor('codex')).toBe('default')
+        expect(getBasePermissionModeForFlavor('grok')).toBe('default')
     })
 })
 

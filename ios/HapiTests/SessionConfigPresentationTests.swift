@@ -63,7 +63,7 @@ final class SessionConfigPresentationTests: XCTestCase {
         try capture(window, name: "root")
 
         harness.model.selectModel("sonnet")
-        harness.model.selectPermission(.default)
+        harness.model.selectPermission(.manual)
         let initialPosts = await harness.http.posts
         XCTAssertTrue(initialPosts.isEmpty, "Reselecting the current value is read-only")
         harness.model.selectModel("opus")

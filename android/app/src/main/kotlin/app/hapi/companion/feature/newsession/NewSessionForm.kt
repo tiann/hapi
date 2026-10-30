@@ -25,7 +25,7 @@ data class NewSessionForm(
     /** Codex reasoning effort; `'default'` = omit. */
     val modelReasoningEffort: String = "default",
     /** Native permission mode for grok + codex-family flavors. */
-    val permissionMode: String = "default",
+    val permissionMode: String = PermissionModes.baseForFlavor(agent).wireId,
     /** HAPI YOLO preference for the remaining flavors (claude/agy/cursor/pi). */
     val yolo: Boolean = false,
     /** `'simple' | 'worktree'`. */
@@ -100,7 +100,7 @@ object NewSessionLogic {
      * - opencode's reasoning effort validates against the static list minus
      *   `xhigh` (web drops that row for opencode);
      * - a stored permission mode that is absent from the flavor's launch
-     *   catalog falls back to `'default'` — never to a stale toggle; non
+     *   catalog falls back to the flavor's base mode — never to a stale toggle; non
      *   shared-mode flavors resolve to null (not remembered).
      */
     fun resolvePreferredLaunchSettings(
@@ -127,7 +127,7 @@ object NewSessionLogic {
         val permissionMode = if (usesSharedPermissionModeState(agent)) {
             stored?.permissionMode
                 ?.takeIf { mode -> PermissionModes.forFlavor(agent).any { it.wireId == mode } }
-                ?: "default"
+                ?: PermissionModes.baseForFlavor(agent).wireId
         } else {
             null
         }
@@ -355,7 +355,7 @@ object NewSessionLogic {
         val allowedModes = PermissionModes.forFlavor(base.agent).map { it.wireId }
         val sessionType = if (base.sessionType == SESSION_TYPE_WORKTREE) SESSION_TYPE_WORKTREE else SESSION_TYPE_SIMPLE
         return base.copy(
-            permissionMode = if (base.permissionMode in allowedModes) base.permissionMode else "default",
+            permissionMode = if (base.permissionMode in allowedModes) base.permissionMode else PermissionModes.baseForFlavor(base.agent).wireId,
             serviceTier = if (base.serviceTier == "fast") "fast" else "standard",
             collaborationMode = if (base.collaborationMode == "plan") "plan" else "default",
             copilotAgentMode = app.hapi.protocol.catalog.CopilotAgentMode.normalize(base.copilotAgentMode).wireId,

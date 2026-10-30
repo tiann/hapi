@@ -129,7 +129,7 @@ describe('PermissionHandler — YOLO plan mode', () => {
     it('reflects session permission mode changes between tool calls', async () => {
         const { session } = createFakeSession();
         const handler = new PermissionHandler(session);
-        handler.handleModeChange('default');
+        handler.handleModeChange('manual');
 
         // Simulate RPC handler in runClaude updating the session directly,
         // bypassing handler.handleModeChange (as happens on web dropdown change).
@@ -172,7 +172,7 @@ describe('PermissionHandler — canceled request finalization', () => {
         const resultPromise = handler.handleToolCall(
             'AskUserQuestion',
             { questions: [] },
-            { permissionMode: 'default' } as any,
+            { permissionMode: 'manual' } as any,
             { signal: controller.signal }
         );
 

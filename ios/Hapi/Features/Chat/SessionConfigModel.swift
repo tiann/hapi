@@ -20,7 +20,7 @@ final class SessionConfigModel {
     var showsCollaborationMode: Bool { config.flavor == "codex" }
     var hasSettings: Bool { !config.permissionModes.isEmpty || showsModel || showsEffort || showsCollaborationMode }
 
-    var permission: PermissionMode { config.permissionMode ?? .default }
+    var permission: PermissionMode { config.permissionMode ?? basePermissionMode(forFlavor: config.flavor) }
     var collaborationMode: CodexCollaborationMode { config.collaborationMode ?? .default }
 
     var currentModel: String? {

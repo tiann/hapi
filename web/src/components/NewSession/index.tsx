@@ -2,7 +2,7 @@ import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, ty
 import type { ApiClient } from '@/api/client'
 import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, OpencodeLocalSessionSummary, PiLocalSessionSummary } from '@/types/api'
 import type { CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
-import { getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
+import { getAgyModelChoices, splitAgyModelSelection, getBasePermissionModeForFlavor, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
 import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
@@ -130,7 +130,7 @@ export function NewSession(props: {
     const [collaborationMode, setCollaborationMode] = useState<CodexCollaborationMode>('default')
     const [copilotAgentMode, setCopilotAgentMode] = useState<CopilotAgentMode>('interactive')
     const [yoloMode, setYoloMode] = useState(loadPreferredYoloMode)
-    const [nativePermissionMode, setNativePermissionMode] = useState<PermissionMode>('default')
+    const [nativePermissionMode, setNativePermissionMode] = useState<PermissionMode>(() => getBasePermissionModeForFlavor(agent))
     const [grokPermissionMode, setGrokPermissionMode] = useState<GrokPermissionMode>('default')
     const [sessionType, setSessionType] = useState<SessionType>('simple')
     const [worktreeName, setWorktreeName] = useState('')
@@ -197,7 +197,7 @@ export function NewSession(props: {
         setEffort('auto')
         setModelReasoningEffort('default')
         setGrokPermissionMode('default')
-        setNativePermissionMode('default')
+        setNativePermissionMode(getBasePermissionModeForFlavor(agent))
         setServiceTier('standard')
         setCollaborationMode('default')
         setCopilotAgentMode('interactive')
@@ -978,7 +978,7 @@ export function NewSession(props: {
         setEffort(preferred.effort)
         setModelReasoningEffort(preferred.modelReasoningEffort)
         if (usesSharedPermissionMode) {
-            setNativePermissionMode(preferred.permissionMode ?? 'default')
+            setNativePermissionMode(preferred.permissionMode ?? getBasePermissionModeForFlavor(agent))
         }
         setOpencodeSelectedModel(
             agent === 'opencode' && preferred.model !== 'auto' ? preferred.model : null

@@ -12,12 +12,13 @@ public enum PermissionModeTone: String, Codable, Sendable {
 
 /// Union of every flavor's permission mode ids.
 ///
-/// Ports `PERMISSION_MODES` (`shared/src/modes.ts:52-66`); declaration order
+/// Ports `PERMISSION_MODES` (`shared/src/modes.ts:52-67`); declaration order
 /// matches the TS array. Labels and tones port
 /// `PERMISSION_MODE_LABELS` / `PERMISSION_MODE_TONES` verbatim (English —
 /// localization is an M5 concern layered above the catalog).
 public enum PermissionMode: String, Codable, CaseIterable, Sendable {
     case `default`
+    case manual
     case acceptEdits
     case auto
     case bypassPermissions
@@ -34,6 +35,7 @@ public enum PermissionMode: String, Codable, CaseIterable, Sendable {
     public var label: String {
         switch self {
         case .default: return "Default"
+        case .manual: return "Manual"
         case .acceptEdits: return "Accept Edits"
         case .auto: return "Auto"
         case .bypassPermissions: return "Yolo"
@@ -52,6 +54,7 @@ public enum PermissionMode: String, Codable, CaseIterable, Sendable {
     public var tone: PermissionModeTone {
         switch self {
         case .default: return .neutral
+        case .manual: return .neutral
         case .acceptEdits: return .warning
         case .auto: return .warning
         case .bypassPermissions: return .danger
@@ -106,7 +109,7 @@ extension AgentFlavor {
         case .pi:
             return []
         case .claude, .other:
-            return [.default, .acceptEdits, .auto, .bypassPermissions, .plan]
+            return [.manual, .acceptEdits, .auto, .bypassPermissions, .plan]
         }
     }
 }
@@ -115,6 +118,11 @@ extension AgentFlavor {
 /// `nil` and unknown flavors yield the Claude set.
 public func permissionModes(forFlavor flavor: String?) -> [PermissionMode] {
     AgentFlavor(rawValue: flavor ?? "claude").permissionModes
+}
+
+/// Ports `getBasePermissionModeForFlavor(flavor)`: Claude calls its base mode `manual`.
+public func basePermissionMode(forFlavor flavor: String?) -> PermissionMode {
+    permissionModes(forFlavor: flavor) == AgentFlavor.claude.permissionModes ? .manual : .default
 }
 
 /// Ports `getPermissionModeOptionsForFlavor(flavor)`.

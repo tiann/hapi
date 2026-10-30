@@ -1,6 +1,7 @@
 import {
     CREATABLE_AGENT_FLAVORS,
     GROK_PERMISSION_MODES,
+    getBasePermissionModeForFlavor,
     getPermissionModesForFlavor,
     normalizeCopilotAgentMode,
     resolveHapiYoloPermissionMode,
@@ -86,7 +87,7 @@ export function loadNewSessionFormDraft(): NewSessionFormDraft | null {
                 if (agentPreserved && parsedMode === undefined && parsed.yoloMode && yoloBridgeMode && modes.includes(yoloBridgeMode)) {
                     return yoloBridgeMode
                 }
-                return 'default'
+                return getBasePermissionModeForFlavor(restoredAgent)
             })(),
             grokPermissionMode: agentPreserved
                 && GROK_PERMISSION_MODES.includes(parsed.grokPermissionMode as GrokPermissionMode)

@@ -8,7 +8,7 @@ import type { EnhancedMode } from './loop'
 // mode change) must still seed modeHash/mode. Before the fix it left
 // modeHash=null, so the NEXT mode switch passed the `(modeHash && hash !==
 // modeHash)` check and was fed into a process spawned with the old
-// --permission-mode — e.g. an 'auto' turn silently running as 'default'
+// --permission-mode — e.g. an 'auto' turn silently running as 'manual'
 // (tiann/hapi permission "Auto 完全无效" report).
 const harness = vi.hoisted(() => ({
     // One entry per claudeRemote() call that actually received an initial
@@ -121,7 +121,7 @@ function createSession(client: ReturnType<typeof createClientStub>) {
         startedBy: 'runner',
         startingMode: 'remote',
         hookSettingsPath: '/tmp/hook.json',
-        permissionMode: 'default'
+        permissionMode: 'manual'
     })
     return { session, queue }
 }
@@ -142,9 +142,9 @@ describe('claudeRemoteLauncher mode gate after pending delivery', () => {
             // default -> auto -> default: the middle switch parks 'two', so the
             // second attempt starts from `pending`. The third message then
             // switches modes again and must NOT be fed into the auto process.
-            queue.push('one', { permissionMode: 'default' }, 'local-1')
+            queue.push('one', { permissionMode: 'manual' }, 'local-1')
             queue.push('two', { permissionMode: 'auto' }, 'local-2')
-            queue.push('three', { permissionMode: 'default' }, 'local-3')
+            queue.push('three', { permissionMode: 'manual' }, 'local-3')
             harness.triggerSwitch = () => {
                 client.rpcHandlers.get(RPC_METHODS.Switch)?.()
             }
@@ -152,9 +152,9 @@ describe('claudeRemoteLauncher mode gate after pending delivery', () => {
             await claudeRemoteLauncher(session as any)
 
             expect(harness.spawns).toEqual([
-                { permissionMode: 'default', messages: ['one'] },
+                { permissionMode: 'manual', messages: ['one'] },
                 { permissionMode: 'auto', messages: ['two'] },
-                { permissionMode: 'default', messages: ['three'] }
+                { permissionMode: 'manual', messages: ['three'] }
             ])
         } finally {
             session.stopKeepAlive()

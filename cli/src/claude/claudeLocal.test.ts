@@ -134,13 +134,13 @@ describe('claudeLocal permission mode arguments', () => {
         ])
     })
 
-    it('leaves the default mode to Claude settings', async () => {
+    it('leaves the manual mode to Claude settings', async () => {
         await claudeLocal({
             abort: new AbortController().signal,
             sessionId: null,
             path: '/workspace',
             hookSettingsPath: '/tmp/hooks.json',
-            permissionMode: 'default'
+            permissionMode: 'manual'
         })
 
         expect(getSpawnArgs()).not.toContain('--permission-mode')

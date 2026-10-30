@@ -68,9 +68,9 @@ describe('claudeCommand arguments', () => {
     })
 
     it('keeps an explicit --permission-mode over a later --dangerously-skip-permissions', async () => {
-        await claudeCommand.run(createCommandContext(['--permission-mode', 'default', '--dangerously-skip-permissions']))
+        await claudeCommand.run(createCommandContext(['--permission-mode', 'manual', '--dangerously-skip-permissions']))
 
-        expect(runClaudeMock).toHaveBeenCalledWith({ permissionMode: 'default' })
+        expect(runClaudeMock).toHaveBeenCalledWith({ permissionMode: 'manual' })
     })
 
     it.each(['--help', '-h', '--version', '-v', 'claude'])('forwards %s without special handling', async (arg) => {

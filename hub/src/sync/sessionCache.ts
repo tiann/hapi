@@ -1,4 +1,4 @@
-import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
+import { isPermissionModeAllowedForFlavor, SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
 import { AgentStateSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
 import type { SessionTurnEndReason, SessionTurnTrigger, Store } from '../store'
@@ -17,6 +17,11 @@ const TURN_RECOVERY_WINDOW_MS = 10 * 60_000
 // HTTP caller as 409 instead of spinning forever.
 const METADATA_RETRY_ATTEMPTS = 5
 type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'effort' | 'serviceTier' | 'collaborationMode' | 'copilotAgentMode'
+
+/** Drops a mode outside the flavor's catalog, e.g. Claude `default` stored before the `manual` rename. */
+function flavorPermissionMode(mode: PermissionMode | undefined, flavor: string | null | undefined): PermissionMode | undefined {
+    return mode !== undefined && isPermissionModeAllowedForFlavor(mode, flavor) ? mode : undefined
+}
 
 export class SessionCache {
     private readonly sessions: Map<string, Session> = new Map()
@@ -273,7 +278,7 @@ export class SessionCache {
             modelReasoningEffort: stored.modelReasoningEffort,
             effort: stored.effort,
             serviceTier: stored.serviceTier,
-            permissionMode: existing?.permissionMode ?? metadata?.preferredPermissionMode,
+            permissionMode: existing?.permissionMode ?? flavorPermissionMode(metadata?.preferredPermissionMode, metadata?.flavor),
             collaborationMode: existing?.collaborationMode,
             copilotAgentMode: existing?.copilotAgentMode ?? metadata?.preferredCopilotAgentMode
         }
@@ -474,9 +479,10 @@ export class SessionCache {
         // The agent says it's idle: whatever it does next is a new turn.
         if (!requestedThinking) this.forgetInterruptedTurn(session.id)
         this.recordTurn(session, wasThinking, hubNow, 'agent', 'idle')
-        if (payload.permissionMode !== undefined && !this.isStaleRuntimeKeepAlive(session.id, 'permissionMode', t)) {
-            session.permissionMode = payload.permissionMode
-            this.persistPreferredPermissionMode(session, payload.permissionMode)
+        const keepAlivePermissionMode = flavorPermissionMode(payload.permissionMode, session.metadata?.flavor)
+        if (keepAlivePermissionMode !== undefined && !this.isStaleRuntimeKeepAlive(session.id, 'permissionMode', t)) {
+            session.permissionMode = keepAlivePermissionMode
+            this.persistPreferredPermissionMode(session, keepAlivePermissionMode)
         }
         if (payload.model !== undefined && !this.isStaleRuntimeKeepAlive(session.id, 'model', t)) {
             if (payload.model !== session.model) {

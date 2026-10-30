@@ -316,7 +316,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     }));
 
     // Forward messages to the queue
-    let currentPermissionMode: PermissionMode = options.permissionMode ?? 'default';
+    let currentPermissionMode: PermissionMode = options.permissionMode ?? 'manual';
     let currentModel: SessionModel = initialModel;
     let currentEffort: SessionEffort = initialEffort;
     let currentFallbackModel: string | undefined = undefined; // Track current fallback model
@@ -422,7 +422,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         if (specialCommand.type === 'compact') {
             logger.debug('[start] Detected /compact command');
             const enhancedMode: EnhancedMode = {
-                permissionMode: messagePermissionMode ?? 'default',
+                permissionMode: messagePermissionMode ?? 'manual',
                 model: messageModel,
                 effort: messageEffort,
                 fallbackModel: messageFallbackModel,
@@ -441,7 +441,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         if (specialCommand.type === 'clear') {
             logger.debug('[start] Detected /clear command');
             const enhancedMode: EnhancedMode = {
-                permissionMode: messagePermissionMode ?? 'default',
+                permissionMode: messagePermissionMode ?? 'manual',
                 model: messageModel,
                 effort: messageEffort,
                 fallbackModel: messageFallbackModel,
@@ -494,7 +494,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
 
         // Push with resolved permission mode, model, system prompts, and tools
         const enhancedMode: EnhancedMode = {
-            permissionMode: messagePermissionMode ?? 'default',
+            permissionMode: messagePermissionMode ?? 'manual',
             model: messageModel,
             effort: messageEffort,
             fallbackModel: messageFallbackModel,

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
 import { SyncEngine } from './syncEngine'
+import type { PermissionMode } from '@hapi/protocol/types'
 
 function createEngine(store?: Store): SyncEngine {
     const engine = new SyncEngine(
@@ -87,7 +88,27 @@ describe('permission mode persistence', () => {
         expect(reloadedSession?.permissionMode).toBe('bypassPermissions')
     })
 
-    it('passes persisted permission mode when resuming after hub restart', async () => {
+    it('hides a stored mode the flavor no longer offers after hub restart', () => {
+        const store = new Store(':memory:')
+        const engine = createEngine(store)
+
+        const session = engine.getOrCreateSession(
+            'stale-claude-default',
+            { path: '/tmp/project', host: 'localhost', flavor: 'claude', preferredPermissionMode: 'default' },
+            { requests: {}, completedRequests: {} },
+            'default'
+        )
+        engine.handleSessionAlive({ sid: session.id, time: Date.now(), permissionMode: 'default' })
+        expect(engine.getSession(session.id)?.permissionMode).toBeUndefined()
+
+        const reloadedSession = simulateHubRestart(store).getSession(session.id)
+        expect(reloadedSession?.permissionMode).toBeUndefined()
+    })
+
+    async function resumeAfterRestart(
+        metadata: { flavor: string; codexSessionId?: string; claudeSessionId?: string; preferredPermissionMode?: PermissionMode },
+        permissionMode?: PermissionMode
+    ): Promise<{ result: unknown; sessionId: string; spawnPermissionMode: string | undefined; configRpcCalls: number }> {
         const store = new Store(':memory:')
         const engine = createEngine(store)
 
@@ -101,13 +122,7 @@ describe('permission mode persistence', () => {
 
         const session = engine.getOrCreateSession(
             'resume-permission-mode-restart',
-            {
-                path: '/tmp/project',
-                host: 'localhost',
-                machineId: machine.id,
-                flavor: 'codex',
-                codexSessionId: 'resume-token'
-            },
+            { path: '/tmp/project', host: 'localhost', machineId: machine.id, ...metadata },
             { requests: {}, completedRequests: {} },
             'default'
         )
@@ -115,14 +130,14 @@ describe('permission mode persistence', () => {
         engine.handleSessionAlive({
             sid: session.id,
             time: Date.now(),
-            permissionMode: 'yolo'
+            ...(permissionMode ? { permissionMode } : {})
         })
         engine.handleSessionEnd({ sid: session.id, time: Date.now() })
 
         const restartedEngine = simulateHubRestart(store)
         restartedEngine.handleMachineAlive({ machineId: machine.id, time: Date.now() })
 
-        let capturedSpawnPermissionMode: string | undefined
+        let spawnPermissionMode: string | undefined
         let configRpcCalls = 0
         ;(restartedEngine as any).rpcGateway.spawnSession = async (
             _machineId: string,
@@ -137,7 +152,7 @@ describe('permission mode persistence', () => {
             _effort?: string,
             permissionMode?: string
         ) => {
-            capturedSpawnPermissionMode = permissionMode
+            spawnPermissionMode = permissionMode
             restartedEngine.handleSessionAlive({
                 sid: session.id,
                 time: Date.now(),
@@ -152,10 +167,27 @@ describe('permission mode persistence', () => {
         ;(restartedEngine as any).waitForSessionActive = async () => true
 
         const result = await restartedEngine.resumeSession(session.id, 'default')
+        return { result, sessionId: session.id, spawnPermissionMode, configRpcCalls }
+    }
 
-        expect(result).toEqual({ type: 'success', sessionId: session.id })
-        expect(capturedSpawnPermissionMode).toBe('yolo')
+    it('passes persisted permission mode when resuming after hub restart', async () => {
+        const { result, sessionId, spawnPermissionMode, configRpcCalls } = await resumeAfterRestart(
+            { flavor: 'codex', codexSessionId: 'resume-token' },
+            'yolo'
+        )
+
+        expect(result).toEqual({ type: 'success', sessionId })
+        expect(spawnPermissionMode).toBe('yolo')
         expect(configRpcCalls).toBe(0)
+    })
+
+    it('drops a persisted mode the flavor no longer offers when resuming', async () => {
+        const { result, sessionId, spawnPermissionMode } = await resumeAfterRestart(
+            { flavor: 'claude', claudeSessionId: 'resume-token', preferredPermissionMode: 'default' }
+        )
+
+        expect(result).toEqual({ type: 'success', sessionId })
+        expect(spawnPermissionMode).toBeUndefined()
     })
 
 })

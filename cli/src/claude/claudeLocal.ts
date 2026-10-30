@@ -95,8 +95,8 @@ export async function claudeLocal(opts: {
     if (opts.model) {
         args.push('--model', opts.model);
     }
-    // Omit default so Claude's own settings.json defaultMode still applies.
-    if (opts.permissionMode && opts.permissionMode !== 'default') {
+    // Omit manual so Claude's own settings.json defaultMode still applies.
+    if (opts.permissionMode && opts.permissionMode !== 'manual') {
         args.push('--permission-mode', opts.permissionMode);
     }
 
