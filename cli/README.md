@@ -248,6 +248,7 @@ composition owns the overall permission policy.
 - `HAPI_EXPERIMENTAL` - Enable experimental features (true/1/yes).
 - `HAPI_EXTRA_HEADERS_JSON` - JSON object of extra headers to send on CLI → hub requests, e.g. `{"Cookie":"CF_Authorization=..."}`. Can also be set as the `extraHeaders` object in `~/.hapi/settings.json` (environment variable wins).
 - `HAPI_CLAUDE_PATH` - Path to a specific `claude` executable.
+- `HAPI_PI_PATH` - Path to a specific `pi` executable.
 - `HAPI_DSH_ACP_COMMAND` - ACP server executable for `hapi dsh` (default: `dsh` with `--profile acp`).
 - `HAPI_DSH_ACP_CONFIG` - Optional config path for the configured DSH ACP server (`--config` with `HAPI_DSH_ACP_COMMAND`, `--patch` overlay on the default official CLI).
 - `HAPI_DSH_ACP_ARGS_JSON` - Optional JSON array of ACP server arguments.
