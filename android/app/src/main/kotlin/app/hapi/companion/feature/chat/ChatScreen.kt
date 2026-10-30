@@ -414,6 +414,7 @@ internal fun ChatScreen(
             onSetModel = viewModel::setModel,
             onSetEffort = viewModel::setEffort,
             onLoadModelOptions = viewModel::loadModelOptions,
+            onSetServiceTier = viewModel::setServiceTier,
         )
     }
     if (renameDialogOpen) {

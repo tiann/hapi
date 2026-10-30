@@ -243,4 +243,93 @@ class ComposerAttachmentsTest {
         // `items` is derived from the entries flow — await the propagation.
         assertTrue(tray.items.first { it.isEmpty() }.isEmpty())
     }
+
+    // ---------------------------------------------------------- drafts v2 --
+
+    @Test
+    fun `draftRefs lists only Ready chips and encodes preview data URLs`() = runTest {
+        val api = FakeUploadApi()
+        api.results += Result.failure(RuntimeException("boom"))
+        val tray = harness(backgroundScope, api)
+        tray.add(prepared(id = "bad", filename = "bad.bin", previewBytes = null))
+        tray.items.first { list -> list.any { it.status == ComposerAttachmentStatus.Failed } }
+        tray.add(prepared(id = "good", filename = "good.jpg", previewBytes = byteArrayOf(9, 9)))
+        tray.items.first { list -> list.any { it.id == "good" && it.status == ComposerAttachmentStatus.Ready } }
+
+        val refs = tray.draftRefs()
+
+        assertEquals(listOf("good"), refs.map { it.id })
+        assertEquals("/uploads/good.jpg", refs.single().path)
+        assertEquals(AttachmentPolicy.dataUrl("image/jpeg", byteArrayOf(9, 9)), refs.single().previewUrl)
+        assertTrue(tray.items.value.isNotEmpty(), "draftRefs must not consume the tray")
+    }
+
+    @Test
+    fun `draftRefs on an empty or all-unsettled tray is empty`() = runTest {
+        val api = FakeUploadApi()
+        val tray = harness(backgroundScope, api)
+
+        assertTrue(tray.draftRefs().isEmpty())
+    }
+
+    @Test
+    fun `restoreDraftAttachments appends Ready chips that consume back to the stored path`() = runTest {
+        val api = FakeUploadApi()
+        val tray = harness(backgroundScope, api)
+
+        tray.restoreDraftAttachments(
+            listOf(
+                ComposerDraftAttachment(
+                    id = "restored", filename = "old.jpg", mimeType = "image/jpeg", sizeBytes = 3,
+                    path = "/uploads/old.jpg",
+                    previewUrl = AttachmentPolicy.dataUrl("image/jpeg", byteArrayOf(4, 5)),
+                )
+            )
+        )
+
+        val chip = tray.items.first { list -> list.size == 1 }[0]
+        assertEquals(ComposerAttachmentStatus.Ready, chip.status)
+        assertTrue(chip.previewBytes!!.contentEquals(byteArrayOf(4, 5)))
+        assertTrue(tray.allReady())
+
+        // A restored chip is sendable as-is: no re-upload, the stored path rides.
+        val metadata = tray.consume()!!.single()
+        assertEquals("/uploads/old.jpg", metadata.path)
+        assertEquals("old.jpg", metadata.filename)
+        assertEquals(3L, metadata.size)
+        assertTrue(api.uploads.value.isEmpty(), "restore must not re-upload")
+    }
+
+    @Test
+    fun `restoreDraftAttachments skips duplicate ids and path-less references`() = runTest {
+        val api = FakeUploadApi()
+        val tray = harness(backgroundScope, api)
+        tray.add(prepared(id = "dup", filename = "dup.jpg"))
+        tray.items.first { list -> list.size == 1 && list[0].status == ComposerAttachmentStatus.Ready }
+
+        tray.restoreDraftAttachments(
+            listOf(
+                ComposerDraftAttachment("dup", "dup.jpg", "image/jpeg", 3, path = "/uploads/dup.jpg"),
+                ComposerDraftAttachment("nopath", "n.jpg", "image/jpeg", 1, path = null),
+                ComposerDraftAttachment("fresh", "f.jpg", "image/jpeg", 2, path = "/uploads/f.jpg"),
+            )
+        )
+
+        val ids = tray.items.first { list -> list.size == 2 }.map { it.id }
+        assertEquals(listOf("dup", "fresh"), ids)
+        assertEquals(1, api.uploads.value.size, "only the original add uploaded")
+    }
+
+    @Test
+    fun `discardAllKeepingUploads empties the tray without hub deletes`() = runTest {
+        val api = FakeUploadApi()
+        val tray = harness(backgroundScope, api)
+        tray.add(prepared(id = "a", filename = "a.jpg"))
+        tray.items.first { list -> list.size == 1 && list[0].status == ComposerAttachmentStatus.Ready }
+
+        tray.discardAllKeepingUploads()
+
+        assertTrue(tray.items.first { it.isEmpty() }.isEmpty())
+        assertTrue(api.deletes.value.isEmpty(), "the persisted references own the upload now")
+    }
 }

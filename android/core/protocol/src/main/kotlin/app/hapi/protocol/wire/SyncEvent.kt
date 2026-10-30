@@ -82,6 +82,17 @@ sealed interface SyncEvent {
         val data: OptionalField<JsonElement> = OptionalField.Absent,
     ) : SyncEvent
 
+    /**
+     * The machine's cached agy model catalog changed. Carries only [machineId]
+     * — clients refetch the `GET /api/machines/:id/agy-models` route (see
+     * `MachineAgyModelsUpdatedSchema`, `shared/src/schemas.ts`).
+     */
+    @Serializable
+    data class AgyModelsUpdated(
+        override val namespace: String? = null,
+        val machineId: String,
+    ) : SyncEvent
+
     @Serializable
     data class Toast(
         override val namespace: String? = null,
@@ -195,6 +206,7 @@ object SyncEvents {
             "scheduled-matured" -> SyncEvent.ScheduledMatured.serializer()
             "session-ended" -> SyncEvent.SessionEnded.serializer()
             "machine-updated" -> return parseMachineUpdated(obj)
+            "machine-agy-models-updated" -> SyncEvent.AgyModelsUpdated.serializer()
             "toast" -> SyncEvent.Toast.serializer()
             "messages-consumed" -> SyncEvent.MessagesConsumed.serializer()
             "messages-indeterminate" -> SyncEvent.MessagesIndeterminate.serializer()

@@ -1,6 +1,7 @@
 package app.hapi.companion.feature.chat
 
 import androidx.annotation.MainThread
+import app.hapi.companion.feature.chat.attachments.ComposerAttachmentStatus
 import app.hapi.companion.feature.chat.attachments.ComposerAttachments
 import app.hapi.companion.feature.chat.attachments.PrepareResult
 import app.hapi.companion.feature.chat.composer.appendSharedText
@@ -8,7 +9,10 @@ import app.hapi.companion.feature.share.PendingShare
 import app.hapi.companion.feature.share.SharedFile
 import app.hapi.companion.feature.share.SharedFileStatus
 import app.hapi.companion.feature.chat.blocks.planProposalMarkdown
+import app.hapi.companion.feature.chat.composer.AttachmentDrafts
 import app.hapi.companion.feature.chat.composer.ChatDrafts
+import app.hapi.companion.feature.chat.composer.ComposerDraftSnapshot
+import app.hapi.companion.feature.chat.composer.ComposerDraftSnapshots
 import app.hapi.companion.feature.chat.composer.SlashCommands
 import app.hapi.companion.feature.chat.composer.appendTranscript
 import app.hapi.companion.ui.markdown.MarkdownRenderCache
@@ -16,6 +20,7 @@ import app.hapi.protocol.chat.AgentTextBlock
 import app.hapi.protocol.chat.AgentReasoningBlock
 import app.hapi.companion.feature.sessions.SessionListViewModel
 import app.hapi.companion.feature.sessions.formatReopenError
+import app.hapi.companion.feature.newsession.CursorModels
 import app.hapi.data.api.ApiError
 import app.hapi.data.api.ChatSessionApi
 import app.hapi.data.sse.SseEngine
@@ -54,8 +59,12 @@ import app.hapi.protocol.wire.AgentState
 import app.hapi.protocol.wire.ApprovePermissionRequest
 import app.hapi.protocol.wire.AttachmentMetadata
 import app.hapi.protocol.wire.CodexModelSummary
+import app.hapi.protocol.wire.GrokReasoningEffortOption
 import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.Machine
+import app.hapi.protocol.wire.OpencodeModelSummary
+import app.hapi.protocol.wire.OpencodeReasoningEffortOption
+import app.hapi.protocol.wire.PiModelSummary
 import app.hapi.protocol.wire.SendMessageRequest
 import app.hapi.protocol.wire.Session
 import app.hapi.protocol.wire.SessionSummary
@@ -189,7 +198,7 @@ data class QueuedRowUi(
     val indeterminate: Boolean = false,
 )
 
-/** Session config sheet model (M3b switching). */
+/** Session config sheet model (M3b switching; slice C adds the breadth sections). */
 data class SessionConfigUi(
     val flavor: String?,
     val active: Boolean,
@@ -204,10 +213,19 @@ data class SessionConfigUi(
     val modelOptions: List<CatalogOption>?,
     /** True while the codex model catalog loads (sheet shows a spinner row). */
     val modelOptionsLoading: Boolean,
-    /** Claude `effort` or codex `modelReasoningEffort`, whichever applies. */
+    /**
+     * Claude `effort`, codex/opencode `modelReasoningEffort`, grok/pi `effort`,
+     * whichever applies.
+     */
     val effort: String?,
     /** null → hide the effort section. */
     val effortOptions: List<CatalogOption>?,
+    /** Codex service tier (Fast mode); null = no override (renders Standard). */
+    val serviceTier: String? = null,
+    /** Fast mode section gate: the active codex model advertises a fast tier. */
+    val fastModeAvailable: Boolean = false,
+    /** Cursor variant rows (exact wire ids); null → hide the section. */
+    val variantOptions: List<CatalogOption>? = null,
 )
 
 /** One-shot side effects for the screen. */
@@ -290,9 +308,11 @@ sealed interface PermissionAction {
  *   invoked-race ingested), Edit (cancel + prefill) and Steer (POST steer).
  * - **Permissions** ([resolvePermission]): flavor-exact approve/deny bodies,
  *   optimistic [PermissionRowOverride]s settled by the agentState patch.
- * - **Config** ([config]/[setPermissionMode]/[setModel]/[setEffort]): catalog
- *   pickers with optimistic detail updates, rolled back to server truth on
- *   error; codex model catalog fetched per session ([loadModelOptions]).
+ * - **Config** ([config]/[setPermissionMode]/[setModel]/[setEffort]):
+ *   catalog pickers with optimistic detail updates, rolled back to server
+ *   truth on error; per-flavor catalogs fetched per session
+ *   ([loadModelOptions]) — codex models+efforts, opencode/grok dynamic
+ *   efforts, pi thinking levels, cursor variants.
  *
  * B-M3f adds:
  * - **Attachments** ([attachments], a [ComposerAttachments] tray): picks are
@@ -301,10 +321,11 @@ sealed interface PermissionAction {
  *   then rides the Ready set as `SendMessageRequest.attachments` — the
  *   optimistic row carries them so the user bubble shows thumbnails at once,
  *   and [retryFailedMessage] re-extracts them from the row's wire content.
- *   Attachments are NOT part of drafts (v1 simplification vs the web's
- *   IndexedDB attachment drafts): leaving the chat for good
- *   ([discardAttachments], holder `onCleared`) drops un-sent chips after a
- *   best-effort hub delete.
+ *   Drafts v2: Ready chips persist as attachment references with the same
+ *   lifecycle as text drafts (restore on visit, carry whole across a
+ *   superseding resume/reopen, clear on send) — [draftRefs]/
+ *   [restoreDraftAttachments] on the tray, persisted via [attachmentDrafts]
+ *   and mirrored in the process-wide [draftSnapshots] live ring.
  *
  * B-M3ce adds:
  * - **Slash commands** ([slashSuggestions]/[selectSlashCommand]): `/token`
@@ -339,6 +360,10 @@ class ChatViewModel(
     syncTargets: SyncTargets,
     private val scope: CoroutineScope,
     private val drafts: ChatDrafts? = null,
+    /** Attachment-reference drafts; null ⇒ tray never persists (tests/previews). */
+    private val attachmentDrafts: AttachmentDrafts? = null,
+    /** In-memory live snapshots (text + refs) shared across screens in this process. */
+    private val draftSnapshots: ComposerDraftSnapshots? = null,
     /** null ⇒ scratchlist UI hidden (badge, park) — tests/previews without a store. */
     private val scratchlist: SessionScratchlist? = null,
     private val pipelineDispatcher: CoroutineDispatcher = Dispatchers.Default,
@@ -410,6 +435,12 @@ class ChatViewModel(
     private var everStarted = false
     private var draftJob: Job? = null
 
+    /** This screen observed a Ready chip — only then may an empty tray be persisted. */
+    @Volatile private var traySawReadyChip = false
+
+    /** The draft was carried into a superseding id: this session must not re-persist. */
+    @Volatile private var supersededHandoff = false
+
     // ------------------------------------------------------------ M3 state --
 
     private val composerText = MutableStateFlow("")
@@ -438,14 +469,31 @@ class ChatViewModel(
     )
     private val codexPlanOperations = MutableStateFlow(CodexPlanOperations())
 
-    private sealed interface CodexModels {
-        data object Idle : CodexModels
-        data object Loading : CodexModels
-        data class Loaded(val models: List<CodexModelSummary>) : CodexModels
-        data object Failed : CodexModels
-    }
+    /**
+     * Per-flavor dynamic catalogs behind the config sheet (slice C). One
+     * fetch per sheet open: [loadModelOptions] routes on the session flavor,
+     * fills the fields that flavor needs, and leaves [loadedFlavor] null on
+     * failure so the next open retries.
+     */
+    private data class ConfigCatalogs(
+        val loading: Boolean = false,
+        /** Flavor the catalogs were fetched for; null = not loaded yet / failed. */
+        val loadedFlavor: String? = null,
+        val codexModels: List<CodexModelSummary>? = null,
+        val opencodeEfforts: List<OpencodeReasoningEffortOption>? = null,
+        val grokEfforts: List<GrokReasoningEffortOption>? = null,
+        val piModels: List<PiModelSummary>? = null,
+        /** Cursor session catalog (`GET /api/sessions/:id/cursor-models`). */
+        val cursorSessionModels: List<OpencodeModelSummary>? = null,
+        /** Machine catalog merge-in; fetch failure tolerated (stays null). */
+        val cursorMachineModels: List<OpencodeModelSummary>? = null,
+        val cursorSessionSkus: List<OpencodeModelSummary>? = null,
+        val cursorMachineSkus: List<OpencodeModelSummary>? = null,
+        /** The machine's live cursor wire (`currentModelId` of the session catalog). */
+        val cursorCurrentModelId: String? = null,
+    )
 
-    private val codexModels = MutableStateFlow<CodexModels>(CodexModels.Idle)
+    private val catalogs = MutableStateFlow(ConfigCatalogs())
 
     private sealed interface SlashFetch {
         data object Idle : SlashFetch
@@ -542,11 +590,11 @@ class ChatViewModel(
     val config: StateFlow<SessionConfigUi> = combine(
         sessionStore.sessionDetail(sessionId),
         summaryFlow(),
-        codexModels,
+        catalogs,
         configOpPending,
-    ) { detail, summary, models, _ ->
-        buildConfigUi(detail, summary, models)
-    }.stateIn(scope, SharingStarted.Eagerly, buildConfigUi(null, null, CodexModels.Idle))
+    ) { detail, summary, catalogs, _ ->
+        buildConfigUi(detail, summary, catalogs)
+    }.stateIn(scope, SharingStarted.Eagerly, buildConfigUi(null, null, ConfigCatalogs()))
 
     /**
      * Slash-command dropdown rows (B-M3ce): non-empty only while the composer
@@ -628,6 +676,7 @@ class ChatViewModel(
             }
             launch(workerContext) { restoreDraft() }
             withContext(workerContext) { loadDetail() }
+            launch(workerContext) { observeAttachmentDrafts() }
         }
 
         // Badge count + SSE-triggered refetches while this chat is on screen.
@@ -661,7 +710,17 @@ class ChatViewModel(
         jumpJob?.cancel()
         jumpJob = null
         mutableJumpingLatest.value = false
+        // Exit snapshot first (text + tray refs, while the tray still holds
+        // them — the holder's discard runs after [stop]), then the durable
+        // flushes. A handed-off source stays retired (web tombstone).
+        if (!supersededHandoff) {
+            draftSnapshots?.set(
+                sessionId,
+                ComposerDraftSnapshot(composerText.value, attachments.draftRefs()),
+            )
+        }
         flushPendingDraft()
+        flushAttachmentDraft()
         sseEngine.unsubscribe(subscriptionKey)
         sessionStore.releaseDetail(sessionId)
         scratchlist?.release(sessionId)
@@ -671,16 +730,36 @@ class ChatViewModel(
      * A debounced draft save cancelled by screen exit would lose the last
      * keystrokes; flush it on a detached scope — [scope] is torn down right
      * after [stop] returns (the web analogue is the beforeunload persist).
+     * A handed-off source never re-persists: its draft belongs to the
+     * superseding session now (resurrecting it is the web tombstone bug).
      */
     @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
     private fun flushPendingDraft() {
         val pending = draftJob?.isActive == true
         draftJob?.cancel()
         if (!pending) return
+        if (supersededHandoff) return
         val store = drafts ?: return
         val text = composerText.value
         kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
             runCatching { store.save(sessionId, text) }
+        }
+    }
+
+    /**
+     * Tray references outlive the screen: persist the final state durably
+     * on a detached scope. An empty tray persists only after this screen
+     * observed a Ready chip (a restore skipped for an inactive session must
+     * not erase the stored references — the web keeps its IDB row too).
+     */
+    @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
+    private fun flushAttachmentDraft() {
+        val store = attachmentDrafts ?: return
+        if (supersededHandoff) return
+        val refs = attachments.draftRefs()
+        if (refs.isEmpty() && !traySawReadyChip) return
+        kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+            runCatching { store.save(sessionId, refs) }
         }
     }
 
@@ -857,6 +936,10 @@ class ChatViewModel(
         composerText.value = text
         if (enteredSlashMode) loadSlashCommands()
         draftJob?.cancel()
+        // Live snapshot on every change (web `setComposerDraftSnapshot`):
+        // refreshes recency in the ring and re-opens a handed-off source
+        // when the user keeps typing before navigation completes.
+        draftSnapshots?.set(sessionId, ComposerDraftSnapshot(text, attachments.draftRefs()))
         val store = drafts ?: return
         draftJob = scope.launch {
             delay(draftSaveDebounceMs)
@@ -1005,6 +1088,10 @@ class ChatViewModel(
         scope.launch {
             try {
                 drafts?.let { runCatching { it.clear(sessionId) } }
+                // Sent content is not a draft: consume the tray references
+                // too (web `clearDraftsAfterSend` clears both stores).
+                attachmentDrafts?.let { runCatching { it.clear(sessionId) } }
+                draftSnapshots?.remove(sessionId)
                 if (attachmentMetadata == null && (text == "/clear" || text == "/new") &&
                     sessionStore.sessionDetail(sessionId).first()?.metadata?.capabilities?.concurrentClients == true) {
                     sendInFlight.value = true
@@ -1033,11 +1120,13 @@ class ChatViewModel(
 
     /**
      * The screen is going away for good (holder `onCleared`, not a config
-     * change): un-sent uploads are discarded after a best-effort hub delete.
-     * Attachments deliberately do not persist in drafts v1.
+     * change). With drafts v2 wired the Ready uploads are referenced by the
+     * persisted/carried draft and must survive; without it (tests/previews)
+     * the v1 cleanup still discards them after a best-effort hub delete.
      */
     fun discardAttachments() {
-        attachments.discardAllDetached()
+        if (attachmentDrafts != null) attachments.discardAllKeepingUploads()
+        else attachments.discardAllDetached()
     }
 
     /** Tap-to-retry on a failed optimistic row: re-fires the send with the same localId. */
@@ -1168,7 +1257,7 @@ class ChatViewModel(
                 targetStore.appendOptimistic(optimisticRow)
                 store.removeMessage(localId)
             }
-            drafts?.let { runCatching { it.move(sessionId, targetSessionId) } }
+            carryComposerDraftsTo(targetSessionId)
         }
 
         // Resume succeeded: reflect activity locally, refresh the list row.
@@ -1253,7 +1342,7 @@ class ChatViewModel(
                 val response = sessionStore.reopenSession(sessionId)
                 if (response.sessionId != sessionId) {
                     messageWindows.seed(sessionId, response.sessionId)
-                    drafts?.let { runCatching { it.move(sessionId, response.sessionId) } }
+                    carryComposerDraftsTo(response.sessionId)
                     _events.tryEmit(ChatEvent.SessionSuperseded(response.sessionId))
                 }
             } catch (cancellation: CancellationException) {
@@ -1630,7 +1719,8 @@ class ChatViewModel(
 
     /**
      * Effort switch, flavor-routed: claude → `POST /effort`; codex/opencode →
-     * `POST /model-reasoning-effort`. Null clears.
+     * `POST /model-reasoning-effort`. Null clears. Pi's rows toggle off by
+     * posting null when the clicked row is already selected (web parity).
      */
     fun setEffort(effort: String?) {
         val usesReasoningEffort = currentFlavor() == "codex" || currentFlavor() == "opencode"
@@ -1648,28 +1738,150 @@ class ChatViewModel(
         )
     }
 
-    /** Fetch the codex model catalog for the picker (no-op for other flavors). */
+    /**
+     * `POST /service-tier` (codex Fast mode) — `'fast' | 'standard'`; an
+     * explicit `'standard'` persists Fast-off distinctly from an untouched
+     * session. Optimistic flip with the shared rollback.
+     */
+    fun setServiceTier(serviceTier: String) {
+        runConfigChange(
+            optimistic = { it.copy(serviceTier = serviceTier) },
+            call = { api.setServiceTier(sessionId, serviceTier) },
+        )
+    }
+
+    /** Flavors whose config sheet needs a dynamic catalog fetch. */
+    private val configCatalogFlavors = setOf("codex", "opencode", "grok", "pi", "cursor")
+
+    /**
+     * Fetch the session flavor's dynamic config catalogs (codex models +
+     * efforts, opencode/grok reasoning-effort options, pi models, cursor
+     * session+machine catalogs). One load per flavor: a failure leaves
+     * `loadedFlavor` null so the next sheet open retries. Other flavors are a
+     * no-op (static/no catalog).
+     */
     fun loadModelOptions() {
-        if (currentFlavor() != "codex") return
-        if (codexModels.value is CodexModels.Loading || codexModels.value is CodexModels.Loaded) return
-        codexModels.value = CodexModels.Loading
+        val flavor = currentFlavor() ?: return
+        if (flavor !in configCatalogFlavors) return
+        val state = catalogs.value
+        if (state.loading || state.loadedFlavor == flavor) return
+        catalogs.value = ConfigCatalogs(loading = true)
         scope.launch {
-            codexModels.value = try {
-                val response = api.getSessionCodexModels(sessionId)
-                val models = response.models
-                if (response.success && models != null) {
-                    CodexModels.Loaded(models)
-                } else {
-                    _events.tryEmit(ChatEvent.Notice(ChatNotice.ModelsLoadFailed(response.error)))
-                    CodexModels.Failed
-                }
-            } catch (cancellation: CancellationException) {
-                throw cancellation
-            } catch (error: Exception) {
-                _events.tryEmit(ChatEvent.Notice(ChatNotice.ModelsLoadFailed(error.message)))
-                CodexModels.Failed
+            catalogs.value = when (flavor) {
+                "codex" -> loadCodexCatalogs()
+                "opencode" -> loadOpencodeCatalogs()
+                "grok" -> loadGrokCatalogs()
+                "pi" -> loadPiCatalogs()
+                "cursor" -> loadCursorCatalogs()
+                else -> ConfigCatalogs()
             }
         }
+    }
+
+    private suspend fun loadCodexCatalogs(): ConfigCatalogs {
+        val response = try {
+            api.getSessionCodexModels(sessionId)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            _events.tryEmit(ChatEvent.Notice(ChatNotice.ModelsLoadFailed(error.message)))
+            return ConfigCatalogs()
+        }
+        val models = response.models
+        return if (response.success && models != null) {
+            ConfigCatalogs(loadedFlavor = "codex", codexModels = models)
+        } else {
+            _events.tryEmit(ChatEvent.Notice(ChatNotice.ModelsLoadFailed(response.error)))
+            ConfigCatalogs()
+        }
+    }
+
+    /** Silent-hide on failure — the opencode section simply stays absent (web parity). */
+    private suspend fun loadOpencodeCatalogs(): ConfigCatalogs {
+        val response = try {
+            api.getSessionOpencodeReasoningEffortOptions(sessionId)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            return ConfigCatalogs()
+        }
+        val options = response.options
+        return if (response.success && options != null) {
+            ConfigCatalogs(loadedFlavor = "opencode", opencodeEfforts = options)
+        } else {
+            ConfigCatalogs()
+        }
+    }
+
+    /** Silent-hide on failure — the grok section stays absent (web parity). */
+    private suspend fun loadGrokCatalogs(): ConfigCatalogs {
+        val response = try {
+            api.getSessionGrokReasoningEffortOptions(sessionId)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            return ConfigCatalogs()
+        }
+        val options = response.options
+        return if (response.success && options != null) {
+            ConfigCatalogs(loadedFlavor = "grok", grokEfforts = options)
+        } else {
+            ConfigCatalogs()
+        }
+    }
+
+    /** Silent-hide on failure — pi thinking levels need the resolved model row. */
+    private suspend fun loadPiCatalogs(): ConfigCatalogs {
+        val response = try {
+            api.getSessionPiModels(sessionId)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            return ConfigCatalogs()
+        }
+        val models = response.availableModels
+        return if (response.success && models != null) {
+            ConfigCatalogs(loadedFlavor = "pi", piModels = models)
+        } else {
+            ConfigCatalogs()
+        }
+    }
+
+    /**
+     * Session catalog first (authoritative); the machine catalog merges in to
+     * fill display names and extra CLI skus — its failure is tolerated (web
+     * parity: `useCursorModelsForMachine` error only downgrades readiness).
+     */
+    private suspend fun loadCursorCatalogs(): ConfigCatalogs {
+        val session = try {
+            api.getSessionCursorModels(sessionId)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (_: Exception) {
+            return ConfigCatalogs()
+        }
+        if (!session.success) return ConfigCatalogs()
+
+        val machineId = currentDetail()?.metadata?.machineId
+        val machine = if (machineId != null) {
+            try {
+                api.getMachineCursorModels(machineId)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Exception) {
+                null
+            }
+        } else {
+            null
+        }
+        return ConfigCatalogs(
+            loadedFlavor = "cursor",
+            cursorSessionModels = session.availableModels ?: emptyList(),
+            cursorMachineModels = if (machine?.success == true) machine.availableModels ?: emptyList() else null,
+            cursorSessionSkus = session.cliModelSkus ?: emptyList(),
+            cursorMachineSkus = if (machine?.success == true) machine.cliModelSkus ?: emptyList() else null,
+            cursorCurrentModelId = session.currentModelId,
+        )
     }
 
     private fun runConfigChange(optimistic: (Session) -> Session, call: suspend () -> Unit) {
@@ -1691,13 +1903,19 @@ class ChatViewModel(
         }
     }
 
-    private fun buildConfigUi(detail: Session?, summary: SessionSummary?, models: CodexModels): SessionConfigUi {
+    private fun buildConfigUi(
+        detail: Session?,
+        summary: SessionSummary?,
+        catalogs: ConfigCatalogs,
+    ): SessionConfigUi {
         val flavor = detail?.metadata?.flavor ?: summary?.metadata?.flavor
         val model = detail?.model
         val modelOptions: List<CatalogOption>?
         var modelOptionsLoading = false
         var effort: String? = null
         var effortOptions: List<CatalogOption>? = null
+        var fastModeAvailable = false
+        var variantOptions: List<CatalogOption>? = null
 
         when (flavor) {
             "claude" -> {
@@ -1706,29 +1924,55 @@ class ChatViewModel(
                 effortOptions = ModelCatalog.claudeEffortOptions(effort)
             }
             "codex" -> {
-                when (models) {
-                    is CodexModels.Loaded -> {
-                        modelOptions = models.models.map { summaryRow ->
-                            CatalogOption(
-                                value = summaryRow.id,
-                                label = summaryRow.displayName + if (summaryRow.isDefault) " · default" else "",
-                            )
-                        }
-                        val selected = models.models.firstOrNull { it.id == model }
-                            ?: models.models.firstOrNull { it.isDefault }
-                        val efforts = selected?.supportedReasoningEfforts.orEmpty()
-                        if (efforts.isNotEmpty()) {
-                            effort = detail?.modelReasoningEffort
-                            effortOptions = listOf(CatalogOption(null, "Default")) + efforts.map { level ->
-                                CatalogOption(level, level.replaceFirstChar { it.uppercaseChar() })
-                            }
-                        }
+                val models = catalogs.codexModels
+                if (models != null) {
+                    modelOptions = models.map { summaryRow ->
+                        CatalogOption(
+                            value = summaryRow.id,
+                            label = summaryRow.displayName + if (summaryRow.isDefault) " · default" else "",
+                        )
                     }
-                    is CodexModels.Loading -> {
-                        modelOptions = emptyList()
-                        modelOptionsLoading = true
-                    }
-                    else -> modelOptions = emptyList()
+                } else {
+                    modelOptions = emptyList()
+                    modelOptionsLoading = catalogs.loading
+                }
+                // Codex efforts come from the active model's advertised list
+                // (selection, else default row); presets when it advertises
+                // none — the section is never hidden (web parity).
+                effort = detail?.modelReasoningEffort
+                effortOptions = SessionConfigSections.codexReasoningEffortOptions(
+                    effort,
+                    models?.let { SessionConfigSections.codexModelReasoningEfforts(it, model) },
+                )
+                fastModeAvailable = SessionConfigSections.advertisesFastTier(model, models)
+            }
+            "opencode" -> {
+                modelOptions = null // Model picker stays create-form only.
+                effort = detail?.modelReasoningEffort
+                effortOptions = SessionConfigSections.opencodeReasoningEffortOptions(effort, catalogs.opencodeEfforts)
+            }
+            "grok" -> {
+                modelOptions = null
+                effort = detail?.effort
+                effortOptions = SessionConfigSections.grokReasoningEffortOptions(catalogs.grokEfforts)
+            }
+            "pi" -> {
+                modelOptions = null
+                effort = detail?.effort
+                val piModels = catalogs.piModels
+                effortOptions = SessionConfigSections.piThinkingOptions(
+                    effort,
+                    piModels?.let {
+                        SessionConfigSections.piSelectedModel(it, model, detail?.metadata?.piSelectedModel)
+                    },
+                )
+            }
+            "cursor" -> {
+                modelOptions = null
+                variantOptions = if (catalogs.loadedFlavor == "cursor") {
+                    SessionConfigSections.cursorVariantOptions(cursorPicker(detail, catalogs))
+                } else {
+                    null
                 }
             }
             else -> modelOptions = null // Generic fallback: hide the picker.
@@ -1745,8 +1989,24 @@ class ChatViewModel(
             modelOptionsLoading = modelOptionsLoading,
             effort = effort,
             effortOptions = effortOptions,
+            serviceTier = detail?.serviceTier,
+            fastModeAvailable = fastModeAvailable,
+            variantOptions = variantOptions,
         )
     }
+
+    /** Session-sheet cursor picker: session + machine catalogs + merged CLI skus. */
+    private fun cursorPicker(detail: Session?, catalogs: ConfigCatalogs): CursorModels.PickerState =
+        CursorModels.buildSessionPickerState(
+            sessionModels = catalogs.cursorSessionModels ?: emptyList(),
+            machineModels = catalogs.cursorMachineModels ?: emptyList(),
+            cliSkus = CursorModels.mergeCliSkus(
+                catalogs.cursorMachineSkus ?: emptyList(),
+                catalogs.cursorSessionSkus ?: emptyList(),
+            ),
+            sessionModel = detail?.model,
+            sessionCurrentModelId = catalogs.cursorCurrentModelId,
+        )
 
     // ------------------------------------------------------------- internals --
 
@@ -1786,14 +2046,97 @@ class ChatViewModel(
     private suspend fun restoreDraft() {
         if (draftReady.isCompleted) return
         try {
-            val draft = drafts?.load(sessionId)
-            if (composerText.value.isEmpty() && draft != null) composerText.value = draft
+            // Durable store first; the live snapshot ring is the fallback (the
+            // supersession carry writes both — a failed durable write still
+            // carries in-memory, web `liveSnapshots`).
+            val draft = runCatching { drafts?.load(sessionId) }.getOrNull()
+                ?: draftSnapshots?.get(sessionId)?.text
+            if (!draft.isNullOrEmpty() && composerText.value.isEmpty()) {
+                composerText.value = draft
+            }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
             // Ordinary chat remains usable when local draft storage fails.
         } finally {
             draftReady.complete(Unit)
+        }
+    }
+
+    /**
+     * Drafts v2 supersession carry (web `transferComposerDraft`): the whole
+     * draft — text and attachment references — moves to [targetSessionId].
+     *
+     * - The freshest composer text is flushed into the source row first, so
+     *   un-debounced keystrokes cannot be lost by the move.
+     * - References keep their hub paths (absolute on the agent machine, the
+     *   `resumeAndRetry` precedent) — unlike the web there is no blob to
+     *   re-upload into the target session.
+     * - The live snapshot is set on the target and the source retired
+     *   (`markHandedOff`, the web `completedHandoffs` tombstone) so the
+     *   source's exit cannot resurrect its draft or delete carried paths.
+     */
+    private suspend fun carryComposerDraftsTo(targetSessionId: String) {
+        if (targetSessionId == sessionId) return
+        val text = composerText.value
+        // The tray is the live truth when it holds chips; an unrestored tray
+        // (inactive session) falls back to the stored references so the carry
+        // moves what the draft actually holds, not just what is on screen.
+        val refs = attachments.draftRefs().ifEmpty {
+            runCatching { attachmentDrafts?.load(sessionId) }.getOrNull().orEmpty()
+        }
+        draftJob?.cancel()
+        supersededHandoff = true
+        runCatching {
+            drafts?.let { store ->
+                if (text.isNotBlank()) store.save(sessionId, text)
+                store.move(sessionId, targetSessionId)
+            }
+        }
+        runCatching {
+            attachmentDrafts?.let { store ->
+                if (refs.isNotEmpty()) store.save(sessionId, refs)
+                store.move(sessionId, targetSessionId)
+            }
+        }
+        draftSnapshots?.let { snapshots ->
+            snapshots.set(targetSessionId, ComposerDraftSnapshot(text = text, attachments = refs))
+            snapshots.markHandedOff(sessionId)
+        }
+    }
+
+    /**
+     * Drafts v2 restore + persist observer, started after [loadDetail]
+     * (activity decides the restore, the web contract):
+     *
+     * - Active session: restore stored references as Ready chips (the live
+     *   snapshot backs the store). An inactive session restores text only —
+     *   references stay stored untouched, like the web's IDB row.
+     * - Every settled tray change persists the current references and
+     *   refreshes the live snapshot. An empty tray persists only after this
+     *   screen observed a Ready chip (skipped restores and untouched trays
+     *   must not erase stored references); a handed-off source persists
+     *   nothing.
+     */
+    private suspend fun observeAttachmentDrafts() {
+        val store = attachmentDrafts ?: return
+        if (currentSessionState().active) {
+            val stored = runCatching { store.load(sessionId) }.getOrDefault(emptyList())
+            val refs = stored.ifEmpty { draftSnapshots?.get(sessionId)?.attachments.orEmpty() }
+            if (refs.isNotEmpty()) attachments.restoreDraftAttachments(refs)
+        }
+        var lastFingerprint: String? = null
+        attachments.items.collect { items ->
+            val fingerprint = items.joinToString("|") { "${it.id}:${it.status.name}" }
+            if (fingerprint == lastFingerprint) return@collect
+            lastFingerprint = fingerprint
+            if (items.any { it.status == ComposerAttachmentStatus.Ready }) {
+                traySawReadyChip = true
+            }
+            if (supersededHandoff || !traySawReadyChip) return@collect
+            val refs = attachments.draftRefs()
+            draftSnapshots?.set(sessionId, ComposerDraftSnapshot(composerText.value, refs))
+            runCatching { store.save(sessionId, refs) }
         }
     }
 

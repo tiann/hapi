@@ -191,8 +191,19 @@ private open class FakeMessagesApi : ChatSessionApi {
     override suspend fun setModel(sessionId: String, model: String?) {}
     override suspend fun setEffort(sessionId: String, effort: String?) {}
     override suspend fun setModelReasoningEffort(sessionId: String, modelReasoningEffort: String?) {}
+    override suspend fun setServiceTier(sessionId: String, serviceTier: String?) {}
     override suspend fun getSessionCodexModels(sessionId: String): CodexModelsResponse =
         CodexModelsResponse(success = false, error = "not scripted")
+    override suspend fun getSessionOpencodeReasoningEffortOptions(sessionId: String): app.hapi.protocol.wire.OpencodeReasoningEffortResponse =
+        app.hapi.protocol.wire.OpencodeReasoningEffortResponse(success = false, error = "not scripted")
+    override suspend fun getSessionGrokReasoningEffortOptions(sessionId: String): app.hapi.protocol.wire.GrokReasoningEffortResponse =
+        app.hapi.protocol.wire.GrokReasoningEffortResponse(success = false, error = "not scripted")
+    override suspend fun getSessionPiModels(sessionId: String): app.hapi.protocol.wire.PiModelsResponse =
+        app.hapi.protocol.wire.PiModelsResponse(success = false, error = "not scripted")
+    override suspend fun getSessionCursorModels(sessionId: String): app.hapi.protocol.wire.CursorModelsResponse =
+        app.hapi.protocol.wire.CursorModelsResponse(success = false, error = "not scripted")
+    override suspend fun getMachineCursorModels(machineId: String): app.hapi.protocol.wire.CursorModelsResponse =
+        app.hapi.protocol.wire.CursorModelsResponse(success = false, error = "not scripted")
     override suspend fun getSlashCommands(sessionId: String): app.hapi.protocol.wire.SlashCommandsResponse =
         app.hapi.protocol.wire.SlashCommandsResponse(success = false, error = "not scripted")
     override suspend fun uploadFile(

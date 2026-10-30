@@ -45,6 +45,19 @@ data class SessionMetadata(
     val kimiSessionId: String? = null,
     val copilotSessionId: String? = null,
     val piSessionId: String? = null,
+    /**
+     * Provider-qualified Pi selection the hub persists alongside the legacy
+     * bare modelId — disambiguates when two providers share a modelId (the
+     * session config sheet resolves the thinking-level map through it).
+     */
+    val piSelectedModel: PiSelectedModelRef? = null,
+)
+
+/** `metadata.piSelectedModel` — `{provider, modelId}` (`MetadataSchema`). */
+@Serializable
+data class PiSelectedModelRef(
+    val provider: String,
+    val modelId: String,
 )
 
 /** `metadata.summary` on the detail session (`{text, updatedAt}`). */

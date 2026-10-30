@@ -35,13 +35,20 @@ import app.hapi.protocol.wire.CancelMessageResponse
 import app.hapi.protocol.chat.NormalizedMessage
 import app.hapi.protocol.chat.normalizeDecryptedMessage
 import app.hapi.protocol.wire.CodexModelsResponse
+import app.hapi.protocol.wire.CursorModelsResponse
 import app.hapi.protocol.wire.DecryptedMessage
 import app.hapi.protocol.wire.DeleteUploadResponse
+import app.hapi.protocol.wire.GrokReasoningEffortResponse
 import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.MessagesPage
 import app.hapi.protocol.wire.MessagesResponse
+import app.hapi.protocol.wire.OpencodeReasoningEffortResponse
+import app.hapi.protocol.wire.OpencodeModelSummary
 import app.hapi.protocol.wire.OptionalField
+import app.hapi.protocol.wire.PiModelsResponse
+import app.hapi.protocol.wire.PiModelSummary
+import app.hapi.protocol.wire.PiSelectedModelRef
 import app.hapi.protocol.wire.QueuedStateResponse
 import app.hapi.protocol.wire.ReopenSessionResponse
 import app.hapi.protocol.wire.ResumeSessionResponse
@@ -271,7 +278,33 @@ private class RecordingChatApi : ChatSessionApi {
         configFailure?.let { throw it }
     }
 
+    override suspend fun setServiceTier(sessionId: String, serviceTier: String?) {
+        configCalls.value = configCalls.value + "serviceTier:$serviceTier"
+        configFailure?.let { throw it }
+    }
+
     override suspend fun getSessionCodexModels(sessionId: String): CodexModelsResponse = codexModelsResult
+
+    var opencodeEffortsResult: OpencodeReasoningEffortResponse =
+        OpencodeReasoningEffortResponse(success = false, error = "not scripted")
+    override suspend fun getSessionOpencodeReasoningEffortOptions(sessionId: String): OpencodeReasoningEffortResponse =
+        opencodeEffortsResult
+
+    var grokEffortsResult: GrokReasoningEffortResponse =
+        GrokReasoningEffortResponse(success = false, error = "not scripted")
+    override suspend fun getSessionGrokReasoningEffortOptions(sessionId: String): GrokReasoningEffortResponse =
+        grokEffortsResult
+
+    var piModelsResult: PiModelsResponse = PiModelsResponse(success = false, error = "not scripted")
+    override suspend fun getSessionPiModels(sessionId: String): PiModelsResponse = piModelsResult
+
+    var sessionCursorModelsResult: CursorModelsResponse =
+        CursorModelsResponse(success = false, error = "not scripted")
+    override suspend fun getSessionCursorModels(sessionId: String): CursorModelsResponse = sessionCursorModelsResult
+
+    var machineCursorModelsResult: CursorModelsResponse =
+        CursorModelsResponse(success = false, error = "not scripted")
+    override suspend fun getMachineCursorModels(machineId: String): CursorModelsResponse = machineCursorModelsResult
 
     var slashCommandsResult: SlashCommandsResponse = SlashCommandsResponse(success = false, error = "not scripted")
     val slashCommandsCalls = MutableStateFlow(0)
@@ -1283,6 +1316,188 @@ class ChatViewModelInteractionTest {
         val config = harness.viewModel.config.first { it.modelOptions?.isNotEmpty() == true }
         assertEquals("gpt-5.3-codex", config.modelOptions?.single()?.value)
         assertEquals(listOf(null, "low", "medium", "high"), config.effortOptions?.map { it.value })
+    }
+
+    @Test
+    fun `codex fast mode gates on the active model, posts explicit tiers and rolls back`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "codex", model = "gpt-5.3-codex"))
+        harness.api.codexModelsResult = CodexModelsResponse(
+            success = true,
+            models = listOf(
+                app.hapi.protocol.wire.CodexModelSummary(
+                    id = "gpt-5.3-codex",
+                    displayName = "GPT-5.3 Codex",
+                    isDefault = true,
+                    supportedReasoningEfforts = listOf("high"),
+                    serviceTiers = listOf("standard", "fast"),
+                ),
+            ),
+        )
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { calls -> calls.any { it.startsWith("loadDetail") } }
+
+        harness.viewModel.loadModelOptions()
+        val config = harness.viewModel.config.first { it.fastModeAvailable }
+        // No persisted tier renders as the standard row (fast not yet selected).
+        assertEquals("standard", SessionConfigSections.displayedServiceTier(config.serviceTier))
+
+        harness.viewModel.setServiceTier("fast")
+        harness.api.configCalls.first { "serviceTier:fast" in it }
+        assertEquals("fast", harness.sessionStore.currentDetail(IX_SESSION)?.serviceTier)
+        assertEquals("fast", SessionConfigSections.displayedServiceTier(harness.viewModel.config.value.serviceTier))
+
+        // Failure rolls back to the scripted server truth (serviceTier = null).
+        harness.api.configFailure = ApiError(409, code = "apply_failed")
+        harness.viewModel.setServiceTier("standard")
+        harness.api.configCalls.first { it.count { it == "serviceTier:standard" } == 1 }
+        // Rollback = second detail reload landing the scripted truth.
+        harness.sessionStore.calls.first { calls -> calls.count { it == "loadDetail:$IX_SESSION" } >= 2 }
+        assertNull(harness.sessionStore.currentDetail(IX_SESSION)?.serviceTier)
+    }
+
+    @Test
+    fun `opencode reasoning options load from the session rpc and route to model-reasoning-effort`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "opencode", model = "qwen3-coder"))
+        harness.api.opencodeEffortsResult = OpencodeReasoningEffortResponse(
+            success = true,
+            options = listOf(
+                app.hapi.protocol.wire.OpencodeReasoningEffortOption("low", "Low"),
+                app.hapi.protocol.wire.OpencodeReasoningEffortOption("high"),
+            ),
+        )
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { calls -> calls.any { it.startsWith("loadDetail") } }
+
+        // Before the RPC lands the section is hidden (no static fallback).
+        assertNull(harness.viewModel.config.value.effortOptions)
+        harness.viewModel.loadModelOptions()
+        val config = harness.viewModel.config.first { it.effortOptions != null }
+        assertEquals(listOf(null, "low", "high"), config.effortOptions?.map { it.value })
+        // The model picker stays create-form only for opencode.
+        assertNull(config.modelOptions)
+
+        harness.viewModel.setEffort("high")
+        harness.api.configCalls.first { "modelReasoningEffort:high" in it }
+        assertEquals("high", harness.sessionStore.currentDetail(IX_SESSION)?.modelReasoningEffort)
+    }
+
+    @Test
+    fun `grok effort options hide while the rpc list is empty`() = runTest {
+        val harness = InteractionHarness(this, detail(flavor = "grok", model = "grok-4", effort = "high"))
+        harness.api.grokEffortsResult = GrokReasoningEffortResponse(success = true, options = emptyList())
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { calls -> calls.any { it.startsWith("loadDetail") } }
+
+        harness.viewModel.loadModelOptions()
+        // Drain the load coroutine: loaded flavor settles, but empty options
+        // keep the section hidden (no static fallback for live sessions).
+        testScheduler.runCurrent()
+        assertNull(harness.viewModel.config.value.effortOptions)
+
+        harness.api.grokEffortsResult = GrokReasoningEffortResponse(
+            success = true,
+            options = listOf(app.hapi.protocol.wire.GrokReasoningEffortOption("high", "Think hard")),
+        )
+        harness.viewModel.setEffort("high")
+        harness.api.configCalls.first { "effort:high" in it }
+        assertEquals("high", harness.sessionStore.currentDetail(IX_SESSION)?.effort)
+    }
+
+    @Test
+    fun `pi thinking rows resolve the provider ref and toggle off posts null`() = runTest {
+        // Bare modelId is ambiguous across providers; the metadata ref must win
+        // or the non-reasoning row would hide the section.
+        val piDetail = detail(flavor = "pi", model = "0.5-pro", effort = "high").copy(
+            metadata = SessionMetadata(
+                path = "/repo/app", host = "devbox", flavor = "pi",
+                piSelectedModel = PiSelectedModelRef(provider = "pi", modelId = "0.5-pro"),
+            ),
+        )
+        val harness = InteractionHarness(this, piDetail)
+        harness.api.piModelsResult = PiModelsResponse(
+            success = true,
+            availableModels = listOf(
+                PiModelSummary(provider = "other", modelId = "0.5-pro", reasoning = false),
+                PiModelSummary(
+                    provider = "pi", modelId = "0.5-pro", reasoning = true,
+                    thinkingLevelMap = mapOf("xhigh" to null),
+                ),
+            ),
+        )
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { calls -> calls.any { it.startsWith("loadDetail") } }
+
+        harness.viewModel.loadModelOptions()
+        val config = harness.viewModel.config.first { it.effortOptions != null }
+        assertEquals(listOf("off", "minimal", "low", "medium", "high"), config.effortOptions?.map { it.value })
+
+        // Tapping the selected level posts null (pi toggle-off, web parity).
+        harness.viewModel.setEffort(null)
+        harness.api.configCalls.first { "effort:null" in it }
+        assertNull(harness.sessionStore.currentDetail(IX_SESSION)?.effort)
+    }
+
+    @Test
+    fun `cursor variant rows merge machine skus and post the clicked wire`() = runTest {
+        val cursorDetail = detail(flavor = "cursor", model = "composer-2.5[fast=true]").copy(
+            metadata = SessionMetadata(path = "/repo/app", host = "devbox", flavor = "cursor", machineId = "m-1"),
+        )
+        val harness = InteractionHarness(this, cursorDetail)
+        harness.api.sessionCursorModelsResult = CursorModelsResponse(
+            success = true,
+            availableModels = listOf(
+                OpencodeModelSummary("composer-2.5[fast=true]"),
+                OpencodeModelSummary("composer-2.5[]"),
+            ),
+        )
+        harness.api.machineCursorModelsResult = CursorModelsResponse(
+            success = true,
+            cliModelSkus = listOf(
+                OpencodeModelSummary("composer-2.5"),
+                OpencodeModelSummary("composer-2.5-high"),
+                OpencodeModelSummary("composer-2.5-high-fast"),
+            ),
+        )
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { calls -> calls.any { it.startsWith("loadDetail") } }
+
+        harness.viewModel.loadModelOptions()
+        val config = harness.viewModel.config.first { it.variantOptions != null }
+        // Skus replace the raw wires; the default re-pins as its best sku.
+        assertEquals(
+            listOf("composer-2.5-high-fast", "composer-2.5", "composer-2.5-high"),
+            config.variantOptions?.map { it.value },
+        )
+
+        harness.viewModel.setModel("composer-2.5-high-fast")
+        harness.api.configCalls.first { "model:composer-2.5-high-fast" in it }
+        assertEquals("composer-2.5-high-fast", harness.sessionStore.currentDetail(IX_SESSION)?.model)
+    }
+
+    @Test
+    fun `cursor machine catalog failure degrades to session-only wires`() = runTest {
+        val cursorDetail = detail(flavor = "cursor", model = "composer-2.5[fast=true]").copy(
+            metadata = SessionMetadata(path = "/repo/app", host = "devbox", flavor = "cursor", machineId = "m-1"),
+        )
+        val harness = InteractionHarness(this, cursorDetail)
+        harness.api.sessionCursorModelsResult = CursorModelsResponse(
+            success = true,
+            availableModels = listOf(
+                OpencodeModelSummary("composer-2.5[fast=true]"),
+                OpencodeModelSummary("composer-2.5[]"),
+            ),
+        )
+        harness.api.machineCursorModelsResult = CursorModelsResponse(success = false, error = "rpc down")
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { calls -> calls.any { it.startsWith("loadDetail") } }
+
+        harness.viewModel.loadModelOptions()
+        val config = harness.viewModel.config.first { it.variantOptions != null }
+        // Without skus the raw ACP wires are the rows, default first.
+        assertEquals(
+            listOf("composer-2.5[fast=true]", "composer-2.5[]"),
+            config.variantOptions?.map { it.value },
+        )
     }
 
     // --------------------------------------------------------------- misc --

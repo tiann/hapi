@@ -34,10 +34,11 @@ import app.hapi.protocol.catalog.PermissionModeTone
 import app.hapi.protocol.catalog.PermissionModes
 
 /**
- * Session config sheet (B-M3b): permission mode / model / effort sections,
- * catalog-driven per flavor. Pickers apply optimistically through the
- * ViewModel ([ChatViewModel.setPermissionMode] & co.); a flavor without a
- * known model catalog simply hides that section.
+ * Session config sheet (B-M3b + slice C): permission mode / model / effort /
+ * fast mode (codex service tier) / cursor variant sections, catalog-driven per
+ * flavor. Pickers apply optimistically through the ViewModel
+ * ([ChatViewModel.setPermissionMode] & co.); a flavor without a known catalog
+ * simply hides that section (web parity).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -48,8 +49,11 @@ fun SessionConfigSheet(
     onSetModel: (String?) -> Unit,
     onSetEffort: (String?) -> Unit,
     onLoadModelOptions: () -> Unit,
+    onSetServiceTier: (String) -> Unit = {},
 ) {
-    LaunchedEffect(Unit) { onLoadModelOptions() }
+    // Re-run on flavor change: a reopened session of another flavor must fetch
+    // its own catalogs ([ChatViewModel.loadModelOptions] dedupes per flavor).
+    LaunchedEffect(config.flavor) { onLoadModelOptions() }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         SessionConfigSheetContent(
@@ -57,6 +61,7 @@ fun SessionConfigSheet(
             onSetPermissionMode = onSetPermissionMode,
             onSetModel = onSetModel,
             onSetEffort = onSetEffort,
+            onSetServiceTier = onSetServiceTier,
         )
     }
 }
@@ -67,6 +72,7 @@ internal fun SessionConfigSheetContent(
     onSetPermissionMode: (PermissionMode) -> Unit,
     onSetModel: (String?) -> Unit,
     onSetEffort: (String?) -> Unit,
+    onSetServiceTier: (String) -> Unit = {},
 ) {
     Column(
         modifier = Modifier
@@ -136,16 +142,59 @@ internal fun SessionConfigSheetContent(
             }
         }
 
-        config.effortOptions?.let { effortOptions ->
-            SectionTitle(stringResource(R.string.chat_config_effort))
+        val variantOptions = config.variantOptions
+        if (!variantOptions.isNullOrEmpty()) {
+            SectionTitle(stringResource(R.string.chat_config_variant))
+            val selectedVariant = SessionConfigSections.cursorVariantSelected(config.model, variantOptions)
+            variantOptions.forEach { option ->
+                OptionRow(
+                    label = option.label,
+                    selected = option.value == selectedVariant,
+                    onClick = { onSetModel(option.value) },
+                )
+            }
+        }
+
+        val effortOptions = config.effortOptions
+        if (effortOptions != null) {
+            val reasoningFlavor = config.flavor == "codex" || config.flavor == "opencode"
+            SectionTitle(
+                stringResource(
+                    if (reasoningFlavor) R.string.chat_config_reasoning_effort else R.string.chat_config_effort,
+                ),
+            )
             val currentEffort = normalizedCurrentEffort(config)
+            // Pi only: tapping the selected level toggles it off (posts null);
+            // other flavors re-post the same value (web parity).
+            val piToggleOff = config.flavor == "pi"
             effortOptions.forEach { option ->
                 OptionRow(
                     label = option.label,
                     selected = option.value == currentEffort,
-                    onClick = { onSetEffort(option.value) },
+                    onClick = {
+                        if (piToggleOff && option.value != null && option.value == currentEffort) {
+                            onSetEffort(null)
+                        } else {
+                            onSetEffort(option.value)
+                        }
+                    },
                 )
             }
+        }
+
+        if (config.fastModeAvailable) {
+            SectionTitle(stringResource(R.string.chat_config_fast_mode))
+            val displayedTier = SessionConfigSections.displayedServiceTier(config.serviceTier)
+            OptionRow(
+                label = stringResource(R.string.chat_config_fast_mode_standard),
+                selected = displayedTier == "standard",
+                onClick = { onSetServiceTier("standard") },
+            )
+            OptionRow(
+                label = stringResource(R.string.chat_config_fast_mode_fast),
+                selected = displayedTier == "fast",
+                onClick = { onSetServiceTier("fast") },
+            )
         }
     }
 }
@@ -230,6 +279,34 @@ private fun SessionConfigSheetPreview() {
                     modelOptionsLoading = false,
                     effort = "high",
                     effortOptions = ModelCatalog.claudeEffortOptions("high"),
+                ),
+                onSetPermissionMode = {},
+                onSetModel = {},
+                onSetEffort = {},
+            )
+        }
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+private fun SessionConfigSheetCodexFastPreview() {
+    HapiTheme {
+        Surface {
+            SessionConfigSheetContent(
+                config = SessionConfigUi(
+                    flavor = "codex",
+                    active = true,
+                    controlledByUser = false,
+                    permissionMode = "default",
+                    permissionModes = PermissionModes.forFlavor("codex"),
+                    model = "gpt-5.3-codex",
+                    modelOptions = emptyList(),
+                    modelOptionsLoading = false,
+                    effort = "high",
+                    effortOptions = SessionConfigSections.codexReasoningEffortOptions("high", listOf("low", "medium", "high")),
+                    serviceTier = "priority",
+                    fastModeAvailable = true,
                 ),
                 onSetPermissionMode = {},
                 onSetModel = {},

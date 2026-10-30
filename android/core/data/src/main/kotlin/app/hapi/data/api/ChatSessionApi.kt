@@ -4,7 +4,11 @@ import app.hapi.protocol.wire.ApprovePermissionRequest
 import app.hapi.protocol.wire.CancelMessageResponse
 import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
 import app.hapi.protocol.wire.CodexModelsResponse
+import app.hapi.protocol.wire.CursorModelsResponse
 import app.hapi.protocol.wire.DeleteUploadResponse
+import app.hapi.protocol.wire.GrokReasoningEffortResponse
+import app.hapi.protocol.wire.OpencodeReasoningEffortResponse
+import app.hapi.protocol.wire.PiModelsResponse
 import app.hapi.protocol.wire.ResumeSessionResponse
 import app.hapi.protocol.wire.SendMessageRequest
 import app.hapi.protocol.wire.SlashCommandsResponse
@@ -88,8 +92,34 @@ interface ChatSessionApi : MessagesApi, AttachmentUploadApi {
     /** `POST /api/sessions/:id/model-reasoning-effort` (codex, opencode) — null clears. */
     suspend fun setModelReasoningEffort(sessionId: String, modelReasoningEffort: String?)
 
+    /**
+     * `POST /api/sessions/:id/service-tier` (codex) — `'standard' | 'fast'`;
+     * an explicit `'standard'` persists Fast-off distinctly from an untouched
+     * session, null clears back to the account default.
+     */
+    suspend fun setServiceTier(sessionId: String, serviceTier: String?)
+
     /** `GET /api/sessions/:id/codex-models` (RPC-wrapped: check `success`). */
     suspend fun getSessionCodexModels(sessionId: String): CodexModelsResponse
+
+    /** `GET /api/sessions/:id/opencode-reasoning-effort-options` (RPC-wrapped). */
+    suspend fun getSessionOpencodeReasoningEffortOptions(sessionId: String): OpencodeReasoningEffortResponse
+
+    /** `GET /api/sessions/:id/grok-reasoning-effort-options` (RPC-wrapped). */
+    suspend fun getSessionGrokReasoningEffortOptions(sessionId: String): GrokReasoningEffortResponse
+
+    /** `GET /api/sessions/:id/pi-models` (RPC-wrapped) — the session's Pi catalog. */
+    suspend fun getSessionPiModels(sessionId: String): PiModelsResponse
+
+    /** `GET /api/sessions/:id/cursor-models` (RPC-wrapped) — ACP wires + CLI skus. */
+    suspend fun getSessionCursorModels(sessionId: String): CursorModelsResponse
+
+    /**
+     * `GET /api/machines/:id/cursor-models` — secondary catalog merged into
+     * the session's own ([getSessionCursorModels]) to fill display names and
+     * extra CLI skus. Failure is tolerated (session catalog still renders).
+     */
+    suspend fun getMachineCursorModels(machineId: String): CursorModelsResponse
 
     /**
      * `GET /api/sessions/:id/slash-commands` (RPC-wrapped: check `success`) —

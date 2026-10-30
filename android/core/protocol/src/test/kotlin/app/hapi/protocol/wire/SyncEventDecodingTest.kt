@@ -133,6 +133,33 @@ class SyncEventDecodingTest {
     }
 
     @Test
+    fun `decodes machine-agy-models-updated carrying only the machine id`() {
+        // The SSE frame carries no catalog — clients refetch the agy-models
+        // route on receipt (`shared/src/schemas.ts`).
+        val event = assertIs<SyncEvent.AgyModelsUpdated>(
+            SyncEvents.parse(
+                """{"type":"machine-agy-models-updated","namespace":"default","machineId":"mach-1"}"""
+            )
+        )
+        assertEquals("mach-1", event.machineId)
+        assertEquals("default", event.namespace)
+
+        val bare = assertIs<SyncEvent.AgyModelsUpdated>(
+            SyncEvents.parse("""{"type":"machine-agy-models-updated","machineId":"mach-2"}""")
+        )
+        assertEquals("mach-2", bare.machineId)
+        assertNull(bare.namespace)
+    }
+
+    @Test
+    fun `malformed machine-agy-models-updated degrades to Unknown`() {
+        // Missing machineId must not throw — the frame is inert for us.
+        val malformed = SyncEvents.parse("""{"type":"machine-agy-models-updated"}""")
+        val unknown = assertIs<SyncEvent.Unknown>(malformed)
+        assertEquals("machine-agy-models-updated", unknown.type)
+    }
+
+    @Test
     fun `decodes toast payload`() {
         val toast = assertIs<SyncEvent.Toast>(
             SyncEvents.parse(

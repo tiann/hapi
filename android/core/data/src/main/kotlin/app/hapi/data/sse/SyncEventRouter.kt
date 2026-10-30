@@ -45,6 +45,15 @@ interface SyncTargets {
      * pre-M3 targets are unaffected.
      */
     fun onHandshake(scope: SseSubscriptionKey, subscriptionId: String?) {}
+
+    /**
+     * A machine announced a newer agy model catalog
+     * (`machine-agy-models-updated`; web cancels + invalidates its
+     * `machine-agy-models` query in `applyAgyCatalogAnnouncement`). Clients
+     * refetch `GET /api/machines/:id/agy-models` — the create form refetches
+     * on open/machine switch, so the default is a no-op.
+     */
+    fun onAgyModelsUpdated(machineId: String) {}
 }
 
 /**
@@ -87,6 +96,8 @@ class SyncEventRouter(private val targets: SyncTargets) {
             -> targets.onMessageEvent(scope, event)
 
             is SyncEvent.MachineUpdated -> targets.onMachineEvent(scope, event)
+
+            is SyncEvent.AgyModelsUpdated -> targets.onAgyModelsUpdated(event.machineId)
 
             is SyncEvent.Toast -> targets.onToast(event)
 
