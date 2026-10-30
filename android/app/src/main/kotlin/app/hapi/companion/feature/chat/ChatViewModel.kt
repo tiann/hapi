@@ -1,6 +1,7 @@
 package app.hapi.companion.feature.chat
 
 import androidx.annotation.MainThread
+import app.hapi.companion.feature.chat.attachments.ComposerAttachmentStatus
 import app.hapi.companion.feature.chat.attachments.ComposerAttachments
 import app.hapi.companion.feature.chat.attachments.PrepareResult
 import app.hapi.companion.feature.chat.composer.appendSharedText
@@ -8,7 +9,10 @@ import app.hapi.companion.feature.share.PendingShare
 import app.hapi.companion.feature.share.SharedFile
 import app.hapi.companion.feature.share.SharedFileStatus
 import app.hapi.companion.feature.chat.blocks.planProposalMarkdown
+import app.hapi.companion.feature.chat.composer.AttachmentDrafts
 import app.hapi.companion.feature.chat.composer.ChatDrafts
+import app.hapi.companion.feature.chat.composer.ComposerDraftSnapshot
+import app.hapi.companion.feature.chat.composer.ComposerDraftSnapshots
 import app.hapi.companion.feature.chat.composer.SlashCommands
 import app.hapi.companion.feature.chat.composer.appendTranscript
 import app.hapi.companion.ui.markdown.MarkdownRenderCache
@@ -301,10 +305,11 @@ sealed interface PermissionAction {
  *   then rides the Ready set as `SendMessageRequest.attachments` — the
  *   optimistic row carries them so the user bubble shows thumbnails at once,
  *   and [retryFailedMessage] re-extracts them from the row's wire content.
- *   Attachments are NOT part of drafts (v1 simplification vs the web's
- *   IndexedDB attachment drafts): leaving the chat for good
- *   ([discardAttachments], holder `onCleared`) drops un-sent chips after a
- *   best-effort hub delete.
+ *   Drafts v2: Ready chips persist as attachment references with the same
+ *   lifecycle as text drafts (restore on visit, carry whole across a
+ *   superseding resume/reopen, clear on send) — [draftRefs]/
+ *   [restoreDraftAttachments] on the tray, persisted via [attachmentDrafts]
+ *   and mirrored in the process-wide [draftSnapshots] live ring.
  *
  * B-M3ce adds:
  * - **Slash commands** ([slashSuggestions]/[selectSlashCommand]): `/token`
@@ -339,6 +344,10 @@ class ChatViewModel(
     syncTargets: SyncTargets,
     private val scope: CoroutineScope,
     private val drafts: ChatDrafts? = null,
+    /** Attachment-reference drafts; null ⇒ tray never persists (tests/previews). */
+    private val attachmentDrafts: AttachmentDrafts? = null,
+    /** In-memory live snapshots (text + refs) shared across screens in this process. */
+    private val draftSnapshots: ComposerDraftSnapshots? = null,
     /** null ⇒ scratchlist UI hidden (badge, park) — tests/previews without a store. */
     private val scratchlist: SessionScratchlist? = null,
     private val pipelineDispatcher: CoroutineDispatcher = Dispatchers.Default,
@@ -409,6 +418,12 @@ class ChatViewModel(
     private var started = false
     private var everStarted = false
     private var draftJob: Job? = null
+
+    /** This screen observed a Ready chip — only then may an empty tray be persisted. */
+    @Volatile private var traySawReadyChip = false
+
+    /** The draft was carried into a superseding id: this session must not re-persist. */
+    @Volatile private var supersededHandoff = false
 
     // ------------------------------------------------------------ M3 state --
 
@@ -628,6 +643,7 @@ class ChatViewModel(
             }
             launch(workerContext) { restoreDraft() }
             withContext(workerContext) { loadDetail() }
+            launch(workerContext) { observeAttachmentDrafts() }
         }
 
         // Badge count + SSE-triggered refetches while this chat is on screen.
@@ -661,7 +677,17 @@ class ChatViewModel(
         jumpJob?.cancel()
         jumpJob = null
         mutableJumpingLatest.value = false
+        // Exit snapshot first (text + tray refs, while the tray still holds
+        // them — the holder's discard runs after [stop]), then the durable
+        // flushes. A handed-off source stays retired (web tombstone).
+        if (!supersededHandoff) {
+            draftSnapshots?.set(
+                sessionId,
+                ComposerDraftSnapshot(composerText.value, attachments.draftRefs()),
+            )
+        }
         flushPendingDraft()
+        flushAttachmentDraft()
         sseEngine.unsubscribe(subscriptionKey)
         sessionStore.releaseDetail(sessionId)
         scratchlist?.release(sessionId)
@@ -671,16 +697,36 @@ class ChatViewModel(
      * A debounced draft save cancelled by screen exit would lose the last
      * keystrokes; flush it on a detached scope — [scope] is torn down right
      * after [stop] returns (the web analogue is the beforeunload persist).
+     * A handed-off source never re-persists: its draft belongs to the
+     * superseding session now (resurrecting it is the web tombstone bug).
      */
     @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
     private fun flushPendingDraft() {
         val pending = draftJob?.isActive == true
         draftJob?.cancel()
         if (!pending) return
+        if (supersededHandoff) return
         val store = drafts ?: return
         val text = composerText.value
         kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
             runCatching { store.save(sessionId, text) }
+        }
+    }
+
+    /**
+     * Tray references outlive the screen: persist the final state durably
+     * on a detached scope. An empty tray persists only after this screen
+     * observed a Ready chip (a restore skipped for an inactive session must
+     * not erase the stored references — the web keeps its IDB row too).
+     */
+    @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
+    private fun flushAttachmentDraft() {
+        val store = attachmentDrafts ?: return
+        if (supersededHandoff) return
+        val refs = attachments.draftRefs()
+        if (refs.isEmpty() && !traySawReadyChip) return
+        kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+            runCatching { store.save(sessionId, refs) }
         }
     }
 
@@ -857,6 +903,10 @@ class ChatViewModel(
         composerText.value = text
         if (enteredSlashMode) loadSlashCommands()
         draftJob?.cancel()
+        // Live snapshot on every change (web `setComposerDraftSnapshot`):
+        // refreshes recency in the ring and re-opens a handed-off source
+        // when the user keeps typing before navigation completes.
+        draftSnapshots?.set(sessionId, ComposerDraftSnapshot(text, attachments.draftRefs()))
         val store = drafts ?: return
         draftJob = scope.launch {
             delay(draftSaveDebounceMs)
@@ -1005,6 +1055,10 @@ class ChatViewModel(
         scope.launch {
             try {
                 drafts?.let { runCatching { it.clear(sessionId) } }
+                // Sent content is not a draft: consume the tray references
+                // too (web `clearDraftsAfterSend` clears both stores).
+                attachmentDrafts?.let { runCatching { it.clear(sessionId) } }
+                draftSnapshots?.remove(sessionId)
                 if (attachmentMetadata == null && (text == "/clear" || text == "/new") &&
                     sessionStore.sessionDetail(sessionId).first()?.metadata?.capabilities?.concurrentClients == true) {
                     sendInFlight.value = true
@@ -1033,11 +1087,13 @@ class ChatViewModel(
 
     /**
      * The screen is going away for good (holder `onCleared`, not a config
-     * change): un-sent uploads are discarded after a best-effort hub delete.
-     * Attachments deliberately do not persist in drafts v1.
+     * change). With drafts v2 wired the Ready uploads are referenced by the
+     * persisted/carried draft and must survive; without it (tests/previews)
+     * the v1 cleanup still discards them after a best-effort hub delete.
      */
     fun discardAttachments() {
-        attachments.discardAllDetached()
+        if (attachmentDrafts != null) attachments.discardAllKeepingUploads()
+        else attachments.discardAllDetached()
     }
 
     /** Tap-to-retry on a failed optimistic row: re-fires the send with the same localId. */
@@ -1168,7 +1224,7 @@ class ChatViewModel(
                 targetStore.appendOptimistic(optimisticRow)
                 store.removeMessage(localId)
             }
-            drafts?.let { runCatching { it.move(sessionId, targetSessionId) } }
+            carryComposerDraftsTo(targetSessionId)
         }
 
         // Resume succeeded: reflect activity locally, refresh the list row.
@@ -1253,7 +1309,7 @@ class ChatViewModel(
                 val response = sessionStore.reopenSession(sessionId)
                 if (response.sessionId != sessionId) {
                     messageWindows.seed(sessionId, response.sessionId)
-                    drafts?.let { runCatching { it.move(sessionId, response.sessionId) } }
+                    carryComposerDraftsTo(response.sessionId)
                     _events.tryEmit(ChatEvent.SessionSuperseded(response.sessionId))
                 }
             } catch (cancellation: CancellationException) {
@@ -1786,14 +1842,97 @@ class ChatViewModel(
     private suspend fun restoreDraft() {
         if (draftReady.isCompleted) return
         try {
-            val draft = drafts?.load(sessionId)
-            if (composerText.value.isEmpty() && draft != null) composerText.value = draft
+            // Durable store first; the live snapshot ring is the fallback (the
+            // supersession carry writes both — a failed durable write still
+            // carries in-memory, web `liveSnapshots`).
+            val draft = runCatching { drafts?.load(sessionId) }.getOrNull()
+                ?: draftSnapshots?.get(sessionId)?.text
+            if (!draft.isNullOrEmpty() && composerText.value.isEmpty()) {
+                composerText.value = draft
+            }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
             // Ordinary chat remains usable when local draft storage fails.
         } finally {
             draftReady.complete(Unit)
+        }
+    }
+
+    /**
+     * Drafts v2 supersession carry (web `transferComposerDraft`): the whole
+     * draft — text and attachment references — moves to [targetSessionId].
+     *
+     * - The freshest composer text is flushed into the source row first, so
+     *   un-debounced keystrokes cannot be lost by the move.
+     * - References keep their hub paths (absolute on the agent machine, the
+     *   `resumeAndRetry` precedent) — unlike the web there is no blob to
+     *   re-upload into the target session.
+     * - The live snapshot is set on the target and the source retired
+     *   (`markHandedOff`, the web `completedHandoffs` tombstone) so the
+     *   source's exit cannot resurrect its draft or delete carried paths.
+     */
+    private suspend fun carryComposerDraftsTo(targetSessionId: String) {
+        if (targetSessionId == sessionId) return
+        val text = composerText.value
+        // The tray is the live truth when it holds chips; an unrestored tray
+        // (inactive session) falls back to the stored references so the carry
+        // moves what the draft actually holds, not just what is on screen.
+        val refs = attachments.draftRefs().ifEmpty {
+            runCatching { attachmentDrafts?.load(sessionId) }.getOrNull().orEmpty()
+        }
+        draftJob?.cancel()
+        supersededHandoff = true
+        runCatching {
+            drafts?.let { store ->
+                if (text.isNotBlank()) store.save(sessionId, text)
+                store.move(sessionId, targetSessionId)
+            }
+        }
+        runCatching {
+            attachmentDrafts?.let { store ->
+                if (refs.isNotEmpty()) store.save(sessionId, refs)
+                store.move(sessionId, targetSessionId)
+            }
+        }
+        draftSnapshots?.let { snapshots ->
+            snapshots.set(targetSessionId, ComposerDraftSnapshot(text = text, attachments = refs))
+            snapshots.markHandedOff(sessionId)
+        }
+    }
+
+    /**
+     * Drafts v2 restore + persist observer, started after [loadDetail]
+     * (activity decides the restore, the web contract):
+     *
+     * - Active session: restore stored references as Ready chips (the live
+     *   snapshot backs the store). An inactive session restores text only —
+     *   references stay stored untouched, like the web's IDB row.
+     * - Every settled tray change persists the current references and
+     *   refreshes the live snapshot. An empty tray persists only after this
+     *   screen observed a Ready chip (skipped restores and untouched trays
+     *   must not erase stored references); a handed-off source persists
+     *   nothing.
+     */
+    private suspend fun observeAttachmentDrafts() {
+        val store = attachmentDrafts ?: return
+        if (currentSessionState().active) {
+            val stored = runCatching { store.load(sessionId) }.getOrDefault(emptyList())
+            val refs = stored.ifEmpty { draftSnapshots?.get(sessionId)?.attachments.orEmpty() }
+            if (refs.isNotEmpty()) attachments.restoreDraftAttachments(refs)
+        }
+        var lastFingerprint: String? = null
+        attachments.items.collect { items ->
+            val fingerprint = items.joinToString("|") { "${it.id}:${it.status.name}" }
+            if (fingerprint == lastFingerprint) return@collect
+            lastFingerprint = fingerprint
+            if (items.any { it.status == ComposerAttachmentStatus.Ready }) {
+                traySawReadyChip = true
+            }
+            if (supersededHandoff || !traySawReadyChip) return@collect
+            val refs = attachments.draftRefs()
+            draftSnapshots?.set(sessionId, ComposerDraftSnapshot(composerText.value, refs))
+            runCatching { store.save(sessionId, refs) }
         }
     }
 

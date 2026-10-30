@@ -346,7 +346,7 @@ class HapiApiTest {
             )
         )
 
-        val response = runBlocking { session.api.getMachineGrokModelsForCwd("m1", "/home/dev/proj") }
+        val response = runBlocking { session.api.getMachineGrokModels("m1", "/home/dev/proj") }
         val request = server.takeRequest()
         assertEquals("GET", request.method)
         assertEquals("/api/machines/m1/grok-models", request.path!!.substringBefore('?'))
@@ -359,7 +359,7 @@ class HapiApiTest {
 
         // Field omitted (runner never reported it): null — must never read as false.
         server.enqueue(ok("""{"success":true,"availableModels":[]}"""))
-        val omitted = runBlocking { session.api.getMachineGrokModelsForCwd("m1", "/cwd") }
+        val omitted = runBlocking { session.api.getMachineGrokModels("m1", "/cwd") }
         assertNull(omitted.autoPermissionModeSupported)
     }
 

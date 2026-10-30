@@ -273,11 +273,78 @@ data class CodexModelSummary(
 )
 
 /**
- * `GET /api/machines/:id/grok-models?cwd=` (RPC-wrapped: check [success]) —
- * the directory-scoped Grok probe; `GrokModelsResponse` in
- * `shared/src/apiTypes.ts`. This slice consumes only
- * [autoPermissionModeSupported] (the create-form Auto gate); model discovery
- * stays deferred and unknown fields are ignored by [HapiJson].
+ * `GET /api/machines/:id/agy-models` — RPC-wrapped: check [success]. Also used
+ * with `?refresh=true` (client spends its once-per-load force refresh). Ported
+ * from `AgyModelsResponse` (`shared/src/apiTypes.ts`). `success:true` with a
+ * populated [error] is the stale sign-in warning the web selector renders
+ * amber; `success:false` means no catalog (the web UI prefixes the error with
+ * an "Authentication required" label).
+ */
+@Serializable
+data class AgyModelsResponse(
+    val success: Boolean,
+    val availableModels: List<AgyModelSummary>? = null,
+    val currentModelId: String? = null,
+    val error: String? = null,
+)
+
+/** `AgyModelSummary` (`shared/src/apiTypes.ts`). */
+@Serializable
+data class AgyModelSummary(
+    val modelId: String,
+    val name: String? = null,
+)
+
+/**
+ * `GET /api/machines/:id/opencode-models` — RPC-wrapped. Ported from
+ * `OpencodeModelsResponse` (`shared/src/apiTypes.ts`).
+ */
+@Serializable
+data class OpencodeModelsResponse(
+    val success: Boolean,
+    val availableModels: List<OpencodeModelSummary>? = null,
+    val cliModelSkus: List<OpencodeModelSummary>? = null,
+    val currentModelId: String? = null,
+    val error: String? = null,
+)
+
+/** `OpencodeModelSummary` (`shared/src/apiTypes.ts`); also the cursor CLI SKU row. */
+@Serializable
+data class OpencodeModelSummary(
+    val modelId: String,
+    val name: String? = null,
+)
+
+/**
+ * `GET /api/machines/:id/opencode-model-variants` — RPC-wrapped. A model with
+ * no advertised variants is simply absent from the map. Ported from
+ * `OpencodeModelVariantsResponse` (`shared/src/apiTypes.ts`).
+ */
+@Serializable
+data class OpencodeModelVariantsResponse(
+    val success: Boolean,
+    val variants: Map<String, List<String>>? = null,
+    val error: String? = null,
+)
+
+/**
+ * `GET /api/machines/:id/cursor-models` — the opencode shape plus the
+ * `parameterized` flag. Ported from `CursorModelsResponse`
+ * (`shared/src/apiTypes.ts`).
+ */
+@Serializable
+data class CursorModelsResponse(
+    val success: Boolean,
+    val availableModels: List<OpencodeModelSummary>? = null,
+    val cliModelSkus: List<OpencodeModelSummary>? = null,
+    val currentModelId: String? = null,
+    val parameterized: Boolean? = null,
+    val error: String? = null,
+)
+
+/**
+ * `GET /api/machines/:id/grok-models` — RPC-wrapped. Ported from
+ * `GrokModelsResponse` (`shared/src/apiTypes.ts`).
  */
 @Serializable
 data class GrokModelsResponse(
@@ -297,6 +364,81 @@ data class GrokModelsResponse(
 data class GrokModelSummary(
     val modelId: String,
     val name: String? = null,
+    val reasoningEfforts: List<GrokReasoningEffortOption>? = null,
+)
+
+/** `GrokReasoningEffortOption` (`shared/src/apiTypes.ts`). */
+@Serializable
+data class GrokReasoningEffortOption(
+    val value: String,
+    val name: String? = null,
+    val isDefault: Boolean? = null,
+)
+
+/**
+ * `GET /api/machines/:id/copilot-models` — RPC-wrapped. Ported from
+ * `CopilotModelsResponse` (`shared/src/apiTypes.ts`).
+ */
+@Serializable
+data class CopilotModelsResponse(
+    val success: Boolean,
+    val availableModels: List<CopilotModelSummary>? = null,
+    val currentModelId: String? = null,
+    val error: String? = null,
+)
+
+/** `CopilotModelSummary` (`shared/src/apiTypes.ts`). */
+@Serializable
+data class CopilotModelSummary(
+    val modelId: String,
+    val name: String? = null,
+)
+
+/**
+ * `GET /api/machines/:id/kimi-models` — RPC-wrapped. Ported from
+ * `KimiModelsResponse` (`shared/src/apiTypes.ts`).
+ */
+@Serializable
+data class KimiModelsResponse(
+    val success: Boolean,
+    val availableModels: List<KimiModelSummary>? = null,
+    val currentModelId: String? = null,
+    val error: String? = null,
+)
+
+/** `KimiModelSummary` (`shared/src/apiTypes.ts`). */
+@Serializable
+data class KimiModelSummary(
+    val modelId: String,
+    val name: String? = null,
+    val provider: String? = null,
+)
+
+/**
+ * `GET /api/machines/:id/pi-models` — RPC-wrapped. Ported from
+ * `PiModelsResponse` (`shared/src/apiTypes.ts`).
+ */
+@Serializable
+data class PiModelsResponse(
+    val success: Boolean,
+    val availableModels: List<PiModelSummary>? = null,
+    val currentModelId: String? = null,
+    val error: String? = null,
+)
+
+/**
+ * `PiModelSummary` (`shared/src/apiTypes.ts`). [thinkingLevelMap] mirrors the
+ * wire `thinkingLevelMap: Record<string, string | null>` — an explicit null
+ * value means "level not supported by this model".
+ */
+@Serializable
+data class PiModelSummary(
+    val provider: String,
+    val modelId: String,
+    val name: String? = null,
+    val contextWindow: Long? = null,
+    val reasoning: Boolean? = null,
+    val thinkingLevelMap: Map<String, String?>? = null,
 )
 
 /** `POST /api/sessions/:id/upload` (RPC-wrapped: check [success]). */

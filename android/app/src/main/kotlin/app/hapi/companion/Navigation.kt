@@ -818,6 +818,8 @@ private class ChatViewModelHolder(
         syncTargets = hubGraph.syncTargets,
         scope = scope,
         drafts = hubGraph.chatDrafts,
+        attachmentDrafts = hubGraph.attachmentDrafts,
+        draftSnapshots = hubGraph.composerDraftSnapshots,
         scratchlist = hubGraph.scratchlistStore,
     )
 
@@ -833,11 +835,12 @@ private class ChatViewModelHolder(
 
     override fun onCleared() {
         dictation.cancel()
-        // Leaving the chat for good (not rotation): un-sent uploaded
-        // attachments are discarded after a best-effort hub delete (B-M3f;
-        // attachments are not part of drafts v1).
-        viewModel.discardAttachments()
+        // Stop BEFORE discarding: the exit flush persists the final text +
+        // tray references while the tray still holds them, then the discard
+        // empties it (drafts v2 keeps the hub uploads — the persisted/carried
+        // references own them; only the in-memory tray goes away).
         viewModel.stop()
+        viewModel.discardAttachments()
         scope.cancel()
     }
 }
@@ -1074,5 +1077,10 @@ private fun newSessionStrings(context: Context) = NewSessionStrings(
     runnerUpgradeRequired = context.getString(R.string.new_session_error_runner_upgrade_required),
     noAvailableAgents = context.getString(R.string.new_session_error_no_available_agents),
     selectedAgentUnavailable = context.getString(R.string.new_session_error_selected_agent_unavailable),
+    agyNotListed = context.getString(R.string.new_session_agy_not_listed),
+    opencodeLoadFailedDetail = context.getString(R.string.new_session_error_opencode_models_detail),
+    opencodeDefaultLabel = context.getString(R.string.new_session_opencode_default),
+    selectVariant = context.getString(R.string.new_session_select_variant),
     grokAutoUnavailable = context.getString(R.string.new_session_grok_auto_unavailable),
+    grokAutoUnavailableDesc = context.getString(R.string.new_session_grok_auto_unavailable_desc),
 )

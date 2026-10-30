@@ -67,10 +67,13 @@ data class ComposerAttachmentUi(
  *   send body — `previewUrl` is a small JPEG data URL
  *   ([AttachmentPolicy.PREVIEW_MAX_DIMENSION]) so user bubbles render
  *   thumbnails on every client.
- * - **Drafts (v1 simplification)**: unlike the web (IndexedDB attachment
- *   drafts), attachments never persist. Leaving the chat for good discards
- *   un-sent chips via [discardAllDetached] after best-effort hub deletes;
- *   text drafts alone survive.
+ * - **Drafts (v2)**: Ready chips persist as [ComposerDraftAttachment]
+ *   references (hub path + preview data URL — no payload blobs, the hub file
+ *   is the storage) and restore as Ready chips on the next visit
+ *   ([draftRefs]/[restoreDraftAttachments]). Leaving the chat for good no
+ *   longer hub-deletes un-sent uploads ([discardAllKeepingUploads]) — the
+ *   persisted references keep them alive; the v1 detach-with-delete remains
+ *   only for callers without draft persistence wired.
  * - **Inactive sessions (v1 simplification)**: the hub's upload route
  *   requires an active session, and unlike the web this tray does not
  *   resume-then-upload — a pick on an inactive session settles Failed;
@@ -183,10 +186,56 @@ class ComposerAttachments(
     }
 
     /**
+     * Drafts v2: the tray's persistable references — Ready chips with a hub
+     * path, preview re-encoded as a data URL ([consume] parity). Unsettled
+     * chips (uploading/failed) are skipped: they hold no hub file yet.
+     */
+    fun draftRefs(): List<ComposerDraftAttachment> =
+        entries.value
+            .filter { it.ui.status == ComposerAttachmentStatus.Ready && it.path != null }
+            .map { entry ->
+                ComposerDraftAttachment(
+                    id = entry.ui.id,
+                    filename = entry.ui.filename,
+                    mimeType = entry.ui.mimeType,
+                    sizeBytes = entry.ui.sizeBytes,
+                    path = entry.path,
+                    previewUrl = entry.ui.previewBytes?.let { AttachmentPolicy.dataUrl("image/jpeg", it) },
+                )
+            }
+
+    /**
+     * Drafts v2 restore: append persisted [refs] back as Ready chips. A
+     * duplicate id (a chip still present, or a double restore) is skipped;
+     * a reference without a path cannot become Ready again and is dropped.
+     */
+    fun restoreDraftAttachments(refs: List<ComposerDraftAttachment>) {
+        if (refs.isEmpty()) return
+        entries.update { list ->
+            val present = list.map { it.ui.id }.toHashSet()
+            list + refs.filter { it.path != null && it.id !in present }.map { ref ->
+                Entry(
+                    ui = ComposerAttachmentUi(
+                        id = ref.id,
+                        filename = ref.filename,
+                        mimeType = ref.mimeType,
+                        sizeBytes = ref.sizeBytes,
+                        previewBytes = ref.previewUrl?.let { AttachmentPolicy.bytesFromDataUrl(it) },
+                        status = ComposerAttachmentStatus.Ready,
+                    ),
+                    path = ref.path,
+                )
+            }
+        }
+    }
+
+    /**
      * Leaving the chat for good (ViewModel holder `onCleared`): un-sent
      * uploads are orphans on the hub — delete them best-effort on a detached
      * scope, because the owning scope is being cancelled right after (same
-     * pattern as the draft flush). Attachments are NOT part of drafts v1.
+     * pattern as the draft flush). Drafts v2 call sites use
+     * [discardAllKeepingUploads] instead: their Ready paths are referenced
+     * by a persisted/carried draft and must survive the exit.
      */
     @OptIn(DelicateCoroutinesApi::class)
     fun discardAllDetached() {
@@ -200,6 +249,16 @@ class ComposerAttachments(
         (detachedCleanupScope ?: GlobalScope).launch(Dispatchers.IO) {
             paths.forEach { path -> runCatching { api.deleteUpload(sessionId, path) } }
         }
+    }
+
+    /**
+     * Drafts v2 exit: empty the tray with NO hub deletes — the Ready paths
+     * are draft assets now (persisted for this session or carried into a
+     * superseding session's draft); deleting them would dangle the
+     * references. Unsettled chips keep no hub file, so nothing leaks.
+     */
+    fun discardAllKeepingUploads() {
+        entries.value = emptyList()
     }
 
     private fun upload(id: String, filename: String, mimeType: String, bytes: ByteArray) {

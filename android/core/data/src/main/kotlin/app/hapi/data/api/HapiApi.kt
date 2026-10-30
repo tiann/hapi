@@ -5,9 +5,12 @@ import app.hapi.protocol.wire.AgentAvailabilityResponse
 import app.hapi.protocol.wire.ApprovePermissionRequest
 import app.hapi.protocol.wire.AuthRequest
 import app.hapi.protocol.wire.AuthResponse
+import app.hapi.protocol.wire.AgyModelsResponse
 import app.hapi.protocol.wire.CancelMessageResponse
 import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
 import app.hapi.protocol.wire.CodexModelsResponse
+import app.hapi.protocol.wire.CopilotModelsResponse
+import app.hapi.protocol.wire.CursorModelsResponse
 import app.hapi.protocol.wire.DeleteUploadRequest
 import app.hapi.protocol.wire.DeleteUploadResponse
 import app.hapi.protocol.wire.DenyPermissionRequest
@@ -17,6 +20,7 @@ import app.hapi.protocol.wire.GitCommandResponse
 import app.hapi.protocol.wire.GrokModelsResponse
 import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.HubHealthResponse
+import app.hapi.protocol.wire.KimiModelsResponse
 import app.hapi.protocol.wire.ListDirectoryResponse
 import app.hapi.protocol.wire.MachineListDirectoryRequest
 import app.hapi.protocol.wire.MachineListDirectoryResponse
@@ -24,6 +28,9 @@ import app.hapi.protocol.wire.MachinePathsExistsRequest
 import app.hapi.protocol.wire.MachinePathsExistsResponse
 import app.hapi.protocol.wire.MachinesResponse
 import app.hapi.protocol.wire.MessagesResponse
+import app.hapi.protocol.wire.OpencodeModelsResponse
+import app.hapi.protocol.wire.OpencodeModelVariantsResponse
+import app.hapi.protocol.wire.PiModelsResponse
 import app.hapi.protocol.wire.QueuedStateRequest
 import app.hapi.protocol.wire.QueuedStateResponse
 import app.hapi.protocol.wire.RegisterDeviceRequest
@@ -535,18 +542,61 @@ class HapiApi internal constructor(
     suspend fun getMachineCodexModels(machineId: String): CodexModelsResponse =
         request("GET", url("api", "machines", machineId, "codex-models").build())
 
-    /**
-     * `GET /api/machines/:id/grok-models?cwd=` — directory-scoped Grok probe
-     * (RPC-wrapped). Consumed for `autoPermissionModeSupported` (create-form
-     * Auto gate, web ref: `useGrokModelsForCwd`); the cwd must exist.
-     */
-    suspend fun getMachineGrokModelsForCwd(machineId: String, cwd: String): GrokModelsResponse =
-        request(
-            "GET",
-            url("api", "machines", machineId, "grok-models")
-                .apply { addQueryParameter("cwd", cwd) }
-                .build(),
-        )
+    // -------------------------------------------- flavor model catalogs --
+    // Pre-spawn per-flavor model catalogs (web ref: `web/src/api/client.ts`,
+    // `web/src/components/NewSession/index.tsx`). All RPC-wrapped — check
+    // `success`; a runner without the machine RPC answers 503 `rpc_target_missing`
+    // → [ApiError] and callers hide/fall back the picker.
+
+    /** `GET /api/machines/:id/agy-models?refresh=true` — refresh skips the machine's catalog cache (Retry only). */
+    suspend fun getMachineAgyModels(machineId: String, refresh: Boolean = false): AgyModelsResponse {
+        val target = url("api", "machines", machineId, "agy-models")
+        if (refresh) target.addQueryParameter("refresh", "true")
+        return request("GET", target.build())
+    }
+
+    /** `GET /api/machines/:id/pi-models`. */
+    suspend fun getMachinePiModels(machineId: String): PiModelsResponse =
+        request("GET", url("api", "machines", machineId, "pi-models").build())
+
+    /** `GET /api/machines/:id/cursor-models`. */
+    suspend fun getMachineCursorModels(machineId: String): CursorModelsResponse =
+        request("GET", url("api", "machines", machineId, "cursor-models").build())
+
+    /** `GET /api/machines/:id/opencode-models?cwd=` — catalog is cwd-scoped. */
+    suspend fun getMachineOpencodeModels(machineId: String, cwd: String): OpencodeModelsResponse {
+        val target = url("api", "machines", machineId, "opencode-models")
+            .addQueryParameter("cwd", cwd)
+        return request("GET", target.build())
+    }
+
+    /** `GET /api/machines/:id/opencode-model-variants?cwd=` — null [cwd] omits the query. */
+    suspend fun getMachineOpencodeModelVariants(machineId: String, cwd: String? = null): OpencodeModelVariantsResponse {
+        val target = url("api", "machines", machineId, "opencode-model-variants")
+        cwd?.let { target.addQueryParameter("cwd", it) }
+        return request("GET", target.build())
+    }
+
+    /** `GET /api/machines/:id/grok-models?cwd=` — catalog is cwd-scoped. */
+    suspend fun getMachineGrokModels(machineId: String, cwd: String): GrokModelsResponse {
+        val target = url("api", "machines", machineId, "grok-models")
+            .addQueryParameter("cwd", cwd)
+        return request("GET", target.build())
+    }
+
+    /** `GET /api/machines/:id/copilot-models?cwd=` — catalog is cwd-scoped. */
+    suspend fun getMachineCopilotModels(machineId: String, cwd: String): CopilotModelsResponse {
+        val target = url("api", "machines", machineId, "copilot-models")
+            .addQueryParameter("cwd", cwd)
+        return request("GET", target.build())
+    }
+
+    /** `GET /api/machines/:id/kimi-models?cwd=` — catalog is cwd-scoped. */
+    suspend fun getMachineKimiModels(machineId: String, cwd: String): KimiModelsResponse {
+        val target = url("api", "machines", machineId, "kimi-models")
+            .addQueryParameter("cwd", cwd)
+        return request("GET", target.build())
+    }
 
     // --------------------------------------------------------- git & files --
     // RAW-stdout contract (`docs/api/client-contract/rest.md` "Git & files"):
