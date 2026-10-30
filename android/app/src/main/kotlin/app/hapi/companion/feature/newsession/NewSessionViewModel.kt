@@ -149,6 +149,25 @@ data class NewSessionUiState(
     val canCreate: Boolean,
     /** Armed after the first Create tap on a missing simple directory. */
     val confirmCreateDirectory: Boolean,
+    /** Codex-history inline section (slice A); renders only for agent codex. */
+    val codexImport: CodexImportSectionUi = CodexImportSectionUi(),
+    /** Web `isFormDisabled`: spawning or any codex-import activity locks the form. */
+    val formLocked: Boolean = false,
+)
+
+/** What the codex-history inline section renders (web `CodexImportActions`). */
+data class CodexImportSectionUi(
+    /** Selected session's title; null shows the description instead. */
+    val selectedTitle: String? = null,
+    val loading: Boolean = false,
+    val error: String? = null,
+    /** Bulk import or import-at-create in flight. */
+    val busy: Boolean = false,
+    /**
+     * Duplicate detection failed after an otherwise successful bulk import
+     * (web toasts `duplicates.detect.failed.*`; inline here — divergence).
+     */
+    val duplicateDetectError: String? = null,
 )
 
 /**
@@ -176,6 +195,8 @@ class NewSessionViewModel(
     initialMachineId: String? = null,
     private val debounceMs: Long = 250L,
     private val strings: NewSessionStrings = NewSessionStrings(),
+    private val codexImportStore: CodexImportedSessionsStore = MemoryCodexImportedSessionsStore(),
+    private val codexStrings: CodexImportStrings = CodexImportStrings(),
 ) {
     private val form = MutableStateFlow(NewSessionForm())
     private val prefsData = MutableStateFlow(NewSessionPrefsData())
@@ -200,6 +221,22 @@ class NewSessionViewModel(
         scope = scope,
         listDirectory = gateway::listDirectory,
         fallbackError = strings.directoryLookupFailed,
+    )
+
+    /**
+     * Codex session-import controller (slices A+B). Selecting a session inline
+     * adopts its cwd through the form's own [setDirectory] (web
+     * `handleSelectCodexSession` → `setDirectory(session.cwd.trim())`); a
+     * confirmed duplicate merge navigates through [spawned] like a created
+     * session would (web `props.onSuccess(redirectSessionId)`).
+     */
+    val codexImport = CodexImportController(
+        scope = scope,
+        gateway = gateway,
+        store = codexImportStore,
+        strings = codexStrings,
+        applyDirectory = ::setDirectory,
+        navigateToSession = { sessionId -> _spawned.tryEmit(sessionId) },
     )
 
     private var directoryJob: Job? = null
@@ -298,9 +335,9 @@ class NewSessionViewModel(
                 s, exists, stored, outside, lookupError ->
             DirectoryData(s, exists, stored, outside, lookupError)
         },
-        combine(isSpawning, spawnError, confirmCreateDirectory, machinesRefreshSettled) {
-            spawning, error, confirmed, settled ->
-            SpawnFlags(spawning, error, confirmed, settled)
+        combine(isSpawning, spawnError, confirmCreateDirectory, machinesRefreshSettled, codexImport.state) {
+                spawning, error, confirmed, settled, codexImportState ->
+            SpawnFlags(spawning, error, confirmed, settled, codexImportState)
         },
     ) { currentForm, machines, catalogs, directoryData, flags ->
         buildUiState(currentForm, machines, catalogs, directoryData, flags)
@@ -312,7 +349,13 @@ class NewSessionViewModel(
             machineStore.machines.value,
             CatalogState(codexModels.value, agentAvailability.value, grokAutoSupport.value),
             DirectoryData(emptyList(), emptyMap(), prefsData.value, emptySet(), null),
-            SpawnFlags(isSpawning = false, spawnError = null, confirmed = false, machinesSettled = false),
+            SpawnFlags(
+                isSpawning = false,
+                spawnError = null,
+                confirmed = false,
+                machinesSettled = false,
+                codexImport = codexImport.state.value,
+            ),
         ),
     )
 
@@ -321,6 +364,7 @@ class NewSessionViewModel(
         val spawnError: String?,
         val confirmed: Boolean,
         val machinesSettled: Boolean,
+        val codexImport: CodexImportUiState,
     )
 
     private data class CatalogState(
@@ -391,6 +435,9 @@ class NewSessionViewModel(
             )
         }
         applyPreferredLaunchSettings(form.value.machineId, agent)
+        // Codex import state exists only for the codex flavor (web effect on
+        // `agent !== 'codex'`).
+        if (agent != "codex") codexImport.resetForAgentChange()
         refreshCodexModelsIfNeeded()
         refreshGrokAutoSupportIfNeeded()
     }
@@ -429,6 +476,37 @@ class NewSessionViewModel(
     }
 
     fun retryAgentAvailability() = refreshAgentAvailability(force = true)
+
+    /**
+     * The inline section's Choose-history button (web `onChooseHistory`):
+     * open the dialog and load sessions for the current form context. Web's
+     * loader no-ops unless agent is codex and a machine is selected.
+     */
+    fun openCodexImportDialog() {
+        val current = form.value
+        val machineId = current.machineId ?: return
+        if (current.agent != "codex") return
+        codexImport.openDialog(current.trimmedDirectory, machineId)
+    }
+
+    /** The inline section's Clear button (web `onClear`). */
+    fun clearCodexImportSelection() {
+        codexImport.clearInlineSelection()
+    }
+
+    /**
+     * Confirm inside the duplicate-merge dialog (web
+     * `handleMergeDuplicateSessions`); a successful merge navigates through
+     * [spawned] with the redirect session id.
+     */
+    fun mergeDuplicateCodexSessions() {
+        codexImport.mergeDuplicates()
+    }
+
+    /** Dismiss the duplicate-merge confirm dialog (web `closeDuplicateMergeDialog`). */
+    fun closeDuplicateMergeDialog() {
+        codexImport.closeDuplicateMergeDialog()
+    }
 
     /**
      * Spawn. Directory existence is re-checked server-side first (web
@@ -481,6 +559,32 @@ class NewSessionViewModel(
                 if (current.sessionType == SESSION_TYPE_SIMPLE && exists == false && !confirmCreateDirectory.value) {
                     confirmCreateDirectory.value = true
                     return@launch
+                }
+
+                // Codex import-at-create (web `handleCreate` codex-import
+                // branch): runs after the directory gates, before a spawn.
+                // The whole sync → resume chain replaces the spawn call; the
+                // resumed id is what navigation opens.
+                if (current.agent == "codex") {
+                    val selected = codexImport.state.value.selectedSession
+                    if (selected != null) {
+                        val importRequest = CodexImportLogic.buildSingleImportRequest(
+                            form = current,
+                            selected = selected,
+                            formMachineId = machineId,
+                            importMachineId = codexImport.state.value.machineId,
+                            codexFastTierVisible = codexFastTierVisible(current),
+                        )
+                        when (val result = codexImport.importAtCreate(importRequest, current.permissionMode)) {
+                            is CodexImportAtCreateResult.Imported -> {
+                                persistOnSuccess(machineId, directory, current)
+                                _spawned.tryEmit(result.resumedSessionId)
+                            }
+                            is CodexImportAtCreateResult.Failed ->
+                                spawnError.value = result.rawError
+                        }
+                        return@launch
+                    }
                 }
 
                 val request = buildSpawnRequest(current, codexFastTierVisible(current))
@@ -580,6 +684,9 @@ class NewSessionViewModel(
 
     private fun applyMachineSelection(machineId: String, resetDirectory: Boolean) {
         directoryBrowser.close()
+        // The listing machine is gone — drop sessions/selection (web
+        // `handleMachineChange` codex block).
+        codexImport.resetForContextChange()
         pathExistence.value = emptyMap()
         outsideWorkspaceRoots.value = emptySet()
         directoryLookupError.value = null
@@ -966,6 +1073,22 @@ class NewSessionViewModel(
             null
         }
 
+        // Codex-import busy state (web isFormDisabled codex terms): a load,
+        // bulk import, or import-at-create locks the form; the section shows
+        // the inline selection + load error (web CodexImportActions).
+        val codexImportState = flags.codexImport
+        val codexImportBusy = codexImportState.loading ||
+            codexImportState.importing ||
+            codexImportState.importingAtCreate
+        val formLocked = flags.isSpawning || codexImportBusy
+        val codexSection = CodexImportSectionUi(
+            selectedTitle = codexImportState.selectedSession?.title,
+            loading = codexImportState.loading,
+            error = codexImportState.error,
+            busy = codexImportBusy,
+            duplicateDetectError = codexImportState.duplicateDetectError,
+        )
+
         return NewSessionUiState(
             form = currentForm,
             machines = machines.map { machineOption(it) },
@@ -995,6 +1118,7 @@ class NewSessionViewModel(
             canCreate = currentForm.machineId != null &&
                 trimmed.isNotEmpty() &&
                 !flags.isSpawning &&
+                !codexImportBusy &&
                 !missingWorktreeDirectory &&
                 !directoryOutsideRoots &&
                 availability is AgentAvailabilityUi.Loaded &&
@@ -1002,6 +1126,8 @@ class NewSessionViewModel(
                 nameError == null &&
                 !codexValidationPending,
             confirmCreateDirectory = flags.confirmed && needsCreationWarning,
+            codexImport = codexSection,
+            formLocked = formLocked,
         )
     }
 

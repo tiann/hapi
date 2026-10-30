@@ -7,6 +7,15 @@ import app.hapi.data.store.MachineListStore
 import app.hapi.protocol.catalog.AgentFlavor
 import app.hapi.protocol.wire.AgentAvailabilityEntry
 import app.hapi.protocol.wire.AgentAvailabilityResponse
+import app.hapi.protocol.wire.CodexArchiveSessionResponse
+import app.hapi.protocol.wire.CodexDesktopScriptResponse
+import app.hapi.protocol.wire.CodexDesktopStatusResponse
+import app.hapi.protocol.wire.CodexDesktopSyncRequest
+import app.hapi.protocol.wire.CodexDuplicateSessionGroup
+import app.hapi.protocol.wire.CodexDuplicateSessionsResponse
+import app.hapi.protocol.wire.CodexLocalSessionSummary
+import app.hapi.protocol.wire.CodexLocalSessionsResponse
+import app.hapi.protocol.wire.CodexMergeDuplicateSessionsResponse
 import app.hapi.protocol.wire.CodexModelSummary
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.GrokModelsResponse
@@ -16,6 +25,7 @@ import app.hapi.protocol.wire.MachineDirectoryEntry
 import app.hapi.protocol.wire.MachineListDirectoryResponse
 import app.hapi.protocol.wire.MachineMetadata
 import app.hapi.protocol.wire.MachinePathsExistsResponse
+import app.hapi.protocol.wire.ResumeSessionResponse
 import app.hapi.protocol.wire.SpawnResponse
 import app.hapi.protocol.wire.SpawnSessionRequest
 import app.hapi.protocol.wire.SyncEvent
@@ -51,6 +61,9 @@ private class FakeGateway : NewSessionGateway {
     val availabilityCalls = mutableListOf<String>()
     val grokCalls = mutableListOf<Pair<String, String>>()
     val includeHiddenCalls = mutableListOf<Boolean>()
+    val codexSessionsCalls = mutableListOf<Pair<String?, String?>>()
+    val syncCalls = mutableListOf<CodexDesktopSyncRequest>()
+    val resumeCalls = mutableListOf<Pair<String, String?>>()
 
     var entries: List<MachineDirectoryEntry> = emptyList()
     var existsAnswer: (String) -> Boolean? = { true }
@@ -59,6 +72,19 @@ private class FakeGateway : NewSessionGateway {
     var codexThrows: Exception? = null
     var grokResult = GrokModelsResponse(success = true)
     var grokThrows: Exception? = null
+    var codexSessionsResult: CodexLocalSessionsResponse =
+        CodexLocalSessionsResponse(success = true, sessions = emptyList())
+    var codexSessionsThrows: Exception? = null
+    var syncResult: CodexDesktopScriptResponse = CodexDesktopScriptResponse(success = true)
+    var syncThrows: Exception? = null
+    var resumeResult: ResumeSessionResponse = ResumeSessionResponse(sessionId = "s-resumed")
+    var resumeThrows: Exception? = null
+    var archiveResult: CodexArchiveSessionResponse = CodexArchiveSessionResponse(success = true)
+    var statusResult: CodexDesktopStatusResponse =
+        CodexDesktopStatusResponse(success = true, codexClientAvailable = true)
+    var duplicateResult: CodexDuplicateSessionsResponse = CodexDuplicateSessionsResponse(success = true)
+    var mergeResult: CodexMergeDuplicateSessionsResponse =
+        CodexMergeDuplicateSessionsResponse(success = true)
     var availabilityResult = AgentAvailabilityResponse(
         AgentFlavor.CREATABLE.map { AgentAvailabilityEntry(agent = it.id, available = true) },
     )
@@ -107,6 +133,42 @@ private class FakeGateway : NewSessionGateway {
         grokThrows?.let { throw it }
         return grokResult
     }
+
+    override suspend fun getCodexSessions(
+        cwd: String?,
+        machineId: String?,
+    ): CodexLocalSessionsResponse {
+        codexSessionsCalls.add(cwd to machineId)
+        codexSessionsThrows?.let { throw it }
+        return codexSessionsResult
+    }
+
+    override suspend fun syncCodexSession(sync: CodexDesktopSyncRequest): CodexDesktopScriptResponse {
+        syncCalls.add(sync)
+        syncThrows?.let { throw it }
+        return syncResult
+    }
+
+    override suspend fun resumeSession(sessionId: String, permissionMode: String?): ResumeSessionResponse {
+        resumeCalls.add(sessionId to permissionMode)
+        resumeThrows?.let { throw it }
+        return resumeResult
+    }
+
+    override suspend fun archiveCodexSession(
+        sessionId: String,
+        machineId: String?,
+    ): CodexArchiveSessionResponse = archiveResult
+
+    override suspend fun getCodexDesktopStatus(): CodexDesktopStatusResponse = statusResult
+
+    override suspend fun getCodexDuplicateSessions(payload: CodexDesktopSyncRequest): CodexDuplicateSessionsResponse =
+        duplicateResult
+
+    override suspend fun mergeCodexDuplicateSessions(payload: CodexDesktopSyncRequest): CodexMergeDuplicateSessionsResponse =
+        mergeResult
+
+    override suspend fun restartCodexDesktop(): CodexDesktopScriptResponse = CodexDesktopScriptResponse(success = true)
 }
 
 private class FakeMachineStore(initial: List<Machine> = emptyList()) : MachineListStore {
@@ -1374,5 +1436,262 @@ class NewSessionViewModelTest {
         advanceUntilIdle()
         assertEquals("auto", vm.uiState.value.form.model)
         assertEquals("default", vm.uiState.value.form.permissionMode)
+    }
+
+    // ------------------------------------------------- codex import (A) --
+
+    private fun codexSession(
+        id: String,
+        title: String = "Session $id",
+        cwd: String? = "/repo",
+    ): CodexLocalSessionSummary = CodexLocalSessionSummary(
+        id = id,
+        title = title,
+        cwd = cwd,
+        file = "/rollout/$id.json",
+        modifiedAt = 1_700_000_000_000,
+    )
+
+    @Test
+    fun `codex import at create replaces spawn, resumes and emits the resumed id`() = runTest {
+        val gateway = FakeGateway().apply {
+            codexSessionsResult = CodexLocalSessionsResponse(
+                success = true,
+                sessions = listOf(codexSession("thread-1")),
+            )
+            syncResult = CodexDesktopScriptResponse(
+                success = true,
+                syncedCount = 1,
+                sessionIds = listOf("thread-1"),
+                hapiSessionIds = listOf("h-1"),
+            )
+        }
+        val prefs = FakePrefs()
+        val vmScope = newVmScope()
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), prefs, scope = vmScope)
+        advanceUntilIdle()
+
+        val spawnedIds = mutableListOf<String>()
+        vmScope.launch { vm.spawned.collect(spawnedIds::add) }
+
+        vm.setAgent("codex")
+        vm.setDirectory("/data/github/hapi")
+        advanceUntilIdle()
+        assertTrue(vm.uiState.value.canCreate)
+
+        vm.openCodexImportDialog()
+        advanceUntilIdle()
+        assertEquals(listOf<Pair<String?, String?>>("/data/github/hapi" to "m1"), gateway.codexSessionsCalls)
+
+        vm.codexImport.toggleSession("thread-1")
+        vm.codexImport.confirm() // exactly one checked row → inline select + close
+        advanceUntilIdle()
+        assertFalse(vm.codexImport.state.value.open)
+        assertEquals("thread-1", vm.codexImport.state.value.selectedSessionId)
+        // Selecting inline adopts the session cwd as the form directory.
+        assertEquals("/repo", vm.uiState.value.form.directory)
+        assertTrue(vm.uiState.value.canCreate)
+
+        vm.create()
+        advanceUntilIdle()
+
+        assertEquals(0, gateway.spawnCalls.size, "import replaces the spawn call")
+        val sync = gateway.syncCalls.single()
+        assertEquals(listOf("thread-1"), sync.sessionIds)
+        assertEquals("/repo", sync.cwd, "session cwd wins over the form directory")
+        assertEquals("m1", sync.machineId, "listing machine id backfilled from the load")
+        assertNull(sync.model, "model=auto is omitted")
+        assertNull(sync.modelReasoningEffort, "default effort is omitted")
+        assertNull(sync.serviceTier, "fast tier not visible")
+        assertEquals("default", sync.collaborationMode, "collaborationMode always sent")
+        assertEquals(false, sync.yolo)
+        assertEquals(listOf<Pair<String, String?>>("h-1" to null), gateway.resumeCalls, "default permission mode omits resume permissionMode")
+        assertEquals(listOf("s-resumed"), spawnedIds)
+        assertEquals(setOf("thread-1"), vm.codexImport.state.value.importedMarkers.keys)
+        assertEquals("m1", prefs.stored.lastMachineId)
+        assertTrue(prefs.draftCleared)
+    }
+
+    @Test
+    fun `codex import soft failure lands raw in the create error`() = runTest {
+        val gateway = FakeGateway().apply {
+            codexSessionsResult = CodexLocalSessionsResponse(
+                success = true,
+                sessions = listOf(codexSession("thread-1", cwd = null)),
+            )
+            syncResult = CodexDesktopScriptResponse(success = false, error = "boom")
+        }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs())
+        advanceUntilIdle()
+
+        vm.setAgent("codex")
+        vm.setDirectory("/data/work")
+        advanceUntilIdle()
+
+        vm.openCodexImportDialog()
+        advanceUntilIdle()
+        vm.codexImport.toggleSession("thread-1")
+        vm.codexImport.confirm()
+        advanceUntilIdle()
+        assertEquals("thread-1", vm.codexImport.state.value.selectedSessionId)
+
+        vm.create()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.syncCalls.size)
+        assertEquals(0, gateway.resumeCalls.size)
+        assertEquals("boom", vm.uiState.value.spawnError, "soft failure error is raw, not normalized")
+    }
+
+    @Test
+    fun `codex load failure surfaces on the inline section and clears context`() = runTest {
+        val gateway = FakeGateway().apply {
+            codexSessionsThrows = RuntimeException("rpc down")
+        }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs())
+        advanceUntilIdle()
+
+        vm.setAgent("codex")
+        vm.setDirectory("/data/work")
+        vm.openCodexImportDialog()
+        advanceUntilIdle()
+
+        val state = vm.codexImport.state.value
+        assertTrue(state.open)
+        assertTrue(state.sessions.isEmpty())
+        assertNull(state.machineId)
+        assertEquals("rpc down", state.error)
+        assertEquals("rpc down", vm.uiState.value.codexImport.error)
+    }
+
+    @Test
+    fun `switching away from codex clears import state`() = runTest {
+        val gateway = FakeGateway().apply {
+            codexSessionsResult = CodexLocalSessionsResponse(
+                success = true,
+                sessions = listOf(codexSession("thread-1")),
+            )
+        }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs())
+        advanceUntilIdle()
+
+        vm.setAgent("codex")
+        vm.setDirectory("/data/work")
+        vm.openCodexImportDialog()
+        advanceUntilIdle()
+        vm.codexImport.toggleSession("thread-1")
+        vm.codexImport.confirm()
+        advanceUntilIdle()
+        assertEquals("thread-1", vm.codexImport.state.value.selectedSessionId)
+
+        vm.setAgent("claude")
+        advanceUntilIdle()
+
+        val state = vm.codexImport.state.value
+        assertFalse(state.open)
+        assertTrue(state.sessions.isEmpty())
+        assertNull(state.selectedSessionId)
+        assertNull(state.error)
+        assertNull(state.machineId)
+    }
+
+    @Test
+    fun `machine change drops the codex listing context`() = runTest {
+        val gateway = FakeGateway().apply {
+            codexSessionsResult = CodexLocalSessionsResponse(
+                success = true,
+                sessions = listOf(codexSession("thread-1")),
+                machineId = "m1",
+            )
+        }
+        val vm = buildViewModel(
+            gateway,
+            FakeMachineStore(listOf(machine("m1", workspaceRoots = listOf("/data")), machine("m2"))),
+            FakePrefs(),
+        )
+        advanceUntilIdle()
+
+        vm.setAgent("codex")
+        vm.setDirectory("/data/work")
+        vm.openCodexImportDialog()
+        advanceUntilIdle()
+        assertEquals("m1", vm.codexImport.state.value.machineId)
+
+        vm.setMachine("m2")
+        advanceUntilIdle()
+
+        val state = vm.codexImport.state.value
+        assertTrue(state.sessions.isEmpty())
+        assertNull(state.machineId)
+        assertNull(state.selectedSessionId)
+    }
+
+    // ------------------------------------------------- duplicate merge (B) --
+
+    @Test
+    fun `bulk import with duplicates emits the merge redirect via spawned`() = runTest {
+        val gateway = FakeGateway().apply {
+            codexSessionsResult = CodexLocalSessionsResponse(
+                success = true,
+                sessions = listOf(codexSession("thread-1"), codexSession("thread-2")),
+                machineId = "m1",
+            )
+            syncResult = CodexDesktopScriptResponse(
+                success = true,
+                syncedCount = 2,
+                sessionIds = listOf("thread-1", "thread-2"),
+                hapiSessionIds = listOf("h-1", "h-2"),
+            )
+            duplicateResult = CodexDuplicateSessionsResponse(
+                success = true,
+                duplicates = listOf(
+                    CodexDuplicateSessionGroup(
+                        codexSessionId = "thread-1",
+                        hapiSessionIds = listOf("h-1", "h-2"),
+                        canonicalSessionId = "h-1",
+                    ),
+                ),
+            )
+            mergeResult = CodexMergeDuplicateSessionsResponse(
+                success = true,
+                merged = listOf(
+                    CodexDuplicateSessionGroup(
+                        codexSessionId = "thread-1",
+                        hapiSessionIds = listOf("h-1", "h-2"),
+                        canonicalSessionId = "h-9",
+                    ),
+                ),
+                mergedCount = 1,
+            )
+        }
+        val vmScope = newVmScope()
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs(), scope = vmScope)
+        advanceUntilIdle()
+
+        val spawnedIds = mutableListOf<String>()
+        vmScope.launch { vm.spawned.collect(spawnedIds::add) }
+
+        vm.setAgent("codex")
+        vm.setDirectory("/repo")
+        vm.openCodexImportDialog()
+        advanceUntilIdle()
+
+        vm.codexImport.toggleSession("thread-1")
+        vm.codexImport.toggleSession("thread-2")
+        vm.codexImport.confirm()
+        advanceUntilIdle()
+
+        // Import closed the dialog; detection armed the confirm.
+        val state = vm.codexImport.state.value
+        assertFalse(state.open)
+        assertTrue(state.duplicateMergeConfirmOpen)
+        assertNull(state.duplicateDetectError)
+        assertNull(vm.uiState.value.codexImport.duplicateDetectError)
+
+        vm.mergeDuplicateCodexSessions()
+        advanceUntilIdle()
+
+        assertEquals(listOf("h-9"), spawnedIds, "merge redirect rides the spawned one-shot")
+        assertFalse(vm.codexImport.state.value.duplicateMergeConfirmOpen)
     }
 }
