@@ -87,6 +87,9 @@ zxing-android-embedded = { group = "com.journeyapps", name = "zxing-android-embe
 
 # Image loading (generated images ride the authed hub OkHttp client).
 coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }
+# SVG decode (AndroidSVG) for the shared zoomable viewer: files viewer, chat
+# generated images, scratchlist attachments. Same version line as Coil itself.
+coil-svg = { group = "io.coil-kt", name = "coil-svg", version.ref = "coil" }
 
 # Push (B-M4a): FCM transport + expedited workers for notification actions.
 androidx-work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "workManager" }

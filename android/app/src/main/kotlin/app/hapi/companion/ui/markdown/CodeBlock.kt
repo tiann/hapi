@@ -7,18 +7,23 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -69,15 +74,22 @@ private object HighlightCache {
     }
 }
 
+/** Web useCodeWrap twin: one app-wide persisted toggle; previews/tests keep the inert default. */
+class CodeWrapState(val wrap: Boolean, val onToggle: (Boolean) -> Unit)
+
+val LocalCodeWrap = staticCompositionLocalOf { CodeWrapState(wrap = false, onToggle = {}) }
+
 /**
- * Fenced-code surface: language chip + copy button header, horizontally
- * scrolling monospaced body with `highlights`-based syntax coloring computed
- * off the main thread ([produceState] + LRU cache). Long blocks (>
- * [MAX_HIGHLIGHT_LINES] lines) and unknown languages stay plain.
+ * Fenced-code surface: language chip + wrap/copy buttons header, monospaced
+ * body with `highlights`-based syntax coloring computed off the main thread
+ * ([produceState] + LRU cache). Long blocks ([MAX_HIGHLIGHT_LINES] lines+)
+ * and unknown languages stay plain. The body wraps at container width when
+ * [LocalCodeWrap] is on, else scrolls horizontally (web `Pre` twin).
  */
 @Composable
 fun CodeBlock(code: String, language: String?, modifier: Modifier = Modifier) {
     val colors = MaterialTheme.hapi
+    val codeWrap = LocalCodeWrap.current
 
     Column(
         modifier = modifier
@@ -104,22 +116,48 @@ fun CodeBlock(code: String, language: String?, modifier: Modifier = Modifier) {
                 // away from the trailing edge (weight(fill = false) did).
                 modifier = Modifier.weight(1f),
             )
+            IconButton(
+                onClick = { codeWrap.onToggle(!codeWrap.wrap) },
+                modifier = Modifier.size(48.dp),
+            ) {
+                Icon(
+                    painterResource(R.drawable.ic_wrap_text),
+                    stringResource(if (codeWrap.wrap) R.string.code_wrap_disable else R.string.code_wrap_enable),
+                    Modifier.size(18.dp),
+                    // Active state reads as on-surface; idle matches the label.
+                    tint = if (codeWrap.wrap) MaterialTheme.colorScheme.onSurface else colors.codeHeaderForeground,
+                )
+            }
             FullTextAction(code, compact = true)
         }
         val highlighted = rememberHighlightedCode(code, language, colors.isDark)
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-        ) {
-            Text(
-                text = highlighted,
-                fontFamily = FontFamily.Monospace,
-                fontSize = 14.sp,
-                lineHeight = 20.sp,
-                softWrap = false,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            )
+        if (codeWrap.wrap) {
+            // Web pre-wrap + break-word: soft wraps at container width.
+            Box(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = highlighted,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    softWrap = true,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                )
+            }
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+            ) {
+                Text(
+                    text = highlighted,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    softWrap = false,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                )
+            }
         }
     }
 }

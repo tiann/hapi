@@ -1,0 +1,22 @@
+<!-- Lucide wrap-text (web icons.tsx WrapIcon): lines with a wrap-around
+     arrow on the last line. Stroke-only, tinted by Icon's LocalContentColor. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path
+        android:strokeColor="#000000" android:strokeWidth="2"
+        android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:pathData="M3,6L21,6" />
+    <path
+        android:strokeColor="#000000" android:strokeWidth="2"
+        android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:pathData="M3,12L16,12 A3,3 0 0 1 16,18 L12,18" />
+    <path
+        android:strokeColor="#000000" android:strokeWidth="2"
+        android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:pathData="M15,15L12,18L15,21" />
+    <path
+        android:strokeColor="#000000" android:strokeWidth="2"
+        android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:pathData="M3,18L7,18" />
+</vector>

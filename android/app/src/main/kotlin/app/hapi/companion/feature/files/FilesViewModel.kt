@@ -5,15 +5,19 @@ import app.hapi.protocol.git.GitStatusParser
 import app.hapi.protocol.wire.DirectoryEntry
 import app.hapi.protocol.wire.FileSearchItem
 import app.hapi.protocol.wire.GitCommandResponse
+import app.hapi.protocol.wire.SessionSummary
+import java.util.Base64
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -70,6 +74,16 @@ data class SearchUiState(
     val searched: Boolean = false,
 )
 
+/** Directory-row download pipeline (web `DirectoryTree` `downloadingPath`). */
+data class DownloadsUiState(
+    /** Path currently being fetched; also single-flights new requests. */
+    val inFlightPath: String? = null,
+    /** Completed fetch waiting for the SAF picker; consumed by the UI. */
+    val ready: FileDownload? = null,
+    /** Populated when a fetch failed; cleared by [FilesViewModel.clearDownloadError]. */
+    val error: String? = null,
+)
+
 /**
  * Fallback strings the files ViewModel needs (B-M5a Strings seam): defaults
  * are the pre-i18n English (JVM tests construct without arguments); production
@@ -83,6 +97,8 @@ class FilesStrings(
     val unknownError: String = "unknown error",
     val listDirectoryFailed: String = "Failed to list directory",
     val searchFailed: String = "Failed to search files",
+    val downloadFailedTitle: String = "Download failed",
+    val downloadFailedDefault: String = "Failed to download file.",
 )
 
 /**
@@ -99,6 +115,18 @@ class FilesViewModel(
     private val scope: CoroutineScope,
     private val strings: FilesStrings = FilesStrings(),
     private val searchDebounceMs: Long = SEARCH_DEBOUNCE_MS,
+    /** Sort used until [sortSource]'s first emission (web reads localStorage sync). */
+    initialSort: DirectorySort = DirectorySort.DEFAULT,
+    /** Persisted sort (web localStorage `hapi-directory-sort`); applied until the user overrides it. */
+    private val sortSource: Flow<DirectorySort> = emptyFlow(),
+    /** Persistence hook invoked on user-driven sort changes. */
+    private val onSortChanged: suspend (DirectorySort) -> Unit = {},
+    /** Persisted expanded-directory set (web sessionStorage `hapi-dir-expanded-{sessionId}`); applied on start until the user toggles. */
+    private val expandedSource: Flow<Set<String>> = emptyFlow(),
+    /** Persistence hook invoked on every user-driven expand/collapse (web writes on each change). */
+    private val onExpandedChanged: suspend (Set<String>) -> Unit = {},
+    /** Session summaries for the workspace root (absolute-path copies). */
+    private val sessions: Flow<List<SessionSummary>> = emptyFlow(),
 ) {
     private val changesState = MutableStateFlow(ChangesUiState())
     val changes: StateFlow<ChangesUiState> = changesState.asStateFlow()
@@ -109,6 +137,20 @@ class FilesViewModel(
     private val searchState = MutableStateFlow(SearchUiState())
     val search: StateFlow<SearchUiState> = searchState.asStateFlow()
 
+    private val sortState = MutableStateFlow(initialSort)
+    /** Current tree/search sort (web `directorySort` state + localStorage twin). */
+    val sort: StateFlow<DirectorySort> = sortState.asStateFlow()
+
+    private val downloadsState = MutableStateFlow(DownloadsUiState())
+    val downloads: StateFlow<DownloadsUiState> = downloadsState.asStateFlow()
+
+    private val workspacePathState = MutableStateFlow<String?>(null)
+    /**
+     * The session's working directory (`session.metadata.path`), resolving the
+     * "Copy absolute path" menu item (web `resolveAbsoluteFilePath` input).
+     */
+    val workspacePath: StateFlow<String?> = workspacePathState.asStateFlow()
+
     /** null = never requested; entries null while loading. */
     private data class DirNode(val entries: List<DirectoryEntry>? = null, val error: String? = null) {
         val loading: Boolean get() = entries == null && error == null
@@ -117,6 +159,11 @@ class FilesViewModel(
     private val nodes = MutableStateFlow<Map<String, DirNode>>(emptyMap())
     private val expanded = MutableStateFlow<Set<String>>(emptySet())
     private val queryInput = MutableStateFlow("")
+    /** Latest raw search results, re-sorted in place when the sort changes. */
+    private var latestResults: List<FileSearchItem> = emptyList()
+    private var sortOverridden = false
+    /** First user expand/collapse stops the persisted set from re-applying. */
+    private var expandedOverridden = false
     private var started = false
 
     fun start() {
@@ -127,11 +174,37 @@ class FilesViewModel(
         scope.launch {
             queryInput.collectLatest { query ->
                 if (query.isBlank()) {
+                    latestResults = emptyList()
                     searchState.value = SearchUiState(query = query)
                     return@collectLatest
                 }
                 delay(searchDebounceMs)
                 runSearch(query)
+            }
+        }
+        scope.launch {
+            sortSource.collect { persisted ->
+                if (!sortOverridden && persisted != sortState.value) {
+                    applySort(persisted)
+                }
+            }
+        }
+        scope.launch {
+            // Web reads the expand set once on tree mount (DirectoryTree
+            // useState initializer); the async read applies it here, then
+            // loads each restored directory's children.
+            expandedSource.collect { stored ->
+                if (!expandedOverridden && stored != expanded.value) {
+                    expanded.value = stored
+                    rebuildBrowse()
+                    for (path in stored) loadDirectory(path)
+                }
+            }
+        }
+        scope.launch {
+            sessions.collect { summaries ->
+                val path = summaries.firstOrNull { it.id == sessionId }?.metadata?.path
+                if (path != workspacePathState.value) workspacePathState.value = path
             }
         }
     }
@@ -208,6 +281,9 @@ class FilesViewModel(
     fun toggleDirectory(path: String) {
         val wasExpanded = path in expanded.value
         expanded.update { if (wasExpanded) it - path else it + path }
+        expandedOverridden = true
+        val current = expanded.value
+        scope.launch { onExpandedChanged(current) }
         if (!wasExpanded && nodes.value[path] == null) {
             loadDirectory(path)
         } else {
@@ -218,6 +294,22 @@ class FilesViewModel(
     fun setShowHidden(showHidden: Boolean) {
         browseState.update { it.copy(showHidden = showHidden) }
         rebuildBrowse()
+    }
+
+    /** User-driven sort change (menu tap): applies immediately and persists. */
+    fun setSort(sort: DirectorySort) {
+        sortOverridden = true
+        if (sort == sortState.value) return
+        applySort(sort)
+        scope.launch { onSortChanged(sort) }
+    }
+
+    private fun applySort(sort: DirectorySort) {
+        sortState.value = sort
+        rebuildBrowse()
+        if (latestResults.isNotEmpty()) {
+            searchState.update { it.copy(results = DirectorySortLogic.sortSearchItems(latestResults, sort)) }
+        }
     }
 
     /** Re-lists the root and every expanded directory. */
@@ -262,7 +354,7 @@ class FilesViewModel(
                 val showHidden = browseState.value.showHidden
                 val visible = node.entries.orEmpty()
                     .filter { showHidden || !it.name.startsWith(".") }
-                    .sortedWith(DIRS_FIRST_BY_NAME)
+                    .sortedWith(DirectorySortLogic.entriesComparator(sortState.value))
                 for (entry in visible) {
                     val childPath = if (path.isEmpty()) entry.name else "$path/${entry.name}"
                     when (entry.type) {
@@ -296,10 +388,19 @@ class FilesViewModel(
         searchState.update { it.copy(loading = true, error = null) }
         try {
             val response = gateway.searchFiles(sessionId, query, SEARCH_LIMIT)
-            searchState.update {
-                if (response.success) {
-                    it.copy(loading = false, results = response.files.orEmpty(), error = null, searched = true)
-                } else {
+            if (response.success) {
+                latestResults = response.files.orEmpty()
+                searchState.update {
+                    it.copy(
+                        loading = false,
+                        results = DirectorySortLogic.sortSearchItems(latestResults, sortState.value),
+                        error = null,
+                        searched = true,
+                    )
+                }
+            } else {
+                latestResults = emptyList()
+                searchState.update {
                     it.copy(
                         loading = false,
                         results = emptyList(),
@@ -311,6 +412,7 @@ class FilesViewModel(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            latestResults = emptyList()
             searchState.update {
                 it.copy(
                     loading = false,
@@ -322,16 +424,64 @@ class FilesViewModel(
         }
     }
 
+    // ------------------------------------------------------------ download --
+
+    /**
+     * Fetches [path]'s bytes for a directory-row download (web
+     * `DirectoryTree.handleDownload`: `readSessionFile` → save; one download
+     * at a time). On success [DownloadsUiState.ready] carries the payload for
+     * the SAF picker; failures land in [DownloadsUiState.error].
+     */
+    fun downloadFile(path: String, fileName: String) {
+        if (downloadsState.value.inFlightPath != null || downloadsState.value.ready != null) return
+        downloadsState.value = DownloadsUiState(inFlightPath = path)
+        scope.launch {
+            val state = try {
+                val response = gateway.readFile(sessionId, path)
+                when {
+                    !response.success || response.content == null -> failureState(response.error)
+                    else -> {
+                        val bytes = try {
+                            Base64.getMimeDecoder().decode(response.content)
+                        } catch (_: IllegalArgumentException) {
+                            null
+                        }
+                        if (bytes == null) {
+                            failureState(null)
+                        } else {
+                            DownloadsUiState(ready = FileDownload(fileName, FileDownloads.FALLBACK_MIME, bytes))
+                        }
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                failureState(e.message)
+            }
+            downloadsState.value = state
+        }
+    }
+
+    /** Clears a consumed payload after the SAF picker resolved (or was cancelled). */
+    fun consumeReadyDownload() {
+        if (downloadsState.value.ready != null) {
+            downloadsState.update { DownloadsUiState() }
+        }
+    }
+
+    fun clearDownloadError() {
+        downloadsState.update { it.copy(error = null) }
+    }
+
+    private fun failureState(detail: String?): DownloadsUiState = DownloadsUiState(
+        error = detail?.takeIf { it.isNotBlank() } ?: strings.downloadFailedDefault,
+    )
+
     private companion object {
         const val ROOT = ""
         const val SEARCH_DEBOUNCE_MS = 300L
 
         /** Web default limit (`useSessionFileSearch`). */
         const val SEARCH_LIMIT = 200
-
-        /** Dirs first, then case-insensitive name — web `sortDirectoryEntries` default. */
-        val DIRS_FIRST_BY_NAME: Comparator<DirectoryEntry> =
-            compareBy<DirectoryEntry> { it.type != "directory" }
-                .thenBy(String.CASE_INSENSITIVE_ORDER) { it.name }
     }
 }

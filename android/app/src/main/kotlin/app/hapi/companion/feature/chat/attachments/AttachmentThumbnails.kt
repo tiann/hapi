@@ -51,6 +51,26 @@ fun rememberChipThumbnail(previewBytes: ByteArray?): ImageBitmap? = remember(pre
     previewBytes?.let { decodeDownsampled(it, AttachmentPolicy.PREVIEW_MAX_DIMENSION) }
 }
 
+/**
+ * Full-resolution decode of a wire `previewUrl` for the zoomable viewer:
+ * bubble thumbnails are downsampled to the 512 px cap, but zooming (the web
+ * viewer shows the original) wants the source pixels. Compose this only while
+ * the viewer is open; the caller falls back to its thumbnail when null.
+ */
+@Composable
+fun rememberFullPreviewImage(previewUrl: String?): State<ImageBitmap?> =
+    produceState<ImageBitmap?>(initialValue = null, previewUrl) {
+        if (previewUrl == null) return@produceState
+        value = withContext(Dispatchers.Default) {
+            val bytes = AttachmentPolicy.bytesFromDataUrl(previewUrl)
+            try {
+                bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }?.asImageBitmap()
+            } catch (_: OutOfMemoryError) {
+                null
+            }
+        }
+    }
+
 private fun decodeDownsampled(bytes: ByteArray, maxDimension: Int): ImageBitmap? {
     return try {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
