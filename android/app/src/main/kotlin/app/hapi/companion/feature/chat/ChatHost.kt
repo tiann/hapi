@@ -31,7 +31,7 @@ import app.hapi.companion.feature.chat.blocks.*
 import app.hapi.companion.feature.chat.composer.DictationController
 import app.hapi.companion.ui.markdown.LocalMarkdownLinkHandler
 import app.hapi.companion.ui.markdown.LocalMarkdownRenderCache
-import app.hapi.companion.ui.theme.HapiTypography
+import app.hapi.companion.ui.theme.LocalHapiTypeStyles
 import app.hapi.companion.ui.theme.ReadingColumn
 import app.hapi.protocol.chat.*
 import kotlinx.coroutines.launch
@@ -196,7 +196,7 @@ private fun InspectionScaffold(
 private fun InspectionNotice(stale: Boolean, incomplete: Boolean = false) {
     if (stale || incomplete) Text(
         stringResource(if (stale) R.string.chat_snapshot_notice else R.string.chat_group_history_notice),
-        style = HapiTypography.caption, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        style = LocalHapiTypeStyles.current.caption, color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(vertical = 8.dp).testTag("inspection-notice"),
     )
 }
@@ -273,7 +273,7 @@ internal fun MessageReader(text: String, stale: Boolean, back: () -> Unit, close
         ReadingColumn(Modifier.padding(padding).fillMaxSize().verticalScroll(scroll)) {
             Column(Modifier.padding(vertical = 16.dp)) {
                 InspectionNotice(stale)
-                SelectionContainer { Text(page.text, style = HapiTypography.body, modifier = Modifier.testTag("reader-text")) }
+                SelectionContainer { Text(page.text, style = LocalHapiTypeStyles.current.body, modifier = Modifier.testTag("reader-text")) }
             }
         }
     }

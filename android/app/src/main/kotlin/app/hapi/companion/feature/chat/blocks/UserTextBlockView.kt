@@ -34,7 +34,7 @@ import app.hapi.companion.R
 import app.hapi.companion.feature.chat.LocalChatInteractions
 import app.hapi.companion.feature.chat.LocalChatInspection
 import app.hapi.companion.feature.chat.messagePreview
-import app.hapi.companion.ui.theme.HapiTypography
+import app.hapi.companion.ui.theme.LocalHapiTypeStyles
 import app.hapi.companion.feature.chat.attachments.PreviewImage
 import app.hapi.companion.feature.chat.attachments.rememberPreviewImage
 import app.hapi.companion.ui.theme.HapiTheme
@@ -66,7 +66,7 @@ fun UserTextBlockView(block: UserTextBlock, modifier: Modifier = Modifier) {
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                         SelectionContainer {
-                            Text(text = preview.text, style = HapiTypography.body)
+                            Text(text = preview.text, style = LocalHapiTypeStyles.current.body)
                         }
                         if (preview.end < block.text.length) {
                             TextButton(onClick = { inspection?.openMessage(block.id) }, enabled = inspection != null) {

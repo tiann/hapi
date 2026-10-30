@@ -77,6 +77,7 @@ import app.hapi.companion.feature.sessions.DeleteSessionDialog
 import app.hapi.companion.feature.sessions.RenameSessionDialog
 import app.hapi.companion.ui.markdown.LocalMarkdownRenderCache
 import app.hapi.companion.ui.markdown.LocalMarkdownLinkHandler
+import app.hapi.companion.ui.theme.LocalHapiTypeStyles
 import app.hapi.companion.ui.theme.hapi
 import java.io.File
 import kotlinx.coroutines.launch
@@ -557,7 +558,7 @@ private fun ChatTitle(header: ChatHeaderUi, reconnecting: Boolean, retry: () -> 
         // Always reserve the subtitle slot; reconnect phases never resize the transcript.
         Text(
             if (reconnecting) stringResource(R.string.chat_reconnecting_retry) else header.subtitle.orEmpty(),
-            style = app.hapi.companion.ui.theme.HapiTypography.caption,
+            style = LocalHapiTypeStyles.current.caption,
             color = if (reconnecting) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1, overflow = TextOverflow.Ellipsis,
         )

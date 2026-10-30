@@ -33,6 +33,7 @@ import app.hapi.companion.feature.chat.LocalChatInteractions
 import app.hapi.companion.feature.chat.permissions.PermissionVerdictLabel
 import app.hapi.companion.feature.chat.permissions.PermissionVerdicts
 import app.hapi.companion.ui.theme.HapiTheme
+import app.hapi.companion.ui.theme.LocalHapiTypeStyles
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.ChatToolCall
 import app.hapi.protocol.chat.ToolCallBlock
@@ -135,7 +136,7 @@ internal fun ToolSummaryRow(
             Column(Modifier.weight(1f)) {
                 Text(presentation.title, style = MaterialTheme.typography.bodyMedium, maxLines = if (stacked) 2 else 1, overflow = TextOverflow.Ellipsis)
                 presentation.subtitle?.let {
-                    Text(it, style = app.hapi.companion.ui.theme.HapiTypography.caption,
+                    Text(it, style = LocalHapiTypeStyles.current.caption,
                         color = MaterialTheme.hapi.hint, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
             }

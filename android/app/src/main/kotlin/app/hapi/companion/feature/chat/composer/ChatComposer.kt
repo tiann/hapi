@@ -64,6 +64,7 @@ import app.hapi.companion.feature.chat.attachments.ComposerAttachmentStatus
 import app.hapi.companion.feature.chat.attachments.ComposerAttachmentUi
 import app.hapi.companion.feature.chat.attachments.rememberChipThumbnail
 import app.hapi.companion.ui.theme.HapiTheme
+import app.hapi.companion.ui.theme.LocalHapiTypeStyles
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.wire.SlashCommand
 import kotlinx.coroutines.delay
@@ -157,7 +158,7 @@ fun ChatComposer(
                         value = state.text,
                         enabled = !state.isImportingShare,
                         onValueChange = onTextChange,
-                        textStyle = app.hapi.companion.ui.theme.HapiTypography.body.copy(
+                        textStyle = LocalHapiTypeStyles.current.body.copy(
                             color = MaterialTheme.colorScheme.onSurface,
                         ),
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),

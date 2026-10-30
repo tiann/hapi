@@ -17,9 +17,11 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
@@ -164,6 +166,7 @@ private fun TestScope.buildViewModel(
     sessions: FakeSessionStore = FakeSessionStore(),
     machines: FakeMachineStore = FakeMachineStore(),
     zoneProvider: () -> ZoneId = { ZoneId.of("UTC") },
+    showActiveSessionsOnly: Flow<Boolean> = flowOf(false),
 ): Triple<SessionListViewModel, FakeSessionStore, FakeMachineStore> {
     val viewModel = SessionListViewModel(
         sessionStore = sessions,
@@ -172,6 +175,7 @@ private fun TestScope.buildViewModel(
         scope = backgroundScope,
         hubKey = "hub-test",
         zoneProvider = zoneProvider,
+        showActiveSessionsOnly = showActiveSessionsOnly,
     )
     return Triple(viewModel, sessions, machines)
 }
@@ -774,5 +778,55 @@ class SessionListViewModelTest {
         )
         val state = viewModel.uiState.first { it.rows.size == 3 }
         assertEquals(setOf("named-stub", "content", "agent-stub"), state.rows.map { it.id }.toSet())
+    }
+
+    // ----------------------------------- P2 display: active-only lens --
+
+    @Test
+    fun `active sessions only hides inactive rows but keeps the selected one`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel(showActiveSessionsOnly = MutableStateFlow(true))
+        sessions.set(
+            summary("live", active = true, updatedAt = dayMillis),
+            summary("dead", updatedAt = dayMillis - 86_400_000L),
+            summary("selected-dead", updatedAt = dayMillis - 2 * 86_400_000L),
+        )
+        viewModel.onSessionOpened("selected-dead")
+
+        val state = viewModel.uiState.first { it.rows.isNotEmpty() }
+        // Web `filterActiveSessionsOnly`: active rows plus the open session —
+        // the lens must never yank the selection out from under the operator.
+        assertEquals(setOf("live", "selected-dead"), state.rows.map { it.id }.toSet())
+        // The activity marks follow the lensed corpus (web derives
+        // `sessionActivityDates` from `allSessions`, post active-only).
+        assertEquals(setOf(day, day - 2), state.dateActivityEpochDays)
+    }
+
+    @Test
+    fun `active sessions only defaults to the full list`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("live", active = true, updatedAt = dayMillis),
+            summary("dead", updatedAt = dayMillis - 86_400_000L),
+        )
+        val state = viewModel.uiState.first { it.rows.size == 2 }
+        assertEquals(setOf("live", "dead"), state.rows.map { it.id }.toSet())
+        assertEquals(setOf(day, day - 1), state.dateActivityEpochDays)
+    }
+
+    @Test
+    fun `toggling the active-only lens re-hides and re-shows rows`() = runTest {
+        val lens = MutableStateFlow(false)
+        val (viewModel, sessions, _) = buildViewModel(showActiveSessionsOnly = lens)
+        sessions.set(summary("live", active = true, updatedAt = dayMillis), summary("dead", updatedAt = dayMillis))
+
+        val full = viewModel.uiState.first { it.rows.size == 2 }
+        assertEquals(setOf("live", "dead"), full.rows.map { it.id }.toSet())
+
+        lens.value = true
+        val activeOnly = viewModel.uiState.first { it.rows.size == 1 }
+        assertEquals(listOf("live"), activeOnly.rows.map { it.id })
+
+        lens.value = false
+        viewModel.uiState.first { it.rows.size == 2 }
     }
 }
