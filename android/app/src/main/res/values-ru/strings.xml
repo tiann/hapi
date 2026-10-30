@@ -299,6 +299,7 @@
     <string name="chat_composer_stop_recording">Остановить запись</string>
     <string name="chat_composer_send">Отправить</string>
     <string name="chat_composer_abort">Остановить текущий ход</string>
+    <string name="chat_mention_suggestions">Предложения упоминаний</string>
     <string name="chat_send_steer">Отправить и вклиниться в текущий ход</string>
     <string name="chat_queued_one">1 сообщение в очереди</string>
     <string name="chat_queued_many">Сообщений в очереди: %1$d</string>

@@ -306,6 +306,7 @@
     <string name="chat_composer_stop_recording">停止录音</string>
     <string name="chat_composer_send">发送</string>
     <string name="chat_composer_abort">中止当前回合</string>
+    <string name="chat_mention_suggestions">提及建议</string>
     <string name="chat_send_steer">发送并插入当前回合</string>
     <string name="chat_queued_one">1 条队列消息</string>
     <string name="chat_queued_many">%1$d 条队列消息</string>

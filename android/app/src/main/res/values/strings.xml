@@ -299,6 +299,7 @@
     <string name="chat_composer_stop_recording">Stop recording</string>
     <string name="chat_composer_send">Send</string>
     <string name="chat_composer_abort">Stop the current turn</string>
+    <string name="chat_mention_suggestions">Mention suggestions</string>
     <string name="chat_send_steer">Send &amp; steer into current turn</string>
     <string name="chat_queued_one">1 queued message</string>
     <string name="chat_queued_many">%1$d queued messages</string>
