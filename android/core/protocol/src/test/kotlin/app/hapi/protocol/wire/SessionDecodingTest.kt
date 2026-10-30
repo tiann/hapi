@@ -119,6 +119,42 @@ class SessionDecodingTest {
     }
 
     @Test
+    fun `decodes conversation history points and divergence flags`() {
+        val session = HapiJson.decodeFromString(
+            Session.serializer(),
+            """
+            {
+              "id": "sess-2",
+              "namespace": "default",
+              "seq": 3,
+              "createdAt": 1,
+              "updatedAt": 2,
+              "active": false,
+              "metadata": {
+                "path": "/data/github/hapi",
+                "host": "devbox",
+                "capabilities": {"conversationHistory": {"forkCurrent": false, "forkAtMessage": true, "rewindToMessage": true}},
+                "conversationHistoryPoints": {"msg-local-1": true, "msg-local-2": true},
+                "conversationHistoryDiverged": true
+              },
+              "metadataVersion": 1,
+              "agentStateVersion": 1,
+              "thinking": false,
+              "thinkingAt": 5
+            }
+            """
+        )
+        val metadata = assertNotNull(session.metadata)
+        val history = assertNotNull(metadata.capabilities?.conversationHistory)
+        // Nullable booleans — gate with `== true` (batch-16 merge lesson).
+        assertEquals(false, history.forkCurrent)
+        assertEquals(true, history.forkAtMessage)
+        assertEquals(true, history.rewindToMessage)
+        assertEquals(mapOf("msg-local-1" to true, "msg-local-2" to true), metadata.conversationHistoryPoints)
+        assertEquals(true, metadata.conversationHistoryDiverged)
+    }
+
+    @Test
     fun `decodes a sessions list response`() {
         val response = HapiJson.decodeFromString(
             SessionsResponse.serializer(),

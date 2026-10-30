@@ -95,6 +95,28 @@ data class ResumeSessionResponse(
 )
 
 /**
+ * `POST /api/sessions/:id/fork` — `{sessionId}` of the freshly spawned child
+ * session. Callers navigate to it; the current session is left untouched.
+ * Failure is HTTP 409 with a plain `{error}` body (no machine `code`).
+ */
+@Serializable
+data class ForkConversationResponse(
+    val sessionId: String,
+)
+
+/**
+ * `POST /api/sessions/:id/rewind` — `{success: true}` plus a `session`
+ * refresh. The authoritative transcript change also arrives via SSE
+ * (`messages-invalidated`); callers should force an authoritative reload.
+ * 409 bodies carry `{error, code?, hydrateFailed?}` — the only machine
+ * [code] is `ambiguous_native_boundary` (+ `_fork_safe` variant).
+ */
+@Serializable
+data class RewindConversationResponse(
+    val success: Boolean = true,
+)
+
+/**
  * `POST /api/sessions/:id/reopen` (`ReopenSessionResponseSchema`). Same
  * superseding-[sessionId] caveat as [ResumeSessionResponse].
  */

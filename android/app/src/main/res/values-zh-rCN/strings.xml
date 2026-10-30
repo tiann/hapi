@@ -293,6 +293,23 @@
     <string name="chat_notice_request_failed">请求失败</string>
     <string name="chat_notice_models_failed">加载模型失败</string>
     <string name="chat_notice_config_failed">更新会话失败</string>
+    <string name="chat_notice_fork_failed">分叉对话失败</string>
+    <string name="chat_notice_rewind_failed">回退对话失败</string>
+    <string name="chat_notice_rewind_diverged">回退结果未知 — 此会话的历史需要核对</string>
+
+    <!-- Conversation history: fork / rewind message actions (web message.fork.*) -->
+    <string name="chat_history_fork">分叉</string>
+    <string name="chat_history_fork_confirm_title">分叉对话</string>
+    <string name="chat_history_fork_confirm_description">从此处创建新会话？\n当前会话不会被修改。</string>
+    <string name="chat_history_fork_pending">分叉中…</string>
+    <string name="chat_history_rewind">回退</string>
+    <string name="chat_history_rewind_confirm_title">回退对话</string>
+    <string name="chat_history_rewind_confirm_description">将此会话回退到此处？\n之后的对话历史将永久移除。文件不会被修改。</string>
+    <string name="chat_history_rewind_pending">回退中…</string>
+    <string name="chat_history_rewind_fallback_title">暂时无法回退</string>
+    <string name="chat_history_rewind_fallback_description">由于 Codex 原生对话边界存在歧义，HAPI 没有修改当前会话。\n是否改为在此处创建新会话？当前会话不会被修改。</string>
+    <string name="chat_history_rewind_fallback_fork">在此处分叉</string>
+    <string name="chat_history_rewind_fallback_pending">分叉中…</string>
 
     <!-- Composer (B-M3a/ce/f) -->
     <string name="chat_composer_placeholder">输入消息…</string>

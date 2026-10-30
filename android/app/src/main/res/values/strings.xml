@@ -286,6 +286,23 @@
     <string name="chat_notice_request_failed">Request failed</string>
     <string name="chat_notice_models_failed">Failed to load models</string>
     <string name="chat_notice_config_failed">Failed to update session</string>
+    <string name="chat_notice_fork_failed">Failed to fork conversation</string>
+    <string name="chat_notice_rewind_failed">Failed to rewind conversation</string>
+    <string name="chat_notice_rewind_diverged">Rewind outcome is unknown — this session’s history needs reconciliation</string>
+
+    <!-- Conversation history: fork / rewind message actions (web message.fork.*) -->
+    <string name="chat_history_fork">Fork</string>
+    <string name="chat_history_fork_confirm_title">Fork conversation</string>
+    <string name="chat_history_fork_confirm_description">Create a new session from this point?\nThe current session will not be changed.</string>
+    <string name="chat_history_fork_pending">Forking…</string>
+    <string name="chat_history_rewind">Rewind</string>
+    <string name="chat_history_rewind_confirm_title">Rewind conversation</string>
+    <string name="chat_history_rewind_confirm_description">Rewind this session to this point?\nLater conversation history will be permanently removed. Files will not be changed.</string>
+    <string name="chat_history_rewind_pending">Rewinding…</string>
+    <string name="chat_history_rewind_fallback_title">Rewind unavailable</string>
+    <string name="chat_history_rewind_fallback_description">HAPI did not change this session because its native Codex boundary is ambiguous.\nCreate a new session before this point instead? The current session will not be changed.</string>
+    <string name="chat_history_rewind_fallback_fork">Fork here</string>
+    <string name="chat_history_rewind_fallback_pending">Forking…</string>
 
     <!-- Composer (B-M3a/ce/f) -->
     <string name="chat_composer_placeholder">Message the agent…</string>

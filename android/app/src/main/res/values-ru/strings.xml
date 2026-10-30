@@ -286,6 +286,23 @@
     <string name="chat_notice_request_failed">Запрос не выполнен</string>
     <string name="chat_notice_models_failed">Не удалось загрузить модели</string>
     <string name="chat_notice_config_failed">Не удалось обновить сессию</string>
+    <string name="chat_notice_fork_failed">Не удалось создать форк диалога</string>
+    <string name="chat_notice_rewind_failed">Не удалось откатить диалог</string>
+    <string name="chat_notice_rewind_diverged">Результат отката неизвестен — история этой сессии требует выверки</string>
+
+    <!-- Conversation history: fork / rewind message actions (web message.fork.*) -->
+    <string name="chat_history_fork">Форк</string>
+    <string name="chat_history_fork_confirm_title">Форк диалога</string>
+    <string name="chat_history_fork_confirm_description">Создать новую сессию с этого места?\nТекущая сессия не будет изменена.</string>
+    <string name="chat_history_fork_pending">Создание форка…</string>
+    <string name="chat_history_rewind">Откат</string>
+    <string name="chat_history_rewind_confirm_title">Откат диалога</string>
+    <string name="chat_history_rewind_confirm_description">Откатить эту сессию к этому месту?\nИстория диалога после этого момента будет удалена безвозвратно. Файлы изменены не будут.</string>
+    <string name="chat_history_rewind_pending">Откат…</string>
+    <string name="chat_history_rewind_fallback_title">Откат недоступен</string>
+    <string name="chat_history_rewind_fallback_description">HAPI не изменил эту сессию, поскольку её нативная граница Codex неоднозначна.\nСоздать новую сессию до этого места? Текущая сессия не будет изменена.</string>
+    <string name="chat_history_rewind_fallback_fork">Форк здесь</string>
+    <string name="chat_history_rewind_fallback_pending">Создание форка…</string>
 
     <!-- Composer (B-M3a/ce/f) -->
     <string name="chat_composer_placeholder">Сообщение агенту…</string>

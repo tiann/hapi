@@ -3,6 +3,7 @@ package app.hapi.companion.feature.chat
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -39,8 +40,13 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
+import app.hapi.companion.feature.chat.blocks.HistoryActionsRow
 import app.hapi.data.store.ChatHistoryPagingState
+import app.hapi.protocol.chat.CliOutputBlock
+import app.hapi.protocol.chat.UserTextBlock
 import app.hapi.protocol.chat.VisibleChatBlock
+import app.hapi.protocol.chat.threadKey
+import app.hapi.protocol.chat.visibleBlockRole
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.withContext
@@ -242,7 +248,34 @@ internal fun ChatTranscript(
                         .onSizeChanged { heights[row.id] = it.height }
                         .testTag("chat-row-" + row.id)
                     app.hapi.companion.ui.theme.ReadingColumn(modifier = rowModifier) {
-                        ChatBlockCard(block = row.block, basePath = state.basePath, processSteps = state.processSteps[row.id])
+                        // History actions ride under EVERY top-level row, not
+                        // just text blocks: the latest completed boundary can
+                        // head an assistant run with a tool group, reasoning,
+                        // generated image, codex review, or cli output (web
+                        // renders MessageActions on every message regardless
+                        // of block kind). Sidechain children (ChatHost) never
+                        // pass through here.
+                        val historyRole = visibleBlockRole(row.block)
+                        Column(
+                            horizontalAlignment =
+                                if (historyRole == "user") Alignment.End else Alignment.Start,
+                        ) {
+                            ChatBlockCard(block = row.block, basePath = state.basePath, processSteps = state.processSteps[row.id])
+                            // Only user-role rows consume the local id
+                            // (fork-at-message / rewind native points);
+                            // assistant gating keys off the block key alone.
+                            HistoryActionsRow(
+                                role = historyRole,
+                                localId = when (val block = row.block) {
+                                    is UserTextBlock -> block.localId
+                                    is CliOutputBlock -> block.localId
+                                    else -> null
+                                },
+                                blockKey = row.block.threadKey,
+                                modifier =
+                                    if (historyRole == "user") Modifier.padding(end = 4.dp) else Modifier,
+                            )
+                        }
                     }
                 }
             }
