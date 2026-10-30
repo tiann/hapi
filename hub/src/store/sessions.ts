@@ -150,6 +150,7 @@ type DbSessionRow = {
     machine_id: string | null
     created_at: number
     updated_at: number
+    last_user_message_at: number | null
     pinned: number
     global_pinned: number
     metadata: string | null
@@ -177,6 +178,7 @@ function toStoredSession(row: DbSessionRow): StoredSession {
         machineId: row.machine_id,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
+        lastUserMessageAt: row.last_user_message_at ?? undefined,
         pinned: row.pinned === 1,
         globalPinned: row.global_pinned === 1,
         metadata: safeJsonParse(row.metadata),

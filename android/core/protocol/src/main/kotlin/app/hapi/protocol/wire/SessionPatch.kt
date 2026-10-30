@@ -44,6 +44,7 @@ data class SessionPatch(
     val activeTurnStartedAt: OptionalField<Long?> = OptionalField.Absent,
     val activeAt: Long? = null,
     val updatedAt: Long? = null,
+    val lastUserMessageAt: Long? = null,
     val metadata: VersionedValue<SessionMetadata>? = null,
     val agentState: VersionedValue<AgentState>? = null,
     val todos: VersionedValue<List<TodoItem>>? = null,
@@ -62,7 +63,7 @@ data class SessionPatch(
 
 object SessionPatches {
     private val KNOWN_KEYS = setOf(
-        "active", "thinking", "activeTurnStartedAt", "activeAt", "updatedAt",
+        "active", "thinking", "activeTurnStartedAt", "activeAt", "updatedAt", "lastUserMessageAt",
         "metadata", "agentState", "todos", "teamState",
         "model", "modelReasoningEffort", "effort", "serviceTier",
         "permissionMode", "collaborationMode", "copilotAgentMode",
@@ -97,6 +98,7 @@ object SessionPatches {
                 activeTurnStartedAt = optionalNullableLong(obj, "activeTurnStartedAt") ?: return null,
                 activeAt = obj["activeAt"]?.let { it.longOrNull ?: return null },
                 updatedAt = obj["updatedAt"]?.let { it.longOrNull ?: return null },
+                lastUserMessageAt = obj["lastUserMessageAt"]?.let { it.longOrNull ?: return null },
                 metadata = obj["metadata"]?.let { wrapper ->
                     versioned(wrapper) { value ->
                         if (value is JsonNull) null

@@ -1067,6 +1067,9 @@ export class AppServerEventConverter {
 
                 if (method === 'item/completed') {
                     const meta = this.commandMeta.get(itemId) ?? {};
+                    // Completion snapshots can arrive without a start (reconnect or late shutdown).
+                    const command = extractCommand(item.command ?? item.cmd ?? item.args);
+                    const cwd = asString(item.cwd ?? item.workingDirectory ?? item.working_directory);
                     const output = asString(item.aggregatedOutput ?? item.aggregated_output ?? item.output ?? item.result ?? item.stdout)
                         ?? this.commandOutputBuffers.get(itemId);
                     const stderr = asString(item.stderr);
@@ -1079,6 +1082,8 @@ export class AppServerEventConverter {
                         type: 'exec_command_end',
                         call_id: itemId,
                         ...meta,
+                        ...(command ? { command } : {}),
+                        ...(cwd ? { cwd } : {}),
                         ...(output ? { output } : {}),
                         ...(stderr ? { stderr } : {}),
                         ...(error ? { error } : {}),

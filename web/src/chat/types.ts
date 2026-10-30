@@ -80,6 +80,7 @@ export type ToolResult = {
     tool_use_id: string
     content: unknown
     is_error: boolean
+    commandExecution?: { input: Record<string, unknown>; durationMs?: number }
     uuid: string
     parentUUID: string | null
     permissions?: ToolResultPermission
@@ -198,6 +199,10 @@ export type ChatToolCall = {
     createdAt: number
     startedAt: number | null
     completedAt: number | null
+    /** Native command duration, independent of message delivery timing. */
+    executionDurationMs?: number
+    /** A result-only command has no observed invocation timestamp. */
+    startUnavailable?: boolean
     /**
      * Execution-machine timestamps (from `NormalizedMessage.agentTimestamp`)
      * for the tool_use/tool_result entries, when available. Kept separate

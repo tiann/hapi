@@ -2,8 +2,8 @@ import Foundation
 import HapiProtocol
 
 /// `order` query of `GET /api/sessions`. The default (absent) order is the
-/// hub's ranked one (globalPinned → pinned → active → pending requests →
-/// recency); `updatedAt` switches to pure recency.
+/// hub's ranked one (globalPinned → pinned → user-input recency);
+/// `updatedAt` explicitly requests pure activity recency.
 public enum SessionsListOrder: String, Sendable {
     case updatedAt
 }

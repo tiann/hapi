@@ -51,6 +51,9 @@ function App() {
     const runtime = useLocalRuntime(model, { adapters: { attachments: adapter } })
     const [loaded, setLoaded] = useState(false)
     const [loading, setLoading] = useState(false)
+    const addAttachment = (name: string) => runtime.thread.composer.addAttachment(new File(['fixture'], name, {
+        type: name.endsWith('.png') ? 'image/png' : 'text/plain',
+    }))
     const loadAttachments = async () => {
         setLoading(true)
         try {
@@ -70,6 +73,9 @@ function App() {
                 <button type="button" disabled={loaded || loading} onClick={() => void loadAttachments()}>
                     Load attachments
                 </button>
+                <button type="button" onClick={() => void addAttachment('first.png')}>Add image</button>
+                <button type="button" onClick={() => void addAttachment('notes.txt')}>Add file</button>
+                <button type="button" onClick={() => void addAttachment('other.txt')}>Add second file</button>
                 <section aria-label="Sent" className="mb-4">
                     <MessageAttachments attachments={[{
                         id: 'sent', filename: 'sent.png', mimeType: 'image/png', size: 1, path: '/sent.png', previewUrl,

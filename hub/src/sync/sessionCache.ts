@@ -1,13 +1,16 @@
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
 import { AgentStateSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
-import type { Store } from '../store'
+import type { SessionTurnEndReason, SessionTurnTrigger, Store } from '../store'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
 import { resolveSessionIdleTimeoutMs, shouldClearKeepaliveIdle, shouldMarkKeepaliveIdle } from './sessionIdle'
 
 const QUEUED_MESSAGE_THINKING_GRACE_MS = 15_000
+// A turn the hub closed when it restarted is picked up again if the agent
+// carries on with it this soon after the restart, instead of starting a new one.
+const TURN_RECOVERY_WINDOW_MS = 10 * 60_000
 // tiann/hapi#919: metadata writers (renameSession, clearSessionArchiveMetadata,
 // restoreSessionArchiveMetadata) retry on version-mismatch with a fresh cache
 // snapshot. Cap retries so genuine concurrent contention still surfaces to the
@@ -30,6 +33,12 @@ export class SessionCache {
      * so a hub restart re-derives it from the last human turn on disk.
      */
     private readonly agentProgressAtBySessionId: Map<string, number> = new Map()
+    /**
+     * Sessions whose turn the previous hub process left open. It continues if
+     * the agent reports thinking before the hub sees it idle or a new prompt
+     * arrives; see `recordTurn`.
+     */
+    private readonly interruptedTurnSessionIds: Set<string> = new Set()
     private readonly sessionIdleTimeoutMs: number = resolveSessionIdleTimeoutMs()
 
     constructor(
@@ -43,6 +52,20 @@ export class SessionCache {
             onSessionMergedAway?: (oldSessionId: string, newSessionId: string) => void
         } = {}
     ) {
+    }
+
+    /**
+     * Closes turns the previous hub process left open; `thinking` starts out
+     * false here, so nothing else would. Call once at startup.
+     */
+    closeTurnsLeftOpen(now: number = Date.now()): void {
+        try {
+            for (const sessionId of this.store.turns.closeDangling(now, TURN_RECOVERY_WINDOW_MS)) {
+                this.interruptedTurnSessionIds.add(sessionId)
+            }
+        } catch (error) {
+            console.warn('[SessionCache] Failed to close turns left open', { error })
+        }
     }
 
     getSessions(): Session[] {
@@ -222,6 +245,7 @@ export class SessionCache {
             seq: stored.seq,
             createdAt: stored.createdAt,
             updatedAt: stored.updatedAt,
+            lastUserMessageAt: stored.lastUserMessageAt,
             pinned: stored.pinned,
             globalPinned: stored.globalPinned,
             active: existing?.active ?? stored.active,
@@ -357,11 +381,15 @@ export class SessionCache {
         }
 
         const patch = parsed.data
+        const wasThinking = session.thinking
 
         if (patch.active !== undefined) session.active = patch.active
         if (patch.thinking !== undefined) session.thinking = patch.thinking
         if (patch.activeAt !== undefined) session.activeAt = patch.activeAt
         if (patch.updatedAt !== undefined) session.updatedAt = Math.max(session.updatedAt, patch.updatedAt)
+        if (patch.lastUserMessageAt !== undefined) {
+            session.lastUserMessageAt = Math.max(session.lastUserMessageAt ?? 0, patch.lastUserMessageAt)
+        }
         if (patch.model !== undefined) session.model = patch.model
         if (patch.modelReasoningEffort !== undefined) session.modelReasoningEffort = patch.modelReasoningEffort
         if (patch.effort !== undefined) session.effort = patch.effort
@@ -389,6 +417,8 @@ export class SessionCache {
             session.agentState = patch.agentState.value
             session.agentStateVersion = patch.agentState.version
         }
+        if (patch.thinking === false) this.forgetInterruptedTurn(session.id)
+        this.recordTurn(session, wasThinking, Date.now(), 'patch', 'idle')
 
         return true
     }
@@ -441,6 +471,9 @@ export class SessionCache {
         if (requestedThinking || pendingThinkingUntil <= hubNow) {
             this.pendingThinkingUntilBySessionId.delete(session.id)
         }
+        // The agent says it's idle: whatever it does next is a new turn.
+        if (!requestedThinking) this.forgetInterruptedTurn(session.id)
+        this.recordTurn(session, wasThinking, hubNow, 'agent', 'idle')
         if (payload.permissionMode !== undefined && !this.isStaleRuntimeKeepAlive(session.id, 'permissionMode', t)) {
             session.permissionMode = payload.permissionMode
             this.persistPreferredPermissionMode(session, payload.permissionMode)
@@ -555,6 +588,7 @@ export class SessionCache {
         session.thinking = true
         session.thinkingAt = nextTime
         if (!wasThinking) session.activeTurnStartedAt = activeTurnStartedAt
+        this.recordTurn(session, wasThinking, session.activeTurnStartedAt ?? nextTime, 'hub_prompt', 'idle')
         session.updatedAt = Math.max(session.updatedAt, nextTime)
         this.pendingThinkingUntilBySessionId.set(session.id, nextTime + QUEUED_MESSAGE_THINKING_GRACE_MS)
         this.recordAgentProgress(session.id, nextTime)
@@ -573,6 +607,48 @@ export class SessionCache {
         }
     }
 
+    /**
+     * Persists a change of `thinking` as the start or end of a turn, so how
+     * long agents worked survives a hub restart. Never throws: losing a turn
+     * row must not break the keepalive path.
+     */
+    private recordTurn(
+        session: Session,
+        wasThinking: boolean,
+        at: number,
+        trigger: SessionTurnTrigger,
+        reason: SessionTurnEndReason
+    ): void {
+        if (wasThinking === session.thinking) return
+        try {
+            if (session.thinking) {
+                // Only the agent itself carrying on continues an interrupted
+                // turn; a new prompt starts a new one.
+                const resumed = trigger === 'agent'
+                    && this.interruptedTurnSessionIds.has(session.id)
+                    && this.store.turns.resumeInterrupted(session.id, at)
+                this.forgetInterruptedTurn(session.id)
+                if (!resumed) {
+                    this.store.turns.open(session.id, session.namespace, at, trigger)
+                }
+            } else {
+                this.store.turns.close(session.id, at, reason)
+            }
+        } catch (error) {
+            console.warn('[SessionCache] Failed to record turn', { sessionId: session.id, error })
+        }
+    }
+
+    /** The turn a restart interrupted can no longer continue. */
+    private forgetInterruptedTurn(sessionId: string): void {
+        if (!this.interruptedTurnSessionIds.delete(sessionId)) return
+        try {
+            this.store.turns.abandonRecovery(sessionId)
+        } catch (error) {
+            console.warn('[SessionCache] Failed to drop turn recovery', { sessionId, error })
+        }
+    }
+
     setBackgroundTasks(sessionId: string, tasks: BackgroundTask[]): void {
         const session = this.sessions.get(sessionId)
         if (!session) return
@@ -588,6 +664,24 @@ export class SessionCache {
             type: 'session-updated',
             sessionId,
             data: { backgroundTaskCount: tasks.length, backgroundTasks: tasks } satisfies SessionPatch
+        })
+    }
+
+    refreshLastUserMessageAt(sessionId: string): void {
+        const stored = this.store.sessions.getSession(sessionId)
+        if (stored?.lastUserMessageAt === undefined) return
+        const session = this.sessions.get(sessionId)
+        if (!session) {
+            this.refreshSession(sessionId)
+            return
+        }
+        if (stored.lastUserMessageAt <= (session.lastUserMessageAt ?? -Infinity)) return
+        session.lastUserMessageAt = stored.lastUserMessageAt
+        this.publisher.emit({
+            type: 'session-updated',
+            sessionId,
+            namespace: session.namespace,
+            data: { lastUserMessageAt: session.lastUserMessageAt } satisfies SessionPatch
         })
     }
 
@@ -766,16 +860,19 @@ export class SessionCache {
 
         const session = this.sessions.get(payload.sid) ?? this.refreshSession(payload.sid)
         if (!session) return
+        this.forgetInterruptedTurn(session.id)
 
         if (!session.active && !session.thinking) {
             return
         }
 
+        const wasThinking = session.thinking
         session.active = false
         this.store.sessions.setSessionActive(session.id, false, t, session.namespace)
         session.thinking = false
         session.thinkingAt = t
         session.activeTurnStartedAt = null
+        this.recordTurn(session, wasThinking, t, 'agent', 'session_end')
         session.backgroundTaskCount = 0
         session.backgroundTasks = []
         this.pendingThinkingUntilBySessionId.delete(session.id)
@@ -801,9 +898,12 @@ export class SessionCache {
             if (!session.active) continue
             const timeoutMs = session.thinking ? thinkingSessionTimeoutMs : sessionTimeoutMs
             if (now - session.activeAt <= timeoutMs) continue
+            const wasThinking = session.thinking
             session.active = false
             this.store.sessions.setSessionActive(session.id, false, now, session.namespace)
             session.thinking = false
+            // The last keepalive is the last time the agent was known to be working.
+            this.recordTurn(session, wasThinking, session.activeAt, 'agent', 'expired')
             this.pendingThinkingUntilBySessionId.delete(session.id)
             expired.push(session.id)
             this.publisher.emit({
@@ -1574,6 +1674,8 @@ export class SessionCache {
         }
 
         if (options.deleteOldSession) {
+            // Deleting the row cascades to its turns; they're the new row's history now.
+            this.store.turns.transferSession(oldSessionId, newSessionId)
             const deleted = this.store.sessions.deleteSession(oldSessionId, namespace)
             if (!deleted) {
                 throw new Error('Failed to delete old session during merge')

@@ -41,7 +41,8 @@ import { useSlashCommands } from '@/hooks/queries/useSlashCommands'
 import { useSkills } from '@/hooks/queries/useSkills'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { buildSessionReferenceText, matchSessionsForMention } from '@/lib/sessionReference'
-import type { Suggestion } from '@/hooks/useActiveSuggestions'
+import { createDeferredSuggestions } from '@/lib/deferredSuggestions'
+import type { Suggestion, SuggestionRequestContext } from '@/hooks/useActiveSuggestions'
 import { useSendMessage, type SendErrorInfo } from '@/hooks/mutations/useSendMessage'
 import type { ComposerSendError } from '@/components/AssistantChat/HappyComposer'
 import { ApiError } from '@/api/client'
@@ -731,7 +732,9 @@ function SessionPage() {
         return t('machine.unknown')
     }, [mentionMachineLabelsById, t])
 
-    const getAutocompleteSuggestions = useCallback(async (query: string) => {
+    const fileSuggestions = useMemo(() => createDeferredSuggestions(), [api, sessionId, agentType])
+
+    const getAutocompleteSuggestions = useCallback(async (query: string, context: SuggestionRequestContext) => {
         if (query.startsWith('@')) {
             const search = query.slice(1)
             // v1: plain-text expansion (same grammar as Copy reference) — #1213.
@@ -757,26 +760,29 @@ function SessionPage() {
                 }
             })
 
-            const fileHits: Suggestion[] = []
             if ((agentType === 'codex' || agentType === 'copilot') && api && sessionId) {
-                const response = await api.searchSessionFiles(sessionId, search, 50)
-                if (response.success && response.files) {
-                    for (const file of response.files) {
-                        // Codex App Server expects @"path"; Copilot CLI uses @path (relative preferred).
-                        const mentionText = agentType === 'copilot'
-                            ? `@${file.fullPath}`
-                            : `@"${file.fullPath.replace(/(["\\])/g, '\\$1')}"`
-                        fileHits.push({
-                            key: mentionText,
-                            text: mentionText,
-                            label: `@${file.fileName}`,
-                            description: file.filePath || file.fullPath,
-                        })
+                return fileSuggestions(JSON.stringify([sessionId, agentType, search]), sessionHits, async () => {
+                    const response = await api.searchSessionFiles(sessionId, search, 50, context.signal)
+                    if (!response.success) throw new Error(response.error ?? 'File search failed')
+                    const fileHits: Suggestion[] = []
+                    if (response.files) {
+                        for (const file of response.files) {
+                            // Codex App Server expects @"path"; Copilot CLI uses @path (relative preferred).
+                            const mentionText = agentType === 'copilot'
+                                ? `@${file.fullPath}`
+                                : `@"${file.fullPath.replace(/(["\\])/g, '\\$1')}"`
+                            fileHits.push({
+                                key: mentionText,
+                                text: mentionText,
+                                label: `@${file.fileName}`,
+                                description: file.filePath || file.fullPath,
+                            })
+                        }
                     }
-                }
+                    return fileHits
+                }, context)
             }
-
-            return [...sessionHits, ...fileHits]
+            return sessionHits
         }
         if (query.startsWith('$')) {
             return await getSkillSuggestions(query)
@@ -784,6 +790,7 @@ function SessionPage() {
         return await getSlashSuggestions(query)
     }, [
         agentType,
+        fileSuggestions,
         api,
         sessionId,
         allSessions,

@@ -15,7 +15,7 @@ import { createNativeSessionTitleMetadataSync } from '@/agent/nativeSessionTitle
 import { readAgyConversationTitle } from '../utils/agySessionTitle';
 import { resolveAgyTurnModels } from '../utils/agyConversationModel';
 import { killProcessByChildProcess } from '@/utils/process';
-import { AGY_MODEL_LABELS } from '@hapi/protocol';
+import { AGY_EFFORT_LEVELS, AGY_MODEL_LABELS, splitAgyModelSelection, type AgyEffortLevel } from '@hapi/protocol';
 import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 
 const AGY_PRINT_TIMEOUT = '30m';
@@ -43,8 +43,12 @@ export function buildAgyHeadlessArgs(opts: {
     model?: string;
     permissionMode: PermissionMode;
     mode?: 'accept-edits' | 'plan';
-    effort?: 'low' | 'medium' | 'high';
+    effort?: AgyEffortLevel;
 }): string[] {
+    const selection = splitAgyModelSelection(opts.model);
+    if (selection.effort && opts.effort && selection.effort !== opts.effort) {
+        throw new Error(`Antigravity model ${opts.model} conflicts with effort ${opts.effort}`);
+    }
     const args = ['-p', opts.prompt, '--output-format', 'stream-json'];
     if (opts.conversationId) {
         args.push('--conversation', opts.conversationId);
@@ -55,7 +59,7 @@ export function buildAgyHeadlessArgs(opts: {
     if (opts.mode) {
         args.push('--mode', opts.mode);
     }
-    if (opts.effort) {
+    if (opts.effort && !selection.effort) {
         args.push('--effort', opts.effort);
     }
     args.push('--print-timeout', AGY_PRINT_TIMEOUT);
@@ -391,18 +395,34 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
         const sessionEffort = mode.effort ?? undefined;
         // Snapshot the model at turn start: a mid-response switch must not change
         // attribution within one turn.
+        const variantModel = sessionModel && sessionEffort && !splitAgyModelSelection(sessionModel).effort
+            ? `${sessionModel}-${sessionEffort}`
+            : sessionModel;
+        const variantLabel = variantModel ? AGY_MODEL_LABELS[variantModel as keyof typeof AGY_MODEL_LABELS] : undefined;
         const turnModel = typeof sessionModel === 'string' && sessionModel
-            ? AGY_MODEL_LABELS[sessionModel as keyof typeof AGY_MODEL_LABELS] ?? sessionModel
+            ? variantLabel ?? AGY_MODEL_LABELS[sessionModel as keyof typeof AGY_MODEL_LABELS]
+                ?? (splitAgyModelSelection(variantModel).effort ? variantModel : sessionModel)
             : undefined;
-        const args = buildAgyHeadlessArgs({
-            prompt,
-            conversationId: this.conversationId ?? undefined,
-            model: sessionModel,
-            permissionMode: mode.permissionMode,
-            effort: sessionEffort === 'low' || sessionEffort === 'medium' || sessionEffort === 'high'
-                ? sessionEffort
-                : undefined,
-        });
+        let args: string[];
+        try {
+            args = buildAgyHeadlessArgs({
+                prompt,
+                conversationId: this.conversationId ?? undefined,
+                model: sessionModel,
+                permissionMode: mode.permissionMode,
+                effort: (AGY_EFFORT_LEVELS as readonly unknown[]).includes(sessionEffort)
+                    ? sessionEffort as AgyEffortLevel
+                    : undefined,
+            });
+        } catch (error) {
+            // Invalid legacy config must not lose a dequeued delivery or retry
+            // the same deterministic failure. Restore it for the user to resend.
+            if (localIds.length > 0) this.session.client.emitMessagesConsumed(localIds);
+            this.session.client.sendSessionEvent({ type: 'error', message: error instanceof Error ? error.message : String(error) });
+            this.session.client.sendSessionEvent({ type: 'abort-restore', text: prompt });
+            signal.removeEventListener('abort', onAbort);
+            return true;
+        }
         // Never persist the user's prompt to the log (HAPI debug logs can be
         // forwarded under remote-debug configuration); keep the spawn shape.
         const safeArgs = args.map((arg, index) => (args[index - 1] === '-p' ? '<redacted>' : arg));

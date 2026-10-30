@@ -830,6 +830,23 @@ describe('sessions routes', () => {
         ])
     })
 
+    it.each(['high', null])('applies an Antigravity model and effort %s atomically', async (effort) => {
+        const { app, applySessionConfigCalls } = createApp(createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'agy' }
+        }))
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gemini-4-argon', effort })
+        })
+
+        expect(response.status).toBe(200)
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { model: 'gemini-4-argon', effort }]
+        ])
+    })
+
     it('rejects an effort sent with a model change for Pi, which applies the two separately', async () => {
         const session = createSession({
             metadata: { path: '/tmp/project', host: 'localhost', flavor: 'pi' }
@@ -1026,6 +1043,22 @@ describe('sessions routes', () => {
             error: 'Effort selection is not supported for this session type'
         })
         expect(applySessionConfigCalls).toEqual([])
+    })
+
+    it('applies effort changes for Antigravity sessions', async () => {
+        const { app, applySessionConfigCalls } = createApp(createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'agy' }
+        }))
+        const response = await app.request('/api/sessions/session-1/effort', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ effort: 'high' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { effort: 'high' }]
+        ])
     })
 
     it('applies effort changes for Claude sessions', async () => {
@@ -1833,9 +1866,9 @@ describe('sessions routes', () => {
 
     it('honors optional limit on GET /sessions after sort', async () => {
         const sessions = [
-            createSession({ id: 'older-active', active: true, updatedAt: 10 }),
-            createSession({ id: 'newer-active', active: true, updatedAt: 20 }),
-            createSession({ id: 'inactive', active: false, updatedAt: 30 })
+            createSession({ id: 'older-active', active: true, updatedAt: 99, lastUserMessageAt: 10 }),
+            createSession({ id: 'newer-active', active: true, updatedAt: 20, lastUserMessageAt: 20 }),
+            createSession({ id: 'inactive', active: false, updatedAt: 30, lastUserMessageAt: 30 })
         ]
         const scheduledIds: string[][] = []
         const engine = {
@@ -1858,8 +1891,8 @@ describe('sessions routes', () => {
         const limited = await app.request('/api/sessions?limit=2')
         expect(limited.status).toBe(200)
         const limitedBody = await limited.json() as { sessions: Array<{ id: string }> }
-        expect(limitedBody.sessions.map((s) => s.id)).toEqual(['newer-active', 'older-active'])
-        expect(scheduledIds.at(-1)).toEqual(['newer-active', 'older-active'])
+        expect(limitedBody.sessions.map((s) => s.id)).toEqual(['inactive', 'newer-active'])
+        expect(scheduledIds.at(-1)).toEqual(['inactive', 'newer-active'])
 
         const unlimited = await app.request('/api/sessions')
         expect(unlimited.status).toBe(200)

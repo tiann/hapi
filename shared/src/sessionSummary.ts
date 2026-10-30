@@ -28,7 +28,9 @@ export type PendingRequest = {
     since: number
 }
 
-function classifyKind(tool: string): PendingRequestKind {
+/** Whether a request asks the user to answer something (a question, a plan)
+ *  or to allow a tool. */
+export function classifyKind(tool: string): PendingRequestKind {
     return INPUT_REQUEST_TOOLS.has(tool) ? 'input' : 'permission'
 }
 
@@ -53,10 +55,10 @@ export type SessionSummary = {
     thinking: boolean
     activeAt: number
     updatedAt: number
-    /** Epoch ms when the session was created. Drives the fixed-order session
-     *  list sort. Optional because summaries from an older hub lack it —
-     *  consumers fall back to `updatedAt` via the session-order key. */
+    /** Creation time is the stable order key before the first user message. */
     createdAt?: number
+    /** Original timestamp of the latest user message; absent before any input. */
+    lastUserMessageAt?: number
     pinned?: boolean
     globalPinned?: boolean
     metadata: SessionSummaryMetadata | null
@@ -218,6 +220,7 @@ export function toSessionSummary(session: Session): SessionSummary {
         activeAt: session.activeAt,
         updatedAt: session.updatedAt,
         createdAt: session.createdAt,
+        lastUserMessageAt: session.lastUserMessageAt,
         pinned: session.pinned ?? false,
         globalPinned: session.globalPinned ?? false,
         metadata: toSessionSummaryMetadata(session.metadata),

@@ -46,6 +46,17 @@ function baseSession(overrides: Partial<Session> = {}): Session {
 
 export const sseFixtureCases: SseFixtureCase[] = [
     {
+        name: 'last-user-message-time-monotonic',
+        description: 'The list ordering clock changes only with user input; ordinary activity does not advance it and stale SSE replay cannot rewind it.',
+        initialSession: baseSession({ lastUserMessageAt: T0 }),
+        patches: [
+            { updatedAt: T0 + 30_000, thinking: true },
+            { lastUserMessageAt: T0 - 10_000 },
+            { lastUserMessageAt: T0 + 60_000 },
+            { updatedAt: T0 + 90_000, thinking: false }
+        ]
+    },
+    {
         name: 'metadata-newer-version-applied',
         description: 'A metadata wrapper with version strictly greater than the cached metadataVersion replaces the value and stores the version; the accompanying newer updatedAt advances.',
         initialSession: baseSession(),

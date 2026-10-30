@@ -12,6 +12,7 @@ public struct Session: Codable, Equatable, Sendable {
     public var namespace: String
     public var seq: Int
     public var createdAt: Int
+    public var lastUserMessageAt: Int?
     public var updatedAt: Int
     public var pinned: Bool?
     public var globalPinned: Bool?
@@ -48,6 +49,7 @@ public struct Session: Codable, Equatable, Sendable {
         seq: Int,
         createdAt: Int,
         updatedAt: Int,
+        lastUserMessageAt: Int? = nil,
         pinned: Bool? = nil,
         globalPinned: Bool? = nil,
         active: Bool,
@@ -77,6 +79,7 @@ public struct Session: Codable, Equatable, Sendable {
         self.seq = seq
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.lastUserMessageAt = lastUserMessageAt
         self.pinned = pinned
         self.globalPinned = globalPinned
         self.active = active
@@ -109,6 +112,7 @@ public struct Session: Codable, Equatable, Sendable {
         seq = try container.decode(Int.self, forKey: .seq)
         createdAt = try container.decode(Int.self, forKey: .createdAt)
         updatedAt = try container.decode(Int.self, forKey: .updatedAt)
+        lastUserMessageAt = try container.decodeIfPresent(Int.self, forKey: .lastUserMessageAt)
         pinned = try container.decodeIfPresent(Bool.self, forKey: .pinned)
         globalPinned = try container.decodeIfPresent(Bool.self, forKey: .globalPinned)
         active = try container.decode(Bool.self, forKey: .active)
