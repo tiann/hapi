@@ -3,6 +3,8 @@ package app.hapi.companion.di
 import android.content.Context
 import androidx.datastore.preferences.preferencesDataStore
 import app.hapi.companion.fcm.RegisterDeviceWorker
+import app.hapi.companion.feature.directorybrowser.DataStoreDirectoryBrowserPrefs
+import app.hapi.companion.feature.directorybrowser.DirectoryBrowserPrefs
 import app.hapi.companion.feature.newsession.DataStoreNewSessionPrefs
 import app.hapi.companion.feature.newsession.NewSessionPrefs
 import app.hapi.companion.feature.pairing.PairingClient
@@ -117,6 +119,14 @@ class AppGraph(context: Context) {
      * hub scoping is unnecessary.
      */
     val newSessionPrefs: NewSessionPrefs = DataStoreNewSessionPrefs(appContext.hapiDataStore)
+
+    /**
+     * Directory-browser show-hidden choice (web
+     * `hapi:workspaceBrowserShowHidden` localStorage twin), read at every
+     * browser open and written on every toggle.
+     */
+    val directoryBrowserPrefs: DirectoryBrowserPrefs =
+        DataStoreDirectoryBrowserPrefs(appContext.hapiDataStore)
 
     /** Appearance choice (B-M4e); MainActivity reads it at setContent. */
     val themePrefs: ThemePrefs = ThemePrefs(appContext.hapiDataStore)

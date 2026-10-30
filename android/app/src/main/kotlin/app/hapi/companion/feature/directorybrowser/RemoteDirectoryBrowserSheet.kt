@@ -1,5 +1,6 @@
 package app.hapi.companion.feature.directorybrowser
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -8,7 +9,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -33,6 +36,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
+import app.hapi.companion.feature.files.FolderGlyph
 
 /** Reusable presentation for [RemoteDirectoryBrowserController]. */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -115,9 +119,38 @@ fun RemoteDirectoryBrowserSheet(
                 ) {
                     state.entries.forEachIndexed { index, entry ->
                         if (index > 0) HorizontalDivider()
+                        val gitRepo = entry.isGitRepo == true
                         DropdownMenuItem(
                             text = { Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                             onClick = { onNavigateEntry(entry.name) },
+                            // Web `WorkspaceBrowser` row: a git-repo directory
+                            // swaps the folder icon for the orange git glyph and
+                            // adds a trailing "git" pill — two signals, no
+                            // branch/dirty metadata.
+                            leadingIcon = {
+                                Icon(
+                                    if (gitRepo) GitRepoGlyph else FolderGlyph,
+                                    contentDescription = null,
+                                    tint = if (gitRepo) GitBadgeColor else MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            },
+                            trailingIcon = if (gitRepo) {
+                                {
+                                    Text(
+                                        // Literal like the web badge ("git" is
+                                        // the same technical term in every locale).
+                                        text = "git",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = GitBadgeColor,
+                                        modifier = Modifier
+                                            .background(GitBadgeColor.copy(alpha = 0.1f), RoundedCornerShape(4.dp))
+                                            .padding(horizontal = 6.dp, vertical = 1.dp),
+                                    )
+                                }
+                            } else {
+                                null
+                            },
                         )
                     }
                 }

@@ -627,4 +627,5 @@
     <string name="share_error_title">Не удалось поделиться</string>
     <string name="share_ok">ОК</string>
     <string name="share_pair_first">Подключите хаб, чтобы выбрать сессию для отправки.</string>
+    <string name="toast_open">Открыть</string>
 </resources>

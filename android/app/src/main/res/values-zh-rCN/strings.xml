@@ -634,4 +634,5 @@
     <string name="share_error_title">分享暂不可用</string>
     <string name="share_ok">确定</string>
     <string name="share_pair_first">请先配对 Hub，再选择接收分享内容的会话。</string>
+    <string name="toast_open">打开</string>
 </resources>

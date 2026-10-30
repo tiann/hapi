@@ -627,4 +627,5 @@
     <string name="share_error_title">Share unavailable</string>
     <string name="share_ok">OK</string>
     <string name="share_pair_first">Pair a hub to choose a session for the shared content.</string>
+    <string name="toast_open">Open</string>
 </resources>
