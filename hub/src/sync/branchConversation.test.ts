@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import type { BranchConversationRequest } from '@hapi/protocol/apiTypes'
+import { CreateOrLoadSessionRequestSchema, type BranchConversationRequest } from '@hapi/protocol/apiTypes'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
 import { SyncEngine } from './syncEngine'
@@ -40,6 +40,13 @@ describe('portable branch lifecycle', () => {
             expect(args[8]).toBeUndefined() // never resume the source native id
             expect(args[12]).toBeUndefined() // fresh, never reopen
             const childId = args[17]!
+            // Exercise the same UUID/adopt contract used by bootstrapSession;
+            // an arbitrary hash would be ignored and mint an unrelated row.
+            const metadata = { path: '/tmp/worktree', host: 'test', machineId: 'machine', flavor: 'codex', codexSessionId: 'target-native' }
+            expect(CreateOrLoadSessionRequestSchema.safeParse({ id: childId, adopt: true, tag: 'cli-tag', metadata }).success).toBe(true)
+            const adopted = engine.adoptPreallocatedSession(childId, 'cli-tag', metadata, {}, 'default', 'target-model')
+            expect(adopted.id).toBe(childId)
+            expect(adopted.metadata?.conversationBranch?.sourceSessionId).toBe(source.id)
             const initial = store.messages.getAllMessages(childId)
             expect(initial).toHaveLength(1)
             expect(initial[0].scheduledAt).not.toBeNull()

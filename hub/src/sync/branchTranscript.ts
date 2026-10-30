@@ -1,9 +1,22 @@
+import { createHash } from 'node:crypto'
 import { isObject } from '@hapi/protocol'
 import { extractAssistantPlainText, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { BranchConversationRequest } from '@hapi/protocol/apiTypes'
 import type { StoredMessage } from '../store/types'
 
 export const BRANCH_CONTEXT_MAX_BYTES = 256 * 1024
+
+/** UUIDv5 in the standard URL namespace, accepted by CLI's adopt-stub gate. */
+export function branchSessionId(namespace: string, sourceSessionId: string, requestId: string): string {
+    const bytes = createHash('sha1')
+        .update(Buffer.from('6ba7b8119dad11d180b400c04fd430c8', 'hex'))
+        .update(JSON.stringify([namespace, sourceSessionId, requestId]))
+        .digest().subarray(0, 16)
+    bytes[6] = (bytes[6] & 0x0f) | 0x50
+    bytes[8] = (bytes[8] & 0x3f) | 0x80
+    const hex = bytes.toString('hex')
+    return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-')
+}
 
 type ReferenceEntry = { role: 'user' | 'assistant' | 'tool'; text: string }
 

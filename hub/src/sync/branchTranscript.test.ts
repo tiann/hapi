@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import type { BranchConversationRequest } from '@hapi/protocol/apiTypes'
 import type { StoredMessage } from '../store/types'
-import { buildBranchPrompt, BRANCH_CONTEXT_MAX_BYTES } from './branchTranscript'
+import { branchSessionId, buildBranchPrompt, BRANCH_CONTEXT_MAX_BYTES } from './branchTranscript'
 
 const request: BranchConversationRequest = {
     requestId: 'b428e5be-dc54-4edc-9903-59250c1b5c31', messageLocalId: 'second', boundary: 'before',
@@ -22,6 +22,14 @@ const messages = [
     row(6, { role: 'user', content: 'QUEUED_SECRET' }, 'queued', null)
 ]
 describe('portable branch reference', () => {
+    it('derives stable namespace/source-scoped UUIDs for CLI adoption', () => {
+        const id = branchSessionId('default', 'source', request.requestId)
+        expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+        expect(branchSessionId('default', 'source', request.requestId)).toBe(id)
+        expect(branchSessionId('other', 'source', request.requestId)).not.toBe(id)
+        expect(branchSessionId('default', 'other', request.requestId)).not.toBe(id)
+    })
+
     it('selects before/after a user turn and excludes later/queued/hidden content', () => {
         const before = buildBranchPrompt(messages, request).text
         expect(before).toContain('First reply')
