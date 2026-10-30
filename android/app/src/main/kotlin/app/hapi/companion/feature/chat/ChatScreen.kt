@@ -78,6 +78,9 @@ import app.hapi.companion.feature.sessions.RenameSessionDialog
 import app.hapi.companion.ui.markdown.LocalMarkdownRenderCache
 import app.hapi.companion.ui.markdown.LocalMarkdownLinkHandler
 import app.hapi.companion.ui.theme.hapi
+import app.hapi.protocol.chat.VisibleChatBlock
+import app.hapi.protocol.chat.buildMessageMetadataLabels
+import app.hapi.protocol.chat.messageMetadataForBlock
 import java.io.File
 import kotlinx.coroutines.launch
 
@@ -124,6 +127,7 @@ internal fun ChatScreen(
     var configSheetOpen by remember { mutableStateOf(false) }
     var renameDialogOpen by remember { mutableStateOf(false) }
     var deleteDialogOpen by remember { mutableStateOf(false) }
+    var messageInfoBlock by remember { mutableStateOf<VisibleChatBlock?>(null) }
 
     DisposableEffect(viewModel) {
         viewModel.setTranscriptVisible(true)
@@ -330,6 +334,9 @@ internal fun ChatScreen(
                         onEdit = viewModel::editQueuedMessage,
                         onCancel = viewModel::cancelQueuedMessage,
                     )
+                    // Context-remaining readout; rides the same strip as the
+                    // mode chip and hides until the thread reports usage.
+                    ContextUsageChip(indicator = state.contextUsage)
                     // Web StatusBar parity: the current permission mode rides
                     // directly above the composer; tapping opens the config
                     // sheet that hosts the switcher (the web span itself is
@@ -382,6 +389,8 @@ internal fun ChatScreen(
                             onRetryHistory = viewModel::loadOlder,
                             onJumpToLatest = viewModel::jumpToLatest,
                             listState = transcriptList, readingState = readingState,
+                            messageAggregates = state.messageAggregates,
+                            onShowMessageInfo = { messageInfoBlock = it },
                         )
                     }
                     if (!state.loadFailed) state.warning?.let { warning ->
@@ -435,6 +444,19 @@ internal fun ChatScreen(
             },
             onDismiss = { deleteDialogOpen = false },
         )
+    }
+    messageInfoBlock?.let { infoBlock ->
+        val labels = remember(infoBlock, state.messageAggregates) {
+            messageMetadataForBlock(infoBlock, state.messageAggregates)
+                ?.let(::buildMessageMetadataLabels)
+                .orEmpty()
+        }
+        if (labels.isNotEmpty()) {
+            MessageMetadataDialog(
+                labels = labels,
+                onDismiss = { messageInfoBlock = null },
+            )
+        }
     }
 }
 

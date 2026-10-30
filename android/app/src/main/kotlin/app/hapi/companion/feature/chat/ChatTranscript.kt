@@ -3,6 +3,7 @@ package app.hapi.companion.feature.chat
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -40,7 +41,10 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
 import app.hapi.data.store.ChatHistoryPagingState
+import app.hapi.protocol.chat.AggregatedAssistantMeta
 import app.hapi.protocol.chat.VisibleChatBlock
+import app.hapi.protocol.chat.buildMessageMetadataLabels
+import app.hapi.protocol.chat.messageMetadataForBlock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.withContext
@@ -66,6 +70,8 @@ internal fun ChatTranscript(
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
     readingState: TranscriptReadingState = rememberTranscriptReadingState(state.sessionId),
+    messageAggregates: Map<String, AggregatedAssistantMeta> = emptyMap(),
+    onShowMessageInfo: (VisibleChatBlock) -> Unit = {},
 ) {
     val rowState = rememberSaveableStateHolder()
     val stateKeys = remember(state.sessionId) { mutableSetOf<String>() }
@@ -242,7 +248,21 @@ internal fun ChatTranscript(
                         .onSizeChanged { heights[row.id] = it.height }
                         .testTag("chat-row-" + row.id)
                     app.hapi.companion.ui.theme.ReadingColumn(modifier = rowModifier) {
-                        ChatBlockCard(block = row.block, basePath = state.basePath, processSteps = state.processSteps[row.id])
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            ChatBlockCard(block = row.block, basePath = state.basePath, processSteps = state.processSteps[row.id])
+                            // Usage info (model / tokens / cost / timing) under
+                            // blocks that carry it; aggregated groups expose the
+                            // summed view through the same popup.
+                            val metadata = remember(row.block, messageAggregates) {
+                                messageMetadataForBlock(row.block, messageAggregates)
+                            }
+                            val labels = remember(metadata) {
+                                metadata?.let(::buildMessageMetadataLabels).orEmpty()
+                            }
+                            if (labels.isNotEmpty()) {
+                                MessageInfoEntry(onClick = { onShowMessageInfo(row.block) })
+                            }
+                        }
                     }
                 }
             }
