@@ -3,6 +3,10 @@ package app.hapi.companion.di
 import android.content.Context
 import androidx.datastore.preferences.preferencesDataStore
 import app.hapi.companion.fcm.RegisterDeviceWorker
+import app.hapi.companion.feature.directorybrowser.DataStoreDirectoryBrowserPrefs
+import app.hapi.companion.feature.directorybrowser.DirectoryBrowserPrefs
+import app.hapi.companion.feature.chat.composer.DataStoreDictationPrefs
+import app.hapi.companion.feature.chat.composer.DictationPrefs
 import app.hapi.companion.feature.newsession.DataStoreNewSessionPrefs
 import app.hapi.companion.feature.newsession.NewSessionPrefs
 import app.hapi.companion.feature.pairing.PairingClient
@@ -117,6 +121,34 @@ class AppGraph(context: Context) {
      * hub scoping is unnecessary.
      */
     val newSessionPrefs: NewSessionPrefs = DataStoreNewSessionPrefs(appContext.hapiDataStore)
+
+    /**
+     * Directory-browser show-hidden choice (web
+     * `hapi:workspaceBrowserShowHidden` localStorage twin), read at every
+     * browser open and written on every toggle.
+     */
+    val directoryBrowserPrefs: DirectoryBrowserPrefs =
+        DataStoreDirectoryBrowserPrefs(appContext.hapiDataStore)
+
+    /**
+     * Dictation provider + language choices (web `hapi-transcription-provider`
+     * / `hapi-voice-lang` localStorage twins), app-wide: a stale provider id
+     * on another hub self-heals through the first-standard fallback.
+     */
+    val dictationPrefs: DictationPrefs = DataStoreDictationPrefs(appContext.hapiDataStore)
+
+    /**
+     * Eagerly-cached dictation prefs for non-suspend consumers
+     * ([DictationController][app.hapi.companion.feature.chat.composer.DictationController]
+     * reads them via sync getters per take). May briefly read null on a cold
+     * process before the first DataStore emission — the auto-detect/hub-order
+     * default, benign for the first take.
+     */
+    val dictationProviderId: StateFlow<String?> = dictationPrefs.providerId
+        .stateIn(scope, SharingStarted.Eagerly, null)
+
+    val dictationLanguage: StateFlow<String?> = dictationPrefs.language
+        .stateIn(scope, SharingStarted.Eagerly, null)
 
     /** Appearance choice (B-M4e); MainActivity reads it at setContent. */
     val themePrefs: ThemePrefs = ThemePrefs(appContext.hapiDataStore)

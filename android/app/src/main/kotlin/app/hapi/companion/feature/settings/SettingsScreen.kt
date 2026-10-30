@@ -25,6 +25,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -39,22 +40,30 @@ import androidx.core.os.LocaleListCompat
 import app.hapi.companion.BuildConfig
 import app.hapi.companion.R
 import app.hapi.protocol.wire.SUPPORTED_PROTOCOL_VERSION
+import app.hapi.protocol.wire.TranscriptionProviderInfo
 
 /**
  * General subpage of the settings hub (P2 IA): the catch-all category for
  * everything without a dedicated category on this branch — Appearance (theme
- * mode + Material You), Language, and About (app/protocol versions + hub
- * health). The former owner-only Usage/Storage rows moved hub-level (see
- * [SettingsHubCatalog]); their owner gate is unchanged.
+ * mode + Material You), Language, Dictation (provider + language when the
+ * hub offers standard transcription), the Machines entry, and About
+ * (app/protocol versions + hub health). The former owner-only Usage/Storage
+ * rows moved hub-level (see [SettingsHubCatalog]); their owner gate is
+ * unchanged.
  */
 @Composable
 fun SettingsGeneralScreen(
     viewModel: SettingsViewModel,
+    dictation: DictationSettingsViewModel,
+    onOpenMachines: () -> Unit,
     onBack: () -> Unit,
 ) {
     val theme by viewModel.themeSettings.collectAsState()
     val language by viewModel.language.collectAsState()
     val hubInfo by viewModel.hubInfo.collectAsState()
+    val dictationState by dictation.state.collectAsState()
+
+    LaunchedEffect(dictation) { dictation.start() }
 
     SettingsGeneralContent(
         theme = theme,
@@ -65,6 +74,10 @@ fun SettingsGeneralScreen(
         onSetDynamicColor = viewModel::setDynamicColor,
         onSetLanguage = viewModel::setLanguage,
         onRetryHubInfo = viewModel::retryHubInfo,
+        dictationState = dictationState,
+        onSetDictationProvider = dictation::setProvider,
+        onSetDictationLanguage = dictation::setLanguage,
+        onOpenMachines = onOpenMachines,
         onBack = onBack,
     )
 }
@@ -81,10 +94,16 @@ internal fun SettingsGeneralContent(
     onSetDynamicColor: (Boolean) -> Unit,
     onSetLanguage: (AppLanguage) -> Unit,
     onRetryHubInfo: () -> Unit,
+    dictationState: DictationSettingsUiState = DictationSettingsUiState(),
+    onSetDictationProvider: (String) -> Unit = {},
+    onSetDictationLanguage: (String?) -> Unit = {},
+    onOpenMachines: () -> Unit = {},
     onBack: () -> Unit,
 ) {
     var showThemeDialog by rememberSaveable { mutableStateOf(false) }
     var showLanguageDialog by rememberSaveable { mutableStateOf(false) }
+    var showDictationProviderDialog by rememberSaveable { mutableStateOf(false) }
+    var showDictationLanguageDialog by rememberSaveable { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -135,6 +154,34 @@ internal fun SettingsGeneralContent(
                     label = stringResource(R.string.settings_language),
                     value = languageLabel(language),
                     onClick = { showLanguageDialog = true },
+                )
+            }
+
+            // Hidden until the hub confirms a standard-capable provider — the
+            // chat mic button follows the same availability rule.
+            if (dictationState.loaded && dictationState.providers.isNotEmpty()) {
+                SettingsSection(title = stringResource(R.string.settings_section_dictation)) {
+                    SettingsRow(
+                        label = stringResource(R.string.settings_dictation_provider),
+                        value = dictationState.providers
+                            .firstOrNull { it.id == dictationState.resolvedProviderId }
+                            ?.label,
+                        onClick = { showDictationProviderDialog = true },
+                    )
+                    SettingsDivider()
+                    SettingsRow(
+                        label = stringResource(R.string.settings_dictation_language),
+                        value = dictationLanguageValue(dictationState.language),
+                        onClick = { showDictationLanguageDialog = true },
+                    )
+                }
+            }
+
+            SettingsSection(title = stringResource(R.string.settings_machines)) {
+                SettingsRow(
+                    label = stringResource(R.string.settings_machines),
+                    description = stringResource(R.string.settings_machines_summary),
+                    onClick = onOpenMachines,
                 )
             }
 
@@ -195,6 +242,29 @@ internal fun SettingsGeneralContent(
                 )
             },
             onDismiss = { showLanguageDialog = false },
+        )
+    }
+
+    if (showDictationProviderDialog) {
+        DictationProviderDialog(
+            providers = dictationState.providers,
+            selectedId = dictationState.resolvedProviderId,
+            onSelect = { providerId ->
+                showDictationProviderDialog = false
+                onSetDictationProvider(providerId)
+            },
+            onDismiss = { showDictationProviderDialog = false },
+        )
+    }
+
+    if (showDictationLanguageDialog) {
+        DictationLanguageDialog(
+            selectedCode = dictationState.language,
+            onSelect = { code ->
+                showDictationLanguageDialog = false
+                onSetDictationLanguage(code)
+            },
+            onDismiss = { showDictationLanguageDialog = false },
         )
     }
 }
@@ -341,6 +411,65 @@ private fun LanguageDialog(
     )
 }
 
+/** Transcription provider picker — the hub's standard-capable entries only. */
+@Composable
+private fun DictationProviderDialog(
+    providers: List<TranscriptionProviderInfo>,
+    selectedId: String?,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ChoiceDialog(
+        title = stringResource(R.string.settings_dictation_provider),
+        options = providers.map { provider ->
+            ChoiceOption(
+                value = provider.id,
+                label = provider.label,
+            )
+        },
+        selected = selectedId.orEmpty(),
+        onSelect = onSelect,
+        onDismiss = onDismiss,
+        dismissLabel = stringResource(R.string.settings_cancel),
+    )
+}
+
+/** Dictation language picker: localized Auto-detect row + native-name rows. */
+@Composable
+private fun DictationLanguageDialog(
+    selectedCode: String?,
+    onSelect: (String?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ChoiceDialog(
+        title = stringResource(R.string.settings_dictation_language),
+        options = buildList {
+            add(
+                ChoiceOption(
+                    value = null,
+                    label = stringResource(R.string.settings_dictation_language_auto),
+                ),
+            )
+            DICTATION_LANGUAGES.forEach { language ->
+                add(
+                    ChoiceOption(
+                        value = language.code,
+                        label = language.label,
+                    ),
+                )
+            }
+        },
+        selected = selectedCode,
+        onSelect = onSelect,
+        onDismiss = onDismiss,
+        dismissLabel = stringResource(R.string.settings_cancel),
+    )
+}
+
+/** Language row value: catalog label, or Auto-detect for null. */
+@Composable
+private fun dictationLanguageValue(code: String?): String =
+    findDictationLanguage(code)?.label ?: stringResource(R.string.settings_dictation_language_auto)
 private fun themeModeLabelRes(mode: ThemeMode): Int = when (mode) {
     ThemeMode.SYSTEM -> R.string.settings_theme_system
     ThemeMode.LIGHT -> R.string.settings_theme_light

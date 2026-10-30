@@ -1,6 +1,7 @@
 package app.hapi.companion.feature.chat.composer
 
 import app.hapi.data.api.HapiApi
+import app.hapi.protocol.wire.TranscriptionProviderInfo
 import app.hapi.protocol.wire.TranscriptionProvidersResponse
 import app.hapi.protocol.wire.TranscriptionResponse
 import kotlin.coroutines.cancellation.CancellationException
@@ -117,6 +118,20 @@ enum class DictationErrorKind {
 }
 
 /**
+ * Web `resolveProvider` (`useVoiceInputPreferences.ts`) adapted to the
+ * standard-only pipeline: the stored choice wins while the hub still offers it
+ * with `standard`; otherwise the first standard-capable provider in the hub's
+ * own preference order. Realtime-only entries (`browser-local`) never qualify.
+ */
+fun resolveStandardProvider(
+    preferredId: String?,
+    providers: List<TranscriptionProviderInfo>,
+): TranscriptionProviderInfo? {
+    val standard = providers.filter { it.modes.contains("standard") }
+    return standard.firstOrNull { it.id == preferredId } ?: standard.firstOrNull()
+}
+
+/**
  * Press-to-toggle dictation (B-M3ce): [refreshAvailability] discovers a provider
  * on chat entry (`GET /providers`, first entry supporting `standard`). The first
  * [toggle] reuses it (or discovers one) and starts the recorder; the second
@@ -125,16 +140,20 @@ enum class DictationErrorKind {
  * with the hub's text. [cancel] abandons the take without uploading.
  *
  * Web reference: `useDictation.ts` (standard mode; the realtime path is out
- * of scope for v1). No language override yet — the hub auto-detects; a
- * settings-backed `language` field is the M5 hook.
+ * of scope for v1). [preferredProviderId] is the settings-backed provider
+ * choice (web `hapi-transcription-provider`), resolved against the hub list
+ * and re-read per take; [languageCode] is the settings-backed BCP-47 override
+ * (web `hapi-voice-lang`), null = auto-detect.
  *
- * Plain constructor over two seams — JVM tests drive it with fakes.
+ * Plain constructor over seams — JVM tests drive it with fakes.
  */
 class DictationController(
     private val api: DictationApi,
     private val recorder: DictationRecorder,
     private val scope: CoroutineScope,
     private val now: () -> Long = System::currentTimeMillis,
+    private val preferredProviderId: () -> String? = { null },
+    private val languageCode: () -> String? = { null },
 ) {
     private val _state = MutableStateFlow<DictationState>(DictationState.Idle)
     val state: StateFlow<DictationState> = _state.asStateFlow()
@@ -149,14 +168,33 @@ class DictationController(
     /** Reused across takes; refreshed when the composer appears. */
     private var cachedProviderId: String? = null
 
+    /**
+     * The provider preference the cache was resolved under. A settings change
+     * (different stored id) invalidates the memoized provider so the next take
+     * re-resolves; unchanged preferences keep discovery to one call.
+     */
+    private var cachedForPreference: String? = null
+    private var cacheInitialized = false
+
     private var job: Job? = null
     private var refreshingAvailability = false
+
+    private fun invalidateCacheOnPreferenceChange() {
+        val preferred = preferredProviderId()
+        if (!cacheInitialized || cachedForPreference != preferred) {
+            cachedProviderId = null
+            cachedForPreference = preferred
+            cacheInitialized = true
+        }
+    }
 
     /** Silent preflight; no microphone access or notices on chat entry. */
     suspend fun refreshAvailability() {
         if (_state.value != DictationState.Idle || refreshingAvailability) return
         refreshingAvailability = true
         cachedProviderId = null
+        cachedForPreference = preferredProviderId()
+        cacheInitialized = true
         _isAvailable.value = false
         try {
             cachedProviderId = discoverProvider(reportErrors = false)
@@ -187,6 +225,7 @@ class DictationController(
         if (job?.isActive == true || refreshingAvailability) return
         _state.value = DictationState.Starting
         job = scope.launch {
+            invalidateCacheOnPreferenceChange()
             val provider = cachedProviderId ?: discoverProvider() ?: run {
                 _state.value = DictationState.Idle
                 return@launch
@@ -217,10 +256,9 @@ class DictationController(
             }
             return null
         }
-        // First provider supporting standard (uploaded-file) transcription —
-        // the hub lists them in its own preference order. `browser-local`
-        // (realtime-only) never qualifies.
-        val chosen = providers.firstOrNull { it.modes.contains("standard") }
+        // Stored preference first, then the hub's own order — both restricted
+        // to providers that can transcribe an uploaded file (`standard`).
+        val chosen = resolveStandardProvider(preferredProviderId(), providers)
         if (chosen == null && reportErrors) {
             _events.tryEmit(DictationEvent.NoProvider)
         }
@@ -251,7 +289,7 @@ class DictationController(
                     filename = recorder.filename,
                     mimeType = recorder.mimeType,
                     provider = provider,
-                    language = null,
+                    language = languageCode(),
                 )
                 _events.tryEmit(DictationEvent.Transcribed(result.text))
             } catch (cancellation: CancellationException) {

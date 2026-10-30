@@ -627,4 +627,22 @@
     <string name="share_error_title">Share unavailable</string>
     <string name="share_ok">OK</string>
     <string name="share_pair_first">Pair a hub to choose a session for the shared content.</string>
+    <string name="toast_open">Open</string>
+    <!-- Machines settings (web /settings/machines twin) -->
+    <string name="settings_machines">Machines</string>
+    <string name="settings_machines_summary">Give your machines names of your own. Only machines that are currently online are listed.</string>
+    <string name="machines_your">Your machines</string>
+    <string name="machines_empty">No machines online.</string>
+    <string name="machines_rename">Rename %1$s</string>
+    <string name="machines_name_hint">Use hostname</string>
+    <string name="machines_save">Save</string>
+    <string name="machines_rename_error">Could not rename this machine.</string>
+    <string name="machines_status_online">Online</string>
+    <string name="machines_status_offline">Offline</string>
+
+    <!-- Dictation settings (provider + language override) -->
+    <string name="settings_section_dictation">Dictation</string>
+    <string name="settings_dictation_provider">Transcription provider</string>
+    <string name="settings_dictation_language">Language</string>
+    <string name="settings_dictation_language_auto">Auto-detect</string>
 </resources>

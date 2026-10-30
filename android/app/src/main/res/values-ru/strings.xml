@@ -627,4 +627,22 @@
     <string name="share_error_title">Не удалось поделиться</string>
     <string name="share_ok">ОК</string>
     <string name="share_pair_first">Подключите хаб, чтобы выбрать сессию для отправки.</string>
+    <string name="toast_open">Открыть</string>
+    <!-- Machines settings (web /settings/machines twin) -->
+    <string name="settings_machines">Машины</string>
+    <string name="settings_machines_summary">Дайте своим машинам собственные имена. Отображаются только машины, которые сейчас онлайн.</string>
+    <string name="machines_your">Ваши машины</string>
+    <string name="machines_empty">Нет машин онлайн.</string>
+    <string name="machines_rename">Переименовать %1$s</string>
+    <string name="machines_name_hint">Использовать имя хоста</string>
+    <string name="machines_save">Сохранить</string>
+    <string name="machines_rename_error">Не удалось переименовать эту машину.</string>
+    <string name="machines_status_online">Онлайн</string>
+    <string name="machines_status_offline">Офлайн</string>
+
+    <!-- Dictation settings (provider + language override) -->
+    <string name="settings_section_dictation">Диктовка</string>
+    <string name="settings_dictation_provider">Провайдер транскрипции</string>
+    <string name="settings_dictation_language">Язык</string>
+    <string name="settings_dictation_language_auto">Автоопределение</string>
 </resources>

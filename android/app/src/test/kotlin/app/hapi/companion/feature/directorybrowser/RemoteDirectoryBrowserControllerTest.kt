@@ -66,4 +66,45 @@ class RemoteDirectoryBrowserControllerTest {
         controller.close()
         assertFalse(controller.state.value.open)
     }
+
+    @Test
+    fun `show-hidden seeds from the provider and toggles notify the listener`() = runTest {
+        var persisted = true
+        val toggles = mutableListOf<Boolean>()
+        val requestFlags = mutableListOf<Boolean>()
+        val controller = RemoteDirectoryBrowserController(
+            scope = this,
+            listDirectory = { _, _, includeHidden ->
+                requestFlags += includeHidden
+                MachineListDirectoryResponse(success = true, entries = emptyList())
+            },
+            fallbackError = "Failed to browse directories",
+            includeHiddenProvider = { persisted },
+            onIncludeHiddenChange = { value ->
+                persisted = value
+                toggles += value
+            },
+        )
+
+        // Seeded from the persisted value: the very first listing includes hidden.
+        controller.open("machine-1", listOf("/workspace"), "/workspace")
+        advanceUntilIdle()
+        assertTrue(controller.state.value.includeHidden)
+        assertEquals(listOf(true), requestFlags)
+
+        // Toggling both notifies the listener (the persistence write hook)
+        // and reloads with the new flag.
+        controller.setIncludeHidden(false)
+        advanceUntilIdle()
+        assertEquals(listOf(false), toggles)
+        assertFalse(controller.state.value.includeHidden)
+        assertEquals(listOf(true, false), requestFlags)
+
+        // The provider value survives a close/reopen cycle.
+        controller.close()
+        controller.open("machine-1", listOf("/workspace"), "/workspace")
+        advanceUntilIdle()
+        assertFalse(controller.state.value.includeHidden)
+        assertEquals(listOf(true, false, false), requestFlags)
+    }
 }

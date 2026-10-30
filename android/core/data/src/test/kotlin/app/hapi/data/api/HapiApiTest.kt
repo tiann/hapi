@@ -465,6 +465,23 @@ class HapiApiTest {
     }
 
     @Test
+    fun `rename machine patches the display name and an empty string clears it`() {
+        server.enqueue(ok("{}"))
+
+        runBlocking { session.api.renameMachine("m1", "Laptop") }
+
+        val request = server.takeRequest()
+        assertEquals("PATCH", request.method)
+        assertEquals("/api/machines/m1", request.path)
+        assertEquals("""{"displayName":"Laptop"}""", request.body.readUtf8())
+
+        // Empty display name = clear the custom name back to the hostname.
+        server.enqueue(ok("{}"))
+        runBlocking { session.api.renameMachine("m1", "") }
+        assertEquals("""{"displayName":""}""", server.takeRequest().body.readUtf8())
+    }
+
+    @Test
     fun `transcription providers decode from the discovery endpoint`() {
         server.enqueue(
             ok(

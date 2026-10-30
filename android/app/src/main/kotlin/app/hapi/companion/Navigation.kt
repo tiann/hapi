@@ -2,7 +2,13 @@ package app.hapi.companion
 
 import android.content.Context
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
@@ -15,6 +21,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -41,6 +48,7 @@ import app.hapi.companion.feature.chat.attachments.AttachmentPreparer
 import app.hapi.companion.feature.chat.composer.DictationController
 import app.hapi.companion.feature.chat.composer.HapiDictationApi
 import app.hapi.companion.feature.chat.composer.MediaRecorderDictation
+import app.hapi.companion.feature.directorybrowser.DirectoryBrowserPrefs
 import app.hapi.companion.feature.files.ApiFilesGateway
 import app.hapi.companion.feature.files.FileViewerScreen
 import app.hapi.companion.feature.files.FileViewerStrings
@@ -69,6 +77,10 @@ import app.hapi.companion.feature.share.ShareScreen
 import app.hapi.companion.feature.share.ShareSessionGateway
 import app.hapi.companion.feature.share.ShareTarget
 import app.hapi.companion.feature.share.ShareTargetController
+import app.hapi.companion.feature.settings.DictationSettingsViewModel
+import app.hapi.companion.feature.settings.MachinesScreen
+import app.hapi.companion.feature.settings.MachinesViewModel
+import app.hapi.companion.feature.settings.RenameMachineGateway
 import app.hapi.companion.feature.settings.SettingsGeneralScreen
 import app.hapi.companion.feature.settings.SettingsHubScreen
 import app.hapi.companion.feature.settings.SettingsViewModel
@@ -76,15 +88,19 @@ import app.hapi.companion.feature.settings.StorageScreen
 import app.hapi.companion.feature.settings.StorageViewModel
 import app.hapi.companion.feature.settings.UsageScreen
 import app.hapi.companion.feature.settings.UsageViewModel
+import app.hapi.companion.feature.toasts.HubToasts
 import app.hapi.data.auth.AuthTerminalReason
 import java.util.Base64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.withTimeoutOrNull
 
 object Routes {
     const val HOME = "home"
@@ -157,6 +173,9 @@ object Routes {
     const val SETTINGS_GENERAL = "settings/general"
     const val SETTINGS_USAGE = "settings/usage"
     const val SETTINGS_STORAGE = "settings/storage"
+
+    /** Machines management (rename) under settings (web `/settings/machines`). */
+    const val SETTINGS_MACHINES = "settings/machines"
 }
 
 /**
@@ -246,6 +265,36 @@ fun HapiNavigation() {
         }
     }
 
+    // Hub-pushed toasts (web `ToastContainer` twin): collected at the app
+    // level and shown one at a time as a top snackbar over the nav host —
+    // 6 s auto-dismiss (web TOAST_DURATION_MS; SnackbarDuration has no custom
+    // value, hence Indefinite + withTimeoutOrNull), action tap opens the
+    // target session (push-tap navigation shape), no target = plain display.
+    // Sequential rather than the web's stacked column — declared divergence.
+    val toastSnackbar = remember { SnackbarHostState() }
+    val toastContext = LocalContext.current
+    LaunchedEffect(activeHubGraph, navController, toastContext) {
+        val hubGraph = activeHubGraph ?: return@LaunchedEffect
+        hubGraph.toasts.collect { toast ->
+            val route = HubToasts.routeFor(toast)
+            val result = withTimeoutOrNull(HubToasts.DURATION_MS) {
+                toastSnackbar.showSnackbar(
+                    message = HubToasts.message(toast),
+                    actionLabel = route?.let { toastContext.getString(R.string.toast_open) },
+                    withDismissAction = true,
+                    duration = SnackbarDuration.Indefinite,
+                )
+            }
+            if (result == SnackbarResult.ActionPerformed && route != null) {
+                navController.navigate(route) {
+                    // Keep the stack shallow: back always lands on the list.
+                    popUpTo(Routes.HOME)
+                    launchSingleTop = true
+                }
+            }
+        }
+    }
+
     // Pending payloads outlive pairing and HubGraph replacement. A target is
     // persisted before navigation, so process restoration follows the same path.
     LaunchedEffect(pendingShare?.id, pendingShare?.target, shares.size, currentEntry, activeHubGraph, registryState.activeHubUrl) {
@@ -318,6 +367,8 @@ fun HapiNavigation() {
         )
     }
 
+
+    Box(modifier = Modifier.fillMaxSize()) {
     NavHost(navController = navController, startDestination = startDestination) {
         composable(Routes.SHARE, arguments = listOf(navArgument("requestId") { type = NavType.StringType })) { entry ->
             val batch = shares.find { it.id == entry.arguments?.getString("requestId") } ?: return@composable
@@ -391,6 +442,20 @@ fun HapiNavigation() {
             )
             SettingsGeneralScreen(
                 viewModel = holder.viewModel,
+                dictation = holder.dictation,
+                onOpenMachines = { navController.navigate(Routes.SETTINGS_MACHINES) },
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(Routes.SETTINGS_MACHINES) {
+            val hubGraph = activeHubGraph ?: return@composable
+            val holder = viewModel<MachinesViewModelHolder>(
+                key = "settingsMachines:${hubGraph.hubUrl}",
+                factory = viewModelFactory { MachinesViewModelHolder(hubGraph) },
+            )
+            MachinesScreen(
+                viewModel = holder.viewModel,
                 onBack = { navController.popBackStack() },
             )
         }
@@ -441,7 +506,12 @@ fun HapiNavigation() {
             }
             val holder = viewModel<ChatViewModelHolder>(
                 key = "chat:${hubGraph.hubUrl}:$sessionId",
-                factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext) },
+                factory = viewModelFactory {
+                    ChatViewModelHolder(
+                        hubGraph, sessionId, appContext,
+                        graph.dictationProviderId, graph.dictationLanguage,
+                    )
+                },
             )
             DisposableEffect(holder) {
                 composedChat.value = ComposedChat(hubGraph.hubUrl, holder.viewModel)
@@ -596,7 +666,12 @@ fun HapiNavigation() {
                 viewModel<ChatViewModelHolder>(
                     viewModelStoreOwner = owner,
                     key = "chat:${hubGraph.hubUrl}:$sessionId",
-                    factory = viewModelFactory { ChatViewModelHolder(hubGraph, sessionId, appContext) },
+                    factory = viewModelFactory {
+                        ChatViewModelHolder(
+                            hubGraph, sessionId, appContext,
+                            graph.dictationProviderId, graph.dictationLanguage,
+                        )
+                    },
                 )
             }
             ScratchlistScreen(
@@ -633,7 +708,7 @@ fun HapiNavigation() {
                 key = "newSession:${hubGraph.hubUrl}",
                 factory = viewModelFactory {
                     NewSessionViewModelHolder(
-                        hubGraph, graph.newSessionPrefs, machineId,
+                        hubGraph, graph.newSessionPrefs, graph.directoryBrowserPrefs, machineId,
                         newSessionStrings(formContext),
                     )
                 },
@@ -712,6 +787,16 @@ fun HapiNavigation() {
                 )
             }
         }
+    }
+
+    // Top-center like the web container (`safe-area-inset-top` twin); renders
+    // nothing while no toast is showing, so it never blocks screen input.
+    SnackbarHost(
+        hostState = toastSnackbar,
+        modifier = Modifier
+            .align(Alignment.TopCenter)
+            .statusBarsPadding(),
+    )
     }
 }
 
@@ -804,6 +889,11 @@ private class ChatViewModelHolder(
     hubGraph: HubGraph,
     sessionId: String,
     appContext: Context,
+    // Defaults keep the holder compilable for callers that predate dictation
+    // overrides (e.g. forks with extra chat entry points): null flows mean
+    // auto provider + auto language, i.e. the pre-override behavior.
+    dictationProviderId: StateFlow<String?> = MutableStateFlow(null),
+    dictationLanguage: StateFlow<String?> = MutableStateFlow(null),
 ) : ViewModel() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -823,12 +913,16 @@ private class ChatViewModelHolder(
 
     /**
      * Holder-scoped so a recording survives rotation; [onCleared] discards
-     * any take still open when the screen goes away for good.
+     * any take still open when the screen goes away for good. The provider /
+     * language overrides read the app-graph caches live, so settings changes
+     * apply from the next take without recreating the chat.
      */
     val dictation = DictationController(
         api = HapiDictationApi(hubGraph.session.api),
         recorder = MediaRecorderDictation(appContext),
         scope = scope,
+        preferredProviderId = { dictationProviderId.value },
+        languageCode = { dictationLanguage.value },
     )
 
     override fun onCleared() {
@@ -918,6 +1012,30 @@ private class SettingsViewModelHolder(
         probeHealth = probeHealth,
     )
 
+    /** Dictation provider/language rows: app-wide prefs + this hub's providers. */
+    val dictation = DictationSettingsViewModel(
+        prefs = graph.dictationPrefs,
+        api = HapiDictationApi(hubGraph.session.api),
+        scope = scope,
+    )
+
+    override fun onCleared() {
+        scope.cancel()
+    }
+}
+
+/** Shell for the machines screen; live store keeps names current after rename. */
+private class MachinesViewModelHolder(hubGraph: HubGraph) : ViewModel() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    val viewModel = MachinesViewModel(
+        machineStore = hubGraph.machineStore,
+        renameGateway = RenameMachineGateway { machineId, displayName ->
+            hubGraph.session.api.renameMachine(machineId, displayName)
+        },
+        scope = scope,
+    )
+
     override fun onCleared() {
         scope.cancel()
     }
@@ -974,6 +1092,7 @@ private class ScratchlistViewModelHolder(
 private class NewSessionViewModelHolder(
     hubGraph: HubGraph,
     prefs: NewSessionPrefs,
+    browserPrefs: DirectoryBrowserPrefs,
     initialMachineId: String?,
     strings: NewSessionStrings,
 ) : ViewModel() {
@@ -983,6 +1102,7 @@ private class NewSessionViewModelHolder(
         gateway = ApiNewSessionGateway(hubGraph.session.api),
         machineStore = hubGraph.machineStore,
         prefs = prefs,
+        browserPrefs = browserPrefs,
         scope = scope,
         initialMachineId = initialMachineId,
         strings = strings,

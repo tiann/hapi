@@ -103,7 +103,11 @@ class HubGraph(
 
     private val mutableToasts = MutableSharedFlow<SyncEvent.Toast>(extraBufferCapacity = 16)
 
-    /** Hub-pushed in-app banners (never replayed); UI consumption lands in M4/M5. */
+    /**
+     * Hub-pushed in-app banners (never replayed, no id); collected by
+     * `HapiNavigation` into the foreground toast snackbar (web
+     * `ToastContainer` twin).
+     */
     val toasts: SharedFlow<SyncEvent.Toast> = mutableToasts.asSharedFlow()
 
     /** `POST /api/visibility` reporting, fed subscription ids by the handshake hook. */

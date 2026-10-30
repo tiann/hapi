@@ -634,4 +634,22 @@
     <string name="share_error_title">分享暂不可用</string>
     <string name="share_ok">确定</string>
     <string name="share_pair_first">请先配对 Hub，再选择接收分享内容的会话。</string>
+    <string name="toast_open">打开</string>
+    <!-- Machines settings (web /settings/machines twin) -->
+    <string name="settings_machines">设备</string>
+    <string name="settings_machines_summary">给设备起自己的名字。这里只列出当前在线的设备。</string>
+    <string name="machines_your">我的设备</string>
+    <string name="machines_empty">没有在线设备。</string>
+    <string name="machines_rename">重命名 %1$s</string>
+    <string name="machines_name_hint">使用主机名</string>
+    <string name="machines_save">保存</string>
+    <string name="machines_rename_error">重命名失败。</string>
+    <string name="machines_status_online">在线</string>
+    <string name="machines_status_offline">离线</string>
+
+    <!-- Dictation settings (provider + language override) -->
+    <string name="settings_section_dictation">语音输入</string>
+    <string name="settings_dictation_provider">转录提供商</string>
+    <string name="settings_dictation_language">语言</string>
+    <string name="settings_dictation_language_auto">自动检测</string>
 </resources>

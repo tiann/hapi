@@ -54,6 +54,16 @@ class LenientEpochMsTest {
         )
         assertEquals(1786932205158L, machineDir.modified)
 
+        // Backward compatibility: older runners never sent `isGitRepo` — the
+        // flag decodes as null (absent), which the UI treats as "not a git
+        // repo" rather than failing the whole entry.
+        val legacyDir = HapiJson.decodeFromString(
+            MachineDirectoryEntry.serializer(),
+            """{"name":"repo","type":"directory"}""",
+        )
+        assertEquals(null, legacyDir.isGitRepo)
+        assertEquals("repo", legacyDir.name)
+
         val read = HapiJson.decodeFromString(
             FileReadResponse.serializer(),
             """{"success":true,"content":"aGk=","size":2,"modified":1786932205158.0001}""",

@@ -73,6 +73,12 @@ data class MachineHealth(
 )
 
 /**
+ * `MACHINE_DISPLAY_NAME_MAX_LENGTH` (`shared/src/apiTypes.ts`) — enforced by
+ * the hub schema; clients pre-truncate the rename field to it.
+ */
+const val MACHINE_DISPLAY_NAME_MAX_LENGTH: Int = 64
+
+/**
  * Flat patch variant of the `machine-updated` SSE payload
  * (`MachinePatchSchema` — strict in zod).
  */

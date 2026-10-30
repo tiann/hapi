@@ -86,17 +86,33 @@ private class Harness(testScope: kotlinx.coroutines.test.TestScope) {
     val api = FakeDictationApi()
     val recorder = FakeRecorder()
     val events = mutableListOf<DictationEvent>()
+
+    /** Settings-backed provider choice + language override (live getters). */
+    var preferredProvider: String? = null
+    var language: String? = null
+
     val controller = DictationController(
         api = api,
         recorder = recorder,
         scope = testScope.backgroundScope,
         now = { 42_000L },
+        preferredProviderId = { preferredProvider },
+        languageCode = { language },
     )
 
     init {
         testScope.backgroundScope.launch(start = CoroutineStart.UNDISPATCHED) {
             controller.events.collect { events += it }
         }
+    }
+
+    /** Records one take and returns its transcribe call. */
+    suspend fun recordAndStop(): FakeDictationApi.TranscribeCall {
+        controller.toggle()
+        controller.state.first { it is DictationState.Recording }
+        controller.toggle()
+        controller.state.first { it is DictationState.Idle }
+        return api.transcribeCalls.last()
     }
 }
 
@@ -314,6 +330,92 @@ class DictationControllerTest {
         assertEquals(0, harness.recorder.stopCalls)
         assertTrue(harness.api.transcribeCalls.isEmpty())
         assertTrue(harness.events.isEmpty())
+    }
+
+    @Test
+    fun `stored provider preference wins while the hub offers it for standard`() = runTest {
+        val harness = Harness(this)
+        // Hub order: openai first; the stored choice names groq instead.
+        harness.preferredProvider = "groq"
+
+        val call = harness.recordAndStop()
+
+        assertEquals("groq", call.provider)
+    }
+
+    @Test
+    fun `stale or realtime-only stored preference falls back to the first standard provider`() = runTest {
+        val harness = Harness(this)
+        // Stored id the hub no longer configures.
+        harness.preferredProvider = "elevenlabs"
+        assertEquals("openai", harness.recordAndStop().provider)
+
+        // Fresh controller: stored id configured but realtime-only.
+        val second = Harness(this)
+        second.api.providersResult = TranscriptionProvidersResponse(
+            providers = listOf(
+                TranscriptionProviderInfo(id = "openai", label = "OpenAI", modes = listOf("standard")),
+                TranscriptionProviderInfo(id = "browser-local", label = "Browser", modes = listOf("realtime")),
+            ),
+        )
+        second.preferredProvider = "browser-local"
+        assertEquals("openai", second.recordAndStop().provider)
+    }
+
+    @Test
+    fun `changing the stored preference re-resolves the memoized provider`() = runTest {
+        val harness = Harness(this)
+
+        assertEquals("openai", harness.recordAndStop().provider)
+        harness.preferredProvider = "groq"
+        assertEquals("groq", harness.recordAndStop().provider)
+
+        // One discovery per distinct preference value, not per take.
+        assertEquals(2, harness.api.providersCalls)
+        // An unchanged preference keeps the memoization across further takes.
+        assertEquals("groq", harness.recordAndStop().provider)
+        assertEquals(2, harness.api.providersCalls)
+    }
+
+    @Test
+    fun `language override rides the transcription request`() = runTest {
+        val harness = Harness(this)
+        harness.language = "zh-CN"
+
+        assertEquals("zh-CN", harness.recordAndStop().language)
+    }
+}
+
+class ResolveStandardProviderTest {
+
+    private val catalog = listOf(
+        TranscriptionProviderInfo(id = "openai", label = "OpenAI", modes = listOf("standard", "realtime")),
+        TranscriptionProviderInfo(id = "elevenlabs", label = "ElevenLabs", modes = listOf("standard", "realtime")),
+        TranscriptionProviderInfo(id = "groq", label = "Groq", modes = listOf("standard")),
+        TranscriptionProviderInfo(id = "browser-local", label = "Browser", modes = listOf("realtime")),
+    )
+
+    @Test
+    fun `null preference takes the first standard-capable provider`() {
+        assertEquals("openai", resolveStandardProvider(null, catalog)!!.id)
+    }
+
+    @Test
+    fun `standard-capable preference is honored regardless of hub order`() {
+        assertEquals("groq", resolveStandardProvider("groq", catalog)!!.id)
+    }
+
+    @Test
+    fun `realtime-only or unknown preference falls back to hub order`() {
+        assertEquals("openai", resolveStandardProvider("browser-local", catalog)!!.id)
+        assertEquals("openai", resolveStandardProvider("no-such-provider", catalog)!!.id)
+    }
+
+    @Test
+    fun `no standard-capable provider yields null even with a preference`() {
+        val realtimeOnly = catalog.filter { !it.modes.contains("standard") }
+        assertNull(resolveStandardProvider("openai", realtimeOnly))
+        assertNull(resolveStandardProvider(null, emptyList()))
     }
 }
 

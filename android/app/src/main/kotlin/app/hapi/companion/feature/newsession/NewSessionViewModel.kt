@@ -1,5 +1,6 @@
 package app.hapi.companion.feature.newsession
 
+import app.hapi.companion.feature.directorybrowser.DirectoryBrowserPrefs
 import app.hapi.companion.feature.directorybrowser.RemoteDirectoryBrowserController
 import app.hapi.companion.feature.directorybrowser.RemoteDirectoryPath
 import app.hapi.companion.feature.newsession.NewSessionLogic.buildSpawnRequest
@@ -176,6 +177,7 @@ class NewSessionViewModel(
     initialMachineId: String? = null,
     private val debounceMs: Long = 250L,
     private val strings: NewSessionStrings = NewSessionStrings(),
+    browserPrefs: DirectoryBrowserPrefs? = null,
 ) {
     private val form = MutableStateFlow(NewSessionForm())
     private val prefsData = MutableStateFlow(NewSessionPrefsData())
@@ -196,10 +198,25 @@ class NewSessionViewModel(
 
     /** Emits the new session id once — navigate-replace to `chat/{id}`. */
     val spawned: SharedFlow<String> = _spawned.asSharedFlow()
+
+    /**
+     * Latest show-hidden choice (persisted via [browserPrefs] when wired) —
+     * the seed every browser [open][RemoteDirectoryBrowserController.open]
+     * reads and every toggle refreshes (web localStorage twin).
+     */
+    @Volatile private var browserIncludeHidden = false
+
     val directoryBrowser = RemoteDirectoryBrowserController(
         scope = scope,
         listDirectory = gateway::listDirectory,
         fallbackError = strings.directoryLookupFailed,
+        includeHiddenProvider = { browserIncludeHidden },
+        onIncludeHiddenChange = { value ->
+            browserIncludeHidden = value
+            browserPrefs?.let { target ->
+                scope.launch { runCatching { target.writeShowHidden(value) } }
+            }
+        },
     )
 
     private var directoryJob: Job? = null
@@ -225,6 +242,13 @@ class NewSessionViewModel(
     private var cachedListing: Pair<Pair<String, String>, List<MachineDirectoryEntry>>? = null
 
     init {
+        // Show-hidden seed (web reads localStorage at mount): the browser is
+        // only ever opened by user tap, long after this read settles.
+        browserPrefs?.let { target ->
+            scope.launch {
+                browserIncludeHidden = runCatching { target.readShowHidden() }.getOrDefault(false)
+            }
+        }
         scope.launch {
             prefsData.value = runCatching { prefs.readPrefs() }.getOrDefault(NewSessionPrefsData())
             val draft = runCatching { prefs.readDraft() }.getOrNull()?.let(NewSessionLogic::sanitizeDraft)
