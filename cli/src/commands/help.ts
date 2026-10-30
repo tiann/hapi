@@ -24,6 +24,8 @@ Commands:
   hapi doctor                Run diagnostics and troubleshooting
   hapi ping-peer             List peers or message another session
   hapi inspect-peer <id>     Read another session's metadata and messages
+  hapi set-mode <id> <mode>  Change a session's permission mode
+  hapi usage [--json]        When agents were working, across machines
   hapi mcp                   Start the MCP stdio bridge
 
 Options:

@@ -32,8 +32,8 @@ To start one directly, use `hapi claude`, `hapi codex`, or another
 
 ## Open the UI
 
-- **Web / PWA:** open the web URL shown in the terminal, or scan the web QR code. Enter your access token if prompted.
-- **Native iOS / Android:** open the app and scan the companion QR, or enter the HTTPS hub URL and access token. See [Native apps](./native-apps.md) for build and pairing instructions.
+- **Web / PWA (free):** open the web URL shown in the terminal, or scan the web QR code. Enter your access token if prompted.
+- **Native iOS / Android (paid):** install HAPI from the [App Store](https://apps.apple.com/app/id6805699104) or [Google Play](https://play.google.com/store/apps/details?id=run.hapi.companion), then scan the companion QR or enter the HTTPS hub URL and access token. See [Native apps](./native-apps.md) for pairing.
 
 </Steps>
 

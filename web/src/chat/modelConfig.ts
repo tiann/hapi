@@ -74,16 +74,17 @@ export function getContextBudgetTokens(model: string | null | undefined, flavor?
         if (!trimmedModel) {
             return DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS
         }
-        if (isClaudeModelPreset(trimmedModel) || trimmedModel.startsWith('claude-')) {
-            // Fable ships with a 1M window even under its bare id: the SDK
-            // result message reports modelUsage["claude-fable-5"].contextWindow
-            // = 1,000,000, so the "[1m]" suffix check alone would undercount
-            // local-mode sessions (their transcript usage carries no
-            // context_window and falls through to this heuristic).
-            const isFable = trimmedModel === 'fable'
-                || trimmedModel === 'fable[1m]'
+        if (isClaudeModelPreset(trimmedModel) || trimmedModel.startsWith('claude-') || trimmedModel.endsWith('[1m]')) {
+            // The preset aliases (opus/fable/sonnet/haiku) resolve to models with a
+            // native 1M window, and Fable ships 1M even under its bare id (the
+            // SDK result reports modelUsage["claude-fable-5"].contextWindow =
+            // 1,000,000). Local-mode transcript usage carries no
+            // context_window and falls through to this heuristic, so the
+            // "[1m]" suffix check alone would undercount them.
+            const isLarge = isClaudeModelPreset(trimmedModel)
+                || trimmedModel.endsWith('[1m]')
                 || trimmedModel.startsWith('claude-fable')
-            return trimmedModel.endsWith('[1m]') || isFable
+            return isLarge
                 ? LARGE_CLAUDE_CONTEXT_WINDOW_TOKENS
                 : DEFAULT_CLAUDE_CONTEXT_WINDOW_TOKENS
         }

@@ -10,7 +10,7 @@
         "docs",
         "relay"
     ],
-    "packageManager": "bun@1.4.0",
+    "packageManager": "bun@1.4.4",
     "scripts": {
         "build:site": "bun run --cwd website build && bun run --cwd docs docs:build && cp -r docs/.vitepress/dist website/dist/public/docs",
         "dev": "bun run --parallel dev:hub dev:web",

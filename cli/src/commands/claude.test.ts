@@ -61,6 +61,18 @@ describe('claudeCommand arguments', () => {
         expect(runClaudeMock).toHaveBeenCalledWith({ model: 'claude-opus-4-1' })
     })
 
+    it.each(['--yolo', '--dangerously-skip-permissions'])('tracks %s as session permission mode without forwarding it', async (arg) => {
+        await claudeCommand.run(createCommandContext([arg]))
+
+        expect(runClaudeMock).toHaveBeenCalledWith({ permissionMode: 'bypassPermissions' })
+    })
+
+    it('keeps an explicit --permission-mode over a later --dangerously-skip-permissions', async () => {
+        await claudeCommand.run(createCommandContext(['--permission-mode', 'default', '--dangerously-skip-permissions']))
+
+        expect(runClaudeMock).toHaveBeenCalledWith({ permissionMode: 'default' })
+    })
+
     it.each(['--help', '-h', '--version', '-v', 'claude'])('forwards %s without special handling', async (arg) => {
         const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
         try {

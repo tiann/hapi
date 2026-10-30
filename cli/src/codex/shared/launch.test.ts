@@ -45,7 +45,11 @@ describe('shared launch configuration', () => {
     it('does not interpret flags after -- as configuration', () => {
         expect(sharedLaunchConfig({ codexArgs: ['--', '--profile=explain'] }, '/tmp').tuiArgs).toEqual(['--', '--profile=explain']);
         expect(sharedLaunchConfig({ codexArgs: ['--', '-C', 'literal'] }, '/tmp').tuiArgs).toEqual(['--', '-C', 'literal']);
-        expect(() => sharedLaunchConfig({ permissionMode: 'safe-yolo' }, '/tmp')).toThrow('not a native shared');
+    });
+    it('maps HAPI autoReview to native auto-review in the workspace-write sandbox', () => {
+        const result = sharedLaunchConfig({ permissionMode: 'autoReview', codexArgs: ['--yolo'] }, '/tmp');
+        expect(result.threadParams).toMatchObject({ approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', sandbox: 'workspace-write' });
+        expect(result.serverArgs).toEqual(['-c', 'approval_policy="on-request"', '-c', 'sandbox_mode="workspace-write"', '-c', 'approvals_reviewer="auto_review"']);
     });
     it('preserves launch-time provider and automatic-review policy', () => {
         const result = sharedLaunchConfig({ codexArgs: ['--oss', '--local-provider', 'ollama', '--approve-for-me'] }, '/tmp');

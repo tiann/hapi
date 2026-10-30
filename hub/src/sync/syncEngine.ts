@@ -7,7 +7,7 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import { isKnownFlavor, isLiveLifecycleState, isSteeringSupportedForSession, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
+import { isKnownFlavor, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
 import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
@@ -15,7 +15,7 @@ import {
 import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { ImplementCodexPlanResult } from '@hapi/protocol/apiTypes'
-import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
+import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
 import { randomUUID } from 'node:crypto'
@@ -26,6 +26,7 @@ import { clearAgentTerminalBuffer } from '../socket/agentTerminalBuffer'
 import type { SSEManager } from '../sse/sseManager'
 import { CursorLegacyMigrator, type CursorLegacyMigratorOptions } from '../cursor/cursorLegacyMigrator'
 
+import { isUserInputMessage } from '../store/sessionUserActivity'
 import { EventPublisher, type SyncEventListener } from './eventPublisher'
 import { MachineCache, type Machine } from './machineCache'
 import { MessageService, type RetryIndeterminateMessageResult } from './messageService'
@@ -45,13 +46,16 @@ import {
     type RpcStatFilesResponse,
     type RpcListAgyModelsResponse,
     type RpcListPiModelsResponse,
+    type RpcListClaudeModelsResponse,
     type RpcListCodexModelsResponse,
     type RpcListPiSessionsResponse,
+    type RpcListOpencodeSessionsResponse,
     type RpcArchiveCodexSessionResponse,
     type RpcListCursorModelsResponse,
     type RpcListOpencodeModelsResponse,
     type RpcListOpencodeModelVariantsResponse,
     type RpcListGrokModelsResponse,
+    type RpcListDshModelsResponse,
     type RpcListCopilotModelsResponse,
     type RpcListKimiModelsResponse,
     type RpcListGrokReasoningEffortOptionsResponse,
@@ -64,6 +68,9 @@ import {
     type RpcUploadFileResponse
 } from './rpcGateway'
 import { SessionCache } from './sessionCache'
+import { AutomaticTitleSuggestionService } from './automaticTitleSuggestion'
+import { extractMessageEventType } from '../notifications/eventParsing'
+import { SessionEnumerationCache } from './sessionEnumerationCache'
 import { ingestNotifySummaryFromMessage } from './workGraphNotifyIngest'
 
 type PiResumeAttempt = NonNullable<NonNullable<Session['metadata']>['piResumeAttempt']>
@@ -81,12 +88,14 @@ export type {
     RpcStatFilesResponse,
     RpcListAgyModelsResponse,
     RpcListPiModelsResponse,
+    RpcListClaudeModelsResponse,
     RpcListCodexModelsResponse,
     RpcListPiSessionsResponse,
     RpcListCursorModelsResponse,
     RpcListOpencodeModelsResponse,
     RpcListOpencodeModelVariantsResponse,
     RpcListGrokModelsResponse,
+    RpcListDshModelsResponse,
     RpcListCopilotModelsResponse,
     RpcListKimiModelsResponse,
     RpcListGrokReasoningEffortOptionsResponse,
@@ -183,6 +192,9 @@ export class SyncEngine {
     private readonly machineCache: MachineCache
     private readonly messageService: MessageService
     private readonly titleSuggestionService: TitleSuggestionService
+    private readonly automaticTitleSuggestionService: AutomaticTitleSuggestionService
+    /** Completed turns whose final chat message may still be in transit. */
+    private readonly titleTurnCompletedIds = new Set<string>()
     private readonly rpcGateway: RpcGateway
     private inactivityTimer: NodeJS.Timeout | null = null
     /** Sessions that emitted `session-ready` (Cursor ACP or validated Pi get_state). */
@@ -204,6 +216,28 @@ export class SyncEngine {
     /** Serialize fork/rewind per session so concurrent native rollbacks cannot stack. */
     private readonly historyActionsInFlight = new Set<string>()
     /**
+     * Single-flight + last-good caches for session enumerations. The backing
+     * RPCs can queue for tens of seconds behind a busy engine (mid-turn or
+     * reconnecting socket) while clients re-fetch on every session open;
+     * enumerations change rarely, so serve cached values and revalidate.
+     */
+    private readonly slashCommandsEnumeration = new SessionEnumerationCache({
+        ttlMs: 30_000,
+        fetchTimeoutMs: 8_000
+    })
+    private readonly skillsEnumeration = new SessionEnumerationCache({
+        ttlMs: 30_000,
+        fetchTimeoutMs: 8_000
+    })
+
+    /** Drop cached enumeration RPCs for a session leaving the active set
+     *  (deleted or archived). The keys are never queried again; without this
+     *  the per-session entries would accumulate for the hub's lifetime. */
+    private releaseSessionEnumerations(sessionId: string): void {
+        this.slashCommandsEnumeration.releaseSession(sessionId)
+        this.skillsEnumeration.releaseSession(sessionId)
+    }
+    /**
      * Hub owner id for accountable work-graph principals (A2A P1/P3).
      * Defaults to "1" for unit tests; startHub overwrites with getOrCreateOwnerId().
      */
@@ -216,9 +250,17 @@ export class SyncEngine {
         sseManager: SSEManager,
     ) {
         this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
-        this.sessionCache = new SessionCache(store, this.eventPublisher)
+        this.sessionCache = new SessionCache(store, this.eventPublisher, {
+            // mergeSessionData is the single choke point that deletes rows for
+            // merges — resume-id rotation here and sessionCache's internal
+            // dedup alike — so enumeration cleanup rides on one hook.
+            onSessionMergedAway: (oldSessionId) => this.releaseSessionEnumerations(oldSessionId)
+        })
         this.eventPublisher.subscribe((event) => {
             if (event.type === 'message-received') {
+                if (isUserInputMessage(event.message.content)) {
+                    this.sessionCache.refreshLastUserMessageAt(event.sessionId)
+                }
                 if (!this.sessionCache.getSession(event.sessionId)?.hasConversationContent
                     && hasConversationMessageContent(event.message.content)) {
                     this.sessionCache.refreshConversationContent(event.sessionId)
@@ -235,7 +277,12 @@ export class SyncEngine {
             (sessionId, updatedAt) => this.recordSessionActivity(sessionId, updatedAt)
         )
         this.titleSuggestionService = createTitleSuggestionService(store)
+        this.automaticTitleSuggestionService = new AutomaticTitleSuggestionService(
+            this.sessionCache,
+            this.titleSuggestionService
+        )
         this.rpcGateway = new RpcGateway(io, rpcRegistry)
+        this.sessionCache.closeTurnsLeftOpen()
         this.reloadAll()
         this.inactivityTimer = setInterval(() => this.expireInactive(), 5_000)
     }
@@ -245,6 +292,8 @@ export class SyncEngine {
     }
 
     stop(): void {
+        this.automaticTitleSuggestionService.stop()
+        this.titleTurnCompletedIds.clear()
         if (this.inactivityTimer) {
             clearInterval(this.inactivityTimer)
             this.inactivityTimer = null
@@ -288,6 +337,57 @@ export class SyncEngine {
             if (hostMatch) return hostMatch
         }
         return null
+    }
+
+    /**
+     * Inactive sessions no longer have a session-scoped CLI socket, but their
+     * recorded machine may still have the long-lived runner online. In that
+     * case the runner can serve the current workspace without reviving the
+     * agent or taking a snapshot. Keep this gate strict: only an inactive row
+     * with matching machine metadata and the new read-only capability may use
+     * the fallback.
+     */
+    private getInactiveWorkspaceFallback(sessionId: string): { machineId: string; cwd: string } | null {
+        const session = this.sessionCache.getSession(sessionId)
+        const machineId = session?.metadata?.machineId
+        const cwd = session?.metadata?.path
+        if (!session || session.active || !machineId || !cwd) {
+            return null
+        }
+
+        const machine = this.resolveOnlineMachineForSession(session, session.namespace, { strictMachineId: true })
+        if (!machine?.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.WorkspaceFileAccess)) {
+            return null
+        }
+
+        return { machineId: machine.id, cwd }
+    }
+
+    private async withInactiveWorkspaceFallback<T>(
+        sessionId: string,
+        originalError: unknown,
+        action: (fallback: { machineId: string; cwd: string }) => Promise<T>
+    ): Promise<T> {
+        if (!(originalError instanceof RpcTargetMissingError)) {
+            throw originalError
+        }
+
+        const fallback = this.getInactiveWorkspaceFallback(sessionId)
+        if (!fallback) {
+            throw originalError
+        }
+
+        try {
+            return await action(fallback)
+        } catch (fallbackError) {
+            // An older runner may be online but not implement this capability
+            // yet. Preserve the original session-RPC diagnostic in that case;
+            // real fallback errors still propagate normally.
+            if (fallbackError instanceof RpcTargetMissingError) {
+                throw originalError
+            }
+            throw fallbackError
+        }
     }
 
     async getCursorChatStoreStatus(sessionId: string, namespace: string): Promise<CursorChatStoreStatusResult> {
@@ -505,6 +605,13 @@ export class SyncEngine {
         this.eventPublisher.emit(event)
 
         if (event.type === 'message-received' && event.sessionId && 'message' in event && event.message) {
+            if (extractMessageEventType(event) === 'ready') {
+                this.titleTurnCompletedIds.add(event.sessionId)
+                void this.automaticTitleSuggestionService.onTurnCompleted(event.sessionId)
+            } else if (this.titleTurnCompletedIds.has(event.sessionId) && !this.getSession(event.sessionId)?.thinking) {
+                void this.automaticTitleSuggestionService.onTurnCompleted(event.sessionId)
+            }
+
             // A2A P3: well-formed AGENT_NOTIFY_SUMMARY → work-graph work_ad.
             // Capture is independent of chat display settings (#1462/#1464).
             const session = this.getSession(event.sessionId)
@@ -539,7 +646,15 @@ export class SyncEngine {
         serviceTier?: string | null
         collaborationMode?: CodexCollaborationMode
     }): void {
+        const wasThinking = this.sessionCache.getSession(payload.sid)?.thinking === true
+        if (!wasThinking && payload.thinking === true) {
+            this.automaticTitleSuggestionService.onTurnStarted(payload.sid)
+        }
         this.sessionCache.handleSessionAlive(payload)
+        if (wasThinking && !this.sessionCache.getSession(payload.sid)?.thinking) {
+            this.titleTurnCompletedIds.add(payload.sid)
+            void this.automaticTitleSuggestionService.onTurnCompleted(payload.sid)
+        }
         this.messageService.replayImmediateQueuedMessages(payload.sid)
         this.triggerDedupIfNeeded(payload.sid)
     }
@@ -582,6 +697,10 @@ export class SyncEngine {
         const shouldRetryDedup = !ownsPiAttempt && !isPiAttemptChild && (!isCursorAcp || this.sessionReadyIds.has(payload.sid))
 
         this.sessionCache.handleSessionEnd(payload)
+        if (payload.reason === 'completed') {
+            this.titleTurnCompletedIds.add(payload.sid)
+            void this.automaticTitleSuggestionService.onTurnCompleted(payload.sid)
+        }
         this.eventPublisher.emit({
             type: 'session-ended',
             sessionId: payload.sid,
@@ -615,8 +734,8 @@ export class SyncEngine {
         clearAgentTerminalBuffer(payload.sid)
     }
 
-    handleBackgroundTaskDelta(sessionId: string, delta: { started: number; completed: number }): void {
-        this.sessionCache.applyBackgroundTaskDelta(sessionId, delta)
+    handleBackgroundTasks(sessionId: string, tasks: BackgroundTask[]): void {
+        this.sessionCache.setBackgroundTasks(sessionId, tasks)
     }
 
     recordSessionActivity(sessionId: string, updatedAt: number): void {
@@ -1069,6 +1188,9 @@ export class SyncEngine {
         if (this.historyActionsInFlight.has(sessionId)) {
             throw new Error('Conversation history action already in progress')
         }
+        if (!this.sessionCache.getSession(sessionId)?.thinking) {
+            this.automaticTitleSuggestionService.onTurnStarted(sessionId)
+        }
         const { actualSessionId, createdAt: activeTurnStartedAt } = await this.messageService.sendMessage(sessionId, payload)
         this.sessionCache.markMessageQueued(actualSessionId, Date.now(), activeTurnStartedAt)
         this.sessionCache.recordSessionActivity(actualSessionId, Date.now())
@@ -1183,14 +1305,14 @@ export class SyncEngine {
         await this.rpcGateway.abortSession(sessionId)
     }
 
-    private assertConversationHistoryIdle(session: Session): void {
+    private assertConversationHistoryIdle(session: Session, allowRunningHistoricalFork = false): void {
         if (!session.active) {
             throw new Error('Session must be active')
         }
         if (session.agentState?.controlledByUser === true && !session.metadata?.capabilities?.concurrentClients) {
             throw new Error('Conversation history actions require a remote session')
         }
-        if (session.thinking) {
+        if (session.thinking && !allowRunningHistoricalFork) {
             throw new Error('Session is busy')
         }
         if (session.metadata?.conversationHistoryDiverged === true) {
@@ -1413,7 +1535,7 @@ export class SyncEngine {
         }
         let source = access.session
         try {
-            this.assertConversationHistoryIdle(source)
+            this.assertConversationHistoryIdle(source, Boolean(messageLocalId) && this.resolveFlavor(source) === 'codex')
         } catch (error) {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
@@ -1448,7 +1570,22 @@ export class SyncEngine {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
 
-        if (!rpcResult?.nativeSessionId) {
+        if (
+            rpcResult &&
+            typeof rpcResult === 'object' &&
+            'error' in rpcResult &&
+            typeof rpcResult.error === 'string' &&
+            rpcResult.error.trim()
+        ) {
+            return { type: 'error', message: rpcResult.error }
+        }
+
+        if (
+            !rpcResult ||
+            typeof rpcResult !== 'object' ||
+            !('nativeSessionId' in rpcResult) ||
+            !rpcResult.nativeSessionId
+        ) {
             return { type: 'error', message: 'Native fork did not return a session id' }
         }
         if (rpcResult.sessionId) {
@@ -1848,6 +1985,7 @@ export class SyncEngine {
             )
             this.emitCliSessionMetadataUpdate(sessionId)
         }
+        this.releaseSessionEnumerations(sessionId)
         this.handleSessionEnd({ sid: sessionId, time: Date.now() })
     }
 
@@ -2091,20 +2229,23 @@ export class SyncEngine {
         await this.rpcGateway.switchSession(sessionId, to)
     }
 
-    async renameSession(sessionId: string, name: string): Promise<void> {
-        await this.sessionCache.renameSession(sessionId, name)
+    async renameSession(sessionId: string, name: string | undefined, titleLocked?: boolean): Promise<void> {
+        await this.sessionCache.renameSession(sessionId, name, titleLocked)
     }
 
     async suggestSessionTitle(sessionId: string): Promise<string> {
         return await this.titleSuggestionService.suggestTitle(sessionId)
     }
 
-    async updateSessionSummary(sessionId: string, text: string): Promise<void> {
-        await this.sessionCache.updateSessionSummary(sessionId, text)
+    async updateSessionSummary(sessionId: string, text: string, titleLocked?: boolean): Promise<void> {
+        await this.sessionCache.updateSessionSummary(sessionId, text, titleLocked)
     }
 
     async deleteSession(sessionId: string): Promise<void> {
         await this.sessionCache.deleteSession(sessionId)
+        this.titleTurnCompletedIds.delete(sessionId)
+        this.automaticTitleSuggestionService.forgetSession(sessionId)
+        this.releaseSessionEnumerations(sessionId)
     }
 
     async applySessionConfig(
@@ -3206,7 +3347,7 @@ export class SyncEngine {
         const targetMachine = this.resolveOnlineMachineForSession(
             session,
             namespace,
-            { strictMachineId: flavor === 'cursor' || (flavor === 'pi' && resumeToken !== undefined) }
+            { strictMachineId: flavor === 'cursor' || ((flavor === 'pi' || flavor === 'opencode') && resumeToken !== undefined) }
         )
         if (!targetMachine) {
             return { type: 'error', message: 'No machine online', code: 'no_machine_online' }
@@ -3508,6 +3649,8 @@ export class SyncEngine {
                 const oldSession = this.sessionCache.getSessionByNamespace(access.sessionId, namespace)
                 if (oldSession) {
                     try {
+                        // Enumeration cleanup for the deleted old row fires via
+                        // the onSessionMergedAway hook wired in the constructor.
                         await this.sessionCache.mergeSessions(access.sessionId, spawnResult.sessionId, namespace)
                     } catch (error) {
                         const message = error instanceof Error ? error.message : 'Failed to merge resumed session'
@@ -4009,7 +4152,10 @@ export class SyncEngine {
         }
         if (session?.active) this.handleSessionEnd({ sid: sessionId, time: Date.now(), reason: 'error' })
         const remaining = this.sessionCache.getSession(sessionId)
-        if (remaining && !remaining.active) await this.sessionCache.deleteSession(sessionId)
+        if (remaining && !remaining.active) {
+            await this.sessionCache.deleteSession(sessionId)
+            this.releaseSessionEnumerations(sessionId)
+        }
         this.piUnexpectedTempOriginalIds.delete(sessionId)
         await this.writePiResumeAttempt(originalSessionId, namespace, null, true).catch(() => {})
         return true
@@ -4169,7 +4315,10 @@ export class SyncEngine {
         if (child?.active) this.handleSessionEnd({ sid: childSessionId, time: Date.now(), reason: 'error' })
         if (childSessionId !== session.id) {
             const remaining = this.sessionCache.getSession(childSessionId)
-            if (remaining && !remaining.active) await this.sessionCache.deleteSession(childSessionId)
+            if (remaining && !remaining.active) {
+                await this.sessionCache.deleteSession(childSessionId)
+                this.releaseSessionEnumerations(childSessionId)
+            }
         }
         await this.writePiResumeAttempt(session.id, session.namespace, null, true)
         this.piResumeQuarantinedIds.delete(session.id)
@@ -4241,19 +4390,51 @@ export class SyncEngine {
     }
 
     async getGitStatus(sessionId: string, cwd?: string): Promise<RpcCommandResponse> {
-        return await this.rpcGateway.getGitStatus(sessionId, cwd)
+        try {
+            return await this.rpcGateway.getGitStatus(sessionId, cwd)
+        } catch (error) {
+            return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd: fallbackCwd }) =>
+                this.rpcGateway.getWorkspaceGitStatus(machineId, { cwd: fallbackCwd })
+            )
+        }
     }
 
     async getGitDiffNumstat(sessionId: string, options: { cwd?: string; staged?: boolean }): Promise<RpcCommandResponse> {
-        return await this.rpcGateway.getGitDiffNumstat(sessionId, options)
+        try {
+            return await this.rpcGateway.getGitDiffNumstat(sessionId, options)
+        } catch (error) {
+            return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd: fallbackCwd }) =>
+                this.rpcGateway.getWorkspaceGitDiffNumstat(machineId, {
+                    ...options,
+                    cwd: fallbackCwd,
+                })
+            )
+        }
     }
 
     async getGitDiffFile(sessionId: string, options: { cwd?: string; filePath: string; staged?: boolean }): Promise<RpcCommandResponse> {
-        return await this.rpcGateway.getGitDiffFile(sessionId, options)
+        try {
+            return await this.rpcGateway.getGitDiffFile(sessionId, options)
+        } catch (error) {
+            return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd: fallbackCwd }) =>
+                this.rpcGateway.getWorkspaceGitDiffFile(machineId, {
+                    ...options,
+                    cwd: fallbackCwd,
+                })
+            )
+        }
     }
 
-    async readSessionFile(sessionId: string, path: string): Promise<RpcReadFileResponse> {
-        return await this.rpcGateway.readSessionFile(sessionId, path)
+    async readSessionFile(sessionId: string, path: string, options?: { maxBytes?: number }): Promise<RpcReadFileResponse> {
+        try {
+            return options === undefined
+                ? await this.rpcGateway.readSessionFile(sessionId, path)
+                : await this.rpcGateway.readSessionFile(sessionId, path, options)
+        } catch (error) {
+            return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd }) =>
+                this.rpcGateway.readWorkspaceFile(machineId, { cwd, path, ...options })
+            )
+        }
     }
 
     async readGeneratedImage(sessionId: string, imageId: string): Promise<RpcGeneratedImageResponse> {
@@ -4261,11 +4442,23 @@ export class SyncEngine {
     }
 
     async listDirectory(sessionId: string, path: string): Promise<RpcListDirectoryResponse> {
-        return await this.rpcGateway.listDirectory(sessionId, path)
+        try {
+            return await this.rpcGateway.listDirectory(sessionId, path)
+        } catch (error) {
+            return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd }) =>
+                this.rpcGateway.listWorkspaceDirectory(machineId, { cwd, path })
+            )
+        }
     }
 
     async statFiles(sessionId: string, paths: string[]): Promise<RpcStatFilesResponse> {
-        return await this.rpcGateway.statFiles(sessionId, paths)
+        try {
+            return await this.rpcGateway.statFiles(sessionId, paths)
+        } catch (error) {
+            return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd }) =>
+                this.rpcGateway.statWorkspaceFiles(machineId, { cwd, paths })
+            )
+        }
     }
 
     async uploadFile(sessionId: string, filename: string, content: string, mimeType: string): Promise<RpcUploadFileResponse> {
@@ -4277,11 +4470,21 @@ export class SyncEngine {
     }
 
     async runRipgrep(sessionId: string, args: string[], cwd?: string, fileSearch?: FileSearchOptions): Promise<RpcCommandResponse> {
-        return await this.rpcGateway.runRipgrep(sessionId, args, cwd, fileSearch)
+        try {
+            return await this.rpcGateway.runRipgrep(sessionId, args, cwd, fileSearch)
+        } catch (error) {
+            return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd: fallbackCwd }) =>
+                this.rpcGateway.runWorkspaceRipgrep(machineId, { args, cwd: fallbackCwd, fileSearch })
+            )
+        }
     }
 
     async listSlashCommands(sessionId: string, agent: string): Promise<SlashCommandsResponse> {
-        return await this.rpcGateway.listSlashCommands(sessionId, agent)
+        return await this.slashCommandsEnumeration.get(
+            `${sessionId}|${agent}`,
+            () => this.rpcGateway.listSlashCommands(sessionId, agent),
+            (result) => result.success === true && Array.isArray(result.commands)
+        )
     }
 
     async listSkills(sessionId: string, flavor?: string): Promise<{
@@ -4289,7 +4492,11 @@ export class SyncEngine {
         skills?: Array<{ name: string; description?: string }>
         error?: string
     }> {
-        return await this.rpcGateway.listSkills(sessionId, flavor)
+        return await this.skillsEnumeration.get(
+            `${sessionId}|${flavor ?? ''}`,
+            () => this.rpcGateway.listSkills(sessionId, flavor),
+            (result) => result.success === true && Array.isArray(result.skills)
+        )
     }
 
     async listAgyModelsForMachine(
@@ -4301,6 +4508,10 @@ export class SyncEngine {
 
     async listPiModelsForMachine(machineId: string): Promise<RpcListPiModelsResponse> {
         return await this.rpcGateway.listPiModelsForMachine(machineId)
+    }
+
+    async listClaudeModelsForMachine(machineId: string): Promise<RpcListClaudeModelsResponse> {
+        return await this.rpcGateway.listClaudeModelsForMachine(machineId)
     }
 
     async listCodexModelsForMachine(machineId: string): Promise<RpcListCodexModelsResponse> {
@@ -4321,6 +4532,10 @@ export class SyncEngine {
 
     async listPiSessionsForMachine(machineId: string, cwd?: string | null, sessionIds?: string[]): Promise<RpcListPiSessionsResponse> {
         return await this.rpcGateway.listPiSessionsForMachine(machineId, cwd, sessionIds)
+    }
+
+    async listOpencodeSessionsForMachine(machineId: string, cwd?: string | null, sessionIds?: string[]): Promise<RpcListOpencodeSessionsResponse> {
+        return await this.rpcGateway.listOpencodeSessionsForMachine(machineId, cwd, sessionIds)
     }
 
     async archiveCodexSessionForMachine(machineId: string, sessionId: string): Promise<RpcArchiveCodexSessionResponse> {
@@ -4349,6 +4564,14 @@ export class SyncEngine {
 
     async listGrokModelsForSession(sessionId: string): Promise<RpcListGrokModelsResponse> {
         return await this.rpcGateway.listGrokModelsForSession(sessionId)
+    }
+
+    async listDshModelsForMachine(machineId: string): Promise<RpcListDshModelsResponse> {
+        return await this.rpcGateway.listDshModelsForMachine(machineId)
+    }
+
+    async listDshModelsForSession(sessionId: string): Promise<RpcListDshModelsResponse> {
+        return await this.rpcGateway.listDshModelsForSession(sessionId)
     }
 
     async listGrokReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListGrokReasoningEffortOptionsResponse> {

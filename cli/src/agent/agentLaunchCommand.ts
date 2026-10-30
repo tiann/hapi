@@ -11,7 +11,7 @@ const DEFAULT_COMMANDS: Record<AgentFlavor, string> = {
     codex: 'codex',
     copilot: 'copilot',
     cursor: 'agent',
-    dsh: 'dsh-acp-demo',
+    dsh: 'dsh',
     gemini: 'gemini',
     grok: 'grok',
     kimi: 'kimi',

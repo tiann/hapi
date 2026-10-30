@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import type { SessionSummary } from '@/types/api'
+import type { ApiClient } from '@/api/client'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider } from '@/lib/toast-context'
 import { SessionList } from './SessionList'
@@ -59,6 +60,28 @@ function renderWithProviders(children: ReactNode) {
 }
 
 describe('SessionList directory action', () => {
+    it('reopens a locked list session and preserves its lock through a user rename', async () => {
+        const renameSession = vi.fn(async () => {})
+        const session = makeSession({ id: 'list-locked', updatedAt: Date.now(), metadata: {
+            path: '/work/locked', name: 'Locked list title', titleLocked: true, flavor: 'codex'
+        } })
+        renderWithProviders(<SessionList sessions={[session]} selectedSessionId={session.id} onSelect={vi.fn()}
+            onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
+            api={{ renameSession } as unknown as ApiClient} />)
+        const open = () => {
+            fireEvent.contextMenu(screen.getByRole('button', { name: /Locked list title/ }))
+            fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }))
+        }
+        open()
+        expect(screen.getByRole('button', { name: 'Lock title against agent updates' })).toHaveAttribute('aria-pressed', 'true')
+        fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+        open()
+        expect(screen.getByRole('button', { name: 'Lock title against agent updates' })).toHaveAttribute('aria-pressed', 'true')
+        fireEvent.change(screen.getByRole('textbox'), { target: { value: 'New human title' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+        await waitFor(() => expect(renameSession).toHaveBeenCalledWith('list-locked', 'New human title', true))
+    })
+
     it('starts a new session with the project machine and directory', () => {
         const onNewSessionInDirectory = vi.fn()
         const session = makeSession({
@@ -190,6 +213,9 @@ describe('SessionList time filter', () => {
             />
         )
 
+        // Inactive groups start collapsed and do not mount their rows.
+        fireEvent.click(screen.getByTitle('/work/recent'))
+        fireEvent.click(screen.getByTitle('/work/old'))
         expect(screen.getByRole('button', { name: /Recent session/ })).toBeInTheDocument()
         expect(screen.getByRole('button', { name: /Old session/ })).toBeInTheDocument()
 
@@ -353,11 +379,65 @@ describe('SessionList action menu parity', () => {
             />
         )
 
+        if (!active) {
+            fireEvent.click(screen.getByTitle('/home/ubuntu'))
+        }
         fireEvent.contextMenu(screen.getByRole('button', { name: new RegExp(active ? 'Running session' : 'Closed session') }))
         fireEvent.click(screen.getByRole('menuitem', { name: 'Export conversation' }))
 
         expect(screen.getByRole('dialog')).toBeInTheDocument()
         expect(screen.getByRole('heading', { name: 'Export conversation' })).toBeInTheDocument()
+    })
+})
+
+describe('SessionList selection', () => {
+    it('does not select the row that moves under the pointer during a live reorder', () => {
+        const onSelect = vi.fn()
+        const first = makeSession({
+            id: 'session-first',
+            active: true,
+            updatedAt: 200,
+            lastUserMessageAt: 200,
+            metadata: { path: '/work/hapi', name: 'First session', flavor: 'codex' }
+        })
+        const second = makeSession({
+            id: 'session-second',
+            active: true,
+            updatedAt: 100,
+            lastUserMessageAt: 100,
+            metadata: { path: '/work/hapi', name: 'Second session', flavor: 'codex' }
+        })
+
+        const renderList = (sessions: SessionSummary[]) => (
+            <QueryClientProvider client={new QueryClient()}>
+                <ToastProvider>
+                    <I18nProvider>
+                        <SessionList
+                            sessions={sessions}
+                            selectedSessionId={null}
+                            onSelect={onSelect}
+                            onNewSession={vi.fn()}
+                            onRefresh={vi.fn()}
+                            isLoading={false}
+                            renderHeader={false}
+                            api={null}
+                        />
+                    </I18nProvider>
+                </ToastProvider>
+            </QueryClientProvider>
+        )
+
+        const { rerender } = render(renderList([first, second]))
+        fireEvent.mouseDown(screen.getByRole('button', { name: /First session/ }), { button: 0 })
+
+        rerender(renderList([
+            { ...first, updatedAt: 200 },
+            { ...second, updatedAt: 300, lastUserMessageAt: 300 }
+        ]))
+
+        fireEvent.mouseUp(screen.getByRole('button', { name: /Second session/ }), { button: 0 })
+
+        expect(onSelect).not.toHaveBeenCalled()
     })
 })
 
@@ -786,6 +866,85 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByTitle('In progress').getAttribute('aria-expanded')).toBe('true')
     })
 
+    it('allows a directory group to collapse while searching', () => {
+        const sessions = [
+            makeSession({
+                id: 'session-match',
+                updatedAt: 100,
+                metadata: { path: '/work/hapi', name: 'Matching task', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'session-other',
+                updatedAt: 90,
+                metadata: { path: '/work/hapi', name: 'Other task', flavor: 'codex' },
+            }),
+        ]
+        render(renderSessionList(sessions, null))
+
+        const projectHeader = screen.getByTitle('/work/hapi')
+        const projectPanel = projectHeader.nextElementSibling
+        expect(projectPanel?.getAttribute('data-open')).toBeNull()
+
+        // Establish a manual collapsed state before filtering. The filter
+        // still opens the group by default so matching sessions remain visible.
+        fireEvent.click(projectHeader)
+        fireEvent.click(projectHeader)
+        expect(projectPanel?.getAttribute('data-open')).toBeNull()
+
+        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+        const searchInput = screen.getByPlaceholderText(SEARCH_PLACEHOLDER)
+        fireEvent.change(searchInput, {
+            target: { value: 'Matching' },
+        })
+
+        expect(projectPanel?.getAttribute('data-open')).toBe('true')
+
+        fireEvent.click(projectHeader)
+        expect(projectPanel?.getAttribute('data-open')).toBeNull()
+
+        fireEvent.click(projectHeader)
+        expect(projectPanel?.getAttribute('data-open')).toBe('true')
+
+        fireEvent.change(searchInput, { target: { value: '' } })
+        expect(projectPanel?.getAttribute('data-open')).toBeNull()
+    })
+
+    it('restores a selected group collapse after filtering excludes the selected session', async () => {
+        const sessions = [
+            makeSession({
+                id: 'session-selected',
+                updatedAt: 100,
+                metadata: { path: '/work/hapi', name: 'Selected task', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'session-match',
+                updatedAt: 90,
+                metadata: { path: '/work/hapi', name: 'Matching task', flavor: 'codex' },
+            }),
+        ]
+        render(renderSessionList(sessions, 'session-selected'))
+
+        const projectHeader = screen.getByTitle('/work/hapi')
+        const projectPanel = projectHeader.nextElementSibling
+        await waitFor(() => {
+            expect(projectPanel?.getAttribute('data-open')).toBe('true')
+        })
+
+        fireEvent.click(projectHeader)
+        expect(projectPanel?.getAttribute('data-open')).toBeNull()
+
+        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+        const searchInput = screen.getByPlaceholderText(SEARCH_PLACEHOLDER)
+        fireEvent.change(searchInput, { target: { value: 'Matching' } })
+        expect(screen.queryByRole('button', { name: /Selected task/ })).toBeNull()
+        expect(screen.getByRole('button', { name: /Matching task/ })).toBeInTheDocument()
+
+        fireEvent.change(searchInput, { target: { value: '' } })
+        await waitFor(() => {
+            expect(projectPanel?.getAttribute('data-open')).toBeNull()
+        })
+    })
+
     it('toggles the running section with the keyboard', () => {
         localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
         const sessions = [
@@ -863,6 +1022,53 @@ describe('SessionList collapse behavior', () => {
         expect(screen.getByRole('button', { name: /Matching task 4/ })).toBeInTheDocument()
     })
 
+    it('mounts collapsed group rows only while open or closing', () => {
+        const sessions = [makeSession({
+            id: 'session-closed',
+            updatedAt: 100,
+            metadata: { path: '/work/hapi', name: 'Closed task', flavor: 'codex' },
+        })]
+        render(renderSessionList(sessions, null))
+
+        const header = screen.getByTitle('/work/hapi')
+        expect(screen.queryByRole('button', { name: /Closed task/ })).toBeNull()
+
+        fireEvent.click(header)
+        const row = screen.getByRole('button', { name: /Closed task/ })
+
+        fireEvent.click(header)
+        expect(row).toBeInTheDocument()
+        const panel = row.closest('.collapsible-panel')!
+        fireEvent.transitionEnd(panel.querySelector('.collapsible-inner')!)
+        expect(row).toBeInTheDocument()
+        fireEvent.transitionEnd(panel)
+        expect(screen.queryByRole('button', { name: /Closed task/ })).toBeNull()
+    })
+
+    it('keeps a collapsing row mounted while its rename dialog is open', () => {
+        const sessions = [makeSession({
+            id: 'session-closed',
+            updatedAt: 100,
+            metadata: { path: '/work/hapi', name: 'Closed task', flavor: 'codex' },
+        })]
+        render(renderSessionList(sessions, null))
+
+        const header = screen.getByTitle('/work/hapi')
+        fireEvent.click(header)
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Closed task/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }))
+        expect(screen.getByRole('dialog', { name: 'Rename Session' })).toBeInTheDocument()
+
+        fireEvent.click(header)
+        const panel = document.querySelector('.collapsible-panel')!
+        fireEvent.transitionEnd(panel)
+        expect(screen.getByRole('dialog', { name: 'Rename Session' })).toBeInTheDocument()
+
+        fireEvent.keyDown(screen.getByRole('dialog', { name: 'Rename Session' }), { key: 'Escape' })
+        expect(screen.queryByRole('dialog', { name: 'Rename Session' })).toBeNull()
+        expect(screen.queryByRole('button', { name: /Closed task/ })).toBeNull()
+    })
+
     it('expands and collapses the session preview one batch at a time', () => {
         localStorage.setItem('hapi-session-preview-limit', '2')
         const sessions = Array.from({ length: 6 }, (_, index) => makeSession({
@@ -876,6 +1082,7 @@ describe('SessionList collapse behavior', () => {
         }))
 
         render(renderSessionList(sessions, null))
+        fireEvent.click(screen.getByTitle('/work/hapi'))
 
         expect(screen.getByRole('button', { name: 'Expand 2' })).toBeInTheDocument()
         expect(screen.queryByRole('button', { name: 'Collapse 2' })).toBeNull()
@@ -911,6 +1118,7 @@ describe('SessionList collapse behavior', () => {
         const sessions = Array.from({ length: 4 }, (_, index) => makeSession({
             id: `session-${index + 1}`,
             updatedAt: 100 - index,
+            active: index > 0,
             pendingRequestsCount: index > 0 ? 1 : 0,
             metadata: {
                 path: '/work/hapi',
@@ -941,6 +1149,7 @@ describe('SessionList collapse behavior', () => {
         const sessions = Array.from({ length: 8 }, (_, index) => makeSession({
             id: `session-${index + 1}`,
             updatedAt: 100 - index,
+            active: index < 5,
             pendingRequestsCount: index < 5 ? 1 : 0,
             metadata: {
                 path: '/work/hapi',

@@ -27,6 +27,28 @@ class FakeSocket {
     }
 }
 
+it('does not rebroadcast stored messages and retains repeated consumption acknowledgements', () => {
+    const store = new Store(':memory:')
+    const session = store.sessions.getOrCreateSession('dedupe-replay', {}, null, 'default')
+    const socket = new FakeSocket()
+    const events: SyncEvent[] = []
+    const progress = mock(() => {})
+    registerSessionHandlers(socket as unknown as CliSocketWithData, {
+        store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
+        onWebappEvent: event => events.push(event), onAgentProgress: progress
+    })
+    const message = { sid: session.id, localId: 'stable-1', message: { role: 'user', content: { type: 'text', text: 'hello' } } }
+    socket.trigger('message', message)
+    socket.trigger('messages-consumed', { sid: session.id, localIds: ['stable-1'] })
+    socket.trigger('message', message)
+    socket.trigger('messages-consumed', { sid: session.id, localIds: ['stable-1'] })
+    expect(events.filter(event => event.type === 'message-received')).toHaveLength(1)
+    expect(events.filter(event => event.type === 'messages-consumed')).toHaveLength(2)
+    expect(progress).toHaveBeenCalledTimes(1)
+    expect(store.messages.getAllMessages(session.id)).toHaveLength(1)
+    store.close()
+})
+
 function redundantGoalStatusContent(message: string): unknown {
     return {
         role: 'agent',
@@ -53,6 +75,39 @@ function reasoningTextOf(message: { content: unknown }): string {
 }
 
 describe('cli session handlers', () => {
+    it('keeps one cumulative answer across reconnect and deduplicates final replay', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('text-reconnect', {}, null, 'default')
+        const events: SyncEvent[] = []
+        const connect = () => {
+            const socket = new FakeSocket()
+            registerSessionHandlers(socket as unknown as CliSocketWithData, {
+                store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
+                onWebappEvent: event => events.push(event)
+            })
+            return socket
+        }
+        const id = 'codex:thread:turn:answer:agent_message'
+        const message = (text: string, live: boolean) => ({ sid: session.id,
+            ...(live ? {} : { localId: id }),
+            message: { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: {
+                type: 'message', id, turn_id: 'turn', message: text,
+                ...(live ? { live: true, streamSnapshot: true } : {})
+            } } }
+        })
+        connect().trigger('message', message('Hello', true))
+        const reconnected = connect()
+        reconnected.trigger('message', message('Hello world', true))
+        expect(store.messages.getAllMessages(session.id).map(reasoningTextOf)).toEqual(['Hello world'])
+        const final = message('Hello world!', false)
+        reconnected.trigger('message', final)
+        connect().trigger('message', final)
+        expect(store.messages.getAllMessages(session.id).map(reasoningTextOf)).toEqual(['Hello world!'])
+        expect(store.messages.getAllMessages(session.id)[0].localId).toBe(id)
+        expect(events.filter(event => event.type === 'message-received')).toHaveLength(3)
+        store.close()
+    })
+
     it.each([undefined, 'terminated', 'error'] as const)('preserves shared Codex pending input on execution exit (%s)', reason => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('shared-end', { flavor: 'codex', capabilities: { concurrentClients: true } }, null, 'default')
@@ -438,7 +493,7 @@ describe('cli session handlers', () => {
         expect(uuids).toEqual(['msg-1', 'msg-2'])
     })
 
-    it.each(['supersededBySessionId', 'opencodeClearOperation'] as const)(
+    it.each(['supersededBySessionId', 'opencodeClearOperation', 'titleSuggestionAutoAttemptedAt', 'titleSuggestionTurn'] as const)(
         'ignores a forged hub-owned %s addition from CLI metadata',
         (field) => {
             const store = new Store(':memory:')
@@ -456,7 +511,9 @@ describe('cli session handlers', () => {
                     path: '/tmp/project',
                     [field]: field === 'supersededBySessionId'
                         ? 'foreign-session'
-                        : { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }
+                        : field === 'opencodeClearOperation'
+                            ? { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }
+                            : field === 'titleSuggestionTurn' ? { first: false, completed: true } : 1234
                 }
             }, () => {})
             expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).not.toHaveProperty(field)
@@ -486,6 +543,32 @@ describe('cli session handlers', () => {
         }, () => {})
         expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).toMatchObject({
             supersededBySessionId: 'owned-target', opencodeClearOperation: operation, lifecycleState: 'archived'
+        })
+    })
+
+    it('preserves the automatic title attempt marker across CLI metadata updates', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('preserve-auto-title-marker', {
+            path: '/tmp/project',
+            titleSuggestionAutoAttemptedAt: 1234,
+            titleSuggestionTurn: { first: true, completed: false }
+        }, null, 'default')
+        const socket = new FakeSocket()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+            emitAccessError: () => { throw new Error('unexpected access error') }
+        })
+
+        socket.trigger('update-metadata', {
+            sid: session.id,
+            expectedVersion: session.metadataVersion,
+            metadata: { path: '/tmp/project', titleSuggestionAutoAttemptedAt: 9999, titleSuggestionTurn: { first: false, completed: true } }
+        }, () => {})
+
+        expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).toMatchObject({
+            titleSuggestionAutoAttemptedAt: 1234,
+            titleSuggestionTurn: { first: true, completed: false }
         })
     })
 })

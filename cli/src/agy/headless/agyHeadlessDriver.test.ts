@@ -107,7 +107,7 @@ describe('buildAgyHeadlessArgs', () => {
         const args = buildAgyHeadlessArgs({
             prompt: 'hi',
             conversationId: 'conv-1',
-            model: 'gemini-3.5-flash-medium',
+            model: 'gemini-3.5-flash',
             permissionMode: 'always-proceed',
             mode: 'plan',
             effort: 'high',
@@ -115,7 +115,7 @@ describe('buildAgyHeadlessArgs', () => {
         expect(args).toContain('--conversation');
         expect(args).toContain('conv-1');
         expect(args).toContain('--model');
-        expect(args).toContain('gemini-3.5-flash-medium');
+        expect(args).toContain('gemini-3.5-flash');
         expect(args).toContain('--mode');
         expect(args).toContain('plan');
         expect(args).toContain('--effort');
@@ -127,9 +127,46 @@ describe('buildAgyHeadlessArgs', () => {
         const args = buildAgyHeadlessArgs({ prompt: 'hi', permissionMode: 'request-review' });
         expect(args).not.toContain('--dangerously-skip-permissions');
     });
+
+    it('rejects a conflicting unnormalized variant instead of spawning an invalid selection', () => {
+        expect(() => buildAgyHeadlessArgs({
+            prompt: 'hi', permissionMode: 'request-review', model: 'gemini-4-argon-medium', effort: 'high',
+        })).toThrow('conflicts with effort high');
+    });
+
+    it('avoids redundant effort flags for an exact variant', () => {
+        const args = buildAgyHeadlessArgs({
+            prompt: 'hi', permissionMode: 'request-review', model: 'gemini-4-argon-medium', effort: 'medium',
+        });
+        expect(args).toContain('gemini-4-argon-medium');
+        expect(args).not.toContain('--effort');
+    });
+
+    it.each(['xhigh', 'max'] as const)('passes native %s effort', (effort) => {
+        const args = buildAgyHeadlessArgs({
+            prompt: 'hi', permissionMode: 'request-review', model: 'gemini-4-argon', effort,
+        });
+        expect(args[args.indexOf('--effort') + 1]).toBe(effort);
+    });
 });
 
 describe('AgyHeadlessDriver', () => {
+    it('restores a conflicting legacy selection without spawning or retrying', async () => {
+        const { session, queue, client } = createSession();
+        const spawnAgy = vi.fn();
+        const driver = new AgyHeadlessDriver({ session, spawnAgy });
+        queue.push('hello', { permissionMode: 'request-review', model: 'gemini-4-argon-medium', effort: 'high' }, 'local-1');
+        queue.close();
+        await driver.launch();
+        session.stopKeepAlive();
+        expect(spawnAgy).not.toHaveBeenCalled();
+        expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['local-1']);
+        expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'abort-restore', text: 'hello' });
+        expect(client.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'error', message: expect.stringContaining('conflicts with effort high'),
+        });
+    });
+
     it('maps a full NDJSON turn onto the transcript-entry channel and adopts the conversation id', async () => {
         const { session, queue, client, sent } = createSession();
         const driver = new AgyHeadlessDriver({
@@ -341,6 +378,76 @@ describe('AgyHeadlessDriver', () => {
         expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['local-1']);
         expect(client.sendSessionEvent).toHaveBeenCalledWith(
             expect.objectContaining({ type: 'error', message: expect.stringContaining('agy turn failed') })
+        );
+    });
+
+    it('reports the failure reason instead of echoing the answer', async () => {
+        const { session, queue, client } = createSession();
+        // A failed envelope still carries the answer in `response` (agy fills it
+        // from the completed buffer). Surfacing that as the failure text repeats
+        // the whole answer in the chat; the reason lives in `error`.
+        const stream = [
+            '{"event":"init","conversation_id":"c-e","init":{}}',
+            '{"event":"step_update","step_update":{"conversation_id":"c-e","step_index":2,"state":"ACTIVE","step_type":"agent_response","text_delta":"the answer"}}',
+            '{"event":"step_update","step_update":{"conversation_id":"c-e","step_index":2,"state":"DONE","step_type":"agent_response","text_delta":""}}',
+            '{"event":"result","result":{"conversation_id":"c-e","status":"ERROR","response":"the answer","error":"quota exceeded"}}',
+        ];
+        const driver = new AgyHeadlessDriver({ session, spawnAgy: () => fakeAgyProcess(stream) });
+
+        queue.push('hello', { permissionMode: 'request-review' }, 'local-1');
+        const launchPromise = driver.launch();
+        await new Promise((r) => setTimeout(r, 500));
+        queue.close();
+        session.stopKeepAlive();
+        await launchPromise;
+
+        expect(client.sendSessionEvent).toHaveBeenCalledWith(
+            expect.objectContaining({ type: 'error', message: 'quota exceeded' })
+        );
+        const echoed = client.sendSessionEvent.mock.calls
+            .filter(([e]) => e.type === 'error' && typeof e.message === 'string' && e.message.includes('the answer'));
+        expect(echoed).toHaveLength(0);
+    });
+
+    it('falls back to the status when a failed envelope carries no reason', async () => {
+        const { session, queue, client } = createSession();
+        const stream = [
+            '{"event":"init","conversation_id":"c-n","init":{}}',
+            '{"event":"step_update","step_update":{"conversation_id":"c-n","step_index":2,"state":"ACTIVE","step_type":"agent_response","text_delta":"the answer"}}',
+            '{"event":"step_update","step_update":{"conversation_id":"c-n","step_index":2,"state":"DONE","step_type":"agent_response","text_delta":""}}',
+            '{"event":"result","result":{"conversation_id":"c-n","status":"ERROR","response":"the answer"}}',
+        ];
+        const driver = new AgyHeadlessDriver({ session, spawnAgy: () => fakeAgyProcess(stream) });
+
+        queue.push('hello', { permissionMode: 'request-review' }, 'local-1');
+        const launchPromise = driver.launch();
+        await new Promise((r) => setTimeout(r, 500));
+        queue.close();
+        session.stopKeepAlive();
+        await launchPromise;
+
+        expect(client.sendSessionEvent).toHaveBeenCalledWith(
+            expect.objectContaining({ type: 'error', message: 'agy turn failed: ERROR' })
+        );
+    });
+
+    it('surfaces a timeout reason from a failed envelope', async () => {
+        const { session, queue, client } = createSession();
+        const stream = [
+            '{"event":"init","conversation_id":"c-t","init":{}}',
+            '{"event":"result","result":{"conversation_id":"c-t","status":"ERROR","response":"","error":"timeout waiting for response"}}',
+        ];
+        const driver = new AgyHeadlessDriver({ session, spawnAgy: () => fakeAgyProcess(stream) });
+
+        queue.push('hello', { permissionMode: 'request-review' }, 'local-1');
+        const launchPromise = driver.launch();
+        await new Promise((r) => setTimeout(r, 500));
+        queue.close();
+        session.stopKeepAlive();
+        await launchPromise;
+
+        expect(client.sendSessionEvent).toHaveBeenCalledWith(
+            expect.objectContaining({ type: 'error', message: 'timeout waiting for response' })
         );
     });
 
@@ -615,14 +722,19 @@ describe('AgyHeadlessDriver', () => {
         expect(plannerEntries.map((e) => e!.content)).toEqual(['Let me check', 'Done: listed']);
     });
 
-    it('carries the queued model (display label) on emitted planner entries', async () => {
+    it.each([
+        { model: 'gemini-3.5-flash-medium', effort: undefined, label: 'Gemini 3.5 Flash (Medium)' },
+        { model: 'gemini-3.5-flash', effort: 'high', label: 'Gemini 3.5 Flash (High)' },
+        { model: 'gemini-4-argon', effort: 'high', label: 'gemini-4-argon-high' },
+        { model: 'custom-high', effort: 'medium', label: 'custom-high' },
+    ])('carries the queued model (display label) on emitted planner entries: $model / $effort', async ({ model, effort, label }) => {
         const { session, queue, sent } = createSession();
         const driver = new AgyHeadlessDriver({
             session,
             spawnAgy: () => fakeAgyProcess(FULL_TURN),
         });
 
-        queue.push('hello', { permissionMode: 'request-review', model: 'gemini-3.5-flash-medium' }, 'local-1');
+        queue.push('hello', { permissionMode: 'request-review', model, effort }, 'local-1');
         const launchPromise = driver.launch();
         await new Promise((r) => setTimeout(r, 500));
         queue.close();
@@ -635,7 +747,7 @@ describe('AgyHeadlessDriver', () => {
         expect(plannerEntries.length).toBeGreaterThan(0);
         // Display label, not the raw wire id.
         for (const entry of plannerEntries) {
-            expect(entry!.model).toBe('Gemini 3.5 Flash (Medium)');
+            expect(entry!.model).toBe(label);
         }
     });
 

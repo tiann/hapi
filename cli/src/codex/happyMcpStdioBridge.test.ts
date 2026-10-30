@@ -140,6 +140,19 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
         ])
     })
 
+    it.each(['auto', 'queue', 'steer'])('advertises and forwards ping_peer delivery mode %s', async (deliveryMode) => {
+        await runHappyMcpStdioBridge(['--url', 'http://127.0.0.1:43006', '--tools', 'ping_peer'])
+        const schema = harness.configs.get('ping_peer')?.inputSchema as {
+            parse(input: unknown): unknown
+        }
+        const args = { sessionIdPrefix: 'peer-id', message: 'hello', deliveryMode }
+        expect(harness.configs.get('ping_peer')?.description).toContain('auto (default)')
+        expect(schema.parse(args)).toEqual(args)
+        expect(() => schema.parse({ ...args, deliveryMode: 'interrupt' })).toThrow()
+        await harness.tools.get('ping_peer')?.(args)
+        expect(harness.callTool).toHaveBeenCalledWith({ name: 'ping_peer', arguments: args })
+    })
+
     it('registers inspect_peer when included in --tools', async () => {
         await runHappyMcpStdioBridge([
             '--url',
@@ -176,4 +189,54 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
         ])
     })
 
+
+    it('hides peer tools under HAPI_DISABLE_PEER_TOOLS even when listed in --tools', async () => {
+        process.env.HAPI_DISABLE_PEER_TOOLS = '1'
+        try {
+            await runHappyMcpStdioBridge([
+                '--url',
+                'http://127.0.0.1:43006',
+                '--tools',
+                'change_title,list_peers,ping_peer,inspect_peer'
+            ])
+
+            expect([...harness.tools.keys()]).toEqual(['change_title'])
+        } finally {
+            delete process.env.HAPI_DISABLE_PEER_TOOLS
+        }
+    })
+
+    it('drops peer tools from the default tool list under HAPI_DISABLE_PEER_TOOLS', async () => {
+        // No --tools: the bridge seeds its default list, which includes the
+        // peer tools. Positive control first so the disabled run below proves
+        // filtering rather than an empty seed.
+        await runHappyMcpStdioBridge(['--url', 'http://127.0.0.1:43006'])
+
+        expect([...harness.tools.keys()]).toEqual([
+            'change_title',
+            'display_image',
+            'display_video',
+            'display_media',
+            'ping_peer',
+            'inspect_peer',
+            'list_peers'
+        ])
+
+        harness.tools.clear()
+        harness.configs.clear()
+
+        process.env.HAPI_DISABLE_PEER_TOOLS = '1'
+        try {
+            await runHappyMcpStdioBridge(['--url', 'http://127.0.0.1:43006'])
+
+            expect([...harness.tools.keys()]).toEqual([
+                'change_title',
+                'display_image',
+                'display_video',
+                'display_media'
+            ])
+        } finally {
+            delete process.env.HAPI_DISABLE_PEER_TOOLS
+        }
+    })
 })

@@ -72,6 +72,49 @@ struct PairingTextField: UIViewRepresentable {
             updateFocus()
         }
 
+        override func paste(itemProviders: [NSItemProvider]) {
+            guard allowsEditing, isEnabled,
+                  let selection = selectedTextRange ?? textRange(from: endOfDocument, to: endOfDocument) else { return }
+            let startOffset = offset(from: beginningOfDocument, to: selection.start)
+            let endOffset = offset(from: beginningOfDocument, to: selection.end)
+
+            // Explicitly load provider payloads before using the same insertion
+            // delegate as menu pastes; UIKit's provider forwarding can skip it.
+            Task { @MainActor [weak self] in
+                var strings: [String] = []
+                for provider in itemProviders {
+                    if let string = await Self.pastedString(from: provider) { strings.append(string) }
+                }
+                guard let self, self.allowsEditing, self.isEnabled, !strings.isEmpty else { return }
+                let count = text?.utf16.count ?? 0
+                guard let start = position(from: beginningOfDocument, offset: min(startOffset, count)),
+                      let end = position(from: beginningOfDocument, offset: min(endOffset, count)),
+                      let range = textRange(from: start, to: end) else { return }
+                _ = pasteDelegate?.textPasteConfigurationSupporting?(
+                    self, performPasteOf: NSAttributedString(string: strings.joined()), to: range
+                )
+            }
+        }
+
+        private static func pastedString(from provider: NSItemProvider) async -> String? {
+            // A copied URL can expose a display title as text. Prefer its URL
+            // representation so pairing receives the complete link and query.
+            if provider.canLoadObject(ofClass: NSURL.self) {
+                let value: String? = await withCheckedContinuation { continuation in
+                    provider.loadObject(ofClass: NSURL.self) { object, _ in
+                        continuation.resume(returning: (object as? NSURL)?.absoluteString)
+                    }
+                }
+                if let value { return value }
+            }
+            guard provider.canLoadObject(ofClass: NSString.self) else { return nil }
+            return await withCheckedContinuation { continuation in
+                provider.loadObject(ofClass: NSString.self) { object, _ in
+                    continuation.resume(returning: object as? String)
+                }
+            }
+        }
+
         func updateFocus() {
             // Disabling/focusing a field can trigger UIKit layout and editing
             // callbacks. Do that outside SwiftUI's updateUIView transaction.

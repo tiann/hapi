@@ -2,7 +2,11 @@ package app.hapi.companion.feature.chat
 
 import app.hapi.companion.feature.chat.attachments.ComposerAttachmentStatus
 import app.hapi.companion.feature.chat.attachments.PreparedAttachment
+import app.hapi.companion.feature.chat.attachments.PrepareResult
 import app.hapi.companion.feature.chat.composer.ChatDrafts
+import app.hapi.companion.feature.share.PendingShare
+import app.hapi.companion.feature.share.SharedFile
+import app.hapi.companion.feature.share.SharedFileStatus
 import app.hapi.data.api.ApiError
 import app.hapi.data.api.ChatSessionApi
 import app.hapi.data.api.MessagesQuery
@@ -15,6 +19,8 @@ import app.hapi.data.store.MachineListStore
 import app.hapi.data.store.MessageWindowStores
 import app.hapi.data.store.ScratchlistAttachmentDeleteResult
 import app.hapi.data.store.ScratchlistCreateResult
+import app.hapi.data.store.ScratchlistEntryOps
+import app.hapi.data.store.ScratchlistMoveDirection
 import app.hapi.data.store.ScratchlistSessionState
 import app.hapi.data.store.ScratchlistUploadResult
 import app.hapi.data.store.SessionDetailStore
@@ -299,7 +305,16 @@ private class RecordingChatApi : ChatSessionApi {
 
 private class FakeDrafts : ChatDrafts {
     val map = mutableMapOf<String, String>()
-    override suspend fun load(sessionId: String): String? = map[sessionId]
+    val sharedReceipts = mutableSetOf<Pair<String, String>>()
+    var loadGate: CompletableDeferred<Unit>? = null
+    override suspend fun load(sessionId: String): String? {
+        loadGate?.await()
+        return map[sessionId]
+    }
+    override suspend fun appendSharedText(sessionId: String, requestId: String, currentText: String, text: String): String {
+        if (!sharedReceipts.add(sessionId to requestId)) return currentText
+        return app.hapi.companion.feature.chat.composer.appendSharedText(currentText, text).also { save(sessionId, it) }
+    }
     override suspend fun save(sessionId: String, text: String) {
         if (text.isBlank()) map.remove(sessionId) else map[sessionId] = text
     }
@@ -391,6 +406,11 @@ private class FakeScratchlist : SessionScratchlist {
         attachments: List<app.hapi.protocol.wire.ScratchlistAttachment>?,
     ): Boolean = true
     override suspend fun deleteEntry(sessionId: String, entryId: String): Boolean = true
+    override fun moveEntry(sessionId: String, entryId: String, direction: ScratchlistMoveDirection) {
+        sessionState.value = sessionState.value.copy(
+            entries = ScratchlistEntryOps.moveEntry(sessionState.value.entries, entryId, direction)
+        )
+    }
     override suspend fun uploadAttachment(
         sessionId: String,
         filename: String,
@@ -703,6 +723,103 @@ class ChatViewModelInteractionTest {
         viewModel.attachments.items.first { list ->
             list.isNotEmpty() && list.all { it.status == ComposerAttachmentStatus.Ready }
         }
+    }
+
+    private fun sharedBatch() = PendingShare("share-1", 1_000, "shared text", listOf(
+        SharedFile("shared-1", "content://one", "one.jpg", status = SharedFileStatus.Ready),
+        SharedFile("shared-2", "content://two", "two.jpg", status = SharedFileStatus.Ready),
+    ))
+
+    @Test fun `entering the share picker commits unsaved text before a superseding session migration`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        vm.start()
+        testScheduler.runCurrent()
+        vm.setComposerText("latest keystrokes")
+        assertNull(harness.drafts.map[IX_SESSION])
+        vm.persistComposerDraft()
+        harness.drafts.move(IX_SESSION, "replacement")
+        assertEquals("latest keystrokes", harness.drafts.map["replacement"])
+    }
+
+    @Test fun `share waits for draft restore and handoff before allowing an explicit send`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        val loadGate = CompletableDeferred<Unit>()
+        val handoffGate = CompletableDeferred<Unit>()
+        harness.drafts.map[IX_SESSION] = "existing draft"
+        harness.drafts.loadGate = loadGate
+        vm.start()
+        vm.attachments.add(preparedShot("existing"))
+        val prepared = mutableListOf<String>()
+        val importing = async {
+            vm.importShare(sharedBatch(), complete = { handoffGate.await() }) { file ->
+                prepared += file.id
+                PrepareResult.Ready(preparedShot(file.id, file.filename))
+            }
+        }
+        testScheduler.runCurrent()
+        assertTrue(vm.composer.value.isImportingShare)
+        assertTrue(prepared.isEmpty())
+        vm.sendMessage()
+        assertTrue(harness.api.sendCalls.value.isEmpty())
+        loadGate.complete(Unit)
+        testScheduler.runCurrent()
+        assertEquals("existing draft\nshared text", vm.composer.value.text)
+        vm.sendMessage()
+        assertTrue(harness.api.sendCalls.value.isEmpty(), "the inbox handoff has not committed yet")
+        handoffGate.complete(Unit)
+        assertNull(importing.await())
+        vm.attachments.items.first { it.size == 3 && it.all { chip -> chip.status == ComposerAttachmentStatus.Ready } }
+        assertTrue(harness.api.sendCalls.value.isEmpty(), "import never sends automatically")
+        vm.sendMessage()
+        val request = harness.api.sendCalls.first { it.isNotEmpty() }.single().second
+        assertEquals("existing draft\nshared text", request.text)
+        assertEquals(setOf("existing", "shared-1", "shared-2"), request.attachments!!.map { it.id }.toSet())
+        vm.importShare(sharedBatch()) { error("already accepted share must not prepare again") }
+        assertEquals(1, harness.api.sendCalls.value.size)
+    }
+
+    @Test fun `partial share failure and retry do not duplicate text or successful attachments`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        harness.drafts.map[IX_SESSION] = "existing"
+        vm.start()
+        val prepared = mutableListOf<String>()
+        val failure = vm.importShare(sharedBatch()) { file ->
+            prepared += file.id
+            if (file.id == "shared-2") PrepareResult.Unreadable(file.filename)
+            else PrepareResult.Ready(preparedShot(file.id, file.filename))
+        }
+        assertEquals(ShareImportFailure("shared-2", SharedFileStatus.Unreadable), failure)
+        vm.importShare(sharedBatch()) { file ->
+            prepared += file.id
+            PrepareResult.Ready(preparedShot(file.id, file.filename))
+        }
+        assertEquals(listOf("shared-1", "shared-2", "shared-2"), prepared)
+        assertEquals("existing\nshared text", vm.composer.first { !it.isImportingShare }.text)
+        assertEquals(setOf("shared-1", "shared-2"), vm.attachments.items.first { it.size == 2 }.map { it.id }.toSet())
+        assertTrue(harness.api.sendCalls.value.isEmpty())
+    }
+
+    @Test fun `canceled import can resume on the same holder without replaying its text`() = runTest {
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        vm.start()
+        val gate = CompletableDeferred<Unit>()
+        val importing = launch {
+            vm.importShare(sharedBatch()) { file ->
+                gate.await()
+                PrepareResult.Ready(preparedShot(file.id, file.filename))
+            }
+        }
+        testScheduler.runCurrent()
+        assertEquals("shared text", vm.composer.value.text)
+        importing.cancel()
+        importing.join()
+        vm.importShare(sharedBatch()) { file -> PrepareResult.Ready(preparedShot(file.id, file.filename)) }
+        assertEquals("shared text", vm.composer.first { !it.isImportingShare }.text)
+        assertTrue(harness.api.sendCalls.value.isEmpty())
     }
 
     @Test
@@ -1057,6 +1174,67 @@ class ChatViewModelInteractionTest {
         assertEquals("default", harness.sessionStore.currentDetail(IX_SESSION)?.permissionMode)
         assertTrue(harness.sessionStore.calls.value.count { it == "loadDetail:$IX_SESSION" } >= 2)
         assertEquals(listOf("mode:acceptEdits"), harness.api.configCalls.value)
+    }
+
+    @Test
+    fun `permission mode switch is withheld for terminal-controlled copilot sessions`() = runTest {
+        val harness = InteractionHarness(
+            this,
+            detail(
+                flavor = "copilot",
+                permissionMode = "read-only",
+                agentState = AgentState(controlledByUser = true),
+            ),
+        )
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { "loadDetail:$IX_SESSION" in it }
+
+        harness.viewModel.setPermissionMode(PermissionMode.Yolo)
+        testScheduler.advanceUntilIdle()
+
+        // Web parity: the switcher callback is withheld (SessionChat.tsx:
+        // 2159-2163) — no request, no optimistic flip.
+        assertTrue(harness.api.configCalls.value.none { it.startsWith("mode:") })
+        assertEquals("read-only", harness.sessionStore.currentDetail(IX_SESSION)?.permissionMode)
+    }
+
+    @Test
+    fun `permission mode switch survives terminal control outside copilot and shared-clients copilot`() = runTest {
+        val sharedClients = detail(
+            flavor = "copilot",
+            permissionMode = "read-only",
+            agentState = AgentState(controlledByUser = true),
+        ).copy(
+            metadata = SessionMetadata(
+                path = "/repo", host = "devbox", flavor = "copilot",
+                capabilities = SessionCapabilities(concurrentClients = true),
+            ),
+        )
+        val harness = InteractionHarness(this, sharedClients)
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { "loadDetail:$IX_SESSION" in it }
+
+        harness.viewModel.setPermissionMode(PermissionMode.Yolo)
+        harness.api.configCalls.first { "mode:yolo" in it }
+        testScheduler.advanceUntilIdle()
+
+        // Terminal-controlled claude keeps the switcher: only copilot loses
+        // it on web (controlledByUser derivation matches SessionChat.tsx:996).
+        harness.sessionStore.setDetail(
+            detail(flavor = "claude", agentState = AgentState(controlledByUser = true)),
+        )
+        harness.viewModel.setPermissionMode(PermissionMode.AcceptEdits)
+        harness.api.configCalls.first { "mode:acceptEdits" in it }
+    }
+
+    @Test
+    fun `permission mode switch stays available for inactive sessions`() = runTest {
+        val harness = InteractionHarness(this, detail(active = false, permissionMode = "default"))
+        harness.viewModel.start()
+        harness.sessionStore.calls.first { "loadDetail:$IX_SESSION" in it }
+
+        harness.viewModel.setPermissionMode(PermissionMode.AcceptEdits)
+        harness.api.configCalls.first { "mode:acceptEdits" in it }
     }
 
     @Test

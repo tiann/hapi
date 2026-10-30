@@ -26,16 +26,18 @@ import java.util.Locale
 class HomeTopBarTest {
     @get:Rule val compose = createComposeRule()
     private val context = InstrumentationRegistry.getInstrumentation().targetContext
-    private val configuration = mutableStateOf(Configuration(context.resources.configuration).apply { setLocale(Locale.ENGLISH) })
-    private val showFilters = mutableStateOf(true)
+    private val configuration = mutableStateOf(Configuration(context.resources.configuration))
     private val filtered = mutableStateOf(false)
+    private val searching = mutableStateOf(false)
+    private val query = mutableStateOf("")
     private val actions = mutableListOf<String>()
 
     private fun mount() {
         compose.setContent {
             val config = configuration.value
+            val localizedContext = context.createConfigurationContext(config)
             CompositionLocalProvider(
-                LocalContext provides context.createConfigurationContext(config),
+                LocalContext provides localizedContext,
                 LocalConfiguration provides config,
                 LocalDensity provides Density(LocalDensity.current.density, config.fontScale),
             ) {
@@ -44,8 +46,12 @@ class HomeTopBarTest {
                         HomeTopBar(
                             activeHubUrl = "https://alpha.example",
                             pairedHubs = listOf("https://alpha.example", "https://beta.example"),
-                            hasMachineFilters = showFilters.value,
-                            hasActiveFilter = filtered.value,
+                            hasActiveFilters = filtered.value,
+                            searchExpanded = searching.value,
+                            searchQuery = query.value,
+                            onOpenSearch = { searching.value = true },
+                            onSearchQueryChange = { query.value = it },
+                            onCloseSearch = { searching.value = false; query.value = "" },
                             onOpenFilters = { actions += "filters" },
                             onSwitchHub = { actions += it },
                             onPairAnotherHub = { actions += "pair" },
@@ -56,10 +62,19 @@ class HomeTopBarTest {
                 }
             }
         }
+        compose.waitUntil(10_000) {
+            compose.onAllNodesWithTag("home-bar").fetchSemanticsNodes(atLeastOneRootRequired = false).isNotEmpty()
+        }
     }
 
     private fun label(id: Int) = context.createConfigurationContext(configuration.value).getString(id)
-    private fun openHubMenu() = compose.onNodeWithContentDescription(label(R.string.home_hub_menu)).performClick()
+    private fun openHubMenu() {
+        compose.onNodeWithContentDescription(label(R.string.home_hub_menu)).performClick()
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithText(label(R.string.home_pair_another))
+                .fetchSemanticsNodes(atLeastOneRootRequired = false).isNotEmpty()
+        }
+    }
 
     @Test fun titleStaysCenteredWithIconOnlyActionsInBothLanguagesAndLargeFonts() {
         mount()
@@ -77,6 +92,8 @@ class HomeTopBarTest {
                 compose.onNodeWithContentDescription(label(R.string.home_hub_menu)).assertIsDisplayed()
                     .assertWidthIsEqualTo(48.dp).assertHeightIsEqualTo(48.dp)
                 compose.onNodeWithContentDescription(label(R.string.sessions_filters)).assertIsDisplayed()
+                    .assertWidthIsEqualTo(48.dp).assertHeightIsEqualTo(48.dp)
+                compose.onNodeWithContentDescription(label(R.string.sessions_search_open)).assertIsDisplayed()
                     .assertWidthIsEqualTo(48.dp).assertHeightIsEqualTo(48.dp)
             }
         }
@@ -102,15 +119,33 @@ class HomeTopBarTest {
         compose.onNodeWithText("alpha.example").assertDoesNotExist()
     }
 
-    @Test fun filterActionShowsAppliedStateAndDisappearsWhenNotNeeded() {
+    @Test fun filterActionShowsAppliedStateAndStaysAvailableWithoutActiveFilters() {
         mount()
         compose.onNodeWithContentDescription(label(R.string.sessions_filters)).performClick()
         compose.runOnIdle { assertEquals(listOf("filters"), actions); filtered.value = true }
         compose.onNodeWithContentDescription(label(R.string.sessions_filters))
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, label(R.string.sessions_filters_active)))
-        compose.runOnIdle { showFilters.value = false }
-        compose.onNodeWithContentDescription(label(R.string.sessions_filters)).assertDoesNotExist()
+        compose.runOnIdle { filtered.value = false }
+        compose.onNodeWithContentDescription(label(R.string.sessions_filters)).assertIsDisplayed()
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, label(R.string.sessions_filter_all)))
         val title = compose.onNodeWithText(label(R.string.sessions_section_sessions)).getUnclippedBoundsInRoot()
         assertEquals(160f, (title.left.value + title.right.value) / 2, 1f)
+    }
+
+    @Test fun searchReplacesTheWholeToolbarAndClosesEvenWithAnEmptyQuery() {
+        mount()
+        val normalBounds = compose.onNodeWithTag("home-bar").getUnclippedBoundsInRoot()
+        compose.onNodeWithContentDescription(label(R.string.sessions_search_open)).performClick()
+        compose.onNodeWithTag("home-search-input").assertIsDisplayed().assertIsFocused()
+        compose.onNodeWithText(label(R.string.sessions_section_sessions)).assertDoesNotExist()
+        compose.onNodeWithContentDescription(label(R.string.home_hub_menu)).assertDoesNotExist()
+        compose.onNodeWithContentDescription(label(R.string.sessions_filters)).assertDoesNotExist()
+        val searchBounds = compose.onNodeWithTag("home-bar").getUnclippedBoundsInRoot()
+        assertEquals(normalBounds.bottom - normalBounds.top, searchBounds.bottom - searchBounds.top)
+        compose.onNodeWithContentDescription(label(R.string.sessions_search_close))
+            .assertWidthIsEqualTo(48.dp).assertHeightIsEqualTo(48.dp).performClick()
+        compose.onNodeWithTag("home-search-input").assertDoesNotExist()
+        compose.onNodeWithContentDescription(label(R.string.home_hub_menu)).assertIsDisplayed()
+        compose.onNodeWithContentDescription(label(R.string.sessions_filters)).assertIsDisplayed()
     }
 }

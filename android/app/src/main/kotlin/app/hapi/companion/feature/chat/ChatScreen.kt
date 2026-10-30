@@ -330,6 +330,14 @@ internal fun ChatScreen(
                         onEdit = viewModel::editQueuedMessage,
                         onCancel = viewModel::cancelQueuedMessage,
                     )
+                    // Web StatusBar parity: the current permission mode rides
+                    // directly above the composer; tapping opens the config
+                    // sheet that hosts the switcher (the web span itself is
+                    // not clickable).
+                    PermissionModeChip(
+                        config = configState,
+                        onClick = { configSheetOpen = true },
+                    )
                     ChatComposer(
                         state = composerState,
                         onTextChange = viewModel::setComposerText,

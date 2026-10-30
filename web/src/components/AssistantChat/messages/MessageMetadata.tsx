@@ -39,7 +39,9 @@ function getRoundUsage(summary: RoundSummary): UsageData | undefined {
         input_tokens: total.input_tokens + (usage.inputTokens ?? 0),
         output_tokens: total.output_tokens + (usage.outputTokens ?? 0),
         cache_creation_input_tokens: (total.cache_creation_input_tokens ?? 0) + (usage.cacheCreationInputTokens ?? 0),
-        cache_read_input_tokens: (total.cache_read_input_tokens ?? 0) + (usage.cacheReadInputTokens ?? 0)
+        cache_read_input_tokens: total.cache_read_input_tokens === undefined && usage.cacheReadInputTokens === undefined
+            ? undefined
+            : (total.cache_read_input_tokens ?? 0) + (usage.cacheReadInputTokens ?? 0)
     }), { input_tokens: 0, output_tokens: 0 })
 }
 
@@ -49,17 +51,25 @@ function buildRoundSummaryLabels(summary: RoundSummary, fallbackModel?: string |
     const model = models.length > 0 ? models.join(', ') : fallbackModel
     if (model) parts.push(`${models.length > 1 ? 'Models' : 'Model'}: ${model}`)
 
-    const usage = getRoundUsage(summary)
-    if (usage) {
-        const input = usage.input_tokens
+    const isCodex = summary.provider === 'codex'
+    const usage = isCodex && summary.usage ? summary.usage : getRoundUsage(summary)
+    if (usage && (!isCodex || (Number.isSafeInteger(usage.input_tokens) && usage.input_tokens >= 0
+        && Number.isSafeInteger(usage.output_tokens) && usage.output_tokens >= 0))) {
+        // Codex input already includes cache hits; Claude reports them separately.
+        const input = isCodex ? usage.input_tokens : usage.input_tokens
             + (usage.cache_creation_input_tokens ?? 0)
             + (usage.cache_read_input_tokens ?? 0)
         const total = input + usage.output_tokens
         parts.push(`Tokens: ${formatCompactTokenCount(total)} (${formatCompactTokenCount(input)} in · ${formatCompactTokenCount(usage.output_tokens)} out)`)
 
         const economics: string[] = []
-        if (input > 0 && (usage.cache_read_input_tokens ?? 0) > 0) {
-            economics.push(`Cached input: ${formatPercentage(((usage.cache_read_input_tokens ?? 0) / input) * 100)}%`)
+        const cached = usage.cache_read_input_tokens
+        const showCache = isCodex
+            ? Number.isSafeInteger(input) && input > 0
+                && cached !== undefined && Number.isSafeInteger(cached) && cached >= 0 && cached <= input
+            : input > 0 && (cached ?? 0) > 0
+        if (showCache) {
+            economics.push(`Cached input: ${formatPercentage(((cached ?? 0) / input) * 100)}%`)
         }
         if (summary.totalCostUsd !== undefined && summary.totalCostUsd > 0) {
             economics.push(`Cost: ${formatUsd(summary.totalCostUsd)}`)

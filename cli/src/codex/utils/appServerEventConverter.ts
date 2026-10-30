@@ -1090,6 +1090,9 @@ export class AppServerEventConverter {
 
                 if (method === 'item/completed') {
                     const meta = this.commandMeta.get(itemId) ?? {};
+                    // Completion snapshots can arrive without a start (reconnect or late shutdown).
+                    const command = extractCommand(item.command ?? item.cmd ?? item.args);
+                    const cwd = asString(item.cwd ?? item.workingDirectory ?? item.working_directory);
                     const output = asString(item.aggregatedOutput ?? item.aggregated_output ?? item.output ?? item.result ?? item.stdout)
                         ?? this.commandOutputBuffers.get(itemId);
                     const stderr = asString(item.stderr);
@@ -1102,6 +1105,8 @@ export class AppServerEventConverter {
                         type: 'exec_command_end',
                         call_id: itemId,
                         ...meta,
+                        ...(command ? { command } : {}),
+                        ...(cwd ? { cwd } : {}),
                         ...(output ? { output } : {}),
                         ...(stderr ? { stderr } : {}),
                         ...(error ? { error } : {}),
@@ -1239,10 +1244,32 @@ export class AppServerEventConverter {
         return events;
     }
 
-    reset(): void {
-        this.agentMessageBuffers.clear();
-        this.textSnapshots.clear();
-        this.textSources.clear();
+    /** Restore cumulative text from an active thread/read item during reconnect. */
+    restoreAgentMessage(params: unknown): ConvertedEvent[] {
+        const value = asRecord(params) ?? {};
+        const item = extractItem(value);
+        const itemId = extractItemId(value);
+        if (!this.options.streamText || !item || !itemId || this.completedAgentMessageItems.has(itemId)) return [];
+        const scope = extractEventScope(value);
+        const current = this.agentMessageBuffers.get(itemId) ?? '';
+        const historyText = extractItemText(item) ?? '';
+        // Fill a reconnect gap without rolling back deltas that overtook history.
+        const text = current.startsWith(historyText) ? current
+            : historyText.startsWith(current) ? historyText : current || historyText;
+        if (!text) return [];
+        this.agentMessageBuffers.set(itemId, text);
+        const id = this.textSnapshots.get(itemId)?.id
+            ?? `codex:${scope.thread_id ?? ''}:${scope.turn_id ?? 'thread'}:${itemId}:agent_message`;
+        this.textSnapshots.set(itemId, { id, at: Date.now() });
+        return [{ ...scope, type: 'agent_message', message: text, stream_id: id, live: true }];
+    }
+
+    reset(options: { preserveText?: boolean } = {}): void {
+        if (!options.preserveText) {
+            this.agentMessageBuffers.clear();
+            this.textSnapshots.clear();
+            this.textSources.clear();
+        }
         this.reasoningBuffers.clear();
         this.commandOutputBuffers.clear();
         this.commandMeta.clear();

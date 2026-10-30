@@ -6,14 +6,15 @@ import { ToastProvider } from '../src/lib/toast-context'
 import { SessionList } from '../src/components/SessionList'
 import type { SessionSummary } from '../src/types/api'
 
-const sessions: SessionSummary[] = Array.from({ length: 40 }, (_, index) => ({
+const twoProjects = new URLSearchParams(location.search).has('two-projects')
+const sessions: SessionSummary[] = Array.from({ length: twoProjects ? 16 : 40 }, (_, index) => ({
     id: `session-list-scroll-${index}`,
     active: true,
     thinking: false,
     activeAt: 1_700_000_000_000 - index,
     updatedAt: 1_700_000_000_000 - index,
     metadata: {
-        path: '/work/hapi',
+        path: twoProjects ? (index < 9 ? '/work/project-a' : '/work/project-b') : '/work/hapi',
         name: `Fixture session ${index + 1}`,
         machineId: 'fixture-machine',
         agentSessionId: `thread-${index}`
@@ -43,7 +44,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <QueryClientProvider client={queryClient}>
         <ToastProvider>
             <I18nProvider>
-                <div className="flex h-screen min-h-0 flex-col">
+                <div className="flex h-full min-h-0 flex-col">
                     <SessionList
                         sessions={sessions}
                         selectedSessionId={null}

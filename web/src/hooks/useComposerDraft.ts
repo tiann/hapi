@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { getDraft, saveDraft } from '@/lib/composer-drafts'
+import { getDraft, markDraftEdited, saveDraft } from '@/lib/composer-drafts'
 import {
     getDraftAttachments,
     getRestoredUploadMetadata,
@@ -7,6 +7,12 @@ import {
     type AttachmentDraftInput,
 } from '@/lib/composer-attachment-drafts'
 import { persistInactiveComposerAttachments, composerDraftWasHandedOff } from '@/lib/composer-draft-transfer'
+
+const liveComposers = new Map<string, { getText: () => string; setText: (text: string) => void }>()
+
+export function getLiveComposerDraft(sessionId: string) {
+    return liveComposers.get(sessionId)
+}
 
 export type ComposerDraftHydration = {
     /** Session represented by this status; prevents a previous session's ready state leaking across a key change. */
@@ -44,8 +50,25 @@ export function useComposerDraft(
     setText: (text: string) => void,
     addAttachment: (file: File) => Promise<void>,
 ): ComposerDraftHydration {
+    const textRevisionRef = useRef({ sessionId, text: composerText })
     const composerTextRef = useRef(composerText)
     composerTextRef.current = composerText
+    const setTextRef = useRef(setText)
+    setTextRef.current = setText
+    useEffect(() => {
+        if (!sessionId) return
+        const composer = {
+            getText: () => draftReadyRef.current ? composerTextRef.current : (composerTextRef.current || getDraft(sessionId)),
+            setText: (text: string) => {
+                composerTextRef.current = text
+                setTextRef.current(text)
+            },
+        }
+        liveComposers.set(sessionId, composer)
+        return () => {
+            if (liveComposers.get(sessionId) === composer) liveComposers.delete(sessionId)
+        }
+    }, [sessionId])
     const attachmentsRef = useRef(attachments)
     attachmentsRef.current = attachments
 
@@ -91,6 +114,8 @@ export function useComposerDraft(
                     restoredAny: true,
                     hasStoredAttachments: false,
                 })
+                textRevisionRef.current = { sessionId, text: draft }
+                composerTextRef.current = draft!
                 setText(draft!)
             }
             draftReadyRef.current = true
@@ -215,6 +240,14 @@ export function useComposerDraft(
             attachmentsReadyRef.current = false
         }
     }, [sessionId, canRestoreAttachments]) // eslint-disable-line react-hooks/exhaustive-deps
+
+    useEffect(() => {
+        const previous = textRevisionRef.current
+        if (sessionId && previous.sessionId === sessionId && previous.text !== composerText) {
+            markDraftEdited(sessionId)
+        }
+        textRevisionRef.current = { sessionId, text: composerText }
+    }, [sessionId, composerText])
 
     return hydration
 }

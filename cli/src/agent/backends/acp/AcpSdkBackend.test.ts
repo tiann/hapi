@@ -453,6 +453,71 @@ describe('AcpSdkBackend', () => {
         });
     });
 
+    it('flattens Zed-style grouped configOptions into model metadata (dsh shape)', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method) => {
+                if (method === 'session/new') {
+                    return {
+                        sessionId: 'dsh-session-grouped',
+                        configOptions: [
+                            {
+                                id: 'model',
+                                name: 'Model',
+                                category: 'model',
+                                type: 'select',
+                                currentValue: '["deepseek-official","deepseek-flash"]',
+                                options: [
+                                    {
+                                        group: 'deepseek-official',
+                                        name: 'DeepSeek',
+                                        options: [
+                                            { value: '["deepseek-official","deepseek-flash"]', name: 'DeepSeek-V41-Flash' },
+                                            { value: '["deepseek-official","deepseek-v4-pro"]', name: 'DeepSeek-V4-Pro' }
+                                        ]
+                                    }
+                                ]
+                            },
+                            {
+                                id: 'reasoning_effort',
+                                category: 'thought_level',
+                                currentValue: 'high',
+                                options: [
+                                    { value: 'off', name: 'Off' },
+                                    { value: 'high', name: 'High' }
+                                ]
+                            }
+                        ]
+                    };
+                }
+                return null;
+            },
+            close: async () => {}
+        };
+
+        const sessionId = await backend.newSession({ cwd: '/tmp/x', mcpServers: [] });
+
+        expect(backend.getSessionModelsMetadata(sessionId)).toEqual({
+            availableModels: [
+                { modelId: '["deepseek-official","deepseek-flash"]', name: 'DeepSeek-V41-Flash' },
+                { modelId: '["deepseek-official","deepseek-v4-pro"]', name: 'DeepSeek-V4-Pro' }
+            ],
+            currentModelId: '["deepseek-official","deepseek-flash"]'
+        });
+        expect(backend.getConfigOptionByCategory(sessionId, 'model')?.options).toEqual([
+            { value: '["deepseek-official","deepseek-flash"]', name: 'DeepSeek-V41-Flash' },
+            { value: '["deepseek-official","deepseek-v4-pro"]', name: 'DeepSeek-V4-Pro' }
+        ]);
+        // Flat options (thought_level) keep parsing unchanged.
+        expect(backend.getThoughtLevelConfigOption(sessionId)).toMatchObject({
+            id: 'reasoning_effort',
+            currentValue: 'high'
+        });
+    });
+
     it('returns undefined session metadata when session/new omits models', async () => {
         const backend = new AcpSdkBackend({ command: 'gemini' });
         const backendInternal = backend as unknown as {
@@ -1863,5 +1928,383 @@ describe('AcpSdkBackend abortSoftSteers', () => {
 
         expect(() => backend.abortSoftSteers()).not.toThrow();
         expect(backend.processingMessage).toBe(false);
+    });
+});
+
+describe('AcpSdkBackend acpModelSwitchViaConfigOption', () => {
+    async function makeBackendWithModelOption(flag: boolean, opts?: { configOptionError?: string }) {
+        const backend = new AcpSdkBackend({
+            command: 'opencode',
+            acpModelSwitchViaConfigOption: flag
+        });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+            sessionConfigOptions: Map<string, Array<{ id: string; category?: string; options: Array<{ value: string }> }>>;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                calls.push({ method, params });
+                if (method === 'session/new') {
+                    return {
+                        sessionId: 's1',
+                        configOptions: [{
+                            id: 'model',
+                            category: 'model',
+                            currentValue: 'ollama/a',
+                            options: [{ value: 'ollama/a', name: 'a' }, { value: 'ollama/b', name: 'b' }]
+                        }]
+                    };
+                }
+                if (method === 'session/set_config_option') {
+                    if (opts?.configOptionError) {
+                        throw new Error(opts.configOptionError);
+                    }
+                    return {
+                        configOptions: [{
+                            id: 'model',
+                            category: 'model',
+                            currentValue: 'ollama/b',
+                            options: [{ value: 'ollama/a', name: 'a' }, { value: 'ollama/b', name: 'b' }]
+                        }]
+                    };
+                }
+                return null;
+            },
+            close: async () => {}
+        };
+        await backend.newSession({ cwd: '/tmp/x', mcpServers: [] });
+        calls.length = 0;
+        return { backend, calls, backendInternal };
+    }
+
+    it('uses session/set_config_option with the model option id when the flag is on', async () => {
+        const { backend, calls } = await makeBackendWithModelOption(true);
+        await backend.setModel('s1', 'ollama/b', { flavor: 'opencode' });
+        expect(calls).toEqual([
+            { method: 'session/set_config_option', params: { sessionId: 's1', configId: 'model', value: 'ollama/b' } }
+        ]);
+        expect(backend.getSessionModelsMetadata('s1')?.currentModelId).toBe('ollama/b');
+    });
+
+    it('falls back to the legacy set_model path when no model option exists (flag on)', async () => {
+        const { backend, calls, backendInternal } = await makeBackendWithModelOption(true, { configOptionError: 'Method not found' });
+        backendInternal.sessionConfigOptions.set('s1', [
+            { id: 'effort', category: 'thought_level', options: [{ value: 'high' }] }
+        ]);
+        await backend.setModel('s1', 'ollama/b', { flavor: 'opencode' });
+        expect(calls).toEqual([
+            { method: 'session/set_config_option', params: { sessionId: 's1', configId: 'model', value: 'ollama/b' } },
+            { method: 'session/set_model', params: { sessionId: 's1', modelId: 'ollama/b' } }
+        ]);
+    });
+
+    it('flag off with a non-opencode flavor sends only session/set_model (shared-backend guarantee)', async () => {
+        const backend = new AcpSdkBackend({
+            command: 'opencode',
+            acpModelSwitchViaConfigOption: false
+        });
+        const calls: Array<{ method: string; params: unknown }> = [];
+        const backendInternal = backend as unknown as {
+            transport: { sendRequest: (method: string, params: unknown) => Promise<unknown>; close: () => Promise<void> } | null;
+        };
+        backendInternal.transport = {
+            sendRequest: async (method, params) => {
+                calls.push({ method, params });
+                if (method === 'session/new') {
+                    return { sessionId: 's1', configOptions: [{ id: 'model', category: 'model', currentValue: 'ollama/a', options: [] }] };
+                }
+                return null;
+            },
+            close: async () => {}
+        };
+        await backend.newSession({ cwd: '/tmp/x', mcpServers: [] });
+        calls.length = 0;
+        // No flavor: neither the v2 shortcut nor the opencode legacy
+        // config-option attempt may run.
+        await backend.setModel('s1', 'ollama/b');
+        expect(calls).toEqual([
+            { method: 'session/set_model', params: { sessionId: 's1', modelId: 'ollama/b' } }
+        ]);
+    });
+
+    it('flag off (opencode flavor) keeps the legacy opencode path, which itself tries set_config_option before set_model', async () => {
+        // The pre-existing opencode legacy path already attempts
+        // session/set_config_option first and falls back to set_model on
+        // "method not found" — identical traffic to the flag-on shortcut.
+        // The flag only changes the guard: with it OFF, v2 sessions without
+        // a model option go straight to legacy instead of being refused.
+        // Shared-backend guarantee (no flavor → set_model only) is pinned by
+        // the dedicated test above.
+        const { backend, calls } = await makeBackendWithModelOption(false);
+        await backend.setModel('s1', 'ollama/b', { flavor: 'opencode' });
+        expect(calls).toEqual([
+            { method: 'session/set_config_option', params: { sessionId: 's1', configId: 'model', value: 'ollama/b' } }
+        ]);
+    });
+});
+
+describe('AcpSdkBackend OpenCode child session updates', () => {
+    type ChildBackendInternal = {
+        transport: {
+            sendRequest: (...args: unknown[]) => Promise<unknown>;
+            close: () => Promise<void>;
+        } | null;
+        handleNotification: (method: string, params: unknown) => void;
+    };
+
+    function useFastDrains(): void {
+        backendStatics.UPDATE_QUIET_PERIOD_MS = 5;
+        backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 50;
+        backendStatics.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 1;
+        backendStatics.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 50;
+        backendStatics.LATE_FLUSH_INTERVAL_MS = 5;
+        backendStatics.LATE_FLUSH_QUIET_PERIOD_MS = 10;
+        backendStatics.LATE_FLUSH_WINDOW_MS = 50;
+    }
+
+    function childText(childSessionId: string, text: string): { method: string; params: unknown } {
+        return {
+            method: 'opencode/session/child_update',
+            params: {
+                rootSessionId: 'session-1',
+                childSessionId,
+                parentSessionId: 'session-1',
+                depth: 1,
+                type: 'update',
+                update: {
+                    sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+                    content: { type: 'text', text },
+                    _meta: { 'opencode/child-session': { id: childSessionId, parentID: 'session-1', depth: 1 } }
+                }
+            }
+        };
+    }
+
+    function childStatus(childSessionId: string, status: string): { method: string; params: unknown } {
+        return {
+            method: 'opencode/session/child_update',
+            params: {
+                rootSessionId: 'session-1',
+                childSessionId,
+                parentSessionId: 'session-1',
+                depth: 1,
+                type: 'status',
+                status
+            }
+        };
+    }
+
+    function parentText(text: string): { method: string; params: unknown } {
+        return {
+            method: 'session/update',
+            params: {
+                sessionId: 'session-1',
+                update: {
+                    sessionUpdate: ACP_SESSION_UPDATE_TYPES.agentMessageChunk,
+                    content: { type: 'text', text }
+                }
+            }
+        };
+    }
+
+    function texts(messages: AgentMessage[]): string[] {
+        return messages.flatMap((m) => (m.type === 'text' ? [m.text] : []));
+    }
+
+    function makeBackend(childSessionUpdates = true): {
+        backend: AcpSdkBackend;
+        internal: ChildBackendInternal;
+    } {
+        const backend = new AcpSdkBackend({ command: 'opencode', childSessionUpdates });
+        const internal = backend as unknown as ChildBackendInternal;
+        internal.transport = {
+            sendRequest: async () => ({ stopReason: 'end_turn' }),
+            close: async () => {}
+        };
+        return { backend, internal };
+    }
+
+    function notify(internal: ChildBackendInternal, notification: { method: string; params: unknown }): void {
+        internal.handleNotification(notification.method, notification.params);
+    }
+
+    it('keeps parent text and child text in separate messages when interleaved (a)', async () => {
+        useFastDrains();
+        const { backend, internal } = makeBackend();
+        internal.transport = {
+            sendRequest: async () => {
+                notify(internal, parentText('parent part1 '));
+                notify(internal, childText('ses_child', 'child says hi'));
+                notify(internal, parentText('parent part2'));
+                return { stopReason: 'end_turn' };
+            },
+            close: async () => {}
+        };
+
+        const messages: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'hi' }], (m) => messages.push(m));
+        await sleep(60);
+
+        const emitted = texts(messages);
+        expect(emitted).toContain('parent part1 parent part2');
+        expect(emitted).toContain('child says hi');
+        expect(emitted.length).toBe(2);
+    });
+
+    it('keeps two children interleaved in separate messages (b)', async () => {
+        useFastDrains();
+        const { backend, internal } = makeBackend();
+        internal.transport = {
+            sendRequest: async () => {
+                notify(internal, childText('ses_child_a', 'child-a part1 '));
+                notify(internal, childText('ses_child_b', 'child-b part1 '));
+                notify(internal, childText('ses_child_a', 'child-a part2'));
+                return { stopReason: 'end_turn' };
+            },
+            close: async () => {}
+        };
+
+        const messages: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'hi' }], (m) => messages.push(m));
+        await sleep(60);
+
+        const emitted = texts(messages);
+        expect(emitted).toContain('child-a part1 child-a part2');
+        expect(emitted).toContain('child-b part1 ');
+        expect(emitted.length).toBe(2);
+    });
+
+    it('emits a child answer during the compact suppression window (c)', async () => {
+        useFastDrains();
+        const { backend, internal } = makeBackend();
+
+        const messages: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'start a background task' }], (m) => messages.push(m));
+
+        await backend.suppressUpdatesDuring(async () => {
+            notify(internal, childText('ses_child', 'child says hi during compact'));
+        });
+        await sleep(60);
+
+        expect(texts(messages)).toEqual(['child says hi during compact']);
+    });
+
+    it('flushes pending child text on terminal status and starts a fresh buffer after (d)', async () => {
+        useFastDrains();
+        const { backend, internal } = makeBackend();
+
+        const messages: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'hi' }], (m) => messages.push(m));
+
+        backendStatics.LATE_FLUSH_QUIET_PERIOD_MS = 500;
+        notify(internal, childText('ses_child', 'child says hi'));
+        notify(internal, childStatus('ses_child', 'completed'));
+        await sleep(30);
+        expect(texts(messages)).toEqual(['child says hi']);
+
+        notify(internal, childText('ses_child', 'a fresh answer'));
+        await sleep(700);
+        expect(texts(messages)).toEqual(['child says hi', 'a fresh answer']);
+    });
+
+    it('emits a background child answer that arrives after the parent turn ended (e)', async () => {
+        useFastDrains();
+        const { backend, internal } = makeBackend();
+
+        const messages: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'start a background task' }], (m) => messages.push(m));
+        expect(messages.some((m) => m.type === 'turn_complete')).toBe(true);
+
+        notify(internal, childText('ses_child', 'RESULT=391'));
+        await sleep(60);
+
+        expect(texts(messages)).toEqual(['RESULT=391']);
+        const answerIdx = messages.findIndex((m) => m.type === 'text' && m.text === 'RESULT=391');
+        const turnCompleteIdx = messages.findIndex((m) => m.type === 'turn_complete');
+        expect(answerIdx).toBeGreaterThan(turnCompleteIdx);
+    });
+
+    it('flushes pending child text on disconnect (f)', async () => {
+        useFastDrains();
+        const { backend, internal } = makeBackend();
+
+        const messages: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'hi' }], (m) => messages.push(m));
+
+        notify(internal, childText('ses_child', 'pending bye'));
+        await backend.disconnect();
+
+        expect(texts(messages)).toEqual(['pending bye']);
+    });
+
+    it('ignores child updates when the capability is not enabled (g)', async () => {
+        useFastDrains();
+        const { backend, internal } = makeBackend(false);
+
+        const messages: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'hi' }], (m) => messages.push(m));
+        notify(internal, childText('ses_child', 'child says hi'));
+        await sleep(60);
+
+        expect(texts(messages)).toEqual([]);
+    });
+
+    it('does not delay the parent prompt completion while child updates keep arriving (h)', async () => {
+        useFastDrains();
+        const { backend, internal } = makeBackend();
+        internal.transport = {
+            sendRequest: async () => {
+                void (async () => {
+                    for (let i = 0; i < 20; i++) {
+                        await sleep(3);
+                        notify(internal, childText('ses_child', `tick ${i} `));
+                    }
+                })();
+                return { stopReason: 'end_turn' };
+            },
+            close: async () => {}
+        };
+
+        const messages: AgentMessage[] = [];
+        const start = Date.now();
+        await backend.prompt('session-1', [{ type: 'text', text: 'hi' }], (m) => messages.push(m));
+        const elapsed = Date.now() - start;
+
+        expect(elapsed).toBeLessThan(40);
+        expect(messages.some((m) => m.type === 'turn_complete')).toBe(true);
+    });
+
+    it('ignores child status created/running events', async () => {
+        useFastDrains();
+        const { backend, internal } = makeBackend();
+
+        const messages: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'hi' }], (m) => messages.push(m));
+
+        notify(internal, childStatus('ses_child', 'created'));
+        notify(internal, childStatus('ses_child', 'running'));
+        await sleep(60);
+
+        expect(messages.filter((m) => m.type !== 'turn_complete')).toEqual([]);
+    });
+
+    it('ignores child updates for a foreign root session', async () => {
+        useFastDrains();
+        const { backend, internal } = makeBackend();
+
+        const messages: AgentMessage[] = [];
+        await backend.prompt('session-1', [{ type: 'text', text: 'hi' }], (m) => messages.push(m));
+
+        notify(internal, {
+            method: 'opencode/session/child_update',
+            params: {
+                ...(childText('ses_child', 'foreign') as { params: Record<string, unknown> }).params,
+                rootSessionId: 'other-session'
+            }
+        });
+        await sleep(60);
+
+        expect(texts(messages)).toEqual([]);
     });
 });

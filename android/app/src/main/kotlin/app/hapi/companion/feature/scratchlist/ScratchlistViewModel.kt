@@ -3,6 +3,7 @@ package app.hapi.companion.feature.scratchlist
 import android.net.Uri
 import app.hapi.data.store.ScratchlistAttachmentDeleteResult
 import app.hapi.data.store.ScratchlistCreateResult
+import app.hapi.data.store.ScratchlistMoveDirection
 import app.hapi.data.store.ScratchlistUploadResult
 import app.hapi.data.store.SessionScratchlist
 import app.hapi.protocol.wire.ScratchlistAttachment
@@ -231,6 +232,14 @@ class ScratchlistViewModel(
                 notice(ScratchlistNotice.DeleteFailed)
             }
         }
+    }
+
+    /**
+     * Row ↑/↓ (web drawer `handleMove`): local-only reorder in the store
+     * cache — no protocol request; the next refetch restores hub order.
+     */
+    fun moveEntry(entryId: String, direction: ScratchlistMoveDirection) {
+        store.moveEntry(sessionId, entryId, direction)
     }
 
     // --------------------------------------------------------- attachments --
