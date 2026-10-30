@@ -368,9 +368,14 @@ export class ApiMachineClient {
                 const requestedIds = parsed.data.sessionIds
                     ? new Set(parsed.data.sessionIds)
                     : null
-                const allSessions = requestedIds
-                    ? listLocalCodexSessionsWithMessagesByIds(requestedIds)
-                    : listLocalCodexSessionSummaries()
+                let allSessions
+                try {
+                    allSessions = requestedIds
+                        ? listLocalCodexSessionsWithMessagesByIds(requestedIds)
+                        : listLocalCodexSessionSummaries()
+                } catch (error) {
+                    return { success: false, error: error instanceof Error ? error.message : 'Failed to list local Codex sessions' }
+                }
                 const sessions = []
                 for (const session of allSessions) {
                     if (await this.isLocalSessionWithinWorkspaceRoots(session)) {
