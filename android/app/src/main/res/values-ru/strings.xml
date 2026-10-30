@@ -280,6 +280,7 @@
     <string name="chat_notice_delete_failed">Не удалось удалить сессию</string>
     <string name="chat_notice_cancel_failed">Не удалось отменить сообщение в очереди</string>
     <string name="chat_notice_edit_kept_draft">Сообщение отменено — текущий черновик сохранён</string>
+    <string name="chat_notice_edit_schedule_dropped">Расписание убрано — вложения нельзя отправить по расписанию</string>
     <string name="chat_notice_already_delivered">Уже доставлено агенту</string>
     <string name="chat_notice_steer_failed">Не удалось направить сообщение</string>
     <string name="chat_notice_request_already_handled">Запрос уже обработан</string>
@@ -299,10 +300,17 @@
     <string name="chat_composer_stop_recording">Остановить запись</string>
     <string name="chat_composer_send">Отправить</string>
     <string name="chat_composer_abort">Остановить текущий ход</string>
+    <string name="chat_mention_suggestions">Предложения упоминаний</string>
     <string name="chat_send_steer">Отправить и вклиниться в текущий ход</string>
+    <string name="chat_schedule_send">Отложенная отправка</string>
+    <string name="chat_schedule_relative_tab">Относительно</string>
+    <string name="chat_schedule_specific_tab">Точное время</string>
+    <string name="chat_schedule_specific_hint">Максимум 7 дней. Требуется работающий хаб; CLI наверстает отправку при следующем подключении после этого времени.</string>
+    <string name="chat_schedule_error_past">Время отправки должно быть в будущем.</string>
+    <string name="chat_schedule_error_too_far">Максимальное время отправки — 7 дней.</string>
     <string name="chat_queued_one">1 сообщение в очереди</string>
     <string name="chat_queued_many">Сообщений в очереди: %1$d</string>
-    <string name="chat_queued_scheduled">По расписанию · %1$s</string>
+    <string name="chat_queued_scheduled">Запланировано на %1$s</string>
     <string name="chat_queued_steer">Направить</string>
     <string name="chat_queued_edit">Изменить</string>
     <string name="chat_picker_title">Прикрепить</string>

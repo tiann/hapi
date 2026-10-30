@@ -581,7 +581,7 @@ class HapiApi internal constructor(
     }
 
     /** `GET /api/sessions/:id/files?query=&limit=` — ripgrep-backed search (limit 1–500, default 200). */
-    suspend fun searchSessionFiles(sessionId: String, query: String, limit: Int? = null): FileSearchResponse {
+    override suspend fun searchSessionFiles(sessionId: String, query: String, limit: Int?): FileSearchResponse {
         val target = url("api", "sessions", sessionId, "files").apply {
             if (query.isNotEmpty()) addQueryParameter("query", query)
             limit?.let { addQueryParameter("limit", it.toString()) }

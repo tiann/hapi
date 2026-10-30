@@ -280,6 +280,7 @@
     <string name="chat_notice_delete_failed">Failed to delete session</string>
     <string name="chat_notice_cancel_failed">Failed to cancel queued message</string>
     <string name="chat_notice_edit_kept_draft">Message cancelled — kept your current draft</string>
+    <string name="chat_notice_edit_schedule_dropped">Schedule dropped — attachments cannot be scheduled</string>
     <string name="chat_notice_already_delivered">Already delivered to the agent</string>
     <string name="chat_notice_steer_failed">Failed to steer message</string>
     <string name="chat_notice_request_already_handled">Request was already handled</string>
@@ -299,10 +300,17 @@
     <string name="chat_composer_stop_recording">Stop recording</string>
     <string name="chat_composer_send">Send</string>
     <string name="chat_composer_abort">Stop the current turn</string>
+    <string name="chat_mention_suggestions">Mention suggestions</string>
     <string name="chat_send_steer">Send &amp; steer into current turn</string>
+    <string name="chat_schedule_send">Schedule send</string>
+    <string name="chat_schedule_relative_tab">Relative</string>
+    <string name="chat_schedule_specific_tab">Specific</string>
+    <string name="chat_schedule_specific_hint">Max 7 days. Requires the hub running; the CLI catches up the next time it connects after that time.</string>
+    <string name="chat_schedule_error_past">Scheduled time must be in the future.</string>
+    <string name="chat_schedule_error_too_far">Maximum schedule time is 7 days.</string>
     <string name="chat_queued_one">1 queued message</string>
     <string name="chat_queued_many">%1$d queued messages</string>
-    <string name="chat_queued_scheduled">Scheduled · %1$s</string>
+    <string name="chat_queued_scheduled">Scheduled for %1$s</string>
     <string name="chat_queued_steer">Steer</string>
     <string name="chat_queued_edit">Edit</string>
     <string name="chat_picker_title">Attach</string>
