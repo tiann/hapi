@@ -3,11 +3,16 @@ package app.hapi.companion.di
 import android.content.Context
 import androidx.datastore.preferences.preferencesDataStore
 import app.hapi.companion.fcm.RegisterDeviceWorker
+import app.hapi.companion.feature.files.DirectoryExpandPrefs
+import app.hapi.companion.feature.files.DirectorySortPrefs
+import app.hapi.companion.feature.files.MarkdownPreviewPrefs
+import app.hapi.companion.feature.files.filesDirExpandDataStore
 import app.hapi.companion.feature.newsession.DataStoreNewSessionPrefs
 import app.hapi.companion.feature.newsession.NewSessionPrefs
 import app.hapi.companion.feature.pairing.PairingClient
 import app.hapi.companion.feature.pairing.PairingClientFactory
 import app.hapi.companion.feature.settings.AppLanguage
+import app.hapi.companion.feature.settings.CodeWrapPrefs
 import app.hapi.companion.feature.settings.LanguagePrefs
 import app.hapi.companion.feature.settings.ThemePrefs
 import app.hapi.companion.feature.share.ContentResolverShareReader
@@ -120,6 +125,28 @@ class AppGraph(context: Context) {
 
     /** Appearance choice (B-M4e); MainActivity reads it at setContent. */
     val themePrefs: ThemePrefs = ThemePrefs(appContext.hapiDataStore)
+
+    /** Code-block word-wrap toggle (web useCodeWrap / localStorage 'hapi-code-wrap' twin); default off. */
+    val codeWrapPrefs: CodeWrapPrefs = CodeWrapPrefs(appContext.hapiDataStore)
+
+    /**
+     * Files-screen sort choice (web localStorage `hapi-directory-sort` twin),
+     * app-wide: one sort preference across every session's files screen.
+     */
+    val directorySortPrefs: DirectorySortPrefs = DirectorySortPrefs(appContext.hapiDataStore)
+
+    /**
+     * Browse-tree expanded directories, per hub+session (web sessionStorage
+     * `hapi-dir-expanded` twin); own DataStore — expand toggles are bursty
+     * writes (chat-drafts precedent).
+     */
+    val directoryExpandPrefs: DirectoryExpandPrefs = DirectoryExpandPrefs(appContext.filesDirExpandDataStore)
+
+    /**
+     * Markdown preview/source choice for the file viewer (web localStorage
+     * `hapi.filePreview.markdownMode.v1` twin), app-wide like the web.
+     */
+    val markdownPreviewPrefs: MarkdownPreviewPrefs = MarkdownPreviewPrefs(appContext.hapiDataStore)
 
     /** Language choice (B-M5a: applied via per-app locales; Settings writes it). */
     val languagePrefs: LanguagePrefs = LanguagePrefs(appContext.hapiDataStore)
