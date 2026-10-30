@@ -33,6 +33,9 @@ function metadataHasDisplayTitle(metadata: { name?: string; summary?: { text: st
     return Boolean(metadata?.name?.trim() || metadata?.summary?.text?.trim());
 }
 
+// `before` (unix seconds) bounds capture to turns that predate the bind.
+export type HistoryBaseline = { turns: Set<string>; capture: boolean; before: number };
+
 /** Canonical V2 stream only. Stable message IDs also deduplicate snapshot replay at the hub. */
 export class SharedCodexProjection {
     private converter = new AppServerEventConverter();
@@ -208,7 +211,8 @@ export class SharedCodexProjection {
         }
     }
 
-    async history(thread: unknown): Promise<void> {
+    /** Baseline turns were stored by HAPI before stable replay ids (no local id to match), so never replay them. */
+    async history(thread: unknown, baseline?: HistoryBaseline): Promise<void> {
         const turns = record(thread).turns;
         if (!Array.isArray(turns)) return;
         const titleRevision = this.titleRevision;
@@ -216,6 +220,12 @@ export class SharedCodexProjection {
         for (const value of turns) {
             const turn = record(value);
             if (!Array.isArray(turn.items)) continue;
+            const turnId = string(turn.id);
+            const startedAt = typeof turn.startedAt === 'number' ? turn.startedAt : undefined;
+            if (turnId && baseline?.capture && turn.status !== 'inProgress' && (startedAt === undefined || startedAt < baseline.before)) {
+                baseline.turns.add(turnId);
+            }
+            const skip = Boolean(turnId && baseline?.turns.has(turnId));
             for (const item of turn.items) {
                 const params = { threadId: this.threadId, turnId: turn.id, item };
                 const titleKey = `${string(turn.id) ?? 'thread'}:${record(item).id}`;
@@ -223,7 +233,11 @@ export class SharedCodexProjection {
                 if (!this.parentThreadId && string(record(item).id) && pendingTitle && !this.completedTitles.has(titleKey)) {
                     this.pendingTitles.set(titleKey, pendingTitle);
                 }
-                await this.project('item/started', params, undefined, true);
+                // Stored before stable ids: emit nothing, but keep title repair
+                // and prove acceptance so a redelivered input never runs twice.
+                const clientId = string(record(item).clientId ?? record(item).clientUserMessageId);
+                if (!skip) await this.project('item/started', params, undefined, true);
+                else if (!this.parentThreadId && record(item).type === 'userMessage' && clientId) await this.committed(clientId);
                 // Active snapshots can contain partial assistant text. Do not
                 // settle it under the final stable id and suppress completion.
                 if (turn.status !== 'inProgress' || record(item).status === 'completed' || record(item).type === 'userMessage') {
@@ -235,7 +249,7 @@ export class SharedCodexProjection {
                         }
                         this.pendingTitles.delete(titleKey);
                     }
-                    await this.project('item/completed', params, undefined, true);
+                    if (!skip) await this.project('item/completed', params, undefined, true);
                 }
             }
         }

@@ -168,6 +168,15 @@ describe('shared history projection', () => {
         await projection.history(snapshot); projection.reset(); await projection.history(snapshot);
         expect(send).toHaveBeenCalledTimes(2); expect(send.mock.calls[0]).toEqual(send.mock.calls[1]);
     });
+    it('skips baseline turns but still acknowledges their user inputs (#2086)', async () => {
+        const send = vi.fn(); const user = vi.fn(); const committed = vi.fn(async () => {});
+        const session = { getMetadata: () => ({}), sendAgentMessage: send, sendUserMessage: user, updateMetadata() {} } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', committed);
+        const items = [{ id: 'u', type: 'userMessage', clientId: 'local', content: [{ type: 'text', text: 'hi' }] }, { id: 'a', type: 'agentMessage', text: 'old' }];
+        await projection.history({ turns: [{ id: 'old', status: 'completed', items }] }, { turns: new Set(['old']), capture: false, before: 0 });
+        expect(committed).toHaveBeenCalledWith('local');
+        expect(send).not.toHaveBeenCalled(); expect(user).not.toHaveBeenCalled();
+    });
     it('does not settle an active snapshot under the final message id', async () => {
         const send = vi.fn();
         const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;

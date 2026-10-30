@@ -159,6 +159,11 @@ export const MetadataSchema = z.object({
     conversationHistoryIndexes: z.record(z.string(), z.number().int().nonnegative()).optional(),
     // Codex localId → turnId mapping (durable across runner relaunches).
     conversationHistoryTurns: z.record(z.string(), z.string().min(1)).optional(),
+    // Codex turns stored before stable replay ids; history replay skips them.
+    // `before` (unix seconds) bounds capture; `pending` children are not captured
+    // yet; `capture` marks a legacy session whose first capture has not committed.
+    codexHistoryBaseline: z.object({ turns: z.array(z.string()), before: z.number(), pending: z.array(z.string()),
+        capture: z.boolean().optional() }).optional(),
     // Pi localId → append-only session entry id mapping. Pi entry ids are the
     // only stable native boundary accepted by its fork API.
     conversationHistoryEntryIds: z.record(z.string(), z.string().min(1)).optional(),

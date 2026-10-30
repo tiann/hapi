@@ -3,17 +3,20 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentState, Metadata } from '@/api/types';
 import type { SessionBootstrapResult } from '@/agent/sessionFactory';
-import { SharedCodexRoot, type RootHost } from './root';
+import { SharedCodexRoot, legacyHistoryCapture, type RootHost } from './root';
 import { codexPlanProposalId } from './plan';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
-type NativeTurn = { id: string; status: string; items: unknown[] };
+type NativeTurn = { id: string; status: string; items: unknown[]; startedAt?: number };
 type NativeRequest = { id: string | number; method: string; params: unknown };
 
 vi.mock('../codexAppServerClient', () => ({
     CodexAppServerClient: class {
         initialized = false;
         thread = { id: 'thread', turns: [] as NativeTurn[] };
+        children: Record<string, NativeTurn[]> = {};
+        failReads = false;
+        failChildren = false;
         settings: Record<string, unknown> = { model: 'mock', collaborationMode: { mode: 'default' } };
         queue: Array<{ id: string; clientUserMessageId: unknown; input: unknown }> = [];
         notify?: (method: string, params: unknown) => void;
@@ -29,8 +32,13 @@ vi.mock('../codexAppServerClient', () => ({
         isInitialized() { return this.initialized; }
         async disconnect() { this.initialized = false; }
         async request(method: string, params: Record<string, unknown> = {}) {
+            const child = typeof params.threadId === 'string' ? this.children[params.threadId] : undefined;
+            if (method === 'thread/read' && params.includeTurns && this.failReads) throw new Error('read failed');
+            if (method === 'thread/read' && child && params.includeTurns && this.failChildren) throw new Error('child read failed');
+            if (method === 'thread/read' && child) return { thread: { id: params.threadId, parentThreadId: 'thread', turns: structuredClone(child) } };
             if (method === 'thread/read' || method === 'thread/resume') return { ...this.settings, thread: structuredClone(this.thread) };
-            if (method === 'thread/list') return { data: [] };
+            if (method === 'thread/list') return { data: Object.keys(this.children).map(id => ({ id, parentThreadId: 'thread' })) };
+            if (method === 'thread/loaded/list') return { data: [] };
             if (method === 'thread/queue/list') return { data: this.queue };
             if (method === 'thread/settings/update') {
                 this.settings = { ...this.settings, ...params };
@@ -57,10 +65,14 @@ afterEach(async () => {
     finally { vi.useRealTimers(); }
 });
 
-async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'] }) {
+type NativeSetup = { turns?: NativeTurn[]; children?: Record<string, NativeTurn[]>; failReads?: boolean; failChildren?: boolean };
+// What bootstrapping a pre-shared launcher row produces.
+const legacy = (): Partial<Metadata> => ({ codexSessionId: 'thread', ...legacyHistoryCapture({ path: '/repo', host: 'test', codexSessionId: 'thread' }) });
+
+async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create']; metadata?: Partial<Metadata>; native?: NativeSetup; bindMayFail?: boolean }) {
     const directory = await mkdtemp('/tmp/hapi-shared-root-');
     let state: AgentState = { steeringActive: true };
-    let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
+    let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex', ...opts?.metadata };
     let reconnect: (() => void) | null = null;
     const updateState = vi.fn((fn: (value: AgentState) => AgentState) => { state = fn(state); });
     const rpc = new Map<string, (raw: unknown) => Promise<unknown>>();
@@ -84,23 +96,27 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         sendSessionDeath() {}, async flush() {}, close() {}
     } as unknown as ApiSessionClient;
     const end = opts?.end ?? (async () => { throw new Error('Unexpected root archive'); });
-    const root = new SharedCodexRoot({ session, workingDirectory: directory } as SessionBootstrapResult, {
+    const root = new SharedCodexRoot({ session, workingDirectory: directory, metadata } as SessionBootstrapResult, {
         directory, generation: 'test', endpoint: 'mock', settingsFor: () => undefined,
         create: opts?.create ?? (async () => { throw new Error('Unexpected root creation'); }),
         end
     } satisfies RootHost);
     cleanups.push(async () => { await root.close(false); await rm(directory, { recursive: true, force: true }); });
     await root.prepare();
-    await root.bind('thread', { model: 'mock', thread: { turns: [] } }, false);
     const native = root.client as unknown as {
         initialized: boolean;
         thread: { id: string; turns: NativeTurn[] };
+        children: Record<string, NativeTurn[]>;
+        failReads: boolean;
+        failChildren: boolean;
         queue: Array<{ id: string; clientUserMessageId: string; input: unknown }>;
         notify(method: string, params: unknown): void;
         abandoned(): void;
         serverRequest(request: NativeRequest): void;
         responses: Array<{ id: string | number; result: unknown }>;
     };
+    native.thread.turns = opts?.native?.turns ?? []; native.children = opts?.native?.children ?? {}; native.failReads = opts?.native?.failReads ?? false; native.failChildren = opts?.native?.failChildren ?? false;
+    await root.bind('thread', { model: 'mock', thread: { turns: [] } }, false).catch(error => { if (!opts?.bindMayFail) throw error; });
     return {
         root, native, rpc, send, consumed, uncertain, metadata: () => metadata, state: () => state, updateState,
         drain: () => (root as unknown as { notifications: Promise<void> }).notifications,
@@ -392,6 +408,73 @@ describe('shared plan actions', () => {
         await completePlan(f, status);
         await f.root.refresh();
         expect(f.state().codexPlanProposalId).toBeNull();
+    });
+
+    it('does not replay history stored before stable ids, then replays new turns (#2086)', async () => {
+        const old = { id: 'old', status: 'completed', items: [{ id: 'a', type: 'agentMessage', text: 'stored without local id' }] };
+        const f = await fixture({ metadata: legacy(), native: { turns: [old] } });
+        expect(f.send).not.toHaveBeenCalled();
+        expect(f.metadata().codexHistoryBaseline).toMatchObject({ turns: ['old'], pending: [] });
+        f.native.thread.turns.push({ id: 'new', status: 'completed', items: [{ id: 'b', type: 'agentMessage', text: 'fresh' }] });
+        await f.root.refresh();
+        expect(f.send.mock.calls.map(([body]) => body.message)).toEqual(['fresh']);
+    });
+
+    it('imports native history into a newly bound session', async () => {
+        const f = await fixture({ native: { turns: [{ id: 'old', status: 'completed', items: [{ id: 'a', type: 'agentMessage', text: 'native only' }] }] } });
+        expect(f.send.mock.calls.map(([body]) => body.message)).toEqual(['native only']);
+        expect(f.metadata().codexHistoryBaseline).toMatchObject({ turns: [], pending: [] });
+    });
+
+    it('keeps stable-id replay for sessions already created by the shared launcher', async () => {
+        expect(legacyHistoryCapture({ path: '/repo', host: 'test', codexSessionId: 'thread', capabilities: { concurrentClients: true } })).toEqual({});
+        const f = await fixture({ metadata: { codexSessionId: 'thread' },
+            native: { turns: [{ id: 'unseen', status: 'completed', items: [{ id: 'a', type: 'agentMessage', text: 'undelivered' }] }] } });
+        expect(f.send.mock.calls.map(([body]) => body.message)).toEqual(['undelivered']);
+        expect(f.metadata().codexHistoryBaseline).toMatchObject({ turns: [], pending: [] });
+    });
+
+    it('records the empty baseline with the thread before an interruptible first import', async () => {
+        const f = await fixture({ native: { failReads: true }, bindMayFail: true });
+        expect(f.metadata()).toMatchObject({ codexSessionId: 'thread', codexHistoryBaseline: { turns: [] } });
+    });
+
+    it('resumes an interrupted first legacy capture after a restart', async () => {
+        const old = { id: 'old', status: 'completed', items: [{ id: 'a', type: 'agentMessage', text: 'stored without local id' }] };
+        const first = await fixture({ metadata: legacy(), native: { turns: [old], failReads: true }, bindMayFail: true });
+        expect(first.metadata().codexHistoryBaseline).toMatchObject({ capture: true });
+        const restarted = await fixture({ metadata: first.metadata(), native: { turns: [old] } });
+        expect(restarted.send).not.toHaveBeenCalled();
+        expect(restarted.metadata().codexHistoryBaseline).toMatchObject({ turns: ['old'], capture: false });
+    });
+
+    it('keeps capturing a legacy child whose history read failed', async () => {
+        const childTurns = [{ id: 'child-turn', status: 'completed', items: [{ id: 'c', type: 'agentMessage', text: 'stored child' }] }];
+        const f = await fixture({ metadata: legacy(), native: { children: { child: childTurns }, failChildren: true } });
+        expect(f.metadata().codexHistoryBaseline).toMatchObject({ turns: [], pending: ['child'] });
+        f.native.failChildren = false; f.native.initialized = false; f.native.abandoned();
+        await vi.waitFor(() => expect(f.metadata().codexHistoryBaseline).toMatchObject({ turns: ['child-turn'], pending: [] }));
+        expect(f.send).not.toHaveBeenCalled();
+    });
+
+    it('never absorbs a child turn started after the bind into a delayed capture', async () => {
+        const childTurns = [{ id: 'child-turn', status: 'completed', items: [{ id: 'c', type: 'agentMessage', text: 'stored child' }] }];
+        const f = await fixture({ metadata: legacy(), native: { children: { child: childTurns }, failChildren: true } });
+        f.native.children.child.push({ id: 'missed', status: 'completed', startedAt: Math.floor(Date.now() / 1000) + 1,
+            items: [{ id: 'm', type: 'agentMessage', text: 'during gap' }] });
+        f.native.failChildren = false; f.native.initialized = false; f.native.abandoned();
+        await vi.waitFor(() => expect(f.metadata().codexHistoryBaseline).toMatchObject({ turns: ['child-turn'], pending: [] }));
+        expect(f.send.mock.calls.map(([body]) => body.message.message)).toEqual(['during gap']);
+    });
+
+    it('keeps the original cutoff and pending children across a restart', async () => {
+        const childTurns: NativeTurn[] = [{ id: 'child-turn', status: 'completed', items: [{ id: 'c', type: 'agentMessage', text: 'stored child' }] }];
+        const first = await fixture({ metadata: legacy(), native: { children: { child: childTurns }, failChildren: true } });
+        const baseline = first.metadata().codexHistoryBaseline!;
+        const restarted = await fixture({ metadata: { codexSessionId: 'thread', codexHistoryBaseline: baseline }, native: { children: { child: [...childTurns,
+            { id: 'missed', status: 'completed', startedAt: baseline.before + 1, items: [{ id: 'm', type: 'agentMessage', text: 'during gap' }] }] } } });
+        expect(restarted.metadata().codexHistoryBaseline).toEqual({ turns: ['child-turn'], before: baseline.before, pending: [], capture: false });
+        expect(restarted.send.mock.calls.map(([body]) => body.message.message)).toEqual(['during gap']);
     });
 
     it('uses only the latest root turn when replaying history', async () => {

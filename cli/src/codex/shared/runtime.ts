@@ -13,7 +13,7 @@ import { CodexAppServerClient, isIndeterminateError } from '../codexAppServerCli
 import { codexHome, saveRuntime, runtimeDirectory, runtimeAuthHash, findColdBinding, withThreadOwnership, type CodexRuntimeRecord } from './registry';
 import { startCodexGateway, record, string, type Envelope } from './gateway';
 import { resolveSharedCodex, sharedLaunchConfig, initializeSharedClient, checkSharedCapabilities, takeReservedSessionId, type SharedLaunchOptions } from './launch';
-import { SharedCodexRoot } from './root';
+import { SharedCodexRoot, legacyHistoryCapture } from './root';
 
 export type RuntimeReady = { sessionId: string; runtime: CodexRuntimeRecord };
 type Reservation = { root: SharedCodexRoot; resumeId?: string };
@@ -183,6 +183,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             ? await bootstrapExistingSession({
                 ...shared,
                 sessionId: existingSessionId,
+                deriveMetadata: legacyHistoryCapture,
                 requireMetadataFlush: metadata => Boolean(metadata?.capabilities?.conversationHistory)
             })
             : await bootstrapSession({
