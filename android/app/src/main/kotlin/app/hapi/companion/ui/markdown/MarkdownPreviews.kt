@@ -21,8 +21,9 @@ import app.hapi.protocol.git.UnifiedDiffParser
  * Kitchen-sink markdown exercising every renderer path (headings, emphasis,
  * strikethrough, inline code + file citations, links incl. blocked/custom
  * schemes, CJK autolink artifacts, lists + task lists, blockquote, tables --
- * one streaming-truncated, fenced code, mermaid degradation, html fallback,
- * thematic break). Compile-checked previews double as visual regressions.
+ * one streaming-truncated, fenced code, KaTeX block/inline math + currency
+ * prose, mermaid degradation, html fallback, thematic break). Compile-checked
+ * previews double as visual regressions.
  */
 class MarkdownPreviewParameterProvider : PreviewParameterProvider<String> {
     override val values: Sequence<String> = sequenceOf(KITCHEN_SINK_MARKDOWN)
@@ -52,6 +53,19 @@ Links: [docs](https://example.com/docs), [guide](docs/guide.md#install),
 | Column A | Column B | Column C |
 | --- | --- |
 | left | 2 | `x|y` |
+
+The plan is ${'$'}200/mo — currency stays prose — and inline \(a^2 + b^2\) degrades to TeX.
+
+\[
+E = mc^2 \qquad \int_{0}^{\infty} e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}
+\]
+
+${'$'}${'$'}
+\begin{aligned}
+f(x) &= x^2+2x+1 \\
+     &= (x+1)^2
+\end{aligned}
+${'$'}${'$'}
 
 ```kotlin
 fun greet(name: String): String {
