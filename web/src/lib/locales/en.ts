@@ -721,6 +721,7 @@ export default {
   'queuedMessages.editCurrentDraftKept': 'Queued message cancelled — current draft and schedule were kept.',
   'queuedMessages.steer': 'Deliver into the running turn now',
   'queuedMessages.steerFailed': 'Steer failed — message stays queued',
+  'queuedMessages.deliveryPending': 'Waiting for delivery confirmation',
   'queuedMessages.steerOutcomeUnknown': 'Delivery outcome unknown — retry or cancel explicitly',
   'queuedMessages.compactionPending': 'Compacting context — waiting for message acceptance',
   'queuedMessages.retryOutcome': 'Retry uncertain delivery',

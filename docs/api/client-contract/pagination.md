@@ -145,9 +145,10 @@ Lifecycle:
 1. Generate a client-side `localId` and append an **optimistic row**: `{id: localId, seq: null, localId, invokedAt: null, scheduledAt, createdAt: now, status:'sending', content: {role:'user', content:{type:'text', text, attachments?}, meta:{deliveryMode}}}`. A row is *optimistic* iff `id === localId`.
 2. On POST success: status → `queued` if the session is currently thinking, else `sent`. On failure: drop the row and restore the composer (or keep it as `failed` with a retry affordance when attachments are involved).
 3. **Echo**: the hub emits `message-received` carrying the stored row (server `id`, real `seq`, same `localId`). Merging a stored row whose `localId` matches an optimistic row **replaces** the optimistic one, preserving the client-side `status` and any already-known `invokedAt` the server row lacks. Fallback when no `localId` echo matches: drop an optimistic `sent` row when a server user message lands within **10 s** of the same position.
-4. **`messages-consumed {localIds, invokedAt}`** (SSE): stamp `invokedAt` and flip status to `sent` on matching rows (skip `failed` ones). This is what moves a message out of the queued bar and into the thread at its invocation position.
+4. **`messages-consumed {localIds, invokedAt}`** (SSE): stamp `invokedAt`, clear `deliveryState`/`deliveryPending`, and flip status to `sent` on matching rows (skip `failed` ones). This is what moves a message out of the queued bar and into the thread at its invocation position.
 5. **`messages-indeterminate {localIds}`** (SSE): a native dispatch or queue mutation has an unknown outcome. Keep `invokedAt: null`, mark `deliveryState:'indeterminate'`, and exclude the row from automatic replay. Retry/Cancel are explicit resolution actions and may remain unavailable until the native outcome can be reconciled.
-6. **`messages-requeued {localIds}`** (SSE): an explicit Retry restored normal queue delivery; clear `deliveryState`.
+   An optional `dispatching:true` identifies a live dispatch still awaiting confirmation. Preserve `deliveryState:'indeterminate'` and set `deliveryPending:true`; while the session is active and thinking, show confirmation pending without offering another Steer/Retry. This pending state can outlive Steer admission while the current request drains. Without the flag, clear `deliveryPending` and retain explicit unknown-outcome resolution. Neither state proves invocation.
+6. **`messages-requeued {localIds}`** (SSE): an explicit Retry restored normal queue delivery; clear `deliveryState` and `deliveryPending`.
 7. **`message-cancelled {messageId, localId?}`** (SSE): remove the row (match either id).
 
 **Queued semantics**: a user message is "queued" iff `invokedAt === null` **strictly**, `deliveryState !== 'indeterminate'`, and `status !== 'failed'`. An indeterminate row remains visible in the unresolved-delivery bar but is not eligible for automatic delivery. `undefined` means already-invoked (rows from pre-V8 hubs omit the field) — only rows explicitly carrying `null` belong in the queued bar. Server-side, a send without a `localId` gets a hub-minted one, so every REST send follows the queue/ack path; only agent-originated rows without a `localId` are stamped invoked at insert.
@@ -158,8 +159,8 @@ After a reconnect whose handshake said `resume: 'gap'` (an `ok` resume replayed 
 
 1. Finish a tail sync.
 2. Collect candidate `localId`s: user rows with `invokedAt === null`, excluding optimistic rows still `sending`/`failed`.
-3. `POST /api/sessions/:id/messages/queued-state` with `{"localIds": […]}` (max 1000 per call; batch above that) → `{queuedLocalIds: string[], indeterminateLocalIds: string[], invokedLocalMessages: [{localId, invokedAt}]}`.
-4. Apply `invokedLocalMessages` exactly like `messages-consumed`; mark `indeterminateLocalIds` as unresolved delivery. Retain both queued and indeterminate rows; drop only candidates absent from **all three** result groups. An in-flight native dispatch is reported as indeterminate, not as a deleted message.
+3. `POST /api/sessions/:id/messages/queued-state` with `{"localIds": […]}` (max 1000 per call; batch above that) → `{queuedLocalIds: string[], indeterminateLocalIds: string[], dispatchingLocalIds?: string[], invokedLocalMessages: [{localId, invokedAt}]}`.
+4. Apply `invokedLocalMessages` exactly like `messages-consumed`; mark `indeterminateLocalIds` as unresolved delivery. Retain both queued and indeterminate rows; drop only candidates absent from **all three** result groups. The optional `dispatchingLocalIds` is a subset of `indeterminateLocalIds`: these rows are awaiting confirmation, not deleted or already invoked. Treat the remaining indeterminate rows as genuinely unknown. Nonterminal snapshots must not overwrite a newer SSE or local transition that occurred during the request.
 
 ---
 
@@ -191,11 +192,11 @@ Response `{"ok": true}`. Sending to an inactive session returns `409 {"error":"S
 
 Other subscribers learn the same outcome via `message-cancelled` / `messages-consumed` SSE events.
 
-**Steer a queued message into the current turn**: `POST /api/sessions/:id/messages/:messageId/steer` → `SteerQueuedMessageResponseSchema`. Unlike the send-time `deliveryMode` option above, this endpoint supports Pi, Codex, and Cursor ACP sessions (`isSteeringSupportedForSession` in `shared/src/modes.ts`). It rejects all scheduled messages, and rejects terminal-controlled sessions unless they advertise `concurrentClients`.
+**Steer a queued message into the current turn**: `POST /api/sessions/:id/messages/:messageId/steer` → `SteerQueuedMessageResponseSchema`. Unlike the send-time `deliveryMode` option above, this endpoint supports Pi, Codex, OpenCode v1, and Cursor ACP sessions (`isSteeringSupportedForSession` in `shared/src/modes.ts`, together with the agent's `steeringActive` state). OpenCode v2 rejects concurrent prompts and leaves queued messages unchanged on a Steer request. It rejects all scheduled messages, and rejects terminal-controlled sessions unless they advertise `concurrentClients`.
 
 | Response | Client action |
 |---|---|
-| `{"status":"steered","localId"}` | Keep the row queued-side; it is being injected into the live turn. |
+| `{"status":"steered","localId"}` | Keep the uninvoked row until confirmed by `messages-consumed` or readback; show confirmation pending when `deliveryPending:true`. If REST beats the pending SSE, retain a provisional confirmation hold and reconcile queued state before allowing another action. This does not stamp `invokedAt`; a newer unknown/consumed state wins over a stale readback. |
 | `{"status":"invoked","message"}` | Already consumed — ingest the message. |
 | `{"status":"failed","error","localId":string\|null}` | Surface the error. Do not infer delivery state from this alone; reconcile before retrying when the native outcome is unknown. |
 
@@ -204,3 +205,6 @@ is user-initiated only. `retried` or `already-queued` means normal queue deliver
 `invoked` carries the authoritative message; `not-found` means the row is gone.
 `retry-unavailable` leaves the row unresolved: the hub could not prove that
 retrying would avoid duplicate work. Reconcile instead of automatically retrying.
+
+
+OpenCode confirmation ownership ends when its worker exits, expires, or is replaced (machine/PID/process-start marker). The hub moves only that session's uninvoked dispatching rows to unknown delivery; queued and consumed rows remain unchanged. Closing Steer admission alone does not end an existing delivery. After a hub restart, stale persisted `steeringActive` is not sufficient to show a live confirmation wait. Unknown rows are never automatically replayed or stamped invoked; later positive consumption may still reconcile them.

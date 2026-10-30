@@ -1913,3 +1913,20 @@ describe('MessageService.sweepImmediateQueuedOnSessionEnd — scheduled rows are
         expect(stillQueued.find((m) => m.localId === 'local-future')?.invokedAt).toBeNull()
     })
 })
+
+it('preserves live confirmation state when an idempotent send repeats the same durable input', async () => {
+    const store = makeStore()
+    const session = makeSession(store, 'duplicate-pending-input')
+    const events: SyncEvent[] = []
+    const service = new MessageService(store, {} as Server, { emit(event: SyncEvent) { events.push(event) } } as EventPublisher)
+    const message = store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'correction' } }, 'same-local')
+    store.messages.setMessagesDeliveryState(session.id, ['same-local'], 'dispatching')
+    try {
+        await service.sendMessage(session.id, { text: 'correction', localId: 'same-local' })
+        const event = events.find(item => item.type === 'message-received')
+        if (!event || event.type !== 'message-received') throw new Error('missing message echo')
+        expect(event.message).toMatchObject({ id: message.id, localId: 'same-local', invokedAt: null, deliveryState: 'indeterminate', deliveryPending: true })
+        expect(store.messages.countMessages(session.id)).toBe(1)
+        expect(store.messages.lookupQueuedMessage(session.id, message.id).status).toBe('dispatching')
+    } finally { store.close() }
+})

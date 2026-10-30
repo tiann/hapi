@@ -1375,16 +1375,24 @@ export function removeOptimisticMessage(sessionId: string, localId: string): voi
 }
 
 export function markMessagesIndeterminate(sessionId: string, localIds: string[]): void {
+    markUnconfirmedDelivery(sessionId, localIds, false)
+}
+
+export function markMessagesDispatching(sessionId: string, localIds: string[]): void {
+    markUnconfirmedDelivery(sessionId, localIds, true)
+}
+
+function markUnconfirmedDelivery(sessionId: string, localIds: string[], dispatching: boolean): void {
     if (localIds.length === 0) return
     const idSet = new Set(localIds)
     updateState(sessionId, (previous) => {
         let changed = false
         const messages = previous.messages.map((message) => {
-            if (!message.localId || !idSet.has(message.localId) || message.deliveryState === 'indeterminate') {
-                return message
-            }
+            if (!message.localId || !idSet.has(message.localId) || typeof message.invokedAt === 'number'
+                || (message.deliveryState === 'indeterminate' && Boolean(message.deliveryPending) === dispatching)) return message
             changed = true
-            return { ...message, deliveryState: 'indeterminate' as const }
+            const { deliveryPending: _deliveryPending, ...unconfirmed } = message
+            return { ...unconfirmed, deliveryState: 'indeterminate' as const, ...(dispatching ? { deliveryPending: true as const } : {}) }
         })
         return changed ? buildState(previous, { messages }) : previous
     }, true)
@@ -1406,6 +1414,7 @@ export function markMessagesRequeued(sessionId: string, localIds: string[]): voi
             changed = true
             const {
                 deliveryState: _deliveryState,
+                deliveryPending: _deliveryPending,
                 queueDismissed: _queueDismissed,
                 ...requeued
             } = message
@@ -1432,10 +1441,11 @@ export function markMessagesConsumed(
             const needsStatus = message.status !== 'sent'
             const needsInvokedAt = message.invokedAt === null
             const needsSteered = steered === true && message.steered !== true
-            const needsClearDismiss = message.queueDismissed === true
+            const needsClearDismiss = message.queueDismissed === true || message.deliveryState !== undefined || message.deliveryPending === true
             if (!needsStatus && !needsInvokedAt && !needsSteered && !needsClearDismiss) return message
             changed = true
-            const { deliveryState: _deliveryState, queueDismissed: _queueDismissed, ...withoutClientHold } = message
+            const { deliveryState: _deliveryState,
+                deliveryPending: _deliveryPending, queueDismissed: _queueDismissed, ...withoutClientHold } = message
             return {
                 ...withoutClientHold,
                 ...(needsStatus ? { status: 'sent' as MessageStatus } : {}),

@@ -562,6 +562,7 @@ export class SyncEngine {
             if (patchApplied) {
                 this.eventPublisher.emit(event)
                 const after = this.sessionCache.getSession(event.sessionId)
+                this.reconcileOpenCodeDeliveryOwner(beforeMetadata, after)
                 if (after?.metadata && !this.hasSameAgentSessionIds(beforeMetadata, after.metadata)) {
                     if (!this.canRunCursorDedup(after)) {
                         return
@@ -578,6 +579,7 @@ export class SyncEngine {
             // legacy refresh-from-DB-and-broadcast path.
             this.sessionCache.refreshSession(event.sessionId)
             const after = this.sessionCache.getSession(event.sessionId)
+            this.reconcileOpenCodeDeliveryOwner(beforeMetadata, after)
             if (after?.metadata && !this.hasSameAgentSessionIds(beforeMetadata, after.metadata)) {
                 if (!this.canRunCursorDedup(after)) {
                     return
@@ -677,6 +679,25 @@ export class SyncEngine {
         this.sessionCache.clearQueuedThinkingGrace(sessionId)
     }
 
+    private reconcileOpenCodeDeliveryOwner(before: Session['metadata'], after: Session | undefined): void {
+        const current = after?.metadata
+        if (before?.flavor !== 'opencode' || current?.flavor !== 'opencode') return
+        // Steer admission closes before an existing request finishes draining.
+        // Only replacement of the owning worker ends its confirmation lease.
+        if (before.machineId !== current.machineId || before.hostPid !== current.hostPid
+            || before.hostStartMarker !== current.hostStartMarker) {
+            this.markOpenCodeDispatchesUncertain(after)
+        }
+    }
+
+    private markOpenCodeDispatchesUncertain(session: Session | undefined): void {
+        if (session?.metadata?.flavor !== 'opencode') return
+        const localIds = this.store.messages.markDispatchingMessagesIndeterminate(session.id)
+        if (localIds.length > 0) {
+            this.eventPublisher.emit({ type: 'messages-indeterminate', sessionId: session.id, localIds })
+        }
+    }
+
     handleSessionEnd(payload: { sid: string; time: number; reason?: SessionEndReason }): void {
         const before = this.sessionCache.getSession(payload.sid)
         if (before?.metadata?.opencodeClearOperation?.state === 'reserved' && payload.reason !== 'cleared') {
@@ -697,6 +718,7 @@ export class SyncEngine {
         const shouldRetryDedup = !ownsPiAttempt && !isPiAttemptChild && (!isCursorAcp || this.sessionReadyIds.has(payload.sid))
 
         this.sessionCache.handleSessionEnd(payload)
+        this.markOpenCodeDispatchesUncertain(this.sessionCache.getSession(payload.sid))
         if (payload.reason === 'completed') {
             this.titleTurnCompletedIds.add(payload.sid)
             void this.automaticTitleSuggestionService.onTurnCompleted(payload.sid)
@@ -1077,6 +1099,7 @@ export class SyncEngine {
             .filter((s): s is NonNullable<typeof s> => s != null)
             .sort((a, b) => (b.activeAt - a.activeAt) || (b.updatedAt - a.updatedAt))
         for (const session of sorted) {
+            this.markOpenCodeDispatchesUncertain(session)
             this.triggerDedupIfNeeded(session.id)
         }
         this.machineCache.expireInactive?.()
@@ -1212,10 +1235,10 @@ export class SyncEngine {
 
     /**
      * Ask the CLI to deliver one waiting-queue message into the active turn
-     * (native steer). Supported for Pi, Codex, and Cursor ACP sessions; the
-     * CLI's `steer-queued-message` handler is registered per flavor. Legacy
-     * stream-json Cursor sessions and other flavors are rejected by the
-     * capability gate.
+     * (native steer). Supported for Pi, Codex, OpenCode, and Cursor ACP
+     * sessions; the CLI's `steer-queued-message` handler is registered per
+     * flavor. Legacy stream-json Cursor sessions and other flavors are
+     * rejected by the capability gate.
      */
     async steerQueuedMessage(
         sessionId: string,
@@ -1226,30 +1249,30 @@ export class SyncEngine {
             return { status: 'failed', error: 'Session not found', localId: null }
         }
         if (!isSteeringSupportedForSession(session.metadata)) {
-            return { status: 'failed', error: 'Steering is only supported for Pi, Codex, and Cursor ACP sessions', localId: null }
+            return { status: 'failed', error: 'Steering is only supported for Pi, Codex, OpenCode, and Cursor ACP sessions', localId: null }
         }
         if (session.agentState?.controlledByUser === true && !session.metadata?.capabilities?.concurrentClients) {
             return { status: 'failed', error: 'Steering is only available for remote sessions', localId: null }
         }
 
+        const invokedResponse = (message: DecryptedMessage): SteerQueuedMessageResponse => ({
+            status: 'invoked',
+            message: {
+                id: message.id,
+                seq: message.seq,
+                localId: message.localId,
+                content: message.content,
+                createdAt: message.createdAt,
+                invokedAt: message.invokedAt,
+                scheduledAt: message.scheduledAt
+            }
+        })
         const lookup = this.store.messages.lookupQueuedMessage(sessionId, messageId)
         if (lookup.status === 'absent') {
             return { status: 'failed', error: 'Message not found', localId: null }
         }
         if (lookup.status === 'invoked') {
-            const message = lookup.message
-            return {
-                status: 'invoked',
-                message: {
-                    id: message.id,
-                    seq: message.seq,
-                    localId: message.localId,
-                    content: message.content,
-                    createdAt: message.createdAt,
-                    invokedAt: message.invokedAt,
-                    scheduledAt: message.scheduledAt
-                }
-            }
+            return invokedResponse(lookup.message)
         }
         const { localId, scheduledAt } = lookup
         if (!localId) {
@@ -1262,20 +1285,23 @@ export class SyncEngine {
             return { status: 'failed', error: 'Scheduled messages cannot be steered', localId }
         }
 
+        let failure: string
         try {
             const result = await this.rpcGateway.steerQueuedMessage(sessionId, localId)
+            const settled = this.store.messages.lookupQueuedMessage(sessionId, messageId)
+            if (settled.status === 'invoked') return { status: 'invoked', message: settled.message }
             if (result.steered) {
                 return { status: 'steered', localId }
             }
-            return {
-                status: 'failed',
-                error: result.error ?? 'Steer failed',
-                localId
-            }
+            failure = result.error ?? 'Steer failed'
         } catch (error) {
-            const message = error instanceof Error ? error.message : 'Steer failed'
-            return { status: 'failed', error: message, localId }
+            failure = error instanceof Error ? error.message : 'Steer failed'
         }
+        // The consumed event can win the race against an RPC error or stale
+        // negative reply. Persisted invocation is authoritative in either case.
+        const current = this.store.messages.lookupQueuedMessage(sessionId, messageId)
+        if (current.status === 'invoked') return invokedResponse(current.message)
+        return { status: 'failed', error: failure, localId }
     }
 
     sweepImmediateQueuedOnSessionEnd(sessionId: string, invokedAt: number): void {

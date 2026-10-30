@@ -685,6 +685,8 @@ export type QueuedStateRequest = z.infer<typeof QueuedStateRequestSchema>
 export type QueuedStateResponse = {
     queuedLocalIds: string[]
     indeterminateLocalIds?: string[]
+    /** Subset of indeterminateLocalIds still awaiting delivery confirmation. */
+    dispatchingLocalIds?: string[]
     invokedLocalMessages: Array<{
         localId: string
         invokedAt: number

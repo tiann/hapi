@@ -42,6 +42,7 @@ export type StoredMachine = {
 export type MessageDeliveryState = 'indeterminate'
 
 export type StoredMessage = {
+    deliveryPending?: true
     id: string
     sessionId: string
     content: unknown

@@ -95,7 +95,8 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
         localId: row.local_id,
         invokedAt: row.invoked_at ?? null,
         scheduledAt: row.scheduled_at ?? null,
-        ...(row.delivery_state && row.delivery_state !== 'queued' ? { deliveryState: 'indeterminate' as const } : {})
+        ...(row.delivery_state && row.delivery_state !== 'queued' ? { deliveryState: 'indeterminate' as const } : {}),
+        ...(row.delivery_state === 'dispatching' ? { deliveryPending: true as const } : {})
     }
 }
 
@@ -944,6 +945,17 @@ export function setMessagesDeliveryState(
            AND invoked_at IS NULL
            AND delivery_state IN (${fromStates})`
     ).run(state, sessionId, ...localIds).changes
+}
+
+/** Release confirmation-only state when the owning OpenCode worker ends or is replaced. */
+export function markDispatchingMessagesIndeterminate(db: Database, sessionId: string): string[] {
+    const rows = prepareCached(db, `
+        UPDATE messages SET delivery_state = 'indeterminate'
+        WHERE session_id = ? AND delivery_state = 'dispatching'
+          AND invoked_at IS NULL AND local_id IS NOT NULL
+        RETURNING local_id
+    `).all(sessionId) as Array<{ local_id: string }>
+    return rows.map(row => row.local_id)
 }
 
 /** Hold an ambiguous steer out of automatic replay without claiming delivery. */
