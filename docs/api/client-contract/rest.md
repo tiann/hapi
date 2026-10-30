@@ -78,6 +78,18 @@ Both endpoints return the id of the session that now carries the conversation �
 
 Additional session APIs without a current native UI: `POST /api/sessions/:id/fork` `{messageLocalId?}` → `{sessionId}`, `POST /api/sessions/:id/rewind` `{messageLocalId}` → `{success: true}`, `GET /api/sessions/:id/export` (413 when too large). Availability also depends on session history capabilities.
 
+### Portable conversation branches (proposal)
+
+`POST /api/sessions/:id/branch` accepts `{requestId, messageLocalId?, boundary?: 'before'|'after', agent: 'claude'|'codex', model?, workspace?: 'current'|'worktree', worktreeName?, instruction}`.
+
+- `requestId` is a UUID. Reusing it with identical options returns the same child, including after a hub restart; different options are rejected. Keep it when retrying a lost response.
+- The source may be active or inactive, but must be idle, have no queued input, and belong to the authenticated namespace. Its machine must be online for a new launch. Initial sources and targets are Claude Code and Codex.
+- `messageLocalId` identifies an invoked user message. `before` excludes it; `after` includes it and subsequent output up to the next invoked user message. Omitting the id selects the idle tail.
+- A fresh target receives one queued user prompt containing allowlisted visible prose/tool observations and the required new `instruction`. Native session ids, reasoning, private system events and pending input are not copied. Attachments and references larger than 256 KiB are rejected rather than silently omitted/truncated.
+- Files are not rewound. `current` shares the source directory; `worktree` uses the existing runner worktree behavior at current Git HEAD and does not copy uncommitted changes.
+- Response: `{sessionId, warning?}`. Navigate to that child even when `warning` reports an uncertain launch; inspect it before creating another branch. Ambiguous launches retain the child and its instruction. A confirmed pre-exec rejection returns 409 and removes the unused stub.
+- `metadata.forkedFrom` and `metadata.conversationBranch` record provenance, cutoff, import mode and launch state. Existing native `/fork` semantics are unchanged; this proposed endpoint deliberately uses portable reference context even when targeting the same harness.
+
 ### Messages
 
 Source: `hub/src/web/routes/messages.ts`; schemas `MessagesQuerySchema`, `SendMessageRequestSchema`, `QueuedStateRequestSchema` (`shared/src/apiTypes.ts`), responses `CancelMessageResponseSchema`, `SteerQueuedMessageResponseSchema` (`shared/src/schemas.ts`). Unknown steer delivery is durable and user-resolvable; native clients must implement the same transitions.

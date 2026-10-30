@@ -1,3 +1,4 @@
+import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
 import type {
     AttachmentMetadata,
     AuthResponse,
@@ -633,6 +634,12 @@ export class ApiClient {
     async implementCodexPlan(sessionId: string, planId: string): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/codex/plan/implement`, {
             method: 'POST', body: JSON.stringify({ planId })
+        })
+    }
+
+    async branchConversation(sessionId: string, options: BranchConversationRequest): Promise<BranchConversationResponse> {
+        return await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/branch`, {
+            method: 'POST', body: JSON.stringify(options)
         })
     }
 

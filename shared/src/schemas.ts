@@ -75,6 +75,18 @@ export const MetadataSchema = z.object({
     // (`claude --resume <id> --fork-session`). Lets the web list mark the new
     // session as a branch of `<id>` instead of an unrelated duplicate.
     forkedFrom: z.string().optional(),
+    // Portable branches carry visible reference context, never native session ids.
+    conversationBranch: z.object({
+        sourceSessionId: z.string(),
+        messageLocalId: z.string().optional(),
+        boundary: z.enum(['before', 'after']),
+        mode: z.literal('visible-text'),
+        requestFingerprint: z.string(),
+        state: z.enum(['launching', 'started', 'uncertain']),
+        createdAt: z.number(),
+        messageCount: z.number().int().nonnegative(),
+        workspace: z.enum(['current', 'worktree'])
+    }).optional(),
     codexSessionId: z.string().optional(),
     // 原始 Codex thread id。导入 Codex 历史后，HAPI 会 fork 出自己的续写 thread；
     // codexSessionId 保存 fork 后的 thread，codexSourceSessionId 保留来源 thread 便于同步/展示。

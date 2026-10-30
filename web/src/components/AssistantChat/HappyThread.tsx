@@ -538,6 +538,7 @@ export function HappyThread(props: {
     onContinuePlan?: () => void
     onRetryMessage?: (localId: string) => void
     historyActionPending?: boolean
+    onBranchConversation?: (messageLocalId?: string) => void
     onForkConversation?: (messageLocalId?: string) => Promise<void>
     onRewindConversation?: (messageLocalId: string) => Promise<void>
     isLatestCompletedBoundary?: (messageId: string) => boolean
@@ -1775,6 +1776,7 @@ export function HappyThread(props: {
             onRetryMessage: props.onRetryMessage,
             historyActionPending: props.historyActionPending,
             allowInactiveFork: props.allowInactiveFork,
+            onBranchConversation: props.onBranchConversation,
             onForkConversation: props.onForkConversation,
             onRewindConversation: props.onRewindConversation,
             isLatestCompletedBoundary: props.isLatestCompletedBoundary,
