@@ -20,7 +20,7 @@ import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '
 import type { Server } from 'socket.io'
 import { createHash, randomUUID } from 'node:crypto'
 import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
-import { buildBranchPrompt } from './branchTranscript'
+import { branchSessionId, buildBranchPrompt } from './branchTranscript'
 import type { Store, CancelQueuedMessageResult } from '../store'
 import type { HapiSessionExportResult } from '@hapi/protocol/sessionExport'
 import type { RpcRegistry } from '../socket/rpcRegistry'
@@ -1523,7 +1523,7 @@ export class SyncEngine {
             const access = this.resolveSessionAccess(sessionId, namespace)
             if (!access.ok) throw new Error('Session not found or access denied')
             const source = access.session
-            const childId = createHash('sha256').update(JSON.stringify([namespace, sessionId, request.requestId])).digest('hex')
+            const childId = branchSessionId(namespace, sessionId, request.requestId)
             const fingerprint = createHash('sha256').update(JSON.stringify(request)).digest('hex')
             const existing = this.getSessionByNamespace(childId, namespace)
             if (existing) {
