@@ -188,6 +188,18 @@ const summary = (id: string, parentID: string, overrides: Record<string, unknown
 });
 
 describe('captureCompactionMarkerSnapshot', () => {
+    it('fails closed when the message API array contains a null entry', async () => {
+        const fetchImpl = vi.fn(async () => new Response(JSON.stringify([null]), { status: 200 }));
+
+        await expect(captureCompactionMarkerSnapshot({
+            baseUrl: 'http://127.0.0.1:48273', sessionId: 'ses_abc', fetchImpl, signal: noSignal
+        })).resolves.toBeNull();
+
+        await expect(fetchCompactionResult({
+            baseUrl: 'http://127.0.0.1:48273', sessionId: 'ses_abc', markerIdsBefore: ['old-marker'], fetchImpl, signal: noSignal
+        })).resolves.toEqual({ status: 'unverified', reason: 'Compaction result could not be verified.' });
+    });
+
     it('records only pre-existing manual marker IDs before POST so a later result cannot reuse them', async () => {
         const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
             expect(url).toBe('http://127.0.0.1:48273/session/ses_abc/message');

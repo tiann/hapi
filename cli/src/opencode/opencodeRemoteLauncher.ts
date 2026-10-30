@@ -13,6 +13,7 @@ import { OpencodeDisplay } from '@/ui/ink/OpencodeDisplay';
 import type { OpencodeSession } from './session';
 import type { OpencodeMode, PermissionMode } from './types';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { captureOpencodeRoundSnapshot, fetchOpencodeRoundSummary, type OpencodeRoundSnapshot } from './utils/opencodeRoundSummary';
 import {
     allocateFreePort,
     createOpencodeBackend,
@@ -76,6 +77,29 @@ export type AbortStatusDecision = {
 };
 
 type CompactOperationPhase = 'idle' | 'snapshot' | 'summarize' | 'post-summarize' | 'verification';
+type RoundSummaryPhase = 'idle' | 'snapshot' | 'prompt' | 'settle';
+
+const ROUND_SUMMARY_SETTLE_TIMEOUT_MS = 1_000;
+
+async function settleRoundSummary<T>(promise: Promise<T>, controller: AbortController): Promise<T | null> {
+    return await new Promise<T | null>((resolve) => {
+        let settled = false;
+        const settle = (value: T | null) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            controller.signal.removeEventListener('abort', onAbort);
+            resolve(value);
+        };
+        const onAbort = () => settle(null);
+        const timeout = setTimeout(() => {
+            controller.abort();
+            settle(null);
+        }, ROUND_SUMMARY_SETTLE_TIMEOUT_MS);
+        controller.signal.addEventListener('abort', onAbort, { once: true });
+        void promise.then((summary) => settle(summary), () => settle(null));
+    });
+}
 
 /**
  * Pure decision logic for handleAbort()'s final step: which status message
@@ -134,6 +158,11 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     // deliberately unbounded (see triggerOpencodeCompact's doc comment) and
     // the launcher stays wedged until it eventually settles on its own.
     private compactAbortController: AbortController | null = null;
+    private roundSummaryAbortController: AbortController | null = null;
+    /** Distinguishes an active prompt from read-only post-prompt work for Stop semantics. */
+    private roundSummaryPhase: RoundSummaryPhase = 'idle';
+    /** Validated ID boundary returned by the previous post-prompt fetch; explicit history mutations clear it. */
+    private nextRoundSnapshot: OpencodeRoundSnapshot | null = null;
     // A plain Stop must keep waiting only while the summarize POST is
     // actually in flight. That POST can outlive a client-side abort while
     // continuing to mutate the shared OpenCode session, so advancing to a
@@ -726,6 +755,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     continue;
                 }
 
+                this.nextRoundSnapshot = null;
                 session.onThinkingChange(true);
                 try {
                     await this.runCompactOperation(acpSessionId, compactAbortController, compactLocalId);
@@ -743,17 +773,54 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             if (batch.mode.permissionMode === 'plan') {
                 messageText = `${PLAN_MODE_INSTRUCTION}\n\n${messageText}`;
             }
-            if (!this.instructionsSent) {
-                messageText = `${getOpencodeNativeToolInstruction()}\n\n${messageText}`;
-                this.instructionsSent = true;
+
+            this.stallErrorReportedForPrompt = false;
+            const roundSummaryAbortController = new AbortController();
+            this.roundSummaryAbortController = roundSummaryAbortController;
+            this.roundSummaryPhase = 'snapshot';
+            const roundApi = this.v2RestInfo
+                ? { baseUrl: this.v2RestInfo.baseUrl, api: { version: 'v2' as const, password: this.v2RestInfo.password } }
+                : this.baseUrl ? { baseUrl: this.baseUrl } : null;
+            const roundSnapshot = this.nextRoundSnapshot ?? (roundApi
+                ? await captureOpencodeRoundSnapshot({
+                    ...roundApi,
+                    sessionId: acpSessionId,
+                    signal: roundSummaryAbortController.signal
+                }).catch((error) => {
+                    logger.debug('[opencode-remote] round snapshot unavailable', error);
+                    return null;
+                })
+                : null);
+            this.nextRoundSnapshot = null;
+            if (
+                this.roundSummaryAbortController !== roundSummaryAbortController
+                || roundSummaryAbortController.signal.aborted
+                || this.shouldExit
+            ) {
+                if (this.roundSummaryAbortController === roundSummaryAbortController) {
+                    this.roundSummaryAbortController = null;
+                    this.roundSummaryPhase = 'idle';
+                }
+                session.onThinkingChange(false);
+                if (session.queue.size() === 0 && !this.shouldExit) {
+                    sendReady();
+                }
+                continue;
             }
 
+            if (!this.instructionsSent) {
+                messageText = `${getOpencodeNativeToolInstruction()}
+
+${messageText}`;
+                this.instructionsSent = true;
+            }
             const promptContent: PromptContent[] = [{
                 type: 'text',
                 text: messageText,
             }];
 
-            this.stallErrorReportedForPrompt = false;
+            const promptStartedAt = performance.now();
+            this.roundSummaryPhase = 'prompt';
             session.onThinkingChange(true);
 
             try {
@@ -765,10 +832,41 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 logger.warn('[opencode-remote] prompt failed', error);
                 this.reportPromptFailure(error);
             } finally {
-                session.onThinkingChange(false);
-                await this.permissionHandler?.cancelAll('Prompt finished');
-                if (session.queue.size() === 0 && !this.shouldExit) {
-                    sendReady();
+                this.roundSummaryPhase = 'settle';
+                if (
+                    this.roundSummaryAbortController === roundSummaryAbortController
+                    && !roundSummaryAbortController.signal.aborted
+                    && !this.shouldExit
+                    && roundApi
+                    && roundSnapshot
+                ) {
+                    const result = await settleRoundSummary(
+                        fetchOpencodeRoundSummary({
+                            ...roundApi,
+                            sessionId: acpSessionId,
+                            promptText: messageText,
+                            snapshot: roundSnapshot,
+                            durationMs: performance.now() - promptStartedAt,
+                            signal: roundSummaryAbortController.signal
+                        }),
+                        roundSummaryAbortController
+                    );
+                    if (result) {
+                        this.nextRoundSnapshot = result.snapshot;
+                        if (result.summary) this.handleAgentMessage({ type: 'round_summary', summary: result.summary });
+                    }
+                }
+                if (this.roundSummaryAbortController === roundSummaryAbortController) {
+                    this.roundSummaryAbortController = null;
+                }
+                try {
+                    session.onThinkingChange(false);
+                    await this.permissionHandler?.cancelAll('Prompt finished');
+                    if (session.queue.size() === 0 && !this.shouldExit) {
+                        sendReady();
+                    }
+                } finally {
+                    this.roundSummaryPhase = 'idle';
                 }
             }
         }
@@ -1328,6 +1426,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             case 'turn_complete':
                 this.messageBuffer.addMessage('Turn complete', 'status');
                 break;
+            case 'round_summary':
+                break;
             default: {
                 const _exhaustive: never = message;
                 return _exhaustive;
@@ -1369,6 +1469,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // loop's own `finally` (once runCompactOperation() genuinely
         // returns) remains the sole source of truth for when this turn is
         // done.
+        const roundSummaryAbortController = this.roundSummaryAbortController;
+        roundSummaryAbortController?.abort();
+        // The answer is already complete. A plain Stop only abandons its
+        // read-only metadata fetch; queued prompts remain valid FIFO work.
+        if (!leavingRemote && this.roundSummaryPhase === 'settle') {
+            return;
+        }
         const compactAbortController = this.compactAbortController;
         if (compactAbortController) {
             this.compactResultSuppressed = true;
