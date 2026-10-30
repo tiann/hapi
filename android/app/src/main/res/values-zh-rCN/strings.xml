@@ -271,6 +271,35 @@
     <string name="chat_new_messages_one">1 条新消息 ↓</string>
     <string name="chat_new_messages_many">%1$d 条新消息 ↓</string>
 
+    <!-- Session status panel (live goal / todos / subagents / terminals) -->
+    <string name="session_status_title">会话状态</string>
+    <string name="session_status_goal">目标</string>
+    <string name="session_status_tasks">任务</string>
+    <string name="session_status_subagents">子代理</string>
+    <string name="session_status_terminals">后台终端</string>
+    <string name="session_status_terminals_unavailable">%1$d 个终端运行中 · 无法确定具体命令</string>
+    <string name="session_status_terminals_possible">可能的命令</string>
+    <string name="session_status_goal_active">进行中</string>
+    <string name="session_status_goal_paused">已暂停</string>
+    <string name="session_status_goal_budget_limited">已受限</string>
+    <string name="session_status_goal_usage_limited">用量受限</string>
+    <string name="session_status_goal_blocked">已阻塞</string>
+    <string name="session_status_goal_complete">已完成</string>
+    <string name="session_status_subagent_running">运行中</string>
+    <string name="session_status_subagent_waiting">等待中</string>
+    <string name="session_status_subagent_error">错误</string>
+    <string name="session_status_task_empty">（空）</string>
+
+    <!-- Team roster panel (subagent team members / tasks / messages) -->
+    <string name="team_roster_title">团队：%1$s</string>
+    <string name="team_roster_members_one">%1$d 名成员</string>
+    <string name="team_roster_members_many">%1$d 名成员</string>
+    <string name="team_roster_active_members">（%1$d 个活跃）</string>
+    <string name="team_roster_task_progress">%1$d/%2$d 个任务</string>
+    <string name="team_roster_members_section">成员</string>
+    <string name="team_roster_tasks_section">任务</string>
+    <string name="team_roster_messages_section">近期消息</string>
+
     <!-- Chat snackbar notices (semantic ChatNotice resolution) -->
     <string name="chat_notice_no_transcription">Hub 未配置转录提供商</string>
     <string name="chat_notice_mic_permission">语音输入需要麦克风权限</string>
