@@ -81,7 +81,7 @@ export function MessageActions({
     const historyButtons = !actionsLocked ? (
         <>
             {onBranch && !threadIsRunning ? (
-                <MessageActionButton label={t('branch.title')} onClick={onBranch}>
+                <MessageActionButton label={t('branch.title')} onClick={onBranch} className="w-auto gap-1 px-1">
                     <ForkIcon className="h-3.5 w-3.5" />
                     <span className="text-[10px]">{t('branch.options')}</span>
                 </MessageActionButton>
