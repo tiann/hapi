@@ -66,6 +66,7 @@ function createApp(session: Session, opts?: {
     archiveSession?: (sessionId: string) => Promise<void>
     getCursorChatStoreStatus?: SyncEngine['getCursorChatStoreStatus']
     listCodexModelsForSession?: SyncEngine['listCodexModelsForSession']
+    branchConversation?: SyncEngine['branchConversation']
     forkConversation?: SyncEngine['forkConversation']
     clearConversation?: SyncEngine['clearConversation']
     implementCodexPlan?: SyncEngine['implementCodexPlan']
@@ -177,6 +178,7 @@ function createApp(session: Session, opts?: {
             success: true,
             commands: []
         })),
+        branchConversation: opts?.branchConversation,
         forkConversation: opts?.forkConversation ?? (async () => ({ type: 'success', sessionId: 'child-1' })),
         clearConversation: opts?.clearConversation,
         implementCodexPlan: opts?.implementCodexPlan,
@@ -1748,6 +1750,30 @@ describe('sessions routes', () => {
             expect(await response.json()).toEqual({ ok: true })
             expect(calls).toEqual(['session-1'])
         })
+    })
+
+    it('validates portable branch options and passes the authenticated namespace', async () => {
+        let calls = 0
+        const { app } = createApp(createSession({ active: false }), {
+            branchConversation: async (id, namespace, options) => {
+                calls++
+                expect([id, namespace, options.agent, options.boundary]).toEqual(['session-1', 'default', 'codex', 'after'])
+                return { type: 'success', sessionId: 'branch-child', warning: 'Inspect uncertain launch' }
+            }
+        })
+        const options = { requestId: 'b428e5be-dc54-4edc-9903-59250c1b5c31', messageLocalId: 'turn-2',
+            agent: 'codex', boundary: 'after', instruction: 'Try again' }
+        const post = (body: unknown) => app.request('/api/sessions/session-1/branch', {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+        })
+        expect((await post({ ...options, agent: 'arbitrary-executable' })).status).toBe(400)
+        expect((await post({ ...options, requestId: 'invalid' })).status).toBe(400)
+        expect((await post({ ...options, instruction: '  ' })).status).toBe(400)
+        expect((await post({ ...options, nativeSessionId: 'do-not-reuse' })).status).toBe(400)
+        const response = await post(options)
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ sessionId: 'branch-child', warning: 'Inspect uncertain launch' })
+        expect(calls).toBe(1)
     })
 
     it('forks via POST /sessions/:id/fork and returns the child session id', async () => {

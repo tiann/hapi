@@ -1,6 +1,7 @@
+import { BranchConversationDialog } from '@/components/BranchConversationDialog'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
-import { useNavigate } from '@tanstack/react-router'
+import { Link, useNavigate } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { PRESERVE_SESSION_SIDEBAR_SCROLL } from '@/lib/sessionNavigation'
 import { AssistantRuntimeProvider, useAui, useAuiState } from '@assistant-ui/react'
@@ -669,6 +670,7 @@ function SessionChatInner(props: SessionChatProps) {
     const { toolCardDisplayMode } = useToolCardDisplayMode()
     const { groupingMode: toolGroupingMode } = getToolCardDisplayPresentation(toolCardDisplayMode)
     const [historyActionPending, setHistoryActionPending] = useState(false)
+    const [branchPoint, setBranchPoint] = useState<{ messageLocalId?: string } | null>(null)
     const [rewindForkFallback, setRewindForkFallback] = useState<string | null>(null)
 
     const onForkConversation = useCallback(async (messageLocalId?: string) => {
@@ -2078,6 +2080,30 @@ function SessionChatInner(props: SessionChatProps) {
                         )}
                         <div className={(terminalVisible && canViewAgentTerminal) ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
 
+                    {props.session.metadata?.conversationBranch ? (
+                        <div className="border-b border-[var(--app-divider)] p-3 text-xs text-[var(--app-hint)]">
+                            <Link to="/sessions/$sessionId" params={{ sessionId: props.session.metadata.conversationBranch.sourceSessionId }} className="underline">
+                                {t('branch.source')}
+                            </Link>{' · '}{t('branch.filesNotice')}
+                            {props.session.metadata.conversationBranch.state !== 'started'
+                                ? <p role="status">{t('branch.uncertain')}</p> : null}
+                        </div>
+                    ) : null}
+                    {branchPoint && props.session.metadata?.machineId ? <BranchConversationDialog
+                        api={props.api}
+                        machineId={props.session.metadata.machineId}
+                        sourceAgent={props.session.metadata.flavor ?? 'claude'}
+                        messageLocalId={branchPoint.messageLocalId}
+                        onClose={() => setBranchPoint(null)}
+                        onSubmit={async options => {
+                            setHistoryActionPending(true)
+                            try {
+                                const result = await props.api.branchConversation(props.session.id, options)
+                                await navigate({ to: '/sessions/$sessionId', params: { sessionId: result.sessionId }, ...PRESERVE_SESSION_SIDEBAR_SCROLL })
+                                setBranchPoint(null)
+                            } finally { setHistoryActionPending(false) }
+                        }}
+                    /> : null}
                     <HappyThread
                         // Key with prefix: different components under the same session
                         // (thread, scratchlist, composer) must have distinct keys to avoid
@@ -2094,6 +2120,8 @@ function SessionChatInner(props: SessionChatProps) {
                         onRetryMessage={props.onRetryMessage}
                         onContinuePlan={() => focusComposerRef.current?.()}
                         historyActionPending={historyActionPending}
+                        onBranchConversation={Boolean(props.session.metadata?.machineId) && (!props.session.active || !controlledByUser) && ['claude', 'codex'].includes(props.session.metadata?.flavor ?? 'claude')
+                            ? messageLocalId => setBranchPoint({ messageLocalId }) : undefined}
                         onForkConversation={controlledByUser ? undefined : onForkConversation}
                         onRewindConversation={controlledByUser ? undefined : onRewindConversation}
                         isLatestCompletedBoundary={isLatestCompletedBoundary}

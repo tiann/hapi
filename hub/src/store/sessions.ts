@@ -72,7 +72,9 @@ const SIMPLE_RESUME_TOKENS = [
 // `null` remains the explicit-clear sentinel handled by carryForwardIfMissing.
 const HUB_OWNED_METADATA_FIELDS = [
     'titleSuggestionAutoAttemptedAt',
-    'titleSuggestionTurn'
+    'titleSuggestionTurn',
+    'forkedFrom',
+    'conversationBranch'
 ] as const
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -139,6 +141,13 @@ export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     merged = carryForwardIfMissing(prior, next, merged, ROUTING_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, SIMPLE_RESUME_TOKENS)
     merged = carryForwardIfMissing(prior, next, merged, HUB_OWNED_METADATA_FIELDS)
+    // A stale CLI cache may still contain the pre-launch branch state. Once
+    // delivery succeeded, sparse/full CLI updates must not regress its outcome.
+    if (isPlainObject(prior.conversationBranch) && isPlainObject(next.conversationBranch)
+        && prior.conversationBranch.requestFingerprint === next.conversationBranch.requestFingerprint
+        && prior.conversationBranch.state === 'started') {
+        merged = { ...(merged ?? next), conversationBranch: prior.conversationBranch }
+    }
     merged = preserveCursorProtocolPair(prior, next, merged)
     return merged ?? next
 }

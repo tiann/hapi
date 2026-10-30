@@ -88,6 +88,8 @@ export function HappyAssistantMessage() {
                 copyText={copyText || undefined}
                 metadata={metadata}
                 messageElementId={elementId}
+                onBranch={ctx.onBranchConversation && ctx.isLatestCompletedBoundary?.(messageId) === true
+                    ? () => ctx.onBranchConversation?.() : undefined}
                 showFork={showForkCurrent}
                 historyActionPending={ctx.historyActionPending}
                 onFork={showForkCurrent ? () => ctx.onForkConversation!() : undefined}

@@ -112,6 +112,7 @@ export type SessionMetadataSummary = {
             rewindToMessage?: boolean
         }
     }
+    conversationBranch?: NonNullable<Session['metadata']>['conversationBranch']
     conversationHistoryPoints?: Record<string, true>
     conversationHistoryIndexes?: Record<string, number>
     conversationHistoryTurns?: Record<string, string>

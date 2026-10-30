@@ -18,7 +18,9 @@ import type { ImplementCodexPlanResult } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
+import { branchSessionId, buildBranchPrompt } from './branchTranscript'
 import type { Store, CancelQueuedMessageResult } from '../store'
 import type { HapiSessionExportResult } from '@hapi/protocol/sessionExport'
 import type { RpcRegistry } from '../socket/rpcRegistry'
@@ -1305,11 +1307,11 @@ export class SyncEngine {
         await this.rpcGateway.abortSession(sessionId)
     }
 
-    private assertConversationHistoryIdle(session: Session, allowRunningHistoricalFork = false): void {
-        if (!session.active) {
+    private assertConversationHistoryIdle(session: Session, allowRunningHistoricalFork = false, requireActive = true): void {
+        if (requireActive && !session.active) {
             throw new Error('Session must be active')
         }
-        if (session.agentState?.controlledByUser === true && !session.metadata?.capabilities?.concurrentClients) {
+        if (session.active && session.agentState?.controlledByUser === true && !session.metadata?.capabilities?.concurrentClients) {
             throw new Error('Conversation history actions require a remote session')
         }
         if (session.thinking && !allowRunningHistoricalFork) {
@@ -1505,6 +1507,117 @@ export class SyncEngine {
             }
             if (result.result !== 'version-mismatch') return
             this.sessionCache.refreshSession(sessionId)
+        }
+    }
+
+    async branchConversation(
+        sessionId: string,
+        namespace: string,
+        request: BranchConversationRequest
+    ): Promise<({ type: 'success' } & BranchConversationResponse) | { type: 'error'; message: string }> {
+        if (this.historyActionsInFlight.has(sessionId)) {
+            return { type: 'error', message: 'Conversation history action already in progress' }
+        }
+        this.historyActionsInFlight.add(sessionId)
+        try {
+            const access = this.resolveSessionAccess(sessionId, namespace)
+            if (!access.ok) throw new Error('Session not found or access denied')
+            const source = access.session
+            const childId = branchSessionId(namespace, sessionId, request.requestId)
+            const fingerprint = createHash('sha256').update(JSON.stringify(request)).digest('hex')
+            const existing = this.getSessionByNamespace(childId, namespace)
+            if (existing) {
+                if (existing.metadata?.conversationBranch?.requestFingerprint !== fingerprint) {
+                    throw new Error('Branch request id was already used with different options')
+                }
+                return { type: 'success', sessionId: childId,
+                    ...(existing.metadata.conversationBranch.state !== 'started'
+                        ? { warning: 'Launch outcome is uncertain. Inspect this child before starting another branch.' } : {}) }
+            }
+            this.assertConversationHistoryIdle(source, false, false)
+            if (!['claude', 'codex'].includes(source.metadata?.flavor ?? 'claude')) {
+                throw new Error('Portable branches currently support Claude Code and Codex source sessions')
+            }
+            const machineId = source.metadata?.machineId
+            const directory = source.metadata?.path
+            const machine = machineId ? this.getMachineByNamespace(machineId, namespace) : undefined
+            if (!machineId || !directory || !machine?.active) throw new Error('Source machine must be online')
+            if (request.model) {
+                const catalog = request.agent === 'claude'
+                    ? await this.listClaudeModelsForMachine(machineId)
+                    : await this.listCodexModelsForMachine(machineId)
+                const models = 'availableModels' in catalog
+                    ? catalog.availableModels?.map(model => model.value)
+                    : 'models' in catalog ? catalog.models?.map(model => model.id) : []
+                if (!catalog.success || !models?.includes(request.model)) throw new Error('Selected model is not available on the source machine')
+            }
+            // Catalog discovery is asynchronous; reject if a new turn began meanwhile.
+            const latestSource = this.getSessionByNamespace(sessionId, namespace)
+            if (!latestSource) throw new Error('Source session no longer exists')
+            this.assertConversationHistoryIdle(latestSource, false, false)
+            if (latestSource.metadata?.machineId !== machineId || latestSource.metadata?.path !== directory) {
+                throw new Error('Source location changed; reopen the branch dialog')
+            }
+            // Freeze the invoked prefix before any asynchronous spawn work. Pending
+            // inputs and subsequent source events can never enter this reference.
+            const reference = buildBranchPrompt(this.store.messages.getAllMessages(sessionId), request)
+            const branch = {
+                sourceSessionId: sessionId, messageLocalId: request.messageLocalId,
+                boundary: request.boundary, mode: 'visible-text' as const,
+                requestFingerprint: fingerprint, state: 'launching' as const,
+                createdAt: Date.now(), messageCount: reference.messageCount, workspace: request.workspace
+            }
+            this.sessionCache.getOrCreateSession(`machine-spawn:${childId}`, {
+                path: directory, host: source.metadata?.host ?? 'unknown', machineId,
+                flavor: request.agent, startedBy: 'runner', startedFromRunner: true,
+                forkedFrom: sessionId, conversationBranch: branch,
+                summary: { text: `Branch: ${source.metadata?.name ?? source.metadata?.summary?.text ?? 'Conversation'}`, updatedAt: Date.now() }
+            }, null, namespace, request.model, undefined, undefined, childId)
+            // Persist before dispatch so a lost RPC response never loses the
+            // reference/instruction. A mature scheduled row is redelivered until
+            // CLI acknowledgement, including after hub restart. A retry returns
+            // this same child without spawning.
+            const localId = `branch-${request.requestId}`
+            const scheduledAt = Date.now()
+            this.store.messages.addMessage(childId, {
+                role: 'user', content: { type: 'text', text: reference.text },
+                meta: { sentFrom: 'webapp', deliveryMode: 'queue' }
+            }, localId, scheduledAt)
+            let warning: string | undefined
+            try {
+                const spawn = await this.rpcGateway.spawnSession(
+                    machineId, directory, request.agent, request.model,
+                    undefined, undefined, request.workspace === 'worktree' ? 'worktree' : 'simple',
+                    request.worktreeName, undefined, undefined, undefined, undefined,
+                    undefined, undefined, undefined, 'remote', undefined, childId
+                )
+                if (spawn.type !== 'success') {
+                    if (spawn.childStarted === false) {
+                        await this.deleteSession(childId)
+                        return { type: 'error', message: spawn.message }
+                    }
+                    throw new Error(spawn.message)
+                }
+                if (spawn.sessionId !== childId) throw new Error('Runner returned a different branch session id')
+                await this.sendMessage(childId, { text: reference.text, localId, scheduledAt, deliveryMode: 'queue' })
+            } catch (error) {
+                warning = `Launch outcome is uncertain. Inspect this child before retrying: ${error instanceof Error ? error.message : String(error)}`
+            }
+            // Merge with CLI metadata using version checks; never overwrite a native binding.
+            for (let attempt = 0; attempt < 3; attempt++) {
+                const child = this.sessionCache.refreshSession(childId)
+                if (!child?.metadata) break
+                const result = this.store.sessions.updateSessionMetadata(childId, {
+                    ...child.metadata, conversationBranch: { ...branch, state: warning ? 'uncertain' : 'started' }
+                }, child.metadataVersion, namespace, { touchUpdatedAt: false })
+                if (result.result !== 'version-mismatch') break
+            }
+            this.sessionCache.refreshSession(childId)
+            return { type: 'success', sessionId: childId, ...(warning ? { warning } : {}) }
+        } catch (error) {
+            return { type: 'error', message: error instanceof Error ? error.message : String(error) }
+        } finally {
+            this.historyActionsInFlight.delete(sessionId)
         }
     }
 
