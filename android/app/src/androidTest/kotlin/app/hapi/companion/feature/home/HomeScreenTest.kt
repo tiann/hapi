@@ -62,6 +62,9 @@ internal class HomeSessions : SessionListStore {
     override suspend fun renameSession(sessionId: String, name: String): Unit = error("unexpected action")
     override suspend fun deleteSession(sessionId: String): Unit = error("unexpected action")
     override suspend fun reopenSession(sessionId: String): ReopenSessionResponse = error("unexpected action")
+    override suspend fun updateSessionSummary(sessionId: String, text: String): Unit = error("unexpected action")
+    override suspend fun suggestSessionTitle(sessionId: String): String = error("unexpected action")
+    override suspend fun titleSuggestionAvailable(): Boolean = false
 }
 
 internal class HomeMachines : MachineListStore {

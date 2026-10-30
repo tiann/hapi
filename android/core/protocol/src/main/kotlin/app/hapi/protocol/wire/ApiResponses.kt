@@ -108,6 +108,16 @@ data class ReopenSessionResponse(
 )
 
 /**
+ * `POST /api/sessions/:id/title-suggestion`
+ * (`SessionTitleSuggestionResponseSchema`, 1–255 chars). Hub-side AI title —
+ * gated by the hub health capability `titleSuggestion`.
+ */
+@Serializable
+data class SessionTitleSuggestionResponse(
+    val title: String,
+)
+
+/**
  * `DELETE /api/sessions/:id/messages/:messageId`
  * (`CancelMessageResponseSchema` — discriminated on [status]):
  * `'cancelled'` carries [localId]; `'invoked'` (too late) carries [message].
@@ -117,6 +127,39 @@ data class CancelMessageResponse(
     val status: String,
     val localId: String? = null,
     val message: DecryptedMessage? = null,
+)
+
+/**
+ * `GET /api/hub-settings` (`HubSettingsResponseSchema`) — hub-persisted,
+ * owner-only (PUT 403s otherwise). Values apply to new/resumed sessions
+ * hub-side.
+ *
+ * Upstream carries only the two sessionSummary fields; [autoTitlePerTurn]
+ * and [disablePeerTools] are fork extensions (not yet merged upstream) —
+ * nullable so an upstream hub (which omits them) still parses, and the UI
+ * hides those sections when null.
+ */
+@Serializable
+data class HubSettings(
+    val sessionSummaryContract: Boolean,
+    /** Show compact AGENT_NOTIFY_SUMMARY in chat (default off / hide). */
+    val sessionSummaryInChat: Boolean,
+    /** Rewrite the session title at the end of every user turn (fork ext, default off). */
+    val autoTitlePerTurn: Boolean? = null,
+    /** Hide peer-session tools (list_peers / inspect_peer / ping_peer) (fork ext, default off). */
+    val disablePeerTools: Boolean? = null,
+)
+
+/**
+ * `PUT /api/hub-settings` body (`UpdateHubSettingsRequestSchema`): at least
+ * one field; `explicitNulls = false` keeps unset fields out of the JSON.
+ */
+@Serializable
+data class UpdateHubSettingsRequest(
+    val sessionSummaryContract: Boolean? = null,
+    val sessionSummaryInChat: Boolean? = null,
+    val autoTitlePerTurn: Boolean? = null,
+    val disablePeerTools: Boolean? = null,
 )
 
 @Serializable

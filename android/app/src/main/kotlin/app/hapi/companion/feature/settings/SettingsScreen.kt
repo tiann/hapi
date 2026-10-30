@@ -39,13 +39,16 @@ import androidx.core.os.LocaleListCompat
 import app.hapi.companion.BuildConfig
 import app.hapi.companion.R
 import app.hapi.protocol.wire.SUPPORTED_PROTOCOL_VERSION
+import app.hapi.protocol.wire.UpdateHubSettingsRequest
 
 /**
  * General subpage of the settings hub (P2 IA): the catch-all category for
  * everything without a dedicated category on this branch — Appearance (theme
- * mode + Material You), Language, and About (app/protocol versions + hub
- * health). The former owner-only Usage/Storage rows moved hub-level (see
- * [SettingsHubCatalog]); their owner gate is unchanged.
+ * mode + Material You), Language, the owner-only hub switches (web Settings→
+ * General parity: session summaries, per-turn title rewrite and peer-session
+ * tools where the hub speaks the fork extension), and About (app/protocol
+ * versions + hub health). The former owner-only Usage/Storage rows moved
+ * hub-level (see [SettingsHubCatalog]); their owner gate is unchanged.
  */
 @Composable
 fun SettingsGeneralScreen(
@@ -55,12 +58,19 @@ fun SettingsGeneralScreen(
     val theme by viewModel.themeSettings.collectAsState()
     val language by viewModel.language.collectAsState()
     val hubInfo by viewModel.hubInfo.collectAsState()
+    val isOwner by viewModel.isOwner.collectAsState()
+    val hubSettings by viewModel.hubSettings.collectAsState()
+    val hubSettingsSaveError by viewModel.hubSettingsSaveError.collectAsState()
 
     SettingsGeneralContent(
         theme = theme,
         language = language,
         hubUrl = viewModel.hubUrl,
         hubInfo = hubInfo,
+        isOwner = isOwner,
+        hubSettings = hubSettings,
+        hubSettingsSaveError = hubSettingsSaveError,
+        onUpdateHubSettings = viewModel::updateHubSettings,
         onSetThemeMode = viewModel::setThemeMode,
         onSetDynamicColor = viewModel::setDynamicColor,
         onSetLanguage = viewModel::setLanguage,
@@ -77,6 +87,10 @@ internal fun SettingsGeneralContent(
     language: AppLanguage,
     hubUrl: String,
     hubInfo: HubInfoState,
+    isOwner: Boolean = false,
+    hubSettings: HubSettingsState? = null,
+    hubSettingsSaveError: String? = null,
+    onUpdateHubSettings: (UpdateHubSettingsRequest) -> Unit = {},
     onSetThemeMode: (ThemeMode) -> Unit,
     onSetDynamicColor: (Boolean) -> Unit,
     onSetLanguage: (AppLanguage) -> Unit,
@@ -136,6 +150,80 @@ internal fun SettingsGeneralContent(
                     value = languageLabel(language),
                     onClick = { showLanguageDialog = true },
                 )
+            }
+
+            if (isOwner && hubSettings is HubSettingsState.Loaded) {
+                val settings = (hubSettings as HubSettingsState.Loaded).settings
+
+                // Web twin: settings/general.tsx — sections render only when
+                // the query has data; the fork's extra fields are absent on
+                // upstream hubs (null ⇒ hide, matching upstream web).
+                SettingsSection(title = stringResource(R.string.settings_section_summaries)) {
+                    SwitchRow(
+                        label = stringResource(R.string.settings_summary_contract),
+                        description = stringResource(R.string.settings_summary_contract_desc),
+                        checked = settings.sessionSummaryContract,
+                        enabled = true,
+                        onCheckedChange = { checked ->
+                            onUpdateHubSettings(
+                                UpdateHubSettingsRequest(sessionSummaryContract = checked),
+                            )
+                        },
+                    )
+                    SettingsDivider()
+                    SwitchRow(
+                        label = stringResource(R.string.settings_summary_in_chat),
+                        description = stringResource(R.string.settings_summary_in_chat_desc),
+                        checked = settings.sessionSummaryInChat,
+                        enabled = true,
+                        onCheckedChange = { checked ->
+                            onUpdateHubSettings(
+                                UpdateHubSettingsRequest(sessionSummaryInChat = checked),
+                            )
+                        },
+                    )
+                }
+
+                settings.autoTitlePerTurn?.let { autoTitle ->
+                    SettingsSection(title = stringResource(R.string.settings_section_titles)) {
+                        SwitchRow(
+                            label = stringResource(R.string.settings_auto_title_per_turn),
+                            description = stringResource(R.string.settings_auto_title_per_turn_desc),
+                            checked = autoTitle,
+                            enabled = true,
+                            onCheckedChange = { checked ->
+                                onUpdateHubSettings(
+                                    UpdateHubSettingsRequest(autoTitlePerTurn = checked),
+                                )
+                            },
+                        )
+                    }
+                }
+
+                settings.disablePeerTools?.let { disablePeerTools ->
+                    SettingsSection(title = stringResource(R.string.settings_section_peer_tools)) {
+                        SwitchRow(
+                            label = stringResource(R.string.settings_disable_peer_tools),
+                            description = stringResource(R.string.settings_disable_peer_tools_desc),
+                            checked = disablePeerTools,
+                            enabled = true,
+                            onCheckedChange = { checked ->
+                                onUpdateHubSettings(
+                                    UpdateHubSettingsRequest(disablePeerTools = checked),
+                                )
+                            },
+                        )
+                    }
+                }
+
+                if (hubSettingsSaveError != null) {
+                    Text(
+                        text = stringResource(R.string.settings_hub_save_failed, hubSettingsSaveError!!),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(start = 4.dp),
+                    )
+                }
             }
 
             SettingsSection(title = stringResource(R.string.settings_section_about)) {

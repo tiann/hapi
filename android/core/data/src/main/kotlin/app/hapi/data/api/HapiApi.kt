@@ -42,6 +42,8 @@ import app.hapi.protocol.wire.SendMessageRequest
 import app.hapi.protocol.wire.SessionResponse
 import app.hapi.protocol.wire.SessionsResponse
 import app.hapi.protocol.wire.SetSessionPinRequest
+import app.hapi.protocol.wire.HubSettings
+import app.hapi.protocol.wire.SessionTitleSuggestionResponse
 import app.hapi.protocol.wire.SkillsResponse
 import app.hapi.protocol.wire.SlashCommandsResponse
 import app.hapi.protocol.wire.SpawnResponse
@@ -51,6 +53,7 @@ import app.hapi.protocol.wire.SteerQueuedMessageResponse
 import app.hapi.protocol.wire.TranscriptionProvidersResponse
 import app.hapi.protocol.wire.TranscriptionResponse
 import app.hapi.protocol.wire.UnregisterDeviceRequest
+import app.hapi.protocol.wire.UpdateHubSettingsRequest
 import app.hapi.protocol.wire.UpdateSessionSummaryRequest
 import app.hapi.protocol.wire.UploadFileRequest
 import app.hapi.protocol.wire.UploadFileResponse
@@ -343,6 +346,20 @@ class HapiApi internal constructor(
         )
     }
 
+    /** `POST /api/sessions/:id/title-suggestion` — hub capability `titleSuggestion`. */
+    suspend fun suggestSessionTitle(sessionId: String): SessionTitleSuggestionResponse =
+        request("POST", url("api", "sessions", sessionId, "title-suggestion").build(), EMPTY_JSON)
+
+    // --------------------------------------------------------- hub settings --
+
+    /** `GET /api/hub-settings` — owner-only read (403 otherwise). */
+    suspend fun getHubSettings(): HubSettings =
+        request("GET", url("api", "hub-settings").build())
+
+    /** `PUT /api/hub-settings` — owner-only patch; at least one field. */
+    suspend fun updateHubSettings(settings: UpdateHubSettingsRequest): HubSettings =
+        request("PUT", url("api", "hub-settings").build(), settings.toJsonBody())
+
     /** `PUT /api/sessions/:id/pin` — mode `'none' | 'project' | 'global'`. */
     suspend fun setSessionPinMode(sessionId: String, mode: String) {
         request<Unit>("PUT", url("api", "sessions", sessionId, "pin").build(), SetSessionPinRequest(mode).toJsonBody())
@@ -477,7 +494,7 @@ class HapiApi internal constructor(
         request("GET", url("api", "sessions", sessionId, "slash-commands").build())
 
     /** `GET /api/sessions/:id/skills` (RPC-wrapped: check `success`). */
-    suspend fun getSkills(sessionId: String): SkillsResponse =
+    override suspend fun getSkills(sessionId: String): SkillsResponse =
         request("GET", url("api", "sessions", sessionId, "skills").build())
 
     // ------------------------------------------------------------ machines --

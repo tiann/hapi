@@ -2,6 +2,7 @@ package app.hapi.companion.di
 
 import android.content.Context
 import app.hapi.companion.feature.chat.composer.ChatDrafts
+import app.hapi.companion.feature.chat.composer.RecentSkills
 import app.hapi.data.HubSession
 import app.hapi.data.auth.AuthEvents
 import app.hapi.data.auth.CredentialStore
@@ -157,6 +158,9 @@ class HubGraph(
 
     /** Per-session composer drafts, keyed under this hub (process-wide DataStore). */
     val chatDrafts: ChatDrafts = DataStoreChatDrafts(context.chatDraftsDataStore, hubKey = session.hubUrl)
+
+    /** `$`-menu recency ranking (process-wide DataStore, shared across hubs). */
+    val recentSkills: RecentSkills = DataStoreRecentSkills(context.recentSkillsDataStore)
 
     override fun close() {
         networkMonitor.close()
