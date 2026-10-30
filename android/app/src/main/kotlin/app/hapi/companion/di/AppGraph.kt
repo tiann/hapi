@@ -3,6 +3,7 @@ package app.hapi.companion.di
 import android.content.Context
 import androidx.datastore.preferences.preferencesDataStore
 import app.hapi.companion.fcm.RegisterDeviceWorker
+import app.hapi.companion.feature.files.DirectorySortPrefs
 import app.hapi.companion.feature.newsession.DataStoreNewSessionPrefs
 import app.hapi.companion.feature.newsession.NewSessionPrefs
 import app.hapi.companion.feature.pairing.PairingClient
@@ -120,6 +121,12 @@ class AppGraph(context: Context) {
 
     /** Appearance choice (B-M4e); MainActivity reads it at setContent. */
     val themePrefs: ThemePrefs = ThemePrefs(appContext.hapiDataStore)
+
+    /**
+     * Files-screen sort choice (web localStorage `hapi-directory-sort` twin),
+     * app-wide: one sort preference across every session's files screen.
+     */
+    val directorySortPrefs: DirectorySortPrefs = DirectorySortPrefs(appContext.hapiDataStore)
 
     /** Language choice (B-M5a: applied via per-app locales; Settings writes it). */
     val languagePrefs: LanguagePrefs = LanguagePrefs(appContext.hapiDataStore)

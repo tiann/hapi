@@ -479,6 +479,25 @@
     <string name="files_viewer_empty">This file is empty</string>
     <string name="files_viewer_binary">Binary file — no preview available</string>
     <string name="files_viewer_image_unsupported">Preview not available for this image format</string>
+    <string name="files_download">Download file</string>
+    <string name="files_download_named">Download %1$s</string>
+    <string name="files_download_failed">Download failed</string>
+    <string name="files_download_failed_default">Failed to download file.</string>
+    <string name="files_sort">Sort files</string>
+    <string name="files_sort_by">Sort by</string>
+    <string name="files_sort_name">Name</string>
+    <string name="files_sort_modified">Modified time</string>
+    <string name="files_sort_size">File size</string>
+    <string name="files_sort_name_asc">A to Z</string>
+    <string name="files_sort_name_desc">Z to A</string>
+    <string name="files_sort_oldest">Oldest first</string>
+    <string name="files_sort_newest">Newest first</string>
+    <string name="files_sort_smallest">Smallest first</string>
+    <string name="files_sort_largest">Largest first</string>
+    <string name="files_menu_title">File actions</string>
+    <string name="files_menu_copy_path">Copy path</string>
+    <string name="files_menu_copy_absolute_path">Copy absolute path</string>
+    <string name="files_menu_add_to_composer">Add to composer</string>
 
     <!-- Scratchlist workbench (B-M4d) -->
     <string name="scratchlist_back">Back</string>

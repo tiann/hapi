@@ -25,6 +25,7 @@ enum class ViewerMode { DIFF, FILE }
 class FileViewerStrings(
     val loadDiffFailed: String = "Failed to load diff",
     val readFileFailed: String = "Failed to read file",
+    val downloadFailedDefault: String = "Failed to download file.",
 )
 
 sealed interface DiffUiState {
@@ -71,6 +72,15 @@ data class FileViewerUiState(
     val focusLine: Int? = null,
 )
 
+/** Viewer download pipeline (web `file.tsx` download button). */
+data class ViewerDownloadUiState(
+    val fetching: Boolean = false,
+    /** Completed fetch waiting for the SAF picker; consumed by the UI. */
+    val ready: FileDownload? = null,
+    /** Populated when the fetch failed. */
+    val error: String? = null,
+)
+
 /**
  * One file, two modes (web `file.tsx`): **diff** — `git-diff-file` stdout
  * through `UnifiedDiffParser` into `DiffView`, with a staged/unstaged toggle —
@@ -100,6 +110,9 @@ class FileViewerViewModel(
     )
     val state: StateFlow<FileViewerUiState> = stateFlow.asStateFlow()
 
+    private val downloadState = MutableStateFlow(ViewerDownloadUiState())
+    val download: StateFlow<ViewerDownloadUiState> = downloadState.asStateFlow()
+
     /** Explicit mode choice (initial `mode` arg or a chip tap) disables auto-fallback. */
     private var modeChosen = initialMode != null
     private var started = false
@@ -115,6 +128,73 @@ class FileViewerViewModel(
     fun refresh() {
         loadDiff()
         loadContent()
+    }
+
+    // ------------------------------------------------------------- download --
+
+    /**
+     * Whether the download action is offered (web `canDownload`: the file read
+     * succeeded and carries content — binary files still download).
+     */
+    fun isDownloadable(): Boolean = when (stateFlow.value.content) {
+        is FileContentUiState.Image, is FileContentUiState.Text, FileContentUiState.Binary -> true
+        FileContentUiState.Loading, is FileContentUiState.Failed, FileContentUiState.Empty -> false
+    }
+
+    /**
+     * Re-fetches the file's bytes for saving. The bytes are deliberately NOT
+     * taken from [FileContentUiState]: the Text state holds a UTF-8-decoded
+     * string (re-encoding corrupts non-UTF-8 files) and the Binary state drops
+     * the bytes entirely — the fresh read is the only lossless source (and the
+     * web's: the same `readSessionFile` payload).
+     */
+    fun requestDownload() {
+        if (downloadState.value.fetching || downloadState.value.ready != null) return
+        downloadState.value = ViewerDownloadUiState(fetching = true)
+        scope.launch {
+            val state = try {
+                val response = gateway.readFile(sessionId, path)
+                when {
+                    !response.success || response.content == null -> ViewerDownloadUiState(
+                        error = response.error?.takeIf { it.isNotBlank() } ?: strings.downloadFailedDefault,
+                    )
+                    else -> {
+                        val bytes = try {
+                            Base64.getMimeDecoder().decode(response.content)
+                        } catch (_: IllegalArgumentException) {
+                            null
+                        }
+                        if (bytes == null) {
+                            ViewerDownloadUiState(error = strings.downloadFailedDefault)
+                        } else {
+                            ViewerDownloadUiState(
+                                ready = FileDownload(
+                                    fileName = stateFlow.value.fileName,
+                                    mimeType = FileDownloads.downloadMimeType(path),
+                                    bytes = bytes,
+                                ),
+                            )
+                        }
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                ViewerDownloadUiState(error = e.message?.takeIf { it.isNotBlank() } ?: strings.downloadFailedDefault)
+            }
+            downloadState.value = state
+        }
+    }
+
+    /** Clears a consumed payload after the SAF picker resolved (or was cancelled). */
+    fun consumeReadyDownload() {
+        if (downloadState.value.ready != null) {
+            downloadState.update { ViewerDownloadUiState() }
+        }
+    }
+
+    fun clearDownloadError() {
+        downloadState.update { it.copy(error = null) }
     }
 
     fun setMode(mode: ViewerMode) {
