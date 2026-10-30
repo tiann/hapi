@@ -51,7 +51,7 @@ object NewSessionLogic {
      * (`web/src/lib/codexFamilyPermissionAgents.ts`). Gemini is listed for
      * completeness though it is not creatable.
      */
-    val CODEX_FAMILY_PERMISSION_AGENTS = setOf("codex", "gemini", "kimi", "copilot", "opencode")
+    val CODEX_FAMILY_PERMISSION_AGENTS = setOf("codex", "gemini", "kimi", "copilot", "opencode", "dsh")
 
     fun usesCodexFamilyPermissionModes(flavor: String?): Boolean =
         flavor in CODEX_FAMILY_PERMISSION_AGENTS
@@ -178,7 +178,7 @@ object NewSessionLogic {
             } else {
                 null
             },
-            yolo = if (agent == "dsh" || usesNativePermissionSelect(agent)) null else form.yolo,
+            yolo = if (usesNativePermissionSelect(agent)) null else form.yolo,
             permissionMode = if (usesNativePermissionSelect(agent)) form.permissionMode else null,
             sessionType = form.sessionType,
             worktreeName = if (form.sessionType == SESSION_TYPE_WORKTREE) {

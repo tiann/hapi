@@ -6,7 +6,8 @@ export const CODEX_FAMILY_PERMISSION_AGENTS = [
     'gemini',
     'kimi',
     'copilot',
-    'opencode'
+    'opencode',
+    'dsh'
 ] as const satisfies readonly AgentFlavor[]
 
 export type CodexFamilyPermissionAgent = typeof CODEX_FAMILY_PERMISSION_AGENTS[number]

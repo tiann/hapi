@@ -3330,6 +3330,41 @@ describe('session model', () => {
         }
     })
 
+    it('resolves a DSH resume target from the stored dshSessionId', () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'local-resume-dsh-stored-id',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'dsh',
+                    dshSessionId: 'acp-session-1'
+                },
+                null,
+                'default'
+            )
+
+            const result = engine.resolveLocalResumeTarget(session.id, 'default')
+
+            expect(result.type).toBe('success')
+            if (result.type === 'success') {
+                expect(result.target.flavor).toBe('dsh')
+                expect(result.target.agentSessionId).toBe('acp-session-1')
+            }
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('returns resume_unavailable when a cursor session lacks cursorSessionId', () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(

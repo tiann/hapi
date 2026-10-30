@@ -91,14 +91,12 @@ extension AgentFlavor {
         switch self {
         case .codex:
             return [.default, .readOnly, .autoReview, .yolo]
-        case .gemini, .kimi, .copilot:
+        case .gemini, .kimi, .copilot, .dsh:
             return [.default, .readOnly, .safeYolo, .yolo]
         case .grok:
             return [.default, .auto, .plan, .bypassPermissions]
         case .opencode:
             return [.default, .plan, .yolo]
-        case .dsh:
-            return []
         case .agy:
             return [.requestReview, .alwaysProceed]
         case .cursor:

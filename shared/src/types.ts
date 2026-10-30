@@ -38,6 +38,7 @@ export type {
     CodexCollaborationModeOption,
     CodexPermissionMode,
     CursorPermissionMode,
+    DshPermissionMode,
     GeminiPermissionMode,
     GrokPermissionMode,
     KimiPermissionMode,

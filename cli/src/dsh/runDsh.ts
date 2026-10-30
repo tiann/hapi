@@ -1,13 +1,15 @@
 import { hashObject } from '@/utils/deterministicJson'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler'
+import { registerLocalHandoffHandler } from '@/agent/localHandoff'
 import { createRunnerLifecycle, setControlledByUser } from '@/agent/runnerLifecycle'
-import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory'
 import { registerSessionConfigRpc } from '@/agent/sessionConfigRpc'
+import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory'
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter'
 import { getInvokedCwd } from '@/utils/invokedCwd'
 import { logger } from '@/ui/logger'
 import type { AgentState } from '@/api/types'
+import type { DshPermissionMode } from '@hapi/protocol/types'
 import { DshRemoteLauncher } from './dshRemoteLauncher'
 import { DshSession } from './session'
 import { dshModeForPreference, type DshMode } from './types'
@@ -20,7 +22,10 @@ export async function runDsh(opts: {
     reservedSessionId?: string
     /** Spawn-time model override (opaque ACP config-option value). */
     model?: string
+    /** Native ACP session id from `--resume`; resumed via session/resume. */
+    resumeSessionId?: string
     workingDirectory?: string
+    permissionMode?: DshPermissionMode
 } = {}): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd()
     const startedBy = opts.startedBy ?? 'terminal'
@@ -80,8 +85,14 @@ export async function runDsh(opts: {
         effortMode: 'ignore',
         onApply: (config) => {
             if (config.model !== undefined) currentModel = config.model
+            if (config.permissionMode !== undefined) {
+                sessionRef.current?.setPermissionMode(config.permissionMode)
+            }
         },
-        onAfterApply: syncSessionMode
+        onAfterApply: () => {
+            syncSessionMode()
+            sessionRef.current?.pushKeepAlive()
+        }
     })
 
     const lifecycle = createRunnerLifecycle({
@@ -92,6 +103,10 @@ export async function runDsh(opts: {
     })
     lifecycle.registerProcessHandlers()
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session)
+    // `hapi resume` hands active sessions over via the HandoffLocal RPC before
+    // dispatching locally; without this registration an active DSH resume fails
+    // with an unregistered-method error instead of archiving the running copy.
+    registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle)
 
     const dshSession = new DshSession({
         api,
@@ -99,9 +114,11 @@ export async function runDsh(opts: {
         path: workingDirectory,
         logPath: logger.getLogPath(),
         model: opts.model,
+        sessionId: opts.resumeSessionId ?? bootstrap.metadata.dshSessionId ?? null,
         messageQueue: queue,
         onModeChange: () => {},
-        startedBy
+        startedBy,
+        permissionMode: opts.permissionMode
     })
     const launcher = new DshRemoteLauncher(dshSession, {
         model: opts.model,

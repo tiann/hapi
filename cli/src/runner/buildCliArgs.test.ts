@@ -354,7 +354,7 @@ describe('buildCliArgs', () => {
         expect(args).not.toContain('--hapi-session-id')
     })
 
-    it('builds a remote DSH ACP runner command without unsupported policy flags', () => {
+    it('builds a remote DSH ACP runner command forwarding the permission mode', () => {
         const args = buildCliArgs('dsh', {
             directory: '/tmp',
             existingSessionId: 'existing-hub-id',
@@ -365,8 +365,17 @@ describe('buildCliArgs', () => {
             'dsh',
             '--hapi-starting-mode', 'remote',
             '--started-by', 'runner',
-            '--existing-session-id', 'existing-hub-id'
+            '--existing-session-id', 'existing-hub-id',
+            '--permission-mode', 'read-only'
         ])
+    })
+
+    it('builds a DSH runner command with --yolo mapped to the yolo mode flag', () => {
+        const args = buildCliArgs('dsh', {
+            directory: '/tmp',
+            startingMode: 'remote'
+        }, true)
+        expect(args).toContain('--yolo')
     })
 
     it('stamps --hapi-session-id for local HTTP sessionId hints (reap / adopt-stub)', () => {

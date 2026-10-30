@@ -200,8 +200,20 @@ final class SessionConfigTests: XCTestCase {
         XCTAssertFalse(empty.model.showsEffort)
     }
 
+    func testDshExposesPermissionSettingsWithoutModelOrEffortControls() async throws {
+        let harness = try await SessionConfigTestHarness(flavor: "dsh")
+        XCTAssertTrue(harness.model.hasSettings)
+        XCTAssertFalse(harness.model.showsModel)
+        XCTAssertFalse(harness.model.showsEffort)
+        harness.model.selectPermission(.yolo)
+        try await configEventually { await harness.http.posts.count == 1 }
+        let posts = await harness.http.posts
+        XCTAssertEqual(posts.first?.path, "/api/sessions/config/permission-mode")
+        XCTAssertEqual(posts.first?.body, #"{"mode":"yolo"}"#)
+    }
+
     func testCapabilitiesAndUnsupportedAgentsRemainCatalogDriven() async throws {
-        for flavor in ["pi", "dsh"] {
+        for flavor in ["pi"] {
             let harness = try await SessionConfigTestHarness(flavor: flavor)
             XCTAssertFalse(harness.model.hasSettings)
             harness.model.selectPermission(.yolo)
