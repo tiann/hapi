@@ -561,6 +561,8 @@
     <string name="chat_history_continue">继续加载历史</string>
     <string name="chat_history_load">加载更早的消息</string>
     <string name="chat_history_beginning">已到会话起点</string>
+    <string name="chat_message_details">消息详情</string>
+    <string name="chat_message_details_close">关闭</string>
     <string name="chat_copy_full_content">复制完整内容</string>
     <string name="chat_showing_parts">已显示 %1$d / %2$d 部分</string>
     <string name="chat_load_more_content">加载更多内容</string>

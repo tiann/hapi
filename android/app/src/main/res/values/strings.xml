@@ -554,6 +554,8 @@
     <string name="chat_history_continue">Continue loading history</string>
     <string name="chat_history_load">Load older messages</string>
     <string name="chat_history_beginning">Beginning of conversation</string>
+    <string name="chat_message_details">Message details</string>
+    <string name="chat_message_details_close">Close</string>
     <string name="chat_copy_full_content">Copy full content</string>
     <string name="chat_showing_parts">Showing %1$d of %2$d parts</string>
     <string name="chat_load_more_content">Load more content</string>

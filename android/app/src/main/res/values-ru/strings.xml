@@ -554,6 +554,8 @@
     <string name="chat_history_continue">Продолжить загрузку истории</string>
     <string name="chat_history_load">Загрузить старые сообщения</string>
     <string name="chat_history_beginning">Начало разговора</string>
+    <string name="chat_message_details">Сведения о сообщении</string>
+    <string name="chat_message_details_close">Закрыть</string>
     <string name="chat_copy_full_content">Копировать всё содержимое</string>
     <string name="chat_showing_parts">Показано %1$d из %2$d частей</string>
     <string name="chat_load_more_content">Загрузить больше</string>
