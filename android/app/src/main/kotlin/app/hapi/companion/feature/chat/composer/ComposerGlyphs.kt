@@ -55,3 +55,11 @@ internal val StopGlyph: ImageVector by lazy {
 internal val ArrowUpGlyph: ImageVector by lazy {
     strokeIcon("HapiArrowUp", "M12 19 L12 5.5 M6.5 11 L12 5.5 L17.5 11", 2.2f)
 }
+
+/** Sticky note with a folded corner — the scratchlist composer-mode toggle. */
+internal val NoteGlyph: ImageVector by lazy {
+    strokeIcon(
+        "HapiNote",
+        "M5 4.5 h8.5 L19 10 v9.5 h-14 z M13 4.5 v6 h6",
+    )
+}

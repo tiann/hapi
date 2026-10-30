@@ -5,7 +5,9 @@ import app.hapi.protocol.wire.CancelMessageResponse
 import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.DeleteUploadResponse
+import app.hapi.protocol.wire.ForkConversationResponse
 import app.hapi.protocol.wire.ResumeSessionResponse
+import app.hapi.protocol.wire.RewindConversationResponse
 import app.hapi.protocol.wire.SendMessageRequest
 import app.hapi.protocol.wire.SlashCommandsResponse
 import app.hapi.protocol.wire.SteerQueuedMessageResponse
@@ -65,6 +67,26 @@ interface ChatSessionApi : MessagesApi, AttachmentUploadApi {
 
     /** `POST /api/sessions/:id/resume` — the returned id may differ (superseding spawn). */
     suspend fun resumeSession(sessionId: String, permissionMode: String? = null): ResumeSessionResponse
+
+    /**
+     * `POST /api/sessions/:id/fork` (`ForkConversationRequestSchema`).
+     * `messageLocalId == null` forks the current conversation head; a value
+     * forks at that invoked history boundary. Returns the child session id —
+     * the caller navigates to it, the current session is untouched.
+     * Errors are HTTP 409 `{error}` (busy / boundary not invoked / …).
+     */
+    suspend fun forkConversation(
+        sessionId: String,
+        messageLocalId: String? = null,
+    ): ForkConversationResponse
+
+    /**
+     * `POST /api/sessions/:id/rewind` (`RewindConversationRequestSchema`) —
+     * truncates the session at the invoked [messageLocalId] boundary and
+     * emits `messages-invalidated` over SSE. 409 bodies may carry machine
+     * [code] `ambiguous_native_boundary` / `ambiguous_native_boundary_fork_safe`.
+     */
+    suspend fun rewindConversation(sessionId: String, messageLocalId: String): RewindConversationResponse
 
     /** `POST .../permissions/:rid/approve`; 404 not-pending, 409 `session_inactive`. */
     suspend fun approvePermission(

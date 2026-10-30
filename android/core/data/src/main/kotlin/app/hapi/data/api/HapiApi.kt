@@ -29,9 +29,13 @@ import app.hapi.protocol.wire.QueuedStateResponse
 import app.hapi.protocol.wire.RegisterDeviceRequest
 import app.hapi.protocol.wire.RenameMachineRequest
 import app.hapi.protocol.wire.RenameSessionRequest
+import app.hapi.protocol.wire.ForkConversationRequest
+import app.hapi.protocol.wire.ForkConversationResponse
 import app.hapi.protocol.wire.ReopenSessionResponse
 import app.hapi.protocol.wire.ResumeSessionRequest
 import app.hapi.protocol.wire.ResumeSessionResponse
+import app.hapi.protocol.wire.RewindConversationRequest
+import app.hapi.protocol.wire.RewindConversationResponse
 import app.hapi.protocol.wire.ScratchlistEntriesResponse
 import app.hapi.protocol.wire.ScratchlistEntryCreateRequest
 import app.hapi.protocol.wire.ScratchlistEntryResponse
@@ -318,6 +322,26 @@ class HapiApi internal constructor(
     /** `POST /api/sessions/:id/reopen` — same superseding-id caveat as resume; 422 when metadata is incomplete. */
     suspend fun reopenSession(sessionId: String): ReopenSessionResponse =
         request("POST", url("api", "sessions", sessionId, "reopen").build(), EMPTY_JSON)
+
+    /**
+     * `POST /api/sessions/:id/fork`. `messageLocalId == null` omits the field
+     * (fork the current head — web parity: `messageLocalId ? {messageLocalId} : {}`;
+     * [HapiJson] `explicitNulls = false` already elides nulls).
+     */
+    override suspend fun forkConversation(sessionId: String, messageLocalId: String?): ForkConversationResponse =
+        request(
+            "POST",
+            url("api", "sessions", sessionId, "fork").build(),
+            ForkConversationRequest(messageLocalId).toJsonBody(),
+        )
+
+    /** `POST /api/sessions/:id/rewind` — truncates at the invoked boundary. */
+    override suspend fun rewindConversation(sessionId: String, messageLocalId: String): RewindConversationResponse =
+        request(
+            "POST",
+            url("api", "sessions", sessionId, "rewind").build(),
+            RewindConversationRequest(messageLocalId).toJsonBody(),
+        )
 
     /** `POST /api/sessions/:id/archive` — 409 for a plain inactive session. */
     suspend fun archiveSession(sessionId: String) {

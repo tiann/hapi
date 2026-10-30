@@ -273,6 +273,8 @@
     <string name="chat_notice_draft_parked">Draft parked to scratchlist</string>
     <string name="chat_notice_scratchlist_full">Scratchlist is full (200 entries)</string>
     <string name="chat_notice_park_failed">Couldn’t park the draft — check the hub connection</string>
+    <string name="chat_notice_scratchlist_stage_failed">Couldn’t prepare the note’s attachments — check the hub connection</string>
+    <string name="chat_notice_scratchlist_rehydrate_failed">Couldn’t re-add some attachments to the composer</string>
     <string name="chat_notice_attachments_uploading">Attachments are still uploading — wait, or retry/remove the failed ones</string>
     <string name="chat_notice_resume_failed">Session is inactive and could not be resumed</string>
     <string name="chat_notice_abort_failed">Failed to abort</string>
@@ -286,6 +288,23 @@
     <string name="chat_notice_request_failed">Request failed</string>
     <string name="chat_notice_models_failed">Failed to load models</string>
     <string name="chat_notice_config_failed">Failed to update session</string>
+    <string name="chat_notice_fork_failed">Failed to fork conversation</string>
+    <string name="chat_notice_rewind_failed">Failed to rewind conversation</string>
+    <string name="chat_notice_rewind_diverged">Rewind outcome is unknown — this session’s history needs reconciliation</string>
+
+    <!-- Conversation history: fork / rewind message actions (web message.fork.*) -->
+    <string name="chat_history_fork">Fork</string>
+    <string name="chat_history_fork_confirm_title">Fork conversation</string>
+    <string name="chat_history_fork_confirm_description">Create a new session from this point?\nThe current session will not be changed.</string>
+    <string name="chat_history_fork_pending">Forking…</string>
+    <string name="chat_history_rewind">Rewind</string>
+    <string name="chat_history_rewind_confirm_title">Rewind conversation</string>
+    <string name="chat_history_rewind_confirm_description">Rewind this session to this point?\nLater conversation history will be permanently removed. Files will not be changed.</string>
+    <string name="chat_history_rewind_pending">Rewinding…</string>
+    <string name="chat_history_rewind_fallback_title">Rewind unavailable</string>
+    <string name="chat_history_rewind_fallback_description">HAPI did not change this session because its native Codex boundary is ambiguous.\nCreate a new session before this point instead? The current session will not be changed.</string>
+    <string name="chat_history_rewind_fallback_fork">Fork here</string>
+    <string name="chat_history_rewind_fallback_pending">Forking…</string>
 
     <!-- Composer (B-M3a/ce/f) -->
     <string name="chat_composer_placeholder">Message the agent…</string>
@@ -298,6 +317,10 @@
     <string name="chat_composer_mic">Start dictation</string>
     <string name="chat_composer_stop_recording">Stop recording</string>
     <string name="chat_composer_send">Send</string>
+    <string name="chat_composer_send_to_scratchlist">Send to scratchlist</string>
+    <string name="chat_composer_scratchlist_toggle">Scratchlist — park notes &amp; drafts</string>
+    <string name="chat_scratchlist_held_label">held — not sent</string>
+    <string name="chat_scratchlist_mode_hint">Send adds to the scratchlist instead of the chat. Tap the note icon again to leave.</string>
     <string name="chat_composer_abort">Stop the current turn</string>
     <string name="chat_send_steer">Send &amp; steer into current turn</string>
     <string name="chat_queued_one">1 queued message</string>
@@ -489,6 +512,7 @@
     <string name="scratchlist_new_note">New note</string>
     <string name="scratchlist_edit_note">Edit note</string>
     <string name="scratchlist_to_composer">To composer</string>
+    <string name="scratchlist_action_promote_to_queue">Send to queue</string>
     <string name="scratchlist_attachment_only">Attachment only</string>
     <string name="scratchlist_placeholder">Note, draft, parking-lot idea…</string>
     <string name="scratchlist_add_photo">Add photo</string>
@@ -510,6 +534,7 @@
     <string name="scratchlist_notice_needs_content">A note needs text or an attachment — use Delete to remove it</string>
     <string name="scratchlist_notice_save_failed">Couldn’t save the note — check the hub connection</string>
     <string name="scratchlist_notice_delete_failed">Couldn’t delete the note — check the hub connection</string>
+    <string name="scratchlist_notice_promote_failed">Couldn’t send the note to the queue — check the hub connection</string>
     <string name="scratchlist_notice_attach_failed">Couldn’t attach the file — check the hub connection</string>
     <string name="scratchlist_notice_remove_attachment_failed">Couldn’t remove the attachment — check the hub connection</string>
     <string name="scratchlist_notice_too_large">That file is over the hub’s per-file size limit</string>

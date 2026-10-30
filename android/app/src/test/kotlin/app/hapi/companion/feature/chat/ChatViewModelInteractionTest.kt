@@ -3,6 +3,7 @@ package app.hapi.companion.feature.chat
 import app.hapi.companion.feature.chat.attachments.ComposerAttachmentStatus
 import app.hapi.companion.feature.chat.attachments.PreparedAttachment
 import app.hapi.companion.feature.chat.attachments.PrepareResult
+import app.hapi.companion.feature.chat.attachments.ScratchlistPromoter
 import app.hapi.companion.feature.chat.composer.ChatDrafts
 import app.hapi.companion.feature.share.PendingShare
 import app.hapi.companion.feature.share.SharedFile
@@ -10,6 +11,7 @@ import app.hapi.companion.feature.share.SharedFileStatus
 import app.hapi.data.api.ApiError
 import app.hapi.data.api.ChatSessionApi
 import app.hapi.data.api.MessagesQuery
+import app.hapi.data.api.ScratchlistAttachmentFile
 import app.hapi.data.sse.SseEngine
 import app.hapi.data.sse.SseRawEvent
 import app.hapi.data.sse.SseTransport
@@ -49,6 +51,8 @@ import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
 import app.hapi.protocol.wire.SendMessageRequest
 import app.hapi.protocol.wire.Session
 import app.hapi.protocol.wire.SessionMetadata
+import app.hapi.protocol.wire.ScratchlistAttachment
+import app.hapi.protocol.wire.ScratchlistEntry
 import app.hapi.protocol.wire.SessionCapabilities
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SlashCommand
@@ -242,6 +246,16 @@ private class RecordingChatApi : ChatSessionApi {
         return resumeResult ?: throw RuntimeException("resume not scripted")
     }
 
+    override suspend fun forkConversation(
+        sessionId: String,
+        messageLocalId: String?,
+    ): app.hapi.protocol.wire.ForkConversationResponse = error("Unexpected fork")
+
+    override suspend fun rewindConversation(
+        sessionId: String,
+        messageLocalId: String,
+    ): app.hapi.protocol.wire.RewindConversationResponse = error("Unexpected rewind")
+
     override suspend fun approvePermission(sessionId: String, requestId: String, options: ApprovePermissionRequest) {
         approveCalls.value = approveCalls.value + (requestId to options)
         approveFailure?.let { throw it }
@@ -379,11 +393,28 @@ private fun bashRequest(command: String = "rm -rf build") = AgentStateRequest(
 /** Recording [SessionScratchlist] fake for the park/badge seam (B-M4d). */
 private class FakeScratchlist : SessionScratchlist {
     val created = mutableListOf<Pair<String, String>>()
+    val createdAttachments = mutableListOf<List<ScratchlistAttachment>>()
     var createResult: (String) -> ScratchlistCreateResult = { text ->
         ScratchlistCreateResult.Created(
             app.hapi.protocol.wire.ScratchlistEntry(entryId = "hub-1", text = text, createdAt = 1, updatedAt = 2)
         )
     }
+
+    /** Park-migration uploads: filename to mimeType, in order. */
+    val uploaded = mutableListOf<Pair<String, String>>()
+    private var uploadSequence = 0
+    var uploadResult: (String) -> ScratchlistUploadResult = { filename ->
+        ScratchlistUploadResult.Uploaded(
+            ScratchlistAttachment(
+                id = "hub-att-${uploadSequence++}",
+                filename = filename,
+                mimeType = "image/jpeg",
+                size = 4,
+                path = "hapi-hub:scratchlist/$filename",
+            )
+        )
+    }
+    val deletedAttachments = mutableListOf<String>()
     val sessionState = MutableStateFlow(ScratchlistSessionState())
 
     override fun state(sessionId: String): Flow<ScratchlistSessionState> = sessionState
@@ -397,6 +428,7 @@ private class FakeScratchlist : SessionScratchlist {
         attachments: List<app.hapi.protocol.wire.ScratchlistAttachment>,
     ): ScratchlistCreateResult {
         created += sessionId to text.trim()
+        createdAttachments += attachments
         return createResult(text)
     }
     override suspend fun updateEntry(
@@ -416,11 +448,17 @@ private class FakeScratchlist : SessionScratchlist {
         filename: String,
         bytes: ByteArray,
         mimeType: String,
-    ): ScratchlistUploadResult = ScratchlistUploadResult.Failed("unused")
+    ): ScratchlistUploadResult {
+        uploaded += filename to mimeType
+        return uploadResult(filename)
+    }
     override suspend fun deleteAttachment(
         sessionId: String,
         attachmentId: String,
-    ): ScratchlistAttachmentDeleteResult = ScratchlistAttachmentDeleteResult.Removed
+    ): ScratchlistAttachmentDeleteResult {
+        deletedAttachments += attachmentId
+        return ScratchlistAttachmentDeleteResult.Removed
+    }
     override suspend fun limits(sessionId: String) = app.hapi.protocol.wire.ScratchlistAttachmentLimits.DEFAULT
 }
 
@@ -428,6 +466,8 @@ private class InteractionHarness(
     testScope: TestScope,
     detail: Session = detail(),
     val scratchlist: FakeScratchlist? = null,
+    blobFetcher: ScratchlistPromoter.AttachmentFetcher? = null,
+    pickPreparer: ScratchlistPromoter.PickPreparer? = null,
 ) {
     val api = RecordingChatApi()
     val scope = testScope.backgroundScope
@@ -456,6 +496,8 @@ private class InteractionHarness(
         scope = scope,
         drafts = drafts,
         scratchlist = scratchlist,
+        scratchlistBlobFetcher = blobFetcher,
+        scratchlistPickPreparer = pickPreparer,
         pipelineDispatcher = StandardTestDispatcher(testScope.testScheduler),
         uiDispatcher = StandardTestDispatcher(testScope.testScheduler),
         draftSaveDebounceMs = 10,
@@ -1553,5 +1595,270 @@ class ChatViewModelInteractionTest {
         )
 
         harness.viewModel.scratchlistCount.first { it == 2 }
+    }
+
+    // ------------------------------------- composer scratchlist mode (B18b) --
+
+    @Test
+    fun `scratchlist send routing keeps a pending schedule ahead of the mode`() {
+        assertFalse(scratchlistSendRouting(scratchlistMode = false, schedulePending = false))
+        assertFalse(scratchlistSendRouting(scratchlistMode = false, schedulePending = true))
+        assertTrue(scratchlistSendRouting(scratchlistMode = true, schedulePending = false))
+        assertFalse(
+            scratchlistSendRouting(scratchlistMode = true, schedulePending = true),
+            "a pending scheduled send still delivers — the schedule wins (web contract)",
+        )
+    }
+
+    @Test
+    fun `send parks instead of sending while the mode is on and sends after exit`() = runTest {
+        val scratch = FakeScratchlist()
+        val harness = InteractionHarness(this, scratchlist = scratch)
+        harness.viewModel.start()
+        val vm = harness.viewModel
+
+        vm.setComposerText("hold this thought")
+        vm.composer.first { it.text.isNotEmpty() }
+        vm.setScratchlistMode(true)
+        vm.composer.first { it.routesToScratchlist }
+
+        vm.sendMessage()
+        vm.composer.first { it.text.isEmpty() }
+
+        assertEquals(listOf(IX_SESSION to "hold this thought"), scratch.created)
+        assertTrue(harness.api.sendCalls.value.isEmpty(), "the draft was parked, not sent")
+
+        vm.setScratchlistMode(false)
+        vm.composer.first { !it.routesToScratchlist }
+        vm.setComposerText("real message")
+        vm.sendMessage()
+        assertEquals("real message", harness.api.sendCalls.first { it.isNotEmpty() }.single().second.text)
+    }
+
+    @Test
+    fun `promote to queue delivers the entry text as a durable-queue send and exits the mode`() = runTest {
+        val harness = InteractionHarness(this, scratchlist = FakeScratchlist())
+        harness.viewModel.start()
+        val vm = harness.viewModel
+        vm.setScratchlistMode(true)
+        vm.composer.first { it.routesToScratchlist }
+
+        val accepted = vm.sendScratchlistEntryToQueue(ScratchlistEntry("e1", "ship this note", 1, 1))
+
+        assertTrue(accepted)
+        vm.composer.first { !it.routesToScratchlist }
+        val (session, request) = harness.api.sendCalls.first { it.isNotEmpty() }.single()
+        assertEquals(IX_SESSION, session)
+        assertEquals("ship this note", request.text)
+        assertEquals("queue", request.deliveryMode)
+    }
+
+    @Test
+    fun `promote to queue stages hub blobs through the chat upload pipeline`() = runTest {
+        val fetched = mutableListOf<String>()
+        val harness = InteractionHarness(
+            this,
+            scratchlist = FakeScratchlist(),
+            blobFetcher = ScratchlistPromoter.AttachmentFetcher { _, attachmentId ->
+                fetched += attachmentId
+                ScratchlistAttachmentFile(byteArrayOf(1, 2, 3, 4), "image/png")
+            },
+        )
+        harness.viewModel.start()
+        val entry = ScratchlistEntry(
+            "e1", "with a blob", 1, 1,
+            attachments = listOf(
+                ScratchlistAttachment("a1", "blob.png", "image/png", 4, "hapi-hub:scratchlist/a1")
+            ),
+        )
+
+        val accepted = harness.viewModel.sendScratchlistEntryToQueue(entry)
+
+        assertTrue(accepted)
+        assertEquals(listOf("a1"), fetched)
+        assertEquals(listOf("blob.png"), harness.api.uploadCalls.value)
+        val request = harness.api.sendCalls.value.single().second
+        val metadata = request.attachments!!.single()
+        assertEquals("a1", metadata.id)
+        assertEquals("blob.png", metadata.filename)
+        assertEquals("/uploads/ok", metadata.path)
+        assertTrue(metadata.previewUrl!!.startsWith("data:image/png;base64,"))
+    }
+
+    @Test
+    fun `promote to queue staging failure keeps the entry, rolls back and never sends`() = runTest {
+        val harness = InteractionHarness(
+            this,
+            scratchlist = FakeScratchlist(),
+            blobFetcher = ScratchlistPromoter.AttachmentFetcher { _, attachmentId ->
+                if (attachmentId == "bad") null
+                else ScratchlistAttachmentFile(byteArrayOf(1), "image/png")
+            },
+        )
+        harness.viewModel.start()
+        val vm = harness.viewModel
+        val notice = backgroundScope.async(start = CoroutineStart.UNDISPATCHED) {
+            vm.events.filterIsInstance<ChatEvent.Notice>()
+                .first { it.notice == ChatNotice.ScratchlistPromoteStagingFailed }
+        }
+        val entry = ScratchlistEntry(
+            "e1", "half staged", 1, 1,
+            attachments = listOf(
+                ScratchlistAttachment("good", "good.png", "image/png", 4, "hapi-hub:scratchlist/good"),
+                ScratchlistAttachment("bad", "bad.png", "image/png", 4, "hapi-hub:scratchlist/bad"),
+            ),
+        )
+
+        val accepted = vm.sendScratchlistEntryToQueue(entry)
+
+        assertFalse(accepted)
+        assertTrue(harness.api.sendCalls.value.isEmpty(), "a failed stage never reaches sendMessage")
+        assertEquals(listOf("good.png"), harness.api.uploadCalls.value)
+        assertEquals(listOf("/uploads/ok"), harness.api.deleteUploadCalls.value, "the staged upload is rolled back")
+        assertEquals(ChatNotice.ScratchlistPromoteStagingFailed, notice.await().notice)
+    }
+
+    @Test
+    fun `promote to queue reports rejection when the hub send itself fails`() = runTest {
+        val harness = InteractionHarness(this, scratchlist = FakeScratchlist())
+        harness.viewModel.start()
+        harness.api.sendFailures += RuntimeException("hub down")
+
+        val accepted = harness.viewModel.sendScratchlistEntryToQueue(ScratchlistEntry("e1", "retry me", 1, 1))
+
+        assertFalse(accepted)
+        assertTrue(harness.api.sendCalls.value.isNotEmpty(), "the send was attempted")
+    }
+
+    @Test
+    fun `promote to composer exits the mode, inserts the text and rehydrates attachments`() = runTest {
+        val harness = InteractionHarness(
+            this,
+            scratchlist = FakeScratchlist(),
+            blobFetcher = ScratchlistPromoter.AttachmentFetcher { _, attachmentId ->
+                ScratchlistAttachmentFile(byteArrayOf(1), "image/png")
+            },
+            pickPreparer = ScratchlistPromoter.PickPreparer { attachment, bytes, mimeType ->
+                PreparedAttachment(
+                    id = "pick-${attachment.id}",
+                    filename = attachment.filename,
+                    mimeType = mimeType,
+                    bytes = bytes,
+                    previewBytes = null,
+                )
+            },
+        )
+        val vm = harness.viewModel
+        vm.setScratchlistMode(true)
+        vm.composer.first { it.routesToScratchlist }
+
+        vm.promoteScratchlistEntryToComposer(
+            ScratchlistEntry(
+                "e1", "finish this thought", 1, 1,
+                attachments = listOf(
+                    ScratchlistAttachment("a1", "note.png", "image/png", 4, "hapi-hub:scratchlist/a1")
+                ),
+            )
+        )
+
+        vm.composer.first { !it.routesToScratchlist }
+        vm.composer.first { it.text == "finish this thought" }
+        vm.attachments.items.first { chips -> chips.any { it.id == "pick-a1" } }
+        assertEquals(
+            listOf("note.png"),
+            harness.api.uploadCalls.first { it.isNotEmpty() },
+            "the rehydrated pick re-uploads through the chat pipeline",
+        )
+    }
+
+    @Test
+    fun `promote to composer warns when an attachment fails to rehydrate`() = runTest {
+        val harness = InteractionHarness(
+            this,
+            scratchlist = FakeScratchlist(),
+            blobFetcher = ScratchlistPromoter.AttachmentFetcher { _, attachmentId ->
+                if (attachmentId == "a2") null
+                else ScratchlistAttachmentFile(byteArrayOf(1), "image/png")
+            },
+            pickPreparer = ScratchlistPromoter.PickPreparer { attachment, bytes, mimeType ->
+                PreparedAttachment(
+                    id = "pick-${attachment.id}",
+                    filename = attachment.filename,
+                    mimeType = mimeType,
+                    bytes = bytes,
+                    previewBytes = null,
+                )
+            },
+        )
+        val vm = harness.viewModel
+        val notice = backgroundScope.async(start = CoroutineStart.UNDISPATCHED) {
+            vm.events.filterIsInstance<ChatEvent.Notice>()
+                .first { it.notice == ChatNotice.ScratchlistRehydratePartial }
+        }
+
+        vm.promoteScratchlistEntryToComposer(
+            ScratchlistEntry(
+                "e1", "half comes back", 1, 1,
+                attachments = listOf(
+                    ScratchlistAttachment("a1", "one.png", "image/png", 4, "hapi-hub:scratchlist/a1"),
+                    ScratchlistAttachment("a2", "two.png", "image/png", 4, "hapi-hub:scratchlist/a2"),
+                ),
+            )
+        )
+
+        assertEquals(ChatNotice.ScratchlistRehydratePartial, notice.await().notice)
+        vm.attachments.items.first { chips -> chips.any { it.id == "pick-a1" } }
+    }
+
+    // ------------------------------------------- park attachment migration --
+
+    @Test
+    fun `park migrates ready chips to hub blobs and cleans the chat upload`() = runTest {
+        val scratch = FakeScratchlist()
+        val harness = InteractionHarness(this, scratchlist = scratch)
+        val vm = harness.viewModel
+
+        vm.attachments.add(preparedShot())
+        vm.attachments.items.first { chips -> chips.size == 1 && chips[0].status == ComposerAttachmentStatus.Ready }
+        vm.setComposerText("park with a picture")
+        vm.composer.first { it.text.isNotEmpty() }
+
+        vm.parkComposerDraft()
+
+        vm.composer.first { it.text.isEmpty() }
+        assertEquals(listOf("shot.jpg" to "image/jpeg"), scratch.uploaded)
+        assertEquals(listOf(IX_SESSION to "park with a picture"), scratch.created)
+        val migrated = scratch.createdAttachments.single().single()
+        assertEquals("hub-att-0", migrated.id)
+        assertEquals("hapi-hub:scratchlist/shot.jpg", migrated.path)
+        vm.attachments.items.first { it.isEmpty() }
+        assertTrue(
+            harness.api.deleteUploadCalls.value.contains("/uploads/ok"),
+            "the chat upload is deleted once the entry write is accepted",
+        )
+    }
+
+    @Test
+    fun `park migration failure keeps the draft and chips and frees the hub blob`() = runTest {
+        val scratch = FakeScratchlist().apply {
+            uploadResult = { ScratchlistUploadResult.Failed("hub down") }
+        }
+        val harness = InteractionHarness(this, scratchlist = scratch)
+        val vm = harness.viewModel
+        val notice = backgroundScope.async(start = CoroutineStart.UNDISPATCHED) {
+            vm.events.filterIsInstance<ChatEvent.Notice>().first { it.notice == ChatNotice.ScratchlistParkFailed }
+        }
+
+        vm.attachments.add(preparedShot())
+        vm.attachments.items.first { chips -> chips.size == 1 && chips[0].status == ComposerAttachmentStatus.Ready }
+        vm.setComposerText("do not lose me")
+        vm.composer.first { it.text.isNotEmpty() }
+
+        vm.parkComposerDraft()
+
+        assertEquals(ChatNotice.ScratchlistParkFailed, notice.await().notice)
+        assertTrue(scratch.created.isEmpty(), "the entry is never written on a failed migration")
+        assertEquals("do not lose me", vm.composer.value.text)
+        vm.attachments.items.first { chips -> chips.size == 1 && chips[0].status == ComposerAttachmentStatus.Ready }
     }
 }
