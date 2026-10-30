@@ -14,8 +14,8 @@ vi.mock('@/claude/utils/startHappyServer', () => ({
         return {
             url: 'http://127.0.0.1:43006/',
             toolNames: options.skillLookup
-                ? ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'skill_lookup']
-                : ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer'],
+                ? ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'session_job', 'skill_lookup']
+                : ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'session_job'],
             stop: vi.fn()
         }
     })
@@ -71,16 +71,17 @@ describe('buildHapiMcpBridge skill lookup config', () => {
             '--url',
             'http://127.0.0.1:43006/',
             '--tools',
-            'change_title,display_image,display_video,display_media,list_peers,ping_peer,inspect_peer,skill_lookup',
+            'change_title,display_image,display_video,display_media,list_peers,ping_peer,inspect_peer,session_job,skill_lookup',
             '--hapi-session-id',
             'hub-session-1',
         ])
         expect(bridge.mcpServers.hapi.tools).toEqual({
-            change_title: { approval_mode: 'approve' },
             display_image: { approval_mode: 'prompt' },
             display_video: { approval_mode: 'prompt' },
             display_media: { approval_mode: 'prompt' },
+            change_title: { approval_mode: 'approve' },
             list_peers: { approval_mode: 'approve' },
+            session_job: { approval_mode: 'approve' },
             skill_lookup: { approval_mode: 'approve' }
         })
     })
@@ -93,16 +94,17 @@ describe('buildHapiMcpBridge skill lookup config', () => {
             '--url',
             'http://127.0.0.1:43006/',
             '--tools',
-            'change_title,display_image,display_video,display_media,list_peers,ping_peer,inspect_peer',
+            'change_title,display_image,display_video,display_media,list_peers,ping_peer,inspect_peer,session_job',
             '--hapi-session-id',
             'hub-session-1',
         ])
         expect(bridge.mcpServers.hapi.tools).toEqual({
-            change_title: { approval_mode: 'approve' },
             display_image: { approval_mode: 'prompt' },
             display_video: { approval_mode: 'prompt' },
             display_media: { approval_mode: 'prompt' },
-            list_peers: { approval_mode: 'approve' }
+            change_title: { approval_mode: 'approve' },
+            list_peers: { approval_mode: 'approve' },
+            session_job: { approval_mode: 'approve' }
         })
     })
 

@@ -424,15 +424,19 @@ function collectProcessTree(pid: number): number[] | 'scan_failed' {
  * Signals are sent synchronously (children first) to work in exit handlers,
  * then waits asynchronously for processes to die.
  */
-async function killProcessTree(pid: number, force: boolean): Promise<boolean> {
+async function killProcessTree(
+  pid: number,
+  force: boolean,
+  signal: NodeJS.Signals = 'SIGTERM'
+): Promise<boolean> {
   // Collect all PIDs first (sync) - returns in child-first order
   const pids = collectProcessTree(pid);
   if (pids === 'scan_failed') {
     // Signal the known root anyway (partial kill > zero kill), but never claim
     // stopped without a full-tree verify (#1911 Opus Major / debian-slim no pgrep).
-    const signal = force ? 'SIGKILL' : 'SIGTERM';
+    const killSignal = force ? 'SIGKILL' : signal;
     try {
-      process.kill(pid, signal);
+      process.kill(pid, killSignal);
     } catch {
       // already gone
     }
@@ -440,11 +444,13 @@ async function killProcessTree(pid: number, force: boolean): Promise<boolean> {
     return false;
   }
 
-  // Signal all processes synchronously (children first, then root)
-  const signal = force ? 'SIGKILL' : 'SIGTERM';
+  // Signal all processes synchronously (children first, then root).
+  // Preserve the caller's signal when soft-killing so Ctrl-C stays SIGINT
+  // (exit 130) instead of always remapping to SIGTERM (exit 143).
+  const killSignal = force ? 'SIGKILL' : signal;
   for (const p of pids) {
     try {
-      process.kill(p, signal);
+      process.kill(p, killSignal);
     } catch {
       // Process may have already exited
     }
@@ -477,8 +483,12 @@ export type ProcessTreeStopReport = {
 export async function killProcessTreeByPid(
   pid: number,
   force: boolean = false,
-  onReport?: (report: ProcessTreeStopReport) => void
+  // 3rd arg: soft POSIX signal (#1424 job Ctrl-C → exit 130) OR stop report callback (#1911).
+  signalOrReport: NodeJS.Signals | ((report: ProcessTreeStopReport) => void) = 'SIGTERM',
+  onReportMaybe?: (report: ProcessTreeStopReport) => void
 ): Promise<boolean> {
+  const signal: NodeJS.Signals = typeof signalOrReport === 'function' ? 'SIGTERM' : signalOrReport
+  const onReport = typeof signalOrReport === 'function' ? signalOrReport : onReportMaybe
   const n = typeof pid === 'number' ? pid : Number(pid)
   if (!Number.isFinite(n) || n <= 0) return false;
   if (isWindows()) {
@@ -496,6 +506,7 @@ export async function killProcessTreeByPid(
     // Collect the tree + generation markers first, signal the root with /T,
     // then individually signal any surviving pre-kill PIDs whose generation
     // still matches (PID reuse must not be killed) (#1911 bot Major).
+    // Soft signal (SIGINT vs SIGTERM) is POSIX-only; Windows stays taskkill.
     const treePids = collectWindowsProcessTree(n);
     phaseMs.scan = Date.now() - started;
     if (treePids === 'scan_failed') {
@@ -590,7 +601,7 @@ export async function killProcessTreeByPid(
       await new Promise(resolve => setTimeout(resolve, 100));
     }
   }
-  return killProcessTree(n, force);
+  return killProcessTree(n, force, signal);
 }
 
 /**
@@ -636,7 +647,8 @@ async function waitForProcessToDie(pid: number, force: boolean): Promise<void> {
 export async function killProcessByChildProcess(
   child: ChildProcess,
   force: boolean = false,
-  onReport?: (report: ProcessTreeStopReport) => void
+  signalOrReport: NodeJS.Signals | ((report: ProcessTreeStopReport) => void) = 'SIGTERM',
+  onReportMaybe?: (report: ProcessTreeStopReport) => void
 ): Promise<boolean> {
   const pid = child.pid;
   if (!pid) {
@@ -644,5 +656,6 @@ export async function killProcessByChildProcess(
   }
 
   // Both platforms: tree-kill + full-tree verify (win32 must not trust root-only).
-  return killProcessTreeByPid(pid, force, onReport);
+  // Soft signal forwarded on POSIX so job Ctrl-C stays exit 130 (#1424).
+  return killProcessTreeByPid(pid, force, signalOrReport, onReportMaybe);
 }

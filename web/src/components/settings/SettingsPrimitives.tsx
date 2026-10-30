@@ -92,11 +92,11 @@ export function SettingsChoiceGroup<T extends string | number>(props: {
         ? 'grid-cols-6'
         : props.columns === 5
             ? 'grid-cols-5'
-        : props.columns === 4
-            ? 'grid-cols-2 sm:grid-cols-4'
-            : props.columns === 3
-                ? 'grid-cols-3'
-                : 'grid-cols-2'
+            : props.columns === 4
+                ? 'grid-cols-2 sm:grid-cols-4'
+                : props.columns === 3
+                    ? 'grid-cols-3'
+                    : 'grid-cols-2'
     return (
         <div className={`${props.columns === 6 ? 'px-1 sm:px-3' : 'px-3'} py-3`}>
             <SettingsFieldLabel hidden={props.hideLabel} description={props.description}>{props.label}</SettingsFieldLabel>

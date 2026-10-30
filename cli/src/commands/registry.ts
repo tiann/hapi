@@ -23,6 +23,7 @@ import { pingPeerCommand } from './pingPeer'
 import { inspectPeerCommand } from './inspectPeer'
 import { usageCommand } from './usage'
 import { setModeCommand } from './setMode'
+import { jobCommand } from './job'
 import type { CommandContext, CommandDefinition } from './types'
 
 // Gemini CLI was sunset (Google stopped serving the consumer Gemini CLI on
@@ -66,6 +67,7 @@ const COMMANDS: CommandDefinition[] = [
     pingPeerCommand,
     inspectPeerCommand,
     setModeCommand,
+    jobCommand,
     usageCommand
 ]
 

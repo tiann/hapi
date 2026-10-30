@@ -11,11 +11,8 @@ afterEach(() => {
     window.localStorage.clear()
 })
 
-it('keeps rendered rows and machine filters stable by default, but promotes new user input', () => {
-    window.localStorage.clear()
-    // An obsolete stored preference must not prevent the new default behavior.
-    window.localStorage.setItem('hapi-fixed-session-order', 'true')
-    const sessions = ['A', 'B', 'C'].map((id, index): Session => ({
+function makeSessions(): Session[] {
+    return ['A', 'B', 'C'].map((id, index): Session => ({
         id, namespace: 'default', seq: 1, createdAt: index + 1,
         lastUserMessageAt: (index + 1) * 1_000, updatedAt: 10_000,
         active: true, activeAt: 10_000, thinking: true, thinkingAt: 10_000,
@@ -23,8 +20,11 @@ it('keeps rendered rows and machine filters stable by default, but promotes new 
         metadataVersion: 1, agentState: null, agentStateVersion: 1,
         model: null, modelReasoningEffort: null, effort: null, serviceTier: null
     }))
+}
+
+function renderList(rows: Session[]) {
     const client = new QueryClient()
-    const list = (rows: Session[]) => (
+    return (
         <QueryClientProvider client={client}>
             <ToastProvider>
                 <I18nProvider>
@@ -38,21 +38,39 @@ it('keeps rendered rows and machine filters stable by default, but promotes new 
             </ToastProvider>
         </QueryClientProvider>
     )
-    const { rerender } = render(list(sessions))
-    const rowOrder = () => screen.getAllByRole('button', { name: /Order [ABC]/ })
-        .map(row => row.textContent?.match(/Order [ABC]/)?.[0])
-    const machineOrder = () => screen.getAllByRole('button', { name: /Machine (One|Two)/ })
-        .map(button => button.textContent)
+}
+
+const rowOrder = () => screen.getAllByRole('button', { name: /Order [ABC]/ })
+    .map(row => row.textContent?.match(/Order [ABC]/)?.[0])
+const machineOrder = () => screen.getAllByRole('button', { name: /Machine (One|Two)/ })
+    .map(button => button.textContent)
+
+it('keeps rendered rows and machine filters stable by default, but promotes new user input', () => {
+    window.localStorage.clear()
+    const sessions = makeSessions()
+    const { rerender } = render(renderList(sessions))
     expect(rowOrder()).toEqual(['Order C', 'Order B', 'Order A'])
     const machinesBefore = machineOrder()
     for (let index = 0; index < 6; index++) {
-        rerender(list([...sessions].reverse().map(s => ({
+        rerender(renderList([...sessions].reverse().map(s => ({
             ...s, updatedAt: 20_000 + index * 1_000 + (s.id === 'A' ? 500 : 0)
         }))))
         expect(rowOrder()).toEqual(['Order C', 'Order B', 'Order A'])
         expect(machineOrder()).toEqual(machinesBefore)
     }
-    rerender(list(sessions.map(s => s.id === 'A' ? { ...s, lastUserMessageAt: 100_000 } : s)))
+    rerender(renderList(sessions.map(s => s.id === 'A' ? { ...s, lastUserMessageAt: 100_000 } : s)))
     expect(rowOrder()).toEqual(['Order A', 'Order C', 'Order B'])
     expect(machineOrder()).toEqual([...machinesBefore].reverse())
+})
+
+it('Fixed session order keeps creation-time rows and workspaces when lastUserMessageAt moves', () => {
+    window.localStorage.clear()
+    window.localStorage.setItem('hapi-fixed-session-order', 'true')
+    const sessions = makeSessions()
+    const { rerender } = render(renderList(sessions))
+    expect(rowOrder()).toEqual(['Order C', 'Order B', 'Order A'])
+    const machinesBefore = machineOrder()
+    rerender(renderList(sessions.map(s => s.id === 'A' ? { ...s, lastUserMessageAt: 100_000 } : s)))
+    expect(rowOrder()).toEqual(['Order C', 'Order B', 'Order A'])
+    expect(machineOrder()).toEqual(machinesBefore)
 })

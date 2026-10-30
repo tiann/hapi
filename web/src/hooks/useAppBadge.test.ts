@@ -33,6 +33,8 @@ function createSession(
         nextScheduledAt: null,
         model: null,
         effort: null,
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
     }
 }
 

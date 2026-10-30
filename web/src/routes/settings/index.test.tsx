@@ -86,7 +86,12 @@ vi.mock('@/hooks/useShowActiveSessionsOnly', () => ({
 }))
 
 vi.mock('@/hooks/usePinInProgressSessions', () => ({
-    usePinInProgressSessions: () => ({ pinInProgressSessions: false, setPinInProgressSessions: vi.fn() }),
+    usePinInProgressSessions: () => ({
+        pinInProgressMode: 'off' as const,
+        setPinInProgressMode: vi.fn(),
+        pinInProgressSessions: false,
+        setPinInProgressSessions: vi.fn(),
+    }),
 }))
 
 vi.mock('@/hooks/useAppBadgePreference', () => ({
@@ -299,7 +304,9 @@ describe('responsive settings pages', () => {
         expect(screen.getByRole('checkbox', { name: 'Created time' })).not.toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Updated time' })).not.toBeChecked()
         expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
-        expect(screen.queryByRole('checkbox', { name: 'Fixed session order' })).not.toBeInTheDocument()
+        // #1424 keeps fixed-order + tri-state pin (upstream removed fixed-order alone).
+        expect(screen.getByRole('checkbox', { name: 'Fixed session order' })).toBeInTheDocument()
+        expect(screen.getByRole('radio', { name: 'Long-running jobs' })).toBeInTheDocument()
     })
 
     it('keeps the session status description visible with its choice group', () => {
