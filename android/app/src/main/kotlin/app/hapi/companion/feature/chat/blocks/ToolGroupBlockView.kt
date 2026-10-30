@@ -15,6 +15,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
+import app.hapi.companion.feature.chat.LocalChatSurfaceColors
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.ToolGroupBlock
@@ -29,8 +30,12 @@ fun ToolGroupBlockView(block: ToolGroupBlock, basePath: String?, modifier: Modif
     val summary = remember(block.summary, block.activityTitle) {
         listOfNotNull(block.activityTitle, groupSummaryText(block).takeIf { it.isNotEmpty() }).joinToString(" · ").take(240)
     }
+    // P2 Chat `toolGroupBackground` preset (web --app-tool-group-bg): the
+    // resolved preset tint, or the theme default when unset/default.
     Surface(
-        shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = RoundedCornerShape(12.dp),
+        color = LocalChatSurfaceColors.current.toolGroup
+            ?: MaterialTheme.colorScheme.surfaceContainerLow,
         modifier = modifier.fillMaxWidth(),
     ) {
         ToolSummaryRow(

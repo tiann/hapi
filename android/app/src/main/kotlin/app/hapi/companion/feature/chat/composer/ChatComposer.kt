@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -54,16 +56,20 @@ import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.hapi.companion.R
 import app.hapi.companion.feature.chat.ComposerUiState
+import app.hapi.companion.feature.chat.LocalChatSettings
 import app.hapi.companion.feature.chat.attachments.ComposerAttachmentStatus
 import app.hapi.companion.feature.chat.attachments.ComposerAttachmentUi
 import app.hapi.companion.feature.chat.attachments.rememberChipThumbnail
+import app.hapi.companion.feature.settings.ComposerEnterBehavior
 import app.hapi.companion.ui.theme.HapiTheme
+import app.hapi.companion.ui.theme.LocalHapiTypeStyles
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.wire.SlashCommand
 import kotlinx.coroutines.delay
@@ -153,15 +159,35 @@ fun ChatComposer(
                             modifier = Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 2.dp),
                         )
                     }
+                    // Enter-key behavior (P2 Chat settings, web
+                    // `hapi-composer-enter-behavior`): newline keeps the stock
+                    // multiline field (Enter inserts a line break); send swaps
+                    // the IME action so Enter submits through the same gate as
+                    // the primary button (an IME Send action offers no newline
+                    // entry, hence the newline default).
+                    val enterBehavior = LocalChatSettings.current.enterBehavior
+                    val sendOnEnter = enterBehavior == ComposerEnterBehavior.SEND
                     BasicTextField(
                         value = state.text,
                         enabled = !state.isImportingShare,
                         onValueChange = onTextChange,
-                        textStyle = app.hapi.companion.ui.theme.HapiTypography.body.copy(
+                        textStyle = LocalHapiTypeStyles.current.body.copy(
                             color = MaterialTheme.colorScheme.onSurface,
                         ),
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                         maxLines = 6,
+                        keyboardOptions = if (sendOnEnter) {
+                            KeyboardOptions(imeAction = ImeAction.Send)
+                        } else {
+                            KeyboardOptions.Default
+                        },
+                        keyboardActions = if (sendOnEnter) {
+                            KeyboardActions(onSend = {
+                                if (composerCanSubmit(state, attachments)) onSend()
+                            })
+                        } else {
+                            KeyboardActions.Default
+                        },
                         modifier = Modifier
                             .focusRequester(focusRequester)
                             .testTag("chat-composer-input")
@@ -493,6 +519,20 @@ private fun MicButton(state: DictationState, onToggle: () -> Unit) {
 
 // ---------------------------------------------------------------- actions --
 
+/**
+ * Send gate shared by the primary button and the Enter-to-send IME action:
+ * text or a ready attachment tray is required, an in-flight upload blocks the
+ * send (web: every chip must settle Ready), and a running send ignores Enter.
+ */
+private fun composerCanSubmit(
+    state: ComposerUiState,
+    attachments: List<ComposerAttachmentUi>,
+): Boolean {
+    val attachmentsBusy = attachments.any { it.status != ComposerAttachmentStatus.Ready }
+    val attachmentsReady = attachments.isNotEmpty() && !attachmentsBusy
+    return (state.text.isNotBlank() || attachmentsReady) && !attachmentsBusy && !state.isSending && !state.isImportingShare
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PrimaryActionButton(
@@ -503,14 +543,8 @@ private fun PrimaryActionButton(
     onAbort: () -> Unit,
 ) {
     var steerMenuOpen by remember { mutableStateOf(false) }
-    val hasText = state.text.isNotBlank()
-    val hasDraft = hasText || attachments.isNotEmpty()
-    // Attachments gate the send like the web: every chip must settle Ready
-    // (uploading waits, failed must be retried or removed); a ready tray
-    // allows an attachments-only send (wire: text or attachments required).
-    val attachmentsBusy = attachments.any { it.status != ComposerAttachmentStatus.Ready }
-    val attachmentsReady = attachments.isNotEmpty() && !attachmentsBusy
-    val canSubmit = (hasText || attachmentsReady) && !attachmentsBusy && !state.isSending && !state.isImportingShare
+    val canSubmit = composerCanSubmit(state, attachments)
+    val hasDraft = state.text.isNotBlank() || attachments.isNotEmpty()
     val action = when {
         state.isSending || state.isImportingShare -> ComposerPrimaryAction.Sending
         state.canSteer && !hasDraft -> ComposerPrimaryAction.Stop

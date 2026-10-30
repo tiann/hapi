@@ -1,6 +1,7 @@
 package app.hapi.companion.feature.chat
 
 import app.hapi.companion.feature.sessions.SessionListViewModel
+import app.hapi.companion.feature.settings.SessionHeaderMetadata
 import app.hapi.data.api.ChatSessionApi
 import app.hapi.data.api.MessagesQuery
 import app.hapi.data.sse.SseEngine
@@ -26,13 +27,16 @@ import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
 import app.hapi.protocol.wire.SendMessageRequest
 import app.hapi.protocol.wire.SteerQueuedMessageResponse
 import app.hapi.protocol.wire.Machine
+import app.hapi.protocol.wire.MachineMetadata
 import app.hapi.protocol.wire.MessagesPage
 import app.hapi.protocol.wire.MessagesResponse
 import app.hapi.protocol.wire.QueuedStateResponse
 import app.hapi.protocol.wire.Session
+import app.hapi.protocol.wire.SessionMetadata
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SessionSummaryMetadata
 import app.hapi.protocol.wire.SyncEvent
+import app.hapi.protocol.wire.WorktreeMetadata
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
@@ -59,6 +63,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -131,7 +136,8 @@ private class FakeSessionStore : SessionDetailStore {
 }
 
 private class FakeMachineStore : MachineListStore {
-    override val machines: StateFlow<List<Machine>> = MutableStateFlow(emptyList())
+    val backing = MutableStateFlow<List<Machine>>(emptyList())
+    override val machines: StateFlow<List<Machine>> = backing
     override suspend fun refresh() {}
     override fun scheduleRefresh() {}
     override fun applyMachineEvent(event: SyncEvent.MachineUpdated) {}
@@ -309,8 +315,10 @@ private class Harness(
     val scope: CoroutineScope = testScope.backgroundScope,
     uiDispatcher: CoroutineDispatcher = StandardTestDispatcher(testScope.testScheduler),
     pipelineDispatcher: CoroutineDispatcher = StandardTestDispatcher(testScope.testScheduler),
+    headerMetadata: Flow<SessionHeaderMetadata> = flowOf(SessionHeaderMetadata()),
 ) {
     val sessionStore = FakeSessionStore().apply { detailToLoad = detailSession() }
+    val machineStore = FakeMachineStore()
     val lastSeenStore = LastSeenStore(scope)
     val messageWindows = MessageWindowStores(api = api, scope = scope)
     val engine = SseEngine(
@@ -323,7 +331,7 @@ private class Harness(
         sessionId = SESSION_ID,
         api = api,
         sessionStore = sessionStore,
-        machineStore = FakeMachineStore(),
+        machineStore = machineStore,
         lastSeenStore = lastSeenStore,
         messageWindows = messageWindows,
         sseEngine = engine,
@@ -331,6 +339,7 @@ private class Harness(
         scope = scope,
         pipelineDispatcher = pipelineDispatcher,
         uiDispatcher = uiDispatcher,
+        headerMetadata = headerMetadata,
     )
 }
 
@@ -383,6 +392,55 @@ class ChatViewModelTest {
         h.viewModel.uiState.first { it.historyVersion == 1L }
         assertEquals(2, api.queries.value.filterIsInstance<MessagesQuery.Before>().size)
         assertEquals(1, transport.connects)
+        h.viewModel.stop()
+    }
+
+    @Test
+    fun `header metadata switches gate the chat header subtitle segments`() = runTest {
+        val gates = MutableStateFlow(SessionHeaderMetadata())
+        val h = Harness(this, ScriptedTransport(listOf("ok")), headerMetadata = gates)
+        h.sessionStore.detailToLoad = detailSession().copy(
+            metadata = SessionMetadata(
+                path = "/data/github/hapi",
+                host = "box",
+                flavor = "claude",
+                machineId = "machine-1",
+                worktree = WorktreeMetadata(
+                    basePath = "/data/github/hapi",
+                    branch = "fix/insets",
+                    name = "231",
+                ),
+            ),
+        )
+        h.machineStore.backing.value = listOf(
+            Machine(
+                id = "machine-1",
+                namespace = "default",
+                seq = 1,
+                createdAt = 1,
+                updatedAt = 1,
+                active = true,
+                activeAt = 1,
+                metadata = MachineMetadata(host = "box", platform = "linux", happyCliVersion = "1.0.0", displayName = "Beef box"),
+                metadataVersion = 1,
+                runnerState = null,
+                runnerStateVersion = 1,
+            ),
+        )
+        h.viewModel.start()
+
+        // Defaults (all segments visible): flavor label · machine · worktree.
+        val initial = h.viewModel.uiState.first { it.header.subtitle != null }
+        assertEquals("Claude · Beef box · 231", initial.header.subtitle)
+
+        // Machine off: the machine segment drops, the rest reflow.
+        gates.value = SessionHeaderMetadata(machine = false)
+        h.viewModel.uiState.first { it.header.subtitle == "Claude · 231" }
+
+        // All three off: nothing left, no subtitle.
+        gates.value = SessionHeaderMetadata(agent = false, machine = false, worktree = false)
+        h.viewModel.uiState.first { it.header.subtitle == null }
+
         h.viewModel.stop()
     }
 

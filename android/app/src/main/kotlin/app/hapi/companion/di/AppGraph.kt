@@ -8,7 +8,12 @@ import app.hapi.companion.feature.newsession.NewSessionPrefs
 import app.hapi.companion.feature.pairing.PairingClient
 import app.hapi.companion.feature.pairing.PairingClientFactory
 import app.hapi.companion.feature.settings.AppLanguage
+import app.hapi.companion.feature.settings.ChatPrefs
+import app.hapi.companion.feature.settings.DataStoreChatPrefs
+import app.hapi.companion.feature.settings.DataStoreDisplayPrefs
+import app.hapi.companion.feature.settings.DisplayPrefs
 import app.hapi.companion.feature.settings.LanguagePrefs
+import app.hapi.companion.feature.settings.SessionHeaderMetadata
 import app.hapi.companion.feature.settings.ThemePrefs
 import app.hapi.companion.feature.share.ContentResolverShareReader
 import app.hapi.companion.feature.share.ShareInbox
@@ -123,6 +128,31 @@ class AppGraph(context: Context) {
 
     /** Language choice (B-M5a: applied via per-app locales; Settings writes it). */
     val languagePrefs: LanguagePrefs = LanguagePrefs(appContext.hapiDataStore)
+
+    /**
+     * Display preferences (P2 Display subpage): font scale + header metadata
+     * + session-list preferences, defaults mirroring the web `/settings/display`
+     * hooks. Same app-wide store as theme/language (web localStorage twin).
+     */
+    val displayPrefs: DisplayPrefs = DataStoreDisplayPrefs(appContext.hapiDataStore)
+
+    /**
+     * Chat preferences (P2 Chat subpage): composer Enter behavior, the
+     * reasoning/tool-card collapse defaults, and the two surface-color
+     * presets — the web `/settings/chat` twins. Same app-wide store as
+     * theme/language/display; MainActivity feeds the composition locals.
+     */
+    val chatPrefs: ChatPrefs = DataStoreChatPrefs(appContext.hapiDataStore)
+
+    /**
+     * Eagerly-cached metadata gates for the chat headers (appLanguage
+     * precedent): each session's ChatViewModel combines this flow so its
+     * header subtitle re-renders when a Display switch flips, without each
+     * nav entry scoping its own read.
+     */
+    val sessionHeaderMetadata: StateFlow<SessionHeaderMetadata> = displayPrefs.settings
+        .map { it.headerMetadata }
+        .stateIn(scope, SharingStarted.Eagerly, SessionHeaderMetadata())
 
     /**
      * Eagerly-cached language for non-composable surfaces (B-M5a): FCM

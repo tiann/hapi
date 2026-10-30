@@ -19,9 +19,9 @@ import java.time.LocalDate
  * Compile-checked previews doubling as visual regressions for the B-M4e
  * dashboards: stat tiles, the daily bar chart, the ranked bar list, and the
  * storage donut — light, dark, and OLED — plus the P2 settings hub (owner and
- * non-owner gating), the General subpage it drills into, and the expressive
- * choice dialogs that subpage opens (theme swatches in light and dark,
- * language cards without swatches).
+ * non-owner gating), the General subpage it drills into, the Display subpage
+ * (session-list prefs, metadata switches, font tiers), and the Chat subpage
+ * (Enter behavior, collapse defaults, surface-color presets).
  */
 
 private fun bucket(
@@ -174,6 +174,53 @@ private fun SettingsHubNonOwnerPreview() {
     }
 }
 
+@Preview(name = "Settings display", showBackground = true, heightDp = 1700)
+@Composable
+private fun SettingsDisplayPreview() {
+    HapiTheme(darkTheme = false, dynamicColor = false) {
+        Surface {
+            SettingsDisplayContent(
+                settings = DisplaySettings(
+                    sessionPreviewLimit = 12,
+                    showActiveSessionsOnly = true,
+                    sessionListStatusMode = SessionListStatusMode.DETAILED,
+                    headerMetadata = SessionHeaderMetadata(createdAt = true),
+                    fontScale = AppFontScale.L,
+                ),
+                onSetSessionPreviewLimit = {},
+                onSetShowActiveSessionsOnly = {},
+                onSetPinInProgressSessions = {},
+                onSetSessionListStatusMode = {},
+                onSetFontScale = {},
+                onSetHeaderMetadata = {},
+                onBack = {},
+            )
+        }
+    }
+}
+
+@Preview(name = "Settings chat", showBackground = true, heightDp = 1100)
+@Composable
+private fun SettingsChatPreview() {
+    HapiTheme(darkTheme = false, dynamicColor = false) {
+        Surface {
+            SettingsChatContent(
+                settings = ChatSettings(
+                    enterBehavior = ComposerEnterBehavior.SEND,
+                    reasoningCollapsed = false,
+                    toolGroupBackground = ChatSurfaceColor.SOFT_BLUE,
+                ),
+                onSetEnterBehavior = {},
+                onSetReasoningCollapsed = {},
+                onSetToolCardsCollapsed = {},
+                onSetToolGroupBackground = {},
+                onSetUserMessageBackground = {},
+                onBack = {},
+            )
+        }
+    }
+}
+
 @Preview(name = "Settings general", showBackground = true, heightDp = 1200)
 @Composable
 private fun SettingsGeneralPreview() {
@@ -193,67 +240,5 @@ private fun SettingsGeneralPreview() {
                 onBack = {},
             )
         }
-    }
-}
-
-@Preview(name = "Theme choice dialog", showBackground = true)
-@Composable
-private fun ThemeChoiceDialogPreview() {
-    HapiTheme(darkTheme = false, dynamicColor = false) {
-        ChoiceDialog(
-            title = "Theme",
-            options = ThemeMode.entries.map { mode ->
-                ChoiceOption(
-                    value = mode,
-                    label = mode.name.lowercase().replaceFirstChar { it.uppercase() },
-                    swatch = themeModeSwatch(mode),
-                )
-            },
-            selected = ThemeMode.DARK,
-            onSelect = {},
-            onDismiss = {},
-            dismissLabel = "Cancel",
-        )
-    }
-}
-
-@Preview(name = "Theme choice dialog · dark", showBackground = true, backgroundColor = 0xFF1B1B1F)
-@Composable
-private fun ThemeChoiceDialogDarkPreview() {
-    HapiTheme(darkTheme = true, dynamicColor = false) {
-        ChoiceDialog(
-            title = "Theme",
-            options = ThemeMode.entries.map { mode ->
-                ChoiceOption(
-                    value = mode,
-                    label = mode.name.lowercase().replaceFirstChar { it.uppercase() },
-                    swatch = themeModeSwatch(mode),
-                )
-            },
-            selected = ThemeMode.OLED,
-            onSelect = {},
-            onDismiss = {},
-            dismissLabel = "Cancel",
-        )
-    }
-}
-
-@Preview(name = "Language choice dialog", showBackground = true)
-@Composable
-private fun LanguageChoiceDialogPreview() {
-    HapiTheme(darkTheme = false, dynamicColor = false) {
-        ChoiceDialog(
-            title = "App language",
-            options = listOf(
-                ChoiceOption(value = AppLanguage.SYSTEM, label = "Follow system"),
-                ChoiceOption(value = AppLanguage.ENGLISH, label = "English"),
-                ChoiceOption(value = AppLanguage.SIMPLIFIED_CHINESE, label = "简体中文"),
-                ChoiceOption(value = AppLanguage.RUSSIAN, label = "Русский"),
-            ),
-            selected = AppLanguage.ENGLISH,
-            onSelect = {},
-            onDismiss = {},
-            dismissLabel = "Cancel",
-        )
     }
 }

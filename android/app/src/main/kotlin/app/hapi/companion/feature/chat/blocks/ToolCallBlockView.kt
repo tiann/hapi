@@ -30,9 +30,11 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
 import app.hapi.companion.feature.chat.LocalChatInteractions
+import app.hapi.companion.feature.chat.LocalChatSettings
 import app.hapi.companion.feature.chat.permissions.PermissionVerdictLabel
 import app.hapi.companion.feature.chat.permissions.PermissionVerdicts
 import app.hapi.companion.ui.theme.HapiTheme
+import app.hapi.companion.ui.theme.LocalHapiTypeStyles
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.ChatToolCall
 import app.hapi.protocol.chat.ToolCallBlock
@@ -58,7 +60,16 @@ fun ToolCallBlockView(block: ToolCallBlock, basePath: String?, modifier: Modifie
     val planProposal = isPlanProposalTool(tool.name)
     // An output-first placeholder can acquire its real tool name later. Open a
     // newly recognized plan, but retain explicit folding across input updates.
-    var expanded by rememberSaveable(block.id, planProposal) { mutableStateOf(planProposal) }
+    // The *initial* fold follows the P2 Chat `toolCardsCollapsed` preference
+    // (default keeps plans expanded — web `codex-exploration-collapsed`'s
+    // nearest Android surface is this plan card, the only inline-foldable
+    // tool content; groups and ordinary calls open the inspector).
+    // Read outside the initializer: the rememberSaveable lambda is not
+    // composable, and only the *initial* fold follows the preference anyway.
+    val chatSettings = LocalChatSettings.current
+    var expanded by rememberSaveable(block.id, planProposal) {
+        mutableStateOf(planProposal && !chatSettings.toolCardsCollapsed)
+    }
 
     Surface(
         shape = RoundedCornerShape(12.dp),
@@ -135,7 +146,7 @@ internal fun ToolSummaryRow(
             Column(Modifier.weight(1f)) {
                 Text(presentation.title, style = MaterialTheme.typography.bodyMedium, maxLines = if (stacked) 2 else 1, overflow = TextOverflow.Ellipsis)
                 presentation.subtitle?.let {
-                    Text(it, style = app.hapi.companion.ui.theme.HapiTypography.caption,
+                    Text(it, style = LocalHapiTypeStyles.current.caption,
                         color = MaterialTheme.hapi.hint, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
             }

@@ -21,6 +21,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
+import app.hapi.companion.feature.chat.LocalChatSettings
 import app.hapi.companion.ui.markdown.Markdown
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.companion.ui.theme.hapi
@@ -34,12 +35,22 @@ fun AgentTextBlockView(block: AgentTextBlock, modifier: Modifier = Modifier) {
 }
 
 /**
- * Extended thinking: collapsed to a subdued one-liner by default, expands in
- * place to the full reasoning markdown (still subdued — it is meta-content).
+ * Extended thinking: folded to a subdued one-liner by default (the P2 Chat
+ * `reasoningCollapsed` preference — Android ships collapsed, the web twin
+ * only auto-expands reasoning while it streams), expands in place to the full
+ * reasoning markdown (still subdued — it is meta-content). The fold is
+ * [rememberSaveable] per block, so a manual toggle survives recomposition and
+ * config changes within the session; only the *initial* fold follows the
+ * preference (the web keeps per-card state in memory only).
  */
 @Composable
 fun AgentReasoningBlockView(block: AgentReasoningBlock, modifier: Modifier = Modifier) {
-    var expanded by rememberSaveable(block.id) { mutableStateOf(false) }
+    // Read outside the initializer: the rememberSaveable lambda is not
+    // composable, and only the *initial* fold follows the preference anyway.
+    val chatSettings = LocalChatSettings.current
+    var expanded by rememberSaveable(block.id) {
+        mutableStateOf(!chatSettings.reasoningCollapsed)
+    }
     val hint = MaterialTheme.hapi.hint
 
     Column(
