@@ -7,10 +7,15 @@ React Mini App / PWA for monitoring and controlling hapi sessions.
 - Session list with status, pending approvals, todos, and summaries.
 - Chat view with streaming updates and message sending.
 - Permission approval and denial workflows.
+- Codex `request_user_input` choices honor `isOther`: **None of the above**
+  focuses optional notes, supports empty notes, and preserves the canonical
+  wire value across languages. Recorded other answers and notes remain visible
+  in live and historical cards; Pi/MCP forms without the flag are unchanged.
 - Permission mode and model selection.
 - Machine list and remote session spawn.
 - File browser and git status/diff views.
 - PWA install prompt and offline banner.
+- Optional unread-session count on the Windows taskbar when installed as an Edge/Chrome PWA (toggleable in Display settings; off by default).
 
 ## Runtime behavior
 
@@ -18,6 +23,7 @@ React Mini App / PWA for monitoring and controlling hapi sessions.
 - When opened in a normal browser, you can log in with `CLI_API_TOKEN:<namespace>` (or `CLI_API_TOKEN` for the default namespace).
 - The login screen includes a top-right hub picker; if unset, the app uses the same origin it was loaded from.
 - Live updates come from the hub via SSE.
+- Session `@` suggestions require conversation content, including untitled conversations. Names and directory labels affect display/search, not eligibility; empty stubs stay excluded. See the [session list behavior guide](../docs/guide/session-list.md) for search and picker rules.
 
 ## Routes
 
@@ -30,6 +36,7 @@ See `src/router.tsx` for route definitions.
 - `/sessions/$sessionId/files` - File browser with git status.
 - `/sessions/$sessionId/file` - File viewer with diff support.
 - `/sessions/$sessionId/terminal` - Terminal interface.
+- `/browse` - Workspace browser, enabled by the runner's configured workspace roots.
 - `/share` - Share-target landing (Web Share Target POST → `?id=`, or native `/share#url=&text=&title=`).
 - `/settings` - Settings category hub (mobile) and responsive master-detail shell.
 - `/settings/general` - Language preferences.
@@ -38,6 +45,8 @@ See `src/router.tsx` for route definitions.
 - `/settings/voice` - Everyday voice assistant preferences.
 - `/settings/voice/voices` - Full-page voice picker.
 - `/settings/voice/advanced` - Voice persona, tuning, and diagnostics.
+- `/settings/machines` - Machine management and runner status.
+- `/settings/storage` - SQLite storage sizes for the hub owner.
 - `/settings/usage` - Cache-aware token usage dashboard for the hub owner.
 - `/settings/about` - Application links and version information.
 
@@ -49,21 +58,38 @@ See `src/router.tsx` for route definitions.
 - Session title from name, summary, or path.
 - Todo progress display.
 - Pending permission request count.
-- Agent flavor label (claude/codex/gemini).
-- Model mode display.
+- Agent name and model display.
+- Metadata search with relevance ranking, wildcard matching, and date/unread/machine filters.
+- Stable user-input ordering across sessions and machine/project groups; agent output and status updates do not reorder ordinary rows.
+- Machine/project grouping, pinned and in-progress sections, and configurable collapsed previews.
+
+### Session title lock
+
+The rename dialog has a per-session lock beside the title input. New and existing
+sessions are unlocked by default. Saving a manual name does not automatically lock
+it: agents may still rename an unlocked session. Locking prevents agent title
+updates; users can still edit or generate a title and save it while locked.
+Save applies the title and lock together; Cancel discards both changes. Unlocking
+allows future agent title updates without immediately changing the current title.
+The Hub persists and enforces the lock across clients, restarts, and resume.
 
 ### Chat interface (`src/components/SessionChat.tsx`)
 
 - Message thread with infinite scroll.
 - Composer for sending messages.
-- Permission mode toggle (default/acceptEdits/auto/bypassPermissions/plan).
-- Model selection (default/sonnet/sonnet[1m]/opus/opus[1m]).
-- Session abort and mode switch controls.
+- Permission mode and model selection for supported agents.
+  Cursor Auto uses CLI Auto for new/resumed sessions configured with Auto. Switching a live session to Auto when ACP does not advertise a literal Auto option relaunches the Cursor ACP process in place under `--model auto` while preserving the hub session id.
+- Session abort and handoff controls.
+- Codex **Continue planning** hides the current proposal's action menu locally
+  and focuses the composer without sending a message or replacing its draft.
+  The plan document remains readable; recycled cards stay dismissed and new
+  proposals get fresh action menus.
 - Context size display.
 - Per-session scratchlist (`src/components/AssistantChat/ScratchlistPanel.tsx`)
   - Workbench panel for held notes/drafts; **distinct from the queue**.
   - Add/delete/reorder entries; promote to composer (copy) or queue (send).
-  - Persists across reloads via `localStorage` keyed per session.
+  - Entries and attachments saved on the hub and synced across devices.
+  - Reordering affects only the current view and resets when entries refresh.
   - Keyboard shortcut: Ctrl/Cmd+Shift+S to focus the add-input.
 
 ### File browser (`src/routes/sessions/files.tsx`)
@@ -80,12 +106,12 @@ See `src/router.tsx` for route definitions.
 ### Terminal (`src/routes/sessions/terminal.tsx`)
 
 - Remote terminal via xterm.js
-- Real-time via Socket.IO
+- Real-time via Socket.IO `/terminal`
 - Resize handling
 
 ### Voice assistant
 
-- ElevenLabs integration (@elevenlabs/react)
+- ElevenLabs (@elevenlabs/react), Gemini Live, and Qwen Realtime backends
 - Real-time voice control
 - Standard and realtime composer dictation with provider capability selection
 
@@ -94,10 +120,23 @@ See `src/router.tsx` for route definitions.
 Modular session creation:
 
 - Machine selector
-- Directory input with recent paths
+- Directory input with recent paths. The path tail is revealed after loading or selecting a path and after leaving the editor. Unfocused inputs support horizontal touch scrolling; focused inputs retain native editing and text selection.
 - Agent type selector
 - Model selector
-- Permission mode toggle (YOLO mode)
+- Per-agent permission, effort, and collaboration controls when supported
+
+### First-User-Experience (FUE)
+
+For a new, non-essential feature whose affordance would otherwise be hard to
+discover, consider the existing FUE primitive rather than a permanent UI block.
+Optional, not a requirement for every feature or a reason to expand a bug fix.
+
+- `src/lib/use-fue.ts`: `useFue(featureId)` returns `{ status, engage, dismiss }`; acknowledgement is isolated per feature in `hapi.fue.v1.<featureId>` localStorage keys.
+- `src/components/Fue.tsx`: `FueDot` marks the affordance; `FueCallout` explains it while `status === 'engaging'`.
+- Dismissal requires an affirmative user action ("Got it"), never an auto-timeout.
+- The FUE dot and feature-specific badges/counters are mutually exclusive; onboarding wins until acknowledged.
+- Opt in per feature; skip the wrapper if an upstream component already supplies onboarding.
+- Working example: `ScratchlistToggleButton` in `src/components/AssistantChat/ComposerButtons.tsx`. Use the source rather than maintaining a copied example here.
 
 ## Authentication
 

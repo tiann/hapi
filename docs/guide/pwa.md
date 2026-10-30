@@ -2,6 +2,10 @@
 
 HAPI's web interface is a fully-featured PWA that can be installed on your phone for a native app-like experience.
 
+The web app and PWA are free and full-featured. This page
+covers browser installation. For the paid iOS and Android apps, see
+[Native apps (iOS / Android)](./native-apps.md).
+
 ## What is PWA?
 
 A Progressive Web App (PWA) is a web application that can be installed on your device and works like a native app:
@@ -73,6 +77,10 @@ On Android, HAPI appears in the system share sheet. When you share content to HA
 3. The app is then redirected (303) to the share picker, which reads the stored content
 
 This lets you share images, PDFs, text, and other files directly into a session from any app.
+The share-target session picker starts with recent active sessions; typing a
+query or choosing a date range searches the full snapshot. See the [session
+list behavior guide](./session-list.md#share-target-picker) for its ordering
+and matching rules.
 
 ### Native / deep-link ingest
 
@@ -121,13 +129,23 @@ HAPI supports push notifications to alert you when agents need attention.
 | Ready | Agent finished and awaits input |
 | Task completed / Task failed | A background task finishes (success or failure) |
 
-### Native Push via FCM
+### Native app notifications
 
-In addition to Web Push, the hub can send notifications through Firebase Cloud Messaging (FCM) to native companion apps on Android and Wear OS. When FCM is configured and a native device is registered for your namespace, the companion app is treated as the canonical notification surface — if FCM already delivered a notification, the hub skips the Web Push duplicate so you only get one alert. See the [native companion API contract](../api/native-companion-contract.md) for setup details.
+The [native Android and iOS apps](./native-apps.md#notifications) use FCM and
+APNs. App Store and Google Play builds use encrypted push relay delivery by default; private
+builds need matching provider configuration. If a native provider accepts a
+notification for any device in your namespace, the hub skips the Web Push
+duplicate for that dispatch. Missing registrations or failed sends retain the
+Web Push fallback. Provider acceptance is not a handset receipt. See
+[Native app notifications](./notifications.md#native-app-notifications).
 
 ::: tip
 If push notifications don't work in your region (e.g., FCM unavailable), use [Telegram integration](./notifications.md#telegram-setup) instead.
 :::
+
+### Windows taskbar badge
+
+When HAPI is installed as a PWA from Microsoft Edge or Chrome on Windows, users can show the number of sessions with activity newer than the local last-seen watermark on its taskbar icon. The setting is disabled by default because some Edge/Windows configurations render the same host badge as overlapping layers, with one layer offset and clipped by the taskbar. Use Settings > Display > Session list > Taskbar unread badge to opt in or out for this PWA. The badge is updated while the PWA has a current session snapshot; it is not shown for a normal browser tab, and the read state remains local to that browser/PWA profile.
 
 ## Managing Your PWA
 

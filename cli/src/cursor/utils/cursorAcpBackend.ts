@@ -1,5 +1,6 @@
 import { basename, join } from 'node:path';
 import { homedir } from 'node:os';
+import { cursorSpawnModelId } from '@hapi/protocol';
 import { AcpSdkBackend } from '@/agent/backends/acp';
 import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
 
@@ -11,12 +12,6 @@ function filterEnv(env: NodeJS.ProcessEnv): Record<string, string> {
         }
     }
     return result;
-}
-
-function isDefaultSpawnModel(model: string | null | undefined): boolean {
-    if (!model) return true;
-    const normalized = model.trim().toLowerCase();
-    return normalized === 'auto' || normalized === 'default' || normalized === 'default[]';
 }
 
 export type CursorAcpBackendOptions = {
@@ -58,8 +53,9 @@ export function buildCursorAcpArgs(opts: Omit<CursorAcpBackendOptions, 'cwd'>): 
         }
     }
 
-    if (!isDefaultSpawnModel(opts.model)) {
-        args.push('--model', opts.model!.trim());
+    const spawnModel = cursorSpawnModelId(opts.model);
+    if (spawnModel) {
+        args.push('--model', spawnModel);
     }
 
     args.push('acp');

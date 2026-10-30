@@ -59,7 +59,7 @@ struct RemoteDirectoryBrowserView: View {
                         }
                     } else if let error = model.error {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(error).foregroundStyle(.red)
+                            Text(LocalizedNoticeMapper.map(error)).foregroundStyle(.red)
                             Button("Retry") {
                                 model.refresh()
                             }

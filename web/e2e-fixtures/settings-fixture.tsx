@@ -9,6 +9,8 @@ import {
     createRouter,
 } from '@tanstack/react-router'
 import '../src/index.css'
+import type { ApiClient } from '../src/api/client'
+import { AppContextProvider } from '../src/lib/app-context'
 import { I18nProvider } from '../src/lib/i18n-context'
 import SettingsLayout from '../src/routes/settings/layout'
 import SettingsHubPage from '../src/routes/settings'
@@ -55,9 +57,11 @@ const root = document.getElementById('root')
 if (root) {
     ReactDOM.createRoot(root).render(
         <React.StrictMode>
-            <I18nProvider>
-                <RouterProvider router={router} />
-            </I18nProvider>
+            <AppContextProvider value={{ api: {} as ApiClient, token: 'x.eyJucyI6ImRlZmF1bHQifQ.x', baseUrl: window.location.origin }}>
+                <I18nProvider>
+                    <RouterProvider router={router} />
+                </I18nProvider>
+            </AppContextProvider>
         </React.StrictMode>
     )
 }

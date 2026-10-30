@@ -1,7 +1,7 @@
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { shareTargetPathnameFromBase } from './src/lib/sharePath'
 
@@ -63,6 +63,24 @@ function getVendorChunkName(id: string): string | undefined {
     return undefined
 }
 
+function copyKaTeXFonts(): Plugin {
+    return {
+        name: 'copy-katex-fonts',
+        apply: 'build',
+        generateBundle() {
+            const fontsDir = resolve(__dirname, 'node_modules/katex/dist/fonts')
+            for (const fileName of readdirSync(fontsDir)) {
+                if (!/\.(?:ttf|woff|woff2)$/i.test(fileName)) continue
+                this.emitFile({
+                    type: 'asset',
+                    fileName: `assets/fonts/${fileName}`,
+                    source: readFileSync(resolve(fontsDir, fileName))
+                })
+            }
+        }
+    }
+}
+
 export default defineConfig({
     appType: 'spa',
     define: {
@@ -85,6 +103,7 @@ export default defineConfig({
     plugins: [
         react(),
         spaFallback(),
+        copyKaTeXFonts(),
         VitePWA({
             // User-controlled reload avoids mid-session surprise reloads (autoUpdate reloads all tabs).
             registerType: 'prompt',
@@ -96,13 +115,46 @@ export default defineConfig({
                 name: 'HAPI',
                 short_name: 'HAPI',
                 description: 'AI-powered development assistant',
-                theme_color: '#ffffff',
+                // An installed Android WebAPK stores theme_color once at install time and uses it
+                // as a fixed toolbar color, so any value here pins the status bar to one appearance.
+                // With none, Chrome falls back to white in light mode and black in dark mode. That
+                // follows the Android system uiMode, not the in-app appearance setting, so the bar
+                // and the app diverge while an appearance override is active. `undefined` is
+                // explicit because the plugin fills in its own #42b883 default otherwise, and the
+                // resulting "theme_color is missing" build warning is wrong: theme_color is
+                // optional for installability.
+                theme_color: undefined,
+                // Splash background stays light; only the status bar needed to become adaptive.
                 background_color: '#ffffff',
                 display: 'standalone',
                 orientation: 'portrait',
                 scope: base,
                 start_url: base,
                 icons: [
+                    {
+                        src: 'pwa-16x16.png',
+                        sizes: '16x16',
+                        type: 'image/png',
+                        purpose: 'any'
+                    },
+                    {
+                        src: 'pwa-24x24.png',
+                        sizes: '24x24',
+                        type: 'image/png',
+                        purpose: 'any'
+                    },
+                    {
+                        src: 'pwa-32x32.png',
+                        sizes: '32x32',
+                        type: 'image/png',
+                        purpose: 'any'
+                    },
+                    {
+                        src: 'pwa-48x48.png',
+                        sizes: '48x48',
+                        type: 'image/png',
+                        purpose: 'any'
+                    },
                     {
                         src: 'pwa-64x64.png',
                         sizes: '64x64',

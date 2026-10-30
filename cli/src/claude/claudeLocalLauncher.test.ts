@@ -39,13 +39,18 @@ function createSessionStub() {
     let metadata: Metadata = { path: '/tmp/test', host: 'localhost' }
     return {
         session: {
+            localPermissionBridge: { start: vi.fn(), stop: vi.fn(), onTranscript: vi.fn() },
             sessionId: 'test-session',
+            thinking: false,
+            localTurnStartedAt: 0,
+            onThinkingChange: vi.fn(),
             path: '/tmp/test',
             startedBy: 'terminal' as const,
             startingMode: 'local' as const,
             claudeEnvVars: {},
             claudeArgs: [],
             getModel: () => 'claude-opus-4-1',
+            getPermissionMode: () => 'default',
             mcpServers: [],
             allowedTools: [],
             hookSettingsPath: null,
@@ -84,12 +89,48 @@ describe('claudeLocalLauncher message filtering', () => {
         expect(getMetadata().summary?.text).toBe('Native title')
     })
 
+    it('clears thinking on exit and on an Esc interrupt, which fires no Stop hook', async () => {
+        const { session } = createSessionStub()
+        await claudeLocalLauncher(session as never)
+        expect(session.onThinkingChange).toHaveBeenCalledWith(false)
+
+        session.onThinkingChange.mockClear()
+        session.thinking = true
+        harness.scannerOnMessage!({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'keep going' } })
+        expect(session.onThinkingChange).not.toHaveBeenCalled()
+
+        harness.scannerOnMessage!({
+            type: 'user',
+            uuid: 'u2',
+            message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] }
+        })
+        expect(session.onThinkingChange).toHaveBeenCalledWith(false)
+    })
+
+    it('ignores an interrupt marker delivered after a newer turn started', async () => {
+        const { session } = createSessionStub()
+        await claudeLocalLauncher(session as never)
+        session.onThinkingChange.mockClear()
+        session.thinking = true
+        session.localTurnStartedAt = Date.parse('2026-10-27T10:00:05Z')
+
+        harness.scannerOnMessage!({
+            type: 'user',
+            uuid: 'u1',
+            timestamp: '2026-10-27T10:00:04Z',
+            message: { role: 'user', content: '[Request interrupted by user]' }
+        })
+        expect(session.onThinkingChange).not.toHaveBeenCalled()
+    })
+
     it('passes the current session model to the local Claude process', async () => {
         const { session } = createSessionStub()
 
         await claudeLocalLauncher(session as never)
 
         expect(harness.launches[0]).toMatchObject({ model: 'claude-opus-4-1' })
+        expect(session.localPermissionBridge.start).toHaveBeenCalledWith('test-session')
+        expect(session.localPermissionBridge.stop).toHaveBeenCalled()
     })
 
     it('converts Claude Code ai-title metadata into a HAPI title', async () => {
@@ -185,6 +226,7 @@ describe('claudeLocalLauncher message filtering', () => {
         })
 
         expect(sentMessages).toHaveLength(0)
+        expect(session.localPermissionBridge.onTranscript).toHaveBeenCalledWith(expect.objectContaining({ isMeta: true }))
     })
 
     it('filters out isCompactSummary messages', async () => {
@@ -199,5 +241,51 @@ describe('claudeLocalLauncher message filtering', () => {
         })
 
         expect(sentMessages).toHaveLength(0)
+    })
+})
+
+describe('claudeLocalLauncher context window seed (#1858)', () => {
+    afterEach(() => {
+        harness.launches = []
+        harness.scannerOnMessage = null
+    })
+
+    function assistant(model: string, usage: Record<string, unknown> = { input_tokens: 1, output_tokens: 1 }) {
+        return { type: 'assistant', uuid: model, message: { role: 'assistant', model, content: [], usage } }
+    }
+
+    it('stamps 1M on main-model messages when launched with a [1m] alias, not on subagent models', async () => {
+        const { session, sentMessages } = createSessionStub()
+        session.getModel = () => 'opus[1m]'
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!(assistant('claude-opus-5'))
+        harness.scannerOnMessage!(assistant('claude-haiku-4-5-20251001'))
+
+        expect(sentMessages[0]).toMatchObject({ message: { usage: { context_window: 1_000_000 } } })
+        expect((sentMessages[1].message as { usage: Record<string, unknown> }).usage.context_window).toBeUndefined()
+    })
+
+    it('stamps nothing when the launch model is not a [1m] variant', async () => {
+        const { session, sentMessages } = createSessionStub()
+        session.getModel = () => 'opus'
+        await claudeLocalLauncher(session as never)
+
+        harness.scannerOnMessage!(assistant('claude-opus-5'))
+
+        expect((sentMessages[0].message as { usage: Record<string, unknown> }).usage.context_window).toBeUndefined()
+    })
+
+    it('follows an in-session model switch (PostModelSwitch to_model) and keeps explicit windows', async () => {
+        const { session, sentMessages } = createSessionStub()
+        session.getModel = () => 'opus'
+        await claudeLocalLauncher(session as never)
+
+        ;(session as { localContextModel?: string | null }).localContextModel = 'claude-sonnet-5-5[1m]'
+        harness.scannerOnMessage!(assistant('claude-sonnet-5-5'))
+        harness.scannerOnMessage!(assistant('claude-sonnet-5-5', { input_tokens: 1, output_tokens: 1, context_window: 500_000 }))
+
+        expect(sentMessages[0]).toMatchObject({ message: { usage: { context_window: 1_000_000 } } })
+        expect(sentMessages[1]).toMatchObject({ message: { usage: { context_window: 500_000 } } })
     })
 })

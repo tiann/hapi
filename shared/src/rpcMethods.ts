@@ -23,6 +23,13 @@ export const RPC_METHODS = {
     GetDirectoryTree: 'getDirectoryTree',
     UploadFile: 'uploadFile',
     DeleteUpload: 'deleteUpload',
+    WorkspaceReadFile: 'workspace-read-file',
+    WorkspaceListDirectory: 'workspace-list-directory',
+    WorkspaceStatFiles: 'workspace-stat-files',
+    WorkspaceGitStatus: 'workspace-git-status',
+    WorkspaceGitDiffNumstat: 'workspace-git-diff-numstat',
+    WorkspaceGitDiffFile: 'workspace-git-diff-file',
+    WorkspaceRipgrep: 'workspace-ripgrep',
     Ripgrep: 'ripgrep',
     Difftastic: 'difftastic',
     Bash: 'bash',
@@ -36,20 +43,39 @@ export const RPC_METHODS = {
     ListPiModels: 'listPiModels',
     ListPiSessions: 'listPiSessions',
     ListOpencodeModels: 'listOpencodeModels',
+    ListOpencodeModelVariants: 'listOpencodeModelVariants',
+    ListOpencodeSessions: 'listOpencodeSessions',
     ListOpencodeModelsForCwd: 'listOpencodeModelsForCwd',
     ListGrokModelsForCwd: 'listGrokModelsForCwd',
     ListGrokModels: 'listGrokModels',
     ListGrokReasoningEffortOptions: 'listGrokReasoningEffortOptions',
     ListCopilotModelsForCwd: 'listCopilotModelsForCwd',
     ListCopilotModels: 'listCopilotModels',
+    ListKimiModelsForCwd: 'listKimiModelsForCwd',
+    ListKimiModels: 'listKimiModels',
+    ListDshModels: 'listDshModels',
+    ListDshModelsForMachine: 'listDshModelsForMachine',
     ListOpencodeReasoningEffortOptions: 'listOpencodeReasoningEffortOptions',
     ListAgyModels: 'listAgyModels',
+    ListClaudeModels: 'listClaudeModels',
     /** Deliver one queued message into the active Pi turn (native steer). */
     SteerQueuedMessage: 'steer-queued-message',
     ForkConversation: 'fork-conversation',
     RewindConversation: 'rewind-conversation',
+    ClearConversation: 'clear-conversation',
+    ImplementCodexPlan: 'implement-codex-plan',
 } as const
 
 export const RPC_TARGET_MISSING_ERROR_CODE = 'rpc_target_missing' as const
+
+/**
+ * Thrown by a permission handler's handleMissingPendingResponse when a
+ * Permission RPC response arrives for a request the CLI no longer has
+ * pending (already answered, or canceled on the agent side). Shared so the
+ * hub can match on the specific message rather than treating any error on
+ * this RPC method as "not found" — see RpcGateway.approvePermission/
+ * denyPermission.
+ */
+export const PERMISSION_REQUEST_NOT_FOUND_MESSAGE = 'Permission request not found or already resolved' as const
 
 export type RpcMethod = typeof RPC_METHODS[keyof typeof RPC_METHODS]

@@ -1,3 +1,4 @@
+import { formatDuration } from '@/chat/presentation'
 import type { RoundModelUsage, RoundSummary, UsageData } from '@/chat/types'
 
 export type MessageMetadataProps = {
@@ -38,7 +39,9 @@ function getRoundUsage(summary: RoundSummary): UsageData | undefined {
         input_tokens: total.input_tokens + (usage.inputTokens ?? 0),
         output_tokens: total.output_tokens + (usage.outputTokens ?? 0),
         cache_creation_input_tokens: (total.cache_creation_input_tokens ?? 0) + (usage.cacheCreationInputTokens ?? 0),
-        cache_read_input_tokens: (total.cache_read_input_tokens ?? 0) + (usage.cacheReadInputTokens ?? 0)
+        cache_read_input_tokens: total.cache_read_input_tokens === undefined && usage.cacheReadInputTokens === undefined
+            ? undefined
+            : (total.cache_read_input_tokens ?? 0) + (usage.cacheReadInputTokens ?? 0)
     }), { input_tokens: 0, output_tokens: 0 })
 }
 
@@ -48,29 +51,39 @@ function buildRoundSummaryLabels(summary: RoundSummary, fallbackModel?: string |
     const model = models.length > 0 ? models.join(', ') : fallbackModel
     if (model) parts.push(`${models.length > 1 ? 'Models' : 'Model'}: ${model}`)
 
-    const usage = getRoundUsage(summary)
-    if (usage) {
-        const input = usage.input_tokens
+    const isCodex = summary.provider === 'codex'
+    const usage = isCodex && summary.usage ? summary.usage : getRoundUsage(summary)
+    if (usage && (!isCodex || (Number.isSafeInteger(usage.input_tokens) && usage.input_tokens >= 0
+        && Number.isSafeInteger(usage.output_tokens) && usage.output_tokens >= 0))) {
+        // Codex input already includes cache hits; Claude reports them separately.
+        const input = isCodex ? usage.input_tokens : usage.input_tokens
             + (usage.cache_creation_input_tokens ?? 0)
             + (usage.cache_read_input_tokens ?? 0)
         const total = input + usage.output_tokens
         parts.push(`Tokens: ${formatCompactTokenCount(total)} (${formatCompactTokenCount(input)} in · ${formatCompactTokenCount(usage.output_tokens)} out)`)
 
         const economics: string[] = []
-        if (input > 0 && (usage.cache_read_input_tokens ?? 0) > 0) {
-            economics.push(`Cache read: ${formatPercentage(((usage.cache_read_input_tokens ?? 0) / input) * 100)}% of input`)
+        const cached = usage.cache_read_input_tokens
+        const showCache = isCodex
+            ? Number.isSafeInteger(input) && input > 0
+                && cached !== undefined && Number.isSafeInteger(cached) && cached >= 0 && cached <= input
+            : input > 0 && (cached ?? 0) > 0
+        if (showCache) {
+            economics.push(`Cached input: ${formatPercentage(((cached ?? 0) / input) * 100)}%`)
         }
         if (summary.totalCostUsd !== undefined && summary.totalCostUsd > 0) {
-            economics.push(`API-rate est.: ${formatUsd(summary.totalCostUsd)}`)
+            economics.push(`Cost: ${formatUsd(summary.totalCostUsd)}`)
         }
         if (economics.length > 0) parts.push(economics.join(' · '))
     } else if (summary.totalCostUsd !== undefined && summary.totalCostUsd > 0) {
-        parts.push(`API-rate est.: ${formatUsd(summary.totalCostUsd)}`)
+        parts.push(`Cost: ${formatUsd(summary.totalCostUsd)}`)
     }
 
     const round: string[] = []
-    if (summary.durationMs !== undefined && summary.durationMs >= 0) round.push(`${(summary.durationMs / 1000).toFixed(1)}s`)
-    if (summary.numTurns !== undefined && summary.numTurns > 0) round.push(`${summary.numTurns} internal turn${summary.numTurns === 1 ? '' : 's'}`)
+    if (summary.durationMs !== undefined && summary.durationMs >= 0) round.push(formatDuration(summary.durationMs))
+    if (summary.numTurns !== undefined && summary.numTurns > 0) {
+        round.push(`${summary.numTurns} turn${summary.numTurns === 1 ? '' : 's'}`)
+    }
     if (round.length > 0) parts.push(`Round: ${round.join(' · ')}`)
     return parts
 }
@@ -85,7 +98,7 @@ export function buildMessageMetadataLabels({ durationMs, usage, model, turnCount
     const isAggregated = typeof turnCount === 'number' && turnCount >= 2
 
     if (typeof durationMs === 'number' && durationMs >= 0) {
-        parts.push(`Duration: ${(durationMs / 1000).toFixed(1)}s`)
+        parts.push(`Duration: ${formatDuration(durationMs)}`)
     }
 
     const tier = usage?.service_tier

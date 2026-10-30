@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { MessagePrimitive, useAuiState } from '@assistant-ui/react'
 import { getEventPresentation } from '@/chat/presentation'
 import type { AgentEvent } from '@/chat/types'
@@ -5,6 +6,10 @@ import type { HappyChatMessageMetadata } from '@/lib/assistant-runtime'
 import { getConversationMessageAnchorId } from '@/chat/outline'
 import { MessageTimestamp } from '@/components/AssistantChat/messages/MessageTimestamp'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
+import { CodeBlock } from '@/components/CodeBlock'
+import { parseGoalStatusMessage } from '@/components/ToolCard/goalTools'
+import { GoalSummary } from '@/components/ToolCard/views/GoalView'
+import { useTranslation } from '@/lib/use-translation'
 
 function formatTokenDelta(event: AgentEvent | undefined): string | null {
     if (!event || event.type !== 'compact-summary') return null
@@ -15,18 +20,53 @@ function formatTokenDelta(event: AgentEvent | undefined): string | null {
     return parts.length === 2 ? `${parts[0]} → ${parts[1]} tokens` : `${parts[0]} tokens`
 }
 
+// Compaction summaries are long; keep them collapsed by default and let the
+// chevron reveal the body on demand. Toggle state is intentionally local and
+// non-persistent — revisiting a session collapses the card again.
+export function CompactSummaryCard({ delta, text }: { delta: string | null; text: string }) {
+    const [expanded, setExpanded] = useState(false)
+    return (
+        <div className="mx-auto max-w-[92%] rounded-lg border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-3 py-2">
+            <button
+                type="button"
+                aria-expanded={expanded}
+                onClick={() => setExpanded((v) => !v)}
+                className="flex w-full items-center gap-1.5 text-left text-xs text-[var(--app-hint)]"
+            >
+                <span aria-hidden="true">📦</span>
+                <span className="font-medium">Context compacted</span>
+                {delta ? <span className="font-normal">· {delta}</span> : null}
+                <MessageTimestamp className="text-[10px]" />
+                <svg
+                    aria-hidden="true"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    className={`ml-auto h-3.5 w-3.5 shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`}
+                >
+                    <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+            </button>
+            {expanded && text ? (
+                <div className="max-h-96 overflow-y-auto pr-1">
+                    <MarkdownRenderer standalone content={text} />
+                </div>
+            ) : null}
+        </div>
+    )
+}
+
 export function HappySystemMessage() {
+    const { t } = useTranslation()
     const role = useAuiState((s) => s.message.role)
     const messageId = useAuiState((s) => s.message.id)
     const text = useAuiState((s) => {
         if (s.message.role !== 'system') return ''
         return s.message.content[0]?.type === 'text' ? s.message.content[0].text : ''
     })
-    const icon = useAuiState((s) => {
+    const event = useAuiState((s) => {
         if (s.message.role !== 'system') return null
         const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
-        const event = custom?.kind === 'event' ? custom.event : undefined
-        return event ? getEventPresentation(event).icon : null
+        return custom?.kind === 'event' ? custom.event : undefined
     })
     const compactSummary = useAuiState((s) => {
         if (s.message.role !== 'system') return undefined
@@ -36,6 +76,27 @@ export function HappySystemMessage() {
 
     if (role !== 'system') return null
 
+    const icon = event ? getEventPresentation(event).icon : null
+    const goalMessage = event?.type === 'message' && typeof event.message === 'string' ? event.message : null
+    const goal = goalMessage !== null ? parseGoalStatusMessage(goalMessage) : null
+    if (goal && goalMessage !== null) {
+        return (
+            <MessagePrimitive.Root id={getConversationMessageAnchorId(messageId)} className="scroll-mt-4 py-1">
+                <section aria-label={t('session.status.goal')} className="mx-auto max-w-[92%] rounded-[20px] bg-[var(--app-tool-card-bg)] p-3 text-left">
+                    <div className="mb-2 flex items-center gap-2 text-sm font-medium text-[var(--app-fg)]">
+                        <span>{t('session.status.goal')}</span>
+                        <MessageTimestamp className="text-[10px] font-normal text-[var(--app-hint)]" />
+                    </div>
+                    <GoalSummary result={goal} surface="inline" />
+                    <details className="mt-3 min-w-0 text-xs text-[var(--app-hint)]">
+                        <summary className="cursor-pointer py-1">{t('tool.goal.raw')}</summary>
+                        <CodeBlock code={goalMessage} language="json" />
+                    </details>
+                </section>
+            </MessagePrimitive.Root>
+        )
+    }
+
     // Pi compaction summaries are real content, not status: render them as an
     // independent block (header with token delta + the summary markdown)
     // instead of the tiny centered status line used for other events.
@@ -43,19 +104,7 @@ export function HappySystemMessage() {
         const delta = formatTokenDelta(compactSummary)
         return (
             <MessagePrimitive.Root id={getConversationMessageAnchorId(messageId)} className="scroll-mt-4 py-1">
-                <div className="mx-auto max-w-[92%] rounded-lg border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-3 py-2">
-                    <div className="flex items-center gap-1.5 text-xs text-[var(--app-hint)]">
-                        <span aria-hidden="true">📦</span>
-                        <span className="font-medium">Context compacted</span>
-                        {delta ? <span className="font-normal">{delta}</span> : null}
-                        <MessageTimestamp className="text-[10px]" />
-                    </div>
-                    {text ? (
-                        <div className="max-h-96 overflow-y-auto pr-1">
-                            <MarkdownRenderer standalone content={text} />
-                        </div>
-                    ) : null}
-                </div>
+                <CompactSummaryCard delta={delta} text={text} />
             </MessagePrimitive.Root>
         )
     }

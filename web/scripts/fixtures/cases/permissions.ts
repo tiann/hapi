@@ -1,6 +1,67 @@
 import type { FixtureCase } from '../fixtureTypes'
 import { T0, wireMessage } from './support'
 
+const localQuestionInput = {
+    questions: [{ question: 'Which database?', header: 'Database', multiSelect: false, options: [
+        { label: 'SQLite', description: 'Local file' }, { label: 'Postgres', description: 'Server' }
+    ] }]
+}
+const localQuestionMessages = [
+    wireMessage({ id: 'local-user', seq: 1, createdAt: T0, content: {
+        role: 'user', content: { type: 'text', text: 'Choose a database.' }
+    } }),
+    wireMessage({ id: 'local-tool-call', seq: 2, createdAt: T0 + 1_000, content: {
+        role: 'agent', content: { type: 'output', data: {
+            type: 'assistant', uuid: 'local-tool-call', parentUuid: null,
+            message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_local_question', name: 'AskUserQuestion', input: localQuestionInput }] }
+        } }
+    } })
+]
+const localRequest = { tool: 'AskUserQuestion', toolCallId: 'toolu_local_question', arguments: localQuestionInput, createdAt: T0 + 1_100 }
+
+// Shared Codex provides a server request, not a transcript tool_use. These
+// messages are the lifecycle persisted by SharedCodexPermissions itself.
+const sharedQuestionInput = { threadId: 'thread', turnId: 'turn', itemId: 'call', questions: [{ id: 'choice', header: 'Choose', question: 'Which?', options: [
+    { label: 'A', description: 'A' }, { label: 'B', description: 'B' }
+] }] }
+const sharedRequest = { tool: 'request_user_input', toolCallId: 'call', arguments: sharedQuestionInput, createdAt: T0 + 1_100 }
+const sharedQuestionMessages = [
+    wireMessage({ id: 'shared-user', seq: 1, createdAt: T0, content: {
+        role: 'user', content: { type: 'text', text: 'Choose an option.' }
+    } }),
+    wireMessage({ id: 'shared-question', seq: 2, createdAt: T0 + 1_000, content: {
+        role: 'agent', content: { type: 'codex', data: {
+            type: 'tool-call', name: 'request_user_input', callId: 'call', input: sharedQuestionInput,
+            id: 'codex:thread:question:call:start'
+        } }
+    } })
+]
+const sharedQuestionResult = (status: 'resolved' | 'canceled') => wireMessage({
+    id: `shared-${status}`, seq: 3, createdAt: T0 + 5_000, content: {
+        role: 'agent', content: { type: 'codex', data: {
+            type: 'tool-call-result', callId: 'call', output: { status }, is_error: false,
+            id: `codex:thread:question:call:${status}`
+        } }
+    }
+})
+
+const otherQuestionInput = {
+    isBlocking: true,
+    questions: [{ id: 'choice', header: 'Choice', question: 'Which option?', isOther: true, options: [
+        { label: 'A', description: 'First choice' }, { label: 'B', description: 'Second choice' }
+    ] }]
+}
+const otherQuestionMessage = wireMessage({
+    id: 'other-question', seq: 2, createdAt: T0 + 1_000, content: {
+        role: 'agent', content: { type: 'codex', data: {
+            type: 'tool-call', name: 'request_user_input', callId: 'other-call', input: otherQuestionInput
+        } }
+    }
+})
+const otherQuestionRequest = {
+    tool: 'request_user_input', toolCallId: 'other-call', arguments: otherQuestionInput, createdAt: T0 + 1_100
+}
+
 /**
  * Permission requests are NOT messages: they live in session.agentState
  * (requests → completedRequests). A pending request whose tool_use message is
@@ -10,6 +71,77 @@ import { T0, wireMessage } from './support'
  * the oldest loaded message (web/src/chat/reducer.ts).
  */
 export const permissionCases: FixtureCase[] = [
+    {
+        name: 'permission-request-user-input-other-pending',
+        description: 'Codex isOther survives the pipeline without modifying the original options or inventing an answer.',
+        messages: [sharedQuestionMessages[0]!, otherQuestionMessage],
+        agentState: { requests: { 'other-request': otherQuestionRequest } }
+    },
+    ...[false, true].map((withNote): FixtureCase => {
+        const answers = { choice: { answers: ['None of the above', ...(withNote ? ['user_note: 自定义\n说明'] : [])] } }
+        return {
+            name: `permission-request-user-input-other-${withNote ? 'with-note' : 'without-note'}`,
+            description: 'Authoritatively recorded other answer, with an optional note; both result history and permission answers preserve canonical wire values. Not a locally inferred shared-session winner.',
+            messages: [sharedQuestionMessages[0]!, otherQuestionMessage, wireMessage({
+                id: 'other-result', seq: 3, createdAt: T0 + 5_000, content: {
+                    role: 'agent', content: { type: 'codex', data: {
+                        type: 'tool-call-result', callId: 'other-call', output: { answers }, is_error: false
+                    } }
+                }
+            })],
+            agentState: { requests: {}, completedRequests: { 'other-request': {
+                ...otherQuestionRequest, completedAt: T0 + 5_000, status: 'approved', answers
+            } } }
+        }
+    }),
+    {
+        name: 'permission-shared-pending',
+        description: 'requestUserInput without a native transcript item: CLI persists one question, permission state attaches without duplicating it.',
+        messages: sharedQuestionMessages,
+        agentState: { requests: { 'runtime:thread:number:1': sharedRequest } }
+    },
+    {
+        name: 'permission-shared-resolved',
+        description: 'Codex shared request resolved elsewhere: withdraw input, preserve neutral resolved status, never invent the winner or answers.',
+        messages: [...sharedQuestionMessages, sharedQuestionResult('resolved')],
+        agentState: { requests: {}, completedRequests: {
+            'runtime:thread:number:1': { ...sharedRequest, status: 'resolved', completedAt: T0 + 5_000 }
+        } }
+    },
+    {
+        name: 'permission-shared-canceled',
+        description: 'Disconnect withdraws a request-only shared question without claiming it was answered or losing its history.',
+        messages: [...sharedQuestionMessages, sharedQuestionResult('canceled')],
+        agentState: { requests: {}, completedRequests: {
+            'runtime:thread:number:1': { ...sharedRequest, status: 'canceled', completedAt: T0 + 5_000 }
+        } }
+    },
+    {
+        name: 'permission-local-question-pending',
+        description: 'A local permission has an independent request ID: attach to the existing native toolCallId, but submit answers using permission.id. Do not synthesize a duplicate card.',
+        messages: localQuestionMessages,
+        agentState: { controlledByUser: true, requests: { 'claude-local:reply-1': localRequest } }
+    },
+    {
+        name: 'permission-local-question-synthesized',
+        description: 'Before the native tool_use arrives, synthesize one local question card keyed by toolCallId, with the independent reply ID preserved.',
+        messages: localQuestionMessages.slice(0, 1),
+        agentState: { controlledByUser: true, requests: { 'claude-local:reply-1': localRequest } }
+    },
+    {
+        name: 'permission-local-question-completed',
+        description: 'Native confirmation completes the same local question card with actual answers; permission.id remains the original reply ID, not the tool_use ID.',
+        messages: [...localQuestionMessages, wireMessage({ id: 'local-result', seq: 3, createdAt: T0 + 5_000, content: {
+            role: 'agent', content: { type: 'output', data: {
+                type: 'user', uuid: 'local-result', parentUuid: 'local-tool-call',
+                toolUseResult: { ...localQuestionInput, answers: { 'Which database?': 'Postgres' } },
+                message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_local_question', content: 'The user answered: "Which database?"="Postgres".' }] }
+            } }
+        } })],
+        agentState: { controlledByUser: true, requests: {}, completedRequests: {
+            'claude-local:reply-1': { ...localRequest, status: 'approved', completedAt: T0 + 4_900, answers: { '0': ['Postgres'] } }
+        } }
+    },
     {
         name: 'permission-synthesized-pending',
         description: 'A pending agentState request with no matching tool_use in the (older) message window synthesizes a pending tool-call block: state pending, permission.status pending, input from request.arguments.',

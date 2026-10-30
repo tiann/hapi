@@ -26,6 +26,11 @@ export type CreateOrLoadMachineRequest = z.infer<typeof CreateOrLoadMachineReque
 
 export const CreateOrLoadSessionRequestSchema = z.object({
     id: z.string().uuid().optional(),
+    /**
+     * When true with `id`, bind a hub-preallocated stub (overwrite tag/metadata)
+     * instead of create/getOrCreate. Rejects non-stub rows (#1911 adopt).
+     */
+    adopt: z.boolean().optional(),
     tag: z.string().min(1),
     metadata: z.unknown(),
     agentState: z.unknown().nullable().optional(),
@@ -33,6 +38,14 @@ export const CreateOrLoadSessionRequestSchema = z.object({
     modelReasoningEffort: z.string().optional(),
     effort: z.string().optional(),
     machine: CreateOrLoadMachineRequestSchema.optional()
+}).superRefine((value, ctx) => {
+    if (value.adopt === true && !value.id) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'adopt requires id',
+            path: ['id'],
+        })
+    }
 })
 
 export type CreateOrLoadSessionRequest = z.infer<typeof CreateOrLoadSessionRequestSchema>
@@ -274,6 +287,46 @@ export type PiLocalSessionWithMessages = z.infer<typeof PiLocalSessionWithMessag
 export type ListPiSessionsRpcRequest = z.infer<typeof ListPiSessionsRpcRequestSchema>
 export type ListPiSessionsRpcResponse = z.infer<typeof ListPiSessionsRpcResponseSchema>
 
+export const OpencodeImportedMessageContentSchema = CodexImportedMessageSchema
+
+export const OpencodeImportedMessageSchema = z.object({
+    localId: z.string().min(1),
+    createdAt: z.number(),
+    content: OpencodeImportedMessageContentSchema
+})
+
+export const OpencodeLocalSessionSummarySchema = z.object({
+    id: z.string().min(1),
+    title: z.string(),
+    lastUserMessage: z.string().nullable().optional(),
+    cwd: z.string().nullable().optional(),
+    file: z.string().min(1),
+    modifiedAt: z.number()
+})
+
+export const OpencodeLocalSessionWithMessagesSchema = OpencodeLocalSessionSummarySchema.extend({
+    messages: z.array(OpencodeImportedMessageSchema)
+})
+
+export const MAX_OPENCODE_SESSION_IMPORTS = 200
+
+export const ListOpencodeSessionsRpcRequestSchema = z.object({
+    cwd: z.string().nullable().optional(),
+    sessionIds: z.array(z.string().min(1)).max(MAX_OPENCODE_SESSION_IMPORTS).optional()
+})
+
+export const ListOpencodeSessionsRpcResponseSchema = z.union([
+    z.object({ success: z.literal(true), sessions: z.array(z.union([OpencodeLocalSessionWithMessagesSchema, OpencodeLocalSessionSummarySchema])) }),
+    z.object({ success: z.literal(false), error: z.string() })
+])
+
+export type OpencodeImportedMessageContent = z.infer<typeof OpencodeImportedMessageContentSchema>
+export type OpencodeImportedMessage = z.infer<typeof OpencodeImportedMessageSchema>
+export type OpencodeLocalSessionSummary = z.infer<typeof OpencodeLocalSessionSummarySchema>
+export type OpencodeLocalSessionWithMessages = z.infer<typeof OpencodeLocalSessionWithMessagesSchema>
+export type ListOpencodeSessionsRpcRequest = z.infer<typeof ListOpencodeSessionsRpcRequestSchema>
+export type ListOpencodeSessionsRpcResponse = z.infer<typeof ListOpencodeSessionsRpcResponseSchema>
+
 export const SessionCollaborationModeRequestSchema = z.object({
     mode: CodexCollaborationModeSchema
 })
@@ -293,7 +346,9 @@ export const SessionModelRequestSchema = z.object({
             provider: z.string().trim().min(1),
             modelId: z.string().trim().min(1),
         }),
-    ]).nullable()
+    ]).nullable(),
+    /** Effort to apply together with the model, e.g. cleared when the new model does not offer it. */
+    effort: z.string().trim().min(1).nullable().optional()
 })
 
 export type SessionModelRequest = z.infer<typeof SessionModelRequestSchema>
@@ -321,13 +376,17 @@ export const SessionServiceTierRequestSchema = z.object({
 export type SessionServiceTierRequest = z.infer<typeof SessionServiceTierRequestSchema>
 
 export const RenameSessionRequestSchema = z.object({
-    name: z.string().min(1).max(255)
+    name: z.string().min(1).max(255).optional(),
+    titleLocked: z.boolean().optional()
+}).refine(value => value.name !== undefined || value.titleLocked !== undefined, {
+    message: 'name or titleLocked is required'
 })
 
 export type RenameSessionRequest = z.infer<typeof RenameSessionRequestSchema>
 
 export const UpdateSessionSummaryRequestSchema = z.object({
-    text: z.string().trim().min(1).max(255)
+    text: z.string().trim().min(1).max(255),
+    titleLocked: z.boolean().optional()
 })
 
 export type UpdateSessionSummaryRequest = z.infer<typeof UpdateSessionSummaryRequestSchema>
@@ -558,6 +617,18 @@ export type ForkConversationResponse = {
     sessionId: string
 }
 
+export const ImplementCodexPlanRequestSchema = z.object({
+    planId: z.string().min(1)
+})
+
+export type ImplementCodexPlanRequest = z.infer<typeof ImplementCodexPlanRequestSchema>
+
+export type ImplementCodexPlanResult = { ok: true } | {
+    ok: false
+    code: 'stale_plan' | 'unavailable' | 'indeterminate' | 'failed'
+    error: string
+}
+
 export const RewindConversationRequestSchema = z.object({
     messageLocalId: z.string().min(1)
 })
@@ -571,9 +642,21 @@ export type RewindConversationResponse = {
 /** CLI → hub RPC result for native fork (before HAPI child binding). */
 export type ForkConversationRpcResult = {
     nativeSessionId: string
+    /** Shared runtimes bind the child themselves; hub must not spawn another engine. */
+    sessionId?: string
     /** When true, hub must spawn with --fork-session (Claude). */
     forkSession?: boolean
 }
+
+/** Raw RPC response, including generic serialized handler failures. */
+export type ForkConversationRpcResponse = ForkConversationRpcResult | {
+    /** Serialized CLI handler failure returned through the generic RPC layer. */
+    error: string
+}
+
+export type RewindConversationErrorCode =
+    | 'ambiguous_native_boundary'
+    | 'ambiguous_native_boundary_fork_safe'
 
 export type RewindConversationRpcResult = {
     success: true
@@ -588,6 +671,7 @@ export type RewindConversationRpcResult = {
 } | {
     success: false
     error: string
+    code?: RewindConversationErrorCode
     /** Native state is unchanged, cancelled, or was restored exactly. */
     outcome: 'rejected' | 'cancelled' | 'source_restored'
 }
@@ -742,6 +826,50 @@ export type PathExistsResponse = {
 
 export type MachinePathsExistsResponse = PathExistsResponse
 
+/** Requests served by the long-lived runner for archived-session file access. */
+export type WorkspaceReadFileRequest = {
+    cwd: string
+    path: string
+    maxBytes?: number
+}
+
+export type WorkspaceListDirectoryRequest = {
+    cwd: string
+    path?: string
+}
+
+export type WorkspaceStatFilesRequest = {
+    cwd: string
+    paths: string[]
+}
+
+export type WorkspaceGitStatusRequest = {
+    cwd: string
+    timeout?: number
+}
+
+export type WorkspaceGitDiffNumstatRequest = {
+    cwd: string
+    staged?: boolean
+    timeout?: number
+}
+
+export type WorkspaceGitDiffFileRequest = {
+    cwd: string
+    filePath: string
+    staged?: boolean
+    timeout?: number
+}
+
+export type WorkspaceRipgrepRequest = {
+    cwd: string
+    args: string[]
+    fileSearch?: {
+        query: string
+        limit: number
+    }
+}
+
 export type CodexModelSummary = {
     id: string
     displayName: string
@@ -777,11 +905,36 @@ export type OpencodeModelsResponse = {
 
 export type ListOpencodeModelsResponse = OpencodeModelsResponse
 
+/** Variant values keyed by `providerId/modelId` from the OpenCode server catalog. */
+export type OpencodeModelVariantsResponse = {
+    success: boolean
+    variants?: Record<string, string[]>
+    error?: string
+}
+
 export type GrokModelSummary = {
     modelId: string
     name?: string
     reasoningEfforts?: GrokReasoningEffortOption[]
 }
+
+export type DshModelSummary = {
+    modelId: string
+    name?: string
+}
+
+/**
+ * DeepSeek Harness model discovery. Model ids are opaque ACP config-option
+ * values — for dsh 0.2.x they are JSON-encoded `["provider","model"]` tuples —
+ * and must be sent back verbatim when switching.
+ */
+export type DshModelsResponse = {
+    success: boolean
+    availableModels?: DshModelSummary[]
+    currentModelId?: string | null
+    error?: string
+}
+export type ListDshModelsResponse = DshModelsResponse
 
 export type GrokReasoningEffortOption = {
     value: string
@@ -812,6 +965,22 @@ export type CopilotModelsResponse = {
 
 export type ListCopilotModelsResponse = CopilotModelsResponse
 
+export type KimiModelSummary = {
+    /** Kimi model alias as used by `--model` / `session/set_model`. */
+    modelId: string
+    name?: string
+    provider?: string
+}
+
+export type KimiModelsResponse = {
+    success: boolean
+    availableModels?: KimiModelSummary[]
+    currentModelId?: string | null
+    error?: string
+}
+
+export type ListKimiModelsResponse = KimiModelsResponse
+
 export type GrokReasoningEffortResponse = {
     success: boolean
     options?: GrokReasoningEffortOption[]
@@ -828,6 +997,10 @@ export type OpencodeReasoningEffortResponse = {
     success: boolean
     options?: OpencodeReasoningEffortOption[]
     currentValue?: string | null
+    /** Backend-side model the options belong to — lets clients detect a pending model switch. */
+    currentModelId?: string | null
+    /** Concrete backend model requested by the session, including a resolved Default selection. */
+    targetModelId?: string | null
     error?: string
 }
 
@@ -847,7 +1020,15 @@ export type ListAgyModelsResponse = AgyModelsResponse
 
 export type CursorModelSummary = OpencodeModelSummary
 
-export type CursorModelsResponse = OpencodeModelsResponse
+export type CursorModelsResponse = OpencodeModelsResponse & {
+    /**
+     * True when ACP advertised Cursor's parameterized model picker: bare model bases
+     * plus separate `fast` / `thought_level` config options. The ACP apply path
+     * expresses variant CLI skus through those options, so variant rows stay valid
+     * even when the catalog itself carries no bracket wire ids.
+     */
+    parameterized?: boolean
+}
 
 export type ListCursorModelsResponse = CursorModelsResponse
 
@@ -873,6 +1054,21 @@ export type PiModelsResponse = {
 }
 
 export type ListPiModelsResponse = PiModelsResponse
+
+/** One row of the `claude` CLI's own model picker, as reported by its `initialize` control response. */
+export type ClaudeModelSummary = {
+    /** What `claude --model` accepts: an alias that follows the family (`opus`) or a full model id. */
+    value: string
+    displayName?: string
+    /** Effort levels the model accepts: `[]` = no effort control, undefined = unknown. */
+    effortLevels?: string[]
+}
+
+export type ClaudeModelsResponse = {
+    success: boolean
+    availableModels?: ClaudeModelSummary[]
+    error?: string
+}
 
 export type PiCommandSummary = {
     name: string
@@ -938,4 +1134,44 @@ export type UsageSummaryResponse = {
     byAgent: UsageSummaryBucket[]
     byModel: UsageSummaryBucket[]
     updatedAt: number
+}
+
+/** A stretch an agent was working: from `thinking` turning on to it turning
+ *  off. `end` is null while the turn is still going. */
+export type AgentActivityTurn = {
+    start: number
+    end: number | null
+    endReason: 'idle' | 'session_end' | 'expired' | 'hub_restart' | null
+    startedBy: 'hub_prompt' | 'agent' | 'patch'
+}
+
+/** The agent waiting on the user inside a turn: a permission prompt or a
+ *  question. `end` is null while it is still waiting. */
+export type AgentActivityWait = {
+    start: number
+    end: number | null
+    kind: 'permission' | 'input'
+    tool: string
+}
+
+export type AgentActivitySession = {
+    id: string
+    flavor: string | null
+    /** The agent's own session id (Claude session, Codex thread, ...). */
+    agentSessionId: string | null
+    machineId: string | null
+    host: string | null
+    machineName: string | null
+    path: string | null
+    title: string | null
+    turns: AgentActivityTurn[]
+    waits: AgentActivityWait[]
+}
+
+/** GET /api/activity: when agents in the caller's namespace were working. */
+export type AgentActivityResponse = {
+    since: number
+    until: number
+    generatedAt: number
+    sessions: AgentActivitySession[]
 }

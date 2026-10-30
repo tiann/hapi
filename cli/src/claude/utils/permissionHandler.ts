@@ -5,6 +5,7 @@
  * Handles tool permission requests, responses, and state management.
  */
 
+import { buildAskUserQuestionUpdatedInput } from './askUserQuestionAnswers';
 import { logger } from "@/lib";
 import { SDKAssistantMessage, SDKMessage, SDKUserMessage } from "../sdk";
 import { PermissionResult } from "../sdk/types";
@@ -16,6 +17,7 @@ import { EnhancedMode, PermissionMode } from "../loop";
 import { getToolDescriptor } from "./getToolDescriptor";
 import { delay } from "@/utils/time";
 import { isObject } from "@hapi/protocol";
+import { PERMISSION_REQUEST_NOT_FOUND_MESSAGE } from "@hapi/protocol/rpcMethods";
 import {
     BasePermissionHandler,
     type PendingPermissionRequest,
@@ -98,48 +100,6 @@ function formatAskUserQuestionAnswers(answers: Record<string, string[]> | Record
     return rawJson
         ? `User answered:\n${body}\n\nRaw answers JSON:\n${rawJson}`
         : `User answered:\n${body}`;
-}
-
-function buildAskUserQuestionUpdatedInput(input: unknown, answers: Record<string, string[]> | Record<string, { answers: string[] }>): Record<string, unknown> {
-    // Normalize incoming answers (web sends Record<questionIndex, string[]>;
-    // codex pathway sends nested Record<id, { answers: string[] }>) into a
-    // single Record<index, string[]> shape we can iterate.
-    const indexedAnswers: Record<string, string[]> = {};
-    for (const [key, value] of Object.entries(answers)) {
-        if (Array.isArray(value)) {
-            indexedAnswers[key] = value;
-        } else if (value && typeof value === 'object' && 'answers' in value) {
-            indexedAnswers[key] = value.answers;
-        }
-    }
-
-    if (!isObject(input)) {
-        return { answers: {} };
-    }
-
-    // claude code 2.x's built-in AskUserQuestion tool expects
-    //   answers: Record<questionText, answerString>
-    // and joins multi-select answers with a comma; it then echoes them
-    // verbatim in the tool result (`mapToolResultToToolResultBlockParam`).
-    // Sending the index-keyed `string[]` shape we receive from the web
-    // makes claude's lookup miss every question, producing the empty
-    // "User has answered your questions: ." result that locks the turn.
-    const questions = Array.isArray(input.questions) ? input.questions : [];
-    const claudeShapedAnswers: Record<string, string> = {};
-    for (let i = 0; i < questions.length; i += 1) {
-        const q = questions[i];
-        if (!q || typeof q !== 'object') continue;
-        const questionText = (q as { question?: unknown }).question;
-        if (typeof questionText !== 'string' || questionText.length === 0) continue;
-        const selections = indexedAnswers[String(i)];
-        if (!selections || selections.length === 0) continue;
-        claudeShapedAnswers[questionText] = selections.join(',');
-    }
-
-    return {
-        ...input,
-        answers: claudeShapedAnswers
-    };
 }
 
 /**
@@ -360,6 +320,16 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
             // Set up abort signal handling
             const abortHandler = () => {
                 this.pendingRequests.delete(id);
+                // Mirrors cancelPendingRequests' session-level cancel path: without
+                // this, a per-request abort (e.g. Claude sending a
+                // control_cancel_request) leaves the request live in agentState, so
+                // a later answer still passes the hub's requests[id] check and
+                // reaches handleMissingPendingResponse below instead of being
+                // rejected up front (hapi#1735).
+                this.finalizeRequest(id, {
+                    status: 'canceled',
+                    reason: 'Permission request aborted'
+                });
                 reject(new Error('Permission request aborted'));
             };
             signal.addEventListener('abort', abortHandler, { once: true });
@@ -508,7 +478,15 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
     }
 
     protected handleMissingPendingResponse(_response: PermissionResponse): void {
-        logger.debug('Permission request not found or already resolved');
+        // Thrown (not just logged) so the RPC caller sees a real error instead
+        // of a silent no-op: RpcHandlerManager.handleRequest catches this and
+        // returns it as `{ error: message }`, which the hub's RpcGateway now
+        // turns into a 409 for the operator instead of accepting a doomed
+        // answer with no feedback (hapi#1735). The message is the shared
+        // PERMISSION_REQUEST_NOT_FOUND_MESSAGE constant so the hub can match
+        // on it specifically rather than treating any error here as "not found".
+        logger.debug(PERMISSION_REQUEST_NOT_FOUND_MESSAGE);
+        throw new Error(PERMISSION_REQUEST_NOT_FOUND_MESSAGE);
     }
 
     protected onResponseReceived(response: PermissionResponse): void {

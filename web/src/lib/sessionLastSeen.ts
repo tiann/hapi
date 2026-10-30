@@ -142,9 +142,115 @@ export function getSessionManualUnreadAt(sessionId: string): number | null {
     return typeof value === 'number' && Number.isFinite(value) ? value : null
 }
 
+/** One localStorage read/parse for bulk consumers such as the PWA badge. */
+export function getSessionManualUnreadSnapshot(): Readonly<Record<string, number>> {
+    return readManualUnreadStore()
+}
+
 /** One localStorage read/parse for bulk filters (e.g. unread-only lens). */
 export function getSessionLastSeenSnapshot(): Readonly<Record<string, number>> {
     return readStore()
+}
+
+type SessionReadStateInput = {
+    id: string
+    updatedAt: number
+    active?: boolean
+    thinking?: boolean
+}
+
+function isGenerating(session: SessionReadStateInput): boolean {
+    return session.active !== false && session.thinking === true
+}
+
+function latestSessionUpdates(sessions: Iterable<SessionReadStateInput>): Map<string, SessionReadStateInput> {
+    const latest = new Map<string, SessionReadStateInput>()
+    for (const session of sessions) {
+        if (!session.id || !Number.isFinite(session.updatedAt)) {
+            continue
+        }
+        const current = latest.get(session.id)
+        if (
+            current === undefined
+            || session.updatedAt > current.updatedAt
+            || (session.updatedAt === current.updatedAt && isGenerating(current) && !isGenerating(session))
+        ) {
+            latest.set(session.id, session)
+        }
+    }
+    return latest
+}
+
+function hasUnreadActivity(
+    session: SessionReadStateInput,
+    store: LastSeenStore,
+    manualUnreadStore: ManualUnreadStore
+): boolean {
+    const lastSeenAt = store[session.id]
+    const manualUnreadAt = manualUnreadStore[session.id]
+    return typeof manualUnreadAt === 'number' && Number.isFinite(manualUnreadAt)
+        || (!isGenerating(session)
+            && session.updatedAt > (typeof lastSeenAt === 'number' && Number.isFinite(lastSeenAt) ? lastSeenAt : 0))
+}
+
+/** Count unread sessions in the supplied list using one localStorage snapshot. */
+export function getUnreadSessionCount(sessions: Iterable<SessionReadStateInput>): number {
+    const latest = latestSessionUpdates(sessions)
+    const store = readStore()
+    const manualUnreadStore = readManualUnreadStore()
+    let count = 0
+    for (const session of latest.values()) {
+        if (hasUnreadActivity(session, store, manualUnreadStore)) {
+            count += 1
+        }
+    }
+    return count
+}
+
+/** Mark all supplied unread sessions as seen on this device. Returns changed count. */
+export function markAllSessionsSeen(sessions: Iterable<SessionReadStateInput>): number {
+    const latest = latestSessionUpdates(sessions)
+    if (latest.size === 0) {
+        return 0
+    }
+
+    const store = readStore()
+    const manualUnreadStore = readManualUnreadStore()
+    let count = 0
+    let seenChanged = false
+    let manualUnreadChanged = false
+
+    for (const session of latest.values()) {
+        if (!hasUnreadActivity(session, store, manualUnreadStore)) {
+            continue
+        }
+
+        count += 1
+        const currentSeenAt = store[session.id]
+        const nextSeenAt = Math.max(
+            typeof currentSeenAt === 'number' && Number.isFinite(currentSeenAt) ? currentSeenAt : 0,
+            session.updatedAt
+        )
+        if (store[session.id] !== nextSeenAt) {
+            store[session.id] = nextSeenAt
+            seenChanged = true
+        }
+        if (Object.prototype.hasOwnProperty.call(manualUnreadStore, session.id)) {
+            delete manualUnreadStore[session.id]
+            manualUnreadChanged = true
+        }
+    }
+
+    if (count === 0) {
+        return 0
+    }
+
+    const seenWritten = !seenChanged || writeStore(store)
+    const manualUnreadWritten = !manualUnreadChanged || writeManualUnreadStore(manualUnreadStore)
+    if (seenWritten || manualUnreadWritten) {
+        notifyStoreChanged()
+    }
+    return count
 }
 
 export function initializeSessionLastSeen(scope: string, sessions: Iterable<{ id: string; updatedAt: number }>): void {

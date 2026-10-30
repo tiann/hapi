@@ -8,8 +8,8 @@ type SessionTitleSource = {
 }
 
 /**
- * Real title for sidebar / @ mention — not path last-segment or id fallback.
- * Path-only husks are display labels, not reference targets (tiann/hapi#1506).
+ * Distinguish explicit title metadata from path / ID display fallbacks.
+ * Reference eligibility is based on conversation content, not this signal.
  */
 export function hasSessionTitleSignal(session: SessionTitleSource): boolean {
     const meta = session.metadata

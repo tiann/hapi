@@ -2,8 +2,8 @@ import Foundation
 import HapiProtocol
 
 /// `order` query of `GET /api/sessions`. The default (absent) order is the
-/// hub's ranked one (globalPinned → pinned → active → pending requests →
-/// recency); `updatedAt` switches to pure recency.
+/// hub's ranked one (globalPinned → pinned → user-input recency);
+/// `updatedAt` explicitly requests pure activity recency.
 public enum SessionsListOrder: String, Sendable {
     case updatedAt
 }
@@ -60,6 +60,26 @@ extension APIClient {
             .post,
             "/api/sessions/\(encodePathComponent(id))/reopen",
             body: EmptyRequestBody()
+        )
+    }
+
+    /// Create a new shared root; only the caller follows the returned ID.
+    public func clearConversation(id: String) async throws -> ResumeSessionResponse {
+        try await request(.post, "/api/sessions/\(encodePathComponent(id))/clear", body: EmptyRequestBody())
+    }
+
+    /// Shared Codex client action, NOT a tool approval. The CLI
+    /// validates the proposal, switches to Default and queues implementation.
+    /// Never emulate this with separate config/message requests or auto-retry
+    /// an unconfirmed result.
+    public func implementCodexPlan(sessionId: String, planId: String) async throws {
+        struct ImplementPlanRequest: Encodable {
+            let planId: String
+        }
+        try await requestVoid(
+            .post,
+            "/api/sessions/\(encodePathComponent(sessionId))/codex/plan/implement",
+            body: ImplementPlanRequest(planId: planId)
         )
     }
 

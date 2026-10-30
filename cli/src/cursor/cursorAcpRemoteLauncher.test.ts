@@ -10,6 +10,7 @@ const harness = vi.hoisted(() => ({
     loadSessionError: null as Error | null,
     newSessionError: null as Error | null,
     failSetConfigOption: false,
+    failFastConfigOption: false,
     supportsLoadSession: true,
     loadSessionCalled: false,
     newSessionCalled: false,
@@ -17,7 +18,7 @@ const harness = vi.hoisted(() => ({
     promptCalls: 0,
     prompts: [] as unknown[][],
     deferPrompt: null as Promise<void> | null,
-    deferSoftSteer: null as Promise<void> | null,
+    deferSoftSteer: null as Promise<string | null | void> | null,
     softSteerDispatchError: null as Error | null,
     deferSoftSteerDispatch: null as Promise<void> | null,
     promptErrors: [] as Error[],
@@ -26,6 +27,15 @@ const harness = vi.hoisted(() => ({
     promptStderrErrors: [] as Array<{ type: string; message: string; raw: string }>,
     releasePrompt: null as (() => void) | null,
     backendArgs: null as { command: string; args?: string[] } | null,
+    modelOptionValues: [
+        'default[]',
+        'composer-2.5[fast=true]',
+        'composer-2.5[fast=false]',
+        'gpt-5.3-codex[reasoning=medium,fast=false]',
+        'gpt-5.3-codex[reasoning=medium,fast=true]',
+        'cursor-grok-4.5-medium',
+        'cursor-grok-4.5-medium-fast',
+    ] as string[],
     setConfigOptionCalls: [] as Array<{ sessionId: string; configId: string; value: string }>,
     deferSetConfigOption: null as Promise<void> | null,
     releaseSetConfigOption: null as (() => void) | null,
@@ -34,7 +44,15 @@ const harness = vi.hoisted(() => ({
     stderrErrorHandler: null as ((error: { type: string; message: string; raw?: string }) => void) | null,
     disconnectError: null as Error | null,
     overlayCleanup: null as ReturnType<typeof vi.fn> | null,
-    agentActivityListener: null as ((thinking: boolean) => void) | null
+    agentActivityListener: null as ((thinking: boolean) => void) | null,
+    /** When set, the next backend.initialize() rejects once, then clears. */
+    failNextInitialize: null as Error | null,
+    /** When > 0, the next N backend.initialize() calls reject. */
+    failInitializeTimes: 0,
+    /** When set, the next backend.initialize() awaits this before completing. */
+    deferNextInitialize: null as Promise<void> | null,
+    /** Spawn flags passed to createCursorAcpBackend (newest last). */
+    spawnAutoReviewFlags: [] as boolean[]
 }));
 
 const legacyLauncher = vi.hoisted(() => vi.fn());
@@ -45,16 +63,37 @@ vi.mock('./cursorLegacyRemoteLauncher', () => ({
 
 vi.mock('./utils/cursorAcpBackend', () => ({
     CURSOR_ACP_REQUIRED_MESSAGE: 'Cursor ACP mode is required for new Cursor remote sessions.',
-    createCursorAcpBackend: vi.fn((opts?: { model?: string | null }) => {
+    createCursorAcpBackend: vi.fn((opts?: { model?: string | null; autoReview?: boolean }) => {
         const args = ['acp'];
         const model = opts?.model?.trim();
-        if (model && model !== 'auto' && model !== 'default' && model !== 'default[]') {
-            args.unshift('--model', model);
+        const spawn = !model
+            ? null
+            : (model === 'auto' || model === 'default' || model === 'default[]' ? 'auto' : model);
+        if (spawn) {
+            args.unshift('--model', spawn);
         }
+        if (opts?.autoReview) {
+            args.unshift('--auto-review');
+        }
+        harness.spawnAutoReviewFlags.push(Boolean(opts?.autoReview));
         harness.backendArgs = { command: 'agent', args };
         return {
             initialize: vi.fn(async () => {
                 harness.initializeAttempts += 1;
+                if (harness.failNextInitialize) {
+                    const error = harness.failNextInitialize;
+                    harness.failNextInitialize = null;
+                    throw error;
+                }
+                if (harness.failInitializeTimes > 0) {
+                    harness.failInitializeTimes -= 1;
+                    throw new Error('initialize failed');
+                }
+                if (harness.deferNextInitialize) {
+                    const deferred = harness.deferNextInitialize;
+                    harness.deferNextInitialize = null;
+                    await deferred;
+                }
                 if (harness.initializeError && harness.initializeAttempts === 1) {
                     harness.stderrErrorHandler?.({
                         type: 'model_not_found',
@@ -96,6 +135,9 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 if (harness.failSetConfigOption && configId === 'model-opt') {
                     throw new Error('set_config_option rejected');
                 }
+                if (harness.failFastConfigOption && configId === 'fast') {
+                    throw new Error('fast update rejected');
+                }
                 harness.setConfigOptionCalls.push({ sessionId, configId, value });
             }),
             pinSessionModelWireId: vi.fn(),
@@ -111,6 +153,12 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 currentModelId: 'composer-2.5[fast=true]'
             })),
             getConfigOptionByCategory: vi.fn((_sessionId: string, category: string) => {
+                if (category === 'fast' && harness.failFastConfigOption) {
+                    return {
+                        id: 'fast',
+                        options: [{ value: 'false' }, { value: 'true' }]
+                    };
+                }
                 if (category === 'mode') {
                     return {
                         id: 'mode-opt',
@@ -124,15 +172,7 @@ vi.mock('./utils/cursorAcpBackend', () => ({
                 if (category === 'model') {
                     return {
                         id: 'model-opt',
-                        options: [
-                            { value: 'default[]' },
-                            { value: 'composer-2.5[fast=true]' },
-                            { value: 'composer-2.5[fast=false]' },
-                            { value: 'gpt-5.3-codex[reasoning=medium,fast=false]' },
-                            { value: 'gpt-5.3-codex[reasoning=medium,fast=true]' },
-                            { value: 'cursor-grok-4.5-medium' },
-                            { value: 'cursor-grok-4.5-medium-fast' },
-                        ]
+                        options: harness.modelOptionValues.map((value) => ({ value }))
                     };
                 }
                 return undefined;
@@ -285,6 +325,16 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.loadSessionError = null;
         harness.newSessionError = null;
         harness.failSetConfigOption = false;
+        harness.failFastConfigOption = false;
+        harness.modelOptionValues = [
+            'default[]',
+            'composer-2.5[fast=true]',
+            'composer-2.5[fast=false]',
+            'gpt-5.3-codex[reasoning=medium,fast=false]',
+            'gpt-5.3-codex[reasoning=medium,fast=true]',
+            'cursor-grok-4.5-medium',
+            'cursor-grok-4.5-medium-fast',
+        ];
         harness.supportsLoadSession = true;
         harness.loadSessionCalled = false;
         harness.newSessionCalled = false;
@@ -309,6 +359,10 @@ describe('cursorAcpRemoteLauncher', () => {
         harness.disconnectError = null;
         harness.overlayCleanup = null;
         harness.agentActivityListener = null;
+        harness.failNextInitialize = null;
+        harness.failInitializeTimes = 0;
+        harness.deferNextInitialize = null;
+        harness.spawnAutoReviewFlags = [];
         legacyLauncher.mockClear();
         process.stdin.isTTY = false;
         process.stdout.isTTY = false;
@@ -559,6 +613,37 @@ describe('cursorAcpRemoteLauncher', () => {
         await runPromise;
     });
 
+    it('holds a soft steer that an abort cancels for explicit resolution', async () => {
+        let releasePrompt!: () => void;
+        let finishSoftSteer!: (stopReason: string) => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        harness.deferSoftSteer = new Promise((resolve) => { finishSoftSteer = resolve; });
+        const session = makeSession(null, false);
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        session.queue.push('soft steer', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: true });
+        harness.deferPrompt = null;
+        releasePrompt();
+        const abort = handlers.get(RPC_METHODS.Abort)!();
+        finishSoftSteer('cancelled');
+        await abort;
+
+        await vi.waitFor(() => expect(session.client.emitSteerIndeterminate).toHaveBeenCalledWith(['steer']));
+        expect(session.client.emitMessagesConsumed).not.toHaveBeenCalledWith(['steer'], { steered: true });
+
+        session.queue.close();
+        await runPromise;
+    });
+
     it('does not hang teardown while a soft steer completion is unresolved', async () => {
         let releasePrompt!: () => void;
         harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
@@ -594,6 +679,15 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(createCursorAcpBackend).toHaveBeenCalled();
         expect(harness.backendArgs).toEqual({ command: 'agent', args: ['acp'] });
         expect(legacyLauncher).not.toHaveBeenCalled();
+    });
+
+    it('pins CLI auto with --model auto on spawn', async () => {
+        const session = makeSession(null);
+        session.model = 'auto';
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.backendArgs).toEqual({ command: 'agent', args: ['--model', 'auto', 'acp'] });
+        expect(session.model).toBe('auto');
     });
 
     it('applies harness thinking transitions once per edge (#1470)', async () => {
@@ -1533,7 +1627,7 @@ describe('cursorAcpRemoteLauncher', () => {
         await runPromise;
     });
 
-    it('applies ACP default model when setModel is cleared', async () => {
+    it('relaunches via setModel Auto when ACP has no auto option', async () => {
         const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
@@ -1542,7 +1636,7 @@ describe('cursorAcpRemoteLauncher', () => {
             sendSessionEvent: vi.fn(),
             sendAgentMessage: vi.fn(),
             keepAlive: vi.fn(),
-        emitSessionReady: vi.fn()
+            emitSessionReady: vi.fn()
         } as unknown as ApiSessionClient;
 
         const session = new CursorSession({
@@ -1558,7 +1652,9 @@ describe('cursorAcpRemoteLauncher', () => {
             startingMode: 'remote',
             permissionMode: 'default'
         });
-        session.onSessionFoundWithProtocol = vi.fn();
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
         queue.push('hold-open', { permissionMode: 'default' });
 
         const runPromise = cursorAcpRemoteLauncher(session);
@@ -1575,16 +1671,15 @@ describe('cursorAcpRemoteLauncher', () => {
         });
 
         harness.setConfigOptionCalls.length = 0;
-        session.setModel(null);
+        harness.loadSessionCalled = false;
+        session.setModel('auto');
 
         await vi.waitFor(() => {
-            expect(
-                harness.setConfigOptionCalls.some(
-                    (call) => call.configId === 'model-opt' && call.value === 'default[]'
-                )
-            ).toBe(true);
-            expect(session.model).toBeUndefined();
+            expect(session.model).toBe('auto');
         });
+        expect(harness.backendArgs).toEqual({ command: 'agent', args: ['--model', 'auto', 'acp'] });
+        expect(harness.loadSessionCalled).toBe(true);
+        expect(harness.setConfigOptionCalls.filter((call) => call.configId === 'model-opt')).toEqual([]);
 
         queue.close();
         await runPromise;
@@ -1634,7 +1729,7 @@ describe('cursorAcpRemoteLauncher', () => {
         await runPromise;
     });
 
-    it('applyModelConfig(null) resets ACP to the default model option', async () => {
+    it('relaunches in place with --model auto when ACP has no auto option', async () => {
         const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
         const client = {
             rpcHandlerManager: { registerHandler: vi.fn() },
@@ -1644,6 +1739,681 @@ describe('cursorAcpRemoteLauncher', () => {
             sendAgentMessage: vi.fn(),
             keepAlive: vi.fn(),
         emitSessionReady: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+
+        await session.applyModelConfig('composer-2.5[fast=false]');
+        harness.setConfigOptionCalls.length = 0;
+        harness.loadSessionCalled = false;
+        const createCallsBefore = vi.mocked(createCursorAcpBackend).mock.calls.length;
+
+        await session.applyModelConfig('auto');
+
+        expect(session.model).toBe('auto');
+        expect(harness.backendArgs).toEqual({ command: 'agent', args: ['--model', 'auto', 'acp'] });
+        expect(harness.loadSessionCalled).toBe(true);
+        expect(vi.mocked(createCursorAcpBackend).mock.calls.length).toBeGreaterThan(createCallsBefore);
+        expect(harness.setConfigOptionCalls.filter((call) => call.configId === 'model-opt')).toEqual([]);
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('restores the prior ACP spawn when Auto relaunch initialize fails', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+
+        await session.applyModelConfig('composer-2.5[fast=false]');
+        expect(session.model).toBe('composer-2.5[fast=false]');
+
+        harness.failNextInitialize = new Error('auto spawn refused');
+        await expect(session.applyModelConfig('auto')).rejects.toThrow(/relaunch with --model auto failed/i);
+        expect(session.model).toBe('composer-2.5[fast=false]');
+
+        // Prior spawn restored — concrete model apply still works.
+        await session.applyModelConfig('composer-2.5[fast=true]');
+        expect(session.model).toBe('composer-2.5[fast=true]');
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('requeues a pending message when Auto relaunch and restore both fail', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const emitMessagesConsumed = vi.fn();
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn(),
+            emitMessagesConsumed
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+        await session.applyModelConfig('composer-2.5[fast=false]');
+        emitMessagesConsumed.mockClear();
+
+        harness.failInitializeTimes = 2;
+        const autoSwitch = session.applyModelConfig('auto');
+        queue.push('must-survive-double-failure', { permissionMode: 'default' }, 'turn-local-1');
+        await expect(autoSwitch).rejects.toThrow(/relaunch with --model auto failed/i);
+
+        await vi.waitFor(() => expect(queue.size()).toBeGreaterThan(0));
+        expect(queue.hasMessageMatching((message) => message === 'must-survive-double-failure')).toBe(true);
+        expect(emitMessagesConsumed).not.toHaveBeenCalledWith(
+            expect.arrayContaining(['turn-local-1'])
+        );
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('re-queues Auto-review slash after relaunch when leaving and re-entering Auto-review', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn(),
+            emitMessagesConsumed: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+
+        session.setPermissionMode('autoReview');
+        await vi.waitFor(() => {
+            expect(queue.hasMessageMatching((message) => message === '/auto-review')).toBe(true);
+        });
+        // Consume the slash so the old-process flag would otherwise block a re-queue.
+        await vi.waitFor(() => {
+            expect(
+                harness.prompts.some((prompt) => JSON.stringify(prompt).includes('/auto-review'))
+            ).toBe(true);
+        });
+
+        session.setPermissionMode('default');
+        await session.applyModelConfig('composer-2.5[fast=false]');
+        await session.applyModelConfig('auto');
+        session.setPermissionMode('autoReview');
+
+        await vi.waitFor(() => {
+            expect(
+                harness.prompts.filter((prompt) => JSON.stringify(prompt).includes('/auto-review')).length
+            ).toBeGreaterThanOrEqual(2);
+        });
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('queues Auto-review slash after Auto relaunch when session started with --auto-review', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn(),
+            emitMessagesConsumed: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'autoReview'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'autoReview' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+        expect(harness.spawnAutoReviewFlags[0]).toBe(true);
+        // Spawned with --auto-review — no slash needed yet.
+        expect(queue.hasMessageMatching((message) => message === '/auto-review')).toBe(false);
+
+        session.setPermissionMode('default');
+        await session.applyModelConfig('composer-2.5[fast=false]');
+        await session.applyModelConfig('auto');
+
+        await vi.waitFor(() => {
+            expect(harness.spawnAutoReviewFlags.at(-1)).toBe(false);
+        });
+
+        session.setPermissionMode('autoReview');
+        await vi.waitFor(() => {
+            expect(
+                harness.prompts.some((prompt) => JSON.stringify(prompt).includes('/auto-review'))
+                || queue.hasMessageMatching((message) => message === '/auto-review')
+            ).toBe(true);
+        });
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('drops queued Auto-review slash when Auto relaunch spawns with --auto-review', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn(),
+            emitMessagesConsumed: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+        await session.applyModelConfig('composer-2.5[fast=false]');
+
+        // Mode is Auto-review before relaunch so the replacement gets --auto-review.
+        session.setPermissionMode('autoReview');
+        await vi.waitFor(() => {
+            expect(
+                harness.prompts.some((prompt) => JSON.stringify(prompt).includes('/auto-review'))
+            ).toBe(true);
+        });
+        // Wait until the slash prompt finishes so relaunch is not blocked by promptInFlight.
+        await vi.waitFor(() => {
+            expect(queue.hasMessageMatching((message) => message === '/auto-review')).toBe(false);
+        });
+
+        let releaseInitialize!: () => void;
+        harness.deferNextInitialize = new Promise<void>((resolve) => {
+            releaseInitialize = resolve;
+        });
+        const autoSwitch = session.applyModelConfig('auto');
+        await vi.waitFor(() => expect(harness.deferNextInitialize).toBeNull());
+
+        // Leftover toggle from the old process still queued while replacement starts
+        // with --auto-review. Insert without waking the waiter so the message loop
+        // cannot dequeue it before bindFresh reconciles (mode+model race).
+        queue.queue.push({
+            message: '/auto-review',
+            mode: { permissionMode: 'autoReview', model: session.model },
+            modeHash: queue.modeHasher({ permissionMode: 'autoReview', model: session.model }),
+            isolate: true,
+            internal: true,
+            enqueueOrder: 9999
+        });
+        expect(queue.hasMessageMatching((message) => message === '/auto-review')).toBe(true);
+
+        const promptsBeforeBind = harness.prompts.filter(
+            (prompt) => JSON.stringify(prompt).includes('/auto-review')
+        ).length;
+        releaseInitialize();
+        await autoSwitch;
+
+        expect(harness.spawnAutoReviewFlags.at(-1)).toBe(true);
+        expect(queue.hasMessageMatching((message) => message === '/auto-review')).toBe(false);
+        expect(
+            harness.prompts.filter((prompt) => JSON.stringify(prompt).includes('/auto-review')).length
+        ).toBe(promptsBeforeBind);
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('discards a dequeued internal Auto-review toggle held across Auto relaunch', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) =>
+            `${mode.permissionMode}:${mode.model ?? ''}`
+        );
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn(),
+            emitMessagesConsumed: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+        await session.applyModelConfig('composer-2.5[fast=false]');
+
+        session.setPermissionMode('autoReview');
+        const slash = queue.queue.find((entry) => entry.message === '/auto-review');
+        expect(slash?.internal).toBe(true);
+        // Force the held batch to trigger Auto relaunch while dequeued (tip-bot Major).
+        slash!.mode = { permissionMode: 'autoReview', model: 'auto' };
+        slash!.modeHash = queue.modeHasher(slash!.mode);
+
+        await vi.waitFor(() => {
+            expect(harness.spawnAutoReviewFlags.at(-1)).toBe(true);
+        });
+        await vi.waitFor(() => expect(session.model).toBe('auto'));
+
+        // Internal toggle must not be prompted on a --auto-review replacement.
+        expect(
+            harness.prompts.filter((prompt) => JSON.stringify(prompt).includes('/auto-review')).length
+        ).toBe(0);
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('preserves a user-sent /auto-review across Auto relaunch with --auto-review', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn(),
+            emitMessagesConsumed: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+        await session.applyModelConfig('composer-2.5[fast=false]');
+
+        session.setPermissionMode('autoReview');
+        await vi.waitFor(() => {
+            expect(
+                harness.prompts.some((prompt) => JSON.stringify(prompt).includes('/auto-review'))
+            ).toBe(true);
+        });
+        await vi.waitFor(() => {
+            expect(queue.hasMessageMatching((message) => message === '/auto-review')).toBe(false);
+        });
+
+        let releaseInitialize!: () => void;
+        harness.deferNextInitialize = new Promise<void>((resolve) => {
+            releaseInitialize = resolve;
+        });
+        const autoSwitch = session.applyModelConfig('auto');
+        await vi.waitFor(() => expect(harness.deferNextInitialize).toBeNull());
+
+        // User-authored command (no internal flag) must survive bindFresh reconcile.
+        queue.queue.push({
+            message: '/auto-review',
+            mode: { permissionMode: 'autoReview', model: session.model },
+            modeHash: queue.modeHasher({ permissionMode: 'autoReview', model: session.model }),
+            isolate: true,
+            localId: 'user-auto-review-1',
+            enqueueOrder: 9999
+        });
+        const promptsBeforeUserSlash = harness.prompts.filter(
+            (prompt) => JSON.stringify(prompt).includes('/auto-review')
+        ).length;
+
+        releaseInitialize();
+        await autoSwitch;
+        expect(harness.spawnAutoReviewFlags.at(-1)).toBe(true);
+        expect(queue.hasMessageMatching((message) => message === '/auto-review')).toBe(true);
+
+        // Silent insert during relaunch did not wake the idle waiter — nudge the loop.
+        queue.push('wake-loop', { permissionMode: 'default' });
+
+        await vi.waitFor(() => {
+            expect(
+                harness.prompts.filter((prompt) => JSON.stringify(prompt).includes('/auto-review')).length
+            ).toBeGreaterThan(promptsBeforeUserSlash);
+        });
+        expect(queue.hasMessageMatching((message) => message === '/auto-review')).toBe(false);
+        expect(vi.mocked(client.emitMessagesConsumed)).toHaveBeenCalledWith(
+            expect.arrayContaining(['user-auto-review-1'])
+        );
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('queues Auto-review slash when mode flips during Auto relaunch', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn(),
+            emitMessagesConsumed: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+        await session.applyModelConfig('composer-2.5[fast=false]');
+
+        let releaseInitialize!: () => void;
+        harness.deferNextInitialize = new Promise<void>((resolve) => {
+            releaseInitialize = resolve;
+        });
+        const autoSwitch = session.applyModelConfig('auto');
+        await vi.waitFor(() => expect(harness.deferNextInitialize).toBeNull());
+
+        session.setPermissionMode('autoReview');
+        releaseInitialize();
+        await autoSwitch;
+
+        await vi.waitFor(() => {
+            expect(
+                harness.prompts.some((prompt) => JSON.stringify(prompt).includes('/auto-review'))
+                || (queue as unknown as { queue: Array<{ message: string }> }).queue
+                    ?.some((item) => item.message === '/auto-review')
+            ).toBe(true);
+        });
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('prompts a queued Auto-mode batch on the relaunched backend', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) =>
+            `${mode.permissionMode}:${mode.model ?? ''}`
+        );
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn(),
+            emitMessagesConsumed: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+
+        await session.applyModelConfig('composer-2.5[fast=false]');
+        expect(session.model).toBe('composer-2.5[fast=false]');
+        harness.promptCalls = 0;
+        harness.loadSessionCalled = false;
+
+        queue.push('switch-to-auto-turn', { permissionMode: 'default', model: 'auto' });
+        queue.close();
+
+        await runPromise;
+
+        expect(session.model).toBe('auto');
+        expect(harness.backendArgs).toEqual({ command: 'agent', args: ['--model', 'auto', 'acp'] });
+        expect(harness.loadSessionCalled).toBe(true);
+        expect(harness.promptCalls).toBeGreaterThanOrEqual(1);
+        expect(harness.prompts.at(-1)).toEqual([{ type: 'text', text: 'switch-to-auto-turn' }]);
+    });
+
+    it('keeps the launcher alive when a message arrives mid Auto relaunch', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn(),
+            emitMessagesConsumed: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+        await session.applyModelConfig('composer-2.5[fast=false]');
+
+        let releaseInitialize!: () => void;
+        harness.deferNextInitialize = new Promise<void>((resolve) => {
+            releaseInitialize = resolve;
+        });
+        const autoSwitch = session.applyModelConfig('auto');
+        await vi.waitFor(() => expect(harness.deferNextInitialize).toBeNull());
+
+        queue.push('arrived-during-relaunch', { permissionMode: 'default' });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        releaseInitialize();
+        await autoSwitch;
+
+        expect(session.model).toBe('auto');
+        await vi.waitFor(() => {
+            expect(harness.prompts.some(
+                (prompt) => JSON.stringify(prompt).includes('arrived-during-relaunch')
+            )).toBe(true);
+        });
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('applies Auto via ACP when the catalog advertises auto', async () => {
+        harness.modelOptionValues = ['auto', 'composer-2.5[fast=false]'];
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn()
         } as unknown as ApiSessionClient;
 
         const session = new CursorSession({
@@ -1669,13 +2439,144 @@ describe('cursorAcpRemoteLauncher', () => {
         await session.applyModelConfig('composer-2.5[fast=false]');
         harness.setConfigOptionCalls.length = 0;
 
-        await session.applyModelConfig(null);
+        await session.applyModelConfig('auto');
 
+        expect(session.model).toBe('auto');
         expect(
             harness.setConfigOptionCalls.some(
-                (call) => call.configId === 'model-opt' && call.value === 'default[]'
+                (call) => call.configId === 'model-opt' && call.value === 'auto'
             )
         ).toBe(true);
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('falls back to in-place relaunch when advertised auto cannot be set via ACP', async () => {
+        harness.modelOptionValues = ['auto', 'composer-2.5[fast=false]'];
+        harness.failSetConfigOption = true;
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+
+        await session.applyModelConfig('auto');
+        expect(session.model).toBe('auto');
+        expect(harness.backendArgs).toEqual({ command: 'agent', args: ['--model', 'auto', 'acp'] });
+        expect(harness.loadSessionCalled).toBe(true);
+
+        queue.close();
+        await runPromise;
+    });
+
+    it.each([[false, false], [true, false], [false, true], [true, true]])('relaunches Auto after an Auto-spawned concrete switch (partial=%s, concurrent=%s)', async (partial, concurrent) => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => mode.permissionMode);
+        const client = {
+            rpcHandlerManager: { registerHandler: vi.fn() },
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true),
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            keepAlive: vi.fn(),
+            emitSessionReady: vi.fn()
+        } as unknown as ApiSessionClient;
+
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default',
+            model: 'auto'
+        });
+        session.onSessionFoundWithProtocol = vi.fn((id: string) => {
+            session.sessionId = id;
+        });
+        queue.push('hold-open', { permissionMode: 'default' });
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.newSessionCalled).toBe(true));
+        await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+        expect(harness.backendArgs).toEqual({ command: 'agent', args: ['--model', 'auto', 'acp'] });
+
+        if (partial) {
+            harness.modelOptionValues = ['default', 'composer-2.5'];
+            harness.failFastConfigOption = true;
+        }
+        if (concurrent) {
+            harness.deferSetConfigOption = new Promise<void>((resolve) => {
+                harness.releaseSetConfigOption = resolve;
+            });
+        }
+        const concreteRequest = session.applyModelConfig('composer-2.5[fast=false]');
+        const autoRequest = concurrent
+            ? session.applyModelConfig('auto').then(
+                value => ({ value, error: null }),
+                error => ({ value: null, error })
+            )
+            : null;
+        if (concurrent) {
+            await new Promise<void>(resolve => setImmediate(resolve));
+            harness.releaseSetConfigOption?.();
+        }
+        if (partial) {
+            await expect(concreteRequest).rejects.toThrow(
+                'Cursor model is not available via ACP'
+            );
+        } else {
+            await concreteRequest;
+        }
+        if (autoRequest) {
+            const result = await autoRequest;
+            expect(result.error).toBeNull();
+            expect(result.value).toBe('auto');
+            expect(session.model).toBe('auto');
+        } else {
+            const concreteModel = partial ? 'composer-2.5' : 'composer-2.5[fast=false]';
+            expect(session.model).toBe(concreteModel);
+            harness.setConfigOptionCalls.length = 0;
+            harness.loadSessionCalled = false;
+
+            await session.applyModelConfig('auto');
+            expect(session.model).toBe('auto');
+            expect(harness.backendArgs).toEqual({ command: 'agent', args: ['--model', 'auto', 'acp'] });
+            expect(harness.loadSessionCalled).toBe(true);
+            expect(harness.setConfigOptionCalls.filter((call) => call.configId === 'model-opt')).toEqual([]);
+        }
 
         queue.close();
         await runPromise;

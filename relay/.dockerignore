@@ -1,0 +1,11 @@
+# Only runtime sources and the package manifest belong in the build context.
+*
+!Dockerfile
+!package.json
+!src/
+!src/**
+src/**/*.test.ts
+src/testSupport/
+**/*.p8
+**/*.pem
+**/.env*

@@ -81,7 +81,7 @@ describe('POST /v1/push validation', () => {
         { name: 'JSON array body', body: [1, 2], status: 400, code: 'bad_request' },
         { name: 'missing platform', body: { token: TOKEN, envelope: ENVELOPE }, status: 400, code: 'bad_request' },
         { name: 'unknown platform', body: { platform: 'web', token: TOKEN, envelope: ENVELOPE }, status: 400, code: 'bad_request' },
-        { name: 'android platform (reserved)', body: { platform: 'android', token: TOKEN, envelope: ENVELOPE }, status: 501, code: 'unsupported_platform' },
+        { name: 'android provider not configured', body: { platform: 'android', token: TOKEN, envelope: ENVELOPE }, status: 501, code: 'unsupported_platform' },
         { name: 'missing token', body: { platform: 'ios', envelope: ENVELOPE }, status: 400, code: 'bad_request' },
         { name: 'non-string token', body: { platform: 'ios', token: 42, envelope: ENVELOPE }, status: 400, code: 'bad_request' },
         { name: 'non-hex token', body: { platform: 'ios', token: 'zz'.repeat(32), envelope: ENVELOPE }, status: 400, code: 'bad_request' },
@@ -174,6 +174,7 @@ describe('POST /v1/push forwarding', () => {
         { name: 'APNs 400 BadTopic (relay misconfig)', result: { kind: 'rejected', status: 400, reason: 'BadTopic' }, status: 502, code: 'upstream' },
         { name: 'APNs 403 InvalidProviderToken', result: { kind: 'rejected', status: 403, reason: 'InvalidProviderToken' }, status: 502, code: 'upstream' },
         { name: 'APNs 429 TooManyRequests', result: { kind: 'rejected', status: 429, reason: 'TooManyRequests' }, status: 429, code: 'rate_limited' },
+        { name: 'APNs 429 TooManyProviderTokenUpdates', result: { kind: 'rejected', status: 429, reason: 'TooManyProviderTokenUpdates' }, status: 429, code: 'rate_limited' },
         { name: 'APNs 500', result: { kind: 'rejected', status: 500, reason: 'InternalServerError' }, status: 502, code: 'upstream' },
         { name: 'APNs 503', result: { kind: 'rejected', status: 503, reason: 'ServiceUnavailable' }, status: 502, code: 'upstream' },
         { name: 'network failure', result: { kind: 'transport-error', message: 'connect ECONNREFUSED' }, status: 502, code: 'upstream' }
@@ -195,6 +196,23 @@ describe('POST /v1/push forwarding', () => {
         }
     })
 
+    test.each([
+        { status: 429, reason: 'TooManyRequests', outcome: 'apns-throttled' },
+        { status: 429, reason: 'TooManyProviderTokenUpdates', outcome: 'apns-throttled' },
+        { status: 400, reason: 'BadDeviceToken', outcome: 'unregistered' },
+        { status: 410, reason: 'Unregistered', outcome: 'unregistered' }
+    ])('logs a sanitized APNs outcome for $status $reason', async ({ status, reason, outcome }) => {
+        const { app, apns, logs } = makeHarness()
+        apns.nextResults.push({ kind: 'rejected', status, reason })
+        await app.handle(
+            pushRequest({ platform: 'ios', token: TOKEN, envelope: ENVELOPE }),
+            '1.2.3.4'
+        )
+        expect(logs).toEqual([
+            expect.stringContaining(`[relay] push platform=ios token=${hashedTokenPrefix(TOKEN, 'ios')} outcome=${outcome} (apns ${status}) durationMs=`)
+        ])
+    })
+
     test('never logs the envelope or the raw device token', async () => {
         const { app, logs } = makeHarness()
         await app.handle(
@@ -207,7 +225,7 @@ describe('POST /v1/push forwarding', () => {
             expect(line).not.toContain(TOKEN)
             expect(line).not.toContain(TOKEN.toLowerCase())
         }
-        expect(logs.some((line) => line.includes(hashedTokenPrefix(TOKEN)))).toBe(true)
+        expect(logs.some((line) => line.includes(hashedTokenPrefix(TOKEN, 'ios')))).toBe(true)
     })
 })
 

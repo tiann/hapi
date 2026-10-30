@@ -1,6 +1,26 @@
 import { describe, expect, it } from 'bun:test'
 import { SSEManager } from './sseManager'
 import type { SyncEvent } from '../sync/syncEngine'
+
+it('closes a stalled subscriber once pending writes reach the bound', () => {
+    const manager = new SSEManager(0, new VisibilityTracker())
+    let closed = 0
+    manager.subscribe({ id: 'slow', namespace: 'default', all: true,
+        send: () => new Promise<void>(() => {}), sendHeartbeat: () => {}, close: () => { closed++ } })
+    for (let i = 0; i < 4200; i++) manager.broadcast({ type: 'session-updated', sessionId: 's', namespace: 'default' })
+    expect(closed).toBe(1)
+    expect(manager.hasSubscription('slow')).toBe(false)
+})
+
+it('also bounds stalled subscriber writes by bytes', () => {
+    const manager = new SSEManager(0, new VisibilityTracker())
+    let closed = 0
+    manager.subscribe({ id: 'slow-bytes', namespace: 'default', all: true,
+        send: () => new Promise<void>(() => {}), sendHeartbeat: () => {}, close: () => { closed++ } })
+    for (let i = 0; i < 10; i++) manager.broadcast({ type: 'session-updated', sessionId: 'x'.repeat(512 * 1024), namespace: 'default' })
+    expect(closed).toBe(1)
+    expect(manager.hasSubscription('slow-bytes')).toBe(false)
+})
 import { VisibilityTracker } from '../visibility/visibilityTracker'
 
 describe('SSEManager namespace filtering', () => {
@@ -332,5 +352,44 @@ describe('SSEManager reconnect replay', () => {
         expect(fresh.resume).toBe('ok')
         expect(fresh.replay).toHaveLength(1)
         expect(fresh.replay[0]?.event).toMatchObject({ sessionId: 'big-3' })
+    })
+})
+
+describe('SSEManager agy catalog announcements', () => {
+    it('reaches the global connection the app always keeps open, and no other namespace', () => {
+        // The app runs one `all` connection plus a session-scoped one
+        // (web/src/lib/appSseSubscriptions.ts), so this is what decides whether
+        // an open in-session picker hears about a new catalog.
+        const manager = new SSEManager(0, new VisibilityTracker())
+        const globalAlpha: SyncEvent[] = []
+        const sessionAlpha: SyncEvent[] = []
+        const machineAlpha: SyncEvent[] = []
+        const globalBeta: SyncEvent[] = []
+
+        manager.subscribe({
+            id: 'alpha-global', namespace: 'alpha', all: true,
+            send: (event) => { globalAlpha.push(event) }, sendHeartbeat: () => {}
+        })
+        manager.subscribe({
+            id: 'alpha-session', namespace: 'alpha', all: false, sessionId: 's1',
+            send: (event) => { sessionAlpha.push(event) }, sendHeartbeat: () => {}
+        })
+        manager.subscribe({
+            id: 'alpha-machine', namespace: 'alpha', all: false, machineId: 'm1',
+            send: (event) => { machineAlpha.push(event) }, sendHeartbeat: () => {}
+        })
+        manager.subscribe({
+            id: 'beta-global', namespace: 'beta', all: true,
+            send: (event) => { globalBeta.push(event) }, sendHeartbeat: () => {}
+        })
+
+        manager.broadcast({ type: 'machine-agy-models-updated', machineId: 'm1', namespace: 'alpha' })
+
+        expect(globalAlpha).toHaveLength(1)
+        expect(machineAlpha).toHaveLength(1)
+        // A session-scoped connection carries no machineId, so it is not the
+        // route: the global connection is.
+        expect(sessionAlpha).toHaveLength(0)
+        expect(globalBeta).toHaveLength(0)
     })
 })

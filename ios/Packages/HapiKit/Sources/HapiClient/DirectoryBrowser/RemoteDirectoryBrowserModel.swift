@@ -25,18 +25,51 @@ public struct RemoteDirectoryBreadcrumb: Identifiable, Equatable, Sendable {
 
 /** Pure remote-path operations shared by directory-browser consumers. */
 public enum RemoteDirectoryPath {
+    /// Empty roots mean unrestricted browsing, matching the runner's spawn policy.
     public static func browseRoots(for machine: Machine) -> [String] {
-        let workspaceRoots = unique(
+        unique(
             machine.metadata?.workspaceRoots?
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
                 ?? []
         )
-        if !workspaceRoots.isEmpty { return workspaceRoots }
+    }
+
+    public static func defaultDirectory(for machine: Machine) -> String {
+        if let root = browseRoots(for: machine).first { return root }
         if let home = machine.metadata?.homeDir,
            !home.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return [home]
+            return home.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        return []
+        return machine.metadata?.platform == "win32" ? "" : "/"
+    }
+
+    /// Expand against the runner's home, never the phone's local filesystem.
+    public static func expandHome(_ input: String, homeDirectory: String?) -> String {
+        let path = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let home = homeDirectory?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !home.isEmpty else { return path }
+        if path == "~" { return home }
+        if path.hasPrefix("~/") || (home.contains("\\") && path.hasPrefix("~\\")) {
+            return join(parent: home, child: String(path.dropFirst(2)))
+        }
+        return path
+    }
+
+    public static func filesystemRoot(_ path: String) -> String? {
+        if isDriveAbsolute(path) { return String(path.prefix(3)) }
+        if path.hasPrefix("\\\\") || path.hasPrefix("//") {
+            let parts = path.dropFirst(2).split(whereSeparator: isPathSeparator)
+            guard parts.count >= 2 else { return nil }
+            let separator = path.hasPrefix("\\") ? "\\" : "/"
+            return separator + separator + parts[0] + separator + parts[1]
+        }
+        return path.hasPrefix("/") ? "/" : nil
+    }
+
+    public static func allowsBrowsing(path: String, roots: [String]) -> Bool {
+        filesystemRoot(path) != nil
+            && (roots.isEmpty || roots.contains { isWithinRoot(path: path, root: $0) })
     }
 
     public static func join(parent: String, child: String) -> String {
@@ -124,7 +157,8 @@ public enum RemoteDirectoryPath {
  * Reusable runner-backed directory navigation state machine.
  *
  * Consumers own presentation and selection handling. Navigation is lexically
- * confined to ``roots``; the runner performs canonical symlink-aware checks.
+ * confined to explicit ``roots``; empty roots allow any absolute path. The
+ * runner performs canonical symlink-aware checks.
  */
 @MainActor @Observable
 public final class RemoteDirectoryBrowserModel {
@@ -152,17 +186,25 @@ public final class RemoteDirectoryBrowserModel {
         self.fallbackError = fallbackError
     }
 
-    public func open(machineId: String, roots: [String], initialPath: String? = nil) {
+    public func open(
+        machineId: String,
+        roots: [String],
+        initialPath: String? = nil,
+        defaultPath: String? = nil
+    ) {
         close()
         let usableRoots = unique(roots.filter {
             !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         })
         let selectedInitialPath = initialPath.flatMap { candidate in
-            usableRoots.contains { RemoteDirectoryPath.isWithinRoot(path: candidate, root: $0) }
+            RemoteDirectoryPath.allowsBrowsing(path: candidate, roots: usableRoots)
                 ? candidate
                 : nil
         }
-        guard let path = selectedInitialPath ?? usableRoots.first else { return }
+        let fallback = defaultPath.flatMap {
+            RemoteDirectoryPath.allowsBrowsing(path: $0, roots: usableRoots) ? $0 : nil
+        }
+        guard let path = selectedInitialPath ?? fallback ?? usableRoots.first else { return }
         self.machineId = machineId
         self.isPresented = true
         self.path = path
@@ -187,7 +229,7 @@ public final class RemoteDirectoryBrowserModel {
 
     public func navigate(to path: String) {
         guard isPresented,
-              roots.contains(where: { RemoteDirectoryPath.isWithinRoot(path: path, root: $0) })
+              RemoteDirectoryPath.allowsBrowsing(path: path, roots: roots)
         else {
             return
         }
@@ -200,7 +242,7 @@ public final class RemoteDirectoryBrowserModel {
 
     public func navigateUp() {
         guard let parent = RemoteDirectoryPath.parent(path),
-              roots.contains(where: { RemoteDirectoryPath.isWithinRoot(path: parent, root: $0) })
+              RemoteDirectoryPath.allowsBrowsing(path: parent, roots: roots)
         else {
             return
         }
@@ -220,7 +262,7 @@ public final class RemoteDirectoryBrowserModel {
     private func load(_ path: String) {
         guard let machineId,
               isPresented,
-              roots.contains(where: { RemoteDirectoryPath.isWithinRoot(path: path, root: $0) })
+              RemoteDirectoryPath.allowsBrowsing(path: path, roots: roots)
         else {
             return
         }
@@ -235,7 +277,7 @@ public final class RemoteDirectoryBrowserModel {
         error = nil
         breadcrumbs = makeBreadcrumbs(path: path, roots: browseRoots)
         canGoUp = RemoteDirectoryPath.parent(path).map { parent in
-            browseRoots.contains { RemoteDirectoryPath.isWithinRoot(path: parent, root: $0) }
+            RemoteDirectoryPath.allowsBrowsing(path: parent, roots: browseRoots)
         } ?? false
 
         loadTask = Task { [weak self] in
@@ -298,7 +340,8 @@ public final class RemoteDirectoryBrowserModel {
     }
 
     private func makeBreadcrumbs(path: String, roots: [String]) -> [RemoteDirectoryBreadcrumb] {
-        guard let root = roots
+        let breadcrumbRoots = roots.isEmpty ? [RemoteDirectoryPath.filesystemRoot(path)].compactMap { $0 } : roots
+        guard let root = breadcrumbRoots
             .filter({ RemoteDirectoryPath.isWithinRoot(path: path, root: $0) })
             .max(by: { $0.count < $1.count })
         else {

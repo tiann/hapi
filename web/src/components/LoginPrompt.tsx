@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiClient } from '@/api/client'
+import { AUTH_PROXY_REDIRECT_MESSAGE, openAuthProxySignIn } from '@/api/authProxy'
 import { LanguageSwitcher } from '@/components/LanguageSwitcher'
 import { Spinner } from '@/components/Spinner'
 import { Button } from '@/components/ui/button'
@@ -107,6 +108,9 @@ export function LoginPrompt(props: LoginPromptProps) {
     }, [])
 
     const displayError = error || props.error
+    // Opening the hub lets the browser follow the redirect that the cached app shell hides.
+    const redirected = displayError === AUTH_PROXY_REDIRECT_MESSAGE
+    const hubOrigin = new URL(props.baseUrl || window.location.origin, window.location.href).origin
     const serverSummary = props.serverUrl ?? `${props.baseUrl} ${t('login.server.default')}`
     const title = isBindMode ? t('login.bind.title') : t('login.title')
     const subtitle = t('login.subtitle')
@@ -144,8 +148,19 @@ export function LoginPrompt(props: LoginPromptProps) {
 
                     {displayError && (
                         <div className="text-sm text-red-500 text-center">
-                            {displayError}
+                            {redirected ? t('login.error.redirected') : displayError}
                         </div>
+                    )}
+
+                    {!isBindMode && redirected && (
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            className="w-full"
+                            onClick={() => openAuthProxySignIn(hubOrigin)}
+                        >
+                            {t('login.redirect.open', { host: new URL(hubOrigin).host })}
+                        </Button>
                     )}
 
                     <button

@@ -1,4 +1,5 @@
 import HapiClient
+import HapiUI
 import SwiftUI
 
 /// Floating bar above the composer for queued (uninvoked) sends — the
@@ -8,6 +9,8 @@ import SwiftUI
 /// actions disabled until the SSE echo lands.
 struct QueuedMessagesBarView: View {
     let interactor: ChatInteractor
+    @Environment(\.hapiTheme) private var theme
+    @Environment(\.hapiTypography) private var typography
 
     var body: some View {
         let rows = interactor.queuedRows
@@ -16,8 +19,8 @@ struct QueuedMessagesBarView: View {
                 Text(rows.count == 1
                     ? String(localized: "1 queued message")
                     : String(format: String(localized: "%lld queued messages"), Int64(rows.count)))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(typography.captionFont)
+                    .foregroundStyle(theme.textSecondary)
                     .padding(.horizontal, 10)
                 ScrollView {
                     VStack(spacing: 4) {
@@ -36,56 +39,89 @@ struct QueuedMessagesBarView: View {
     }
 }
 
-private struct QueuedRowView: View {
+struct QueuedRowView: View {
     let row: QueuedMessageRow
     let interactor: ChatInteractor
+    @Environment(\.hapiTheme) private var theme
+    @Environment(\.hapiTypography) private var typography
 
     var body: some View {
-        HStack(alignment: .center, spacing: 4) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(row.text.isEmpty ? row.attachmentNames.joined(separator: ", ") : row.text)
-                    .font(.footnote)
-                    .lineLimit(2)
-                if row.indeterminate {
-                    Text("Delivery outcome unknown")
-                        .font(.caption2)
-                        .foregroundStyle(.red)
-                }
-                if let scheduledAt = row.scheduledAt {
-                    Text("Scheduled · \(Self.timeLabel(scheduledAt))")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                preview.frame(minWidth: 120, alignment: .leading)
+                Spacer(minLength: 0)
+                HStack(spacing: 4) { actions(horizontal: true) }
+                    .fixedSize(horizontal: true, vertical: true)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                preview.frame(maxWidth: .infinity, alignment: .leading)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 4) { actions(horizontal: true) }
+                    VStack(spacing: 4) { actions(horizontal: false) }
                 }
             }
-            Spacer(minLength: 8)
-            if row.indeterminate {
-                Button("Retry") {
-                    interactor.retryIndeterminateMessage(row.id)
-                }
-                .font(.footnote.weight(.medium))
-                .disabled(!row.canAct)
-            } else if row.canSteer {
-                Button("Steer") {
-                    interactor.steerQueuedMessage(row.id)
-                }
-                .font(.footnote.weight(.medium))
-            }
-            Button("Edit") {
-                interactor.editQueuedMessage(row.id)
-            }
-            .font(.footnote.weight(.medium))
-            .disabled(!row.canAct)
-            Button("Cancel") {
-                interactor.cancelQueuedMessage(row.id)
-            }
-            .font(.footnote.weight(.medium))
-            .tint(.red)
-            .disabled(!row.canAct)
         }
-        .buttonStyle(.borderless)
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(.fill.tertiary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(theme.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private var preview: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(row.text.isEmpty ? row.attachmentNames.joined(separator: ", ") : row.text)
+                .font(typography.toolSubtitleFont)
+                .foregroundStyle(theme.textPrimary)
+                .lineLimit(2)
+            if row.indeterminate {
+                Text("Delivery outcome unknown")
+                    .font(typography.captionFont)
+                    .foregroundStyle(theme.danger)
+            }
+            if let scheduledAt = row.scheduledAt {
+                Text("Scheduled · \(Self.timeLabel(scheduledAt))")
+                    .font(typography.captionFont)
+                    .foregroundStyle(theme.textSecondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func actions(horizontal: Bool) -> some View {
+        if row.indeterminate {
+            action("Retry", id: "retry", horizontal: horizontal) {
+                interactor.retryIndeterminateMessage(row.id)
+            }
+        } else if row.canSteer {
+            action("Steer", id: "steer", horizontal: horizontal) {
+                interactor.steerQueuedMessage(row.id)
+            }
+        }
+        action("Edit", id: "edit", horizontal: horizontal) {
+            interactor.editQueuedMessage(row.id)
+        }
+        action("Cancel", id: "cancel", horizontal: horizontal, destructive: true) {
+            interactor.cancelQueuedMessage(row.id)
+        }
+    }
+
+    private func action(
+        _ title: LocalizedStringKey, id: String, horizontal: Bool,
+        destructive: Bool = false, perform: @escaping () -> Void
+    ) -> some View {
+        Button(action: perform) {
+            Text(title)
+                .font(typography.toolTitleFont)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: horizontal, vertical: true)
+                .padding(.horizontal, 8)
+                .frame(minWidth: 44, maxWidth: horizontal ? nil : .infinity, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(destructive ? theme.danger : theme.link)
+        .disabled(!row.canAct)
+        .opacity(row.canAct ? 1 : 0.5)
+        .accessibilityIdentifier("queued-\(id)-\(row.id)")
     }
 
     private static func timeLabel(_ epochMs: Int) -> String {

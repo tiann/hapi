@@ -1,6 +1,8 @@
 # Installation
 
-Install the HAPI CLI and set up the hub.
+Install the HAPI CLI and set up the hub. To install the paid phone apps and
+pair them, see [Native apps (iOS / Android)](./native-apps.md); for the free
+browser client, see [PWA](./pwa.md).
 
 ## Prerequisites
 
@@ -27,48 +29,31 @@ opencode --version
 
 ## Architecture
 
-HAPI has three components:
+HAPI uses these runtime roles:
 
 | Component | Role | Required |
 |-----------|------|----------|
 | **CLI** | Wraps AI coding agents, runs sessions | Yes |
 | **Hub** | Central coordinator: persistence, real-time sync, remote access | Yes |
 | **Runner** | Background service for remote session spawning | Optional |
+| **Client** | Native iOS/Android, Web/PWA or Telegram Mini App | One client for remote control |
 
 ### How they work together
 
-```
-┌─────────────────────────────────────────────────────┐
-│              Your Machine                           │
-│                                                     │
-│  ┌─────────┐    Socket.IO    ┌─────────────┐       │
-│  │  CLI    │◄───────────────►│    Hub      │       │
-│  │+ Agent  │                 │  + SQLite   │       │
-│  └─────────┘                 └──────┬──────┘       │
-│       ▲                             │ SSE          │
-│       │ spawn                       ▼              │
-│  ┌────┴────┐                 ┌─────────────┐       │
-│  │ Runner  │◄────RPC────────►│   Web App   │       │
-│  │(背景)   │                 └─────────────┘       │
-│  └─────────┘                                       │
-└─────────────────────────────────────────────────────┘
-                    │
-           [Tunnel / Public URL]
-                    │
-              ┌─────▼─────┐
-              │ Phone/Web │
-              └───────────┘
-```
+The CLI and Runner connect to the hub over Socket.IO; clients send actions
+through REST and receive live updates through SSE. The Runner spawns CLI
+sessions when requested through the hub. See the [architecture overview](./how-it-works.md#architecture-overview).
 
-- **CLI**: Start a session with `hapi`. The CLI wraps your AI agent and syncs with the hub.
+- **CLI**: Choose an agent with `hapi`, or start one directly with `hapi <agent>`. The CLI wraps your AI agent and syncs with the hub. Scripts must specify the agent explicitly.
 - **Hub**: Run `hapi hub`. Stores sessions, handles permissions, enables remote access.
-- **Runner**: Run `hapi runner start`. Lets you spawn sessions from phone/web without keeping a terminal open.
+- **Runner**: Run `hapi runner start`. Lets you spawn sessions from native or web clients without keeping a terminal open.
+- **Client**: Pair a native app with the HTTPS hub origin and access token, or log in through the web app.
 
 ### Typical workflows
 
 **Local only**: `hapi hub` → `hapi` → work in terminal
 
-**Remote access**: `hapi hub --relay` → `hapi runner start` → control from phone/web
+**Remote access**: `hapi hub --relay` → `hapi runner start` → pair a native app or open the web app
 
 ## Install the CLI
 
@@ -83,6 +68,31 @@ Or with Homebrew:
 ```bash
 brew install tiann/tap/hapi
 ```
+
+### Upgrades that still run an older version
+
+The `@twsxtd/hapi` package is a launcher. Its platform binary (for example,
+`@twsxtd/hapi-darwin-arm64`) is an optional dependency pinned to the same version.
+If a mirror has the new launcher but not the matching platform package, the
+package manager can finish upgrading the launcher while skipping the binary.
+A previous binary may remain installed. Older launchers can silently run it;
+launchers with version validation instead report a version mismatch.
+
+Retry against the official registry using your existing package manager. For Bun:
+
+```bash
+bun remove -g @twsxtd/hapi && bun add -g @twsxtd/hapi@latest --registry=https://registry.npmjs.org
+hapi --version
+```
+
+Removing the launcher first clears its dependency resolution; `--force` alone
+can leave a previously skipped platform package out of Bun's lockfile. This does
+not remove your HAPI settings or sessions. To stay on a specific release, replace
+`latest` with that version. For npm, use
+`npm install -g @twsxtd/hapi@latest --registry=https://registry.npmjs.org`.
+If the command still reports an old version, check for another HAPI installation
+earlier on `PATH`. Restart an already-running hub or runner after upgrading;
+installing a new binary does not replace running processes.
 
 ## Other install options
 
@@ -109,7 +119,7 @@ sudo mv ./hapi /usr/local/bin/
 <details>
 <summary>Build from source</summary>
 
-Requires Bun 1.4.0.
+Requires Bun 1.4.4.
 
 ```bash
 git clone https://github.com/tiann/hapi.git
@@ -196,11 +206,19 @@ On first run, HAPI:
 | `HAPI_RELAY_FORCE_TCP` | `false` | - | Force TCP mode for relay |
 | `HAPI_OFFICIAL_WEB_URL` | `https://app.hapi.run` | - | Official web app origin, added to CORS when the relay is enabled |
 | `VAPID_SUBJECT` | `mailto:admin@hapi.run` | - | Web Push contact info |
+| `HAPI_ANDROID_PUSH` | `auto` | `androidPushMode` | Android push: official relay by default, direct FCM when private credentials are configured; also accepts `relay`, `fcm`, `off` |
+| `HAPI_IOS_PUSH` | `relay` | `iosPushMode` | iOS push: `relay`, direct `apns`, or `off` |
+| `HAPI_PUSH_RELAY_URL` | `https://push.hapi.run` | `iosPushRelayUrl` | Shared Android/iOS push relay, independent of the network tunnel |
+| `FCM_SERVICE_ACCOUNT_PATH` | - | `fcmServiceAccountPath` | Direct FCM credentials for private builds using the same Firebase project |
 | `HAPI_HOME` | `~/.hapi` | - | Config directory path |
 | `DB_PATH` | `~/.hapi/hapi.db` | - | Database file path |
 | `HAPI_EXPERIMENTAL` | - | - | CLI: enable experimental features (`true`/`1`/`yes`) |
 | `ELEVENLABS_API_KEY` | - | Settings / env | ElevenLabs API key for voice + dictation |
 | `ELEVENLABS_AGENT_ID` | Auto-created | - | Custom ElevenLabs agent ID |
+| `ELEVENLABS_MAX_DURATION_SECONDS` | `1800` | - | Max length of one ElevenLabs voice conversation (60-7200) |
+| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | - | Settings / env | Gemini Live voice assistant |
+| `DASHSCOPE_API_KEY` / `QWEN_API_KEY` | - | Settings / env | Qwen Realtime voice assistant |
+| `VOICE_BACKEND` | Auto-detected | - | Default assistant backend: `elevenlabs`, `gemini-live`, or `qwen-realtime` |
 | `OPENAI_API_KEY` | - | Settings / env | OpenAI API key for dictation (`gpt-transcribe` / `gpt-live-transcribe`) |
 | `DEEPGRAM_API_KEY` | - | Settings / env | Deepgram API key for dictation (`nova-3`) |
 | `GROQ_API_KEY` | - | Settings / env | Groq API key for dictation (`whisper-large-v3`) |
@@ -212,13 +230,25 @@ On first run, HAPI:
 | `HAPI_TITLE_PROVIDER_MODEL` | - | - | Server-only lightweight model used for generated session titles |
 | `HAPI_TITLE_SUGGESTION_RATE_LIMIT` | `5` | - | Maximum title suggestions per session in the rate-limit window |
 | `HAPI_TITLE_SUGGESTION_RATE_WINDOW_MS` | `600000` | - | Title suggestion rate-limit window in milliseconds |
+| `HAPI_TITLE_PROVIDER_MAX_TOKENS` | `64` | - | Maximum completion-token budget per generated title; raise for reasoning-model providers |
+| `HAPI_TITLE_PROVIDER_TIMEOUT_MS` | `10000` | - | Title provider request timeout in milliseconds |
 </details>
 
 The session rename dialog's **Generate** action is unavailable until all three
 `HAPI_TITLE_PROVIDER_*` variables are configured on the Hub. The provider is
-called only on demand; the existing manual rename flow does not require these
-variables. Each request sends recent visible user/assistant conversation text
+used by the automatic fallback below and the manual **Generate** action. The
+existing manual rename flow does not require these variables. Each request
+sends recent visible user/assistant conversation text
 (up to 200 stored messages and a bounded prompt) to that configured provider.
+
+When a provider is configured, the Hub also makes one best-effort automatic
+request after the first completed turn if the session has no manual name or
+existing summary. Automatic failures are ignored and do not affect the primary
+conversation. The manual **Generate** action remains available for retrying
+after an automatic failure. An attempt is remembered across Hub restarts, so
+later turns do not silently retry it. A manual or Agent title arriving during
+generation takes precedence. Without a configured provider, existing title
+behavior is unchanged.
 
 <details>
 <summary>settings.json example</summary>
@@ -325,6 +355,10 @@ hapi runner start
 
 Session CLI may export an **explicit** non-default `HAPI_API_URL` (from env or settings) into child env so shell helpers hit the same remote hub. It does **not** mirror `CLI_API_TOKEN` into wrapped agents (settings/prompt-backed secrets stay out of agent env; a fresh `hapi` re-reads `~/.hapi/settings.json`, and systemd/env tokens already inherit). Prefer MCP `list_peers` inside a session. Web terminal PTYs still strip hub secrets. If `--list` fails with an auth/URL error, the message points at `hapi auth login` and the configured hub URL.
 
+##### Disabling peer tools on a runner
+
+Set `HAPI_DISABLE_PEER_TOOLS=1` (also `true`/`yes`) in the runner environment to stop wrapped agents from browsing or messaging other HAPI sessions — for example when one agent digging through the session list and pinging peers pollutes other sessions' contexts. The switch is not advertised-then-refused: the `list_peers` / `inspect_peer` / `ping_peer` MCP tools are not registered on the session MCP server and not passed to `--allowedTools` / `--tools`, the peer steer block is dropped from agent system prompts (a pasted `/sessions/<id>` citation only reminds the agent it is a hub path, not a local file), and the peer core refuses with an explicit `disabled` error as defense in depth — so `hapi ping-peer` / `hapi inspect-peer` from inside a wrapped agent shell fails loudly too. Scope the env to the runner (systemd unit, launchd plist, or runner guard script); operators who leave it unset in their interactive terminal keep full `hapi ping-peer` CLI access.
+
 Additional runner commands:
 
 ```bash
@@ -338,10 +372,10 @@ Use `--workspace-root <path>` to restrict which directories the runner can brows
 hapi runner start --workspace-root ~/projects --workspace-root ~/work
 ```
 
-Without `--workspace-root`, manually entered spawn paths remain unrestricted.
-Session directory autocomplete and native pickers browse only beneath the
-runner's home directory; configuring roots makes both browsing and spawning
-use those roots instead.
+Without `--workspace-root`, directory browsing and spawning both accept paths
+anywhere the runner's OS account can access. The iOS directory picker starts
+at the home directory and can navigate above it. Configuring roots restricts
+both browsing and spawning to those roots, including symlink targets.
 
 For running the hub and runner as persistent background services (pm2, launchd, systemd), see [Deployment](./deployment.md). Supervised installs should set `HAPI_RUNNER_SUPERVISED=1` on the runner process (systemd `Environment=` / pm2 `--env`) so the web **Restart** control can safely stop-runner knowing the supervisor will cold-start it.
 

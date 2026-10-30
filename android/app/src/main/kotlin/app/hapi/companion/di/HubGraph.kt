@@ -6,6 +6,7 @@ import app.hapi.data.HubSession
 import app.hapi.data.auth.AuthEvents
 import app.hapi.data.auth.CredentialStore
 import app.hapi.data.sse.GlobalSsePipe
+import app.hapi.data.sse.AndroidNetworkMonitor
 import app.hapi.data.sse.OkHttpSseTransport
 import app.hapi.data.sse.SseEngine
 import app.hapi.data.sse.SseTokenProvider
@@ -72,6 +73,8 @@ class HubGraph(
         scope = scope,
     )
 
+    private val networkMonitor = AndroidNetworkMonitor(context, sseEngine::networkChanged)
+
     /** Per-hub snapshot root (filesDir — survives cache pressure). */
     private val snapshotDir: File = File(File(context.filesDir, "hubs"), dirNameFor(session.hubUrl))
 
@@ -95,6 +98,7 @@ class HubGraph(
         api = session.api,
         scope = scope,
         snapshots = WindowSnapshots(File(snapshotDir, "windows")),
+        historyRetentionLimit = app.hapi.protocol.window.OLDER_LOAD_WINDOW_SIZE,
     )
 
     private val mutableToasts = MutableSharedFlow<SyncEvent.Toast>(extraBufferCapacity = 16)
@@ -155,6 +159,7 @@ class HubGraph(
     val chatDrafts: ChatDrafts = DataStoreChatDrafts(context.chatDraftsDataStore, hubKey = session.hubUrl)
 
     override fun close() {
+        networkMonitor.close()
         scope.cancel()
         imageLoader.shutdown()
         session.close()

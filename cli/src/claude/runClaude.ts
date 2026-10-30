@@ -10,6 +10,7 @@ import { getEnvironmentInfo } from '@/ui/doctor';
 import { startHappyServer, toClaudeAllowedHapiMcpTools } from '@/claude/utils/startHappyServer';
 import { startHookServer } from '@/claude/utils/startHookServer';
 import { generateHookSettingsFile, cleanupHookSettingsFile } from '@/modules/common/hooks/generateHookSettings';
+import { forwardClaudeAutoCompactionStart } from './utils/autoCompactionHook';
 import { registerKillSessionHandler } from './registerKillSessionHandler';
 import type { Session } from './session';
 import { bootstrapExistingSession, bootstrapSession } from '@/agent/sessionFactory';
@@ -39,6 +40,11 @@ export interface StartOptions {
     claudeArgs?: string[]
     startedBy?: 'runner' | 'terminal'
     existingSessionId?: string
+    /**
+     * Fresh-spawn reserved hub id from `--hapi-session-id` (create/getOrCreate).
+     * Distinct from `existingSessionId` / `--existing-session-id` (reopen).
+     */
+    reservedSessionId?: string
     workingDirectory?: string
     resumeSessionId?: string
 }
@@ -75,7 +81,8 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             workingDirectory,
             agentState: initialState,
             model: initialModel ?? undefined,
-            effort: initialEffort ?? undefined
+            effort: initialEffort ?? undefined,
+            reservedSessionId: options.reservedSessionId
         });
     const { api, session, sessionInfo } = bootstrap;
     logger.debug(`Session created: ${sessionInfo.id}`);
@@ -159,15 +166,40 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
 
     // Start Hook server for receiving Claude session notifications
     const hookServer = await startHookServer({
+        onPermissionRequest: (data, signal) => currentSessionRef.current?.localPermissionBridge.request(data, signal) ?? Promise.resolve(null),
         onSessionHook: (sessionId, data) => {
+            if (data.agent_id !== undefined) return;
             logger.debug(`[START] Session hook received: ${sessionId}`, data);
 
             const currentSession = currentSessionRef.current;
-            if (currentSession) {
+            forwardClaudeAutoCompactionStart(currentSession, sessionId, data);
+            currentSession?.localPermissionBridge.onHook(data);
+            if (currentSession && (data.hook_event_name === 'SessionStart' || data.hook_event_name === undefined)) {
                 const previousSessionId = currentSession.sessionId;
                 if (previousSessionId !== sessionId) {
                     logger.debug(`[START] Claude session ID changed: ${previousSessionId} -> ${sessionId}`);
                     currentSession.onSessionFound(sessionId);
+                }
+            }
+
+            // Follow /model switches inside the TUI ("[1m]" kept) for the local
+            // context window; only the local settings file registers this hook.
+            if (currentSession && data.hook_event_name === 'PostModelSwitch' && typeof data.to_model === 'string') {
+                currentSession.localContextModel = data.to_model;
+            }
+
+            // Local mode has no SDK stream; derive thinking from turn hooks.
+            // PreToolUse also covers a turn HAPI attached to mid-flight.
+            if (currentSession?.mode === 'local' && sessionId === currentSession.sessionId) {
+                const event = data.hook_event_name;
+                if (event === 'UserPromptSubmit') {
+                    currentSession.localTurnStartedAt = Date.now();
+                }
+                const thinking = event === 'UserPromptSubmit' || event === 'PreToolUse' ? true
+                    : event === 'Stop' || event === 'StopFailure' || event === 'SessionEnd' ? false
+                    : currentSession.thinking;
+                if (thinking !== currentSession.thinking) {
+                    currentSession.onThinkingChange(thinking);
                 }
             }
 
@@ -180,6 +212,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             if (
                 hookPermissionMode
                 && currentSession?.mode === 'local'
+                && sessionId === currentSession.sessionId
                 && hookPermissionMode !== currentPermissionMode
             ) {
                 logger.debug(`[START] Inheriting permission mode from local Claude: ${currentPermissionMode} -> ${hookPermissionMode}`);
@@ -202,13 +235,14 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     // The interactive TUI gets a separate settings file that also forwards
     // UserPromptSubmit/PreToolUse (their payloads carry permission_mode), so a
     // mode picked via shift+tab is inherited on local→remote switch. The
-    // remote SDK process keeps the SessionStart-only file: these extra hooks
+    // remote SDK process keeps only the session/compaction observers: these extra hooks
     // block Claude per prompt/tool call, and remote mode state is owned by the
     // hub/RPC path.
     const localHookSettingsPath = generateHookSettingsFile(hookServer.port, hookServer.token, {
         filenamePrefix: 'session-hook-local',
         logLabel: 'generateHookSettings',
-        trackPermissionMode: true
+        trackPermissionMode: true,
+        includeLocalPermissions: true
     });
     logger.debug(`[START] Generated hook settings files: ${hookSettingsPath}, ${localHookSettingsPath}`);
 
@@ -223,6 +257,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         stopKeepAlive: () => currentSessionRef.current?.stopKeepAlive(),
         onAfterClose: () => {
             happyServer.stop();
+            currentSessionRef.current?.localPermissionBridge.stop();
             hookServer.stop();
             cleanupHookSettingsFile(hookSettingsPath, 'generateHookSettings');
             cleanupHookSettingsFile(localHookSettingsPath, 'generateHookSettings');
@@ -230,7 +265,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     });
 
     lifecycle.registerProcessHandlers();
-    registerKillSessionHandler(session.rpcHandlerManager, lifecycle);
+    registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
 
     const conversationHistory = toConversationHistoryCapabilities(CLAUDE_CONVERSATION_HISTORY)
@@ -537,6 +572,12 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             throw new Error('Invalid session config payload');
         }
         const config = payload as { permissionMode?: unknown; model?: unknown; effort?: unknown };
+
+        // The remote launcher reverts the session mode when Claude refuses one.
+        const sessionPermissionMode = currentSessionRef.current?.getPermissionMode();
+        if (sessionPermissionMode && isPermissionModeAllowedForFlavor(sessionPermissionMode, 'claude')) {
+            currentPermissionMode = sessionPermissionMode as PermissionMode;
+        }
 
         if (config.permissionMode !== undefined) {
             currentPermissionMode = resolvePermissionMode(config.permissionMode);

@@ -8,6 +8,7 @@ import {
     getHistoryCoverageRetryDelay,
     getPullToLoadState,
     getScrollIntent,
+    getScrollToBottomButtonVisibility,
     hasAppliedHistoryVersion,
     isNestedScrollEvent,
     locateOutlineTargetMessage,
@@ -15,6 +16,8 @@ import {
     restoreScrollAnchor,
     shouldLoadOlderForViewport,
     shouldCancelInitialScrollSettling,
+    shouldRenderScrollToBottomButton,
+    shouldShowScrollToBottomButton,
     ThreadMessagesById,
 } from '@/components/AssistantChat/HappyThread'
 import { AssistantRuntimeProvider, useExternalStoreRuntime } from '@assistant-ui/react'
@@ -332,6 +335,63 @@ describe('scroll anchor helpers', () => {
             isNearBottom: true,
             isScrollingUp: false
         })
+    })
+
+    it('shows the jump button only while scrolling down away from the bottom', () => {
+        const downward = getScrollIntent({
+            scrollTop: 610,
+            previousScrollTop: 590,
+            scrollHeight: 1232,
+            clientHeight: 530
+        })
+        const upward = getScrollIntent({
+            scrollTop: 590,
+            previousScrollTop: 610,
+            scrollHeight: 1232,
+            clientHeight: 530
+        })
+        const atBottom = getScrollIntent({
+            scrollTop: 702,
+            previousScrollTop: 690,
+            scrollHeight: 1232,
+            clientHeight: 530
+        })
+
+        expect(downward.isScrollingDown).toBe(true)
+        expect(shouldShowScrollToBottomButton(downward)).toBe(true)
+        expect(shouldShowScrollToBottomButton(upward)).toBe(false)
+        expect(shouldShowScrollToBottomButton(atBottom)).toBe(false)
+    })
+
+    it('keeps the jump button hidden while the new-message indicator has content', () => {
+        expect(shouldRenderScrollToBottomButton(true, 0)).toBe(true)
+        expect(shouldRenderScrollToBottomButton(true, 1)).toBe(false)
+        expect(shouldRenderScrollToBottomButton(false, 0)).toBe(false)
+    })
+
+    it('keeps the jump button visible after downward scrolling stops', () => {
+        const downward = getScrollIntent({
+            scrollTop: 610,
+            previousScrollTop: 590,
+            scrollHeight: 1232,
+            clientHeight: 530
+        })
+        const stationary = getScrollIntent({
+            scrollTop: 610,
+            previousScrollTop: 610,
+            scrollHeight: 1232,
+            clientHeight: 530
+        })
+        const upward = getScrollIntent({
+            scrollTop: 590,
+            previousScrollTop: 610,
+            scrollHeight: 1232,
+            clientHeight: 530
+        })
+
+        expect(getScrollToBottomButtonVisibility(false, downward)).toBe(true)
+        expect(getScrollToBottomButtonVisibility(true, stationary)).toBe(true)
+        expect(getScrollToBottomButtonVisibility(true, upward)).toBe(false)
     })
 
     it('cancels initial scroll settling when the user scrolls up away from the bottom', () => {

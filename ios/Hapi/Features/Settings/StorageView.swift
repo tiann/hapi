@@ -183,7 +183,7 @@ private struct StorageUsageCard: View {
             Text(sliceLabel(slice.key))
                 .font(.subheadline)
             Spacer(minLength: 12)
-            Text("\(UsageMath.formatBytes(slice.bytes)) · \(StorageMath.formatPercent(slice.percent))")
+            Text(verbatim: "\(UsageMath.formatBytes(slice.bytes)) · \(StorageMath.formatPercent(slice.percent))")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }

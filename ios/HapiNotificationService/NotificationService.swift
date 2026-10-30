@@ -90,11 +90,9 @@ final class NotificationService: UNNotificationServiceExtension {
                 || type == "ready"
                 || type == "task-notification"
         )
-        if supportsActions {
-            // Category ids are the contract type strings; the app registers
-            // Allow/Deny + Reply actions under exactly these identifiers.
-            content.categoryIdentifier = type
-        }
+        // input-request is tap-to-open only. Clear any inherited category so
+        // a question (or unknown contract) can never offer Allow/Deny or Reply.
+        content.categoryIdentifier = supportsActions ? type : ""
         // Coalescing (Android `type-<sessionId>` tag): a newer push of the
         // same type for the same session replaces the previous one.
         content.threadIdentifier = "\(type.isEmpty ? "unknown" : type)-\(fields["sessionId"] ?? "")"

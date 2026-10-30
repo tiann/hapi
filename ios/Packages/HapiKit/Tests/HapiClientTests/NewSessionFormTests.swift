@@ -19,9 +19,11 @@ struct NewSessionSpawnBodyTests {
         return String(decoding: data, as: UTF8.self)
     }
 
-    @Test func claudeSimpleSessionWithModelEffortAndYoloOff() throws {
-        // Exact SpawnSessionRequestSchema field set — yolo false IS sent for
-        // claude; permissionMode / reasoning / codex fields are absent.
+    @Test func claudeSimpleSessionWithModelEffortAndPermissionMode() throws {
+        // Exact SpawnSessionRequestSchema field set — claude is on the
+        // native permission select now, so permissionMode IS sent (even a
+        // picked non-default mode) and yolo is absent, even when set on the
+        // form (a stale toggle value from before the flavor switch).
         let body = try canonicalBody(
             NewSessionForm(
                 machineId: "m1",
@@ -29,13 +31,14 @@ struct NewSessionSpawnBodyTests {
                 agent: .claude,
                 model: "opus",
                 effort: "high",
-                yolo: false
+                permissionMode: .plan,
+                yolo: true
             ),
             codexFastTierVisible: false
         )
         #expect(body == """
         {"agent":"claude","directory":"/data/github/hapi","effort":"high",\
-        "model":"opus","sessionType":"simple","yolo":false}
+        "model":"opus","permissionMode":"plan","sessionType":"simple"}
         """)
     }
 
@@ -50,7 +53,7 @@ struct NewSessionSpawnBodyTests {
                 agent: .codex,
                 model: "gpt-5.2-codex",
                 modelReasoningEffort: "high",
-                permissionMode: .safeYolo,
+                permissionMode: .readOnly,
                 yolo: true,
                 sessionType: .worktree,
                 worktreeName: "  feature-x  ",
@@ -62,7 +65,7 @@ struct NewSessionSpawnBodyTests {
         #expect(body == """
         {"agent":"codex","collaborationMode":"plan","directory":"/repo",\
         "model":"gpt-5.2-codex","modelReasoningEffort":"high",\
-        "permissionMode":"safe-yolo","serviceTier":"fast",\
+        "permissionMode":"read-only","serviceTier":"fast",\
         "sessionType":"worktree","worktreeName":"feature-x"}
         """)
     }
@@ -76,13 +79,58 @@ struct NewSessionSpawnBodyTests {
         {"agent":"grok","directory":"/repo","permissionMode":"auto","sessionType":"simple"}
         """)
 
-        // Cursor has no v1 model picker: even a stashed model id is not sent.
+        // Cursor always sends its model (`cursorSpawnModelId`), Auto included.
         let cursor = try canonicalBody(
             NewSessionForm(directory: "/repo", agent: .cursor, model: "sonic", yolo: true),
             codexFastTierVisible: false
         )
         #expect(cursor == """
-        {"agent":"cursor","directory":"/repo","sessionType":"simple","yolo":true}
+        {"agent":"cursor","directory":"/repo","model":"sonic","sessionType":"simple","yolo":true}
+        """)
+        let cursorAuto = try canonicalBody(
+            NewSessionForm(directory: "/repo", agent: .cursor, yolo: false),
+            codexFastTierVisible: false
+        )
+        #expect(cursorAuto == """
+        {"agent":"cursor","directory":"/repo","model":"auto","sessionType":"simple","yolo":false}
+        """)
+    }
+
+    @Test func discoveredCatalogFlavorsSendTheirModelAndEffortFields() throws {
+        let grok = try canonicalBody(
+            NewSessionForm(directory: "/repo", agent: .grok, model: "grok-4", effort: "high",
+                           modelReasoningEffort: "max", permissionMode: .default),
+            codexFastTierVisible: false
+        )
+        #expect(grok == """
+        {"agent":"grok","directory":"/repo","effort":"high","model":"grok-4","permissionMode":"default","sessionType":"simple"}
+        """)
+
+        let opencode = try canonicalBody(
+            NewSessionForm(directory: "/repo", agent: .opencode, model: "openai/gpt-5", effort: "high",
+                           modelReasoningEffort: "max", permissionMode: .default),
+            codexFastTierVisible: false
+        )
+        #expect(opencode == """
+        {"agent":"opencode","directory":"/repo","model":"openai/gpt-5","modelReasoningEffort":"max",\
+        "permissionMode":"default","sessionType":"simple"}
+        """)
+
+        let pi = try canonicalBody(
+            NewSessionForm(directory: "/repo", agent: .pi, model: "anthropic/claude-x", effort: "minimal"),
+            codexFastTierVisible: false
+        )
+        #expect(pi == """
+        {"agent":"pi","directory":"/repo","effort":"minimal","model":"anthropic/claude-x","sessionType":"simple","yolo":false}
+        """)
+
+        // Default sentinels stay off the wire.
+        let kimi = try canonicalBody(
+            NewSessionForm(directory: "/repo", agent: .kimi, permissionMode: .default),
+            codexFastTierVisible: false
+        )
+        #expect(kimi == """
+        {"agent":"kimi","directory":"/repo","permissionMode":"default","sessionType":"simple"}
         """)
     }
 
@@ -157,6 +205,12 @@ struct NewSessionLogicTests {
     }
 
     @Test func windowsDriveAndUNCAutocompletePreserveSeparators() {
+        #expect(NewSessionLogic.directoryAutocompleteQuery(path: "C:\\wo", roots: ["C:\\work"])
+            == .roots(["C:\\work"]))
+        #expect(NewSessionLogic.directoryAutocompleteQuery(path: "\\\\server\\sh", roots: ["\\\\server\\share"])
+            == .roots(["\\\\server\\share"]))
+        #expect(NewSessionLogic.directoryAutocompleteQuery(path: "C:\\work", roots: ["C:\\work"])
+            == .directory(NewSessionLogic.ParentQuery(parent: "C:\\work", prefix: "", separator: "\\")))
         #expect(
             NewSessionLogic.parentQuery(for: "C:\\Users\\pro")
                 == NewSessionLogic.ParentQuery(parent: "C:\\Users", prefix: "pro", separator: "\\")
@@ -266,10 +320,12 @@ struct NewSessionLogicTests {
         )
         #expect(badMode.permissionMode == .default)
 
-        let goodMode = NewSessionLogic.sanitizeDraft(
+        let staleMode = NewSessionLogic.sanitizeDraft(
             NewSessionForm(agent: .codex, permissionMode: .safeYolo)
         )
-        #expect(goodMode.permissionMode == .safeYolo)
+        #expect(staleMode.permissionMode == .default)
+        #expect(AgentFlavor.codex.permissionModes == [.default, .readOnly, .autoReview, .yolo])
+        #expect(NewSessionLogic.sanitizeDraft(NewSessionForm(agent: .kimi, permissionMode: .safeYolo)).permissionMode == .safeYolo)
     }
 
     @Test func draftDecodingToleratesMissingKeysAndRoundTrips() throws {

@@ -10,6 +10,14 @@ function getEventString(event: Record<string, unknown>, key: string): string | n
     return asString(event[key])
 }
 
+// Stream identity must match the wire-level semantics in @hapi/protocol
+// (blank ids are not streams): a blank value falls back to row-derived ids
+// instead of colliding every blank-id row onto one block identity.
+function nonBlank(value: unknown): string | null {
+    const raw = asString(value)
+    return raw !== null && raw.trim().length > 0 ? raw : null
+}
+
 function getEventNumber(event: Record<string, unknown>, key: string): number | null {
     const value = event[key]
     return typeof value === 'number' && Number.isFinite(value) ? value : null
@@ -68,6 +76,51 @@ function mapAgentRunStatusToToolState(status: string | null): ToolCallBlock['too
     ) return 'error'
     if (status === 'pending') return 'pending'
     return 'running'
+}
+
+function attachCodexRoundSummaryToLatestGroup(blocks: ChatBlock[], summary: RoundSummary): void {
+    type SummaryTargetBlock = Exclude<ChatBlock, UserTextBlock | AgentEventBlock>
+    const isSummaryTarget = (block: ChatBlock): block is SummaryTargetBlock =>
+        block.kind !== 'user-text'
+        && block.kind !== 'agent-event'
+        && !(block.kind === 'cli-output' && block.source === 'user')
+
+    let targetIndex = summary.turnId
+        ? blocks.findLastIndex(block => isSummaryTarget(block) && isObject(block.meta) && block.meta.codexTurnId === summary.turnId)
+        : blocks.length - 1
+    // Persisted replies from earlier versions have no native turn IDs.
+    if (targetIndex === -1 && summary.usage) {
+        for (let index = blocks.length - 1; index >= 0 && isSummaryTarget(blocks[index]); index -= 1) {
+            const meta = blocks[index].meta
+            if (isObject(meta) && typeof meta.codexTurnId === 'string') return
+        }
+        targetIndex = blocks.length - 1
+    }
+    let firstIndex = -1
+    for (let index = targetIndex; index >= 0; index -= 1) {
+        if (!isSummaryTarget(blocks[index])) break
+        firstIndex = index
+    }
+    if (firstIndex === -1) return
+
+    const firstBlock = blocks[firstIndex]
+    if (isSummaryTarget(firstBlock)) {
+        const previousSummary = firstBlock.roundSummary
+        if (previousSummary?.turnId && summary.turnId && previousSummary.turnId !== summary.turnId) {
+            for (let index = targetIndex + 1; index < blocks.length && isSummaryTarget(blocks[index]); index += 1) {
+                const meta = blocks[index].meta
+                if (isObject(meta) && meta.codexTurnId === previousSummary.turnId) return
+            }
+        }
+        const previous = previousSummary?.provider === 'codex'
+            && (!summary.turnId || previousSummary.turnId === summary.turnId) ? previousSummary : undefined
+        firstBlock.roundSummary = {
+            ...previous,
+            ...summary,
+            modelUsage: summary.usage ? summary.modelUsage : previous?.modelUsage ?? summary.modelUsage,
+            durationMs: summary.durationMs ?? previous?.durationMs
+        }
+    }
 }
 
 function isTerminalAgentRunState(state: ToolCallBlock['tool']['state']): boolean {
@@ -476,6 +529,33 @@ export function reduceTimeline(
                 continue
             }
             if (msg.content.type === 'token-count') {
+                const tokenCount = msg.content as {
+                    type: 'token-count'
+                    provider?: 'codex'
+                    turnId?: string
+                    model?: string | null
+                }
+                if (
+                    tokenCount.provider === 'codex'
+                    && msg.usage
+                    && msg.usage.scope_role !== 'child'
+                ) {
+                    const model = tokenCount.model ?? undefined
+                    attachCodexRoundSummaryToLatestGroup(blocks, {
+                        provider: 'codex',
+                        turnId: tokenCount.turnId,
+                        usage: msg.usage,
+                        modelUsage: model
+                            ? {
+                                [model]: {
+                                    inputTokens: msg.usage.input_tokens,
+                                    outputTokens: msg.usage.output_tokens
+                                }
+                            }
+                            : {},
+                        numTurns: 1
+                    })
+                }
                 continue
             }
             // abort-restore is a side-effect signal for the web composer,
@@ -504,6 +584,12 @@ export function reduceTimeline(
                 continue
             }
             if (msg.content.type === 'turn-duration') {
+                if (msg.content.provider === 'codex') {
+                    attachCodexRoundSummaryToLatestGroup(blocks, {
+                        provider: 'codex', turnId: msg.content.turnId as string, modelUsage: {}, numTurns: 1, durationMs: msg.content.durationMs as number
+                    })
+                    continue
+                }
                 const targetId = msg.content.targetMessageId
                 const durationMs = msg.content.durationMs as number
                 type DurationBearingBlock = AgentTextBlock | AgentReasoningBlock | CliOutputBlock | ToolCallBlock
@@ -788,7 +874,7 @@ export function reduceTimeline(
                         }))
                         continue
                     }
-                    const streamId = asString(c.streamId)
+                    const streamId = nonBlank(c.streamId)
                     if (streamId) {
                         const existing = textBlocksByStreamId.get(streamId)
                         if (existing) {
@@ -803,7 +889,13 @@ export function reduceTimeline(
 
                     const block: AgentTextBlock = {
                         kind: 'agent-text',
-                        id: `${msg.id}:${idx}`,
+                        // Streamed snapshots under one stream id arrive as
+                        // separate message rows that the window keeps swapping
+                        // for newer rows. Deriving the id from the stream id
+                        // (unique per stream) keeps the block identity stable
+                        // across snapshots so the rendered component is
+                        // updated in place instead of being remounted.
+                        id: streamId ?? `${msg.id}:${idx}`,
                         localId: msg.localId,
                         createdAt: msg.createdAt,
                         invokedAt: msg.invokedAt,
@@ -836,7 +928,7 @@ export function reduceTimeline(
                 }
 
                 if (c.type === 'reasoning') {
-                    const streamId = asString(c.streamId)
+                    const streamId = nonBlank(c.streamId)
                     if (streamId) {
                         const existing = reasoningBlocksByStreamId.get(streamId)
                         if (existing) {
@@ -851,7 +943,11 @@ export function reduceTimeline(
 
                     const block: AgentReasoningBlock = {
                         kind: 'agent-reasoning',
-                        id: `${msg.id}:${idx}`,
+                        // Same as agent-text above: a stream-stable id keeps
+                        // the reasoning panel mounted while its snapshots
+                        // arrive, so the smooth streaming continues from the
+                        // previous text instead of replaying from a remount.
+                        id: streamId ?? `${msg.id}:${idx}`,
                         localId: msg.localId,
                         createdAt: msg.createdAt,
                         invokedAt: msg.invokedAt,
@@ -932,6 +1028,11 @@ export function reduceTimeline(
                         agentTimestamp: msg.agentTimestamp
                     })
 
+                    if (isObject(msg.meta) && typeof msg.meta.codexTurnId === 'string') {
+                        if (!isObject(block.meta) || block.meta.codexTurnId !== msg.meta.codexTurnId) block.roundSummary = undefined
+                        block.meta = msg.meta
+                    }
+
                     if (block.tool.state === 'pending') {
                         block.tool = { ...block.tool, state: 'running' }
                     }
@@ -944,6 +1045,7 @@ export function reduceTimeline(
                     // null exec timestamp is a no-op, leaving exec start unset so
                     // toolDurationMs falls back to hub times on both sides.
                     setEarliestStartedAt(block, msg.createdAt)
+                    if (block.tool.startUnavailable) block.tool = { ...block.tool, startUnavailable: false }
                     setEarliestExecStartedAt(block, msg.agentTimestamp ?? null)
 
                     if (isSubagentToolName(c.name) && !context.consumedGroupIds.has(msg.id)) {
@@ -998,6 +1100,7 @@ export function reduceTimeline(
                         return permissionFromResult ?? permissionEntry?.permission
                     })()
 
+                    const existing = toolBlocksById.get(c.tool_use_id)
                     const block = ensureToolBlock(blocks, toolBlocksById, c.tool_use_id, {
                         createdAt: msg.createdAt,
                         invokedAt: msg.invokedAt,
@@ -1005,8 +1108,8 @@ export function reduceTimeline(
                         model: msg.model,
                         localId: msg.localId,
                         meta: msg.meta,
-                        name: permissionEntry?.toolName ?? 'Tool',
-                        input: permissionEntry?.input ?? null,
+                        name: permissionEntry?.toolName ?? (c.commandExecution ? 'CodexBash' : 'Tool'),
+                        input: existing?.tool.input ?? permissionEntry?.input ?? c.commandExecution?.input ?? null,
                         description: null,
                         permission
                         // NOTE: no agentTimestamp seed here. execStartedAt must
@@ -1020,6 +1123,10 @@ export function reduceTimeline(
 
                     block.tool = {
                         ...block.tool,
+                        ...(c.commandExecution ? {
+                            executionDurationMs: c.commandExecution.durationMs ?? block.tool.executionDurationMs,
+                            ...(!existing ? { startedAt: null, startUnavailable: true } : {})
+                        } : {}),
                         result: c.content,
                         completedAt: msg.createdAt,
                         // Only a real Claude timestamp — never the hub receive

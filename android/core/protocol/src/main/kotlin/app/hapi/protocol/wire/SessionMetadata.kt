@@ -67,6 +67,7 @@ data class WorktreeMetadata(
 /** `SessionCapabilitiesSchema`. */
 @Serializable
 data class SessionCapabilities(
+    val concurrentClients: Boolean? = null,
     val terminal: Boolean? = null,
     val conversationHistory: ConversationHistoryCapabilities? = null,
 )

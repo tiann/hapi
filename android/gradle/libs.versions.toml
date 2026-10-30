@@ -13,6 +13,7 @@ kotlinxCoroutines = "1.10.2"
 okhttp = "4.12.0"
 securityCrypto = "1.1.0"
 junit = "4.13.2"
+androidxTestRunner = "1.6.2"
 turbine = "1.2.0"
 # Pairing flow (B-M1d).
 # datastore 1.1.7 (2025-06) + navigation-compose 2.9.0 (2025-05) +
@@ -57,6 +58,9 @@ androidx-lifecycle-process = { group = "androidx.lifecycle", name = "lifecycle-p
 # Compose (versions come from the BOM)
 androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
 androidx-compose-ui = { group = "androidx.compose.ui", name = "ui" }
+androidx-compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
+androidx-compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
+androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
 androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
 androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }

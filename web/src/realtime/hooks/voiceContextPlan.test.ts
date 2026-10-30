@@ -35,6 +35,36 @@ describe('buildSessionVoiceContextPlan', () => {
         expect(plan.bootstrap).not.toContain('Claude Code')
     })
 
+    test('prefers metadata.name over a stale summary for the voice session header', () => {
+        const session = {
+            id: 'sess-named',
+            metadata: {
+                path: '/proj',
+                name: 'Renamed triage peer',
+                summary: { text: 'issue-triage-#54' }
+            }
+        } as Session
+
+        const plan = buildSessionVoiceContextPlan(session, [], 'Codex')
+
+        expect(plan.bootstrap).toContain('Renamed triage peer')
+        expect(plan.bootstrap).not.toContain('issue-triage-#54')
+    })
+
+    test('uses metadata.name alone when no summary exists', () => {
+        const session = {
+            id: 'sess-name-only',
+            metadata: {
+                path: '/proj',
+                name: 'spawned-peer'
+            }
+        } as Session
+
+        const plan = buildSessionVoiceContextPlan(session, [], 'Codex')
+
+        expect(plan.bootstrap).toContain('spawned-peer')
+    })
+
     test('handles missing session', () => {
         const plan = buildSessionVoiceContextPlan(null, [], 'Claude')
         expect(plan.bootstrap).toBe('Session not available')

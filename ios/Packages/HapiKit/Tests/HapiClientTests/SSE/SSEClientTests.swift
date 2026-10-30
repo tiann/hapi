@@ -363,8 +363,37 @@ struct SSEClientTests {
 
     // MARK: - Network path
 
-    @Test func networkPathChangeWhileConnectedForcesReconnect() async throws {
-        let observer = FakePathObserver()
+    private static let wifiPath = NetworkPathUpdate(
+        isSatisfied: true, usedInterfaces: ["en0"], gateways: ["192.168.1.1"]
+    )
+
+    @Test func repeatedPathAndCostUpdatesKeepHealthyStreamOpen() async throws {
+        let observer = FakePathObserver(initialPath: Self.wifiPath)
+        let h = await makeHarness(pathObserver: observer)
+        let connection = try #require(await h.transport.nextConnection())
+        connection.open()
+        connection.sendHandshake()
+        #expect(await waitUntil { !h.box.handshakes.isEmpty && observer.subscriberCount() >= 1 })
+
+        observer.emitChange(Self.wifiPath)
+        var costChange = Self.wifiPath
+        costChange.isExpensive = true
+        observer.emitChange(costChange)
+        observer.emitChange(Self.wifiPath)
+        #expect(await h.transport.expectNoConnection())
+        #expect(!connection.isTerminated)
+        #expect(h.box.states == [.connecting, .connected])
+        await h.client.stop()
+    }
+
+    @Test(arguments: [
+        NetworkPathUpdate(isSatisfied: false, usedInterfaces: ["en0"], gateways: ["192.168.1.1"]),
+        NetworkPathUpdate(isSatisfied: true, isExpensive: true, usedInterfaces: ["pdp_ip0"]),
+        NetworkPathUpdate(isSatisfied: true, usedInterfaces: ["utun0"], gateways: ["192.168.1.1"]),
+        NetworkPathUpdate(isSatisfied: true, usedInterfaces: ["en0"], gateways: ["192.168.2.1"]),
+    ])
+    func networkRouteChangeWhileConnectedForcesReconnect(_ path: NetworkPathUpdate) async throws {
+        let observer = FakePathObserver(initialPath: Self.wifiPath)
         let h = await makeHarness(pathObserver: observer)
         let first = try #require(await h.transport.nextConnection())
         first.open()
@@ -372,9 +401,16 @@ struct SSEClientTests {
         #expect(await waitUntil { !h.box.handshakes.isEmpty })
 
         #expect(await waitUntil { observer.subscriberCount() >= 1 })
-        observer.emitChange(isSatisfied: true) // e.g. wifi → cellular
-        _ = try #require(await h.transport.nextConnection())
+        observer.emitChange(path)
+        let second = try #require(await h.transport.nextConnection())
         #expect(first.isTerminated)
+        second.open()
+        second.sendHandshake()
+        #expect(await waitUntil { h.box.handshakes.count == 2 })
+        // The new path is now the baseline, not another reason to reconnect.
+        observer.emitChange(path)
+        #expect(await h.transport.expectNoConnection())
+        #expect(!second.isTerminated)
         await h.client.stop()
     }
 

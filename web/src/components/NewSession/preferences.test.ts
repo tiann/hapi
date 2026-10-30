@@ -47,7 +47,7 @@ describe('NewSession preferences', () => {
             cursorSelectedBase: 'auto',
             effort: 'auto',
             modelReasoningEffort: 'xhigh',
-            permissionMode: 'safe-yolo'
+            permissionMode: 'read-only'
         })
         savePreferredLaunchSettings('machine-1', 'claude', {
             model: 'opus',
@@ -67,7 +67,7 @@ describe('NewSession preferences', () => {
             cursorSelectedBase: 'auto',
             effort: 'auto',
             modelReasoningEffort: 'xhigh',
-            permissionMode: 'safe-yolo'
+            permissionMode: 'read-only'
         })
         expect(loadPreferredLaunchSettings('machine-1', 'claude')).toEqual({
             model: 'opus',
@@ -81,6 +81,16 @@ describe('NewSession preferences', () => {
             effort: 'auto',
             modelReasoningEffort: 'max'
         })
+    })
+
+    it('drops stale Safe Yolo preferences for new Codex sessions', () => {
+        const stale = { model: 'auto', cursorSelectedBase: 'auto', effort: 'auto',
+            modelReasoningEffort: 'default', permissionMode: 'safe-yolo' } as const
+        savePreferredLaunchSettings('machine-1', 'codex', stale)
+        const loaded = loadPreferredLaunchSettings('machine-1', 'codex')
+        expect(loaded?.permissionMode).toBe('default')
+        expect(resolvePreferredLaunchSettings('codex', loaded, true).permissionMode).toBe('default')
+        expect(resolvePreferredLaunchSettings('codex', stale, true).permissionMode).toBe('default')
     })
 
     it('returns null when no launch settings were saved for the target', () => {
@@ -123,17 +133,20 @@ describe('NewSession preferences', () => {
         expect(loadPreferredLaunchSettings('machine-1', 'codex')).toBeNull()
     })
 
-    it('falls back when remembered static Claude options are no longer available', () => {
+    it('keeps a remembered Claude model the built-in list lacks, but drops an unknown effort', () => {
+        // Claude models come from the machine's catalog; a pinned model it no
+        // longer lists is shown as such rather than silently replaced.
         expect(resolvePreferredLaunchSettings('claude', {
-            model: 'retired-model',
+            model: 'claude-opus-4-1',
             cursorSelectedBase: 'auto',
             effort: 'ultra',
             modelReasoningEffort: 'default'
         })).toEqual({
-            model: 'auto',
+            model: 'claude-opus-4-1',
             cursorSelectedBase: 'auto',
             effort: 'auto',
-            modelReasoningEffort: 'default'
+            modelReasoningEffort: 'default',
+            permissionMode: 'default'
         })
     })
 
@@ -150,6 +163,24 @@ describe('NewSession preferences', () => {
             effort: 'auto',
             modelReasoningEffort: 'xhigh',
             permissionMode: 'read-only'
+        })
+    })
+
+    it('does not reset a remembered Kimi alias against the static Default-only list', () => {
+        // Kimi's catalog is dynamic; validating against MODEL_OPTIONS.kimi
+        // (only 'auto') must not turn a saved alias back into Default before
+        // the real catalog arrives.
+        expect(resolvePreferredLaunchSettings('kimi', {
+            model: 'GLM-5.3-flash',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default'
+        })).toEqual({
+            model: 'GLM-5.3-flash',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            permissionMode: 'default'
         })
     })
 
@@ -175,6 +206,29 @@ describe('NewSession preferences', () => {
         expect(resolvePreferredLaunchSettings('codex', null, true).permissionMode).toBe('yolo')
         expect(resolvePreferredLaunchSettings('copilot', null, true).permissionMode).toBe('default')
         expect(resolvePreferredLaunchSettings('codex', null, false).permissionMode).toBe('default')
+    })
+
+    it('migrates the legacy YOLO preference for Claude to bypassPermissions', () => {
+        expect(resolvePreferredLaunchSettings('claude', null, true).permissionMode).toBe('bypassPermissions')
+        expect(resolvePreferredLaunchSettings('claude', null, false).permissionMode).toBe('default')
+    })
+
+    it('round-trips a Claude permission mode through storage', () => {
+        savePreferredLaunchSettings('machine-1', 'claude', {
+            model: 'auto',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            permissionMode: 'plan'
+        })
+
+        expect(loadPreferredLaunchSettings('machine-1', 'claude')).toEqual({
+            model: 'auto',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            permissionMode: 'plan'
+        })
     })
 
     it.each([

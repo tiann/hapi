@@ -1,3 +1,4 @@
+import { LocalPermissionBridge } from './utils/localPermissionBridge';
 import { ApiClient, ApiSessionClient } from '@/lib';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { logger } from '@/ui/logger';
@@ -18,12 +19,18 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     readonly mcpServers: Record<string, any>;
     readonly allowedTools?: string[];
     readonly hookSettingsPath: string;
-    /** Settings for the interactive TUI: also forwards permission-mode-carrying hooks. */
+    /** Interactive TUI hooks: mode tracking and native-dialog permission bridge. */
     readonly localHookSettingsPath: string;
+    readonly localPermissionBridge: LocalPermissionBridge;
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
     localLaunchFailure: LocalLaunchFailure | null = null;
+    /** Model the local TUI runs, "[1m]" suffix intact: launch seed, then PostModelSwitch. */
+    localContextModel: string | null = null;
+    /** Epoch ms of the latest local UserPromptSubmit hook; older interrupt markers are stale. */
+    localTurnStartedAt = 0;
     private nativeSkillNames = new Set<string>();
+    private permissionModeListener: ((mode: PermissionMode) => void) | null = null;
 
     constructor(opts: {
         api: ApiClient;
@@ -72,6 +79,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         this.allowedTools = opts.allowedTools;
         this.hookSettingsPath = opts.hookSettingsPath;
         this.localHookSettingsPath = opts.localHookSettingsPath ?? opts.hookSettingsPath;
+        this.localPermissionBridge = new LocalPermissionBridge(opts.client);
         this.startedBy = opts.startedBy;
         this.startingMode = opts.startingMode;
         this.permissionMode = opts.permissionMode;
@@ -81,6 +89,11 @@ export class Session extends AgentSessionBase<EnhancedMode> {
 
     setPermissionMode = (mode: PermissionMode): void => {
         this.permissionMode = mode;
+        this.permissionModeListener?.(mode);
+    };
+
+    setPermissionModeListener = (listener: ((mode: PermissionMode) => void) | null): void => {
+        this.permissionModeListener = listener;
     };
 
     // Override base getPermissionMode to return the Claude-narrow type. Safe

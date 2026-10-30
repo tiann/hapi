@@ -6,7 +6,8 @@ import { join } from 'node:path'
 import { Hono } from 'hono'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import { Store } from '../../store'
-import type { Machine, SyncEngine } from '../../sync/syncEngine'
+import { SyncEngine, type Machine } from '../../sync/syncEngine'
+import { RpcRegistry } from '../../socket/rpcRegistry'
 import type { WebAppEnv } from '../middleware/auth'
 import { createCodexDesktopRoutes, getDarwinCodexOpenArgs, importSelectedCodexSessions } from './codexDesktop'
 
@@ -385,6 +386,7 @@ describe('Codex Desktop import routes', () => {
     it('imports normal response_item chat messages', async () => {
         const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-test-'))
         const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
         const codexSessionId = '11111111-1111-4111-8111-111111111111'
         process.env.CODEX_HOME = codexHome
 
@@ -395,12 +397,13 @@ describe('Codex Desktop import routes', () => {
                 codexSessionIds: [codexSessionId],
                 store,
                 namespace: 'default',
-                getSyncEngine: () => null
+                getSyncEngine: () => engine
             })
 
             expect(result.success).toBe(true)
             const session = store.sessions.getSessionsByNamespace('default')[0]
             expect(session).toBeDefined()
+            expect(engine.getSession(session.id)?.hasConversationContent).toBe(true)
             const messages = store.messages.getAllMessages(session.id)
             expect(messages).toHaveLength(2)
             expect(messages[0].content).toEqual({
@@ -427,6 +430,46 @@ describe('Codex Desktop import routes', () => {
                     sentFrom: 'cli'
                 }
             })
+        } finally {
+            engine.stop()
+            store.close()
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
+
+    it('refuses a transcript import for an active Codex thread when stored messages do not match its prefix', async () => {
+        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-active-sync-test-'))
+        const store = new Store(':memory:')
+        const codexSessionId = '10101010-1010-4010-8010-101010101010'
+        process.env.CODEX_HOME = codexHome
+
+        try {
+            createTranscript(codexHome, codexSessionId)
+            const liveSession = store.sessions.getOrCreateSession('live-session', {
+                path: 'C:\\work\\project',
+                flavor: 'codex',
+                codexSessionId
+            }, {}, 'default')
+            store.messages.addMessage(liveSession.id, {
+                role: 'user',
+                content: { type: 'text', text: 'different from the transcript' }
+            }, 'live-1')
+            const engine = {
+                getSessionsByNamespace: () => [{ ...liveSession, active: true }]
+            } as unknown as SyncEngine
+
+            const result = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => engine
+            })
+
+            expect(result.success).toBe(false)
+            if (result.success) throw new Error('Expected active-session transcript import to fail')
+            expect(result.error).toContain('matching HAPI session is active')
+            expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(1)
+            expect(store.messages.getAllMessages(liveSession.id)).toHaveLength(1)
         } finally {
             store.close()
             rmSync(codexHome, { recursive: true, force: true })

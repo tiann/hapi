@@ -6,6 +6,7 @@ import Foundation
 public enum PushType: String, Sendable {
     case ready
     case permissionRequest = "permission-request"
+    case inputRequest = "input-request"
     case taskNotification = "task-notification"
 }
 
@@ -66,7 +67,7 @@ public struct PushPayload: Equatable, Sendable {
     public var url: String?
     public var title: String?
     public var body: String?
-    /// Permission requests only: the id for approve/deny.
+    /// Pending request id: approve/deny for permissions, correlation only for input requests.
     public var requestId: String?
     public var severity: PushSeverity?
     public var contractVersion: String?
@@ -90,6 +91,7 @@ public struct PushPayload: Equatable, Sendable {
         guard isKnownContractVersion else { return false }
         switch type {
         case .permissionRequest: return requestId != nil
+        case .inputRequest: return false // Answer in the session, never via Allow/Deny or message Reply.
         case .ready, .taskNotification: return true
         case nil: return false
         }

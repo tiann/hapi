@@ -2,7 +2,7 @@
 
 [Happy](https://github.com/slopus/happy) is an excellent project. So why build HAPI?
 
-**The short answer**: Happy uses a centralized server that stores your encrypted data. HAPI is decentralized — each user runs their own hub, and the relay server only forwards encrypted traffic without storing anything. These different goals lead to fundamentally different architectures.
+**The short answer**: Happy uses a centralized server that stores your encrypted data. HAPI is decentralized — each user runs their own hub, and the optional network relay forwards encrypted traffic rather than hosting your conversation history. These different goals lead to fundamentally different architectures.
 
 ## TL;DR
 
@@ -10,8 +10,8 @@
 |--------|-------|------|
 | **Architecture** | Centralized (cloud server stores encrypted data) | Decentralized (each user runs own hub) |
 | **Users** | Multi-user on shared server | Any number (each runs own hub) |
-| **Data** | Encrypted on server (server cannot read) | Stays on your machine |
-| **Encryption** | Application-layer E2EE (client encrypts before sending) | WireGuard + TLS via relay; or none needed if self-hosted |
+| **Session history** | Encrypted on server (server cannot read) | Stored on your own hub |
+| **Encryption** | Application-layer E2EE (client encrypts before sending) | WireGuard + TLS via relay; HTTPS for self-hosted remote access |
 | **Deployment** | Multiple services (PostgreSQL, Redis, app server) | Single binary |
 | **Complexity** | High (E2EE, key management, scaling) | Low (one command) |
 
@@ -56,14 +56,14 @@ The server stores encrypted data — it never sees plaintext, but it does hold y
 
 Each user runs their own hub. HAPI offers two modes of remote access:
 
-- **Self-hosted** (own server / Cloudflare Tunnel / Tailscale) — You control the full network path, no E2EE needed
+- **Self-hosted** (own server / Cloudflare Tunnel / Tailscale) — You choose the host and HTTPS endpoint
 - **Public relay** (`hapi hub --relay`) — E2E encrypted via tunwg (WireGuard + TLS); the relay only forwards opaque packets
 - **Single embedded database** — SQLite, no external services
 - **One-command deployment** — Single binary, zero config
 
 #### Mode 1: Self-Hosted (own server or tunnel)
 
-You control the entire path. No encryption beyond standard HTTPS is needed.
+You operate the hub and choose how to expose it. Use HTTPS for remote access; a third-party proxy that terminates TLS is part of that trust boundary.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -134,10 +134,10 @@ The relay server only forwards encrypted packets — it cannot read your data.
 
 | Aspect | Happy | HAPI |
 |--------|-------|------|
-| **Where data lives** | Cloud server (encrypted blobs) | Your own machine |
-| **Who stores it** | Central server holds encrypted data | Only your hub, locally |
+| **Where session history lives** | Cloud server (encrypted blobs) | Your own hub |
+| **Who stores it** | Central server holds encrypted data | Your hub; clients may cache data |
 | **Data at rest** | Encrypted (server cannot read) | Plaintext (protected by OS) |
-| **Server's role** | Stores encrypted data + syncs devices | Relay only forwards (or no server at all if self-hosted) |
+| **Server's role** | Stores encrypted data + syncs devices | Your hub stores history; optional relay forwards traffic |
 
 ### Deployment Model
 
@@ -203,14 +203,14 @@ Goal: Multi-user cloud platform
 ```
 Goal: Self-hosted tool — each user runs their own hub
          │
-         ├──► Data never leaves your machine
-         │         └──► No application-layer E2EE needed
+         ├──► History stored on your own hub
+         │         └──► No central HAPI history store
          │
          ├──► Each user has their own hub
          │         └──► No horizontal scaling needed; unlimited users in aggregate
          │
          ├──► Self-hosted access (own server/tunnel)
-         │         └──► You control the full path — HTTPS sufficient
+         │         └──► Your hub behind your chosen HTTPS endpoint
          │
          └──► Public relay access
                    └──► WireGuard + TLS (tunwg) — relay forwards only
@@ -223,7 +223,7 @@ Goal: Self-hosted tool — each user runs their own hub
 | Dimension | Happy | HAPI |
 |-----------|-------|------|
 | **Architecture** | Centralized cloud server | Decentralized (each user runs own hub) |
-| **Server's role** | Stores encrypted data | Relay only forwards (or none if self-hosted) |
+| **Server's role** | Stores encrypted data | Your hub stores history; optional relay forwards traffic |
 | **Data location** | Server (encrypted, zero-knowledge) | Local (plaintext, your machine) |
 | **Deployment** | Multiple services (PostgreSQL, Redis, Node.js) | Single binary (embedded SQLite) |
 | **Encryption** | Application-layer E2EE (client-side) | WireGuard + TLS (relay) or HTTPS (self-hosted) |
@@ -236,6 +236,6 @@ The architectural differences stem from a centralized vs decentralized design:
 
 - **Happy**: Centralized cloud server that stores your encrypted data. The server never sees plaintext (zero-knowledge), but it does hold your data. This requires application-layer E2EE, key management, and distributed infrastructure (PostgreSQL, Redis, scaling).
 
-- **HAPI**: Decentralized — each user runs their own hub. Your data stays on your machine. For remote access, you can self-host (own server or tunnel — no E2EE needed since you control the path) or use the public relay (WireGuard + TLS via tunwg — the relay only forwards encrypted packets it cannot read). This achieves one-command deployment with zero external dependencies.
+- **HAPI**: Decentralized — you run the hub that stores your session history, on your workstation or another host you control. Remote access uses your own HTTPS endpoint or the built-in encrypted network relay. The CLI, hub, web app, and SQLite database ship in one binary.
 
-The core tradeoff: Happy solves the "untrusted server" problem with sophisticated encryption. HAPI avoids the problem entirely by keeping your data on your own machine.
+The core tradeoff: Happy encrypts data for storage on its server; HAPI puts the history store under your control. Coding agents and optional voice, title-generation, and notification features still use their configured providers. See the [Privacy Policy](../privacy.md) for those data flows and native push relay metadata.

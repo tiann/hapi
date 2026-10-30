@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { ChatToolCall } from '@/chat/types'
 import { Badge } from '@/components/ui/badge'
@@ -11,6 +11,9 @@ import {
     isRequestUserInputQuestionAnswered,
     isRequestUserInputUrlConfirmed,
     openRequestUserInputUrl,
+    requestUserInputOptions,
+    selectRequestUserInputOption,
+    type RequestUserInputOption,
     type RequestUserInputQuestion
 } from '@/components/ToolCard/requestUserInput'
 import { cn } from '@/lib/utils'
@@ -42,6 +45,7 @@ function OptionRow(props: {
                 props.checked ? 'bg-[var(--app-subtle-bg)]' : null
             )}
             disabled={props.disabled}
+            aria-pressed={props.checked}
             onClick={props.onClick}
         >
             <SelectionMark checked={props.checked} />
@@ -82,6 +86,7 @@ export function RequestUserInputFooter(props: {
 
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
+    const noteRef = useRef<HTMLTextAreaElement>(null)
 
     useEffect(() => {
         setStep(0)
@@ -166,19 +171,17 @@ export function RequestUserInputFooter(props: {
         setStep((s) => Math.max(s - 1, 0))
     }
 
-    const selectOption = (question: RequestUserInputQuestion, optionLabel: string) => {
+    const selectOption = (question: RequestUserInputQuestion, option: RequestUserInputOption) => {
         haptic.selection()
+        setError(null)
         setStateByQuestion((prev) => ({
             ...prev,
             [question.id]: {
                 ...prev[question.id],
-                selected: question.multiple
-                    ? prev[question.id]?.selected.includes(optionLabel)
-                        ? prev[question.id].selected.filter((value) => value !== optionLabel)
-                        : [...(prev[question.id]?.selected ?? []), optionLabel]
-                    : [optionLabel]
+                selected: selectRequestUserInputOption(question, prev[question.id]?.selected ?? [], option)
             }
         }))
+        if (option.isOther) noteRef.current?.focus()
     }
 
     const updateUserNote = (questionId: string, value: string) => {
@@ -236,16 +239,16 @@ export function RequestUserInputFooter(props: {
                         // Question with options
                         <>
                             <div className="mt-3 flex flex-col gap-1">
-                                {currentQuestion.options.map((opt, optIdx) => {
+                                {requestUserInputOptions(currentQuestion).map((opt, optIdx) => {
                                     const isSelected = currentState?.selected.includes(opt.label) ?? false
                                     return (
                                         <OptionRow
                                             key={optIdx}
                                             checked={isSelected}
                                             disabled={props.disabled || loading}
-                                            title={opt.label}
-                                            description={opt.description}
-                                            onClick={() => selectOption(currentQuestion, opt.label)}
+                                            title={opt.isOther ? t('tool.requestUserInput.otherLabel') : opt.label}
+                                            description={opt.isOther ? t('tool.requestUserInput.otherDescription') : opt.description}
+                                            onClick={() => selectOption(currentQuestion, opt)}
                                         />
                                     )
                                 })}
@@ -257,6 +260,8 @@ export function RequestUserInputFooter(props: {
                                     {t('tool.requestUserInput.noteLabel')}
                                 </div>
                                 <textarea
+                                    ref={noteRef}
+                                    aria-label={t('tool.requestUserInput.noteLabel')}
                                     value={currentState?.userNote ?? ''}
                                     onChange={(e) => updateUserNote(currentQuestion.id, e.target.value)}
                                     disabled={props.disabled || loading}

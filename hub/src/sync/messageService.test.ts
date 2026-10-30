@@ -2,8 +2,8 @@
  * MessageService.cancelQueuedMessage race scenario tests
  *
  * Race-A: CLI ack returns { removed: true }  → DB DELETE + status='cancelled'
- * Race-B: CLI ack returns { removed: false } (already shift()-ed) → markMessagesInvoked + status='invoked'
- * Race-C: CLI ack times out (500 ms)         → markMessagesInvoked + status='invoked'
+ * Race-B: CLI ack returns { removed: false } → indeterminate + status='busy'
+ * Race-C: CLI ack times out (500 ms)         → indeterminate + status='busy'
  * Race-D (CLI offline): no CLI socket in room → immediate DELETE, message-cancelled emit, no ack call
  * Race-E (partial ack): broadcast ack receives err + [{ removed: true }] → DELETE + status='cancelled'
  */
@@ -12,6 +12,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MessageService } from './messageService'
+import type { EventPublisher } from './eventPublisher'
 import { Store } from '../store'
 import type { Server } from 'socket.io'
 import { SESSION_EXPORT_MESSAGE_LIMIT } from '@hapi/protocol/sessionExport'
@@ -56,7 +57,15 @@ function toProtocolSession(session: ReturnType<typeof makeSession>): Session {
     }
 }
 
-type AckCallback = (err: Error | null, responses: Array<{ removed: boolean }>) => void
+type AckCallback = (
+    err: Error | null,
+    responses: Array<{
+        removed: boolean
+        inFlight?: boolean
+        indeterminate?: boolean
+        consumed?: boolean
+    }>
+) => void
 
 function makeIo(onEmit: (ack: AckCallback) => void, socketCount = 1): Server {
     const broadcastRoom = {
@@ -94,6 +103,24 @@ function makePublisher() {
 // ---------------------------------------------------------------------------
 
 describe('MessageService goal status filtering', () => {
+    it('does not discard or replay an uncertain shared input on a not-found cancellation ACK', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('shared-unknown', { capabilities: { concurrentClients: true } }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'possibly executing' } }, 'shared-q')
+        store.messages.setMessagesDeliveryState(session.id, ['shared-q'], 'indeterminate')
+        const service = new MessageService(store, makeIo(ack => ack(null, [{ removed: false }])), makePublisher() as unknown as EventPublisher)
+        expect(await service.cancelQueuedMessage(session.id, 'shared-q')).toEqual({ status: 'busy', localId: 'shared-q' })
+        expect(await service.retryIndeterminateMessage(session.id, 'shared-q')).toEqual({ status: 'retry-unavailable', localId: 'shared-q' })
+        expect(store.messages.lookupQueuedMessage(session.id, 'shared-q').status).toBe('indeterminate')
+    })
+    it('does not discard a shared native queue when the worker is disconnected from the hub', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('shared-offline', { capabilities: { concurrentClients: true } }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'may be executing' } }, 'shared-q')
+        const service = new MessageService(store, makeIo(() => { throw new Error('offline') }, 0), makePublisher() as unknown as EventPublisher)
+        expect(await service.cancelQueuedMessage(session.id, 'shared-q')).toEqual({ status: 'busy', localId: 'shared-q' })
+        expect(store.messages.lookupQueuedMessage(session.id, 'shared-q').status).toBe('indeterminate')
+    })
     function redundantGoalStatusContent(message: string): unknown {
         return {
             role: 'agent',
@@ -609,8 +636,8 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
         })
     })
 
-    describe('Race-B: CLI ack removed:false (already shift()-ed) → markMessagesInvoked + status=invoked', () => {
-        it('returns invoked with message row when CLI says item was already consumed', async () => {
+    describe('Race-B: CLI ack removed:false is ambiguous → indeterminate + status=busy', () => {
+        it('does not claim delivery when the CLI cannot find the item', async () => {
             const store = makeStore()
             const session = makeSession(store, 'race-b')
             const msg = store.messages.addMessage(
@@ -621,47 +648,35 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
 
             const publisher = makePublisher()
             const io = makeIo((callback) => {
-                // CLI already shifted the item before the cancel arrived
+                // Not found does not distinguish a reservation from consumption.
                 callback(null, [{ removed: false }])
             })
 
             const service = new MessageService(store, io, publisher as any)
             const result = await service.cancelQueuedMessage(session.id, msg.id)
 
-            expect(result.status).toBe('invoked')
-            if (result.status === 'invoked') {
-                expect(result.message.id).toBe(msg.id)
-                expect(result.message.localId).toBe('local-b')
-                expect(result.message.invokedAt).not.toBeNull()
-            }
+            expect(result).toEqual({ status: 'busy', localId: 'local-b' })
 
-            // Row must still exist but now have invoked_at set
+            // The durable row remains held and is never presented as sent.
             const rows = store.messages.getMessages(session.id)
             const row = rows.find(r => r.id === msg.id)
             expect(row).toBeDefined()
-            expect(row!.invokedAt).not.toBeNull()
+            expect(row!.invokedAt).toBeNull()
+            expect(row!.deliveryState).toBe('indeterminate')
 
             // No message-cancelled SSE should have been emitted
             const cancelled = publisher.events.find(e => e.type === 'message-cancelled')
             expect(cancelled).toBeUndefined()
 
-            // messages-consumed SSE must be broadcast so other web clients clear the queued row
-            const consumed = publisher.events.find(e => e.type === 'messages-consumed')
-            expect(consumed).toBeDefined()
-            if (consumed?.type === 'messages-consumed') {
-                expect(consumed.sessionId).toBe(session.id)
-                expect(consumed.localIds).toEqual(['local-b'])
-                expect(typeof consumed.invokedAt).toBe('number')
-            }
-
-            // messages-consumed must be emitted exactly once
             const consumedCount = publisher.events.filter(e => e.type === 'messages-consumed').length
-            expect(consumedCount).toBe(1)
+            expect(consumedCount).toBe(0)
+            const held = publisher.events.find(e => e.type === 'messages-indeterminate')
+            expect(held).toBeDefined()
         })
     })
 
-    describe('Race-C: CLI ack timeout → markMessagesInvoked + status=invoked', () => {
-        it('returns invoked with message row when CLI does not respond within timeout', async () => {
+    describe('Race-C: CLI ack timeout → indeterminate + status=busy', () => {
+        it('does not claim delivery when the CLI does not respond', async () => {
             const store = makeStore()
             const session = makeSession(store, 'race-c')
             const msg = store.messages.addMessage(
@@ -679,34 +694,49 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
             const service = new MessageService(store, io, publisher as any)
             const result = await service.cancelQueuedMessage(session.id, msg.id)
 
-            expect(result.status).toBe('invoked')
-            if (result.status === 'invoked') {
-                expect(result.message.id).toBe(msg.id)
-                expect(result.message.invokedAt).not.toBeNull()
-            }
+            expect(result).toEqual({ status: 'busy', localId: 'local-c' })
 
-            // Row must still exist with invoked_at stamped
+            // Row remains held without invoked_at.
             const rows = store.messages.getMessages(session.id)
             const row = rows.find(r => r.id === msg.id)
             expect(row).toBeDefined()
-            expect(row!.invokedAt).not.toBeNull()
+            expect(row!.invokedAt).toBeNull()
+            expect(row!.deliveryState).toBe('indeterminate')
 
             // No message-cancelled SSE
             const cancelled = publisher.events.find(e => e.type === 'message-cancelled')
             expect(cancelled).toBeUndefined()
 
-            // messages-consumed SSE must be broadcast so other web clients clear the queued row
-            const consumed = publisher.events.find(e => e.type === 'messages-consumed')
-            expect(consumed).toBeDefined()
-            if (consumed?.type === 'messages-consumed') {
-                expect(consumed.sessionId).toBe(session.id)
-                expect(consumed.localIds).toEqual(['local-c'])
-                expect(typeof consumed.invokedAt).toBe('number')
-            }
-
-            // messages-consumed must be emitted exactly once
             const consumedCount = publisher.events.filter(e => e.type === 'messages-consumed').length
-            expect(consumedCount).toBe(1)
+            expect(consumedCount).toBe(0)
+            const held = publisher.events.find(e => e.type === 'messages-indeterminate')
+            expect(held).toBeDefined()
+        })
+    })
+
+    describe('positive consumed ACK', () => {
+        it('returns invoked only when the CLI explicitly confirms consumption', async () => {
+            const store = makeStore()
+            const session = makeSession(store, 'race-consumed')
+            const msg = store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: 'hello' } },
+                'local-consumed'
+            )
+            const publisher = makePublisher()
+            const io = makeIo((callback) => {
+                callback(null, [{ removed: false, consumed: true }])
+            })
+
+            const service = new MessageService(store, io, publisher as any)
+            const result = await service.cancelQueuedMessage(session.id, msg.id)
+
+            expect(result.status).toBe('invoked')
+            if (result.status === 'invoked') {
+                expect(result.message.localId).toBe('local-consumed')
+                expect(result.message.invokedAt).not.toBeNull()
+            }
+            expect(publisher.events.filter(e => e.type === 'messages-consumed')).toHaveLength(1)
         })
     })
 
@@ -835,12 +865,9 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
 
 describe('MessageService — cancel × mature race (scheduled messages)', () => {
     // The 5-second mature tick widens the cancel race window for scheduled
-    // messages compared to immediately-queued ones.  When mature fires first,
-    // the CLI shifts the row; a subsequent cancel call gets 'not-found' from
-    // the CLI ack, which stamps invoked_at (PR #568 contract preserved).
-    // The web client surfaces this as "sent".  This test documents that the
-    // behaviour is intentional — it is the expected outcome, not a bug.
-    it('cancel after mature-emit stamps invoked_at (race resolved as invoked — expected behavior)', async () => {
+    // messages compared to immediately-queued ones. When mature fires first,
+    // a later not-found cancel ACK is ambiguous and must not claim delivery.
+    it('holds a mature message as indeterminate after an ambiguous cancel ACK', async () => {
         const store = makeStore()
         const session = makeSession(store, 'race-sched-mature')
         const publisher = makePublisher()
@@ -867,17 +894,12 @@ describe('MessageService — cancel × mature race (scheduled messages)', () => 
         // Then cancel arrives — CLI says not-found
         const result = await service.cancelQueuedMessage(session.id, msg.id)
 
-        // Expected behavior: invoked_at is stamped (PR #568 contract preserved)
-        // Web client will show the message as "sent"
-        expect(result.status).toBe('invoked')
-        if (result.status === 'invoked') {
-            expect(result.message.localId).toBe('local-sched-race')
-            expect(result.message.invokedAt).not.toBeNull()
-        }
+        expect(result).toEqual({ status: 'busy', localId: 'local-sched-race' })
 
-        // messages-consumed SSE ensures web clients remove it from the queued bar
-        const consumed = publisher.events.find(e => e.type === 'messages-consumed')
-        expect(consumed).toBeDefined()
+        const held = store.messages.lookupQueuedMessage(session.id, msg.id)
+        expect(held.status).toBe('indeterminate')
+        expect(publisher.events.some(e => e.type === 'messages-consumed')).toBe(false)
+        expect(publisher.events.some(e => e.type === 'messages-indeterminate')).toBe(true)
     })
 })
 
@@ -1058,6 +1080,38 @@ describe('MessageService.sendMessage with scheduledAt', () => {
         expect(msgs[0].scheduledAt).toBeNull()
     })
 
+    it('mints a localId for senders that omit one so the agent echo dedupes', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'no-local-id')
+        const publisher = makePublisher()
+
+        const cliEmitted: Array<{ body: { message: { localId: string | null } } }> = []
+        const io = {
+            of: (ns: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (ns === '/cli') cliEmitted.push(data as typeof cliEmitted[number])
+                    },
+                    timeout: (_ms: number) => ({ emit: () => {} })
+                }),
+                adapter: { rooms: { get: () => undefined } }
+            })
+        } as unknown as Server
+
+        const service = new MessageService(store, io, publisher as any)
+        await service.sendMessage(session.id, { text: 'peer ping' })
+        await service.sendMessage(session.id, { text: 'peer ping' })
+
+        const [first, second] = cliEmitted.map((update) => update.body.message.localId)
+        expect(first).toEqual(expect.any(String))
+        expect(second).toEqual(expect.any(String))
+        expect(second).not.toBe(first)
+
+        // Shared Codex echoes the user turn back under the id it received.
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'peer ping' }, meta: { sentFrom: 'cli' } }, first!)
+        expect(store.messages.getMessages(session.id)).toHaveLength(2)
+    })
+
     it('past scheduledAt (already mature): emits to /cli immediately', async () => {
         const store = makeStore()
         const session = makeSession(store, 'sched-past')
@@ -1191,6 +1245,21 @@ describe('MessageService.sendMessage deliveryMode', () => {
         } as unknown as Server
         return { io, cliEmitted }
     }
+
+    it('skips the OpenCode delivery-gate scan when heartbeat replay has no queued messages', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'empty-heartbeat-replay')
+        const service = new MessageService(store, makeTrackingIo().io, makePublisher() as any)
+        const originalGateCheck = store.isOpenCodeClearDeliveryGated.bind(store)
+        let gateChecks = 0
+        store.isOpenCodeClearDeliveryGated = (sessionId: string) => {
+            gateChecks += 1
+            return originalGateCheck(sessionId)
+        }
+
+        expect(service.replayImmediateQueuedMessages(session.id)).toBe(0)
+        expect(gateChecks).toBe(0)
+    })
 
     it('persists Pi steer provenance but downgrades every deferred CLI delivery to queue', async () => {
         const store = makeStore()
@@ -1750,6 +1819,75 @@ describe('MessageService.sweepImmediateQueuedOnSessionEnd — scheduled rows are
         // Row is now stamped — bar can clear.
         const stillQueued = store.messages.getUninvokedLocalMessages(session.id)
         expect(stillQueued.find((m) => m.localId === 'local-imm')).toBeUndefined()
+    })
+
+    it('peer row (ping-peer- localId) is exempt: session-end cannot confirm an unconsumed peer message, replay preserves pending, real ACK confirms', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'peer-sweep-exempt')
+        const publisher = makePublisher()
+        const now = Date.now()
+
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'peer nudge' } },
+            'ping-peer-abc123'
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'ordinary' } },
+            'local-ordinary'
+        )
+
+        const service = new MessageService(store, makeNoopIo(), publisher as any)
+        const result = service.sweepImmediateQueuedOnSessionEnd(session.id, now)
+
+        // Ordinary row swept; peer row untouched — no synthetic confirmation.
+        expect(result?.localIds).toEqual(['local-ordinary'])
+        const consumed = publisher.events.filter(e => e.type === 'messages-consumed')
+        expect(consumed).toHaveLength(1)
+        expect((consumed[0] as { localIds: string[] }).localIds).toEqual(['local-ordinary'])
+
+        // Peer row stays pending (refresh/reconnect preserves it).
+        const stillQueued = store.messages.getUninvokedLocalMessages(session.id)
+        expect(stillQueued.find((m) => m.localId === 'ping-peer-abc123')?.invokedAt).toBeNull()
+
+        // Re-attach replay still re-emits the unconsumed peer row.
+        const { io, cliEmitted } = makeTrackingIo()
+        const service2 = new MessageService(store, io, publisher as any)
+        expect(service2.replayImmediateQueuedMessages(session.id)).toBe(1)
+        expect(cliEmitted).toHaveLength(1)
+
+        // A real runtime ACK confirms the peer row.
+        store.messages.markMessagesInvoked(session.id, ['ping-peer-abc123'], now + 1000)
+        expect(
+            store.messages.getUninvokedLocalMessages(session.id)
+                .find((m) => m.localId === 'ping-peer-abc123')
+        ).toBeUndefined()
+    })
+
+    it('duplicate ACK on a peer row preserves the original consumption timestamp (first-write-wins)', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'peer-dup-ack')
+        const now = Date.now()
+
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'peer nudge' } },
+            'ping-peer-dup1'
+        )
+
+        // Actual hub consumption: first ACK stamps invoked_at.
+        store.messages.markMessagesInvoked(session.id, ['ping-peer-dup1'], now)
+        const first = store.messages.getMessages(session.id)
+            .find((m) => m.localId === 'ping-peer-dup1')?.invokedAt
+        expect(first).toBe(now)
+
+        // Duplicate/late ACK must not move the timestamp.
+        store.messages.markMessagesInvoked(session.id, ['ping-peer-dup1'], now + 60_000)
+        expect(
+            store.messages.getMessages(session.id)
+                .find((m) => m.localId === 'ping-peer-dup1')?.invokedAt
+        ).toBe(now)
     })
 
     it('future scheduled (scheduled_at > now) is also preserved by the sweep', () => {

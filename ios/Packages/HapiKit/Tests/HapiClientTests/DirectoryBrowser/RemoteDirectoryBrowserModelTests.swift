@@ -49,6 +49,62 @@ private func directoryBrowserEventually(
 @Suite("RemoteDirectoryBrowserModel")
 @MainActor
 struct RemoteDirectoryBrowserModelTests {
+    @Test func defaultDirectoryIsIndependentOfBrowseBoundaries() {
+        var machine = Machine(
+            id: "m", namespace: "test", seq: 1, createdAt: 0, updatedAt: 0,
+            active: true, activeAt: 0,
+            metadata: MachineMetadata(host: "m", platform: "linux", happyCliVersion: "test", homeDir: "/home/dev"),
+            metadataVersion: 1, runnerStateVersion: 0
+        )
+        #expect(RemoteDirectoryPath.browseRoots(for: machine).isEmpty)
+        #expect(RemoteDirectoryPath.defaultDirectory(for: machine) == "/home/dev")
+        machine.metadata?.workspaceRoots = ["/data", "/work"]
+        #expect(RemoteDirectoryPath.browseRoots(for: machine) == ["/data", "/work"])
+        #expect(RemoteDirectoryPath.defaultDirectory(for: machine) == "/data")
+        #expect(RemoteDirectoryPath.expandHome("~/repo", homeDirectory: "/remote/home") == "/remote/home/repo")
+        #expect(RemoteDirectoryPath.expandHome("~", homeDirectory: "/remote/home") == "/remote/home")
+        #expect(RemoteDirectoryPath.expandHome("~\\repo", homeDirectory: "D:\\Users\\dev") == "D:\\Users\\dev\\repo")
+        #expect(RemoteDirectoryPath.filesystemRoot("D:\\Users\\dev") == "D:\\")
+        #expect(RemoteDirectoryPath.filesystemRoot("\\\\server\\share\\repo") == "\\\\server\\share")
+        #expect(!RemoteDirectoryPath.allowsBrowsing(path: "relative/path", roots: []))
+    }
+
+    @Test func unrestrictedBrowserPreservesExternalInputAndNavigatesAboveHome() async {
+        let requester = FakeMachineDirectoryRequester()
+        let model = RemoteDirectoryBrowserModel(requester: requester)
+        model.open(machineId: "m", roots: [], initialPath: "/data/github/hapi", defaultPath: "/home/dev")
+        #expect(await directoryBrowserEventually { !model.isLoading })
+        #expect(model.path == "/data/github/hapi")
+        #expect(model.breadcrumbs.map(\.path) == ["/", "/data", "/data/github", "/data/github/hapi"])
+        model.navigate(to: "/home/dev")
+        model.navigateUp()
+        #expect(await directoryBrowserEventually { !model.isLoading })
+        #expect(model.path == "/home")
+        model.navigate(to: "/")
+        #expect(await directoryBrowserEventually { !model.isLoading })
+        #expect(!model.canGoUp)
+        model.open(machineId: "m", roots: [], initialPath: "", defaultPath: "/home/dev")
+        #expect(model.path == "/home/dev")
+        model.close()
+    }
+
+    @Test func configuredRootsRemainBoundariesAndSupportSwitchingRoots() async {
+        let requester = FakeMachineDirectoryRequester()
+        let model = RemoteDirectoryBrowserModel(requester: requester)
+        model.open(machineId: "m", roots: ["/data", "/work"], initialPath: "/home/dev", defaultPath: "/home/dev")
+        #expect(await directoryBrowserEventually { !model.isLoading })
+        #expect(model.path == "/data")
+        #expect(!model.canGoUp)
+        model.navigate(to: "/work/repo")
+        #expect(await directoryBrowserEventually { !model.isLoading })
+        #expect(model.breadcrumbs.map(\.path) == ["/work", "/work/repo"])
+        model.navigateUp()
+        #expect(await directoryBrowserEventually { !model.isLoading })
+        #expect(model.path == "/work")
+        #expect(!model.canGoUp)
+        model.close()
+    }
+
     @Test func pathBoundariesSupportPosixDriveAndUNCPaths() {
         #expect(RemoteDirectoryPath.isWithinRoot(path: "/workspace/repo", root: "/workspace"))
         #expect(!RemoteDirectoryPath.isWithinRoot(path: "/workspace-other/repo", root: "/workspace"))

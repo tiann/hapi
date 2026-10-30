@@ -17,7 +17,7 @@ import { HappyUserMessage } from '@/components/AssistantChat/messages/UserMessag
 import { HappySystemMessage } from '@/components/AssistantChat/messages/SystemMessage'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/Spinner'
-import { useTerminalToolDisplayMode } from '@/hooks/useTerminalToolDisplayMode'
+import { getToolCardDisplayPresentation, useToolCardDisplayMode } from '@/hooks/useToolCardDisplayMode'
 import { useTranslation } from '@/lib/use-translation'
 import { CloseIcon } from '@/components/icons'
 import { ShareTurnDialog } from '@/components/AssistantChat/ShareTurnDialog'
@@ -29,10 +29,12 @@ import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useMachineLabels } from '@/hooks/useMachineLabels'
 import { resolveSessionHeaderMachineLabel } from '@/components/SessionHeader'
+import { getSessionProjectLabel, getSessionProjectPath } from '@/lib/sessionProjectLabel'
 import { formatRelativeTime } from '@/lib/relativeTime'
 import { formatSessionHeaderTimestamp } from '@/lib/sessionHeaderTimestamp'
 import { getShareTurnReasoningLabel, selectShareTurnMetadata } from '@/lib/shareTurnMetadata'
 import { useMinuteTick } from '@/hooks/useMinuteTick'
+import { useTransientScrollbar } from '@/hooks/useTransientScrollbar'
 import { queryKeys } from '@/lib/query-keys'
 import { matchesSearchQuery } from '@hapi/protocol'
 
@@ -140,7 +142,6 @@ const TOP_PULL_TRIGGER_PX = 64
 // Trackpads emit a burst per swipe; one signal is enough to restart a paused
 // run after its bounded retry budget is exhausted.
 const WHEEL_GESTURE_GAP_MS = 250
-const KEYBOARD_SCROLL_INTENT_WINDOW_MS = 750
 const POINTER_CANCEL_INTENT_WINDOW_MS = 750
 const UPWARD_SCROLL_KEYS = new Set(['ArrowUp', 'PageUp', 'Home'])
 
@@ -158,6 +159,7 @@ type ScrollIntent = {
     distanceFromBottom: number
     isNearBottom: boolean
     isScrollingUp: boolean
+    isScrollingDown: boolean
 }
 
 type LocateOutlineTargetOptions = {
@@ -179,8 +181,33 @@ export function getScrollIntent(params: {
     return {
         distanceFromBottom,
         isNearBottom: distanceFromBottom <= thresholdPx,
-        isScrollingUp: params.scrollTop < params.previousScrollTop - MANUAL_SCROLL_EPSILON_PX
+        isScrollingUp: params.scrollTop < params.previousScrollTop - MANUAL_SCROLL_EPSILON_PX,
+        isScrollingDown: params.scrollTop > params.previousScrollTop + MANUAL_SCROLL_EPSILON_PX
     }
+}
+
+export function shouldShowScrollToBottomButton(intent: ScrollIntent): boolean {
+    return intent.isScrollingDown && !intent.isNearBottom
+}
+
+export function getScrollToBottomButtonVisibility(
+    wasVisible: boolean,
+    intent: ScrollIntent
+): boolean {
+    if (intent.isNearBottom || intent.isScrollingUp) {
+        return false
+    }
+    if (intent.isScrollingDown) {
+        return true
+    }
+    return wasVisible
+}
+
+export function shouldRenderScrollToBottomButton(
+    isVisible: boolean,
+    unseenCount: number
+): boolean {
+    return isVisible && unseenCount === 0
 }
 
 export function shouldCancelInitialScrollSettling(
@@ -258,20 +285,54 @@ export function getHistoryCoverageRetryDelay(deadline: number, now: number): num
     return Math.max(0, deadline - now) + 16
 }
 
-function NewMessagesIndicator(props: { count: number; onClick: () => void }) {
+const SCROLL_TO_BOTTOM_BUTTON_CLASS = 'absolute bottom-0 right-2 z-10 h-6 w-6 rounded-full border-[var(--app-border)] bg-[var(--app-secondary-bg)] px-0 text-[var(--app-fg)] hover:bg-[var(--app-bg)]'
+
+function ScrollToBottomButton(props: { onClick: () => void; count?: number }) {
     const { t } = useTranslation()
+    const hasCount = typeof props.count === 'number'
+    const label = hasCount
+        ? `${t('misc.newMessage', { n: props.count! })} — ${t('misc.scrollToBottom')}`
+        : t('misc.scrollToBottom')
+    const buttonClass = hasCount
+        ? 'absolute bottom-0 right-2 z-10 h-6 w-6 rounded-full border-[var(--app-button)] bg-[var(--app-button)] px-0 text-[var(--app-button-text)] hover:opacity-90'
+        : SCROLL_TO_BOTTOM_BUTTON_CLASS
+
+    return (
+        <Button
+            variant="outline"
+            type="button"
+            onClick={props.onClick}
+            aria-label={label}
+            title={label}
+            className={buttonClass}
+        >
+            {hasCount ? (
+                <span className="translate-y-px text-[10px] font-semibold leading-none tabular-nums" aria-hidden="true">
+                    {props.count! > 99 ? '99+' : props.count}
+                </span>
+            ) : (
+                <svg
+                    className="h-4 w-4 translate-y-px"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                >
+                    <path d="m6 9 6 6 6-6" />
+                </svg>
+            )}
+        </Button>
+    )
+}
+
+function NewMessagesIndicator(props: { count: number; onClick: () => void }) {
     if (props.count === 0) {
         return null
     }
-
-    return (
-        <button
-            onClick={props.onClick}
-            className="absolute bottom-20 left-1/2 -translate-x-1/2 bg-[var(--app-button)] text-[var(--app-button-text)] px-3 py-1.5 rounded-full text-sm font-medium shadow-lg animate-bounce-in z-10"
-        >
-            {t('misc.newMessage', { n: props.count })} &#8595;
-        </button>
-    )
+    return <ScrollToBottomButton count={props.count} onClick={props.onClick} />
 }
 
 function MessageSkeleton() {
@@ -472,6 +533,7 @@ export function HappyThread(props: {
     metadata: SessionMetadataSummary | null
     disabled: boolean
     onRefresh: () => void
+    onContinuePlan?: () => void
     onRetryMessage?: (localId: string) => void
     historyActionPending?: boolean
     onForkConversation?: (messageLocalId?: string) => Promise<void>
@@ -501,12 +563,18 @@ export function HappyThread(props: {
     const machineLabelsById = useMachineLabels(machines)
     const [shareTurn, setShareTurn] = useState<ShareTurnState>(null)
     const shareDialogOpen = shareTurn !== null
+    const getGeneratedMediaBlob = useCallback(
+        (imageId: string) => props.api.getGeneratedImageBlob(props.sessionId, imageId),
+        [props.api, props.sessionId]
+    )
     const shareTitle = shareTurn ? getSessionTitle(props.session) : ''
     const shareRelativeTimeTick = useMinuteTick(headerMetadata.lastActive && shareDialogOpen)
     const shareMetadataItems = useMemo(() => {
         const agentFlavor = props.session.metadata?.flavor ?? null
         const agentLabel = agentFlavor?.trim() || null
         const machineLabel = resolveSessionHeaderMachineLabel(props.session, machineLabelsById)
+        const projectPath = getSessionProjectPath(props.session.metadata)
+        const projectLabel = projectPath ? getSessionProjectLabel(projectPath) : null
         const modelLabel = getSessionModelLabel(props.session)
         const reasoningLabel = getShareTurnReasoningLabel(
             agentFlavor,
@@ -524,6 +592,9 @@ export function HappyThread(props: {
 
         return selectShareTurnMetadata(headerMetadata, {
             agent: agentLabel ? { text: agentLabel, flavor: agentFlavor } : undefined,
+            project: projectLabel ? {
+                text: `${headerMetadata.showLabels ? `${t('session.item.project')}: ` : ''}${projectLabel}`,
+            } : undefined,
             machine: machineLabel ? {
                 text: `${headerMetadata.showLabels ? `${t('session.item.machine')}: ` : ''}${machineLabel}`,
             } : undefined,
@@ -544,7 +615,8 @@ export function HappyThread(props: {
             } : undefined,
         })
     }, [headerMetadata, locale, machineLabelsById, props.serviceTier, props.session, shareDialogOpen, shareRelativeTimeTick, t])
-    const { terminalToolDisplayMode } = useTerminalToolDisplayMode()
+    const { toolCardDisplayMode } = useToolCardDisplayMode()
+    const { terminalToolDisplayMode } = getToolCardDisplayPresentation(toolCardDisplayMode)
     const hubSettingsQuery = useQuery({
         queryKey: queryKeys.hubSettings,
         queryFn: async () => props.api.getHubSettings(),
@@ -558,8 +630,10 @@ export function HappyThread(props: {
     const appliedMessagesVersion = runtimeExtras?.messagesVersion ?? props.messagesVersion
     const appliedHistoryVersion = runtimeExtras?.historyVersion ?? props.historyVersion
     const viewportRef = useRef<HTMLDivElement | null>(null)
+    useTransientScrollbar(viewportRef, 'right')
     const contentRef = useRef<HTMLDivElement | null>(null)
     const [pullToLoadState, setPullToLoadState] = useState<PullToLoadState>('idle')
+    const [showScrollToBottom, setShowScrollToBottom] = useState(false)
     const pullToLoadStateRef = useRef<PullToLoadState>('idle')
     const shareTurnIdRef = useRef(0)
     const topSentinelRef = useRef<HTMLDivElement | null>(null)
@@ -628,6 +702,9 @@ export function HappyThread(props: {
     useEffect(() => {
         isSyncingTailRef.current = props.isSyncingTail
     }, [props.isSyncingTail])
+    useLayoutEffect(() => {
+        isLoadingMoreRef.current = props.isLoadingMoreMessages
+    }, [props.isLoadingMoreMessages])
     useEffect(() => {
         onLoadMoreRef.current = props.onLoadMore
     }, [props.onLoadMore])
@@ -723,7 +800,7 @@ export function HappyThread(props: {
         let pointerResumeActive = false
         let pointerResumeUntil = 0
         let pointerResumeLatched = false
-        let keyboardResumeUntil = 0
+        let keyboardResumeActive = false
         let lastWheelAt = 0
         let wheelIntentUntil = 0
         let wheelLatched = false
@@ -732,7 +809,7 @@ export function HappyThread(props: {
             return intent.isScrollingUp && (
                 pointerResumeActive
                 || pointerResumeUntil >= Date.now()
-                || keyboardResumeUntil >= Date.now()
+                || keyboardResumeActive
                 || wheelIntentUntil >= Date.now()
             )
         }
@@ -745,8 +822,8 @@ export function HappyThread(props: {
                 pointerResumeLatched = true
                 return true
             }
-            if (keyboardResumeUntil >= Date.now()) {
-                keyboardResumeUntil = 0
+            if (keyboardResumeActive) {
+                keyboardResumeActive = false
                 return true
             }
             if (wheelIntentUntil >= Date.now() && !wheelLatched) {
@@ -757,6 +834,9 @@ export function HappyThread(props: {
         }
 
         const handleScroll = () => {
+            if (viewport.scrollTop > lastScrollTopRef.current) {
+                keyboardResumeActive = false
+            }
             const intent = getScrollIntent({
                 scrollTop: viewport.scrollTop,
                 scrollHeight: viewport.scrollHeight,
@@ -791,6 +871,7 @@ export function HappyThread(props: {
             const explicitUpwardIntent = needsCoverage && consumeExplicitUpwardIntent(intent)
 
             if (isInitialScrollSettling()) {
+                setShowScrollToBottom(false)
                 if (shouldCancelInitialScrollSettling(intent, hadExplicitUpwardIntent)) {
                     initialScrollDeadlineRef.current = 0
                     clearInitialScrollTimers()
@@ -810,8 +891,29 @@ export function HappyThread(props: {
                 void requestOlderRef.current(explicitUpwardIntent ? 'user' : 'coverage')
             }
 
+            // Content growth and viewport resizes (mobile keyboard) move the
+            // tail without any user gesture. While tail-follow is active, treat
+            // a non-upward scroll as layout churn and re-pin to the newest
+            // message instead of silently dropping out of tail mode.
+            if (
+                autoScrollEnabledRef.current
+                && !intent.isScrollingUp
+                && !tailScrollInProgressRef.current
+                && !pendingScrollRef.current
+            ) {
+                setShowScrollToBottom(false)
+                setAutoScrollMode(true)
+                setAtBottomMode(true)
+                if (!intent.isNearBottom) {
+                    viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'instant' })
+                    lastScrollTopRef.current = viewport.scrollTop
+                }
+                return
+            }
+
             if (intent.isScrollingUp && intent.distanceFromBottom > MANUAL_SCROLL_EPSILON_PX) {
                 tailScrollInProgressRef.current = false
+                setShowScrollToBottom(false)
                 setAutoScrollMode(false)
                 setAtBottomMode(false)
                 return
@@ -819,6 +921,7 @@ export function HappyThread(props: {
 
             if (intent.isNearBottom) {
                 tailScrollInProgressRef.current = false
+                setShowScrollToBottom(false)
                 setAutoScrollMode(true)
                 setAtBottomMode(true)
                 return
@@ -829,9 +932,11 @@ export function HappyThread(props: {
             // must not be mistaken for ordinary history browsing. Keep tail
             // mode armed until the animation arrives or the user reverses it.
             if (tailScrollInProgressRef.current) {
+                setShowScrollToBottom(false)
                 return
             }
 
+            setShowScrollToBottom((wasVisible) => getScrollToBottomButtonVisibility(wasVisible, intent))
             setAutoScrollMode(false)
             setAtBottomMode(false)
         }
@@ -851,6 +956,9 @@ export function HappyThread(props: {
 
         const handleKeyDown = (event: KeyboardEvent) => {
             if (isNestedScrollEvent(event)) return
+            if (!UPWARD_SCROLL_KEYS.has(event.key)) {
+                keyboardResumeActive = false
+            }
             const target = event.target
             if (
                 event.defaultPrevented
@@ -865,14 +973,17 @@ export function HappyThread(props: {
             ) {
                 return
             }
-            keyboardResumeUntil = Date.now() + KEYBOARD_SCROLL_INTENT_WINDOW_MS
+            // Native keyboard scrolling can outlive a fixed intent timeout.
+            // Keep this gesture armed until consumed, completed, or cancelled.
+            keyboardResumeActive = true
             if (needsViewportCoverageRef.current()) {
-                keyboardResumeUntil = 0
+                keyboardResumeActive = false
                 void requestOlderRef.current('user')
             }
         }
 
         const armPointerIntent = () => {
+            keyboardResumeActive = false
             pointerResumeActive = true
             pointerResumeUntil = 0
             pointerResumeLatched = false
@@ -933,6 +1044,7 @@ export function HappyThread(props: {
 
         const handleWheel = (event: WheelEvent) => {
             if (isNestedScrollEvent(event)) return
+            keyboardResumeActive = false
             if (event.deltaY >= 0) {
                 wheelIntentUntil = 0
                 return
@@ -956,6 +1068,7 @@ export function HappyThread(props: {
 
         const handleTouchStart = (event: TouchEvent) => {
             if (isNestedScrollEvent(event)) return
+            keyboardResumeActive = false
             updatePullToLoadState('idle')
             pullStartY = (
                 viewport.scrollTop <= 0
@@ -1002,7 +1115,21 @@ export function HappyThread(props: {
             updatePullToLoadState('idle')
         }
 
+        const clearKeyboardIntent = () => {
+            keyboardResumeActive = false
+        }
+        const handleScrollEnd = (event: Event) => {
+            if (event.target !== viewport) return
+            // Recheck the final geometry before retiring unconsumed demand.
+            if (keyboardResumeActive && needsViewportCoverageRef.current()) {
+                void requestOlderRef.current('user')
+            }
+            clearKeyboardIntent()
+        }
+
         viewport.addEventListener('scroll', handleScroll, { passive: true })
+        viewport.addEventListener('scrollend', handleScrollEnd)
+        viewport.addEventListener('focusout', clearKeyboardIntent)
         viewport.addEventListener('keydown', handleKeyDown)
         viewport.addEventListener('pointerdown', handlePointerDown, { passive: true })
         viewport.addEventListener('wheel', handleWheel, { passive: true })
@@ -1016,8 +1143,11 @@ export function HappyThread(props: {
         window.addEventListener('mouseup', clearPointerIntent, { passive: true })
         window.addEventListener('pointercancel', handlePointerCancel, { passive: true })
         window.addEventListener('blur', clearPointerIntent)
+        window.addEventListener('blur', clearKeyboardIntent)
         return () => {
             viewport.removeEventListener('scroll', handleScroll)
+            viewport.removeEventListener('scrollend', handleScrollEnd)
+            viewport.removeEventListener('focusout', clearKeyboardIntent)
             viewport.removeEventListener('keydown', handleKeyDown)
             viewport.removeEventListener('pointerdown', handlePointerDown)
             viewport.removeEventListener('wheel', handleWheel)
@@ -1031,14 +1161,29 @@ export function HappyThread(props: {
             window.removeEventListener('mouseup', clearPointerIntent)
             window.removeEventListener('pointercancel', handlePointerCancel)
             window.removeEventListener('blur', clearPointerIntent)
+            window.removeEventListener('blur', clearKeyboardIntent)
         }
     }, []) // Stable: no dependencies, reads from refs
 
     const scrollToBottomInstant = useCallback(() => {
         const viewport = viewportRef.current
+        setShowScrollToBottom(false)
         if (viewport) {
             viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'instant' })
             lastScrollTopRef.current = viewport.scrollTop
+        }
+    }, [])
+
+    const scrollToBottomSmooth = useCallback(() => {
+        const viewport = viewportRef.current
+        const content = contentRef.current
+        if (!viewport) {
+            return
+        }
+        if (content && typeof content.scrollIntoView === 'function') {
+            content.scrollIntoView({ block: 'end', behavior: 'smooth' })
+        } else {
+            viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'smooth' })
         }
     }, [])
 
@@ -1052,20 +1197,26 @@ export function HappyThread(props: {
     // Scroll to bottom handler for the indicator button
     const scrollToBottom = useCallback(() => {
         const viewport = viewportRef.current
+        setShowScrollToBottom(false)
         if (viewport) {
             tailScrollInProgressRef.current = true
-            viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'smooth' })
+            // Match outline navigation's native smooth-scroll path. Keep
+            // instant tail-following disabled until the smooth animation
+            // reaches the bottom, otherwise a resize/state update can snap
+            // the viewport there before the animation is visible.
+            autoScrollEnabledRef.current = false
+            scrollToBottomSmooth()
             lastScrollTopRef.current = viewport.scrollTop
         }
-        autoScrollEnabledRef.current = true
         if (!atBottomRef.current) {
             atBottomRef.current = true
             onViewModeChangeRef.current('tail')
         }
-    }, [])
+    }, [scrollToBottomSmooth])
 
     // Reset state when session changes
     useLayoutEffect(() => {
+        setShowScrollToBottom(false)
         autoScrollEnabledRef.current = true
         tailScrollInProgressRef.current = false
         lastScrollTopRef.current = viewportRef.current?.scrollTop ?? 0
@@ -1451,8 +1602,12 @@ export function HappyThread(props: {
         const observer = new ResizeObserver(() => {
             // Message DOM can grow after messagesVersion commits (assistant-ui
             // updates its external runtime in an effect, then markdown/tool
-            // content may resize). Keep following while the user is at bottom.
-            if (
+            // content may resize). Keep a smooth tail jump aligned with the
+            // newest content until it reaches the bottom; otherwise the
+            // browser's original smooth-scroll target can become stale.
+            if (tailScrollInProgressRef.current && !pendingScrollRef.current) {
+                scrollToBottomSmooth()
+            } else if (
                 autoScrollEnabledRef.current
                 && atBottomRef.current
                 && !pendingScrollRef.current
@@ -1474,6 +1629,7 @@ export function HappyThread(props: {
         return () => observer.disconnect()
     }, [
         scrollToBottomInstant,
+        scrollToBottomSmooth,
         isInitialScrollSettling,
         needsViewportCoverage,
         scheduleCoverageAfterSettling
@@ -1528,10 +1684,6 @@ export function HappyThread(props: {
         settlePendingLoad,
         clearFailureRetryTimer
     ])
-
-    useEffect(() => {
-        isLoadingMoreRef.current = props.isLoadingMoreMessages
-    }, [props.isLoadingMoreMessages])
 
     const showSkeleton = props.isSyncingTail && props.rawMessagesCount === 0
     const handleShareTurn = useCallback((
@@ -1611,6 +1763,9 @@ export function HappyThread(props: {
             showSessionSummaryInChat,
             disabled: props.disabled,
             onRefresh: props.onRefresh,
+            codexPlanProposalId: props.session.active && props.session.metadata?.capabilities?.concurrentClients
+                ? props.session.agentState?.codexPlanProposalId : null,
+            onContinuePlan: props.onContinuePlan,
             onRetryMessage: props.onRetryMessage,
             historyActionPending: props.historyActionPending,
             onForkConversation: props.onForkConversation,
@@ -1653,7 +1808,7 @@ export function HappyThread(props: {
                 >
                     <div
                         ref={viewportRef}
-                        className="app-scroll-y chat-scroll-y min-h-0 flex-1 overflow-x-hidden focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--app-link)]"
+                        className="app-scroll-y chat-scroll-y scrollbar-auto-hide min-h-0 flex-1 overflow-x-hidden focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--app-link)]"
                         tabIndex={0}
                     >
                         <div ref={contentRef} className="chat-scroll-content mx-auto w-full max-w-content min-w-0 p-3">
@@ -1682,6 +1837,9 @@ export function HappyThread(props: {
                     </div>
                 </ThreadPrimitive.Viewport>
                 <NewMessagesIndicator count={props.unseenCount} onClick={scrollToBottom} />
+                {shouldRenderScrollToBottomButton(showScrollToBottom, props.unseenCount) ? (
+                    <ScrollToBottomButton onClick={scrollToBottom} />
+                ) : null}
                 {props.outlineOpen ? (
                     <>
                         <button
@@ -1709,6 +1867,7 @@ export function HappyThread(props: {
                     metadataItems={shareMetadataItems}
                     sourceSnapshots={shareTurn?.snapshots ?? []}
                     sourceContentWidth={shareTurn?.sourceContentWidth ?? null}
+                    getGeneratedMediaBlob={getGeneratedMediaBlob}
                     onClose={() => setShareTurn(null)}
                 />
             </ThreadPrimitive.Root>

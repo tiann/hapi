@@ -227,7 +227,7 @@ object MessageWindowLogic {
         val effectiveMode = mode
             ?: if (previous.viewMode == MessageViewMode.History) TrimMode.Prepend else TrimMode.Append
         val effectiveLimit = regularLimit
-            ?: if (previous.viewMode == MessageViewMode.History) HISTORY_WINDOW_SIZE else VISIBLE_WINDOW_SIZE
+            ?: if (previous.viewMode == MessageViewMode.History) previous.historyRetentionLimit else VISIBLE_WINDOW_SIZE
         val merged = MessageMerge.mergeMessages(previous.messages, retainedIncoming)
         val (kept, dropped) = trimPreservingQueued(merged, effectiveLimit, effectiveMode).let { it.kept to it.dropped }
         var next = previous.withMessages(kept)

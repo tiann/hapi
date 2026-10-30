@@ -8,6 +8,7 @@ import { queryKeys } from '@/lib/query-keys'
 const locales: ReadonlyArray<{ value: Locale; label: string }> = [
     { value: 'en', label: 'English' },
     { value: 'zh-CN', label: '简体中文' },
+    { value: 'ru', label: 'Русский' },
 ]
 
 function getNamespace(token: string | null): string | null {
@@ -56,7 +57,10 @@ export default function SettingsGeneralPage() {
                 <SettingsChoiceGroup hideLabel label={t('settings.language.label')} value={locale} options={locales} onChange={setLocale} />
             </SettingsSection>
             {isOwner ? (
-                <SettingsSection title={t('settings.general.agents.title')} description={t('settings.general.agents.description')}>
+                <SettingsSection
+                    title={t('settings.general.sessionSummary.title')}
+                    description={t('settings.general.sessionSummary.description')}
+                >
                     {hubSettingsQuery.data ? (
                         <>
                             <SettingsSwitch

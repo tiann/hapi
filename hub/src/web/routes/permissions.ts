@@ -2,6 +2,7 @@ import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
 import { PermissionModeSchema } from '@hapi/protocol/schemas'
 import { Hono } from 'hono'
 import { z } from 'zod'
+import { PermissionRequestNotFoundError } from '../../sync/rpcGateway'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
@@ -64,7 +65,14 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
         const allowTools = parsed.data.allowTools
         const decision = parsed.data.decision
         const answers = parsed.data.answers
-        await engine.approvePermission(sessionId, requestId, mode, allowTools, decision, answers)
+        try {
+            await engine.approvePermission(sessionId, requestId, mode, allowTools, decision, answers)
+        } catch (error) {
+            if (error instanceof PermissionRequestNotFoundError) {
+                return c.json({ error: error.message }, 409)
+            }
+            throw error
+        }
         return c.json({ ok: true })
     })
 
@@ -93,7 +101,14 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
             return c.json({ error: 'Invalid body' }, 400)
         }
 
-        await engine.denyPermission(sessionId, requestId, parsed.data.decision)
+        try {
+            await engine.denyPermission(sessionId, requestId, parsed.data.decision)
+        } catch (error) {
+            if (error instanceof PermissionRequestNotFoundError) {
+                return c.json({ error: error.message }, 409)
+            }
+            throw error
+        }
         return c.json({ ok: true })
     })
 

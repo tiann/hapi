@@ -2,11 +2,11 @@
  * APNs client for the HAPI push relay: ES256 provider-token auth (jose) plus
  * a persistent HTTP/2 connection (node:http2).
  *
- * NOTE - deliberate duplication: hub/src/apns/ (work package P1) carries the
+ * NOTE - deliberate duplication: hub/src/push-ios/apnsClient.ts carries the
  * hub's own APNs JWT + HTTP/2 client for hubs that self-configure an APNs
  * key. The two copies are kept separate on purpose so the relay stays a
  * standalone, dependency-light deployable that never imports hub code. If
- * you fix a protocol bug here, check the twin in hub/src/apns/.
+ * you fix a protocol bug here, check the twin in hub/src/push-ios/.
  *
  * Bun compatibility: verified on Bun 1.3.14 - Bun's node:http2 client talks
  * to a real node:http2 server (the tests in apns.test.ts exercise exactly
@@ -44,7 +44,7 @@ export type ApnsJwtProviderOptions = {
 }
 
 export class ApnsJwtProvider {
-    private cached: { token: string; issuedAtMs: number } | undefined
+    private cached: { token: Promise<string>; issuedAtMs: number } | undefined
     private keyPromise: Promise<ApnsSigningKey> | undefined
 
     constructor(private readonly options: ApnsJwtProviderOptions) {}
@@ -54,14 +54,27 @@ export class ApnsJwtProvider {
         if (this.cached !== undefined && nowMs - this.cached.issuedAtMs <= APNS_JWT_MAX_AGE_MS) {
             return this.cached.token
         }
+        // Cache the signing work before awaiting it so concurrent pushes use
+        // the same JWT, including on startup and when the old token expires.
+        const token = this.signToken(nowMs)
+        this.cached = { token, issuedAtMs: nowMs }
+        try {
+            return await token
+        } catch (error) {
+            if (this.cached?.token === token) {
+                this.cached = undefined
+            }
+            throw error
+        }
+    }
+
+    private async signToken(nowMs: number): Promise<string> {
         const key = await this.getKey()
-        const token = await new SignJWT({})
+        return new SignJWT({})
             .setProtectedHeader({ alg: 'ES256', kid: this.options.keyId })
             .setIssuer(this.options.teamId)
             .setIssuedAt(Math.floor(nowMs / 1000))
             .sign(key)
-        this.cached = { token, issuedAtMs: nowMs }
-        return token
     }
 
     /** Drop the cached token so the next getToken() mints a fresh one. */

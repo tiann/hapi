@@ -45,7 +45,7 @@ export function formatMessageTimestamp(date: Date, now: Date = new Date()): stri
 
 export function formatOutlineTimestamp(
     date: Date,
-    locale: 'en' | 'zh-CN',
+    locale: 'en' | 'zh-CN' | 'ru',
     now: Date = new Date()
 ): string {
     const sameDay = date.getFullYear() === now.getFullYear()
@@ -64,6 +64,11 @@ export function formatOutlineTimestamp(
 
     if (locale === 'zh-CN') {
         const dateLabel = sameYear ? `${month}月${day}日` : `${year}年${month}月${day}日`
+        return `${dateLabel} ${time}`
+    }
+
+    if (locale === 'ru') {
+        const dateLabel = sameYear ? `${day}.${month}` : `${day}.${month}.${year}`
         return `${dateLabel} ${time}`
     }
 
@@ -94,9 +99,16 @@ function formatLimitType(limitType: string | undefined): string {
 export function formatDuration(ms: number): string {
     const seconds = ms / 1000
     if (seconds < 60) return `${seconds.toFixed(1)}s`
-    const mins = Math.floor(seconds / 60)
-    const secs = Math.round(seconds % 60)
-    return `${mins}m ${secs}s`
+
+    const totalSeconds = Math.round(seconds)
+    const hours = Math.floor(totalSeconds / 3_600)
+    const minutes = Math.floor((totalSeconds % 3_600) / 60)
+    const remainingSeconds = totalSeconds % 60
+    const parts: string[] = []
+    if (hours > 0) parts.push(`${hours}h`)
+    if (minutes > 0) parts.push(`${minutes}m`)
+    if (remainingSeconds > 0) parts.push(`${remainingSeconds}s`)
+    return parts.join(' ')
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

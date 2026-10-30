@@ -63,15 +63,29 @@ public struct ConversationHistoryCapabilities: Codable, Equatable, Sendable {
 
 /// Per-session capability flags advertised by the CLI.
 public struct SessionCapabilities: Codable, Equatable, Sendable {
+    public var concurrentClients: Bool?
     public var terminal: Bool?
     public var conversationHistory: ConversationHistoryCapabilities?
 
     public init(
         terminal: Bool? = nil,
+        concurrentClients: Bool? = nil,
         conversationHistory: ConversationHistoryCapabilities? = nil
     ) {
+        self.concurrentClients = concurrentClients
         self.terminal = terminal
         self.conversationHistory = conversationHistory
+    }
+}
+
+/// `metadata.piSelectedModel` and the Pi `{provider, modelId}` model switch.
+public struct PiModelReference: Codable, Equatable, Sendable {
+    public var provider: String
+    public var modelId: String
+
+    public init(provider: String, modelId: String) {
+        self.provider = provider
+        self.modelId = modelId
     }
 }
 
@@ -122,6 +136,10 @@ public struct SessionMetadata: Codable, Equatable, Sendable {
     public var kimiSessionId: String?
     public var copilotSessionId: String?
     public var piSessionId: String?
+    /// Pi model with its provider (`session.model` holds only the id).
+    public var piSelectedModel: PiModelReference?
+    /// User-message `localId`s with a native fork/rewind point.
+    public var conversationHistoryPoints: [String: Bool]?
 
     public init(
         path: String,
@@ -148,7 +166,9 @@ public struct SessionMetadata: Codable, Equatable, Sendable {
         cursorSessionId: String? = nil,
         kimiSessionId: String? = nil,
         copilotSessionId: String? = nil,
-        piSessionId: String? = nil
+        piSessionId: String? = nil,
+        piSelectedModel: PiModelReference? = nil,
+        conversationHistoryPoints: [String: Bool]? = nil
     ) {
         self.path = path
         self.host = host
@@ -175,5 +195,7 @@ public struct SessionMetadata: Codable, Equatable, Sendable {
         self.kimiSessionId = kimiSessionId
         self.copilotSessionId = copilotSessionId
         self.piSessionId = piSessionId
+        self.piSelectedModel = piSelectedModel
+        self.conversationHistoryPoints = conversationHistoryPoints
     }
 }

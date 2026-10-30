@@ -128,6 +128,51 @@ export function MachineFilterBar(props: {
     )
 }
 
+// Single-machine counterpart of MachineFilterBar: with nothing to filter,
+// chips would be meaningless, but the machine's health and session count
+// still belong in the sidebar. Renders a compact non-interactive row —
+// health metrics are inline so touch layouts need no hover, and pointer
+// users get the same capacity popup as the filter chips.
+export function MachineSummaryRow(props: { machine: MachineFilterItem }) {
+    const tooltipId = useId()
+    const hasHealth = Boolean(props.machine.healthPresentation?.metrics.length)
+
+    const content = (
+        <span
+            className="flex min-w-0 items-center gap-1.5"
+            aria-describedby={hasHealth ? tooltipId : undefined}
+        >
+            <span className="max-w-32 truncate text-[var(--app-fg)]">{props.machine.label}</span>
+            <span className="shrink-0 tabular-nums text-[var(--app-hint)]">({props.machine.sessionCount})</span>
+            {hasHealth ? (
+                <span className="min-w-0 truncate tabular-nums text-[var(--app-hint)]">
+                    {props.machine.healthPresentation!.metrics
+                        .map((metric) => `${metric.shortLabel} ${metric.percent}%`)
+                        .join(' · ')}
+                </span>
+            ) : null}
+        </span>
+    )
+
+    return (
+        <div className="flex items-center px-2 pb-2 text-xs">
+            {hasHealth ? (
+                // Same popup treatment as the filter chips: hidden below md
+                // (the inline metrics above already cover touch layouts).
+                <HoverTooltip
+                    id={tooltipId}
+                    target={content}
+                    side="bottom"
+                    align="start"
+                    tooltipClassName="pointer-events-auto before:absolute before:inset-x-0 before:-top-1 before:h-1 before:content-[''] px-3 py-2 min-w-[16rem] max-md:hidden"
+                >
+                    <MachineHealthTooltipBody presentation={props.machine.healthPresentation!} />
+                </HoverTooltip>
+            ) : content}
+        </div>
+    )
+}
+
 function MachineFilterMenuRow(props: {
     label: string
     count: number
@@ -162,19 +207,37 @@ function MachineFilterMenuRow(props: {
     )
 }
 
-// Clamp the menu to the space actually remaining left of/below the trigger
-// (the menu is right-anchored to the trigger): the rem-based design caps
-// (w-64 / max-h-80) grow with the font-scale setting, and safe-area insets
-// shrink usable space on notched devices. The height chain mirrors the body
-// sizing in index.css.
+// Clamp the menu to the larger horizontal pocket around the trigger and the
+// space below it. Right-only clamping collapsed to a few dozen px when More
+// parked the trigger near the left edge (tiann/hapi#2039 / #2040).
 const MENU_VIEWPORT_MARGIN_PX = 8
 const MENU_TOP_GAP_PX = 4 // mt-1
 
-export function getMachineFilterMenuClampStyle(anchor: { right: number; bottom: number }): CSSProperties {
+export type MachineFilterMenuAnchor = {
+    left: number
+    right: number
+    bottom: number
+}
+
+export function getMachineFilterMenuClampStyle(anchor: MachineFilterMenuAnchor): CSSProperties {
+    const spaceOpeningLeft = Math.max(0, anchor.right - MENU_VIEWPORT_MARGIN_PX)
     return {
-        maxWidth: `min(16rem, calc(${anchor.right}px - ${MENU_VIEWPORT_MARGIN_PX}px - env(safe-area-inset-left)))`,
+        // Wider of: room to the left of the trigger's right edge, or room to the
+        // right of the trigger's left edge (so a left-edge More trigger still
+        // gets a readable menu when we flip to left-align).
+        maxWidth: `min(16rem, max(calc(${spaceOpeningLeft}px - env(safe-area-inset-left)), calc(100vw - ${anchor.left}px - ${MENU_VIEWPORT_MARGIN_PX}px - env(safe-area-inset-right))))`,
         maxHeight: `min(20rem, calc(var(--tg-viewport-stable-height, var(--app-viewport-height, 100dvh)) - ${anchor.bottom + MENU_TOP_GAP_PX}px - ${MENU_VIEWPORT_MARGIN_PX}px - env(safe-area-inset-bottom)))`
     }
+}
+
+/** Left-align (open rightward) when that pocket is at least as wide as right-align. */
+export function machineFilterMenuAlignsStart(
+    anchor: Pick<MachineFilterMenuAnchor, 'left' | 'right'>,
+    viewportWidth: number
+): boolean {
+    const spaceOpeningRight = Math.max(0, viewportWidth - anchor.left)
+    const spaceOpeningLeft = Math.max(0, anchor.right)
+    return spaceOpeningRight >= spaceOpeningLeft
 }
 
 // Mobile (below md) counterpart of MachineFilterBar: collapses the machine
@@ -193,7 +256,7 @@ export function MachineFilterMenu(props: {
     const triggerRef = useRef<HTMLButtonElement>(null)
     const wrapperRef = useRef<HTMLDivElement>(null)
     const menuRef = useRef<HTMLDivElement>(null)
-    const [anchor, setAnchor] = useState<{ right: number; bottom: number } | null>(null)
+    const [anchor, setAnchor] = useState<MachineFilterMenuAnchor | null>(null)
 
     const close = useCallback(() => {
         setOpen(false)
@@ -213,12 +276,16 @@ export function MachineFilterMenu(props: {
         const updateAnchor = () => {
             const rect = wrapperRef.current?.getBoundingClientRect()
             if (!rect) return
-            setAnchor({ right: rect.right, bottom: rect.bottom })
+            setAnchor({ left: rect.left, right: rect.right, bottom: rect.bottom })
         }
         updateAnchor()
         window.addEventListener('resize', updateAnchor)
         return () => window.removeEventListener('resize', updateAnchor)
     }, [open])
+
+    const alignStart = anchor
+        ? machineFilterMenuAlignsStart(anchor, window.innerWidth)
+        : false
 
     // Focus the selected (or first) row on open; Escape closes and Arrow keys
     // move between rows, matching SessionActionMenu's keyboard behavior.
@@ -289,7 +356,10 @@ export function MachineFilterMenu(props: {
                         role="menu"
                         aria-label={t('sessions.machineFilter.label')}
                         style={anchor ? getMachineFilterMenuClampStyle(anchor) : undefined}
-                        className="absolute right-0 top-full z-30 mt-1 max-h-80 w-64 overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-xl"
+                        className={cn(
+                            'absolute top-full z-30 mt-1 max-h-80 w-64 overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-1 shadow-xl',
+                            alignStart ? 'left-0' : 'right-0'
+                        )}
                     >
                         <MachineFilterMenuRow
                             label={t('sessions.machineFilter.all')}

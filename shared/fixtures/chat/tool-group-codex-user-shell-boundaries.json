@@ -1,0 +1,595 @@
+{
+    "description": "User shell remains standalone with unknown, exploration or absent command actions (including camelCase aliases); ordinary agent tools on either side cannot merge across it.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "id": "agent-before",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "agent-before",
+                    "input": {
+                        "command": "bun test",
+                        "command_actions": [
+                            {
+                                "command": "bun test",
+                                "type": "unknown"
+                            }
+                        ]
+                    },
+                    "name": "CodexBash",
+                    "result": "Done",
+                    "state": "completed"
+                }
+            },
+            {
+                "createdAt": 1755000002000,
+                "id": "patch-before",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "patch-before",
+                    "input": {
+                        "changes": {}
+                    },
+                    "name": "CodexPatch",
+                    "result": "Done",
+                    "state": "completed"
+                }
+            },
+            {
+                "createdAt": 1755000004000,
+                "id": "user-unknown",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "user-unknown",
+                    "input": {
+                        "command": "git status",
+                        "command_actions": [
+                            {
+                                "command": "git status",
+                                "type": "unknown"
+                            }
+                        ],
+                        "command_source": "userShell"
+                    },
+                    "name": "CodexBash",
+                    "result": "Done",
+                    "state": "completed"
+                }
+            },
+            {
+                "createdAt": 1755000006000,
+                "id": "user-read",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "user-read",
+                    "input": {
+                        "command": "cat README.md",
+                        "commandActions": [
+                            {
+                                "command": "cat README.md",
+                                "name": "README.md",
+                                "path": "/repo/README.md",
+                                "type": "read"
+                            }
+                        ],
+                        "commandSource": "userShell"
+                    },
+                    "name": "CodexBash",
+                    "result": "Done",
+                    "state": "completed"
+                }
+            },
+            {
+                "createdAt": 1755000008000,
+                "id": "user-unclassified",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "user-unclassified",
+                    "input": {
+                        "command": "pwd",
+                        "command_source": "userShell"
+                    },
+                    "name": "CodexBash",
+                    "result": "Done",
+                    "state": "completed"
+                }
+            },
+            {
+                "createdAt": 1755000010000,
+                "id": "agent-after",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "agent-after",
+                    "input": {
+                        "command": "bun test",
+                        "command_actions": [
+                            {
+                                "command": "bun test",
+                                "type": "unknown"
+                            }
+                        ]
+                    },
+                    "name": "CodexBash",
+                    "result": "Done",
+                    "state": "completed"
+                }
+            },
+            {
+                "createdAt": 1755000012000,
+                "id": "patch-after",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "patch-after",
+                    "input": {
+                        "changes": {}
+                    },
+                    "name": "CodexPatch",
+                    "result": "Done",
+                    "state": "completed"
+                }
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "firstToolId": "agent-before",
+                "id": "tool-group:agent-before",
+                "kind": "tool-group",
+                "lastToolId": "patch-before",
+                "tools": [
+                    {
+                        "createdAt": 1755000000000,
+                        "id": "agent-before",
+                        "kind": "tool-call",
+                        "localId": null,
+                        "tool": {
+                            "id": "agent-before",
+                            "input": {
+                                "command": "bun test",
+                                "command_actions": [
+                                    {
+                                        "command": "bun test",
+                                        "type": "unknown"
+                                    }
+                                ]
+                            },
+                            "name": "CodexBash",
+                            "result": "Done",
+                            "state": "completed"
+                        }
+                    },
+                    {
+                        "createdAt": 1755000002000,
+                        "id": "patch-before",
+                        "kind": "tool-call",
+                        "localId": null,
+                        "tool": {
+                            "id": "patch-before",
+                            "input": {
+                                "changes": {}
+                            },
+                            "name": "CodexPatch",
+                            "result": "Done",
+                            "state": "completed"
+                        }
+                    }
+                ]
+            },
+            {
+                "createdAt": 1755000004000,
+                "id": "user-unknown",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "user-unknown",
+                    "input": {
+                        "command": "git status",
+                        "command_actions": [
+                            {
+                                "command": "git status",
+                                "type": "unknown"
+                            }
+                        ],
+                        "command_source": "userShell"
+                    },
+                    "name": "CodexBash",
+                    "result": "Done",
+                    "state": "completed"
+                }
+            },
+            {
+                "createdAt": 1755000006000,
+                "id": "user-read",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "user-read",
+                    "input": {
+                        "command": "cat README.md",
+                        "commandActions": [
+                            {
+                                "command": "cat README.md",
+                                "name": "README.md",
+                                "path": "/repo/README.md",
+                                "type": "read"
+                            }
+                        ],
+                        "commandSource": "userShell"
+                    },
+                    "name": "CodexBash",
+                    "result": "Done",
+                    "state": "completed"
+                }
+            },
+            {
+                "createdAt": 1755000008000,
+                "id": "user-unclassified",
+                "kind": "tool-call",
+                "localId": null,
+                "tool": {
+                    "id": "user-unclassified",
+                    "input": {
+                        "command": "pwd",
+                        "command_source": "userShell"
+                    },
+                    "name": "CodexBash",
+                    "result": "Done",
+                    "state": "completed"
+                }
+            },
+            {
+                "createdAt": 1755000010000,
+                "firstToolId": "agent-after",
+                "id": "tool-group:agent-after",
+                "kind": "tool-group",
+                "lastToolId": "patch-after",
+                "tools": [
+                    {
+                        "createdAt": 1755000010000,
+                        "id": "agent-after",
+                        "kind": "tool-call",
+                        "localId": null,
+                        "tool": {
+                            "id": "agent-after",
+                            "input": {
+                                "command": "bun test",
+                                "command_actions": [
+                                    {
+                                        "command": "bun test",
+                                        "type": "unknown"
+                                    }
+                                ]
+                            },
+                            "name": "CodexBash",
+                            "result": "Done",
+                            "state": "completed"
+                        }
+                    },
+                    {
+                        "createdAt": 1755000012000,
+                        "id": "patch-after",
+                        "kind": "tool-call",
+                        "localId": null,
+                        "tool": {
+                            "id": "patch-after",
+                            "input": {
+                                "changes": {}
+                            },
+                            "name": "CodexPatch",
+                            "result": "Done",
+                            "state": "completed"
+                        }
+                    }
+                ]
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "agent-before",
+                            "input": {
+                                "command": "bun test",
+                                "command_actions": [
+                                    {
+                                        "command": "bun test",
+                                        "type": "unknown"
+                                    }
+                                ]
+                            },
+                            "name": "CodexBash",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "shell-boundary-0",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "agent-before",
+                            "output": "Done",
+                            "type": "tool-call-result"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000001000,
+                "id": "shell-boundary-1",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "patch-before",
+                            "input": {
+                                "changes": {}
+                            },
+                            "name": "CodexPatch",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000002000,
+                "id": "shell-boundary-2",
+                "localId": null,
+                "seq": 3
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "patch-before",
+                            "output": "Done",
+                            "type": "tool-call-result"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000003000,
+                "id": "shell-boundary-3",
+                "localId": null,
+                "seq": 4
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "user-unknown",
+                            "input": {
+                                "command": "git status",
+                                "command_actions": [
+                                    {
+                                        "command": "git status",
+                                        "type": "unknown"
+                                    }
+                                ],
+                                "command_source": "userShell"
+                            },
+                            "name": "CodexBash",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000004000,
+                "id": "shell-boundary-4",
+                "localId": null,
+                "seq": 5
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "user-unknown",
+                            "output": "Done",
+                            "type": "tool-call-result"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000005000,
+                "id": "shell-boundary-5",
+                "localId": null,
+                "seq": 6
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "user-read",
+                            "input": {
+                                "command": "cat README.md",
+                                "commandActions": [
+                                    {
+                                        "command": "cat README.md",
+                                        "name": "README.md",
+                                        "path": "/repo/README.md",
+                                        "type": "read"
+                                    }
+                                ],
+                                "commandSource": "userShell"
+                            },
+                            "name": "CodexBash",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000006000,
+                "id": "shell-boundary-6",
+                "localId": null,
+                "seq": 7
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "user-read",
+                            "output": "Done",
+                            "type": "tool-call-result"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000007000,
+                "id": "shell-boundary-7",
+                "localId": null,
+                "seq": 8
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "user-unclassified",
+                            "input": {
+                                "command": "pwd",
+                                "command_source": "userShell"
+                            },
+                            "name": "CodexBash",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000008000,
+                "id": "shell-boundary-8",
+                "localId": null,
+                "seq": 9
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "user-unclassified",
+                            "output": "Done",
+                            "type": "tool-call-result"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000009000,
+                "id": "shell-boundary-9",
+                "localId": null,
+                "seq": 10
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "agent-after",
+                            "input": {
+                                "command": "bun test",
+                                "command_actions": [
+                                    {
+                                        "command": "bun test",
+                                        "type": "unknown"
+                                    }
+                                ]
+                            },
+                            "name": "CodexBash",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000010000,
+                "id": "shell-boundary-10",
+                "localId": null,
+                "seq": 11
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "agent-after",
+                            "output": "Done",
+                            "type": "tool-call-result"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000011000,
+                "id": "shell-boundary-11",
+                "localId": null,
+                "seq": 12
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "patch-after",
+                            "input": {
+                                "changes": {}
+                            },
+                            "name": "CodexPatch",
+                            "type": "tool-call"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000012000,
+                "id": "shell-boundary-12",
+                "localId": null,
+                "seq": 13
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "callId": "patch-after",
+                            "output": "Done",
+                            "type": "tool-call-result"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000013000,
+                "id": "shell-boundary-13",
+                "localId": null,
+                "seq": 14
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "tool-group-codex-user-shell-boundaries"
+}

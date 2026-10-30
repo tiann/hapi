@@ -11,6 +11,7 @@ import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.test.runTest
 
 // ------------------------------------------------------------------ fakes --
@@ -102,6 +103,82 @@ private class Harness(testScope: kotlinx.coroutines.test.TestScope) {
 // ------------------------------------------------------------------ tests --
 
 class DictationControllerTest {
+
+    @Test
+    fun `preflight enables dictation without recording and reuses provider`() = runTest {
+        val harness = Harness(this)
+        assertEquals(false, harness.controller.isAvailable.value)
+
+        harness.controller.refreshAvailability()
+        assertTrue(harness.controller.isAvailable.value)
+        assertIs<DictationState.Idle>(harness.controller.state.value)
+        assertEquals(0, harness.recorder.startCalls)
+        yield()
+        assertTrue(harness.events.isEmpty())
+
+        harness.controller.toggle()
+        harness.controller.state.first { it is DictationState.Recording }
+        harness.controller.refreshAvailability()
+        assertTrue(harness.controller.isAvailable.value)
+        assertEquals(1, harness.api.providersCalls)
+        harness.controller.cancel()
+    }
+
+    @Test
+    fun `preflight hides empty and realtime-only providers silently`() = runTest {
+        val harness = Harness(this)
+        for (providers in listOf(emptyList(), listOf(
+            TranscriptionProviderInfo(id = "browser-local", label = "Browser", modes = listOf("realtime")),
+        ))) {
+            harness.api.providersResult = TranscriptionProvidersResponse(providers = providers)
+            harness.controller.refreshAvailability()
+            assertEquals(false, harness.controller.isAvailable.value)
+        }
+        assertIs<DictationState.Idle>(harness.controller.state.value)
+        assertEquals(0, harness.recorder.startCalls)
+        yield()
+        assertTrue(harness.events.isEmpty())
+    }
+
+    @Test
+    fun `preflight failure hides button silently and can retry`() = runTest {
+        val harness = Harness(this)
+        harness.controller.refreshAvailability()
+        assertTrue(harness.controller.isAvailable.value)
+
+        harness.api.providersFailure = RuntimeException("hub unreachable")
+        harness.controller.refreshAvailability()
+        assertEquals(false, harness.controller.isAvailable.value)
+        assertEquals(0, harness.recorder.startCalls)
+        yield()
+        assertTrue(harness.events.isEmpty())
+
+        harness.api.providersFailure = null
+        harness.controller.refreshAvailability()
+        assertTrue(harness.controller.isAvailable.value)
+    }
+
+    @Test
+    fun `preflight reflects provider configuration changes`() = runTest {
+        val harness = Harness(this)
+        harness.controller.refreshAvailability()
+        assertTrue(harness.controller.isAvailable.value)
+
+        harness.api.providersResult = TranscriptionProvidersResponse(providers = emptyList())
+        harness.controller.refreshAvailability()
+        assertEquals(false, harness.controller.isAvailable.value)
+
+        harness.api.providersResult = TranscriptionProvidersResponse(providers = listOf(
+            TranscriptionProviderInfo(id = "groq", label = "Groq", modes = listOf("standard")),
+        ))
+        harness.controller.refreshAvailability()
+        assertTrue(harness.controller.isAvailable.value)
+        harness.controller.toggle()
+        harness.controller.state.first { it is DictationState.Recording }
+        harness.controller.toggle()
+        harness.controller.state.first { it is DictationState.Idle }
+        assertEquals("groq", harness.api.transcribeCalls.single().provider)
+    }
 
     @Test
     fun `record then stop uploads the take and emits the transcript`() = runTest {

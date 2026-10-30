@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useTranslation } from '@/lib/use-translation'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
@@ -16,6 +16,7 @@ type ShareTurnDialogProps = {
         role?: 'user' | 'assistant'
     }>
     sourceContentWidth?: number | null
+    getGeneratedMediaBlob?: (imageId: string) => Promise<Blob>
     onClose: () => void
 }
 
@@ -61,13 +62,20 @@ function stripCaptureOnlyControls(root: HTMLElement): void {
         anchor.removeAttribute('href')
         anchor.removeAttribute('target')
         anchor.removeAttribute('rel')
+        if (anchor.matches('[data-hapi-generated-media-download="true"]')) {
+            anchor.classList.add('cursor-pointer')
+            anchor.setAttribute('role', 'button')
+            anchor.setAttribute('tabindex', '0')
+        }
     }
     for (const element of Array.from(root.querySelectorAll('[role="button"], [contenteditable="true"]'))) {
+        const isGeneratedMediaAction = element.tagName.toLowerCase() === 'a'
+            && element.matches('[data-hapi-generated-media-download="true"]')
         if (element.tagName.toLowerCase() !== 'a') {
             element.removeAttribute('role')
         }
         element.removeAttribute('contenteditable')
-        element.removeAttribute('tabindex')
+        if (!isGeneratedMediaAction) element.removeAttribute('tabindex')
     }
 }
 
@@ -88,6 +96,37 @@ function getPreviewCodeBody(control: HTMLElement): HTMLElement | null {
     const header = control.closest<HTMLElement>('[data-hapi-code-header="true"]')
     const body = header?.nextElementSibling
     return body instanceof HTMLElement && body.matches('[data-hapi-code-body="true"]') ? body : null
+}
+
+function getGeneratedMediaFileName(media: HTMLElement): string {
+    return media.dataset.hapiGeneratedMediaFileName
+        || media.querySelector<HTMLElement>('[data-hapi-generated-media-download="true"]')?.getAttribute('download')
+        || 'generated-file'
+}
+
+function revokePreviewMediaUrls(urls: Set<string>): void {
+    for (const url of urls) URL.revokeObjectURL(url)
+    urls.clear()
+}
+
+function replaceGeneratedMediaPrepareAction(action: HTMLElement, media: HTMLElement, url: string): void {
+    const link = document.createElement('a')
+    for (const attribute of Array.from(action.attributes)) {
+        if (attribute.name === 'type' || attribute.name === 'disabled' || attribute.name === 'aria-busy') continue
+        link.setAttribute(attribute.name, attribute.value)
+    }
+    link.href = url
+    link.download = getGeneratedMediaFileName(media)
+    link.dataset.hapiGeneratedMediaDownload = 'true'
+    link.dataset.hapiGeneratedMediaLoaded = 'true'
+    link.innerHTML = action.innerHTML
+    const label = link.querySelector<HTMLElement>('span')
+    if (label) {
+        label.textContent = `Download ${link.download}`
+    } else {
+        link.textContent = `Download ${link.download}`
+    }
+    action.replaceWith(link)
 }
 
 function setPreviewCodeWrap(control: HTMLElement, enabled: boolean): void {
@@ -210,6 +249,13 @@ function prepareExportElement(element: HTMLElement, exportWidth: number, preserv
                shaped baseline. Zero spacing keeps each text run intact. */
             letter-spacing: 0 !important;
         }
+        .hapi-share-export-root .katex,
+        .hapi-share-export-root .katex * {
+            letter-spacing: normal !important;
+        }
+        .hapi-share-export-root .katex {
+            line-height: 1.2 !important;
+        }
         .hapi-share-export-root :not(pre) > code {
             position: relative !important;
             /* html2canvas-pro paints an inline element's background using its
@@ -275,6 +321,12 @@ function prepareExportElement(element: HTMLElement, exportWidth: number, preserv
         .hapi-share-export-root [data-hapi-code-body="true"]::-webkit-scrollbar {
             display: none !important;
         }
+        .hapi-share-export-root .aui-md-table-wrapper {
+            scrollbar-width: none !important;
+        }
+        .hapi-share-export-root .aui-md-table-wrapper::-webkit-scrollbar {
+            display: none !important;
+        }
     `
     captureElement.prepend(style)
     return captureElement
@@ -303,6 +355,82 @@ function waitForStyleSheets(document: Document): Promise<void> {
     })).then(() => undefined)
 }
 
+const KATEX_FONT_FAMILIES = [
+    'KaTeX_Main',
+    'KaTeX_Math',
+    'KaTeX_AMS',
+    'KaTeX_Caligraphic',
+    'KaTeX_Fraktur',
+    'KaTeX_SansSerif',
+    'KaTeX_Script',
+    'KaTeX_Size1',
+    'KaTeX_Size2',
+    'KaTeX_Size3',
+    'KaTeX_Size4',
+    'KaTeX_Typewriter',
+] as const
+
+const loadedKaTeXFonts = new WeakMap<Document, Map<string, Promise<FontFace[]>>>()
+
+export function getKaTeXFontRequests(root: HTMLElement): string[] {
+    const requests = new Set<string>()
+    const elements = [
+        ...(root.matches('.katex') ? [root] : []),
+        ...Array.from(root.querySelectorAll<HTMLElement>('.katex, .katex *')),
+    ]
+    const getStyle = root.ownerDocument.defaultView?.getComputedStyle.bind(root.ownerDocument.defaultView)
+
+    for (const element of elements) {
+        const style = getStyle?.(element)
+        if (!style) continue
+        const family = style.fontFamily
+            .split(',')
+            .map((value) => value.trim().replace(/^['"]|['"]$/g, ''))
+            .find((value): value is (typeof KATEX_FONT_FAMILIES)[number] => (
+                KATEX_FONT_FAMILIES.includes(value as (typeof KATEX_FONT_FAMILIES)[number])
+            ))
+        if (!family) continue
+
+        const fontStyle = style.fontStyle === 'italic' ? 'italic' : 'normal'
+        const numericWeight = Number.parseInt(style.fontWeight, 10)
+        const fontWeight = style.fontWeight === 'bold' || numericWeight >= 600 ? 'bold' : 'normal'
+        const stylePrefix = fontStyle === 'italic' ? 'italic ' : ''
+        const weightPrefix = fontWeight === 'bold' ? 'bold ' : ''
+        requests.add(`${stylePrefix}${weightPrefix}16px "${family}"`)
+    }
+
+    return requests.size > 0 ? [...requests] : ['16px "KaTeX_Main"']
+}
+
+function loadKaTeXFont(document: Document, request: string): Promise<FontFace[]> {
+    let documentFonts = loadedKaTeXFonts.get(document)
+    if (!documentFonts) {
+        documentFonts = new Map()
+        loadedKaTeXFonts.set(document, documentFonts)
+    }
+
+    const existing = documentFonts.get(request)
+    if (existing) return existing
+
+    const loading = document.fonts.load(request).catch(() => {
+        documentFonts?.delete(request)
+        return []
+    })
+    documentFonts.set(request, loading)
+    return loading
+}
+
+async function waitForKaTeXFonts(root: HTMLElement): Promise<void> {
+    const ownerDocument = root.ownerDocument
+    if (!ownerDocument.fonts) return
+
+    // Loading every KaTeX family/style combination makes each export wait for
+    // fonts that are not present in the captured formula. The computed styles
+    // identify the small subset actually used by this turn.
+    const fontRequests = getKaTeXFontRequests(root)
+    await Promise.all(fontRequests.map((request) => loadKaTeXFont(ownerDocument, request)))
+}
+
 function appendTextFallback(target: DocumentFragment | HTMLElement, snapshot: ShareTurnSnapshot): void {
     if (snapshot.text.trim().length === 0) return
     const fallback = document.createElement('div')
@@ -314,13 +442,14 @@ function appendTextFallback(target: DocumentFragment | HTMLElement, snapshot: Sh
     target.appendChild(fallback)
 }
 
-function resolveCssUrls(cssText: string, styleSheetUrl: string | null): string {
-    if (!styleSheetUrl) return cssText
+function resolveCssUrls(cssText: string, styleSheetUrl: string | null, fallbackBaseUrl: string): string {
+    const baseUrl = styleSheetUrl ?? fallbackBaseUrl
+    if (!baseUrl) return cssText
     return cssText.replace(/url\(\s*(['"]?)(.*?)\1\s*\)/gi, (match, quote: string, rawUrl: string) => {
         const url = rawUrl.trim()
         if (!url || /^(?:data:|blob:|#|[a-z][a-z\d+.-]*:|\/\/)/i.test(url)) return match
         try {
-            return `url(${quote}${new URL(url, styleSheetUrl).href}${quote})`
+            return `url(${quote}${new URL(url, baseUrl).href}${quote})`
         } catch {
             return match
         }
@@ -339,7 +468,8 @@ function copyLoadedStyleSheets(source: Document, target: Document): void {
         try {
             const cssText = resolveCssUrls(
                 Array.from(sheet.cssRules, (rule) => rule.cssText).join('\n'),
-                sheet.href
+                sheet.href,
+                source.baseURI
             )
             if (!cssText) continue
             const style = target.createElement('style')
@@ -386,7 +516,9 @@ async function waitForImages(root: HTMLElement): Promise<void> {
 async function waitForExportReady(root: HTMLElement): Promise<void> {
     const ownerDocument = root.ownerDocument
     await waitForStyleSheets(ownerDocument)
-    if (ownerDocument.fonts) {
+    if (root.querySelector('.katex')) {
+        await waitForKaTeXFonts(root)
+    } else if (ownerDocument.fonts) {
         await ownerDocument.fonts.ready.catch(() => undefined)
     }
     await waitForImages(root)
@@ -458,10 +590,16 @@ async function elementToPngBlob(
         const maxScale = Math.sqrt(MAX_EXPORT_PIXELS / Math.max(1, captureWidth * captureHeight))
         const scale = Math.min(SHARE_EXPORT_SCALE, maxScale)
         const backgroundColor = getComputedStyle(captureElement).backgroundColor || '#ffffff'
+        const containsKaTeX = captureElement.querySelector('.katex') !== null
+        const containsInlineCode = Array.from(captureElement.querySelectorAll('code'))
+            .some((code) => !code.closest('pre'))
         const { default: html2canvas } = await import('html2canvas-pro')
         canvas = await html2canvas(captureElement, {
             backgroundColor,
-            foreignObjectRendering: false,
+            // KaTeX relies on browser font metrics and nested CSS positioning,
+            // while wrapped inline code needs browser fragment painting instead
+            // of one bounding rectangle in html2canvas-pro's canvas renderer.
+            foreignObjectRendering: containsKaTeX || containsInlineCode,
             imageTimeout: 15000,
             logging: false,
             removeContainer: true,
@@ -518,6 +656,7 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
     const { t } = useTranslation()
     const captureRef = useRef<HTMLDivElement | null>(null)
     const bodyRef = useRef<HTMLDivElement | null>(null)
+    const previewMediaUrlsRef = useRef<Set<string>>(new Set())
     const [busy, setBusy] = useState<'copy' | 'download' | 'share' | null>(null)
     const [error, setError] = useState<string | null>(null)
     const [copied, setCopied] = useState(false)
@@ -544,6 +683,7 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
         : SHARE_EXPORT_WIDTH
 
     useLayoutEffect(() => {
+        revokePreviewMediaUrls(previewMediaUrlsRef.current)
         setReady(false)
         if (!props.isOpen) return undefined
         const body = bodyRef.current
@@ -591,6 +731,10 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
     }, [props.isOpen, props.sourceSnapshots, restoreTick])
 
     useEffect(() => {
+        return () => revokePreviewMediaUrls(previewMediaUrlsRef.current)
+    }, [])
+
+    useEffect(() => {
         const capture = captureRef.current
         if (!props.isOpen || !ready || !capture) {
             setPreparedBlob(null)
@@ -612,6 +756,48 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
     const handlePreviewClick = (event: ReactMouseEvent<HTMLElement>) => {
         const target = event.target
         if (!(target instanceof Element)) return
+
+        const generatedMediaAction = target.closest<HTMLElement>('[data-hapi-generated-media-download="true"]')
+        if (generatedMediaAction) {
+            const media = generatedMediaAction.closest<HTMLElement>('[data-hapi-generated-media-id]')
+            const imageId = media?.dataset.hapiGeneratedMediaId
+            if (!imageId || !props.getGeneratedMediaBlob) return
+
+            // Once the preview has created a real object URL, let the browser
+            // handle the native download on the next click.
+            if (generatedMediaAction instanceof HTMLAnchorElement
+                && generatedMediaAction.getAttribute('href')) return
+
+            event.preventDefault()
+            event.stopPropagation()
+            if (generatedMediaAction.getAttribute('aria-busy') === 'true') return
+
+            const loaded = generatedMediaAction.dataset.hapiGeneratedMediaLoaded === 'true'
+            generatedMediaAction.setAttribute('aria-busy', 'true')
+            if (generatedMediaAction instanceof HTMLButtonElement) generatedMediaAction.disabled = true
+            void props.getGeneratedMediaBlob(imageId)
+                .then((blob) => {
+                    if (!generatedMediaAction.isConnected) return
+                    if (!loaded && generatedMediaAction instanceof HTMLButtonElement) {
+                        const url = URL.createObjectURL(blob)
+                        previewMediaUrlsRef.current.add(url)
+                        replaceGeneratedMediaPrepareAction(generatedMediaAction, media, url)
+                        setPreparedBlob(null)
+                        setPreviewRevision((revision) => revision + 1)
+                        return
+                    }
+                    downloadBlob(blob, getGeneratedMediaFileName(media))
+                })
+                .catch((err: unknown) => {
+                    setError(err instanceof Error ? err.message : 'Failed to download file')
+                })
+                .finally(() => {
+                    if (!generatedMediaAction.isConnected) return
+                    generatedMediaAction.removeAttribute('aria-busy')
+                    if (generatedMediaAction instanceof HTMLButtonElement) generatedMediaAction.disabled = false
+                })
+            return
+        }
 
         const wrapButton = target.closest<HTMLButtonElement>('[data-hapi-code-wrap-toggle="true"]')
         if (wrapButton) {
@@ -665,6 +851,18 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
                 naturalHeight: image.naturalHeight || image.height
             })
         }
+    }
+
+    const handlePreviewKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        const target = event.target
+        if (!(target instanceof Element)) return
+        const action = target.closest<HTMLAnchorElement>(
+            'a[data-hapi-generated-media-download="true"]:not([href])'
+        )
+        if (!action) return
+        event.preventDefault()
+        action.click()
     }
 
     const runBlobAction = (
@@ -727,6 +925,7 @@ export function ShareTurnDialog(props: ShareTurnDialogProps) {
                     <div
                         ref={captureRef}
                         onClick={handlePreviewClick}
+                        onKeyDown={handlePreviewKeyDown}
                         className="hapi-share-preview-root mx-auto w-[720px] max-w-full rounded-[28px] bg-[var(--app-bg)] p-4 text-[var(--app-fg)] sm:p-5"
                     >
                         <style>{`

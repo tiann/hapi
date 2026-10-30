@@ -22,12 +22,13 @@ describe('Pi conversation-history hub integration', () => {
             store.messages.markMessagesInvoked(session.id, ['local-boundary'], Date.now())
             ;(engine as any).rpcGateway.rewindConversation = async () => ({
                 success: false,
-                error: 'Pi rewind was cancelled',
-                outcome: 'cancelled',
+                error: 'Codex native boundary is ambiguous',
+                code: 'ambiguous_native_boundary',
+                outcome: 'rejected',
             })
 
             await expect(engine.rewindConversation(session.id, 'default', 'local-boundary')).resolves.toEqual({
-                type: 'error', message: 'Pi rewind was cancelled',
+                type: 'error', message: 'Codex native boundary is ambiguous', code: 'ambiguous_native_boundary',
             })
             expect(engine.getSession(session.id)?.metadata?.conversationHistoryDiverged).not.toBe(true)
         } finally {
@@ -68,6 +69,7 @@ describe('Pi conversation-history hub integration', () => {
                 machineId: 'machine-1',
                 flavor: 'pi',
                 piSessionId: 'pi-source-native',
+                summary: { text: 'Pi source title', updatedAt: 100 },
                 capabilities: { conversationHistory: { forkCurrent: true, forkAtMessage: true, rewindToMessage: true } },
                 conversationHistoryPoints: { local1: true, local2: true },
                 conversationHistoryEntryIds: { local1: 'entry-1', local2: 'entry-2' },
@@ -125,10 +127,15 @@ describe('Pi conversation-history hub integration', () => {
             expect(capturedChildMetadata).toMatchObject({
                 flavor: 'pi',
                 piSessionId: 'pi-clone-native',
+                summary: { text: 'Fork: Pi source title', updatedAt: expect.any(Number) },
                 conversationHistoryEntryIds: { local1: 'entry-1', local2: 'entry-2', local3: 'entry-3' },
                 conversationHistoryPoints: { local1: true, local2: true, local3: true },
             })
             expect(store.messages.getAllMessages(result.sessionId).map((message) => message.localId)).toContain('local3')
+            expect(engine.getSession(result.sessionId)?.metadata?.summary).toMatchObject({
+                text: 'Fork: Pi source title',
+                updatedAt: expect.any(Number),
+            })
             expect(exactBinds).toEqual([[result.sessionId, 'pi-clone-native', 'piSessionId', true]])
             expect(spawnArgs[3]).toBeUndefined()
             expect(spawnArgs[9]).toBeUndefined()

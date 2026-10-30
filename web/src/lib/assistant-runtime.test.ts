@@ -824,6 +824,25 @@ describe('aggregateResponseGroups', () => {
         expect(aggregateResponseGroups([userText('u2'), groupedTurn, tool]).get('grouped')?.roundSummary).toEqual(summary)
     })
 
+    it('derives Codex Round duration from invocation to response completion', () => {
+        const summary = {
+            provider: 'codex' as const,
+            modelUsage: {
+                'gpt-5.4': { inputTokens: 100, outputTokens: 10 }
+            },
+            numTurns: 1
+        }
+        const blocks: VisibleChatBlock[] = [
+            userText('u1', { invokedAt: 1_000 }),
+            Object.assign(agentText('codex-answer', { createdAt: 2_800 }), { roundSummary: summary })
+        ]
+
+        expect(aggregateResponseGroups(blocks).get('codex-answer')?.roundSummary).toEqual({
+            ...summary,
+            durationMs: 1_800
+        })
+    })
+
     it('preserves a tool-only result summary through tool-call to tool-group conversion', () => {
         const summary = {
             usage: { input_tokens: 100, output_tokens: 20 },

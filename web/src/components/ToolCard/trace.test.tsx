@@ -325,6 +325,11 @@ describe('TraceSection', () => {
         expect(screen.getByText(/3 calls/)).toBeInTheDocument()
     })
 
+    it('uses compact units for long trace durations', () => {
+        expect(getTraceSummaryText(1, null, 60_000, 'calls')).toBe('1 calls · 1m')
+        expect(getTraceSummaryText(1, null, 3_600_000, 'calls')).toBe('1 calls · 1h')
+    })
+
     it('shows Input section when a child row is expanded', () => {
         const block = makeTaskBlock([makeChild('c1', 'Bash')], 'running')
         const { container } = render(<TraceSection block={block} metadata={null} />)

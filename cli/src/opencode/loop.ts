@@ -23,6 +23,7 @@ interface OpencodeLoopOptions {
     hookServer: OpencodeHookServer;
     hookUrl: string;
     onSessionReady?: (session: OpencodeSession) => void;
+    onModelRollback?: (model: string | null) => void;
     onReasoningEffortRollback?: (effort: string | null) => void;
     onCompactAvailabilityChange?: (available: boolean) => void;
     onClearRequested?: () => Promise<void>;
@@ -81,6 +82,7 @@ export async function opencodeLoop(opts: OpencodeLoopOptions): Promise<void> {
             hookUrl: opts.hookUrl
         }),
         runRemote: (instance) => opencodeRemoteLauncher(instance, {
+            onModelRollback: opts.onModelRollback,
             onReasoningEffortRollback: opts.onReasoningEffortRollback,
             onCompactAvailabilityChange: opts.onCompactAvailabilityChange,
             isLocalIdCancelled: opts.isLocalIdCancelled,

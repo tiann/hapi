@@ -117,6 +117,26 @@ class HapiApiTest {
 
     // ------------------------------------------------------ request shapes --
 
+    @Test fun `Codex implementation uses a dedicated endpoint and exact plan id`() = runBlocking {
+        server.enqueue(ok("""{"ok":true}"""))
+        session.api.implementCodexPlan("session/1", "plan:thread:turn:item")
+        val request = server.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/api/sessions/session%2F1/codex/plan/implement", request.path)
+        assertEquals("Bearer $jwt", request.getHeader("Authorization"))
+        assertEquals("""{"planId":"plan:thread:turn:item"}""", request.body.readUtf8())
+    }
+
+    @Test fun `uncertain plan implementation reports its error without automatic resubmission`() = runBlocking {
+        for ((status, code) in listOf(409 to "stale_plan", 409 to "unavailable", 502 to "failed", 503 to "indeterminate")) {
+            server.enqueue(MockResponse().setResponseCode(status).setBody("""{"ok":false,"code":"$code","error":"Not confirmed"}"""))
+            val error = assertFailsWith<ApiError> { session.api.implementCodexPlan("session", "proposal") }
+            assertEquals(status, error.status)
+            assertEquals(code, error.code)
+        }
+        assertEquals(4, server.requestCount)
+    }
+
     @Test
     fun `messages page sends compound cursor and epoch as query params`() {
         server.enqueue(
@@ -319,6 +339,31 @@ class HapiApiTest {
     }
 
     @Test
+    fun `machine grok models pass cwd and keep auto support nullable`() {
+        server.enqueue(
+            ok(
+                """{"success":true,"availableModels":[{"modelId":"grok-4","name":"Grok 4"}],"currentModelId":"grok-4","autoPermissionModeSupported":false}"""
+            )
+        )
+
+        val response = runBlocking { session.api.getMachineGrokModelsForCwd("m1", "/home/dev/proj") }
+        val request = server.takeRequest()
+        assertEquals("GET", request.method)
+        assertEquals("/api/machines/m1/grok-models", request.path!!.substringBefore('?'))
+        assertEquals("/home/dev/proj", request.requestUrl!!.queryParameter("cwd"))
+        assertTrue(response.success)
+        assertEquals(false, response.autoPermissionModeSupported)
+        assertEquals("grok-4", response.availableModels!!.single().modelId)
+        assertEquals("Grok 4", response.availableModels!!.single().name)
+        assertEquals("grok-4", response.currentModelId)
+
+        // Field omitted (runner never reported it): null — must never read as false.
+        server.enqueue(ok("""{"success":true,"availableModels":[]}"""))
+        val omitted = runBlocking { session.api.getMachineGrokModelsForCwd("m1", "/cwd") }
+        assertNull(omitted.autoPermissionModeSupported)
+    }
+
+    @Test
     fun `unregister device is a DELETE with a json body`() {
         server.enqueue(ok("""{"ok":true}"""))
 
@@ -328,6 +373,21 @@ class HapiApiTest {
         assertEquals("DELETE", request.method)
         assertEquals("/api/devices/register", request.path)
         assertEquals("fcm-token", Json.parseToJsonElement(request.body.readUtf8()).jsonObject.getValue("token").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `register device sends the persisted encryption key along with the install id`() {
+        server.enqueue(ok("""{"ok":true}"""))
+        val key = java.util.Base64.getEncoder().encodeToString(ByteArray(32))
+        runBlocking { session.api.registerDevice(token = "FCM:MixedCase", deviceId = "install", pushKey = key) }
+        val request = server.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/api/devices/register", request.path)
+        val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+        assertEquals("FCM:MixedCase", body.getValue("token").jsonPrimitive.content)
+        assertEquals("phone", body.getValue("platform").jsonPrimitive.content)
+        assertEquals("install", body.getValue("deviceId").jsonPrimitive.content)
+        assertEquals(key, body.getValue("pushKey").jsonPrimitive.content)
     }
 
     // --------------------------------------------------- health & binaries --

@@ -2,7 +2,7 @@ import type { AgentBackend, PermissionRequest, PermissionResponse } from './type
 import type { AgentState, SessionPermissionMode } from '@/api/types';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { logger } from '@/ui/logger';
-import { deriveToolName } from '@/agent/utils';
+import { deriveToolInput, deriveToolName } from '@/agent/utils';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import {
     resolveToolAutoApprovalDecision,
@@ -13,13 +13,6 @@ interface PermissionResponseMessage {
     id: string;
     approved: boolean;
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort';
-}
-
-function deriveToolInput(request: PermissionRequest): unknown {
-    if (request.rawInput !== undefined) {
-        return request.rawInput;
-    }
-    return request.rawOutput;
 }
 
 function pickOptionId(

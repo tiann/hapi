@@ -1,5 +1,7 @@
 package app.hapi.companion.feature.chat.blocks
 
+import android.content.Context
+import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,23 +25,31 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 import app.hapi.companion.R
 import app.hapi.companion.feature.chat.PermissionAction
 import app.hapi.companion.feature.chat.PermissionRowOverride
 import app.hapi.companion.feature.chat.permissions.AskQuestion
 import app.hapi.companion.feature.chat.permissions.isCursorAskQuestionToolName
 import app.hapi.companion.feature.chat.permissions.isRequestUserInputAnswered
+import app.hapi.companion.feature.chat.permissions.isRequestUserInputUrlConfirmed
 import app.hapi.companion.feature.chat.permissions.parseAskUserQuestions
-import app.hapi.companion.feature.chat.permissions.parseRequestUserInputQuestions
+import app.hapi.companion.feature.chat.permissions.parseRequestUserInput
 import app.hapi.companion.feature.chat.permissions.requestUserInputAnswerValues
+import app.hapi.companion.feature.chat.permissions.selectRequestUserInputOption
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.ChatToolCall
@@ -216,8 +226,8 @@ private fun AskUserQuestionFooter(
     val questions = remember(tool.id, tool.input) { parseAskUserQuestions(tool.input, cursorDialect) }
 
     // Selection state per question index.
-    val selected = remember(tool.id) { mutableStateOf(mapOf<Int, Set<Int>>()) }
-    val otherText = remember(tool.id) { mutableStateOf(mapOf<Int, String>()) }
+    val selected = rememberSaveable(tool.id) { mutableStateOf(mapOf<Int, Set<Int>>()) }
+    val otherText = rememberSaveable(tool.id) { mutableStateOf(mapOf<Int, String>()) }
     var validationError by remember(tool.id) { mutableStateOf<String?>(null) }
 
     Column(
@@ -385,6 +395,7 @@ private fun AskQuestionSection(
             onValueChange = onOtherText,
             enabled = enabled,
             placeholder = { Text(stringResource(R.string.chat_perm_other)) },
+            minLines = 2,
             modifier = Modifier.fillMaxWidth(),
         )
     }
@@ -395,8 +406,10 @@ private fun AskQuestionSection(
 /**
  * request_user_input answer form: per-field option rows plus a free-text
  * note; answers post nested `{fieldId: {answers: [labels…, "user_note: …"]}}`
- * (`RequestUserInputFooter.tsx` parity; the web-only URL confirmation flow is
- * not ported).
+ * (`RequestUserInputFooter.tsx` parity). Sign-in requests carry a validated
+ * `input.url`: submit requires the `__mcp_url_confirmation` option to be
+ * selected and then opens the page (ACTION_VIEW) alongside submitting — the
+ * native analogue of web's opener-null `window.open`.
  */
 @Composable
 private fun RequestUserInputFooter(
@@ -411,10 +424,12 @@ private fun RequestUserInputFooter(
         return
     }
     val resolving = override == PermissionRowOverride.Resolving
-    val questions = remember(tool.id, tool.input) { parseRequestUserInputQuestions(tool.input) }
+    val context = LocalContext.current
+    val parsed = remember(tool.id, tool.input) { parseRequestUserInput(tool.input) }
+    val questions = parsed.questions
 
-    val selected = remember(tool.id) { mutableStateOf(mapOf<String, Set<String>>()) }
-    val notes = remember(tool.id) {
+    val selected = rememberSaveable(tool.id) { mutableStateOf(mapOf<String, Set<String>>()) }
+    val notes = rememberSaveable(tool.id) {
         mutableStateOf(questions.associate { it.id to it.prefill.orEmpty() })
     }
     var validationError by remember(tool.id) { mutableStateOf<String?>(null) }
@@ -426,6 +441,7 @@ private fun RequestUserInputFooter(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         questions.forEach { question ->
+            val noteFocusRequester = remember(tool.id, question.id) { FocusRequester() }
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (question.question.isNotEmpty()) {
                     Text(
@@ -437,7 +453,8 @@ private fun RequestUserInputFooter(
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
-                question.options.forEach { option ->
+                question.answerOptions.forEachIndexed { optionIndex, option ->
+                    val isOther = question.isOtherOption(optionIndex)
                     val checked = option.label in (selected.value[question.id] ?: emptySet())
                     Surface(
                         shape = RoundedCornerShape(10.dp),
@@ -450,15 +467,12 @@ private fun RequestUserInputFooter(
                             .fillMaxWidth()
                             .selectable(selected = checked, enabled = !resolving, onClick = {
                                 val current = selected.value[question.id] ?: emptySet()
-                                val next = when {
-                                    question.multiple ->
-                                        if (option.label in current) current - option.label
-                                        else current + option.label
-                                    else -> setOf(option.label)
-                                }
+                                val next = selectRequestUserInputOption(question, current, optionIndex)
                                 selected.value = selected.value + (question.id to next)
                                 validationError = null
-                            }),
+                                if (isOther) noteFocusRequester.requestFocus()
+                            })
+                            .testTag("request-input-${question.id}-option-$optionIndex"),
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -470,8 +484,12 @@ private fun RequestUserInputFooter(
                                 RadioButton(selected = checked, onClick = null, enabled = !resolving)
                             }
                             Column(modifier = Modifier.padding(start = 6.dp)) {
-                                Text(text = option.label, style = MaterialTheme.typography.bodyMedium)
-                                option.description?.let { description ->
+                                Text(
+                                    text = if (isOther) stringResource(R.string.chat_perm_none_of_the_above) else option.label,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                val description = if (isOther) stringResource(R.string.chat_perm_other_note_optional) else option.description
+                                description?.let {
                                     Text(
                                         text = description,
                                         style = MaterialTheme.typography.labelSmall,
@@ -490,7 +508,10 @@ private fun RequestUserInputFooter(
                     },
                     enabled = !resolving,
                     placeholder = { Text(question.placeholder ?: stringResource(R.string.chat_perm_add_note)) },
-                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
+                    modifier = Modifier.fillMaxWidth()
+                        .focusRequester(noteFocusRequester)
+                        .testTag("request-input-${question.id}-note"),
                 )
             }
         }
@@ -512,6 +533,7 @@ private fun RequestUserInputFooter(
                 CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
             } else {
                 val answerEveryRequired = stringResource(R.string.chat_perm_answer_required)
+                val openFailed = stringResource(R.string.chat_perm_open_signin_failed)
                 TextButton(onClick = {
                     for (question in questions) {
                         val questionSelected = (selected.value[question.id] ?: emptySet()).toList()
@@ -521,9 +543,23 @@ private fun RequestUserInputFooter(
                             return@TextButton
                         }
                     }
+                    // Sign-in flow: the URL must be explicitly confirmed, then
+                    // the page opens together with submitting (web shows the
+                    // same select-option error for the unconfirmed case).
+                    if (parsed.url != null) {
+                        if (!isRequestUserInputUrlConfirmed(parsed, selected.value.mapValues { it.value.toList() })) {
+                            validationError = answerEveryRequired
+                            return@TextButton
+                        }
+                        if (!openRequestUserInputUrl(context, parsed.url)) {
+                            validationError = openFailed
+                            return@TextButton
+                        }
+                    }
                     val answers = linkedMapOf<String, List<String>>()
                     questions.forEach { question ->
                         answers[question.id] = requestUserInputAnswerValues(
+                            question = question,
                             selected = (selected.value[question.id] ?: emptySet()).toList(),
                             note = notes.value[question.id].orEmpty(),
                         )
@@ -538,6 +574,18 @@ private fun RequestUserInputFooter(
 }
 
 // -------------------------------------------------------------- previews --
+
+/**
+ * `openRequestUserInputUrl` native twin: web's opener-null `window.open` has
+ * no tab-nabbing surface on Android, so a plain view intent is the analogue.
+ * False (≈ web's popup-blocked return) when no handler takes the intent.
+ */
+private fun openRequestUserInputUrl(context: Context, url: String): Boolean = try {
+    context.startActivity(Intent(Intent.ACTION_VIEW, url.toUri()))
+    true
+} catch (_: Exception) {
+    false
+}
 
 @Preview(showBackground = true)
 @Composable

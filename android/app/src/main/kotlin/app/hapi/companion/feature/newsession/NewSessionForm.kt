@@ -56,28 +56,111 @@ object NewSessionLogic {
     fun usesCodexFamilyPermissionModes(flavor: String?): Boolean =
         flavor in CODEX_FAMILY_PERMISSION_AGENTS
 
-    /** Flavors whose permission control is the native-mode select. */
+    /**
+     * Flavors whose permission control is the native-mode select. claude and
+     * grok do not share the codex-family mode set, but they render through
+     * the same native select (web `usesNativePermissionSelect`,
+     * `web/src/lib/codexFamilyPermissionAgents.ts`).
+     */
     fun usesNativePermissionSelect(flavor: String?): Boolean =
-        flavor == "grok" || usesCodexFamilyPermissionModes(flavor)
+        flavor == "claude" || flavor == "grok" || usesCodexFamilyPermissionModes(flavor)
+
+    /**
+     * Flavors whose create-form permission choice lives in the single
+     * `permissionMode` field that launch preferences remember (web
+     * `usesSharedPermissionModeState`). Grok renders the same native select
+     * but its Auto option depends on a machine capability, so its mode stays
+     * out of the remembered launch settings on both platforms.
+     */
+    fun usesSharedPermissionModeState(flavor: String?): Boolean =
+        usesNativePermissionSelect(flavor) && flavor != "grok"
+
+    // ------------------------------------------------- launch preferences --
+
+    /**
+     * Capture of the form's launch defaults at spawn success (web builds
+     * `preferredLaunchSettings` inline in `handleCreate`): the model/effort
+     * fields verbatim, the permission mode only for shared-mode flavors.
+     */
+    fun launchPreferenceFrom(form: NewSessionForm): PreferredLaunchSettings = PreferredLaunchSettings(
+        model = form.model,
+        effort = form.effort,
+        modelReasoningEffort = form.modelReasoningEffort,
+        permissionMode = form.permissionMode.takeIf { usesSharedPermissionModeState(form.agent) },
+    )
+
+    /**
+     * Validation pass over a stored preference before prefill (web
+     * `resolvePreferredLaunchSettings`):
+     * - claude's static lists reject stale ids → sentinels; every other
+     *   flavor passes the stored model through for the live-catalog
+     *   reconciliation ([reconcileCodexSelections] is codex's settled-catalog
+     *   equivalent; the remaining flavors have no v1 picker, so their value
+     *   is always `'auto'` anyway);
+     * - opencode's reasoning effort validates against the static list minus
+     *   `xhigh` (web drops that row for opencode);
+     * - a stored permission mode that is absent from the flavor's launch
+     *   catalog falls back to `'default'` — never to a stale toggle; non
+     *   shared-mode flavors resolve to null (not remembered).
+     */
+    fun resolvePreferredLaunchSettings(
+        agent: String?,
+        stored: PreferredLaunchSettings?,
+    ): PreferredLaunchSettings {
+        val model = if (agent == "claude") {
+            stored?.model?.takeIf { it in NewSessionCatalogs.CLAUDE_MODELS.map(OptionItem::value) } ?: "auto"
+        } else {
+            stored?.model ?: "auto"
+        }
+        val effort = if (agent == "claude") {
+            stored?.effort?.takeIf { it in NewSessionCatalogs.CLAUDE_EFFORTS.map(OptionItem::value) } ?: "auto"
+        } else {
+            stored?.effort ?: "auto"
+        }
+        val modelReasoningEffort = if (agent == "opencode") {
+            stored?.modelReasoningEffort
+                ?.takeIf { it in NewSessionCatalogs.CODEX_REASONING_EFFORTS.map(OptionItem::value) - "xhigh" }
+                ?: "default"
+        } else {
+            stored?.modelReasoningEffort ?: "default"
+        }
+        val permissionMode = if (usesSharedPermissionModeState(agent)) {
+            stored?.permissionMode
+                ?.takeIf { mode -> PermissionModes.forFlavor(agent).any { it.wireId == mode } }
+                ?: "default"
+        } else {
+            null
+        }
+        return PreferredLaunchSettings(
+            model = model,
+            effort = effort,
+            modelReasoningEffort = modelReasoningEffort,
+            permissionMode = permissionMode,
+        )
+    }
 
     /**
      * Exact spawn body (`POST /api/machines/:id/spawn`), field-for-field port
      * of the web `handleCreate` mapping:
      * - `model`/`effort` only for flavors whose picker exists in this v1
      *   (claude static list, codex machine catalog; others send no model);
-     * - `yolo` for non-grok/non-codex-family flavors — **including `false`**;
-     * - `permissionMode` for grok + codex-family — including `'default'`;
+     * - `yolo` only for flavors still on the YOLO toggle (not
+     *   `usesNativePermissionSelect`) — **including `false`**;
+     * - `permissionMode` for every `usesNativePermissionSelect` flavor —
+     *   including `'default'`;
      * - `sessionType` always; `worktreeName` only for worktree and non-blank;
      * - `serviceTier` only while the codex fast tier is visible (then also
      *   `'standard'`); `collaborationMode` only when not `'default'`;
      * - `copilotAgentMode` always for copilot;
      * - `startingMode` omitted = the runner's `'remote'` default (v1 fixes
      *   remote; pty is deferred, matching the web create form).
+     *
+     * Unlike web, Android has no persistent YOLO preference to migrate: the
+     * toggle only lives in the in-memory form / a draft that is deleted on
+     * success, so there is nothing to bridge into `permissionMode` here.
      */
     fun buildSpawnRequest(form: NewSessionForm, codexFastTierVisible: Boolean): SpawnSessionRequest {
         val agent = form.agent
-        val codexFamily = usesCodexFamilyPermissionModes(agent)
-        val isGrok = agent == "grok"
         val resolvedModel = when {
             // v1 model pickers: claude (static presets) and codex (machine
             // catalog). Other flavors' discovery endpoints are TODO(M3d+),
@@ -95,8 +178,8 @@ object NewSessionLogic {
             } else {
                 null
             },
-            yolo = if (agent == "dsh" || isGrok || codexFamily) null else form.yolo,
-            permissionMode = if (isGrok || codexFamily) form.permissionMode else null,
+            yolo = if (agent == "dsh" || usesNativePermissionSelect(agent)) null else form.yolo,
+            permissionMode = if (usesNativePermissionSelect(agent)) form.permissionMode else null,
             sessionType = form.sessionType,
             worktreeName = if (form.sessionType == SESSION_TYPE_WORKTREE) {
                 form.worktreeName.trim().ifEmpty { null }

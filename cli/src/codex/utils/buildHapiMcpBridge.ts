@@ -9,6 +9,8 @@ import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { exportHapiSessionEnv } from '@/agent/hapiSessionEnv';
+import { isPeerToolsDisabled } from '@/modules/common/peerTools';
+import type { CodexMcpServerConfig } from './codexMcpServers';
 
 /**
  * MCP server entry configuration.
@@ -19,7 +21,7 @@ export interface McpServerToolConfig {
     approval_mode?: McpToolApprovalMode;
 }
 
-export interface McpServerEntry {
+export interface McpServerEntry extends CodexMcpServerConfig {
     command: string;
     args: string[];
     tools?: Record<string, McpServerToolConfig>;
@@ -44,6 +46,7 @@ export interface HapiMcpBridge {
 }
 
 export interface HapiMcpBridgeOptions {
+    exportSessionEnv?: boolean;
     emitTitleSummary?: boolean;
     enableChangeTitle?: boolean;
     skillLookup?: {
@@ -75,19 +78,23 @@ export async function buildHapiMcpBridge(
         }
     }
     // Belt-and-suspenders: onMaterialized already exports; keep env set for non-lazy too.
-    exportHapiSessionEnv(client.sessionId);
+    if (options.exportSessionEnv !== false) exportHapiSessionEnv(client.sessionId);
 
     const happyServer = await startHappyServer(client, {
         emitTitleSummary: options.emitTitleSummary,
         enableChangeTitle: options.enableChangeTitle,
         skillLookup: options.skillLookup
     });
+    // Stamp the hub row id so orphanReap can find MCP helpers after the agent
+    // root dies without a full tree kill (#2003 / #1911 follow-up).
     const bridgeCommand = getHappyCliCommand([
         'mcp',
         '--url',
         happyServer.url,
         '--tools',
-        happyServer.toolNames.join(',')
+        happyServer.toolNames.join(','),
+        '--hapi-session-id',
+        client.sessionId,
     ]);
     const tools: Record<string, McpServerToolConfig> = {
         display_image: {
@@ -106,9 +113,12 @@ export async function buildHapiMcpBridge(
         };
     }
     // Discovery shortlist only - same trust as skill_lookup / change_title.
-    tools.list_peers = {
-        approval_mode: 'approve'
-    };
+    // Skipped under HAPI_DISABLE_PEER_TOOLS (tool is not registered then).
+    if (!isPeerToolsDisabled()) {
+        tools.list_peers = {
+            approval_mode: 'approve'
+        };
+    }
     // ping_peer / inspect_peer are registered on the HTTP MCP server / stdio
     // bridge, but are not auto-approved: they target another session (resume +
     // inject, or read peer histories).

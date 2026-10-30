@@ -18,11 +18,11 @@ public struct NewSessionForm: Codable, Equatable, Sendable {
     public var directory: String
     /// Flavor from ``AgentFlavor/creatableFlavors``.
     public var agent: AgentFlavor
-    /// `'auto'` = no explicit model (claude presets / codex catalog ids).
+    /// `'auto'` = no explicit model (claude presets, codex and discovered catalogs).
     public var model: String
-    /// Claude launch effort; `'auto'` = omit.
+    /// Claude/grok effort or pi thinking level; `'auto'` = omit.
     public var effort: String
-    /// Codex reasoning effort; `'default'` = omit.
+    /// Codex reasoning effort or opencode variant; `'default'` = omit.
     public var modelReasoningEffort: String
     /// Native permission mode for grok + codex-family flavors.
     public var permissionMode: PermissionMode
@@ -122,9 +122,12 @@ public enum NewSessionLogic {
         codexFamilyPermissionAgents.contains(flavor)
     }
 
-    /// Flavors whose permission control is the native-mode select.
+    /// Flavors whose permission control is the native-mode select. claude
+    /// and grok do not share the codex-family mode set, but they render
+    /// through the same native select (web `usesNativePermissionSelect`,
+    /// `web/src/lib/codexFamilyPermissionAgents.ts`).
     public static func usesNativePermissionSelect(_ flavor: AgentFlavor) -> Bool {
-        flavor == .grok || usesCodexFamilyPermissionModes(flavor)
+        flavor == .claude || flavor == .grok || usesCodexFamilyPermissionModes(flavor)
     }
 
     /// `resolveHapiYoloPermissionMode` (`shared/src/agentConfig.ts`) — the
@@ -142,40 +145,54 @@ public enum NewSessionLogic {
 
     /// Exact spawn body (`POST /api/machines/:id/spawn`), field-for-field
     /// port of the web `handleCreate` mapping:
-    /// - `model`/`effort` only for flavors whose picker exists in this v1
-    ///   (claude static list, codex machine catalog; others send no model);
-    /// - `yolo` for non-grok/non-codex-family flavors — **including `false`**;
-    /// - `permissionMode` for grok + codex-family — including `'default'`;
+    /// - `model` for every flavor with a picker (claude presets, codex and the
+    ///   ``AgentModelCatalog`` flavors) unless `'auto'`; cursor always sends
+    ///   it (`'auto'` included, web `cursorSpawnModelId`);
+    /// - `effort` for claude, grok and pi; `modelReasoningEffort` for codex
+    ///   and opencode (variants); each omitted on its Default sentinel;
+    /// - `yolo` only for flavors still on the YOLO toggle (not
+    ///   `usesNativePermissionSelect`) — **including `false`**;
+    /// - `permissionMode` for every `usesNativePermissionSelect` flavor —
+    ///   including `'default'`;
     /// - `sessionType` always; `worktreeName` only for worktree and non-blank;
     /// - `serviceTier` only while the codex fast tier is visible (then also
     ///   `'standard'`); `collaborationMode` only when not `'default'`;
     /// - `copilotAgentMode` always for copilot;
     /// - `startingMode` omitted = the runner's `'remote'` default (v1 fixes
     ///   remote; pty is deferred, matching the web create form).
+    ///
+    /// Unlike web, iOS has no persistent YOLO preference to migrate: the
+    /// toggle only lives in the in-memory form / a draft that is deleted on
+    /// success, so there is nothing to bridge into `permissionMode` here.
     public static func buildSpawnRequest(
         form: NewSessionForm,
         codexFastTierVisible: Bool
     ) -> SpawnRequest {
         let agent = form.agent
-        let codexFamily = usesCodexFamilyPermissionModes(agent)
-        let isGrok = agent == .grok
-        // v1 model pickers: claude (static presets) and codex (machine
-        // catalog). Other flavors' discovery endpoints are TODO(M4+), so
-        // their model is never sent.
-        let resolvedModel: String? = ((agent == .claude || agent == .codex) && form.model != "auto")
-            ? form.model
-            : nil
+        let hasModelPicker = agent == .claude || agent == .codex
+            || AgentModelCatalog.scope(for: agent) != nil
+        let trimmedModel = form.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedModel: String?
+        if agent == .cursor {
+            resolvedModel = trimmedModel.isEmpty ? "auto" : trimmedModel
+        } else {
+            resolvedModel = hasModelPicker && trimmedModel != "auto" && !trimmedModel.isEmpty
+                ? trimmedModel
+                : nil
+        }
+        let sendsEffort = agent == .claude || agent == .grok || agent == .pi
+        let sendsReasoningEffort = agent == .codex || agent == .opencode
         let trimmedWorktreeName = form.worktreeName.trimmingCharacters(in: .whitespacesAndNewlines)
         return SpawnRequest(
             directory: form.trimmedDirectory,
             agent: agent,
             model: resolvedModel,
-            effort: (agent == .claude && form.effort != "auto") ? form.effort : nil,
-            modelReasoningEffort: (agent == .codex && form.modelReasoningEffort != "default")
+            effort: (sendsEffort && form.effort != "auto") ? form.effort : nil,
+            modelReasoningEffort: (sendsReasoningEffort && form.modelReasoningEffort != "default")
                 ? form.modelReasoningEffort
                 : nil,
-            yolo: (agent == .dsh || isGrok || codexFamily) ? nil : form.yolo,
-            permissionMode: (isGrok || codexFamily) ? form.permissionMode : nil,
+            yolo: (agent == .dsh || usesNativePermissionSelect(agent)) ? nil : form.yolo,
+            permissionMode: usesNativePermissionSelect(agent) ? form.permissionMode : nil,
             sessionType: form.sessionType,
             worktreeName: (form.sessionType == .worktree && !trimmedWorktreeName.isEmpty)
                 ? trimmedWorktreeName
@@ -189,6 +206,39 @@ public enum NewSessionLogic {
         )
     }
 
+    /// Restored selections the live catalog no longer offers fall back to
+    /// their Default sentinels (web validation effects): an unlisted model,
+    /// a grok/pi effort or an opencode variant the selected model lacks.
+    public static func reconcileAgentModelSelections(
+        _ form: NewSessionForm,
+        response: AgentModelsResponse,
+        variants: [String: [String]]?
+    ) -> NewSessionForm {
+        let agent = form.agent
+        guard AgentModelCatalog.scope(for: agent) != nil else { return form }
+        var next = form
+        let models = AgentModelCatalog.newSessionModelOptions(flavor: agent, response: response)
+        if !models.contains(where: { $0.value == next.model }) {
+            next.model = "auto"
+        }
+        let efforts: [NewSessionOption]?
+        switch agent {
+        case .grok: efforts = AgentModelCatalog.grokEffortOptions(response: response, model: next.model)
+        case .pi: efforts = AgentModelCatalog.piEffortOptions(response: response, model: next.model)
+        default: efforts = nil
+        }
+        if next.effort != "auto", efforts?.contains(where: { $0.value == next.effort }) != true {
+            next.effort = "auto"
+        }
+        if agent == .opencode, next.modelReasoningEffort != "default",
+           AgentModelCatalog.opencodeReasoningEffortOptions(
+               variants: variants, response: response, model: next.model
+           )?.contains(where: { $0.value == next.modelReasoningEffort }) != true {
+            next.modelReasoningEffort = "default"
+        }
+        return next
+    }
+
     // MARK: - Directory autocomplete
 
     /// Parent listing target for the autocomplete dropdown.
@@ -200,11 +250,41 @@ public enum NewSessionLogic {
         /// Separator used by the typed path; suggestions preserve it.
         public let separator: String
 
+        public var includeHidden: Bool { prefix.hasPrefix(".") }
+
         public init(parent: String, prefix: String, separator: String = "/") {
             self.parent = parent
             self.prefix = prefix
             self.separator = separator
         }
+    }
+
+    public enum DirectoryAutocompleteQuery: Equatable, Sendable {
+        case none
+        case roots([String])
+        case directory(ParentQuery)
+        case outsideRoots
+    }
+
+    /// Complete known roots without listing their forbidden ancestors. Once
+    /// inside a root, use the normal parent listing. `path` is home-expanded.
+    public static func directoryAutocompleteQuery(
+        path: String,
+        roots: [String]
+    ) -> DirectoryAutocompleteQuery {
+        if path.isEmpty { return roots.isEmpty ? .none : .roots(Array(roots.prefix(8))) }
+        guard let query = parentQuery(for: path) else { return .none }
+        if roots.contains(where: {
+            RemoteDirectoryPath.isWithinRoot(path: path, root: $0)
+                && RemoteDirectoryPath.isWithinRoot(path: $0, root: path)
+        }) {
+            return .directory(ParentQuery(parent: path, prefix: "", separator: query.separator))
+        }
+        if RemoteDirectoryPath.allowsBrowsing(path: query.parent, roots: roots) {
+            return .directory(query)
+        }
+        let matchingRoots = roots.filter { $0.lowercased().hasPrefix(path.lowercased()) }
+        return matchingRoots.isEmpty ? .outsideRoots : .roots(Array(matchingRoots.prefix(8)))
     }
 
     /// Derives the list-directory request from the typed text: list the

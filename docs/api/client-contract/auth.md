@@ -15,7 +15,7 @@ The hub's base token (`CLI_API_TOKEN`) is auto-generated on first run (32 random
 
 ## Pairing
 
-Source of truth: `hub/src/startHub.ts` (lines ~317–366), `web/src/components/settings/CompanionPairing.tsx`.
+Source of truth: `hub/src/startHub.ts`, `web/src/components/settings/CompanionPairing.tsx`.
 
 The hub terminal (when started with `--relay`) prints two QR codes; the web app's Settings → Companion pairing screen renders the second one as well:
 
@@ -25,6 +25,18 @@ The hub terminal (when started with `--relay`) prints two QR codes; the web app'
 | Companion deeplink | `hapicompanion://bind?hub=<url>&code=<accessToken>` | `hub`, `code` |
 
 Native clients register the `hapicompanion://` scheme and parse `bind` links: `hub` is the hub base URL, `code` is the access token. Note the param-name mismatch: the web QR carries the same value under `token=`, the companion deeplink under `code=`. A robust scanner may accept both forms; the deeplink form is the canonical one for natives. Always provide a manual fallback (type hub URL + access token) for `--relay`-less local hubs.
+
+Both repository apps accept both QR forms in their in-app scanners. Android
+requires HTTPS for the hub and web-QR URL, and disables cleartext traffic in
+its manifest. iOS parses HTTP and HTTPS URLs, but transport remains subject
+to system network policy; its project has no ATS exceptions. Use HTTPS for
+the pairing examples. See [Native apps → Pairing](../../guide/native-apps.md#pair-with-your-hub).
+
+Both apps normalize hub identities to `scheme://host[:port]`, lowercasing
+scheme/host and removing default ports, paths, queries and fragments. Reverse
+proxies must expose the hub at that origin, not solely under a path prefix.
+Sources: iOS `HapiClient/Auth/HubRegistry.swift` (`HubURLNormalization`),
+Android `core/data/.../auth/HubUrls.kt` and `core/protocol/.../pairing/PairingLinks.kt`.
 
 ## Access-token grammar
 
@@ -84,19 +96,23 @@ Source of truth: `hub/src/web/middleware/auth.ts`.
 
 ## Silent re-auth (401 handling)
 
-Reference behavior: `web/src/api/client.ts` (`request()`), `web/src/hooks/useAuth.ts` (`refreshAuth`).
+Native implementations: iOS `HapiClient/Auth/AuthManager.swift` and
+`HapiClient/APIClient.swift`; Android `core/data/.../auth/TokenAuthenticator.kt`.
+Web reference: `web/src/api/client.ts` (`request()`),
+`web/src/hooks/useAuth.ts` (`refreshAuth`).
 
 The JWT expires every 4 hours, so 401s are routine, not exceptional. The contract:
 
-1. On any 401 from an `/api/*` call, re-exchange the **stored access token** via `POST /api/auth`.
+1. On a 401 from an authenticated client API request, re-exchange the **stored access token** via `POST /api/auth`. The auth exchange itself must not enter this loop.
 2. If the exchange succeeds, retry the original request **exactly once** with the new JWT.
-3. If the exchange fails (or the retry 401s again), surface "signed out" and require re-pairing — the access token was rotated or revoked.
+3. A 401 from the exchange, or another 401 on the retried request, is terminal: require re-pairing. An exchange rejected with 401 means the stored access token is invalid or revoked.
+4. A temporary exchange failure (network error or 5xx) fails the call without signing out or deleting paired credentials. Recover when connectivity returns; do not treat every refresh error as token revocation.
 
-Implementation notes (all present in the web reference and recommended for natives):
+Implementation notes:
 
-- **Single-flight** the refresh: concurrent 401s must share one in-flight `POST /api/auth` promise, not race N exchanges (`refreshPromiseRef` in `useAuth.ts`).
-- Throttle failed refresh attempts (web: 15 s between attempts) so a dead hub doesn't cause a refresh storm.
-- Optionally refresh proactively: the web schedules a refresh 60 s before `exp` and on app-foreground when remaining TTL < 60 s. This keeps the SSE connection (which authenticates once, at connect time) from dying mid-stream with a stale token on reconnect.
+- **Single-flight** the refresh: concurrent 401s share an exchange or reuse the JWT already refreshed by another caller. Both native clients implement this.
+- Both native clients proactively refresh within 10 minutes of expiry. iOS can retain a still-valid cached JWT after a failed proactive refresh and throttles those attempts for 15 s. Android refreshes before SSE connects and leaves transient failures recoverable.
+- The web schedules proactive refresh 60 s before `exp` and on foreground when remaining TTL < 60 s. These scheduling choices are client implementation details, not additional protocol-version requirements. SSE authenticates at connection time, so reconnects need a current token.
 
 ## Namespaces
 
@@ -113,16 +129,19 @@ Every request executes in the JWT's namespace (`ns` claim, derived from the acce
 | `PUT /api/hub-settings` (write; read is open to all namespaces) | `hub/src/web/routes/hubSettings.ts` |
 | `GET`/`PUT /api/voice/transcription/credentials` | `hub/src/web/routes/voice.ts` |
 
-Clients should hide the usage/storage screens entirely when the paired namespace is not `default` (the namespace is known client-side: it's the part after the last `:` of the access token, or `default`).
+Both native apps gate usage/storage screens on the authenticated JWT's `ns`
+claim and hide them unless it is `default`; missing claims fail closed. Pass
+the access token unchanged during authentication rather than rewriting its
+namespace suffix. The hub remains authoritative for every owner-only request.
 
 ## Credential storage guidance
 
 - Store the **access token** in platform-secure storage: iOS Keychain, Android `EncryptedSharedPreferences` (behind an interface so the mechanism can be swapped). Never plain files, never logs.
 - Key credentials **per hub base URL** (normalized), since a client can pair with several hubs. Web reference: localStorage key `hapi_access_token::<baseUrl>` (`web/src/hooks/useAuth.ts`, `web/src/components/settings/CompanionPairing.tsx`).
-- The JWT is a cache, not a secret worth keeping: it is fine to hold it in memory only and re-exchange on cold start. If persisted (to save one round-trip at launch), store it alongside the access token with the same protection.
-- On unpair/sign-out: delete both credentials, and unregister FCM (`DELETE /api/devices/register`) first while you still hold a valid JWT.
+- The JWT is a sensitive bearer credential, but need not be persisted: hold it in memory and re-exchange on cold start. If persisted (to save one round-trip at launch), store it alongside the access token with the same protection.
+- On unpair/sign-out: delete both credentials, and unregister native push (`DELETE /api/devices/register`) first while you still hold a valid JWT.
 
-## 401 error bodies
+## 401 error bodies {#401-error-bodies}
 
 All are JSON with an `error` string; none carry a `code` field except Telegram's `not_bound` (which reuses `error` as the discriminator — natives never see it):
 

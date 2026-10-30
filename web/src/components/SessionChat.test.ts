@@ -1,19 +1,44 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
     applyGlobalSelectAll,
+    buildAgyComposerModelOptions,
     applyModelChangeWithReasoningRollback,
     buildGoalStateMessages,
     isScratchlistHotkeyBlockedTarget,
     isScratchlistToggleHotkey,
     isSelectAllTargetBlocked,
     mergeStagedAttachmentsInOrder,
+    opencodeEffortOptionsInvalidationKey,
     resolvePiContextWindow,
+    resolveEffortForModelChange,
     resolveLatestCompletedBoundaryIdForView,
     shouldAutoClearPendingSchedule,
+    shouldClearReasoningEffortForModelChange,
     shouldRouteToScratchlist,
+    isRewindForkFallbackError,
 } from './SessionChat'
+import { ApiError } from '@/api/client'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import type { AttachmentMetadata, DecryptedMessage } from '@/types/api'
+
+describe('isRewindForkFallbackError', () => {
+    it('recognizes the structured safe-Fork boundary code', () => {
+        expect(isRewindForkFallbackError(new ApiError(
+            'native boundary is ambiguous',
+            409,
+            'ambiguous_native_boundary_fork_safe'
+        ))).toBe(true)
+    })
+
+    it('does not classify unsafe or message-only errors as fallback candidates', () => {
+        expect(isRewindForkFallbackError(new ApiError(
+            'native boundary is ambiguous',
+            409,
+            'ambiguous_native_boundary'
+        ))).toBe(false)
+        expect(isRewindForkFallbackError(new Error('ambiguous native boundary'))).toBe(false)
+    })
+})
 
 describe('applyModelChangeWithReasoningRollback', () => {
     it('restores the previous effort when the model switch fails after clearing it', async () => {
@@ -48,6 +73,42 @@ describe('applyModelChangeWithReasoningRollback', () => {
         expect(setModelReasoningEffort).toHaveBeenCalledOnce()
         expect(setModelReasoningEffort).toHaveBeenCalledWith(null)
         expect(setModel).toHaveBeenCalledWith('gpt-next')
+    })
+})
+
+describe('shouldClearReasoningEffortForModelChange', () => {
+    it('preserves an OpenCode effort for backend validation and rollback', () => {
+        expect(shouldClearReasoningEffortForModelChange({
+            agentFlavor: 'opencode',
+            previousModelReasoningEffort: 'high',
+            codexModels: [],
+            model: 'provider/model-b'
+        })).toBe(false)
+    })
+
+    it('does not clear an unset OpenCode effort', () => {
+        expect(shouldClearReasoningEffortForModelChange({
+            agentFlavor: 'opencode',
+            previousModelReasoningEffort: null,
+            codexModels: [],
+            model: 'provider/model-b'
+        })).toBe(false)
+    })
+})
+
+describe('opencodeEffortOptionsInvalidationKey', () => {
+    it('returns the effort options query key for opencode sessions', () => {
+        expect(opencodeEffortOptionsInvalidationKey('opencode', 'session-1')).toEqual([
+            'session-opencode-reasoning-effort-options',
+            'session-1',
+        ])
+    })
+
+    it('returns null for other flavors and missing flavor', () => {
+        expect(opencodeEffortOptionsInvalidationKey('codex', 'session-1')).toBeNull()
+        expect(opencodeEffortOptionsInvalidationKey('grok', 'session-1')).toBeNull()
+        expect(opencodeEffortOptionsInvalidationKey(null, 'session-1')).toBeNull()
+        expect(opencodeEffortOptionsInvalidationKey(undefined, 'session-1')).toBeNull()
     })
 })
 
@@ -504,5 +565,55 @@ describe('buildGoalStateMessages', () => {
 
         expect(buildGoalStateMessages([futureQueued, matureQueued, invokedScheduled]).map((message) => message.id))
             .toEqual(['invoked'])
+    })
+})
+
+describe('buildAgyComposerModelOptions', () => {
+    it('groups model effort variants into one family option', () => {
+        expect(buildAgyComposerModelOptions([
+            { modelId: 'gemini-4-argon-medium', name: 'Gemini 4 Argon (Medium)' },
+            { modelId: 'gemini-4-argon-high', name: 'Gemini 4 Argon (High)' },
+        ])).toEqual([{ value: 'gemini-4-argon', label: 'Gemini 4 Argon' }])
+    })
+
+    it('maps the machine catalog into composer options and keeps the id when agy sent no label', () => {
+        expect(buildAgyComposerModelOptions([
+            { modelId: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)' },
+            { modelId: 'gemini-9.9-experimental' }
+        ])).toEqual([
+            { value: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
+            { value: 'gemini-9.9-experimental', label: 'gemini-9.9-experimental' }
+        ])
+    })
+
+    it('signals "no catalog yet" rather than an empty picker while the machine is still answering', () => {
+        expect(buildAgyComposerModelOptions([])).toBeUndefined()
+    })
+})
+
+describe('resolveEffortForModelChange', () => {
+    const claudeModels = [
+        { value: 'opus', effortLevels: ['low', 'high', 'xhigh'] },
+        { value: 'haiku', effortLevels: [] },
+    ]
+
+    it('clears an effort the next Claude model does not offer', () => {
+        expect(resolveEffortForModelChange({ currentEffort: 'xhigh', model: 'haiku', claudeModels })).toEqual({ effort: null })
+    })
+
+    it('leaves the effort alone when the next model keeps it', () => {
+        expect(resolveEffortForModelChange({ currentEffort: 'high', model: 'claude-opus-5-5', claudeModels })).toBeUndefined()
+    })
+
+    it('leaves the effort alone without a catalog (non-Claude sessions, or discovery unavailable)', () => {
+        expect(resolveEffortForModelChange({ currentEffort: 'xhigh', model: 'haiku', claudeModels: [] })).toBeUndefined()
+    })
+
+    it('ignores provider-qualified selections', () => {
+        expect(resolveEffortForModelChange({
+            currentEffort: 'xhigh',
+            model: { provider: 'p', modelId: 'haiku' },
+            claudeModels
+        })).toBeUndefined()
     })
 })

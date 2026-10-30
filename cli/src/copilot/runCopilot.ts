@@ -45,6 +45,8 @@ export async function runCopilot(opts: {
     copilotAgentMode?: import('@hapi/protocol').CopilotAgentMode;
     resumeSessionId?: string;
     existingSessionId?: string;
+    /** Fresh-spawn reserved hub id from `--hapi-session-id` (create/getOrCreate). */
+    reservedSessionId?: string;
     workingDirectory?: string;
 } = {}): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd();
@@ -78,7 +80,8 @@ export async function runCopilot(opts: {
             startedBy,
             workingDirectory,
             agentState: initialState,
-            model: persistedModel
+            model: persistedModel,
+            reservedSessionId: opts.reservedSessionId
         });
     const { api, session } = bootstrap;
 
@@ -106,7 +109,7 @@ export async function runCopilot(opts: {
     });
 
     lifecycle.registerProcessHandlers();
-    registerKillSessionHandler(session.rpcHandlerManager, lifecycle);
+    registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
 
     const syncSessionMode = () => {

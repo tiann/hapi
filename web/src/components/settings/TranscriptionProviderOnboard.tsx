@@ -3,6 +3,11 @@ import { ApiError, type ApiClient, type TranscriptionCredentialStatus, type Tran
 import { useTranslation } from '@/lib/use-translation'
 import { SelectControl } from '@/components/ui/select-control'
 import { Button } from '@/components/ui/button'
+import {
+    VOICE_MAX_DURATION_DEFAULT_SECONDS,
+    VOICE_MAX_DURATION_MAX_SECONDS,
+    VOICE_MAX_DURATION_MIN_SECONDS
+} from '@hapi/protocol/voice'
 import { DICTATION_PROVIDER_PRESETS, dictationOnboardProviders, hasOpenAICompatibleCredentials, type DictationProviderPreset } from './transcriptionProviders'
 
 type DictationProvider = DictationProviderPreset | 'deepgram' | 'openai-compatible'
@@ -79,6 +84,10 @@ export function TranscriptionProviderOnboard(props: {
     const [apiKey, setApiKey] = useState('')
     const [baseUrl, setBaseUrl] = useState('')
     const [model, setModel] = useState('')
+    const [maxDurationInput, setMaxDurationInput] = useState('')
+    const [maxDurationBusy, setMaxDurationBusy] = useState(false)
+    const [maxDurationError, setMaxDurationError] = useState<string | null>(null)
+    const [maxDurationMessage, setMaxDurationMessage] = useState<string | null>(null)
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [message, setMessage] = useState<string | null>(null)
@@ -116,6 +125,7 @@ export function TranscriptionProviderOnboard(props: {
             if (next.openaiCompatible.modelEditable && next.openaiCompatible.model) {
                 setModel(next.openaiCompatible.model)
             }
+            setMaxDurationInput(String(next.elevenLabsMaxDurationSeconds?.value ?? VOICE_MAX_DURATION_DEFAULT_SECONDS))
         } catch {
             setStatus(null)
         }
@@ -170,6 +180,7 @@ export function TranscriptionProviderOnboard(props: {
         if (next.openaiCompatible.modelEditable) {
             setModel(next.openaiCompatible.model ?? '')
         }
+        setMaxDurationInput(String(next.elevenLabsMaxDurationSeconds?.value ?? VOICE_MAX_DURATION_DEFAULT_SECONDS))
     }
 
     const save = async () => {
@@ -204,6 +215,53 @@ export function TranscriptionProviderOnboard(props: {
             setError(errorMessage(err, t('settings.voice.credentials.saveFailed')))
         } finally {
             setBusy(false)
+        }
+    }
+
+    const maxDurationStatus = status?.elevenLabsMaxDurationSeconds
+    const maxDurationEditable = maxDurationStatus?.editable !== false
+
+    const saveMaxDuration = async () => {
+        const parsed = Number(maxDurationInput)
+        if (
+            !Number.isInteger(parsed)
+            || parsed < VOICE_MAX_DURATION_MIN_SECONDS
+            || parsed > VOICE_MAX_DURATION_MAX_SECONDS
+        ) {
+            setMaxDurationError(t('settings.voice.credentials.maxDuration.invalid', {
+                min: String(VOICE_MAX_DURATION_MIN_SECONDS),
+                max: String(VOICE_MAX_DURATION_MAX_SECONDS),
+            }))
+            return
+        }
+        setMaxDurationBusy(true)
+        setMaxDurationError(null)
+        setMaxDurationMessage(null)
+        try {
+            const next = await props.api.updateTranscriptionCredentials({ elevenLabsMaxDurationSeconds: parsed })
+            setStatus(next)
+            setMaxDurationInput(String(next.elevenLabsMaxDurationSeconds?.value ?? parsed))
+            setMaxDurationMessage(t('settings.voice.credentials.maxDuration.saved'))
+        } catch (err) {
+            setMaxDurationError(errorMessage(err, t('settings.voice.credentials.saveFailed')))
+        } finally {
+            setMaxDurationBusy(false)
+        }
+    }
+
+    const resetMaxDuration = async () => {
+        setMaxDurationBusy(true)
+        setMaxDurationError(null)
+        setMaxDurationMessage(null)
+        try {
+            const next = await props.api.updateTranscriptionCredentials({ elevenLabsMaxDurationSeconds: null })
+            setStatus(next)
+            setMaxDurationInput(String(next.elevenLabsMaxDurationSeconds?.value ?? VOICE_MAX_DURATION_DEFAULT_SECONDS))
+            setMaxDurationMessage(t('settings.voice.credentials.maxDuration.saved'))
+        } catch (err) {
+            setMaxDurationError(errorMessage(err, t('settings.voice.credentials.saveFailed')))
+        } finally {
+            setMaxDurationBusy(false)
         }
     }
 
@@ -286,6 +344,47 @@ export function TranscriptionProviderOnboard(props: {
 
             {selected?.editable === false ? (
                 <p className="text-xs text-[var(--app-hint)]">{t('settings.voice.credentials.envLocked')}</p>
+            ) : null}
+
+            {provider === 'elevenlabs' ? (
+                <div className="space-y-2 border-t border-[var(--app-divider)] pt-3">
+                    <label className="block space-y-1">
+                        <span className="text-sm font-medium text-[var(--app-fg)]">
+                            {t('settings.voice.credentials.maxDuration.label')}
+                        </span>
+                        <input
+                            type="number"
+                            min={VOICE_MAX_DURATION_MIN_SECONDS}
+                            max={VOICE_MAX_DURATION_MAX_SECONDS}
+                            step={1}
+                            value={maxDurationInput}
+                            onChange={(event) => setMaxDurationInput(event.target.value)}
+                            disabled={maxDurationBusy || !maxDurationEditable}
+                            className="w-full rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-1.5 text-sm text-[var(--app-fg)]"
+                        />
+                    </label>
+                    <p className="text-xs text-[var(--app-hint)]">
+                        {t('settings.voice.credentials.maxDuration.hint', {
+                            min: String(VOICE_MAX_DURATION_MIN_SECONDS),
+                            max: String(VOICE_MAX_DURATION_MAX_SECONDS),
+                        })}
+                    </p>
+                    {!maxDurationEditable ? (
+                        <p className="text-xs text-[var(--app-hint)]">{t('settings.voice.credentials.envLocked')}</p>
+                    ) : null}
+                    {maxDurationError ? <p className="text-xs text-red-500">{maxDurationError}</p> : null}
+                    {maxDurationMessage ? <p className="text-xs text-[var(--app-hint)]">{maxDurationMessage}</p> : null}
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                        <Button type="button" size="sm" disabled={maxDurationBusy || !maxDurationEditable} onClick={() => void saveMaxDuration()}>
+                            {t('settings.voice.credentials.maxDuration.save')}
+                        </Button>
+                        {maxDurationStatus?.source === 'settings' ? (
+                            <Button type="button" size="sm" variant="outline" disabled={maxDurationBusy} onClick={() => void resetMaxDuration()}>
+                                {t('settings.voice.credentials.maxDuration.reset')}
+                            </Button>
+                        ) : null}
+                    </div>
+                </div>
             ) : null}
 
             {error ? <p className="text-xs text-red-500">{error}</p> : null}

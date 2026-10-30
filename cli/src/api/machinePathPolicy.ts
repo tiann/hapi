@@ -1,6 +1,5 @@
 import { realpathSync } from 'node:fs'
 import { realpath } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import {
     basename,
     dirname,
@@ -8,6 +7,7 @@ import {
     join,
     relative,
     resolve,
+    sep,
 } from 'node:path'
 
 export function normalizeWindowsDriveRoot(path: string): string {
@@ -31,30 +31,24 @@ function normalizeRoots(paths: readonly string[]): string[] {
 function isPathWithinRoots(path: string, roots: readonly string[]): boolean {
     return roots.some((root) => {
         const child = relative(root, path)
-        return child === '' || (!child.startsWith('..') && !isAbsolute(child))
+        return child !== '..' && !child.startsWith(`..${sep}`) && !isAbsolute(child)
     })
 }
 
 /**
  * Single authority for machine-scoped path access.
  *
- * Spawn paths are unrestricted when the runner has no configured workspace
- * roots, preserving the legacy manual-entry contract. Browse paths instead
- * fall back to the runner's home directory so native autocomplete/pickers can
- * remain useful without exposing the whole filesystem.
+ * Browsing and spawning share the same boundaries. Without explicit workspace
+ * roots, both can access any path available to the runner's OS account; a
+ * client's initial directory is a navigation preference, not an access limit.
  */
 export class MachinePathPolicy {
     readonly workspaceRoots: readonly string[]
-    readonly browseRoots: readonly string[]
 
     constructor(options: {
         workspaceRoots?: readonly string[]
-        homeDirectory?: string
     } = {}) {
         this.workspaceRoots = normalizeRoots(options.workspaceRoots ?? [])
-        this.browseRoots = this.workspaceRoots.length > 0
-            ? this.workspaceRoots
-            : normalizeRoots([options.homeDirectory ?? homedir()])
     }
 
     hasWorkspaceRoots(): boolean {
@@ -66,7 +60,7 @@ export class MachinePathPolicy {
     }
 
     isWithinBrowseRoots(path: string): boolean {
-        return isPathWithinRoots(path, this.browseRoots)
+        return this.isWithinSpawnRoots(path)
     }
 
     async resolveForCheck(path: string): Promise<string> {

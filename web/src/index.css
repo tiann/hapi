@@ -334,6 +334,116 @@ html:has(.chat-scroll-y) #root {
     touch-action: pan-y;
 }
 
+/* Keep file-preview content aligned to the previous left edge while reserving
+ * the scrollbar slot on the right on both touch and pointer devices. */
+.file-preview-scroll-y {
+    overflow-x: hidden;
+    scrollbar-gutter: stable;
+}
+
+/* Older WebViews without scrollbar-gutter still need a stable right slot. */
+@supports not (scrollbar-gutter: stable) {
+    .file-preview-scroll-y {
+        overflow-y: scroll;
+    }
+}
+
+/* Include the reserved scrollbar width in the visible content width so the
+ * outer left and right edge spacing remains equal. */
+.file-preview-scroll-content {
+    position: relative;
+    width: calc(100% + var(--file-preview-scrollbar-compensation, 0px));
+    max-width: calc(var(--content-max-w, 960px) + var(--file-preview-scrollbar-compensation, 0px));
+    left: var(--file-preview-scroll-content-offset, 0px);
+}
+
+/* Keep only the two primary session surfaces visually quiet while idle.
+ * Preserve scrollbar width/gutters so hiding the thumb cannot shift content. */
+.scrollbar-auto-hide {
+    transition: scrollbar-color 300ms ease-out;
+}
+
+.scrollbar-auto-hide::-webkit-scrollbar-thumb {
+    transition: background-color 300ms ease-out;
+}
+
+.scrollbar-auto-hide:not([data-scrollbar-visible="true"]):not(:focus-within) {
+    scrollbar-color: transparent transparent;
+}
+
+.scrollbar-auto-hide:not([data-scrollbar-visible="true"]):not(:focus-within)::-webkit-scrollbar-thumb {
+    background-color: transparent;
+}
+
+.scrollbar-auto-hide:not([data-scrollbar-visible="true"]):not(:focus-within)::-webkit-scrollbar-thumb:hover {
+    background-color: var(--app-scrollbar-thumb-hover);
+}
+
+.scrollbar-auto-hide-container {
+    position: relative;
+}
+
+.transient-scrollbar-fallback {
+    display: none;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 10;
+    width: 10px;
+    /* Stale thumb geometry during resize must not create outer scrollbars. */
+    overflow: hidden;
+    pointer-events: none;
+}
+
+.transient-scrollbar-fallback-left {
+    left: 0;
+}
+
+.transient-scrollbar-fallback-right {
+    right: 0;
+}
+
+.transient-scrollbar-fallback-thumb {
+    position: absolute;
+    top: 0;
+    left: 3px;
+    width: 4px;
+    min-height: 24px;
+    border-radius: 999px;
+    background-color: var(--app-scrollbar-thumb);
+    opacity: 0;
+    transition: opacity 300ms ease-out;
+}
+
+.transient-scrollbar-fallback[data-visible="true"] .transient-scrollbar-fallback-thumb {
+    opacity: 1;
+}
+
+@media (hover: none) and (pointer: coarse) {
+    /* Mobile browsers may paint native overlay scrollbars outside the CSS
+     * transition pipeline. Keep the native hit area, but use the fallback
+     * thumb for the animated visual. */
+    .scrollbar-auto-hide {
+        scrollbar-color: transparent transparent;
+    }
+
+    .scrollbar-auto-hide::-webkit-scrollbar-thumb {
+        background-color: transparent;
+    }
+
+    .transient-scrollbar-fallback {
+        display: block;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .scrollbar-auto-hide,
+    .scrollbar-auto-hide::-webkit-scrollbar-thumb,
+    .transient-scrollbar-fallback-thumb {
+        transition-duration: 0s;
+    }
+}
+
 /* On touch-first devices, keep the chat scrollbar from shifting centered content. */
 @media (hover: none) and (pointer: coarse) {
     .chat-scroll-y {
@@ -429,6 +539,41 @@ html:has(.chat-scroll-y) #root {
 
 .sidebar-resize-handle[data-dragging] {
     opacity: 0.6;
+}
+
+.sidebar-show-button {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    z-index: 20;
+    width: 36px;
+    height: 48px;
+    cursor: pointer;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 0;
+    transform: translateY(-50%);
+    border: 0;
+    background: transparent;
+    color: var(--app-hint);
+    transition: color 0.15s;
+}
+
+.sidebar-show-button svg {
+    display: block;
+    width: 24px;
+    height: 40px;
+    flex-shrink: 0;
+}
+
+.sidebar-show-button:hover {
+    color: var(--app-fg);
+}
+
+.sidebar-show-button:focus-visible {
+    color: var(--app-link);
+    outline: 2px solid var(--app-link);
+    outline-offset: 2px;
 }
 
 /*

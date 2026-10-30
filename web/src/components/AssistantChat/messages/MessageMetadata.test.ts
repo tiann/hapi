@@ -54,6 +54,11 @@ describe('buildMessageMetadataLabels', () => {
         expect(parts).toContain('Duration: 0.0s')
     })
 
+    it('uses compact units for long legacy durations', () => {
+        expect(buildMessageMetadataLabels({ durationMs: 60_000 })).toContain('Duration: 1m')
+        expect(buildMessageMetadataLabels({ durationMs: 3_600_000 })).toContain('Duration: 1h')
+    })
+
     // Proof of Invariance — single-turn inputs (turnCount omitted, or < 2)
     // must produce byte-identical output to the pre-aggregate footer so
     // existing single-turn cards do not regress visually.
@@ -144,8 +149,39 @@ describe('buildMessageMetadataLabels', () => {
         expect(parts).toEqual([
             'Models: claude-opus-5, claude-haiku-4-5',
             'Tokens: 100.6k (100.1k in · 500 out)',
-            'Cache read: 99.9% of input · API-rate est.: $0.028',
-            'Round: 8.2s · 9 internal turns'
+            'Cached input: 99.9% · Cost: $0.028',
+            'Round: 8.2s · 9 turns'
+        ])
+    })
+
+    it('formats long round durations with minutes and hours', () => {
+        const summary = (durationMs: number) => buildMessageMetadataLabels({
+            roundSummary: {
+                modelUsage: {},
+                durationMs,
+                numTurns: 1
+            }
+        })
+
+        expect(summary(59_900)).toContain('Round: 59.9s · 1 turn')
+        expect(summary(60_000)).toContain('Round: 1m · 1 turn')
+        expect(summary(537_000)).toContain('Round: 8m 57s · 1 turn')
+        expect(summary(3_661_000)).toContain('Round: 1h 1m 1s · 1 turn')
+    })
+
+    it('labels a top-level Codex turn with Round', () => {
+        expect(buildMessageMetadataLabels({
+            roundSummary: {
+                provider: 'codex',
+                modelUsage: {
+                    'gpt-5.4': { inputTokens: 100, outputTokens: 10 }
+                },
+                numTurns: 1
+            }
+        })).toEqual([
+            'Model: gpt-5.4',
+            'Tokens: 110 (100 in · 10 out)',
+            'Round: 1 turn'
         ])
     })
 
@@ -175,8 +211,63 @@ describe('buildMessageMetadataLabels', () => {
         })).toEqual([
             'Models: claude-opus-5, claude-haiku-4-5, claude-empty-5',
             'Tokens: 24 (10 in · 14 out)',
-            'API-rate est.: <$0.0001',
+            'Cost: <$0.0001',
             'Round: 0.0s'
         ])
+    })
+})
+
+
+describe('Codex cached input metadata', () => {
+    const labels = (input: number, cached?: number) => buildMessageMetadataLabels({
+        roundSummary: {
+            provider: 'codex',
+            usage: { input_tokens: input, output_tokens: 10, cache_read_input_tokens: cached },
+            modelUsage: { 'gpt-5.4': { inputTokens: input, outputTokens: 10 } },
+            numTurns: 1
+        }
+    })
+
+    it('uses cache-inclusive input without adding cached tokens again', () => {
+        expect(labels(100, 80)).toEqual([
+            'Model: gpt-5.4',
+            'Tokens: 110 (100 in · 10 out)',
+            'Cached input: 80%',
+            'Round: 1 turn'
+        ])
+    })
+
+    it('uses token totals rather than averaging cache percentages', () => {
+        expect(buildMessageMetadataLabels({
+            roundSummary: {
+                provider: 'codex',
+                modelUsage: {
+                    'model-a': { inputTokens: 100, cacheReadInputTokens: 80, outputTokens: 5 },
+                    'model-b': { inputTokens: 900, cacheReadInputTokens: 90, outputTokens: 5 }
+                }
+            }
+        })).toContain('Cached input: 17%')
+    })
+
+    it('distinguishes missing cache usage from an explicit zero', () => {
+        expect(labels(100).some(label => label.startsWith('Cached input:'))).toBe(false)
+        expect(labels(100, 0)).toContain('Cached input: 0%')
+        expect(labels(100, 100)).toContain('Cached input: 100%')
+    })
+
+    it.each([-1, NaN, Infinity, 1.5])('omits invalid Codex output counts (%s)', output => {
+        expect(buildMessageMetadataLabels({ roundSummary: {
+            provider: 'codex', modelUsage: {},
+            usage: { input_tokens: 100, output_tokens: output, cache_read_input_tokens: 80 }
+        } }).some(label => label.startsWith('Tokens:') || label.startsWith('Cached input:'))).toBe(false)
+    })
+
+    it.each([
+        [0, 0], [-1, 0], [100, -1], [100, 101], [100, NaN],
+        [100, Infinity], [Infinity, 80], [NaN, 80], [100.5, 80],
+        [100, 1.5], [Number.MAX_SAFE_INTEGER + 1, 80]
+    ])('omits an invalid cache ratio for input=%s cached=%s', (input, cached) => {
+        expect(labels(input, cached).some(label => label.startsWith('Cached input:'))).toBe(false)
+        expect(labels(input, cached).join(' ')).not.toMatch(/NaN|Infinity/)
     })
 })
