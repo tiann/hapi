@@ -164,6 +164,8 @@ private fun TestScope.buildViewModel(
     sessions: FakeSessionStore = FakeSessionStore(),
     machines: FakeMachineStore = FakeMachineStore(),
     zoneProvider: () -> ZoneId = { ZoneId.of("UTC") },
+    cursorProbe: (suspend (String) -> app.hapi.protocol.wire.CursorChatStoreStatus)? = null,
+    now: () -> Long = System::currentTimeMillis,
 ): Triple<SessionListViewModel, FakeSessionStore, FakeMachineStore> {
     val viewModel = SessionListViewModel(
         sessionStore = sessions,
@@ -172,6 +174,8 @@ private fun TestScope.buildViewModel(
         scope = backgroundScope,
         hubKey = "hub-test",
         zoneProvider = zoneProvider,
+        cursorChatStoreProbe = cursorProbe ?: { error("cursor chat-store probe not wired") },
+        now = now,
     )
     return Triple(viewModel, sessions, machines)
 }
@@ -774,5 +778,134 @@ class SessionListViewModelTest {
         )
         val state = viewModel.uiState.first { it.rows.size == 3 }
         assertEquals(setOf("named-stub", "content", "agent-stub"), state.rows.map { it.id }.toSet())
+
+    }
+
+    // ---------------------------------- slice C: cursor reopen gate ------
+
+    private fun cursorSummary(id: String = "cu-sess", active: Boolean = false): SessionSummary =
+        summary(id = id, active = active).copy(
+            metadata = SessionSummaryMetadata(
+                name = null,
+                path = "/repo/app",
+                machineId = null,
+                summary = null,
+                flavor = "cursor",
+                worktree = null,
+                agentSessionId = "cu-1",
+            ),
+        )
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `long-press on an applicable cursor row probes and a missing store gates reopen`() = runTest {
+        val probeCalls = MutableStateFlow(0)
+        val (viewModel, sessions, machines) = buildViewModel(
+            cursorProbe = {
+                probeCalls.value += 1
+                app.hapi.protocol.wire.CursorChatStoreStatus(onDisk = false, store = null)
+            },
+            now = { testScheduler.currentTime },
+        )
+        sessions.set(cursorSummary())
+        viewModel.uiState.first { it.rows.size == 1 }
+
+        viewModel.beginCursorReopenProbe(sessions.backing.value.first())
+        viewModel.cursorReopenGate.first { it.sessionId == "cu-sess" }
+        viewModel.cursorReopenGate.first { it.gate.disabledReason == CursorReopenGateReason.Missing }
+        assertEquals(1, probeCalls.value)
+        assertFalse(viewModel.cursorReopenGate.value.gate.probeUnverified)
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `probe errors soft-allow reopen with the unverified hint`() = runTest {
+        val (viewModel, sessions, machines) = buildViewModel(
+            cursorProbe = { throw RuntimeException("rpc handler missing") },
+        )
+        sessions.set(cursorSummary())
+        viewModel.uiState.first { it.rows.size == 1 }
+
+        viewModel.beginCursorReopenProbe(sessions.backing.value.first())
+        viewModel.cursorReopenGate.first { it.gate.probeUnverified }
+        assertNull(viewModel.cursorReopenGate.value.gate.disabledReason)
+        assertEquals("cu-sess", viewModel.cursorReopenGate.value.sessionId)
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `non-applicable rows clear the gate and never probe`() = runTest {
+        var probeCalls = 0
+        val (viewModel, sessions, machines) = buildViewModel(
+            cursorProbe = {
+                probeCalls++
+                app.hapi.protocol.wire.CursorChatStoreStatus(onDisk = true, store = "acp")
+            },
+        )
+        sessions.set(summary("plain-claude"))
+        viewModel.uiState.first { it.rows.size == 1 }
+
+        viewModel.beginCursorReopenProbe(sessions.backing.value.first())
+        runCurrent()
+        assertNull(viewModel.cursorReopenGate.value.sessionId)
+        assertEquals(0, probeCalls)
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `a row that activates clears the gate while its sheet is open`() = runTest {
+        val (viewModel, sessions, machines) = buildViewModel(
+            cursorProbe = { app.hapi.protocol.wire.CursorChatStoreStatus(onDisk = false, store = null) },
+            now = { testScheduler.currentTime },
+        )
+        sessions.set(cursorSummary())
+        viewModel.uiState.first { it.rows.size == 1 }
+        viewModel.beginCursorReopenProbe(sessions.backing.value.first())
+        viewModel.cursorReopenGate.first { it.gate.disabledReason == CursorReopenGateReason.Missing }
+
+        // The session activates (e.g. another client resumed it): applicability
+        // is re-derived from the live list, and the gate must open even with
+        // the sheet still on screen.
+        sessions.set(cursorSummary(active = true))
+        viewModel.cursorReopenGate.first { it.gate.disabledReason == null }
+        assertEquals("cu-sess", viewModel.cursorReopenGate.value.sessionId)
+        assertFalse(viewModel.cursorReopenGate.value.gate.probeUnverified)
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `repeated long-presses reuse a fresh probe and re-probe after the staleness window`() = runTest {
+        val probeCalls = MutableStateFlow(0)
+        val (viewModel, sessions, machines) = buildViewModel(
+            cursorProbe = {
+                probeCalls.value += 1
+                app.hapi.protocol.wire.CursorChatStoreStatus(onDisk = true, store = "legacy")
+            },
+            now = { testScheduler.currentTime },
+        )
+        sessions.set(cursorSummary())
+        viewModel.uiState.first { it.rows.size == 1 }
+        val row = sessions.backing.value.first()
+
+        viewModel.beginCursorReopenProbe(row)
+        // The gate's open state is also its initial value (sessionId null);
+        // sequence on the probe side effect instead of the gate predicate.
+        probeCalls.first { it == 1 }
+        assertEquals("cu-sess", viewModel.cursorReopenGate.value.sessionId)
+
+        // Inside the 5s window (web `staleTime: 5_000`): no duplicate probe.
+        testScheduler.advanceTimeBy(2_000)
+        viewModel.beginCursorReopenProbe(row)
+        runCurrent()
+        assertEquals(1, probeCalls.value)
+
+        // Past it: the next long-press probes again.
+        testScheduler.advanceTimeBy(3_100)
+        viewModel.beginCursorReopenProbe(row)
+        probeCalls.first { it == 2 }
+        // …and the gate stays settled-open through the reload.
+        viewModel.cursorReopenGate.first {
+            it.sessionId == "cu-sess" && it.gate.disabledReason == null && !it.gate.probeUnverified
+        }
     }
 }

@@ -45,6 +45,17 @@ data class SessionMetadata(
     val kimiSessionId: String? = null,
     val copilotSessionId: String? = null,
     val piSessionId: String? = null,
+    /**
+     * `cursorMigrationState` (`MetadataSchema`, tiann/hapi#873) — drives the
+     * migration banner while a legacy stream-json Cursor store is transplanted
+     * to ACP: `'in_progress'` = banner spinner, `'ambiguous'` = migrator
+     * refused (manual review), absent = no migration in flight. The hub clears
+     * it in the same metadata write that flips `cursorSessionProtocol`, so the
+     * banner disappears in the same SSE patch that re-renders the chat as ACP.
+     * Nullable-with-default per the fork-extension precedent: older hubs never
+     * send it and unknown future values stay opaque strings.
+     */
+    val cursorMigrationState: String? = null,
 )
 
 /** `metadata.summary` on the detail session (`{text, updatedAt}`). */

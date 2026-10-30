@@ -604,6 +604,24 @@
     <string name="sessions_time_filter_empty_title">此日期范围内没有会话</string>
     <string name="sessions_time_filter_empty_hint">调整或清除日期筛选以查看更多会话。</string>
     <string name="sessions_time_filter_recent_activity">近期活动</string>
+    <string name="sessions_action_export">导出对话</string>
+    <string name="session_export_title">导出对话</string>
+    <string name="session_export_description">选择格式，然后导出完整可见对话与 scratchlist 笔记。</string>
+    <string name="session_export_format_json">JSON</string>
+    <string name="session_export_format_json_description">保留会话元数据、消息与 scratchlist 笔记的无损载荷（附件仅含元数据）。</string>
+    <string name="session_export_format_markdown">Markdown</string>
+    <string name="session_export_format_markdown_description">从同一份导出载荷生成的可读视图。</string>
+    <string name="session_export_save">保存</string>
+    <string name="session_export_save_anyway">仍然保存</string>
+    <string name="session_export_share">分享</string>
+    <string name="session_export_share_anyway">仍然分享</string>
+    <string name="session_export_progress">导出中…</string>
+    <string name="session_export_warning_title">导出内容较大</string>
+    <string name="session_export_warning_description">此导出包含 %1$s 条消息，预计大小为 %2$s，超过建议的 %3$s 条消息阈值。</string>
+    <string name="session_export_error_too_large">导出内容过大，无法安全准备（%1$s 条消息，%2$s；上限 %3$s）。</string>
+    <string name="session_export_error_default">导出对话失败</string>
+    <string name="session_export_error_write">无法写入导出文件。</string>
+    <string name="session_export_saved">已保存 %1$s</string>
     <string name="privacy_policy">隐私政策</string>
     <string name="privacy_open_failed">没有可打开此链接的应用。</string>
     <!-- Incoming Android shares. -->
@@ -634,4 +652,14 @@
     <string name="share_error_title">分享暂不可用</string>
     <string name="share_ok">确定</string>
     <string name="share_pair_first">请先配对 Hub，再选择接收分享内容的会话。</string>
+
+    <!-- Cursor reopen gate + migration banner (tiann/hapi#1084, #873; slice C) -->
+    <string name="sessions_reopen_cursor_missing">记录设备上的 Cursor 聊天数据已不可用。</string>
+    <string name="sessions_reopen_cursor_checking">正在检查记录设备上的 Cursor 聊天数据是否仍然可用。</string>
+    <string name="sessions_reopen_cursor_unverified">无法验证 Cursor 聊天数据（运行器可能过旧）。仍可尝试重新打开——若失败，请在该机器上升级 CLI。</string>
+    <string name="chat_inactive_cannot_resume">此会话已停止，无法恢复。</string>
+    <string name="chat_cursor_migration_title">正在升级 Cursor 会话</string>
+    <string name="chat_cursor_migration_body">正在将此旧版会话切换到更安全的 ACP 协议。历史较长的会话需要 15-20 秒；对话会自动恢复，已输入但未发送的草稿不会丢失。</string>
+    <string name="chat_cursor_migration_ambiguous_title">Cursor 会话升级需要人工处理</string>
+    <string name="chat_cursor_migration_ambiguous_body">此会话在磁盘上的多个工作区下存在，或本地存储大小与已同步的历史记录不匹配，因此 HAPI 拒绝自动迁移。请在 hub 日志中搜索 "[migrator] ambiguous legacy store" 或 "[migrator] size sanity check refused" 获取候选列表，删除 ~/.cursor/chats/ 下的陈旧目录后，再重新打开此会话。</string>
 </resources>

@@ -108,6 +108,21 @@ data class ReopenSessionResponse(
 )
 
 /**
+ * `GET /api/sessions/:id/cursor-chat-store` (`CursorChatStoreStatusSchema`,
+ * `shared/src/apiTypes.ts`) — the runner capability probe behind the Cursor
+ * reopen gate (`cursor-chat-store-status` RPC relayed through the hub). Only
+ * a definitive [onDisk] `false` blocks reopen; probe errors surface as
+ * soft-allow + unverified hint (#1084). Runners without the capability make
+ * the endpoint answer an error, which callers treat as "unknown".
+ */
+@Serializable
+data class CursorChatStoreStatus(
+    val onDisk: Boolean,
+    /** `'legacy' | 'acp'`; null when the store is gone. */
+    val store: String? = null,
+)
+
+/**
  * `DELETE /api/sessions/:id/messages/:messageId`
  * (`CancelMessageResponseSchema` — discriminated on [status]):
  * `'cancelled'` carries [localId]; `'invoked'` (too late) carries [message].

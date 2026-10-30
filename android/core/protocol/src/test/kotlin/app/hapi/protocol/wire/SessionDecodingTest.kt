@@ -2,6 +2,7 @@ package app.hapi.protocol.wire
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -211,5 +212,72 @@ class SessionDecodingTest {
         assertEquals(1L, response.page.nextBeforeSeq)
         assertNull(response.page.nextAfterSeq)
         assertTrue(response.page.hasMore)
+    }
+
+    // --------------------------- slice C: cursor migration + chat store --
+
+    @Test
+    fun `decodes cursorMigrationState from session metadata`() {
+        val session = HapiJson.decodeFromString(
+            Session.serializer(),
+            """
+            {
+              "id": "sess-cu", "namespace": "default", "seq": 1,
+              "createdAt": 1755000000000, "updatedAt": 1755000005000,
+              "active": false,
+              "metadata": {
+                "path": "/w", "host": "devbox", "flavor": "cursor",
+                "cursorSessionId": "cu-1",
+                "cursorMigrationState": "in_progress"
+              },
+              "metadataVersion": 4, "agentStateVersion": 1,
+              "thinking": false, "thinkingAt": 0
+            }
+            """
+        )
+        assertEquals("in_progress", session.metadata?.cursorMigrationState)
+    }
+
+    @Test
+    fun `cursorMigrationState is null when absent — older hubs stay decodable`() {
+        val session = HapiJson.decodeFromString(
+            Session.serializer(),
+            """
+            {
+              "id": "sess-cu", "namespace": "default", "seq": 1,
+              "createdAt": 1755000000000, "updatedAt": 1755000005000,
+              "active": false,
+              "metadata": {"path": "/w", "host": "devbox", "flavor": "cursor"},
+              "metadataVersion": 4, "agentStateVersion": 1,
+              "thinking": false, "thinkingAt": 0
+            }
+            """
+        )
+        assertNull(session.metadata?.cursorMigrationState)
+    }
+
+    @Test
+    fun `decodes cursor chat-store probe responses`() {
+        val present = HapiJson.decodeFromString(
+            CursorChatStoreStatus.serializer(),
+            """{"onDisk": true, "store": "legacy"}""",
+        )
+        assertTrue(present.onDisk)
+        assertEquals("legacy", present.store)
+
+        val gone = HapiJson.decodeFromString(
+            CursorChatStoreStatus.serializer(),
+            """{"onDisk": false, "store": null}""",
+        )
+        assertFalse(gone.onDisk)
+        assertNull(gone.store)
+
+        // `store` is optional — a hub that only answers the boolean must decode.
+        val minimal = HapiJson.decodeFromString(
+            CursorChatStoreStatus.serializer(),
+            """{"onDisk": true}""",
+        )
+        assertTrue(minimal.onDisk)
+        assertNull(minimal.store)
     }
 }

@@ -185,6 +185,8 @@ private open class FakeMessagesApi : ChatSessionApi {
 
     override suspend fun resumeSession(sessionId: String, permissionMode: String?): ResumeSessionResponse =
         ResumeSessionResponse(sessionId = sessionId)
+    override suspend fun getCursorChatStoreStatus(sessionId: String): app.hapi.protocol.wire.CursorChatStoreStatus =
+        error("cursor chat-store probe not scripted")
     override suspend fun approvePermission(sessionId: String, requestId: String, options: ApprovePermissionRequest) {}
     override suspend fun denyPermission(sessionId: String, requestId: String, decision: String?) {}
     override suspend fun setPermissionMode(sessionId: String, mode: String) {}

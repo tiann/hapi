@@ -15,7 +15,11 @@ import app.hapi.companion.ui.markdown.MarkdownRenderCache
 import app.hapi.protocol.chat.AgentTextBlock
 import app.hapi.protocol.chat.AgentReasoningBlock
 import app.hapi.companion.feature.sessions.SessionListViewModel
+import app.hapi.companion.feature.sessions.CursorReopenGate
 import app.hapi.companion.feature.sessions.formatReopenError
+import app.hapi.companion.feature.sessions.inactiveSessionCanResume
+import app.hapi.companion.feature.sessions.isCursorChatStoreProbeApplicable
+import app.hapi.companion.feature.sessions.resolveCursorReopenGate
 import app.hapi.data.api.ApiError
 import app.hapi.data.api.ChatSessionApi
 import app.hapi.data.sse.SseEngine
@@ -155,6 +159,12 @@ data class ChatUiState(
     val messagesVersion: Long = 0,
     val requiresLatestReset: Boolean = false,
     val processSteps: Map<String, Int> = emptyMap(),
+    /**
+     * Web `inactiveSessionCanResume` port: whether the inactive-session bar
+     * may offer send-to-resume / Reopen. Cursor + definitive `onDisk:false`
+     * forces false; probe unknown soft-allows (#1084).
+     */
+    val inactiveCanResume: Boolean = true,
 )
 
 /** Composer bar state (M3a). */
@@ -386,6 +396,80 @@ class ChatViewModel(
     val reconnecting: StateFlow<Boolean> = sseEngine.reconnecting(subscriptionKey)
         .stateIn(scope, SharingStarted.Eagerly, false)
 
+    // ------------------------------------------- Cursor chat-store gate (C) --
+
+    /** One `GET /api/sessions/:id/cursor-chat-store` probe's lifecycle. */
+    private sealed interface CursorChatStoreProbe {
+        data object Idle : CursorChatStoreProbe
+        data object Loading : CursorChatStoreProbe
+        data class Loaded(val onDisk: Boolean) : CursorChatStoreProbe
+        data object Failed : CursorChatStoreProbe
+    }
+
+    private val cursorChatStoreProbe = MutableStateFlow<CursorChatStoreProbe>(CursorChatStoreProbe.Idle)
+    private var cursorProbeJob: Job? = null
+
+    /**
+     * `cursor-chat-store` probe applicability — web `shouldProbe`
+     * (`useCursorChatStoreStatus.ts`): an inactive Cursor session with a
+     * resume id and a workspace path. The detail metadata carries
+     * `cursorSessionId`; before it loads, the list summary's hub-projected
+     * `agentSessionId` stands in.
+     */
+    private fun cursorProbeApplicability() = combine(
+        sessionStore.sessionDetail(sessionId),
+        summaryFlow(),
+    ) { detail, summary ->
+        isCursorChatStoreProbeApplicable(
+            active = detail?.active ?: summary?.active ?: false,
+            flavor = detail?.metadata?.flavor ?: summary?.metadata?.flavor,
+            cursorSessionId = detail?.metadata?.cursorSessionId ?: summary?.metadata?.agentSessionId,
+            path = detail?.metadata?.path ?: summary?.metadata?.path,
+        )
+    }
+
+    /**
+     * Gate for this session's Cursor reopen affordances — web
+     * `resolveCursorReopenGate` (`sessionResume.ts`). Only a definitive
+     * `onDisk:false` disables; probe errors soft-allow with the unverified
+     * hint (#1084).
+     */
+    val cursorReopenGate: StateFlow<CursorReopenGate> = combine(
+        cursorProbeApplicability(),
+        cursorChatStoreProbe,
+    ) { applicable, probe ->
+        resolveCursorReopenGate(
+            applicable = applicable,
+            onDisk = (probe as? CursorChatStoreProbe.Loaded)?.onDisk,
+            probeFailed = probe is CursorChatStoreProbe.Failed,
+            isLoading = probe is CursorChatStoreProbe.Loading,
+        )
+    }.stateIn(scope, SharingStarted.Eagerly, CursorReopenGate(disabledReason = null, probeUnverified = false))
+
+    /**
+     * Cursor migration banner state (tiann/hapi#873) — rides the session
+     * metadata via SSE `session-updated`, so this reacts within one patch of
+     * the hub flipping/clearing `cursorMigrationState`. Dedicated flow (not
+     * the throttled pipeline): like the web banner it must appear promptly,
+     * including during the initial transcript load. Detail-only: the list
+     * summary projection does not carry the flag.
+     */
+    val cursorMigrationBanner: StateFlow<CursorMigrationBannerState?> =
+        sessionStore.sessionDetail(sessionId)
+            .map { detail -> cursorMigrationBannerState(detail?.metadata?.cursorMigrationState) }
+            .stateIn(scope, SharingStarted.Eagerly, null)
+
+    private suspend fun runCursorChatStoreProbe() {
+        cursorChatStoreProbe.value = CursorChatStoreProbe.Loading
+        cursorChatStoreProbe.value = try {
+            CursorChatStoreProbe.Loaded(api.getCursorChatStoreStatus(sessionId).onDisk)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            CursorChatStoreProbe.Failed
+        }
+    }
+
     @MainThread
     internal fun setTranscriptVisible(visible: Boolean) {
         transcriptVisible = visible
@@ -477,6 +561,8 @@ class ChatViewModel(
         val machines: List<Machine>,
         val detailLoadFailed: Boolean,
         val permissionOverrides: Map<String, PermissionRowOverride>,
+        /** Cursor gate probe verdict; null = unknown/loading/failed (soft-allow). */
+        val cursorChatOnDisk: Boolean?,
     )
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -490,6 +576,7 @@ class ChatViewModel(
                 machineStore.machines,
                 detailLoadFailed,
                 permissionOverrides,
+                cursorChatStoreProbe,
             ) { values: Array<Any?> -> pipelineInputs(values) }
         }
         // The web samples pipeline runs through React batching; here: emit the
@@ -645,6 +732,16 @@ class ChatViewModel(
                 .distinctUntilChanged()
                 .collect { updatedAt -> lastSeenStore.markSeen(sessionId, updatedAt) }
         }
+
+        // Cursor reopen gate: (re)probe on every rising edge of applicability
+        // (web mounts the query per chat open, staleTime 5s). Re-entering an
+        // applicable session after stop() restarts this collector, so a fresh
+        // open re-probes rather than trusting a stale onDisk verdict.
+        cursorProbeJob = scope.launch {
+            cursorProbeApplicability()
+                .distinctUntilChanged()
+                .collect { applicable -> if (applicable) runCursorChatStoreProbe() }
+        }
     }
 
     /** Tears the session pipe down (engine keeps the resume cursor). */
@@ -657,6 +754,11 @@ class ChatViewModel(
         sseJob = null
         initJob?.cancel()
         seenJob?.cancel()
+        cursorProbeJob?.cancel()
+        cursorProbeJob = null
+        // A new open re-probes (web staleTime 5s): never carry a settled
+        // onDisk verdict across screen exits.
+        cursorChatStoreProbe.value = CursorChatStoreProbe.Idle
         cancelHistory()
         jumpJob?.cancel()
         jumpJob = null
@@ -1147,6 +1249,21 @@ class ChatViewModel(
         request: SendMessageRequest,
         localId: String,
     ) {
+        // Web `resolveSessionId` refuses the resume before the POST when the
+        // session can't come back (cursor store gone — #1084). Same surface
+        // as a failed resume: row Failed + notice, no request sent.
+        val detail = currentDetail()
+        if (!inactiveSessionCanResume(
+                active = false,
+                metadata = detail?.metadata,
+                userMessageCount = store.state.value.messages.count { !it.isQueuedForInvocation },
+                cursorChatOnDisk = (cursorChatStoreProbe.value as? CursorChatStoreProbe.Loaded)?.onDisk,
+            )
+        ) {
+            store.updateStatus(localId, MessageStatus.Failed)
+            _events.tryEmit(ChatEvent.Notice(ChatNotice.ResumeFailed))
+            return
+        }
         val targetSessionId = try {
             api.resumeSession(sessionId, currentDetail()?.permissionMode).sessionId
         } catch (cancellation: CancellationException) {
@@ -1806,6 +1923,7 @@ class ChatViewModel(
             machines = values[3] as List<Machine>,
             detailLoadFailed = values[4] as Boolean,
             permissionOverrides = values[5] as Map<String, PermissionRowOverride>,
+            cursorChatOnDisk = (values[6] as? CursorChatStoreProbe.Loaded)?.onDisk,
         )
     }
 
@@ -1906,6 +2024,25 @@ class ChatViewModel(
             historyVersion = window.historyVersion,
             messagesVersion = window.messagesVersion,
             requiresLatestReset = window.requiresLatestReset,
+            inactiveCanResume = buildInactiveCanResume(inputs, visibleMessages.size),
+        )
+    }
+
+    /**
+     * Web `inactiveSessionCanResume(session, messages.length, onDisk)`: with
+     * the detail loaded it evaluates exactly like the web; before the detail
+     * arrives it stays open (true) — the bar/menu keep today's affordance
+     * until the metadata lands, and the hub enforces the real verdict
+     * server-side either way.
+     */
+    private fun buildInactiveCanResume(inputs: PipelineInputs, messageCount: Int): Boolean {
+        val detail = inputs.detail ?: return true
+        if (detail.active) return true
+        return inactiveSessionCanResume(
+            active = false,
+            metadata = detail.metadata,
+            userMessageCount = messageCount,
+            cursorChatOnDisk = inputs.cursorChatOnDisk,
         )
     }
 

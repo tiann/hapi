@@ -597,6 +597,24 @@
     <string name="sessions_time_filter_empty_title">No sessions in this date range</string>
     <string name="sessions_time_filter_empty_hint">Adjust or clear the date filter to see more sessions.</string>
     <string name="sessions_time_filter_recent_activity">Recent activity</string>
+    <string name="sessions_action_export">Export conversation</string>
+    <string name="session_export_title">Export conversation</string>
+    <string name="session_export_description">Choose a format, then export the full visible conversation and scratchlist notes.</string>
+    <string name="session_export_format_json">JSON</string>
+    <string name="session_export_format_json_description">Lossless payload with session metadata, messages, and scratchlist notes (attachment metadata only).</string>
+    <string name="session_export_format_markdown">Markdown</string>
+    <string name="session_export_format_markdown_description">Readable view generated from the same export payload.</string>
+    <string name="session_export_save">Save</string>
+    <string name="session_export_save_anyway">Save anyway</string>
+    <string name="session_export_share">Share</string>
+    <string name="session_export_share_anyway">Share anyway</string>
+    <string name="session_export_progress">Exporting…</string>
+    <string name="session_export_warning_title">Large export</string>
+    <string name="session_export_warning_description">This export contains %1$s messages and is estimated at %2$s. That exceeds the recommended threshold of %3$s messages.</string>
+    <string name="session_export_error_too_large">This export is too large to safely prepare (%1$s messages, %2$s; maximum %3$s).</string>
+    <string name="session_export_error_default">Failed to export conversation</string>
+    <string name="session_export_error_write">Could not write the export file.</string>
+    <string name="session_export_saved">Saved %1$s</string>
     <string name="privacy_policy">Privacy Policy</string>
     <string name="privacy_open_failed">No app can open this link.</string>
     <!-- Incoming Android shares. -->
@@ -627,4 +645,14 @@
     <string name="share_error_title">Share unavailable</string>
     <string name="share_ok">OK</string>
     <string name="share_pair_first">Pair a hub to choose a session for the shared content.</string>
+
+    <!-- Cursor reopen gate + migration banner (tiann/hapi#1084, #873; slice C) -->
+    <string name="sessions_reopen_cursor_missing">Cursor chat data is no longer available on the recorded machine.</string>
+    <string name="sessions_reopen_cursor_checking">Checking whether Cursor chat data is still available on the recorded machine.</string>
+    <string name="sessions_reopen_cursor_unverified">Could not verify Cursor chat data (runner may be outdated). Reopen is still available — upgrade the CLI on that machine if reopen fails.</string>
+    <string name="chat_inactive_cannot_resume">This session is inactive and cannot be resumed.</string>
+    <string name="chat_cursor_migration_title">Upgrading Cursor session</string>
+    <string name="chat_cursor_migration_body">Switching this legacy chat to the safer ACP protocol. This takes 15-20 seconds for sessions with long history; your conversation will resume automatically and any draft text will survive.</string>
+    <string name="chat_cursor_migration_ambiguous_title">Cursor session upgrade needs manual review</string>
+    <string name="chat_cursor_migration_ambiguous_body">This chat exists on disk in multiple workspace folders or the on-disk size does not match the synced history, so HAPI refused to transplant it automatically. Check hub logs for the candidate list (search for "[migrator] ambiguous legacy store" or "[migrator] size sanity check refused"), delete the stale drawers under ~/.cursor/chats/, and reopen the session.</string>
 </resources>

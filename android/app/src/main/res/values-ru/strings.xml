@@ -597,6 +597,24 @@
     <string name="sessions_time_filter_empty_title">В этом диапазоне дат нет сессий</string>
     <string name="sessions_time_filter_empty_hint">Измените или сбросьте фильтр по дате, чтобы увидеть больше сессий.</string>
     <string name="sessions_time_filter_recent_activity">Недавняя активность</string>
+    <string name="sessions_action_export">Экспорт диалога</string>
+    <string name="session_export_title">Экспорт диалога</string>
+    <string name="session_export_description">Выберите формат, затем экспортируйте весь видимый диалог и записи блокнота.</string>
+    <string name="session_export_format_json">JSON</string>
+    <string name="session_export_format_json_description">Полные данные без потерь: метаданные сессии, сообщения и записи блокнота (только метаданные вложений).</string>
+    <string name="session_export_format_markdown">Markdown</string>
+    <string name="session_export_format_markdown_description">Читаемое представление, сгенерированное из тех же данных экспорта.</string>
+    <string name="session_export_save">Сохранить</string>
+    <string name="session_export_save_anyway">Сохранить в любом случае</string>
+    <string name="session_export_share">Поделиться</string>
+    <string name="session_export_share_anyway">Поделиться в любом случае</string>
+    <string name="session_export_progress">Экспорт…</string>
+    <string name="session_export_warning_title">Большой экспорт</string>
+    <string name="session_export_warning_description">Этот экспорт содержит %1$s сообщений и оценивается в %2$s. Это превышает рекомендуемый порог в %3$s сообщений.</string>
+    <string name="session_export_error_too_large">Этот экспорт слишком велик для безопасной подготовки (%1$s сообщений, %2$s; максимум %3$s).</string>
+    <string name="session_export_error_default">Не удалось экспортировать диалог</string>
+    <string name="session_export_error_write">Не удалось записать файл экспорта.</string>
+    <string name="session_export_saved">Сохранён %1$s</string>
     <string name="privacy_policy">Политика конфиденциальности</string>
     <string name="privacy_open_failed">Нет приложения, способного открыть эту ссылку.</string>
     <!-- Incoming Android shares. -->
@@ -627,4 +645,14 @@
     <string name="share_error_title">Не удалось поделиться</string>
     <string name="share_ok">ОК</string>
     <string name="share_pair_first">Подключите хаб, чтобы выбрать сессию для отправки.</string>
+
+    <!-- Cursor reopen gate + migration banner (tiann/hapi#1084, #873; slice C) -->
+    <string name="sessions_reopen_cursor_missing">Данные чата Cursor больше недоступны на записанной машине.</string>
+    <string name="sessions_reopen_cursor_checking">Проверка доступности данных чата Cursor на записанной машине.</string>
+    <string name="sessions_reopen_cursor_unverified">Не удалось проверить данные чата Cursor (раннер может быть устаревшим). Повторное открытие всё ещё доступно — обновите CLI на той машине, если оно не сработает.</string>
+    <string name="chat_inactive_cannot_resume">Эта сессия неактивна и не может быть возобновлена.</string>
+    <string name="chat_cursor_migration_title">Обновление сессии Cursor</string>
+    <string name="chat_cursor_migration_body">Переключение этого устаревшего чата на более безопасный протокол ACP. Для сессий с длинной историей это занимает 15–20 секунд; ваш диалог возобновится автоматически, а любой черновой текст сохранится.</string>
+    <string name="chat_cursor_migration_ambiguous_title">Обновление сессии Cursor требует проверки вручную</string>
+    <string name="chat_cursor_migration_ambiguous_body">Этот чат существует на диске в нескольких папках рабочего пространства, либо размер на диске не совпадает с синхронизированной историей, поэтому HAPI отказался переносить его автоматически. Проверьте логи хаба на предмет списка кандидатов (поиск по «[migrator] ambiguous legacy store» или «[migrator] size sanity check refused»), удалите устаревшие папки в ~/.cursor/chats/ и откройте сессию заново.</string>
 </resources>

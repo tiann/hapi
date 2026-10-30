@@ -4,6 +4,7 @@ import app.hapi.data.api.ApiError
 import app.hapi.data.store.LastSeenStore
 import app.hapi.data.store.MachineListStore
 import app.hapi.data.store.SessionListStore
+import app.hapi.protocol.wire.CursorChatStoreStatus
 import app.hapi.protocol.wire.Machine
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.sortSessionSummaries
@@ -107,6 +108,17 @@ class SessionListViewModel(
     private val hubKey: String = "default",
     /** Current clock zone; resolved for every date derivation, including after resume. */
     private val zoneProvider: () -> ZoneId = ZoneId::systemDefault,
+    /**
+     * Cursor chat-store probe (`GET /api/sessions/:id/cursor-chat-store`).
+     * Fail-loud default: an unwired probe throws, which the gate catches as
+     * "unknown" → soft-allow reopen + unverified hint (tiann/hapi#1084).
+     * Navigation wires it to the hub API.
+     */
+    private val cursorChatStoreProbe: suspend (String) -> CursorChatStoreStatus = {
+        error("cursor chat-store probe not wired")
+    },
+    /** Wall clock for the probe staleness window; injectable for JVM tests. */
+    private val now: () -> Long = System::currentTimeMillis,
 ) {
     private val machineFilter = MutableStateFlow<String?>(null)
     private val searchQuery = MutableStateFlow("")
@@ -128,6 +140,101 @@ class SessionListViewModel(
 
     /** Reopen succeeded — navigate into this (possibly superseding) session id. */
     val reopened: SharedFlow<String> = _reopened.asSharedFlow()
+
+    // ------------------------------------------- Cursor chat-store gate (C) --
+
+    /** One row's probe lifecycle: `onDisk == null && !failed` = in flight. */
+    private data class CursorProbeEntry(
+        val sessionId: String,
+        val onDisk: Boolean? = null,
+        val failed: Boolean = false,
+        val startedAtMs: Long,
+    )
+
+    private val mutableCursorProbe = MutableStateFlow<CursorProbeEntry?>(null)
+
+    /** Cursor reopen gate for the row whose actions sheet is open (null = none). */
+    data class CursorReopenGateUi(
+        val sessionId: String?,
+        val gate: CursorReopenGate,
+    )
+
+    /**
+     * List-level Cursor reopen gate — web `SessionList.tsx` probes on menu
+     * open (`useCursorChatStoreStatus`, staleTime 5s) and gates the row menu
+     * via `resolveCursorReopenGate`. Applicability is re-derived from the
+     * live list, so a session that activates (or vanishes) clears the gate
+     * even while its sheet is open.
+     */
+    val cursorReopenGate: StateFlow<CursorReopenGateUi> = combine(
+        mutableCursorProbe,
+        sessionStore.sessions,
+    ) { entry, sessions ->
+        if (entry == null) return@combine CursorReopenGateUi(null, CursorReopenGate(null, false))
+        val summary = sessions.firstOrNull { it.id == entry.sessionId }
+        val applicable = summary != null && isCursorChatStoreProbeApplicable(
+            active = summary.active,
+            flavor = summary.metadata?.flavor,
+            cursorSessionId = summary.metadata?.agentSessionId,
+            path = summary.metadata?.path,
+        )
+        CursorReopenGateUi(
+            sessionId = entry.sessionId,
+            gate = resolveCursorReopenGate(
+                applicable = applicable,
+                onDisk = entry.onDisk,
+                probeFailed = entry.failed,
+                isLoading = entry.onDisk == null && !entry.failed,
+            ),
+        )
+    }.stateIn(
+        scope,
+        SharingStarted.Eagerly,
+        CursorReopenGateUi(null, CursorReopenGate(null, false)),
+    )
+
+    /**
+     * Long-press hook: seed the gate for the row about to open its sheet.
+     * Non-applicable rows clear it; a fresh probe starts unless one settled
+     * within the 5s staleness window (web `staleTime: 5_000`).
+     */
+    fun beginCursorReopenProbe(summary: SessionSummary) {
+        val applicable = isCursorChatStoreProbeApplicable(
+            active = summary.active,
+            flavor = summary.metadata?.flavor,
+            cursorSessionId = summary.metadata?.agentSessionId,
+            path = summary.metadata?.path,
+        )
+        if (!applicable) {
+            mutableCursorProbe.value = null
+            return
+        }
+        val existing = mutableCursorProbe.value
+        if (existing != null && existing.sessionId == summary.id &&
+            now() - existing.startedAtMs < CURSOR_PROBE_STALE_MS
+        ) {
+            return
+        }
+        val startedAtMs = now()
+        mutableCursorProbe.value = CursorProbeEntry(sessionId = summary.id, startedAtMs = startedAtMs)
+        scope.launch {
+            val settled = try {
+                CursorProbeEntry(
+                    sessionId = summary.id,
+                    onDisk = cursorChatStoreProbe(summary.id).onDisk,
+                    startedAtMs = startedAtMs,
+                )
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                CursorProbeEntry(sessionId = summary.id, failed = true, startedAtMs = startedAtMs)
+            }
+            mutableCursorProbe.compareAndSet(
+                CursorProbeEntry(sessionId = summary.id, startedAtMs = startedAtMs),
+                settled,
+            )
+        }
+    }
 
     private var refreshJob: Job? = null
 
@@ -502,6 +609,9 @@ class SessionListViewModel(
     )
 
     companion object {
+        /** Web `useCursorChatStoreStatus` staleness window — re-probe after this. */
+        const val CURSOR_PROBE_STALE_MS: Long = 5_000
+
         /** `getSessionTitle` (`web/src/lib/sessionTitle.ts`). */
         fun sessionTitle(summary: SessionSummary): String {
             val metadata = summary.metadata

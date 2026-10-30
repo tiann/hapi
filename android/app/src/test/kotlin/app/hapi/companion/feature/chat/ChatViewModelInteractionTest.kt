@@ -7,6 +7,7 @@ import app.hapi.companion.feature.chat.composer.ChatDrafts
 import app.hapi.companion.feature.share.PendingShare
 import app.hapi.companion.feature.share.SharedFile
 import app.hapi.companion.feature.share.SharedFileStatus
+import app.hapi.companion.feature.sessions.CursorReopenGateReason
 import app.hapi.data.api.ApiError
 import app.hapi.data.api.ChatSessionApi
 import app.hapi.data.api.MessagesQuery
@@ -240,6 +241,16 @@ private class RecordingChatApi : ChatSessionApi {
     override suspend fun resumeSession(sessionId: String, permissionMode: String?): ResumeSessionResponse {
         resumeCalls.value = resumeCalls.value + (sessionId to permissionMode)
         return resumeResult ?: throw RuntimeException("resume not scripted")
+    }
+
+    /** Cursor chat-store probe script (slice C): null → not-applicable default is erroring. */
+    var cursorChatStoreResult: app.hapi.protocol.wire.CursorChatStoreStatus? = null
+    var cursorChatStoreFailure: Exception? = null
+    val cursorChatStoreCalls = MutableStateFlow(0)
+    override suspend fun getCursorChatStoreStatus(sessionId: String): app.hapi.protocol.wire.CursorChatStoreStatus {
+        cursorChatStoreCalls.value += 1
+        cursorChatStoreFailure?.let { throw it }
+        return cursorChatStoreResult ?: error("cursor chat-store probe not scripted")
     }
 
     override suspend fun approvePermission(sessionId: String, requestId: String, options: ApprovePermissionRequest) {
@@ -1553,5 +1564,124 @@ class ChatViewModelInteractionTest {
         )
 
         harness.viewModel.scratchlistCount.first { it == 2 }
+    }
+
+    // ---------------------------------- slice C: cursor reopen gate ------
+
+    private fun cursorDetail(
+        active: Boolean = false,
+        onDiskMetadata: String? = null,
+    ): Session = detail(active = active).copy(
+        metadata = SessionMetadata(
+            path = "/repo/app",
+            host = "devbox",
+            flavor = "cursor",
+            cursorSessionId = "cu-1",
+            cursorMigrationState = onDiskMetadata,
+        ),
+    )
+
+    @Test
+    fun `applicable cursor sessions probe once and a missing store closes the gate`() = runTest {
+        val harness = InteractionHarness(this, cursorDetail())
+        harness.api.cursorChatStoreResult = app.hapi.protocol.wire.CursorChatStoreStatus(onDisk = false, store = null)
+        harness.viewModel.start()
+
+        harness.viewModel.cursorReopenGate.first { it.disabledReason == CursorReopenGateReason.Missing }
+        assertEquals(1, harness.api.cursorChatStoreCalls.value)
+        assertFalse(harness.viewModel.cursorReopenGate.value.probeUnverified)
+
+        // The pipeline picks the verdict up: the inactive bar must not offer
+        // resume (web `inactiveCanResume` false branch, #1084).
+        testScheduler.advanceTimeBy(150)
+        testScheduler.runCurrent()
+        assertFalse(harness.viewModel.uiState.value.inactiveCanResume)
+    }
+
+    @Test
+    fun `probe errors soft-allow reopen with the unverified hint`() = runTest {
+        val harness = InteractionHarness(this, cursorDetail())
+        harness.api.cursorChatStoreFailure = RuntimeException("RPC handler not registered")
+        harness.viewModel.start()
+
+        harness.viewModel.cursorReopenGate.first { it.probeUnverified }
+        assertNull(harness.viewModel.cursorReopenGate.value.disabledReason)
+        // Unknown is NOT missing: send-to-resume stays available.
+        testScheduler.advanceTimeBy(150)
+        testScheduler.runCurrent()
+        assertTrue(harness.viewModel.uiState.value.inactiveCanResume)
+    }
+
+    @Test
+    fun `an on-disk store keeps the gate open and other sessions never probe`() = runTest {
+        val harness = InteractionHarness(this, cursorDetail())
+        harness.api.cursorChatStoreResult = app.hapi.protocol.wire.CursorChatStoreStatus(onDisk = true, store = "legacy")
+        harness.viewModel.start()
+
+        // Wait on the probe itself — the gate's open state is also the
+        // initial value, so waiting on it would race ahead of the probe.
+        harness.api.cursorChatStoreCalls.first { it == 1 }
+        assertNull(harness.viewModel.cursorReopenGate.value.disabledReason)
+        assertFalse(harness.viewModel.cursorReopenGate.value.probeUnverified)
+
+        // Non-cursor (and active) sessions are not applicable — no probe call.
+        val claude = InteractionHarness(this, detail(active = false))
+        claude.viewModel.start()
+        testScheduler.advanceTimeBy(150)
+        testScheduler.runCurrent()
+        assertEquals(0, claude.api.cursorChatStoreCalls.value)
+        assertNull(claude.viewModel.cursorReopenGate.value.disabledReason)
+    }
+
+    @Test
+    fun `cursor migration banner rides the session metadata`() = runTest {
+        val harness = InteractionHarness(this, cursorDetail(onDiskMetadata = "in_progress"))
+        harness.viewModel.start()
+
+        harness.viewModel.cursorMigrationBanner.first { it == CursorMigrationBannerState.InProgress }
+
+        // Sequence past start()'s own detail fetch before staging metadata
+        // transitions — the scripted load overwrites whatever the map holds,
+        // so a later landing would clobber the staged writes below.
+        harness.sessionStore.calls.first { "loadDetail:$IX_SESSION" in it }
+
+        // Hub flips to ambiguous (#873): same SSE metadata channel, new state.
+        harness.sessionStore.setDetail(cursorDetail(onDiskMetadata = "ambiguous"))
+        harness.viewModel.cursorMigrationBanner.first { it == CursorMigrationBannerState.Ambiguous }
+
+        // …and clears it with the same write that flips cursorSessionProtocol.
+        harness.sessionStore.setDetail(cursorDetail())
+        harness.viewModel.cursorMigrationBanner.first { it == null }
+    }
+
+    @Test
+    fun `session_inactive send on a missing cursor store fails without calling resume`() = runTest {
+        val harness = InteractionHarness(this, cursorDetail())
+        harness.api.cursorChatStoreResult = app.hapi.protocol.wire.CursorChatStoreStatus(onDisk = false, store = null)
+        harness.viewModel.start()
+        harness.viewModel.cursorReopenGate.first { it.disabledReason == CursorReopenGateReason.Missing }
+
+        // The first POST must 409 (session_inactive) to enter the retry path;
+        // the pre-check there refuses before POST /resume. Android sends first
+        // and resumes on 409 (established interaction architecture), where the
+        // web refuses in resolveSessionId before any request — the refusal
+        // point, not the request count, is the ported semantics.
+        harness.api.sendFailures += ApiError(409, code = "session_inactive")
+
+        var notice: ChatNotice? = null
+        val collector = backgroundScope.async(start = CoroutineStart.UNDISPATCHED) {
+            notice = harness.viewModel.events.filterIsInstance<ChatEvent.Notice>().first().notice
+        }
+        harness.viewModel.setComposerText("wake up")
+        harness.viewModel.sendMessage()
+        collector.join()
+
+        // Pre-check refuses before POST /resume: the row fails and the
+        // notice surfaces, but the hub is never asked.
+        assertEquals(ChatNotice.ResumeFailed, notice)
+        assertTrue(harness.api.resumeCalls.value.isEmpty())
+        assertEquals(1, harness.api.sendCalls.value.size)
+        val row = harness.window().state.value.messages.first { it.localId == "local-1" }
+        assertEquals(MessageStatus.Failed, row.status)
     }
 }
