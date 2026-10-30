@@ -369,6 +369,11 @@ internal fun ChatScreen(
                     .fillMaxSize()
                     .padding(padding),
             ) {
+                // Collapsed-by-default live summary; null when the session has
+                // no goal, todos, subagents or background terminals.
+                state.sessionStatus?.let { status ->
+                    SessionStatusPanel(status = status)
+                }
                 Box(modifier = Modifier.weight(1f)) {
                     when {
                         state.isInitialLoading -> InitialLoading()

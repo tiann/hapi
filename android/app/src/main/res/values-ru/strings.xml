@@ -264,6 +264,25 @@
     <string name="chat_new_messages_one">1 новое сообщение ↓</string>
     <string name="chat_new_messages_many">Новых сообщений: %1$d ↓</string>
 
+    <!-- Session status panel (live goal / todos / subagents / terminals) -->
+    <string name="session_status_title">Статус сессии</string>
+    <string name="session_status_goal">Цель</string>
+    <string name="session_status_tasks">Задачи</string>
+    <string name="session_status_subagents">Подагенты</string>
+    <string name="session_status_terminals">Фоновые терминалы</string>
+    <string name="session_status_terminals_unavailable">Выполняется: %1$d · точная команда недоступна</string>
+    <string name="session_status_terminals_possible">Возможные команды</string>
+    <string name="session_status_goal_active">Активна</string>
+    <string name="session_status_goal_paused">Приостановлена</string>
+    <string name="session_status_goal_budget_limited">Ограничена</string>
+    <string name="session_status_goal_usage_limited">Ограничена по расходу</string>
+    <string name="session_status_goal_blocked">Заблокирована</string>
+    <string name="session_status_goal_complete">Завершена</string>
+    <string name="session_status_subagent_running">Выполняется</string>
+    <string name="session_status_subagent_waiting">Ожидание</string>
+    <string name="session_status_subagent_error">Ошибка</string>
+    <string name="session_status_task_empty">(пусто)</string>
+
     <!-- Chat snackbar notices (semantic ChatNotice resolution) -->
     <string name="chat_notice_no_transcription">На хабе не настроен провайдер транскрипции</string>
     <string name="chat_notice_mic_permission">Для диктовки нужен доступ к микрофону</string>

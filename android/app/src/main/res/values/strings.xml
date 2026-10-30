@@ -264,6 +264,25 @@
     <string name="chat_new_messages_one">1 new message ↓</string>
     <string name="chat_new_messages_many">%1$d new messages ↓</string>
 
+    <!-- Session status panel (live goal / todos / subagents / terminals) -->
+    <string name="session_status_title">Session status</string>
+    <string name="session_status_goal">Goal</string>
+    <string name="session_status_tasks">Tasks</string>
+    <string name="session_status_subagents">Subagents</string>
+    <string name="session_status_terminals">Background terminals</string>
+    <string name="session_status_terminals_unavailable">%1$d running · exact command unavailable</string>
+    <string name="session_status_terminals_possible">Possible commands</string>
+    <string name="session_status_goal_active">Active</string>
+    <string name="session_status_goal_paused">Paused</string>
+    <string name="session_status_goal_budget_limited">Limited</string>
+    <string name="session_status_goal_usage_limited">Usage limited</string>
+    <string name="session_status_goal_blocked">Blocked</string>
+    <string name="session_status_goal_complete">Complete</string>
+    <string name="session_status_subagent_running">Running</string>
+    <string name="session_status_subagent_waiting">Waiting</string>
+    <string name="session_status_subagent_error">Error</string>
+    <string name="session_status_task_empty">(empty)</string>
+
     <!-- Chat snackbar notices (semantic ChatNotice resolution) -->
     <string name="chat_notice_no_transcription">No transcription provider configured on hub</string>
     <string name="chat_notice_mic_permission">Microphone permission is needed for dictation</string>
