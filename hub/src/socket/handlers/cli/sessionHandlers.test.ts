@@ -460,7 +460,7 @@ describe('cli session handlers', () => {
         expect(uuids).toEqual(['msg-1', 'msg-2'])
     })
 
-    it.each(['supersededBySessionId', 'opencodeClearOperation', 'titleSuggestionAutoAttemptedAt', 'titleSuggestionTurn'] as const)(
+    it.each(['supersededBySessionId', 'opencodeClearOperation', 'opencodeForkPending', 'titleSuggestionAutoAttemptedAt', 'titleSuggestionTurn'] as const)(
         'ignores a forged hub-owned %s addition from CLI metadata',
         (field) => {
             const store = new Store(':memory:')
@@ -480,7 +480,8 @@ describe('cli session handlers', () => {
                         ? 'foreign-session'
                         : field === 'opencodeClearOperation'
                             ? { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }
-                            : field === 'titleSuggestionTurn' ? { first: false, completed: true } : 1234
+                            : field === 'opencodeForkPending' ? true
+                                : field === 'titleSuggestionTurn' ? { first: false, completed: true } : 1234
                 }
             }, () => {})
             expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).not.toHaveProperty(field)
@@ -491,7 +492,7 @@ describe('cli session handlers', () => {
         const store = new Store(':memory:')
         const operation = { replacementSessionId: 'owned-target', state: 'completed', updatedAt: Date.now() }
         const session = store.sessions.getOrCreateSession('preserve-clear-link', {
-            supersededBySessionId: 'owned-target', opencodeClearOperation: operation
+            supersededBySessionId: 'owned-target', opencodeClearOperation: operation, opencodeForkPending: true
         }, null, 'default')
         const socket = new FakeSocket()
         registerSessionHandlers(socket as unknown as CliSocketWithData, {
@@ -504,12 +505,12 @@ describe('cli session handlers', () => {
             expectedVersion: session.metadataVersion,
             metadata: {
                 lifecycleState: 'archived',
-                supersededBySessionId: 'forged-target',
+                supersededBySessionId: 'forged-target', opencodeForkPending: false,
                 opencodeClearOperation: { replacementSessionId: 'forged-target', state: 'reserved', updatedAt: 0 }
             }
         }, () => {})
         expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).toMatchObject({
-            supersededBySessionId: 'owned-target', opencodeClearOperation: operation, lifecycleState: 'archived'
+            supersededBySessionId: 'owned-target', opencodeClearOperation: operation, lifecycleState: 'archived', opencodeForkPending: true
         })
     })
 

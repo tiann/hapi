@@ -22,6 +22,42 @@ beforeAll(async () => {
     config._setCliApiToken('test-token', 'env', false)
 })
 
+describe('cli shutdown preparation', () => {
+    function fixture(machineId = 'machine-1') {
+        let calls = 0
+        let fail = false
+        const app = createApp({
+            resolveSessionAccess: (_id: string, namespace: string) => namespace === 'default'
+                ? { ok: true, sessionId: 'session-1', session: { metadata: { machineId } } }
+                : { ok: false, reason: 'access-denied' },
+            prepareOpenCodeSessionStop: async () => { calls++; if (fail) throw new Error('offline'); return 'ready' }
+        } as never)
+        const request = (runner: string, token = 'test-token') => app.request('/cli/sessions/session-1/prepare-stop', {
+            method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+            body: JSON.stringify({ machineId: runner, pid: 123, processStartMarker: 'gen-a',
+                preparationLease: { id: 'fixture', expiresAt: 123456 } })
+        })
+        return { request, calls: () => calls, offline: () => { fail = true } }
+    }
+
+    it('requires the same namespace and runner machine before requesting shutdown', async () => {
+        const f = fixture()
+        expect((await f.request('machine-1', 'test-token:other')).status).toBe(403)
+        expect((await f.request('machine-2')).status).toBe(403)
+        expect(f.calls()).toBe(0)
+        const response = await f.request('machine-1')
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ status: 'ready', preparationLease: { id: 'fixture', expiresAt: 123456 } })
+        expect(f.calls()).toBe(1)
+    })
+
+    it('returns an unconfirmed failure when the OpenCode drain cannot be acknowledged', async () => {
+        const f = fixture()
+        f.offline()
+        expect((await f.request('machine-1')).status).toBe(503)
+    })
+})
+
 describe('cli resume routes', () => {
     it('returns local resumable sessions', async () => {
         const app = createApp({

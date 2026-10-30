@@ -355,6 +355,7 @@ export class ApiSessionClient extends EventEmitter {
                 : Promise.resolve()
             void afterMeta.finally(() => {
                 void this.backfillIfNeeded()
+                if (this.state === 'active' && this.allowReconnect) this.emit('connected')
             })
             this.hasConnectedOnce = true
             this.reconnectHandler?.()

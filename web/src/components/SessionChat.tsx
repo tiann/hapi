@@ -56,6 +56,7 @@ import { getSessionLastSeenAt } from '@/lib/sessionLastSeen'
 import { formatRelativeTime } from '@/lib/relativeTime'
 import { ScratchlistMigrationBanner } from '@/components/AssistantChat/ScratchlistMigrationBanner'
 import { findLatestCompletedBoundaryId, useHappyRuntime } from '@/lib/assistant-runtime'
+import { resolveAssistantForkPoints } from '@/lib/assistant-fork-points'
 import {
     getRestoredComposerSendIntent,
     resolveMessageDeliveryMode,
@@ -1627,6 +1628,10 @@ function SessionChatInner(props: SessionChatProps) {
         props.tailRevision
     )
 
+    const assistantForkPoints = useMemo(
+        () => resolveAssistantForkPoints(visibleBlocks, props.session.metadata?.conversationHistoryPoints),
+        [visibleBlocks, props.session.metadata?.conversationHistoryPoints]
+    )
     const isLatestCompletedBoundary = useCallback((messageId: string) => {
         return latestCompletedBoundaryId === messageId
     }, [latestCompletedBoundaryId])
@@ -2097,6 +2102,7 @@ function SessionChatInner(props: SessionChatProps) {
                         onForkConversation={controlledByUser ? undefined : onForkConversation}
                         onRewindConversation={controlledByUser ? undefined : onRewindConversation}
                         isLatestCompletedBoundary={isLatestCompletedBoundary}
+                        assistantForkPoints={assistantForkPoints}
                         onViewModeChange={props.onViewModeChange}
                         isSyncingTail={props.isSyncingTail}
                         messagesWarning={props.messagesWarning}

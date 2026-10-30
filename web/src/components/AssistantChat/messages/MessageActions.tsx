@@ -89,6 +89,7 @@ export function MessageActions({
             {showFork && onFork && (!threadIsRunning || allowForkWhileRunning) ? (
                 <MessageActionButton
                     label={t('message.fork')}
+                    data-testid="message-fork"
                     onClick={() => setForkOpen(true)}
                 >
                     <ForkIcon className="h-3.5 w-3.5" />

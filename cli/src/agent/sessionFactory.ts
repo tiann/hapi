@@ -187,6 +187,8 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.conversationHistoryIndexes !== undefined) {
         preserved.conversationHistoryIndexes = metadata.conversationHistoryIndexes
     }
+    if (metadata.opencodeHistoryCheckpoint !== undefined) preserved.opencodeHistoryCheckpoint = metadata.opencodeHistoryCheckpoint
+    if (metadata.opencodeForkPending !== undefined) preserved.opencodeForkPending = metadata.opencodeForkPending
     if (metadata.conversationHistoryTurns !== undefined) {
         preserved.conversationHistoryTurns = metadata.conversationHistoryTurns
     }

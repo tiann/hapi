@@ -14,6 +14,7 @@ import {
 } from '@hapi/protocol/runnerCapabilities'
 import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
+import type { SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import type { ImplementCodexPlanResult } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
@@ -660,8 +661,19 @@ export class SyncEngine {
     }
 
     handleSessionReady(payload: { sid: string; time: number }): void {
-        this.sessionReadyIds.add(payload.sid)
         const session = this.sessionCache.getSession(payload.sid)
+        if (session?.metadata?.flavor === 'opencode' && session.metadata.opencodeForkPending) {
+            if (session.metadata.conversationHistoryDiverged
+                || session.metadata.opencodeHistoryCheckpoint?.sessionId !== session.metadata.opencodeSessionId
+                || session.metadata.opencodeHistoryCheckpoint?.localMessageIds?.length !== 0
+                || session.metadata.opencodeHistoryCheckpoint?.localPublicationPending) return
+            try {
+                this.completeOpencodeForkValidation(payload.sid, session.namespace)
+            } catch {
+                return
+            }
+        }
+        this.sessionReadyIds.add(payload.sid)
         if (session?.metadata?.piResumeAttempt) {
             void this.writePiResumeAttempt(payload.sid, session.namespace, null)
                 .then(() => {
@@ -1372,7 +1384,7 @@ export class SyncEngine {
     private async waitForExactNativeForkBound(
         childId: string,
         expectedNativeSessionId: string,
-        metadataKey: 'grokSessionId' | 'piSessionId',
+        metadataKey: 'grokSessionId' | 'piSessionId' | 'opencodeSessionId',
         requireSessionReady: boolean,
         timeoutMs: number = 60_000
     ): Promise<boolean> {
@@ -1483,6 +1495,22 @@ export class SyncEngine {
             if (result.result !== 'version-mismatch') return
             this.sessionCache.refreshSession(sessionId)
         }
+    }
+
+    private completeOpencodeForkValidation(sessionId: string, namespace: string): void {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const session = this.sessionCache.refreshSession(sessionId)
+            if (!session?.metadata || session.namespace !== namespace) throw new Error('OpenCode fork child disappeared')
+            if (!session.metadata.opencodeForkPending) return
+            const result = this.store.sessions.updateSessionMetadata(sessionId,
+                { ...session.metadata, opencodeForkPending: undefined }, session.metadataVersion, namespace, { touchUpdatedAt: false })
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(sessionId)
+                return
+            }
+            if (result.result !== 'version-mismatch') break
+        }
+        throw new Error('OpenCode fork child validation could not be committed')
     }
 
     private markConversationHistoryDiverged(sessionId: string, namespace: string): void {
@@ -1603,6 +1631,12 @@ export class SyncEngine {
         source = refreshedSource
 
         const flavor = this.resolveFlavor(source)
+        if (flavor === 'opencode'
+            && (rpcResult.opencodeHistoryCheckpoint?.sessionId !== rpcResult.nativeSessionId
+                || rpcResult.opencodeHistoryCheckpoint.localMessageIds?.length !== 0
+                || rpcResult.opencodeHistoryCheckpoint.localPublicationPending)) {
+            return { type: 'error', message: 'OpenCode fork did not return a verified child history checkpoint' }
+        }
         const childId = randomUUID()
         let prefix
         try {
@@ -1642,6 +1676,9 @@ export class SyncEngine {
         }
         if (flavor === 'codex') {
             childMetadata.codexSessionId = rpcResult.nativeSessionId
+        } else if (flavor === 'opencode') {
+            childMetadata.opencodeHistoryCheckpoint = rpcResult.opencodeHistoryCheckpoint
+            childMetadata.opencodeForkPending = true
         } else if (flavor === 'grok') {
             childMetadata.grokSessionId = rpcResult.nativeSessionId
         } else if (flavor === 'pi') {
@@ -1741,6 +1778,19 @@ export class SyncEngine {
                 if (!bound) {
                     throw new Error('Pi fork could not load the exact native session before ready')
                 }
+            }
+
+            if (flavor === 'opencode') {
+                // The CLI seeds opencodeSessionId from the resume id before ACP
+                // initialize, so only the validated session-ready fence proves
+                // the forked native session actually loaded.
+                const bound = await this.waitForExactNativeForkBound(
+                    childId, rpcResult.nativeSessionId, 'opencodeSessionId', true
+                )
+                if (!bound) {
+                    throw new Error('OpenCode fork could not load the forked native session')
+                }
+                this.completeOpencodeForkValidation(childId, namespace)
             }
 
             return { type: 'success', sessionId: childId }
@@ -1865,6 +1915,25 @@ export class SyncEngine {
                 hydrateFailed: true
             }
         }
+    }
+
+    async prepareOpenCodeSessionStop(sessionId: string, pid: number, processStartMarker: string,
+        preparationLease: SessionStopPreparationLease, machineId: string): Promise<'ready' | 'not_required'> {
+        const metadata = this.sessionCache.getSession(sessionId)?.metadata
+        if (metadata?.machineId !== machineId) throw new Error('Session machine does not match runner')
+        if (metadata?.flavor !== 'opencode') return 'not_required'
+        // Only request the session RPC here. Calling archiveSession would
+        // recurse into the runner's StopSession handler that is awaiting us.
+        const result = await this.rpcGateway.killSession(sessionId, {
+            prepareOnly: true, expectedMachineId: machineId, expectedPid: pid, expectedProcessStartMarker: processStartMarker, preparationLease
+        })
+        if (result.pid !== pid || result.processStartMarker !== processStartMarker || result.machineId !== machineId) {
+            throw new Error('Session shutdown preparation did not confirm the target generation')
+        }
+        if (result.preparationLease?.id !== preparationLease.id || result.preparationLease.expiresAt !== preparationLease.expiresAt) {
+            throw new Error('Session shutdown preparation did not confirm the lease')
+        }
+        return 'ready'
     }
 
     async archiveSession(sessionId: string): Promise<void> {

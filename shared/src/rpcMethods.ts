@@ -1,3 +1,8 @@
+export const DEFAULT_RPC_TIMEOUT_MS = 30_000
+
+/** expiresAt uses the Runner/target machine's monotonic milliseconds, not wall time. */
+export type SessionStopPreparationLease = { id: string; expiresAt: number }
+
 export const RPC_METHODS = {
     Permission: 'permission',
     Abort: 'abort',
@@ -67,6 +72,11 @@ export const RPC_METHODS = {
 } as const
 
 export const RPC_TARGET_MISSING_ERROR_CODE = 'rpc_target_missing' as const
+
+/** Select the exact machine/PID; the handler still validates the OS start marker. */
+export function getSessionStopPreparationMethod(machineId: string, pid: number): string {
+    return `${RPC_METHODS.KillSession}/process/${encodeURIComponent(machineId)}/${pid}`
+}
 
 /**
  * Thrown by a permission handler's handleMissingPendingResponse when a

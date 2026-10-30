@@ -3,6 +3,7 @@ import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { AgentSessionBase } from '@/agent/sessionBase';
 import type { OpencodeHookEvent, OpencodeMode, PermissionMode } from './types';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
+import type { LocalHistoryPublisher } from './localHistory';
 
 type LocalLaunchFailure = {
     message: string;
@@ -13,6 +14,7 @@ export class OpencodeSession extends AgentSessionBase<OpencodeMode> {
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
     localLaunchFailure: LocalLaunchFailure | null = null;
+    localHistoryPublisher: LocalHistoryPublisher | null = null;
 
     private hookEventHandlers: Array<(event: OpencodeHookEvent) => void> = [];
 

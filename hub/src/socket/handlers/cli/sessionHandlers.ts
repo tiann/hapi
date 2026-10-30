@@ -71,6 +71,7 @@ const updateStateSchema = z.object({
 const HUB_OWNED_METADATA_KEYS = [
     'supersededBySessionId',
     'opencodeClearOperation',
+    'opencodeForkPending',
     'titleSuggestionAutoAttemptedAt',
     'titleSuggestionTurn'
 ] as const

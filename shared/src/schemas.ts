@@ -157,6 +157,16 @@ export const MetadataSchema = z.object({
     // Native locators for historical fork/rewind (e.g. Grok prompt indexes).
     // Kept separately from the boolean UI markers above.
     conversationHistoryIndexes: z.record(z.string(), z.number().int().nonnegative()).optional(),
+    opencodeHistoryCheckpoint: z.object({
+        sessionId: z.string().min(1),
+        messageIds: z.array(z.string().min(1)),
+        userMessageIds: z.array(z.string().min(1)),
+        // Present even when empty once local publication tracking is enabled.
+        localMessageIds: z.array(z.string().min(1)).optional(),
+        localPublicationPending: z.literal(true).optional()
+    }).optional(),
+    // Hub-owned until the child's first validated session-ready is committed.
+    opencodeForkPending: z.literal(true).optional(),
     // Codex localId → turnId mapping (durable across runner relaunches).
     conversationHistoryTurns: z.record(z.string(), z.string().min(1)).optional(),
     // Pi localId → append-only session entry id mapping. Pi entry ids are the

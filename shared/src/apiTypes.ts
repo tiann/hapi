@@ -642,6 +642,13 @@ export type RewindConversationResponse = {
 /** CLI → hub RPC result for native fork (before HAPI child binding). */
 export type ForkConversationRpcResult = {
     nativeSessionId: string
+    opencodeHistoryCheckpoint?: {
+        sessionId: string
+        messageIds: string[]
+        userMessageIds: string[]
+        localMessageIds?: string[]
+        localPublicationPending?: true
+    }
     /** Shared runtimes bind the child themselves; hub must not spawn another engine. */
     sessionId?: string
     /** When true, hub must spawn with --fork-session (Claude). */

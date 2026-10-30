@@ -143,17 +143,26 @@ export async function runOpencode(opts: {
     });
     const hookUrl = `http://127.0.0.1:${hookServer.port}/hook/opencode`;
 
+    const finishLocalHistory = async () => {
+        const publisher = sessionWrapperRef.current?.localHistoryPublisher;
+        if (publisher && !await publisher.finish()) {
+            logger.warn('[opencode] Local transcript shutdown drain was not confirmed');
+        }
+    };
     const lifecycle = createRunnerLifecycle({
         session,
         logTag: 'opencode',
         stopKeepAlive: () => sessionWrapperRef.current?.stopKeepAlive(),
+        onBeforeClose: finishLocalHistory,
         onAfterClose: () => {
             hookServer.stop();
         }
     });
 
     lifecycle.registerProcessHandlers();
-    registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session);
+    registerKillSessionHandler(session.rpcHandlerManager, { ...lifecycle, machineId: bootstrap.machineId,
+        beforeKill: async (lease) => await sessionWrapperRef.current?.localHistoryPublisher?.prepare(lease) ?? true
+    }, session);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
 
     const syncSessionMode = () => {
