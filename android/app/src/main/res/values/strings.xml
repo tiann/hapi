@@ -264,6 +264,46 @@
     <string name="chat_new_messages_one">1 new message ↓</string>
     <string name="chat_new_messages_many">%1$d new messages ↓</string>
 
+    <!-- Session status panel (live goal / todos / subagents / terminals) -->
+    <string name="session_status_title">Session status</string>
+    <string name="session_status_goal">Goal</string>
+    <string name="session_status_tasks">Tasks</string>
+    <string name="session_status_subagents">Subagents</string>
+    <string name="session_status_terminals">Background terminals</string>
+    <string name="session_status_terminals_unavailable">%1$d running · exact command unavailable</string>
+    <string name="session_status_terminals_possible">Possible commands</string>
+    <string name="session_status_goal_active">Active</string>
+    <string name="session_status_goal_paused">Paused</string>
+    <string name="session_status_goal_budget_limited">Limited</string>
+    <string name="session_status_goal_usage_limited">Usage limited</string>
+    <string name="session_status_goal_blocked">Blocked</string>
+    <string name="session_status_goal_complete">Complete</string>
+    <string name="session_status_subagent_running">Running</string>
+    <string name="session_status_subagent_waiting">Waiting</string>
+    <string name="session_status_subagent_error">Error</string>
+    <string name="session_status_task_empty">(empty)</string>
+
+    <!-- Team roster panel (subagent team members / tasks / messages) -->
+    <string name="team_roster_title">Team: %1$s</string>
+    <string name="team_roster_members_one">1 member</string>
+    <string name="team_roster_members_many">%1$d members</string>
+    <string name="team_roster_active_members">(%1$d active)</string>
+    <string name="team_roster_task_progress">%1$d/%2$d tasks</string>
+    <string name="team_roster_members_section">Members</string>
+    <string name="team_roster_tasks_section">Tasks</string>
+    <string name="team_roster_messages_section">Recent Messages</string>
+
+    <!-- Conversation outline panel (jump-to-message list) -->
+    <string name="outline_open">Conversation outline</string>
+    <string name="outline_close">Close outline</string>
+    <string name="outline_title">Outline</string>
+    <string name="outline_load_older">Load earlier</string>
+    <string name="outline_empty">No outline items in loaded messages</string>
+    <string name="outline_search_hint">Search outline</string>
+    <string name="outline_search_label">Search outline items</string>
+    <string name="outline_search_results">%1$d of %2$d items</string>
+    <string name="outline_no_search_results">No matching outline items</string>
+
     <!-- Chat snackbar notices (semantic ChatNotice resolution) -->
     <string name="chat_notice_no_transcription">No transcription provider configured on hub</string>
     <string name="chat_notice_mic_permission">Microphone permission is needed for dictation</string>

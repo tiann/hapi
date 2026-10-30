@@ -78,6 +78,7 @@ import app.hapi.companion.feature.sessions.RenameSessionDialog
 import app.hapi.companion.ui.markdown.LocalMarkdownRenderCache
 import app.hapi.companion.ui.markdown.LocalMarkdownLinkHandler
 import app.hapi.companion.ui.theme.hapi
+import app.hapi.protocol.chat.ConversationOutlineItem
 import java.io.File
 import kotlinx.coroutines.launch
 
@@ -124,6 +125,7 @@ internal fun ChatScreen(
     var configSheetOpen by remember { mutableStateOf(false) }
     var renameDialogOpen by remember { mutableStateOf(false) }
     var deleteDialogOpen by remember { mutableStateOf(false) }
+    var outlineSheetOpen by remember { mutableStateOf(false) }
 
     DisposableEffect(viewModel) {
         viewModel.setTranscriptVisible(true)
@@ -270,6 +272,23 @@ internal fun ChatScreen(
         )
     }
 
+    /**
+     * Reveal an outline entry's message in the transcript. Detaching from
+     * the tail comes first — the follow-tail correction would otherwise
+     * snap the list straight back to the newest message. The list keeps a
+     * fixed header row at index 0, hence the +1; each outline entry targets
+     * a block id the transcript rows are keyed by, so the lookup cannot
+     * drift between the panel and the list.
+     */
+    val onOutlineSelect: (ConversationOutlineItem) -> Unit = { item ->
+        outlineSheetOpen = false
+        readingState.followsTail = false
+        val rowIndex = state.blocks.indexOfFirst { it.stableId == item.targetBlockId }
+        if (rowIndex >= 0) {
+            scope.launch { transcriptList.scrollToItem(rowIndex + 1) }
+        }
+    }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
         topBar = {
@@ -294,6 +313,7 @@ internal fun ChatScreen(
                         onOpenFiles = onOpenFiles,
                         scratchlistCount = scratchlistCount,
                         onOpenScratchlist = if (viewModel.scratchlistEnabled) onOpenScratchlist else null,
+                        onOpenOutline = { outlineSheetOpen = true },
                         onRename = { renameDialogOpen = true },
                         onReopen = viewModel::reopenSession,
                         onDelete = { deleteDialogOpen = true },
@@ -369,6 +389,16 @@ internal fun ChatScreen(
                     .fillMaxSize()
                     .padding(padding),
             ) {
+                // Collapsed-by-default live summary; null when the session has
+                // no goal, todos, subagents or background terminals.
+                state.sessionStatus?.let { status ->
+                    SessionStatusPanel(status = status)
+                }
+                // Roster of the session's subagent team; null while the
+                // session carries no team state.
+                state.teamRoster?.let { roster ->
+                    TeamRosterPanel(roster = roster)
+                }
                 Box(modifier = Modifier.weight(1f)) {
                     when {
                         state.isInitialLoading -> InitialLoading()
@@ -416,6 +446,16 @@ internal fun ChatScreen(
             onLoadModelOptions = viewModel::loadModelOptions,
         )
     }
+    if (outlineSheetOpen) {
+        OutlinePanel(
+            items = state.conversationOutline,
+            hasMore = state.hasMore,
+            loadingMore = state.isLoadingOlder || state.isSyncingTail,
+            onLoadMore = viewModel::loadOlder,
+            onSelect = onOutlineSelect,
+            onDismiss = { outlineSheetOpen = false },
+        )
+    }
     if (renameDialogOpen) {
         RenameSessionDialog(
             initialName = state.header.name ?: state.header.title,
@@ -454,6 +494,8 @@ private fun SessionOverflowMenu(
     scratchlistCount: Int = 0,
     /** null ⇒ scratchlist row hidden (feature off / tests). */
     onOpenScratchlist: (() -> Unit)? = null,
+    /** null ⇒ outline row hidden (tests / previews). */
+    onOpenOutline: (() -> Unit)? = null,
     /** null ⇒ hidden (scratchlist off or empty composer). */
     onParkDraft: (() -> Unit)? = null,
 ) {
@@ -484,6 +526,15 @@ private fun SessionOverflowMenu(
                 onClick = {
                     open = false
                     onOpenScratchlist()
+                },
+            )
+        }
+        if (onOpenOutline != null) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.outline_open)) },
+                onClick = {
+                    open = false
+                    onOpenOutline()
                 },
             )
         }
