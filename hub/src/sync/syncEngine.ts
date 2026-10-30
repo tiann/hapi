@@ -2248,6 +2248,15 @@ export class SyncEngine {
         this.releaseSessionEnumerations(sessionId)
     }
 
+    async deleteArchivedSessions(sessionIds: string[], namespace: string): Promise<void> {
+        await this.sessionCache.deleteArchivedSessions(sessionIds, namespace)
+        for (const sessionId of new Set(sessionIds)) {
+            this.titleTurnCompletedIds.delete(sessionId)
+            this.automaticTitleSuggestionService.forgetSession(sessionId)
+            this.releaseSessionEnumerations(sessionId)
+        }
+    }
+
     async applySessionConfig(
         sessionId: string,
         config: {
