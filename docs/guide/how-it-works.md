@@ -36,7 +36,7 @@ hapi runner start # Run background service for remote session spawning
 hapi ping-peer --list  # Shell peer shortlist (prefer MCP list_peers in-session)
 ```
 
-MCP peer tools (same hub/namespace as the session): `list_peers` (discover), `inspect_peer` (read), `ping_peer` (message). These work from runner-spawned sessions even when the hub is on another host - see [Installation → Split hub + remote runner](./installation.md#split-hub-remote-runner-peer-discovery). Runners that must keep agents out of other sessions' contexts can hide all three with `HAPI_DISABLE_PEER_TOOLS=1` - see [Installation → Disabling peer tools](./installation.md#disabling-peer-tools-on-a-runner).
+MCP peer tools (same hub/namespace as the session): `list_peers` (discover), `inspect_peer` (read), `ping_peer` (message). These work from runner-spawned sessions even when the hub is on another host - see [Installation → Split hub + remote runner](./installation.md#split-hub-remote-runner-peer-discovery). Hub owners can hide all three hub-wide from Settings → General (applies to new sessions on every runner), and a runner can be pinned with `HAPI_DISABLE_PEER_TOOLS` regardless of the hub setting - see [Installation → Disabling peer tools](./installation.md#disabling-peer-tools).
 
 ### HAPI Hub
 

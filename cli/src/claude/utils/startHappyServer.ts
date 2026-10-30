@@ -140,9 +140,12 @@ function createHapiMcpServer(
 
     const maxInlineMediaBytes = 25 * 1024 * 1024;
 
-    // HAPI_DISABLE_PEER_TOOLS=1: peer tools are neither registered nor
-    // advertised, so wrapped agents cannot browse or message other sessions.
-    const peerToolsDisabled = isPeerToolsDisabled();
+    // HAPI_DISABLE_PEER_TOOLS=1 (or the hub toggle): peer tools are neither
+    // registered nor advertised, so wrapped agents cannot browse or message
+    // other sessions. Prefer this session's create-time snapshot over the
+    // module-wide preference: one runner process hosts many sessions, and a
+    // later bootstrap must not flip an already-running session (new-session-only).
+    const peerToolsDisabled = client.peerToolsDisabled ?? isPeerToolsDisabled();
 
     const inspectPeerInputSchema: z.ZodTypeAny = z.object({
         sessionIdPrefix: z.string().trim().min(1).describe(SESSION_ID_PREFIX_PARAM_DESCRIPTION),
@@ -333,6 +336,7 @@ function createHapiMcpServer(
                     sessionIdPrefix: args.sessionIdPrefix,
                     message: args.message,
                     deliveryMode: args.deliveryMode,
+                    peerToolsDisabled,
                 });
                 return {
                     content: [
@@ -374,6 +378,7 @@ function createHapiMcpServer(
                 const result = await inspectPeer({
                     sessionIdPrefix: args.sessionIdPrefix,
                     messageLimit: args.messageLimit,
+                    peerToolsDisabled,
                 });
                 return {
                     content: [
@@ -413,6 +418,7 @@ function createHapiMcpServer(
                 const limit = args.limit ?? 30;
                 const sessions = await listPeerSessions({
                     limit: peerListFetchLimit(limit, { excludeCaller: true }),
+                    peerToolsDisabled,
                 });
                 const peers = sessions.filter((session) => session.id !== client.sessionId);
                 const hasMore = peers.length > limit;
@@ -568,7 +574,7 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
         hapiMcpUrl: mcpUrl,
     }));
 
-    const peerToolsDisabled = isPeerToolsDisabled();
+    const peerToolsDisabled = client.peerToolsDisabled ?? isPeerToolsDisabled();
     const toolNames = [
         ...(enableChangeTitle ? ['change_title'] : []),
         'display_image',

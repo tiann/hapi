@@ -41,11 +41,13 @@ export function createGrokBackend(opts: {
     cwd: string
     model?: string
     effort?: string
+    /** Base env for the ACP child; defaults to process.env. */
+    env?: NodeJS.ProcessEnv
 }): AcpSdkBackend {
     return new AcpSdkBackend({
         command: getAgentLaunchCommand('grok'),
         args: buildGrokAgentArgs(opts),
-        env: filterEnv(process.env),
+        env: filterEnv(opts.env ?? process.env),
         // Grok ACP emits true agent_message_chunk deltas. Default overlap
         // dedupe treats a later "0" after "300" as an already-buffered suffix
         // and drops it, so the hub stores 300 instead of 3000.

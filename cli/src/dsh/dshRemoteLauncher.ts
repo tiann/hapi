@@ -11,6 +11,7 @@ import {
 import { RemoteModeDisplay } from '@/ui/ink/RemoteModeDisplay'
 import { AcpPermissionHandler } from '@/modules/common/permission/AcpPermissionHandler'
 import { createDshBackend } from './utils/dshBackend'
+import { isPeerToolsDisabled, withPeerToolsPreference } from '@/modules/common/peerTools'
 import type { DshSession } from './session'
 
 export class DshRemoteLauncher extends RemoteLauncherBase {
@@ -50,7 +51,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     }
 
     protected async runMainLoop(): Promise<void> {
-        const backend = createDshBackend()
+        const backend = createDshBackend(withPeerToolsPreference(this.session.client.peerToolsDisabled ?? isPeerToolsDisabled()))
         this.backend = backend
         backend.onStderrError((error) => {
             logger.debug('[dsh-acp] stderr error', error)

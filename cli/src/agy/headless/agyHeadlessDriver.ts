@@ -17,6 +17,7 @@ import { resolveAgyTurnModels } from '../utils/agyConversationModel';
 import { killProcessByChildProcess } from '@/utils/process';
 import { AGY_EFFORT_LEVELS, AGY_MODEL_LABELS, splitAgyModelSelection, type AgyEffortLevel } from '@hapi/protocol';
 import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
+import { isPeerToolsDisabled, withPeerToolsPreference } from '@/modules/common/peerTools';
 
 const AGY_PRINT_TIMEOUT = '30m';
 
@@ -80,13 +81,17 @@ export function buildAgyHeadlessArgs(opts: {
  * the forwarded SSH agent. Only the session markers are removed (so agy does not
  * classify the run as an SSH session and switch auth paths); SSH_AUTH_SOCK and
  * SSH_AGENT_PID are kept for tool subprocesses.
+ *
+ * The session's peer-tools preference is pinned on top (#2056) so an agy agent
+ * shelling `hapi ping-peer` resolves it in the fresh child process; a non-empty
+ * machine-level HAPI_DISABLE_PEER_TOOLS stays authoritative (no overlay).
  */
-function buildAgySpawnEnv(): NodeJS.ProcessEnv {
+export function buildAgySpawnEnv(peerToolsDisabled?: boolean): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = { ...process.env, GEMINI_FORCE_FILE_STORAGE: 'true' }
     for (const key of ['SSH_CLIENT', 'SSH_CONNECTION', 'SSH_TTY']) {
         delete env[key]
     }
-    return env
+    return withPeerToolsPreference(peerToolsDisabled ?? isPeerToolsDisabled(), env)
 }
 
 export type AgyHeadlessDriverOptions = {
@@ -125,7 +130,7 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
             const child = spawn(getAgentLaunchCommand('agy'), args, {
                 cwd,
                 stdio: ['pipe', 'pipe', 'pipe'],
-                env: buildAgySpawnEnv(),
+                env: buildAgySpawnEnv(this.session.client.peerToolsDisabled),
             }) as ChildProcessWithoutNullStreams;
             return child;
         });

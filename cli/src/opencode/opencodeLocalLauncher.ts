@@ -6,6 +6,7 @@ import { ensureOpencodeHookPlugin } from './utils/hookPlugin';
 import { buildOpencodeEnv } from './utils/config';
 import { ensureOpencodeConfig } from './utils/opencodeConfig';
 import { getTitleInstruction } from './utils/systemPrompt';
+import { isPeerToolsDisabled, peerToolsEnvOverlay, withPeerToolsPreference } from '@/modules/common/peerTools';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
 import type { OpencodeHookEvent } from './types';
 import type { OpencodeHookServer } from './utils/startOpencodeHookServer';
@@ -195,7 +196,7 @@ export async function opencodeLocalLauncher(
         logger.debug(`[opencode-local]: Started hapi MCP server at ${happyServer.url}`);
 
         // Generate opencode.json config with MCP server and instructions
-        const { configPath } = ensureOpencodeConfig(opencodeConfigDir, bridge.mcpServers.hapi, getTitleInstruction());
+        const { configPath } = ensureOpencodeConfig(opencodeConfigDir, bridge.mcpServers.hapi, getTitleInstruction(withPeerToolsPreference(session.client.peerToolsDisabled ?? isPeerToolsDisabled())));
         opencodeConfigPath = configPath;
     } catch (error) {
         logger.debug('[opencode-local]: Failed to start hapi MCP server (change_title will be unavailable)', error);
@@ -210,6 +211,9 @@ export async function opencodeLocalLauncher(
         startingMode: session.startingMode,
         launch: async (abortSignal) => {
             const env = buildOpencodeEnv();
+            // Propagate the resolved peer-tools switch onto the local agent
+            // process (see createOpencodeBackend for rationale).
+            Object.assign(env, peerToolsEnvOverlay(session.client.peerToolsDisabled ?? isPeerToolsDisabled()));
             env.HAPI_OPENCODE_HOOK_URL = hookUrl;
             env.HAPI_OPENCODE_HOOK_TOKEN = opts.hookServer.token;
             if (!env.OPENCODE_CONFIG_DIR) {

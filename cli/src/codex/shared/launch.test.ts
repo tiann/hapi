@@ -51,6 +51,14 @@ describe('shared launch configuration', () => {
         expect(result.threadParams).toMatchObject({ approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', sandbox: 'workspace-write' });
         expect(result.serverArgs).toEqual(['-c', 'approval_policy="on-request"', '-c', 'sandbox_mode="workspace-write"', '-c', 'approvals_reviewer="auto_review"']);
     });
+
+    it('does not freeze developer instructions into threadParams (#2056)', () => {
+        // sharedLaunchConfig runs before the hub bootstrap delivers the
+        // peer-tools preference; each root resolves its prompt post-bootstrap
+        // in SharedCodexRoot.config() instead of carrying a frozen string.
+        const result = sharedLaunchConfig({}, '/tmp');
+        expect(result.threadParams).not.toHaveProperty('developerInstructions');
+    });
     it('preserves launch-time provider and automatic-review policy', () => {
         const result = sharedLaunchConfig({ codexArgs: ['--oss', '--local-provider', 'ollama', '--approve-for-me'] }, '/tmp');
         expect(result.threadParams).toMatchObject({ modelProvider: 'ollama', approvalsReviewer: 'auto_review', sandbox: 'workspace-write' });

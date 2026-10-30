@@ -26,6 +26,8 @@ export type CursorAcpBackendOptions = {
     worktree?: boolean | string;
     /** Extra workspace roots (`--add-dir`, repeatable). */
     addDirs?: readonly string[];
+    /** Base env for the ACP child; defaults to process.env. */
+    env?: NodeJS.ProcessEnv;
 };
 
 /** Build `agent … acp` argv (global flags before the `acp` subcommand). */
@@ -78,7 +80,7 @@ export function createCursorAcpBackend(opts: CursorAcpBackendOptions): AcpSdkBac
     return new AcpSdkBackend({
         command: getAgentLaunchCommand('cursor'),
         args: buildCursorAcpArgs(opts),
-        env: filterEnv(process.env),
+        env: filterEnv(opts.env ?? process.env),
         flavor: 'cursor',
     });
 }

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { logger } from '@/ui/logger';
 import { AsyncLock } from '@/utils/lock';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
+import { isPeerToolsDisabled, withPeerToolsPreference } from '@/modules/common/peerTools';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { PermissionAdapter } from '@/agent/permissionAdapter';
 import type { AgentMessage, McpServerStdio, PromptContent } from '@/agent/types';
@@ -163,7 +164,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 model: spawnModel,
                 autoReview,
                 worktree: session.cursorWorktree,
-                addDirs: session.cursorAddDirs
+                addDirs: session.cursorAddDirs,
+                env: withPeerToolsPreference(session.client.peerToolsDisabled ?? isPeerToolsDisabled())
             });
             this.backend = backend;
             registerAcpSessionTitleSync(backend, session.client);
@@ -279,7 +281,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             model: spawnModel,
                             autoReview,
                             worktree: session.cursorWorktree,
-                            addDirs: session.cursorAddDirs
+                            addDirs: session.cursorAddDirs,
+                            env: withPeerToolsPreference(session.client.peerToolsDisabled ?? isPeerToolsDisabled())
                         });
                         this.backend = backend;
                         registerAcpSessionTitleSync(backend, session.client);
@@ -340,7 +343,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             model: spawnModel,
                             autoReview,
                             worktree: session.cursorWorktree,
-                            addDirs: session.cursorAddDirs
+                            addDirs: session.cursorAddDirs,
+                            env: withPeerToolsPreference(session.client.peerToolsDisabled ?? isPeerToolsDisabled())
                         });
                         this.backend = backend;
                         registerAcpSessionTitleSync(backend, session.client);

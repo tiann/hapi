@@ -495,6 +495,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         },
                         onThinkingChange: session.onThinkingChange,
                         claudeEnvVars: session.claudeEnvVars,
+                        peerToolsDisabled: session.peerToolsDisabled,
                         claudeArgs: session.claudeArgs,
                         onMessage,
                         onContextUsage: (usage) => sdkToLogConverter.applyContextUsage(usage.model, usage.maxTokens),

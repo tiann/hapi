@@ -113,8 +113,10 @@ export async function buildHapiMcpBridge(
         };
     }
     // Discovery shortlist only - same trust as skill_lookup / change_title.
-    // Skipped under HAPI_DISABLE_PEER_TOOLS (tool is not registered then).
-    if (!isPeerToolsDisabled()) {
+    // Skipped when this session's peer tools are disabled (create-time
+    // snapshot first: later bootstraps in the same process must not flip an
+    // already-built bridge).
+    if (!(client.peerToolsDisabled ?? isPeerToolsDisabled())) {
         tools.list_peers = {
             approval_mode: 'approve'
         };

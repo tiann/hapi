@@ -6,7 +6,15 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ApiSessionClient } from '@/api/apiSession'
 import * as peerMessages from '@/modules/pingPeer/pingPeer'
+import { applyHubPeerToolsDisabled, resetPeerToolsForTests } from '@/modules/common/peerTools'
 import { startHappyServer, toClaudeAllowedHapiMcpTools } from './startHappyServer'
+
+// The ping_peer core is stubbed so the cross-flip regression can observe the
+// snapshot handed to the handler without network access.
+vi.mock('@/modules/pingPeer/pingPeer', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/modules/pingPeer/pingPeer')>()
+    return { ...actual, pingPeer: vi.fn(actual.pingPeer) }
+})
 
 type ToolResult = {
     content?: Array<{ type: string; text?: string }>
@@ -154,7 +162,7 @@ describe('startHappyServer skill_lookup', () => {
                 arguments: { sessionIdPrefix: 'peer-id', message: 'hello', ...(deliveryMode ? { deliveryMode } : {}) }
             }) as ToolResult
             expect(result.isError).toBe(false)
-            expect(ping).toHaveBeenCalledWith({ sessionIdPrefix: 'peer-id', message: 'hello', deliveryMode })
+            expect(ping).toHaveBeenCalledWith({ sessionIdPrefix: 'peer-id', message: 'hello', deliveryMode, peerToolsDisabled: false })
             expect(result.content?.[0]?.text).toBe(delivery === 'accepted'
                 ? 'Accepted for peer-id (Peer) localId=ping-peer-test — delivery shows in the recipient chat when its runtime consumes it'
                 : `${delivery} to peer-id (Peer) localId=ping-peer-test`)
@@ -441,6 +449,7 @@ describe('startHappyServer peer tools kill switch', () => {
         } else {
             process.env.HAPI_DISABLE_PEER_TOOLS = originalFlag
         }
+        resetPeerToolsForTests()
     })
 
     async function startServer(): Promise<{ url: string; toolNames: string[] }> {
@@ -478,5 +487,55 @@ describe('startHappyServer peer tools kill switch', () => {
         expect(names).not.toContain('ping_peer')
         expect(names).not.toContain('inspect_peer')
         expect(names).toEqual(expect.arrayContaining(['display_image', 'display_video', 'display_media']))
+    })
+
+    it('omits peer tools from registration and toolNames when the hub preference disables them', async () => {
+        delete process.env.HAPI_DISABLE_PEER_TOOLS
+        applyHubPeerToolsDisabled(true)
+        const { toolNames } = await startServer()
+        expect(toolNames).toEqual(['change_title', 'display_image', 'display_video', 'display_media'])
+        const tools = await client!.listTools()
+        const names = tools.tools.map((tool) => tool.name)
+        expect(names).not.toContain('list_peers')
+        expect(names).not.toContain('ping_peer')
+        expect(names).not.toContain('inspect_peer')
+    })
+
+    it('keeps handlers registered by an enabled session working after a later session flips the global switch (#2056)', async () => {
+        delete process.env.HAPI_DISABLE_PEER_TOOLS
+        const { pingPeer } = await import('@/modules/pingPeer/pingPeer')
+        vi.mocked(pingPeer).mockRejectedValueOnce(new Error('offline in test'))
+
+        // Session A bootstraps with peer tools enabled (create-time snapshot).
+        const sessionClient = {
+            peerToolsDisabled: false,
+            updateMetadata: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+        const server = await startHappyServer(sessionClient, {})
+        stopServer = server.stop
+        client = new Client(
+            { name: 'hapi-peer-flip-test', version: '1.0.0' },
+            { capabilities: {} }
+        )
+        await client.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+
+        // Session B bootstraps elsewhere in the same process and flips the
+        // module-wide preference. A's registered handlers must keep working.
+        applyHubPeerToolsDisabled(true)
+
+        const result = await client.callTool({
+            name: 'ping_peer',
+            arguments: { sessionIdPrefix: 'abc123', message: 'hello' }
+        }) as ToolResult
+        expect(result.isError).toBe(true)
+        expect(JSON.stringify(result.content)).not.toContain('peer session tools are disabled')
+        // The handler resolved the guard from A's captured snapshot, not the
+        // flipped module state.
+        expect(pingPeer).toHaveBeenCalledWith(expect.objectContaining({
+            sessionIdPrefix: 'abc123',
+            peerToolsDisabled: false
+        }))
     })
 })

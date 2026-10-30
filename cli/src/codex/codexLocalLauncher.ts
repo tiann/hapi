@@ -3,6 +3,7 @@ import { logger } from '@/ui/logger';
 import { resolve } from 'node:path';
 import { startHookServer } from '@/claude/utils/startHookServer';
 import { codexLocal } from './codexLocal';
+import { isPeerToolsDisabled, withPeerToolsPreference } from '@/modules/common/peerTools';
 import type { ReasoningEffort } from './appServerTypes';
 import { CodexSession } from './session';
 import { createCodexSessionScanner, type CodexSessionScanner } from './utils/codexSessionScanner';
@@ -460,6 +461,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
             await codexLocal({
                 path: session.path,
                 sessionId: resumeSessionId,
+                peerToolsDisabled: session.client.peerToolsDisabled ?? isPeerToolsDisabled(),
                 modelReasoningEffort: (session.getModelReasoningEffort() ?? undefined) as ReasoningEffort | undefined,
                 onSessionFound: handleSessionFound,
                 abort: abortSignal,

@@ -1,10 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { logger } from '@/ui/logger';
-import { buildAgyHeadlessArgs, AgyHeadlessDriver } from './agyHeadlessDriver';
+import { buildAgyHeadlessArgs, buildAgySpawnEnv, AgyHeadlessDriver } from './agyHeadlessDriver';
 import { AgySession } from '../session';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
+import { resetPeerToolsForTests } from '@/modules/common/peerTools';
 import type { AgyMode, PermissionMode } from '../types';
 
 // A fake agy binary: emits a fixed NDJSON stream for one turn, then exits 0.
@@ -1520,4 +1521,44 @@ describe('AgyHeadlessDriver', () => {
         expect(errorEvents.length).toBeGreaterThan(0);
         expect(String(errorEvents[0][0].message)).toContain('exited with code 2');
     }, 15000);
+});
+
+describe('buildAgySpawnEnv peer-tools pinning (#2056)', () => {
+    const original = process.env.HAPI_DISABLE_PEER_TOOLS;
+    const originalSshClient = process.env.SSH_CLIENT;
+
+    afterEach(() => {
+        if (original === undefined) {
+            delete process.env.HAPI_DISABLE_PEER_TOOLS;
+        } else {
+            process.env.HAPI_DISABLE_PEER_TOOLS = original;
+        }
+        if (originalSshClient === undefined) {
+            delete process.env.SSH_CLIENT;
+        } else {
+            process.env.SSH_CLIENT = originalSshClient;
+        }
+        resetPeerToolsForTests();
+    });
+
+    it('pins the session snapshot and keeps the agy hardening vars', () => {
+        delete process.env.HAPI_DISABLE_PEER_TOOLS;
+        process.env.SSH_CLIENT = '1.2.3.4 55555 22';
+        const env = buildAgySpawnEnv(true);
+        expect(env.HAPI_DISABLE_PEER_TOOLS).toBe('1');
+        expect(env.GEMINI_FORCE_FILE_STORAGE).toBe('true');
+        expect(env.SSH_CLIENT).toBeUndefined();
+    });
+
+    it('pins an explicit enabled snapshot', () => {
+        delete process.env.HAPI_DISABLE_PEER_TOOLS;
+        expect(buildAgySpawnEnv(false).HAPI_DISABLE_PEER_TOOLS).toBe('0');
+    });
+
+    it('keeps a machine-level deploy override authoritative and does not mutate process.env', () => {
+        process.env.HAPI_DISABLE_PEER_TOOLS = '1';
+        const env = buildAgySpawnEnv(false);
+        expect(env.HAPI_DISABLE_PEER_TOOLS).toBe('1');
+        expect(process.env.GEMINI_FORCE_FILE_STORAGE).toBeUndefined();
+    });
 });

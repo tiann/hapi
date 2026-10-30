@@ -83,6 +83,12 @@ export function isIndeterminateError(error: unknown): boolean {
 
 type CodexAppServerClientOptions = {
     cwd?: string;
+    /**
+     * Base env for the spawned `codex app-server` child; defaults to
+     * process.env. Callers pass the session-pinned peer-tools overlay so
+     * shell commands inside the app-server resolve the switch consistently.
+     */
+    env?: NodeJS.ProcessEnv;
     /** An independently owned shared server. Disconnect only detaches this client. */
     endpoint?: string;
     token?: string;
@@ -257,10 +263,11 @@ export class CodexAppServerClient extends JsonLineParser {
 
         const codexCommand = resolveCodexAppServerCommand();
         logger.debug(`[CodexAppServer] Starting ${codexCommand} app-server`);
+        const spawnEnv = this.options.env ?? process.env;
         const child = spawn(codexCommand, ['app-server'], {
             cwd: this.options.cwd,
-            env: Object.keys(process.env).reduce((acc, key) => {
-                const value = process.env[key];
+            env: Object.keys(spawnEnv).reduce((acc, key) => {
+                const value = spawnEnv[key];
                 if (typeof value === 'string') acc[key] = value;
                 return acc;
             }, {} as Record<string, string>),

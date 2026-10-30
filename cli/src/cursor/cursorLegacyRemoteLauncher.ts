@@ -14,6 +14,7 @@ import type { CursorSession } from './session';
 import type { EnhancedMode } from './loop';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
+import { isPeerToolsDisabled, withPeerToolsPreference } from '@/modules/common/peerTools';
 // TODO(cursor-acp): remove legacy stream-json resume path after migration window.
 // New Cursor sessions use ACP only. This path exists because pre-ACP Cursor
 // session_id values are not loadable via ACP session/load.
@@ -269,7 +270,10 @@ class CursorRemoteLauncher extends RemoteLauncherBase {
         return new Promise((resolve, reject) => {
             const child = spawn(getAgentLaunchCommand('cursor'), args, {
                 cwd,
-                env: process.env,
+                // Pin the session's peer-tools preference so a legacy Cursor
+                // agent shelling `hapi ping-peer` resolves it in the fresh
+                // child process (#2056).
+                env: withPeerToolsPreference(this.session.client.peerToolsDisabled ?? isPeerToolsDisabled()),
                 stdio: ['ignore', 'pipe', 'pipe'],
                 shell: process.platform === 'win32',
                 windowsHide: process.platform === 'win32'

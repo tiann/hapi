@@ -19,43 +19,70 @@ import { withSessionSummaryInstruction } from '@/modules/common/sessionSummaryIn
 
 /**
  * Title and display_image / display_video / display_media instructions for OpenCode to call the hapi MCP tools.
+ * The peer steer is resolved at call time so the hub toggle applied at
+ * session bootstrap (after module import) is honored.
  */
-export const TITLE_INSTRUCTION = trimIdent(`
+function buildOpencodeTitleInstruction(env: NodeJS.ProcessEnv): string {
+    return trimIdent(`
     ${HAPI_MCP_BRIDGE_PROMPT}
-    ${isPeerToolsDisabled() ? SESSION_CITATION_DISABLED_STEER : buildSessionCitationSteerInstruction({
+    ${isPeerToolsDisabled(env) ? SESSION_CITATION_DISABLED_STEER : buildSessionCitationSteerInstruction({
         inspectTool: 'hapi_inspect_peer',
         pingTool: 'hapi_ping_peer',
         listPeersTool: 'hapi_list_peers',
     })}
     ${SKILL_LOOKUP_INSTRUCTION}
 `);
+}
 
 export function getTitleInstruction(env: NodeJS.ProcessEnv = process.env): string {
-    return withSessionSummaryInstruction(TITLE_INSTRUCTION, env)
+    return withSessionSummaryInstruction(buildOpencodeTitleInstruction(env), env)
 }
 
 /**
  * Tool instructions for native ACP sessions. Title updates come from ACP, so
- * advertise only the MCP tools that remain available to the model.
+ * advertise only the MCP tools that remain available to the model. The peer
+ * steer is resolved at call time (hub toggle / env).
  */
-export const OPENCODE_NATIVE_TOOL_INSTRUCTION = trimIdent(`
+function buildOpencodeNativeToolInstruction(env: NodeJS.ProcessEnv): string {
+    return trimIdent(`
     ${DISPLAY_IMAGE_PROMPT_HAPI_MCP}
     ${DISPLAY_VIDEO_PROMPT_HAPI_MCP}
     ${DISPLAY_MEDIA_PROMPT_HAPI_MCP}
-    ${isPeerToolsDisabled() ? SESSION_CITATION_DISABLED_STEER : buildSessionCitationSteerInstruction({
+    ${isPeerToolsDisabled(env) ? SESSION_CITATION_DISABLED_STEER : buildSessionCitationSteerInstruction({
         inspectTool: 'hapi_inspect_peer',
         pingTool: 'hapi_ping_peer',
         listPeersTool: 'hapi_list_peers',
     })}
     ${SKILL_LOOKUP_INSTRUCTION}
 `);
+}
 
 export function getOpencodeNativeToolInstruction(env: NodeJS.ProcessEnv = process.env): string {
-    return withSessionSummaryInstruction(OPENCODE_NATIVE_TOOL_INSTRUCTION, env)
+    return withSessionSummaryInstruction(buildOpencodeNativeToolInstruction(env), env)
 }
 
 /**
+ * Import-time snapshot resolved from process.env only; does not reflect the
+ * hub toggle applied at session bootstrap. Kept for existing tests — use
+ * getOpencodeNativeToolInstruction(env) in production paths.
+ *
+ * @deprecated use getOpencodeNativeToolInstruction(env)
+ */
+export const OPENCODE_NATIVE_TOOL_INSTRUCTION = buildOpencodeNativeToolInstruction(process.env)
+
+/**
+ * Import-time snapshot resolved from process.env only; does not reflect the
+ * hub toggle applied at session bootstrap. Kept for existing tests — use
+ * getTitleInstruction(env) in production paths.
+ *
+ * @deprecated use getTitleInstruction(env)
+ */
+export const TITLE_INSTRUCTION = buildOpencodeTitleInstruction(process.env)
+
+/**
  * The system prompt to inject for OpenCode sessions.
+ *
+ * @deprecated use getTitleInstruction(env)
  */
 export const opencodeSystemPrompt = TITLE_INSTRUCTION;
 

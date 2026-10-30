@@ -1,6 +1,7 @@
 import { logger } from '@/ui/logger';
 import { spawnWithTerminalGuard } from '@/utils/spawnWithTerminalGuard';
 import { getAgentLaunchCommand } from '@/agent/agentLaunchCommand';
+import { isPeerToolsDisabled, withPeerToolsPreference } from '@/modules/common/peerTools';
 
 import type { CopilotAgentMode } from '@hapi/protocol';
 import { assertSafeWindowsShellArg } from '@/grok/utils/windowsShellArgs';
@@ -29,6 +30,8 @@ export async function copilotLocal(opts: {
     model?: string;
     yolo?: boolean;
     agentMode?: CopilotAgentMode;
+    /** Session peer-tools snapshot; resolved preference pins the child env. */
+    peerToolsDisabled?: boolean;
 }): Promise<void> {
     const args = buildCopilotLocalArgs(opts);
 
@@ -38,7 +41,9 @@ export async function copilotLocal(opts: {
         command: getAgentLaunchCommand('copilot'),
         args,
         cwd: opts.path,
-        env: process.env,
+        // Pin the session's peer-tools preference so a Copilot agent shelling
+        // `hapi ping-peer` resolves it in the fresh child process (#2056).
+        env: withPeerToolsPreference(opts.peerToolsDisabled ?? isPeerToolsDisabled()),
         signal: opts.abort,
         shell: process.platform === 'win32',
         logLabel: 'CopilotLocal',

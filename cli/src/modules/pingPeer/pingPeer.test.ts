@@ -10,6 +10,7 @@ import {
     resolveSessionByPrefix,
     type PingPeerSessionSummary
 } from './pingPeer'
+import { applyHubPeerToolsDisabled, resetPeerToolsForTests } from '@/modules/common/peerTools'
 
 type MockResponse = {
     status: number
@@ -975,5 +976,43 @@ describe('HAPI_DISABLE_PEER_TOOLS kill switch', () => {
 
     it('maps the disabled code to the usage exit code', () => {
         expect(exitCodeForPingPeerError(new PingPeerError('disabled', 'disabled on this machine'))).toBe(2)
+    })
+})
+
+describe('hub disablePeerTools preference', () => {
+    const original = process.env.HAPI_DISABLE_PEER_TOOLS
+
+    beforeEach(() => {
+        delete process.env.HAPI_DISABLE_PEER_TOOLS
+        applyHubPeerToolsDisabled(true)
+    })
+
+    afterEach(() => {
+        if (original === undefined) {
+            delete process.env.HAPI_DISABLE_PEER_TOOLS
+        } else {
+            process.env.HAPI_DISABLE_PEER_TOOLS = original
+        }
+        resetPeerToolsForTests()
+    })
+
+    it('pingPeer refuses before any network call', async () => {
+        await expect(pingPeer({ sessionIdPrefix: 'abc', message: 'hi' }))
+            .rejects.toMatchObject({ code: 'disabled' })
+    })
+
+    it('inspectPeer refuses before any network call', async () => {
+        await expect(inspectPeer({ sessionIdPrefix: 'abc' }))
+            .rejects.toMatchObject({ code: 'disabled' })
+    })
+
+    it('listPeerSessions refuses before any network call', async () => {
+        await expect(listPeerSessions()).rejects.toMatchObject({ code: 'disabled' })
+    })
+
+    it('mentions the hub administrator in the refusal message', async () => {
+        const failure = await pingPeer({ sessionIdPrefix: 'abc', message: 'hi' }).catch((error) => error)
+        expect(failure).toMatchObject({ code: 'disabled' })
+        expect(String(failure.message)).toContain('hub administrator')
     })
 })

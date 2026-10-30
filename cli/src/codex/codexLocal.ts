@@ -1,5 +1,6 @@
 import { logger } from '@/ui/logger';
 import { spawnWithTerminalGuard } from '@/utils/spawnWithTerminalGuard';
+import { isPeerToolsDisabled, withPeerToolsPreference } from '@/modules/common/peerTools';
 import {
     buildMcpServerConfigArgs,
     buildDeveloperInstructionsArg,
@@ -118,6 +119,8 @@ export async function codexLocal(opts: {
     sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
     onSessionFound: (id: string) => void;
     codexArgs?: string[];
+    /** Session peer-tools snapshot; pins the spawned Codex env and prompt. */
+    peerToolsDisabled?: boolean;
     mcpServers?: McpServersConfig;
     sessionHook?: {
         port: number;
@@ -152,8 +155,11 @@ export async function codexLocal(opts: {
         args.push(...buildCodexHookConfigArgs(opts.sessionHook.port, opts.sessionHook.token));
     }
 
-    // Add developer instructions (system prompt)
-    args.push(...buildDeveloperInstructionsArg(getCodexSystemPrompt()));
+    // Add developer instructions (system prompt). Pin the session snapshot
+    // (env > this session's bootstrap) into both the prompt and the child env
+    // so a later bootstrap in the same runner process cannot flip this child.
+    const peerEnv = withPeerToolsPreference(opts.peerToolsDisabled ?? isPeerToolsDisabled());
+    args.push(...buildDeveloperInstructionsArg(getCodexSystemPrompt(peerEnv)));
 
     if (opts.codexArgs) {
         // Before the first launch, Codex still needs the user's selector (for
@@ -178,7 +184,7 @@ export async function codexLocal(opts: {
         command: codexCommand.command,
         args: [...codexCommand.args, ...args],
         cwd: opts.path,
-        env: process.env,
+        env: peerEnv,
         signal: opts.abort,
         logLabel: 'CodexLocal',
         spawnName: 'codex',

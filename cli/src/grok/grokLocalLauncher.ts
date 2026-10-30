@@ -27,7 +27,8 @@ export async function grokLocalLauncher(
                 abort: abortSignal,
                 model: opts.model,
                 effort: opts.effort,
-                permissionMode: session.getPermissionMode() as PermissionMode | undefined
+                permissionMode: session.getPermissionMode() as PermissionMode | undefined,
+                peerToolsDisabled: session.client.peerToolsDisabled
             })
         },
         sendFailureMessage: (message) => {
