@@ -287,6 +287,7 @@
     <string name="chat_notice_delete_failed">删除会话失败</string>
     <string name="chat_notice_cancel_failed">取消队列消息失败</string>
     <string name="chat_notice_edit_kept_draft">消息已取消 — 已保留当前草稿</string>
+    <string name="chat_notice_edit_schedule_dropped">定时已取消 — 附件不支持定时发送</string>
     <string name="chat_notice_already_delivered">已发送给智能体</string>
     <string name="chat_notice_steer_failed">插入消息失败</string>
     <string name="chat_notice_request_already_handled">该请求已被处理</string>
@@ -306,10 +307,17 @@
     <string name="chat_composer_stop_recording">停止录音</string>
     <string name="chat_composer_send">发送</string>
     <string name="chat_composer_abort">中止当前回合</string>
+    <string name="chat_mention_suggestions">提及建议</string>
     <string name="chat_send_steer">发送并插入当前回合</string>
+    <string name="chat_schedule_send">定时发送</string>
+    <string name="chat_schedule_relative_tab">相对时间</string>
+    <string name="chat_schedule_specific_tab">指定时间</string>
+    <string name="chat_schedule_specific_hint">最多 7 天。需 Hub 运行；CLI 下次连接时会接收消息。</string>
+    <string name="chat_schedule_error_past">发送时间必须在未来。</string>
+    <string name="chat_schedule_error_too_far">最多只能定时 7 天。</string>
     <string name="chat_queued_one">1 条队列消息</string>
     <string name="chat_queued_many">%1$d 条队列消息</string>
-    <string name="chat_queued_scheduled">定时发送 · %1$s</string>
+    <string name="chat_queued_scheduled">定时发送: %1$s</string>
     <string name="chat_queued_steer">插入</string>
     <string name="chat_queued_edit">编辑</string>
     <string name="chat_picker_title">添加附件</string>
@@ -634,4 +642,26 @@
     <string name="share_error_title">分享暂不可用</string>
     <string name="share_ok">确定</string>
     <string name="share_pair_first">请先配对 Hub，再选择接收分享内容的会话。</string>
+
+
+    <!-- Global connection + runner version-skew banners (Home chrome). -->
+    <string name="connection_reconnecting">正在重新连接…</string>
+    <string name="connection_syncing">同步中…</string>
+    <string name="connection_reason_heartbeat_timeout">心跳超时</string>
+    <string name="connection_reason_visibility_recovery">后台恢复中</string>
+    <string name="connection_reason_connect_timeout">连接超时</string>
+    <string name="connection_reason_transport_error">流连接错误</string>
+    <string name="connection_reason_closed">流连接已关闭</string>
+    <string name="connection_reason_http_code">HTTP %1$d</string>
+    <string name="runner_skew_summary_title">%1$d 个运行器版本过旧</string>
+    <string name="runner_skew_summary_body">请在下列每台主机上升级 HAPI CLI 并重启运行器。可最小化或暂隐本横幅以操作下方会话。</string>
+    <string name="runner_skew_minimized">%1$d 个过旧运行器：%2$s — 点按展开</string>
+    <string name="runner_skew_minimize">最小化</string>
+    <string name="runner_skew_dismiss_temp">暂隐 1 小时</string>
+    <string name="runner_skew_restart">重启运行器</string>
+    <string name="runner_skew_restart_unavailable">请先升级 CLI</string>
+    <string name="runner_skew_restarting">正在重启…</string>
+    <string name="runner_skew_binary_updated_hint">（磁盘上已有更新 CLI — 运行器应很快自行重启）</string>
+    <string name="runner_skew_upgrade_cli_first">（磁盘尚无更新 CLI — 请先在该主机安装/升级）</string>
+    <string name="runner_skew_restart_failed">重启运行器失败</string>
 </resources>

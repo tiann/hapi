@@ -24,8 +24,6 @@ import app.hapi.companion.R
 import app.hapi.companion.feature.chat.QueuedRowUi
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.companion.ui.theme.hapi
-import java.text.DateFormat
-import java.util.Date
 
 /**
  * Floating bar above the composer for queued (uninvoked) sends — the Compose
@@ -107,7 +105,9 @@ private fun QueuedRow(
                     Text(
                         text = stringResource(
                             R.string.chat_queued_scheduled,
-                            DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(scheduledAt)),
+                            // Web `formatScheduledTime`: "Oct 25, 2:30 PM", the
+                            // year only when it differs from the current one.
+                            ScheduleSend.formatScheduledTime(scheduledAt),
                         ),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.hapi.hint,

@@ -51,6 +51,12 @@ data class MachinesResponse(
     val machines: List<Machine>,
 )
 
+/** `POST /api/machines/:id/restart-runner` — hub ack (`{message}`). */
+@Serializable
+data class RestartRunnerResponse(
+    val message: String,
+)
+
 /** `POST /api/auth` success body (`AuthResponse`, `shared/src/apiTypes.ts`). */
 @Serializable
 data class AuthResponse(

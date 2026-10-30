@@ -11,6 +11,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -129,6 +130,7 @@ class SseEngine(
         val state = MutableStateFlow(ConnectionState())
         val reconnectRevision = MutableStateFlow(0L)
         var phase = ConnectionState.Phase.Idle
+        var lastFailure: ConnectionFailure? = null
         var job: Job? = null
     }
 
@@ -138,6 +140,14 @@ class SseEngine(
     fun connectionState(key: SseSubscriptionKey): StateFlow<ConnectionState> = subscription(key).state.asStateFlow()
 
     fun reconnecting(key: SseSubscriptionKey) = connectionState(key).reconnectNotice(nowMs)
+
+    /**
+     * [reconnectNoticeFailure] on this engine's own clock (the grace compares
+     * against `outageStartedAtMs`, which this engine stamped) — banner reason
+     * labeling must not mix clocks.
+     */
+    fun connectionFailureNotice(key: SseSubscriptionKey): Flow<ConnectionFailure?> =
+        connectionState(key).reconnectNoticeFailure(nowMs)
 
     /** Cancellation joins the previous attempt before opening another socket. */
     fun requestReconnect(key: SseSubscriptionKey) {
@@ -223,7 +233,9 @@ class SseEngine(
             ConnectionState.Phase.Connecting -> sub.state.value.outageStartedAtMs
             else -> null
         }
-        sub.state.value = ConnectionState(visiblePhase, start)
+        if (visiblePhase == ConnectionState.Phase.Connected) sub.lastFailure = null
+        val failure = if (visiblePhase == ConnectionState.Phase.Connected) null else sub.lastFailure
+        sub.state.value = ConnectionState(visiblePhase, start, failure)
     }
 
     private fun subscription(key: SseSubscriptionKey): Subscription = synchronized(lock) {
@@ -251,6 +263,10 @@ class SseEngine(
             }
 
             val outcome = runAttempt(key, sub, token)
+            sub.lastFailure = ConnectionFailure(
+                reason = outcome.endReason ?: DisconnectReason.Closed,
+                httpCode = outcome.failureCode.takeIf { outcome.endReason == DisconnectReason.TransportError },
+            )
             publishState(sub, ConnectionState.Phase.Backoff)
 
             if (outcome.handshakeReached) {
@@ -296,6 +312,21 @@ class SseEngine(
         @Volatile var handshakeReached = false
         @Volatile var lastActivityAtMs = 0L
         @Volatile var failureCode: Int? = null
+
+        /**
+         * Any transport failure was seen this attempt — with or without an
+         * HTTP code. Codeless failures (DNS/TLS/socket errors, the dominant
+         * mobile outage shape) must still attribute as a transport error like
+         * the web's unconditional onerror → transport-error, not as Closed.
+         */
+        @Volatile var sawFailure = false
+
+        /**
+         * Set by whoever ends the attempt (watchdog / resume check before
+         * cancelling, transport failure, clean EOF) — the last writer wins,
+         * resolved at the end of [runAttempt] when null.
+         */
+        @Volatile var endReason: DisconnectReason? = null
     }
 
     private suspend fun runAttempt(
@@ -320,7 +351,10 @@ class SseEngine(
                     when (transportEvent) {
                         TransportEvent.Connected -> state.lastActivityAtMs = nowMs()
                         is TransportEvent.Event -> handleRawEvent(key, sub, transportEvent.event, state)
-                        is TransportEvent.Failure -> state.failureCode = transportEvent.code
+                        is TransportEvent.Failure -> {
+                            state.sawFailure = true
+                            state.failureCode = transportEvent.code
+                        }
                     }
                 }
             } catch (cancellation: CancellationException) {
@@ -336,6 +370,14 @@ class SseEngine(
         collector.join()
         watchdog.cancel()
         resumeCheck.cancel()
+        if (state.endReason == null) {
+            state.endReason = when {
+                // Any transport failure — coded or codeless — is a transport
+                // error; only a clean EOF with no failure attributes Closed.
+                state.sawFailure -> DisconnectReason.TransportError
+                else -> DisconnectReason.Closed
+            }
+        }
         state
     }
 
@@ -351,6 +393,7 @@ class SseEngine(
         while (!state.handshakeReached) {
             val remaining = connectDeadline - nowMs()
             if (remaining <= 0) {
+                state.endReason = DisconnectReason.ConnectTimeout
                 collector.cancel()
                 return
             }
@@ -362,6 +405,7 @@ class SseEngine(
                 continue
             }
             if (nowMs() - state.lastActivityAtMs >= ReconnectPolicy.STALE_MS) {
+                state.endReason = DisconnectReason.HeartbeatTimeout
                 collector.cancel()
                 return
             }
@@ -376,6 +420,7 @@ class SseEngine(
     private suspend fun runForegroundResumeCheck(state: AttemptState, collector: Job) {
         foreground.drop(1).collect { isForeground ->
             if (isForeground && nowMs() - state.lastActivityAtMs >= ReconnectPolicy.RESUME_STALE_MS) {
+                state.endReason = DisconnectReason.VisibilityRecovery
                 collector.cancel()
             }
         }
