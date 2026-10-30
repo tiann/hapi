@@ -7,4 +7,9 @@
     <cache-path
         name="attachment_captures"
         path="attachments/" />
+    <!-- Shared turn card images (cache/share-images/), handed to the system
+         share panel via FileProvider; written fresh per share. -->
+    <cache-path
+        name="share_images"
+        path="share-images/" />
 </paths>
