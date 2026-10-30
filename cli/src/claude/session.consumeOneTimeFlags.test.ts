@@ -40,4 +40,16 @@ describe('Session.consumeOneTimeFlags', () => {
         session.consumeOneTimeFlags()
         expect(session.claudeArgs).toEqual(['--permission-mode', 'acceptEdits'])
     })
+
+    it('consumes rewind flags with their values', () => {
+        const session = makeSession([
+            '--resume', 'claude-session-id',
+            '--resume-session-at', 'kept-uuid',
+            '--resume-drops-turn', 'drop-1',
+            '--resume-drops-turn', 'drop-2',
+            '--permission-mode', 'default'
+        ])
+        session.consumeOneTimeFlags()
+        expect(session.claudeArgs).toEqual(['--permission-mode', 'default'])
+    })
 })

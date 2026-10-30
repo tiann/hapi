@@ -50,6 +50,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
     private readonly session: Session;
     private abortController: AbortController | null = null;
     private abortFuture: Future<void> | null = null;
+    private restartRequested = false;
     private permissionHandler: PermissionHandler | null = null;
     private handleSessionFound: ((sessionId: string) => void) | null = null;
 
@@ -115,6 +116,17 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         await this.handleSwitchRequest();
     }
 
+    /**
+     * Abort the current SDK attempt (without an exit reason) so the main loop
+     * respawns Claude with fresh one-shot args. Used by rewind, which needs a
+     * process restart to apply --resume-session-at.
+     */
+    public async requestRestart(): Promise<void> {
+        logger.debug('[remote]: doRestart');
+        this.restartRequested = true;
+        await this.abort();
+    }
+
     public async launch(): Promise<RemoteLauncherExitReason> {
         return this.start({
             onExit: () => this.handleExitFromUi(),
@@ -128,6 +140,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
         const session = this.session;
         const messageBuffer = this.messageBuffer;
+
+        session.requestRemoteRestart = () => this.requestRestart();
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbortRequest(),
@@ -154,6 +168,13 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
         const handleSessionFound = (sessionId: string) => {
             sdkToLogConverter.updateSessionId(sessionId);
+            // Rewind restart: system/init means the respawned process started
+            // with the resume flags accepted — the native truncation is real.
+            if (session.rewindAck) {
+                const ack = session.rewindAck;
+                session.rewindAck = null;
+                ack(true);
+            }
         };
         this.handleSessionFound = handleSessionFound;
         session.addSessionFoundCallback(handleSessionFound);
@@ -337,6 +358,14 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 }
 
                 previousSessionId = session.sessionId;
+                // A restart flag only concerns the attempt that was aborted; the
+                // fresh attempt must classify its own aborts normally.
+                this.restartRequested = false;
+                // Rewind confirmation is evidence-driven inside claudeRemote
+                // (rewindProof polls the native transcript for the re-parented
+                // resume marker); the launcher only relays ack(false) when the
+                // attempt dies with a deterministic resume rejection, and the
+                // handler's own timeout reports unconfirmed otherwise.
                 const controller = new AbortController();
                 this.abortController = controller;
                 this.abortFuture = new Future<void>();
@@ -535,7 +564,15 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // respawn-storm guard. The turn that led here is no
                             // longer "in flight" either.
                             reachedReadyThisAttempt = true;
+                            // The in-flight batch's native turn just completed:
+                            // record rewind locators only now, after the result,
+                            // so a retry after a crash never double-books them.
+                            const completedLocalIds = inFlightMessage?.items
+                                .flatMap((item) => item.localId ? [item.localId] : []) ?? [];
                             inFlightMessage = null;
+                            if (completedLocalIds.length > 0) {
+                                session.onUserTurnCompleted?.(completedLocalIds);
+                            }
 
                             await messageQueue.flush();
 
@@ -578,6 +615,16 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 `[claudeRemoteLauncher][async-debug] onReady callback ` +
                                 `(hasPending=${Boolean(pending)}, queueSize=${session.queue.size()})`
                             );
+                            // A rewind respawn reports ready only from evidence:
+                            // claudeRemote fires onReady after the rejection
+                            // window settles without a rejection result (or on
+                            // the native proof). That readiness IS the
+                            // acceptance ack — resolve it here, exactly once.
+                            if (session.rewindAck) {
+                                const ack = session.rewindAck;
+                                session.rewindAck = null;
+                                ack(true);
+                            }
                             if (!pending && session.queue.size() === 0) {
                                 session.client.sendSessionEvent({ type: 'ready' });
                                 logger.debug('[claudeRemoteLauncher][async-debug] ready event sent to hub');
@@ -586,10 +633,19 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             }
                         },
                         signal: controller.signal,
+                        rewindProof: session.rewindProof ?? undefined,
                     });
 
+                    // Attempt finished cleanly. Rewind ack resolution is evidence
+                    // driven inside claudeRemote (rewindProof already acked true,
+                    // or armed awaitingRewindInit stays for the handler timeout) —
+                    // a clean no-init return is NOT proof of acceptance.
                     if (!this.exitReason && controller.signal.aborted) {
-                        session.client.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
+                        if (this.restartRequested) {
+                            this.restartRequested = false;
+                        } else {
+                            session.client.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
+                        }
                     }
 
                     // A full attempt completed without throwing. Clear the
@@ -619,6 +675,21 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     }
                 } catch (e) {
                     logger.debug('[remote]: launch error', e);
+                    // A deterministic resume rejection means the native state is
+                    // unchanged — report failure immediately instead of letting
+                    // the rewind handler time out. The rejection surfaces as
+                    // claudeRemote's thrown "Resume rejected by --resume..."
+                    // (measured: it is the attempt's only result). Other
+                    // failures leave the ack armed (handler timeout reports
+                    // unconfirmed).
+                    if (session.rewindAck) {
+                        const detail0 = e instanceof Error ? e.message : String(e);
+                        if (/Resume rejected by --resume/i.test(detail0)) {
+                            const ack = session.rewindAck;
+                            session.rewindAck = null;
+                            ack(false, detail0);
+                        }
+                    }
 
                     // Restores a message batch that was already
                     // dequeued+acked from the queue (see
@@ -679,6 +750,23 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 message: `Process exited unexpectedly ${MAX_IMMEDIATE_RESPAWN_FAILURES} times in a row: ${detail}. Dropping the queued message; resolve the issue and resend it.`
                             });
                             immediateFailureCount = 0;
+                        } else if (this.restartRequested) {
+                            // Intentional restart (rewind): the aborted in-flight
+                            // turn belongs to the pre-rewind history. Re-delivering
+                            // it into the respawned (truncated) process would
+                            // diverge native history from the hub transcript.
+                            for (const item of inFlightMessage?.items ?? []) {
+                                if (item.localId) {
+                                    session.client.discardPendingHubPromptEcho(item.localId)
+                                }
+                            }
+                            if (inFlightMessage?.deliveredText) {
+                                session.client.discardPendingHubPromptEchoText(inFlightMessage.deliveredText)
+                            }
+                            inFlightMessage = null;
+                            session.client.sendSessionEvent({ type: 'message', message: `Process exited unexpectedly: ${detail}` });
+                            await this.respawnBackoff(getRespawnBackoffMs(), controller.signal);
+                            continue;
                         } else {
                             restoreInFlightMessage();
                             session.client.sendSessionEvent({ type: 'message', message: `Process exited unexpectedly: ${detail}` });
@@ -727,6 +815,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
     protected async cleanup(): Promise<void> {
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
+        this.session.requestRemoteRestart = null;
 
         if (this.handleSessionFound) {
             this.session.removeSessionFoundCallback(this.handleSessionFound);

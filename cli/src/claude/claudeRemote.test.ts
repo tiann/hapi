@@ -1689,3 +1689,75 @@ describe('claudeRemote rejected permission mode', () => {
         expect(rejected).toHaveBeenCalledWith('default', expect.stringContaining('auto'));
     });
 });
+
+describe('claudeRemote rewind acceptance proof', () => {
+    beforeEach(() => {
+        findLatestCompactSummaryMock.mockReset();
+        findLatestCompactSummaryMock.mockImplementation(async () => null);
+    });
+
+    function makeRewindOpts(overrides: Partial<Record<string, unknown>> = {}) {
+        return {
+            sessionId: 'rewind-session' as string | null,
+            path: process.cwd(),
+            mcpServers: {},
+            claudeEnvVars: {},
+            // The rewind respawn path parses --resume-session-at out of claudeArgs
+            // and starts query() without an initial child prompt.
+            claudeArgs: ['--resume-session-at', 'keep-boundary-uuid', '--resume-drops-turn', 'drop-uuid'],
+            allowedTools: [],
+            hookSettingsPath: '/tmp/hook.json',
+            canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+            nextMessage: async () => null,
+            onReady: vi.fn(),
+            isAborted: () => false,
+            onSessionFound: vi.fn(),
+            onMessage: vi.fn(),
+            rewindProof: vi.fn(() => false),
+            ...overrides
+        };
+    }
+
+    it('does not fire onReady from a fixed timer while the native proof is absent', { timeout: 15_000 }, async () => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        const opts = makeRewindOpts();
+        queryMock.mockReturnValueOnce((async function* () {
+            // Attempt stays alive (stream open) but no proof is written yet.
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+        })() as AsyncIterable<SDKMessage>);
+        try {
+            await claudeRemote(opts as never);
+            // Regression: the removed 4s/8s guess timers must not ack/ready here.
+            expect(opts.onReady).not.toHaveBeenCalled();
+            expect(opts.rewindProof).toHaveBeenCalled();
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    });
+
+    it('fires onReady exactly when the native proof appears, then starts the queue consumer', { timeout: 15_000 }, async () => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        let proofReady = false;
+        const opts = makeRewindOpts({
+            rewindProof: vi.fn(() => proofReady)
+        });
+queryMock.mockReturnValueOnce((async function* () {
+            yield { type: 'system', subtype: 'hook_response' } as unknown as SDKMessage;
+            await new Promise((resolve) => setTimeout(resolve, 1200));
+            proofReady = true;
+            await new Promise((resolve) => setTimeout(resolve, 2200));
+            yield { type: 'system', subtype: 'hook_response' } as unknown as SDKMessage;
+        })() as AsyncIterable<SDKMessage>);
+        try {
+            await claudeRemote(opts as never);
+            expect(opts.rewindProof).toHaveBeenCalled();
+            expect(opts.onReady).toHaveBeenCalled();
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    });
+});
