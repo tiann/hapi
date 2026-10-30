@@ -249,6 +249,9 @@
     <string name="sessions_rename_placeholder">会话名称</string>
     <string name="sessions_delete_title">删除会话？</string>
     <string name="sessions_delete_message">“%1$s”及其消息历史将从 hub 永久移除。运行中的会话必须先归档。</string>
+    <plurals name="sessions_delete_scratchlist_entries">
+        <item quantity="other">这还会一并删除 %1$d 条笔记。</item>
+    </plurals>
     <string name="sessions_cancel">取消</string>
     <string name="sessions_age_now">刚刚</string>
 
@@ -498,7 +501,7 @@
     <string name="scratchlist_to_composer">复制到输入框</string>
     <string name="scratchlist_attachment_only">仅附件</string>
     <string name="scratchlist_placeholder">笔记、草稿或想法…</string>
-    <string name="scratchlist_add_photo">添加图片</string>
+    <string name="scratchlist_add_attachment">添加附件</string>
     <string name="scratchlist_delete">删除</string>
     <string name="scratchlist_cancel">取消</string>
     <string name="scratchlist_save">保存</string>

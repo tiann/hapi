@@ -242,6 +242,12 @@
     <string name="sessions_rename_placeholder">Имя сессии</string>
     <string name="sessions_delete_title">Удалить сессию?</string>
     <string name="sessions_delete_message">«%1$s» и история её сообщений будут навсегда удалены с хаба. Активные сессии сначала нужно архивировать.</string>
+    <plurals name="sessions_delete_scratchlist_entries">
+        <item quantity="one">Будет также удалена %1$d заметка.</item>
+        <item quantity="few">Будут также удалены %1$d заметки.</item>
+        <item quantity="many">Будут также удалены %1$d заметок.</item>
+        <item quantity="other">Будут также удалены %1$d заметки.</item>
+    </plurals>
     <string name="sessions_cancel">Отмена</string>
     <string name="sessions_age_now">сейчас</string>
 
@@ -491,7 +497,7 @@
     <string name="scratchlist_to_composer">В поле ввода</string>
     <string name="scratchlist_attachment_only">Только вложение</string>
     <string name="scratchlist_placeholder">Заметка, черновик, идея на потом…</string>
-    <string name="scratchlist_add_photo">Добавить фото</string>
+    <string name="scratchlist_add_attachment">Добавить вложение</string>
     <string name="scratchlist_delete">Удалить</string>
     <string name="scratchlist_cancel">Отмена</string>
     <string name="scratchlist_save">Сохранить</string>

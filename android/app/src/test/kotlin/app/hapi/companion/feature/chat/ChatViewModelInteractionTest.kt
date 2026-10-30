@@ -1554,4 +1554,24 @@ class ChatViewModelInteractionTest {
 
         harness.viewModel.scratchlistCount.first { it == 2 }
     }
+
+    @Test
+    fun `attachment-only entries count toward the session-delete hint`() = runTest {
+        // Web `useScratchlistCount` counts every entry — attachment-only rows
+        // included — in the delete-dialog scratchlist warning; the count flow
+        // must not filter empty-text entries.
+        val scratch = FakeScratchlist()
+        val harness = InteractionHarness(this, scratchlist = scratch)
+
+        scratch.sessionState.value = ScratchlistSessionState(
+            entries = listOf(
+                app.hapi.protocol.wire.ScratchlistEntry("e1", "with text", 1, 1),
+                app.hapi.protocol.wire.ScratchlistEntry("e2", "", 2, 2),
+                app.hapi.protocol.wire.ScratchlistEntry("e3", "", 3, 3),
+            ),
+            loaded = true,
+        )
+
+        harness.viewModel.scratchlistCount.first { it == 3 }
+    }
 }

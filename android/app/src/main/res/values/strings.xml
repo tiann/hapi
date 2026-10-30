@@ -242,6 +242,10 @@
     <string name="sessions_rename_placeholder">Session name</string>
     <string name="sessions_delete_title">Delete session?</string>
     <string name="sessions_delete_message">“%1$s” and its message history will be removed from the hub permanently. Active sessions must be archived first.</string>
+    <plurals name="sessions_delete_scratchlist_entries">
+        <item quantity="one">This will also delete %1$d scratchlist entry.</item>
+        <item quantity="other">This will also delete %1$d scratchlist entries.</item>
+    </plurals>
     <string name="sessions_cancel">Cancel</string>
     <string name="sessions_age_now">now</string>
 
@@ -491,7 +495,7 @@
     <string name="scratchlist_to_composer">To composer</string>
     <string name="scratchlist_attachment_only">Attachment only</string>
     <string name="scratchlist_placeholder">Note, draft, parking-lot idea…</string>
-    <string name="scratchlist_add_photo">Add photo</string>
+    <string name="scratchlist_add_attachment">Add attachment</string>
     <string name="scratchlist_delete">Delete</string>
     <string name="scratchlist_cancel">Cancel</string>
     <string name="scratchlist_save">Save</string>

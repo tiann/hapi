@@ -1,7 +1,6 @@
 package app.hapi.companion.feature.scratchlist
 
 import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -488,8 +487,8 @@ private fun AttachmentThumb(
 // ----------------------------------------------------------------- editor --
 
 /**
- * Edit sheet: text field + attachment strip (photo picker, remove, spinner
- * while a file imports/uploads) + Delete for existing entries + Save.
+ * Edit sheet: text field + attachment strip (any-type file picker, remove,
+ * spinner while a file imports/uploads) + Delete for existing entries + Save.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -504,8 +503,12 @@ private fun ScratchlistEditorSheet(
     onRemoveAttachment: (ScratchlistAttachment) -> Unit,
     onOpenAttachment: (ScratchlistAttachment) -> Unit,
 ) {
-    val pickImage = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickVisualMedia(),
+    // Web `scratchlistAttachmentAdapter` accept: '*' — the picker filters no
+    // type (pdf/text/svg reachable, not just photos). Guardrails stay on the
+    // hub side (mime whitelist / sizes / count), mirrored client-side by
+    // ScratchlistAttachmentGuard; web has no extra client pre-checks either.
+    val pickAttachment = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
     ) { uri -> uri?.let(onAddAttachment) }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -555,15 +558,11 @@ private fun ScratchlistEditorSheet(
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceContainerHigh,
                         shape = RoundedCornerShape(10.dp),
-                        onClick = {
-                            pickImage.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                            )
-                        },
+                        onClick = { pickAttachment.launch(arrayOf("*/*")) },
                         modifier = Modifier.size(72.dp),
                     ) {
                         Box(contentAlignment = Alignment.Center) {
-                            Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.scratchlist_add_photo))
+                            Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.scratchlist_add_attachment))
                         }
                     }
                 }
