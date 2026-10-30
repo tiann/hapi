@@ -3,6 +3,7 @@ import {
     CursorMigrateToAcpRequestSchema,
     DeleteUploadRequestSchema,
     ForkConversationRequestSchema,
+    BranchConversationRequestSchema,
     ImplementCodexPlanRequestSchema,
     getPermissionModesForFlavor,
     isLiveLifecycleState,
@@ -346,6 +347,18 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
 
         await engine.abortSession(sessionResult.sessionId)
         return c.json({ ok: true })
+    })
+
+    app.post('/sessions/:id/branch', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+        const source = requireSessionFromParam(c, engine)
+        if (source instanceof Response) return source
+        const parsed = BranchConversationRequestSchema.safeParse(await c.req.json().catch(() => null))
+        if (!parsed.success) return c.json({ error: 'Invalid branch options' }, 400)
+        const result = await engine.branchConversation(source.sessionId, c.get('namespace'), parsed.data)
+        if (result.type === 'error') return c.json({ error: result.message }, 409)
+        return c.json({ sessionId: result.sessionId, ...(result.warning ? { warning: result.warning } : {}) })
     })
 
     app.post('/sessions/:id/fork', async (c) => {
