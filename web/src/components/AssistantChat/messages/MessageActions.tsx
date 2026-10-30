@@ -63,11 +63,9 @@ export function MessageActions({
     const threadIsRunning = useAuiState((state) => selectThreadIsRunning(state))
     const canCopy = Boolean(copyText)
     const hasMetadata = metadata ? buildMessageMetadataLabels(metadata).length > 0 : false
-    const [forkOpen, setForkOpen] = useState(false)
     const [rewindOpen, setRewindOpen] = useState(false)
-    const [forkPending, setForkPending] = useState(false)
     const [rewindPending, setRewindPending] = useState(false)
-    const actionsLocked = historyActionPending || forkPending || rewindPending
+    const actionsLocked = historyActionPending || rewindPending
 
     const shareButton = messageElementId ? (
         <ShareTurnButton
@@ -89,7 +87,7 @@ export function MessageActions({
             {showFork && onFork && (!threadIsRunning || allowForkWhileRunning) ? (
                 <MessageActionButton
                     label={t('message.fork')}
-                    onClick={() => setForkOpen(true)}
+                    onClick={() => { void onFork() }}
                 >
                     <ForkIcon className="h-3.5 w-3.5" />
                 </MessageActionButton>
@@ -125,29 +123,6 @@ export function MessageActions({
                 {align === 'start' && hasMetadata && metadata ? <MessageInfoPopover metadata={metadata} /> : null}
                 {align === 'start' ? <DesktopTimestamp /> : null}
             </div>
-
-            <ConfirmDialog
-                isOpen={forkOpen}
-                onClose={() => {
-                    if (!forkPending) setForkOpen(false)
-                }}
-                title={t('message.fork.confirmTitle')}
-                description={t('message.fork.confirmDescription')}
-                confirmLabel={t('message.fork')}
-                confirmingLabel={t('message.fork.confirming')}
-                isPending={forkPending}
-                centerTitle
-                onConfirm={async () => {
-                    if (!onFork) return
-                    setForkPending(true)
-                    try {
-                        await onFork()
-                        setForkOpen(false)
-                    } finally {
-                        setForkPending(false)
-                    }
-                }}
-            />
 
             <ConfirmDialog
                 isOpen={rewindOpen}
