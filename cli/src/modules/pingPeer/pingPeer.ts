@@ -103,6 +103,7 @@ export type PingPeerResult = {
      * HTTP success below means hub-accepted, which may race that ACK.
      */
     localId: string
+    flavor?: string | null
 }
 
 /**
@@ -654,7 +655,8 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
         name,
         resumed,
         localId,
-        delivery
+        delivery,
+        flavor: live.metadata?.flavor ?? null
     }
 }
 
@@ -693,6 +695,9 @@ export type InspectPeerMessage = {
     role: string
     text: string
     createdAt: number | null
+    localId?: string
+    seq?: number
+    invokedAt?: number | null
 }
 
 export type InspectPeerResult = {
@@ -730,7 +735,7 @@ function extractUserPlainText(inner: unknown): string | null {
 }
 
 /** Best-effort text from a hub message row; skip tool-call / empty noise. */
-export function extractInspectMessageSnippet(content: unknown): InspectPeerMessage | null {
+export function extractInspectMessageSnippet(content: unknown, full = false): InspectPeerMessage | null {
     if (!isObject(content)) return null
     const role = typeof content.role === 'string' ? content.role : 'unknown'
     const inner = content.content
@@ -741,10 +746,9 @@ export function extractInspectMessageSnippet(content: unknown): InspectPeerMessa
         text = extractAssistantPlainText(inner)
         if (!text) text = extractUserPlainText(inner)
     }
-    if (!text) return null
-    const trimmed = text.replace(/\s+/g, ' ').trim()
-    if (!trimmed) return null
-    const snippet = trimmed.length > MAX_SNIPPET_CHARS
+    if (!text?.trim()) return null
+    const trimmed = full ? text.trim() : text.replace(/\s+/g, ' ').trim()
+    const snippet = !full && trimmed.length > MAX_SNIPPET_CHARS
         ? `${trimmed.slice(0, MAX_SNIPPET_CHARS)}…`
         : trimmed
     return {
@@ -755,18 +759,26 @@ export function extractInspectMessageSnippet(content: unknown): InspectPeerMessa
     }
 }
 
+/** Launchers post `{ type: 'event', data: { type: 'ready' } }` when a turn ends and their queue is empty. */
+function isReadyEvent(content: unknown): boolean {
+    return isObject(content) && isObject(content.content) && content.content.type === 'event'
+        && isObject(content.content.data) && content.content.data.type === 'ready'
+}
+
 async function fetchSessionMessages(
     apiUrl: string,
     jwt: string,
     sessionId: string,
     limit: number,
-    http: AxiosInstance
-): Promise<InspectPeerMessage[]> {
+    http: AxiosInstance,
+    watch = false,
+    after?: { at: number; seq: number }
+): Promise<{ messages: InspectPeerMessage[]; next: { at: number; seq: number } | null }> {
     const response = await http.get(
         `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages`,
         {
             headers: authHeaders(jwt),
-            params: { limit },
+            params: after ? { limit, afterAt: after.at, afterSeq: after.seq } : { limit },
             timeout: 20_000,
             validateStatus: () => true
         }
@@ -781,15 +793,30 @@ async function fetchSessionMessages(
     const out: InspectPeerMessage[] = []
     for (const row of rows) {
         if (!isObject(row)) continue
-        const snippet = extractInspectMessageSnippet(row.content)
+        // A future scheduled message is not part of the turn being watched.
+        if (watch && row.invokedAt == null && typeof row.scheduledAt === 'number') continue
+        const isUser = isObject(row.content) && row.content.role === 'user'
+        const snippet = watch && isReadyEvent(row.content)
+            ? { id: '', role: 'ready', text: '', createdAt: null }
+            // A text-less user row still bounds the watched turn.
+            : extractInspectMessageSnippet(row.content, watch) ?? (watch && isUser ? { id: '', role: 'user', text: '', createdAt: null } : null)
         if (!snippet) continue
         out.push({
             ...snippet,
             id: typeof row.id === 'string' ? row.id : snippet.id,
-            createdAt: typeof row.createdAt === 'number' ? row.createdAt : null
+            createdAt: typeof row.createdAt === 'number' ? row.createdAt : null,
+            ...(watch ? {
+                seq: typeof row.seq === 'number' ? row.seq : undefined,
+                invokedAt: typeof row.invokedAt === 'number' ? row.invokedAt : null
+            } : {}),
+            ...(typeof row.localId === 'string' ? { localId: row.localId } : {})
         })
     }
-    return out
+    const page = response.data?.page
+    const next = after && page?.hasMore === true && typeof page.nextAfterAt === 'number' && typeof page.nextAfterSeq === 'number'
+        ? { at: page.nextAfterAt, seq: page.nextAfterSeq }
+        : null
+    return { messages: out, next }
 }
 
 /**
@@ -813,7 +840,7 @@ export async function inspectPeer(options: InspectPeerOptions): Promise<InspectP
     const matched = resolveSessionByPrefix(sessions, prefix)
     const live = await getSession(apiUrl, jwt, matched.id, http)
     const meta = live.metadata ?? matched.metadata ?? null
-    const messages = await fetchSessionMessages(apiUrl, jwt, matched.id, messageLimit, http)
+    const { messages } = await fetchSessionMessages(apiUrl, jwt, matched.id, messageLimit, http)
 
     return {
         sessionId: matched.id,
@@ -931,5 +958,204 @@ export async function setPeerPermissionMode(options: SetPeerPermissionModeOption
         flavor,
         mode,
         active: live.active
+    }
+}
+
+// ── spawn_peer + reply forwarding ───────────────────────────────────────────
+
+const REPLY_POLL_MS = 10_000
+const REPLY_TIMEOUT_MS = 6 * 60 * 60 * 1000
+// ponytail: fallback for a dropped `ready` event (sent droppable while the peer's socket is down).
+const IDLE_FALLBACK_POLLS = 60
+const SEND_ATTEMPTS = 3
+
+/** Flavors whose remote launchers post a `ready` event at turn end; Pi does not. */
+const PEER_REPLY_FLAVORS = new Set(['claude', 'codex', 'cursor', 'opencode', 'copilot', 'kimi', 'grok', 'dsh', 'agy'])
+
+export function supportsPeerReply(flavor: string | null | undefined): boolean {
+    return PEER_REPLY_FLAVORS.has(flavor ?? 'claude')
+}
+
+export type SpawnPeerOptions = {
+    machineId: string
+    directory: string
+    agent?: string
+    message: string
+    apiUrl?: string
+    accessToken?: string
+    http?: AxiosInstance
+}
+
+async function fetchTaskState(
+    apiUrl: string,
+    jwt: string,
+    sessionId: string,
+    localId: string,
+    http: AxiosInstance
+): Promise<{ state: 'invoked'; invokedAt: number } | { state: 'queued' | 'gone' }> {
+    const response = await http.post(
+        `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages/queued-state`,
+        { localIds: [localId] },
+        { headers: authHeaders(jwt), timeout: 20_000, validateStatus: () => true }
+    )
+    if (response.status < 200 || response.status >= 300) {
+        throw new PingPeerError('not_found', `failed to load task state for ${sessionId} (HTTP ${response.status})`)
+    }
+    const list = (key: string): unknown[] => Array.isArray(response.data?.[key]) ? response.data[key] : []
+    const invoked = list('invokedLocalMessages').find((entry: any) => entry?.localId === localId) as { invokedAt?: unknown } | undefined
+    if (typeof invoked?.invokedAt === 'number') return { state: 'invoked', invokedAt: invoked.invokedAt }
+    return [...list('queuedLocalIds'), ...list('indeterminateLocalIds')].includes(localId) ? { state: 'queued' } : { state: 'gone' }
+}
+
+const ROWS_PAGE = 200
+
+/** An after-cursor that includes every row positioned at `at` (the hub requires afterSeq >= 1). */
+function cursorBefore(at: number): { at: number; seq: number } {
+    return { at: at - 1, seq: Number.MAX_SAFE_INTEGER }
+}
+
+async function fetchRowsAfter(
+    apiUrl: string,
+    jwt: string,
+    sessionId: string,
+    after: { at: number; seq: number },
+    http: AxiosInstance
+): Promise<InspectPeerMessage[]> {
+    const rows: InspectPeerMessage[] = []
+    for (let cursor: typeof after | null = after; cursor;) {
+        const page = await fetchSessionMessages(apiUrl, jwt, sessionId, ROWS_PAGE, http, true, cursor)
+        rows.push(...page.messages)
+        cursor = page.next
+    }
+    return rows
+}
+
+/** Start a fresh session on the caller's machine, then deliver its first message via `pingPeer`. */
+export async function spawnPeer(options: SpawnPeerOptions): Promise<PingPeerResult> {
+    assertPeerToolsEnabled()
+    if (!supportsPeerReply(options.agent)) {
+        throw new PingPeerError('bad_args', `${options.agent} sessions do not report turn ends, so their replies cannot be forwarded`)
+    }
+    const apiUrl = resolveApiUrl(options.apiUrl)
+    const accessToken = resolveAccessToken(options.accessToken)
+    const http = options.http ?? axios
+    const jwt = await exchangeJwt(apiUrl, accessToken, http)
+    const response = await http.post(
+        `${apiUrl}/api/machines/${encodeURIComponent(options.machineId)}/spawn`,
+        { directory: options.directory, agent: options.agent },
+        { headers: authHeaders(jwt), timeout: 120_000, validateStatus: () => true }
+    )
+    const sessionId = response.data?.type === 'success' ? response.data.sessionId : null
+    if (typeof sessionId !== 'string') {
+        const detail = response.data?.message ?? response.data?.error ?? `HTTP ${response.status}`
+        throw new PingPeerError('send_failed', `spawn failed: ${detail}`)
+    }
+    return pingPeer({ sessionIdPrefix: sessionId, message: options.message, apiUrl, accessToken, http })
+}
+
+export type ForwardPeerReplyOptions = {
+    peerSessionId: string
+    /** `PingPeerResult.localId` of the task whose reply is awaited. */
+    taskLocalId: string
+    callerSessionId: string
+    apiUrl?: string
+    accessToken?: string
+    http?: AxiosInstance
+    sleep?: (ms: number) => Promise<void>
+    now?: () => number
+}
+
+/**
+ * Wait for the peer to finish its turn, then post its latest reply into the
+ * caller session. The caller wakes with the answer instead of polling.
+ * ponytail: polls from this CLI process; if it exits first, the reply stays only in the peer session.
+ */
+export async function forwardPeerReply(options: ForwardPeerReplyOptions): Promise<void> {
+    const apiUrl = resolveApiUrl(options.apiUrl)
+    const accessToken = resolveAccessToken(options.accessToken)
+    const http = options.http ?? axios
+    const sleep = options.sleep ?? defaultSleep
+    const now = options.now ?? Date.now
+    const deadline = now() + REPLY_TIMEOUT_MS
+    let name = options.peerSessionId.slice(0, 8)
+    let reply: InspectPeerMessage | undefined
+    let latest: InspectPeerMessage | undefined
+    let laterPrompts = 0
+    // Confirm on two polls in a row: a `ready` left by the previous turn can trail the task row.
+    let endedPolls = 0
+    let idlePolls = 0
+    let canceled = false
+    let consumed = false
+    let anchor: { at: number; seq: number } | undefined
+    const finished = () => endedPolls >= 2 || idlePolls >= IDLE_FALLBACK_POLLS
+    while (!canceled && !finished() && now() < deadline) {
+        await sleep(REPLY_POLL_MS)
+        try {
+            const jwt = await exchangeJwt(apiUrl, accessToken, http)
+            const session = await getSession(apiUrl, jwt, options.peerSessionId, http)
+            name = resolvePeerSessionLabel(session)
+            // Anchor once on the task row, then page forward from it. Queued rows are always on the latest
+            // page; a consumed row sits at its invokedAt.
+            if (!anchor) {
+                const { messages: latest } = await fetchSessionMessages(apiUrl, jwt, options.peerSessionId, 50, http, true)
+                const row = latest.find((m) => m.localId === options.taskLocalId)
+                if (row?.createdAt != null) anchor = cursorBefore(row.createdAt)
+            }
+            let rows = anchor ? await fetchRowsAfter(apiUrl, jwt, options.peerSessionId, anchor, http) : []
+            let task = rows.find((m) => m.localId === options.taskLocalId)
+            if (!task) {
+                const state = await fetchTaskState(apiUrl, jwt, options.peerSessionId, options.taskLocalId, http)
+                // The hub deletes canceled rows.
+                canceled = state.state === 'gone'
+                if (state.state !== 'invoked') throw new PingPeerError('not_found', 'task row not found')
+                anchor = cursorBefore(state.invokedAt)
+                rows = await fetchRowsAfter(apiUrl, jwt, options.peerSessionId, anchor, http)
+                task = rows.find((m) => m.localId === options.taskLocalId)
+                if (!task) throw new PingPeerError('not_found', 'task row not found')
+            }
+            consumed = task.invokedAt != null
+            const after = rows.slice(rows.indexOf(task) + 1)
+            const last = after.filter((m) => m.role !== 'user').at(-1)
+            // Rows are ordered by consumption, so the answer ends at the next prompt the peer took on its own;
+            // prompts consumed together with the task share its turn. The hub does not persist whether that
+            // prompt steered this turn or started a new one, so the latest reply is reported alongside.
+            const isText = (m: InspectPeerMessage) => m.role !== 'user' && m.role !== 'ready'
+            const isLaterPrompt = (m: InspectPeerMessage) => m.role === 'user' && m.invokedAt != null && m.invokedAt !== task!.invokedAt
+            const next = after.findIndex(isLaterPrompt)
+            reply = consumed ? (next === -1 ? after : after.slice(0, next)).filter(isText).at(-1) : undefined
+            latest = consumed && next !== -1 ? after.slice(next).filter(isText).at(-1) : undefined
+            laterPrompts = after.filter(isLaterPrompt).length
+            const ended = consumed && !session.thinking && last?.role === 'ready'
+            endedPolls = ended || !session.active ? endedPolls + 1 : 0
+            idlePolls = consumed && !session.thinking ? idlePolls + 1 : 0
+        } catch {
+            endedPolls = 0
+            idlePolls = 0
+        }
+    }
+    const link = `[${name}](/sessions/${options.peerSessionId})`
+    const text = canceled
+        ? `The task sent to peer ${link} was canceled before it ran.`
+        : !finished()
+        ? `Peer ${link} has not finished after ${REPLY_TIMEOUT_MS / 3_600_000}h; check it with inspect_peer.`
+        : latest
+            ? `Reply from peer ${link}:\n\n${reply?.text ?? '(nothing before its next message)'}\n\n`
+                + `The peer then took ${laterPrompts} more message(s), a steer or a later task, before its turn ended. Its latest reply:\n\n${latest.text}`
+        : reply
+            ? `Reply from peer ${link}:\n\n${reply.text}`
+            : consumed
+                ? `Peer ${link} stopped without replying.`
+                : `Peer ${link} stopped before it read the task.`
+    // One localId across retries so a resend after a lost response is not stored twice.
+    const localId = createPeerMessageLocalId()
+    for (let attempt = 1; ; attempt++) {
+        try {
+            const jwt = await exchangeJwt(apiUrl, accessToken, http)
+            await sendMessage(apiUrl, jwt, options.callerSessionId, text, localId, http, 'queue')
+            return
+        } catch (error) {
+            if (attempt >= SEND_ATTEMPTS) throw error
+            await sleep(REPLY_POLL_MS)
+        }
     }
 }

@@ -276,6 +276,11 @@ composition owns the overall permission policy.
 
 For peer discovery and messaging, use the session's MCP `list_peers`,
 `inspect_peer`, and `ping_peer` tools, or the corresponding CLI commands.
+MCP `spawn_peer` starts a new session on the same machine and sends it a task.
+Its reply, and the reply to `ping_peer` with `waitForReply`, is posted back into
+the calling session when the peer's turn ends (Pi peers are not supported). The
+caller's CLI process does the polling, so if that process exits first, the reply
+is not posted back; it stays in the peer session.
 On a remote runner host, configure the matching hub URL and token so shell
 commands reach the same hub (`hapi auth login` saves the token).
 

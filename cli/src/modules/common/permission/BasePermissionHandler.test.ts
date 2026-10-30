@@ -82,6 +82,16 @@ describe('resolveToolAutoApprovalDecision inspect_peer', () => {
     })
 })
 
+describe('resolveToolAutoApprovalDecision spawn_peer', () => {
+    it.each([
+        'spawn_peer',
+        'mcp__hapi__spawn_peer',
+        'Spawn Peer Session'
+    ])('does not auto-approve %s in read-only mode', (toolName) => {
+        expect(resolveToolAutoApprovalDecision('read-only', toolName, 'call-1')).toBeNull()
+    })
+})
+
 describe('resolveToolAutoApprovalDecision list_peers', () => {
     it.each([
         'list_peers',

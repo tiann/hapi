@@ -132,7 +132,8 @@ describe('pingPeer', () => {
             sessionId,
             name: 'Orchestrator',
             resumed: false,
-            delivery: 'accepted'
+            delivery: 'accepted',
+            flavor: 'cursor'
         })
         expect(result.localId).toMatch(/^ping-peer-/)
         expect(http.post.mock.calls[1]?.[1]).toEqual({ text: 'hello peer', localId: result.localId })

@@ -217,6 +217,7 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
             'display_image',
             'display_video',
             'display_media',
+            'spawn_peer',
             'ping_peer',
             'inspect_peer',
             'list_peers'
