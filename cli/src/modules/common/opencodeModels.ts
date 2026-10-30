@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { asString, isObject } from '@hapi/protocol';
 import type { OpencodeModelsResponse, OpencodeModelSummary } from '@hapi/protocol/apiTypes';
 import { AcpStdioTransport } from '@/agent/backends/acp/AcpStdioTransport';
@@ -10,6 +13,83 @@ export interface ListOpencodeModelsForCwdRequest {
 }
 
 export type ListOpencodeModelsForCwdResponse = OpencodeModelsResponse;
+
+export type OpencodeModelFilterMode = 'off' | 'allowlist' | 'blocklist';
+
+export interface OpencodeModelFilter {
+    mode: OpencodeModelFilterMode;
+    models: Set<string>;
+}
+
+const FILTER_MODES: readonly OpencodeModelFilterMode[] = ['off', 'allowlist', 'blocklist'];
+
+/** Env var overriding the filter file path (default: ~/.config/hapi/opencode-model-filter.json). */
+export const OPENCODE_MODEL_FILTER_FILE_ENV = 'HAPI_OPENCODE_MODEL_FILTER_FILE';
+
+export function defaultOpencodeModelFilterPath(): string {
+    return join(homedir(), '.config', 'hapi', 'opencode-model-filter.json');
+}
+
+/**
+ * Parse a filter document. Unknown modes, non-array model lists and malformed
+ * documents degrade to `off` so discovery keeps its unfiltered default.
+ */
+export function parseOpencodeModelFilter(raw: unknown): OpencodeModelFilter {
+    if (!isObject(raw)) {
+        return { mode: 'off', models: new Set() };
+    }
+
+    const mode = asString(raw.mode);
+    const filterMode = FILTER_MODES.includes(mode as OpencodeModelFilterMode)
+        ? (mode as OpencodeModelFilterMode)
+        : 'off';
+
+    const models = new Set<string>();
+    if (Array.isArray(raw.models)) {
+        for (const entry of raw.models) {
+            const modelId = asString(entry)?.trim();
+            if (modelId) {
+                models.add(modelId);
+            }
+        }
+    }
+
+    return { mode: filterMode, models };
+}
+
+/**
+ * Load the model filter from disk. A missing or unreadable file (the default
+ * state) keeps discovery unfiltered.
+ */
+export function loadOpencodeModelFilter(filePath?: string): OpencodeModelFilter {
+    const path = filePath
+        ?? process.env[OPENCODE_MODEL_FILTER_FILE_ENV]
+        ?? defaultOpencodeModelFilterPath();
+
+    try {
+        return parseOpencodeModelFilter(JSON.parse(readFileSync(path, 'utf8')));
+    } catch {
+        return { mode: 'off', models: new Set() };
+    }
+}
+
+/**
+ * Filter discovered models by exact modelId. An empty model list never hides
+ * the whole catalog: it is treated as `off` so a half-written or cleared
+ * configuration cannot make model selection unusable.
+ */
+export function applyOpencodeModelFilter(
+    models: OpencodeModelSummary[],
+    filter: OpencodeModelFilter
+): OpencodeModelSummary[] {
+    if (filter.mode === 'off' || filter.models.size === 0) {
+        return models;
+    }
+    if (filter.mode === 'allowlist') {
+        return models.filter((model) => filter.models.has(model.modelId));
+    }
+    return models.filter((model) => !filter.models.has(model.modelId));
+}
 
 interface CacheEntry {
     expiresAt: number;
@@ -116,7 +196,7 @@ async function runOpencodeProbe(cwd: string): Promise<ListOpencodeModelsForCwdRe
 
         return {
             success: true,
-            availableModels,
+            availableModels: applyOpencodeModelFilter(availableModels, loadOpencodeModelFilter()),
             currentModelId
         };
     } finally {
@@ -129,6 +209,10 @@ async function runOpencodeProbe(cwd: string): Promise<ListOpencodeModelsForCwdRe
  * a short-lived `opencode acp` subprocess, sending `initialize` + `session/new`,
  * and capturing the `availableModels` / `currentModelId` snapshot from the
  * response. The subprocess is torn down immediately afterwards.
+ *
+ * The snapshot is filtered through `loadOpencodeModelFilter()` before caching,
+ * so a local filter file (default `~/.config/hapi/opencode-model-filter.json`)
+ * takes effect within one cache TTL without a restart.
  *
  * Results are cached per cwd for 60 seconds; concurrent requests for the same
  * cwd are coalesced via a single-flight promise so we never spawn more than

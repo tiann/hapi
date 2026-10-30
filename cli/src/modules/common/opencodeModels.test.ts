@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const sendRequestMock = vi.fn()
 const closeMock = vi.fn().mockResolvedValue(undefined)
@@ -16,7 +19,14 @@ vi.mock('@/agent/backends/acp/AcpStdioTransport', () => {
     return { AcpStdioTransport: MockAcpStdioTransport }
 })
 
-import { listOpencodeModelsForCwd, _resetOpencodeModelsCacheForTests } from './opencodeModels'
+import {
+    applyOpencodeModelFilter,
+    listOpencodeModelsForCwd,
+    loadOpencodeModelFilter,
+    parseOpencodeModelFilter,
+    OPENCODE_MODEL_FILTER_FILE_ENV,
+    _resetOpencodeModelsCacheForTests
+} from './opencodeModels'
 
 describe('listOpencodeModelsForCwd', () => {
     beforeEach(() => {
@@ -167,5 +177,156 @@ describe('listOpencodeModelsForCwd', () => {
         expect(result.success).toBe(false)
         expect(result.error).toContain('Failed to spawn opencode')
         expect(closeMock).toHaveBeenCalled()
+    })
+})
+
+describe('parseOpencodeModelFilter', () => {
+    it('degrades malformed documents to off', () => {
+        expect(parseOpencodeModelFilter(null).mode).toBe('off')
+        expect(parseOpencodeModelFilter('nope').mode).toBe('off')
+        expect(parseOpencodeModelFilter({ mode: 'bogus', models: ['a/b'] }).mode).toBe('off')
+        expect(parseOpencodeModelFilter({ mode: 'allowlist', models: 'a/b' }).models.size).toBe(0)
+    })
+
+    it('keeps valid modes and trims/dedupes model ids', () => {
+        const filter = parseOpencodeModelFilter({
+            mode: 'blocklist',
+            models: ['openrouter/x', ' openrouter/x ', '', 'cpa/gpt-5.4', null]
+        })
+        expect(filter.mode).toBe('blocklist')
+        expect([...filter.models]).toEqual(['openrouter/x', 'cpa/gpt-5.4'])
+    })
+})
+
+describe('applyOpencodeModelFilter', () => {
+    const models = [
+        { modelId: 'cpa/gpt-5.4' },
+        { modelId: 'openrouter/anthropic/claude', name: 'Anthropic/Claude' },
+        { modelId: 'ark/ark-code-latest' }
+    ]
+
+    it('returns the list unchanged when off or when the model set is empty', () => {
+        expect(applyOpencodeModelFilter(models, { mode: 'off', models: new Set(['cpa/gpt-5.4']) })).toEqual(models)
+        expect(applyOpencodeModelFilter(models, { mode: 'allowlist', models: new Set() })).toEqual(models)
+        expect(applyOpencodeModelFilter(models, { mode: 'blocklist', models: new Set() })).toEqual(models)
+    })
+
+    it('allowlist keeps only listed models and blocklist drops them', () => {
+        expect(applyOpencodeModelFilter(models, {
+            mode: 'allowlist',
+            models: new Set(['cpa/gpt-5.4', 'ark/ark-code-latest'])
+        })).toEqual([{ modelId: 'cpa/gpt-5.4' }, { modelId: 'ark/ark-code-latest' }])
+
+        expect(applyOpencodeModelFilter(models, {
+            mode: 'blocklist',
+            models: new Set(['openrouter/anthropic/claude'])
+        })).toEqual([{ modelId: 'cpa/gpt-5.4' }, { modelId: 'ark/ark-code-latest' }])
+    })
+
+    it('preserves name metadata of surviving entries', () => {
+        expect(applyOpencodeModelFilter(models, {
+            mode: 'allowlist',
+            models: new Set(['openrouter/anthropic/claude'])
+        })).toEqual([{ modelId: 'openrouter/anthropic/claude', name: 'Anthropic/Claude' }])
+    })
+})
+
+describe('loadOpencodeModelFilter', () => {
+    let tmpDir: string
+    const previousEnv = process.env[OPENCODE_MODEL_FILTER_FILE_ENV]
+
+    beforeEach(() => {
+        tmpDir = mkdtempSync(join(tmpdir(), 'hapi-opencode-filter-'))
+        process.env[OPENCODE_MODEL_FILTER_FILE_ENV] = join(tmpDir, 'missing.json')
+    })
+
+    afterEach(() => {
+        rmSync(tmpDir, { recursive: true, force: true })
+        if (previousEnv === undefined) {
+            delete process.env[OPENCODE_MODEL_FILTER_FILE_ENV]
+        } else {
+            process.env[OPENCODE_MODEL_FILTER_FILE_ENV] = previousEnv
+        }
+    })
+
+    it('returns off when the file does not exist', () => {
+        expect(loadOpencodeModelFilter()).toEqual({ mode: 'off', models: new Set() })
+    })
+
+    it('returns off when the file is not valid JSON', () => {
+        const file = join(tmpDir, 'broken.json')
+        writeFileSync(file, '{not json')
+        expect(loadOpencodeModelFilter(file).mode).toBe('off')
+    })
+
+    it('reads mode and models from the file', () => {
+        const file = join(tmpDir, 'filter.json')
+        writeFileSync(file, JSON.stringify({ mode: 'allowlist', models: ['cpa/gpt-5.4'] }))
+        const filter = loadOpencodeModelFilter(file)
+        expect(filter.mode).toBe('allowlist')
+        expect([...filter.models]).toEqual(['cpa/gpt-5.4'])
+    })
+})
+
+describe('listOpencodeModelsForCwd with filter file', () => {
+    let tmpDir: string
+    const previousEnv = process.env[OPENCODE_MODEL_FILTER_FILE_ENV]
+
+    beforeEach(() => {
+        _resetOpencodeModelsCacheForTests()
+        sendRequestMock.mockReset()
+        tmpDir = mkdtempSync(join(tmpdir(), 'hapi-opencode-filter-'))
+    })
+
+    afterEach(() => {
+        _resetOpencodeModelsCacheForTests()
+        rmSync(tmpDir, { recursive: true, force: true })
+        if (previousEnv === undefined) {
+            delete process.env[OPENCODE_MODEL_FILTER_FILE_ENV]
+        } else {
+            process.env[OPENCODE_MODEL_FILTER_FILE_ENV] = previousEnv
+        }
+    })
+
+    it('applies the allowlist from the filter file to discovered models', async () => {
+        process.env[OPENCODE_MODEL_FILTER_FILE_ENV] = join(tmpDir, 'filter.json')
+        writeFileSync(join(tmpDir, 'filter.json'), JSON.stringify({
+            mode: 'allowlist',
+            models: ['cpa/gpt-5.4']
+        }))
+        sendRequestMock
+            .mockResolvedValueOnce({ protocolVersion: 1 })
+            .mockResolvedValueOnce({
+                models: {
+                    availableModels: [
+                        { modelId: 'cpa/gpt-5.4' },
+                        { modelId: 'openrouter/anthropic/claude' },
+                        { modelId: 'ark/ark-code-latest' }
+                    ],
+                    currentModelId: 'openrouter/anthropic/claude'
+                }
+            })
+
+        const result = await listOpencodeModelsForCwd('/filtered/cwd')
+
+        expect(result.success).toBe(true)
+        expect(result.availableModels).toEqual([{ modelId: 'cpa/gpt-5.4' }])
+        expect(result.currentModelId).toBe('openrouter/anthropic/claude')
+    })
+
+    it('leaves discovery unfiltered when no filter file exists', async () => {
+        process.env[OPENCODE_MODEL_FILTER_FILE_ENV] = join(tmpDir, 'missing.json')
+        sendRequestMock
+            .mockResolvedValueOnce({ protocolVersion: 1 })
+            .mockResolvedValueOnce({
+                models: {
+                    availableModels: [{ modelId: 'cpa/gpt-5.4' }],
+                    currentModelId: 'cpa/gpt-5.4'
+                }
+            })
+
+        const result = await listOpencodeModelsForCwd('/unfiltered/cwd')
+
+        expect(result.availableModels).toEqual([{ modelId: 'cpa/gpt-5.4' }])
     })
 })
