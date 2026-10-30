@@ -49,6 +49,7 @@ export interface HapiMcpBridgeOptions {
     exportSessionEnv?: boolean;
     emitTitleSummary?: boolean;
     enableChangeTitle?: boolean;
+    onChangeTitle?: (title: string) => void;
     skillLookup?: {
         workingDirectory: string;
         flavor: string;
@@ -83,6 +84,7 @@ export async function buildHapiMcpBridge(
     const happyServer = await startHappyServer(client, {
         emitTitleSummary: options.emitTitleSummary,
         enableChangeTitle: options.enableChangeTitle,
+        onChangeTitle: options.onChangeTitle,
         skillLookup: options.skillLookup
     });
     // Stamp the hub row id so orphanReap can find MCP helpers after the agent

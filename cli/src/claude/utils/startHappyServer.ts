@@ -40,6 +40,7 @@ type StartHappyServerOptions = {
      */
     emitTitleSummary?: boolean;
     enableChangeTitle?: boolean;
+    onChangeTitle?: (title: string) => void;
     skillLookup?: {
         workingDirectory: string;
         flavor: string;
@@ -70,7 +71,8 @@ function createHapiMcpServer(
     client: ApiSessionClient,
     emitTitleSummary: boolean,
     enableChangeTitle: boolean,
-    skillLookup: StartHappyServerOptions['skillLookup']
+    skillLookup: StartHappyServerOptions['skillLookup'],
+    onChangeTitle?: StartHappyServerOptions['onChangeTitle']
 ): McpServer {
     const handler = async (title: string) => {
         logger.debug('[hapiMCP] Changing title to:', title);
@@ -97,6 +99,15 @@ function createHapiMcpServer(
             // The ACK carries the Hub's preserved title and lock.
             if (client.getMetadata()?.titleLocked) {
                 return { success: false, error: 'Session title is locked by the user. Only the user can unlock it.' };
+            }
+            if (onChangeTitle) {
+                onChangeTitle(normalizeSessionDisplayTitle(title)!);
+                if (!await client.flushMetadata()) {
+                    return { success: false, error: 'Title update could not be confirmed by the Hub.' };
+                }
+                if (client.getMetadata()?.titleLocked) {
+                    return { success: false, error: 'Session title is locked by the user. Only the user can unlock it.' };
+                }
             }
             return { success: true };
         } catch (error) {
@@ -514,7 +525,7 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
     const mcps = new Map<string, McpServer>();
 
     const createMcpTransport = () => {
-        const mcp = createHapiMcpServer(client, emitTitleSummary, enableChangeTitle, options.skillLookup);
+        const mcp = createHapiMcpServer(client, emitTitleSummary, enableChangeTitle, options.skillLookup, options.onChangeTitle);
         const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (sessionId) => {

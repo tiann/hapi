@@ -59,6 +59,10 @@ export const MetadataSchema = z.object({
     name: z.string().optional(),
     titleLocked: z.boolean().optional(),
     os: z.string().optional(),
+    // Set when the title was chosen via the hapi change_title MCP tool. ACP
+    // native session-title sync must not overwrite it, including after
+    // launcher recreation or session resume.
+    acpManualTitle: z.boolean().optional(),
     summary: MetadataSummarySchema.optional(),
     // Hub-owned marker: the automatic first-turn title fallback has been
     // attempted for this session. It prevents silent retries after failures.

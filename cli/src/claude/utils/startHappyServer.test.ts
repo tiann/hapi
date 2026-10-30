@@ -119,6 +119,87 @@ describe('startHappyServer skill_lookup', () => {
         ])
     })
 
+    it('invokes onChangeTitle when change_title succeeds', async () => {
+        sendAgentMessage = vi.fn()
+        const sessionClient = {
+            updateMetadata: vi.fn(),
+            refreshMetadata: vi.fn(async () => true),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
+            sendAgentMessage,
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+        const onChangeTitle = vi.fn()
+        const server = await startHappyServer(sessionClient, { onChangeTitle })
+        stopServer = server.stop
+        const mcp = new Client({ name: 'hapi-test', version: '1.0.0' })
+        client = mcp
+        await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+
+        await mcp.callTool({
+            name: 'change_title',
+            arguments: { title: '  Manual\n Title  ' }
+        })
+
+        expect(onChangeTitle).toHaveBeenCalledWith('Manual Title')
+        expect(sessionClient.flushMetadata).toHaveBeenCalledTimes(2)
+    })
+
+    it('does not invoke onChangeTitle when the metadata update fails', async () => {
+        sendAgentMessage = vi.fn()
+        const updateMetadata = vi.fn()
+        const sessionClient = {
+            updateMetadata,
+            refreshMetadata: vi.fn(async () => true),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
+            sendAgentMessage,
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+        const onChangeTitle = vi.fn()
+        const server = await startHappyServer(sessionClient, { onChangeTitle })
+        stopServer = server.stop
+        const mcp = new Client({ name: 'hapi-test', version: '1.0.0' })
+        client = mcp
+        await mcp.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+
+        updateMetadata.mockImplementation(() => { throw new Error('update failed') })
+        const result = await mcp.callTool({
+            name: 'change_title',
+            arguments: { title: 'Manual Title' }
+        }) as ToolResult
+
+        expect(result.isError).toBe(true)
+        expect(onChangeTitle).not.toHaveBeenCalled()
+    })
+
+    it.each([
+        { title: '   ', options: {}, isError: true },
+        { title: 'Child Title', options: { emitTitleSummary: false }, isError: false }
+    ])('does not rename or mark manual precedence for $title with $options', async ({ title, options, isError }) => {
+        const updateMetadata = vi.fn()
+        const sessionClient = {
+            updateMetadata,
+            refreshMetadata: vi.fn(async () => true),
+            getMetadata: vi.fn(() => null),
+            flushMetadata: vi.fn(async () => true),
+            sendAgentMessage: vi.fn(),
+            sendClaudeSessionMessage: vi.fn()
+        } as unknown as ApiSessionClient
+        const onChangeTitle = vi.fn()
+        const server = await startHappyServer(sessionClient, { ...options, onChangeTitle })
+        stopServer = server.stop
+        client = new Client({ name: 'hapi-title-test', version: '1.0.0' })
+        await client.connect(new StreamableHTTPClientTransport(new URL(server.url)))
+
+        updateMetadata.mockClear()
+        const result = await client.callTool({ name: 'change_title', arguments: { title } }) as ToolResult
+
+        expect(result.isError).toBe(isError)
+        expect(updateMetadata).not.toHaveBeenCalled()
+        expect(onChangeTitle).not.toHaveBeenCalled()
+    })
+
     it('describes display_image as user output rather than image input', async () => {
         const mcp = await connect(false)
         const tools = await mcp.listTools()
@@ -325,12 +406,51 @@ describe('startHappyServer change_title', () => {
             flushMetadata: vi.fn(async () => { locked = true; return true }),
             sendAgentMessage: vi.fn()
         } as unknown as ApiSessionClient
-        const mcp = await connectChangeTitleServer(sessionClient)
+        const onChangeTitle = vi.fn()
+        const mcp = await connectChangeTitleServer(sessionClient, { onChangeTitle })
         updateMetadata.mockClear()
         const result = await mcp.callTool({ name: 'change_title', arguments: { title: 'Agent' } }) as ToolResult
         expect(result.isError).toBe(true)
         expect(result.content?.[0]?.text).toContain('locked by the user')
         expect(updateMetadata).toHaveBeenCalledTimes(inFlight ? 1 : 0)
+        expect(onChangeTitle).not.toHaveBeenCalled()
+    })
+
+    it.each([1, 2])('does not acknowledge a rename when metadata flush %s fails', async (failedFlush) => {
+        const onChangeTitle = vi.fn()
+        let flushes = 0
+        const sessionClient = {
+            updateMetadata: vi.fn(),
+            refreshMetadata: vi.fn(async () => true),
+            getMetadata: () => null,
+            flushMetadata: vi.fn(async () => {
+                flushes++
+                if (flushes === 2) expect(onChangeTitle).toHaveBeenCalledWith('Manual Title')
+                return flushes !== failedFlush
+            })
+        } as unknown as ApiSessionClient
+        const mcp = await connectChangeTitleServer(sessionClient, { onChangeTitle })
+        const result = await mcp.callTool({ name: 'change_title', arguments: { title: 'Manual Title' } }) as ToolResult
+        expect(result.isError).toBe(true)
+        expect(flushes).toBe(failedFlush)
+        expect(onChangeTitle).toHaveBeenCalledTimes(failedFlush === 1 ? 0 : 1)
+    })
+
+    it('reports a user lock acquired while flushing manual-title precedence', async () => {
+        let locked = false
+        let flushes = 0
+        const onChangeTitle = vi.fn()
+        const sessionClient = {
+            updateMetadata: vi.fn(),
+            refreshMetadata: vi.fn(async () => true),
+            getMetadata: () => ({ path: '/tmp', host: 'localhost', titleLocked: locked }),
+            flushMetadata: vi.fn(async () => { locked = ++flushes === 2; return true })
+        } as unknown as ApiSessionClient
+        const mcp = await connectChangeTitleServer(sessionClient, { onChangeTitle })
+        const result = await mcp.callTool({ name: 'change_title', arguments: { title: 'Manual' } }) as ToolResult
+        expect(result.isError).toBe(true)
+        expect(result.content?.[0]?.text).toContain('locked by the user')
+        expect(onChangeTitle).toHaveBeenCalledTimes(1)
     })
 
     it('refreshes a stale cached lock before allowing an explicit rename', async () => {
