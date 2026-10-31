@@ -26,6 +26,7 @@ export function applySessionDisplayRename(
     }
 
     client.updateMetadata((metadata: Metadata) => {
+        if (metadata.titleLocked) return metadata;
         if (metadata.name?.trim() === normalized) {
             return metadata;
         }

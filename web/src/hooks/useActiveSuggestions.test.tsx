@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import { type Suggestion, useActiveSuggestions } from './useActiveSuggestions'
+import { type Suggestion, type SuggestionRequestContext, useActiveSuggestions } from './useActiveSuggestions'
 
 function suggestion(key: string): Suggestion {
     return {
@@ -19,6 +19,53 @@ function deferred<T>() {
 }
 
 describe('useActiveSuggestions', () => {
+    it('shows local results before remote results and preserves selection when they arrive', async () => {
+        const remote = deferred<Suggestion[]>()
+        const handler = vi.fn(async (_query: string, context: SuggestionRequestContext) => {
+            void remote.promise.then(files => context.publish([suggestion('session'), ...files]))
+            return [suggestion('session')]
+        })
+        const { result } = renderHook(() => useActiveSuggestions('@a', handler))
+        await waitFor(() => expect(result.current[0]).toEqual([suggestion('session')]))
+        await act(async () => { remote.resolve([suggestion('file')]); await remote.promise })
+        expect(result.current[0]).toEqual([suggestion('session'), suggestion('file')])
+        expect(result.current[1]).toBe(0)
+    })
+
+    it('starts the next query without waiting for remote results and rejects stale publications', async () => {
+        const contexts: SuggestionRequestContext[] = []
+        const handler = vi.fn(async (query: string, context: SuggestionRequestContext) => {
+            contexts.push(context)
+            return [suggestion(query)]
+        })
+        const { result, rerender } = renderHook(({ query }) => useActiveSuggestions(query, handler), {
+            initialProps: { query: '@a' }
+        })
+        await waitFor(() => expect(result.current[0]).toEqual([suggestion('@a')]))
+        rerender({ query: '@ab' })
+        await waitFor(() => expect(result.current[0]).toEqual([suggestion('@ab')]))
+        expect(contexts[0].signal.aborted).toBe(true)
+        expect(contexts[1].signal.aborted).toBe(false)
+        act(() => contexts[0].publish([suggestion('stale-file')]))
+        expect(result.current[0]).toEqual([suggestion('@ab')])
+    })
+
+    it('aborts remote work and prevents reopening suggestions after clear or unmount', async () => {
+        let context!: SuggestionRequestContext
+        const handler = async (_query: string, request: SuggestionRequestContext) => {
+            context = request
+            return [suggestion('session')]
+        }
+        const { result, unmount } = renderHook(() => useActiveSuggestions('@', handler))
+        await waitFor(() => expect(result.current[0]).toHaveLength(1))
+        act(() => result.current[4]())
+        expect(context.signal.aborted).toBe(true)
+        act(() => context.publish([suggestion('late-file')]))
+        expect(result.current[0]).toEqual([])
+        unmount()
+        expect(context.signal.aborted).toBe(true)
+    })
+
     it('hides published suggestions immediately while a replacement query is pending', async () => {
         const first = deferred<Suggestion[]>()
         const second = deferred<Suggestion[]>()
@@ -28,7 +75,7 @@ describe('useActiveSuggestions', () => {
             { initialProps: { query: '@a' } }
         )
 
-        await waitFor(() => expect(handler).toHaveBeenCalledWith('@a'))
+        await waitFor(() => expect(handler).toHaveBeenCalledWith('@a', expect.objectContaining({ publish: expect.any(Function), signal: expect.any(AbortSignal) })))
 
         await act(async () => {
             first.resolve([suggestion('published-a')])
@@ -40,7 +87,7 @@ describe('useActiveSuggestions', () => {
         expect(result.current[0]).toEqual([])
         expect(result.current[1]).toBe(-1)
 
-        await waitFor(() => expect(handler).toHaveBeenCalledWith('@ab'))
+        await waitFor(() => expect(handler).toHaveBeenCalledWith('@ab', expect.objectContaining({ publish: expect.any(Function), signal: expect.any(AbortSignal) })))
 
         await act(async () => {
             second.resolve([suggestion('current')])
@@ -60,7 +107,7 @@ describe('useActiveSuggestions', () => {
             { initialProps: { query: '@a' } }
         )
 
-        await waitFor(() => expect(handler).toHaveBeenCalledWith('@a'))
+        await waitFor(() => expect(handler).toHaveBeenCalledWith('@a', expect.objectContaining({ publish: expect.any(Function), signal: expect.any(AbortSignal) })))
         rerender({ query: '@ab' })
 
         await act(async () => {
@@ -68,7 +115,7 @@ describe('useActiveSuggestions', () => {
             await first.promise
         })
 
-        await waitFor(() => expect(handler).toHaveBeenCalledWith('@ab'))
+        await waitFor(() => expect(handler).toHaveBeenCalledWith('@ab', expect.objectContaining({ publish: expect.any(Function), signal: expect.any(AbortSignal) })))
         expect(result.current[0]).toEqual([])
         expect(result.current[1]).toBe(-1)
 
@@ -98,7 +145,7 @@ describe('useActiveSuggestions', () => {
             { initialProps: { query: '@a' } }
         )
 
-        await waitFor(() => expect(handler).toHaveBeenCalledWith('@a'))
+        await waitFor(() => expect(handler).toHaveBeenCalledWith('@a', expect.objectContaining({ publish: expect.any(Function), signal: expect.any(AbortSignal) })))
         await act(async () => {
             firstA.resolve([suggestion('first-a')])
             await firstA.promise
@@ -106,7 +153,7 @@ describe('useActiveSuggestions', () => {
         await waitFor(() => expect(result.current[0].map((item) => item.key)).toEqual(['first-a']))
 
         rerender({ query: '@b' })
-        await waitFor(() => expect(handler).toHaveBeenCalledWith('@b'))
+        await waitFor(() => expect(handler).toHaveBeenCalledWith('@b', expect.objectContaining({ publish: expect.any(Function), signal: expect.any(AbortSignal) })))
 
         rerender({ query: '@a' })
         expect(result.current[0]).toEqual([])
@@ -136,7 +183,7 @@ describe('useActiveSuggestions', () => {
             { initialProps: { handler: oldHandler } }
         )
 
-        await waitFor(() => expect(oldHandler).toHaveBeenCalledWith('@query'))
+        await waitFor(() => expect(oldHandler).toHaveBeenCalledWith('@query', expect.objectContaining({ publish: expect.any(Function), signal: expect.any(AbortSignal) })))
 
         await act(async () => {
             oldRequest.resolve([suggestion('old-handler')])
@@ -148,7 +195,7 @@ describe('useActiveSuggestions', () => {
         expect(result.current[0]).toEqual([])
         expect(result.current[1]).toBe(-1)
 
-        await waitFor(() => expect(replacementHandler).toHaveBeenCalledWith('@query'))
+        await waitFor(() => expect(replacementHandler).toHaveBeenCalledWith('@query', expect.objectContaining({ publish: expect.any(Function), signal: expect.any(AbortSignal) })))
         expect(oldHandler).toHaveBeenCalledTimes(1)
 
         await act(async () => {

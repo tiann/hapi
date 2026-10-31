@@ -14,6 +14,10 @@ export type SSESubscription = {
 type SSEConnection = SSESubscription & {
     send: (event: SyncEvent, eventId?: string) => void | Promise<void>
     sendHeartbeat: () => void | Promise<void>
+    close?: () => void
+    inflight: number
+    inflightBytes: number
+    pendingBytes: number
     /**
      * Non-null while a resumed connection is still writing its replay: live
      * broadcasts land here instead of on the wire so replayed events keep
@@ -73,6 +77,7 @@ export class SSEManager {
         resumeFrom?: string | null
         send: (event: SyncEvent, eventId?: string) => void | Promise<void>
         sendHeartbeat: () => void | Promise<void>
+        close?: () => void
     }): SSESubscription & SSEResumeResult {
         const subscription: SSEConnection = {
             id: options.id,
@@ -82,6 +87,10 @@ export class SSEManager {
             machineId: options.machineId ?? null,
             send: options.send,
             sendHeartbeat: options.sendHeartbeat,
+            close: options.close,
+            inflight: 0,
+            inflightBytes: 0,
+            pendingBytes: 0,
             pending: null
         }
 
@@ -122,6 +131,7 @@ export class SSEManager {
         }
         while (connection.pending) {
             const batch = connection.pending.splice(0)
+            connection.pendingBytes = 0
             if (batch.length === 0) {
                 // No await between this check and the assignment, so no
                 // broadcast can slip into the queue and be dropped.
@@ -250,6 +260,7 @@ export class SSEManager {
 
     broadcast(event: SyncEvent): void {
         const seq = this.recordEvent(event)
+        const eventBytes = JSON.stringify(event).length * 2
         for (const connection of this.connections.values()) {
             if (!this.shouldSend(connection, event)) {
                 continue
@@ -259,13 +270,35 @@ export class SSEManager {
             // the receiving namespace so the cursor stays bound to it.
             const eventId = this.eventIdFor(seq, connection.namespace)
             if (connection.pending) {
+                if (connection.pending.length >= 4096 || connection.pendingBytes + eventBytes > 8 * 1024 * 1024) {
+                    this.unsubscribe(connection.id)
+                    connection.close?.()
+                    continue
+                }
                 connection.pending.push({ event, eventId })
+                connection.pendingBytes += eventBytes
                 continue
             }
 
-            void Promise.resolve(connection.send(event, eventId)).catch(() => {
+            if (connection.inflight >= 4096 || connection.inflightBytes + eventBytes > 8 * 1024 * 1024) {
                 this.unsubscribe(connection.id)
-            })
+                connection.close?.()
+                continue
+            }
+            try {
+                const result = connection.send(event, eventId)
+                if (result) {
+                    connection.inflight++
+                    connection.inflightBytes += eventBytes
+                    void Promise.resolve(result).catch(() => {
+                        this.unsubscribe(connection.id)
+                        connection.close?.()
+                    }).finally(() => { connection.inflight--; connection.inflightBytes -= eventBytes })
+                }
+            } catch {
+                this.unsubscribe(connection.id)
+                connection.close?.()
+            }
         }
     }
 

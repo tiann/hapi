@@ -156,17 +156,6 @@ describe('appServerConfig', () => {
         });
     });
 
-    it('keeps supported escalation approvals for safe-yolo threads', () => {
-        const params = buildThreadStartParams({
-            cwd: '/workspace/project',
-            mode: { permissionMode: 'safe-yolo', collaborationMode: 'default' },
-            mcpServers
-        });
-
-        expect(params.sandbox).toBe('workspace-write');
-        expect(params.approvalPolicy).toBe('on-request');
-    });
-
     it('allows MCP elicitation without enabling sandbox prompts for read-only threads', () => {
         const params = buildThreadStartParams({
             cwd: '/workspace/project',
@@ -583,7 +572,7 @@ describe('appServerConfig', () => {
             threadId: 'thread-1',
             message: 'hello',
             cwd: '/workspace/project',
-            mode: { permissionMode: 'safe-yolo', model: 'o3', collaborationMode: 'default' },
+            mode: { permissionMode: 'autoReview', model: 'o3', collaborationMode: 'default' },
             cliOverrides: { sandbox: 'read-only', approvalPolicy: 'never' }
         });
 

@@ -17,6 +17,31 @@ async function fixture(): Promise<CodexRuntimeRecord> {
         sessions: { sid: { threadId: 'thread', namespace: 'ns', active: true } } };
 }
 describe('shared runtime ownership', () => {
+    it('uses one complete process snapshot without per-record OS probes', async () => {
+        const owner = await fixture();
+        const probe = vi.spyOn(state.processes, 'has');
+        try {
+            for (let scan = 0; scan < 3; scan++) {
+                for (let index = 0; index < 50; index++) {
+                    expect(runtimeMayBeAlive({ ...owner, pid: 3000 + index, serverPid: 4000 + index }, new Map())).toBe(false);
+                }
+            }
+            expect(probe).not.toHaveBeenCalled();
+        } finally { probe.mockRestore(); }
+    });
+    it('retains live wrappers, orphan engines and unknown generations in a fresh snapshot', async () => {
+        const owner = await fixture();
+        expect(runtimeMayBeAlive(owner, new Map([[1111, owner.marker]]))).toBe(true);
+        expect(runtimeMayBeAlive(owner, new Map([[2222, owner.serverMarker!]]))).toBe(true);
+        expect(runtimeMayBeAlive(owner, new Map([[1111, null]]))).toBe(true);
+        expect(runtimeMayBeAlive({ ...owner, serverMarker: undefined }, new Map([[2222, 'unverified-start']]))).toBe(true);
+    });
+    it('does not confuse old runtime generations with reused PIDs or retain a stale live snapshot', async () => {
+        const owner = await fixture(); state.processes.set(1111, owner.marker);
+        expect(runtimeMayBeAlive(owner, new Map([[1111, 'new-wrapper'], [2222, 'new-engine']]))).toBe(false);
+        expect(runtimeMayBeAlive(owner, new Map())).toBe(false);
+        expect(runtimeMayBeAlive(owner, new Map([[1111, owner.marker]]))).toBe(true);
+    });
     it('distinguishes PID reuse from an unknown generation and a live orphan engine', async () => {
         const owner = await fixture(); state.processes.set(1111, 'different-start');
         expect(runtimeAlive(owner)).toBe(false); expect(runtimeMayBeAlive(owner)).toBe(false);

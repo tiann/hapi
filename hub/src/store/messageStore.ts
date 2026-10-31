@@ -42,6 +42,7 @@ import {
     mergeCopiedMessagesToSession as mergeCopiedStoredMessagesToSession,
     getAllMessages,
     getMessagesAfterSeq,
+    getMinSeq,
     getMessageSeqById,
     truncateMessagesFromLocalId,
     type CancelQueuedMessageResult,
@@ -101,6 +102,10 @@ export class MessageStore {
 
     getMessagesAfterSeq(sessionId: string, afterSeq: number): StoredMessage[] {
         return getMessagesAfterSeq(this.db, sessionId, afterSeq)
+    }
+
+    getMinSeq(sessionId: string): number | null {
+        return getMinSeq(this.db, sessionId)
     }
 
     getSeqById(sessionId: string, messageId: string): number | null {

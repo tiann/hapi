@@ -5,6 +5,23 @@ type DraftsMap = Record<string, string>
 
 let cache: DraftsMap | null = null
 
+let revision = 0
+const revisions = new Map<string, number>()
+
+export function getDraftRevision(sessionId: string): number {
+    // An evicted revision must never match an older pending send.
+    return revisions.get(sessionId) ?? revision
+}
+
+export function markDraftEdited(sessionId: string): void {
+    revisions.delete(sessionId)
+    revisions.set(sessionId, ++revision)
+    if (revisions.size > MAX_DRAFTS) {
+        const oldest = revisions.keys().next().value
+        if (oldest !== undefined) revisions.delete(oldest)
+    }
+}
+
 function safeParseJson(value: string): unknown {
     try {
         return JSON.parse(value) as unknown
@@ -36,6 +53,7 @@ function hydrate(): DraftsMap {
             if (key.trim().length === 0) continue
             if (typeof value !== 'string') continue
             result[key] = value
+            markDraftEdited(key)
         }
         cache = result
         return cache
@@ -72,6 +90,7 @@ export function getDraft(sessionId: string): string {
 }
 
 export function saveDraft(sessionId: string, text: string): void {
+    markDraftEdited(sessionId)
     const trimmed = text.trim()
     const drafts = hydrate()
     if (!trimmed) {
@@ -85,6 +104,7 @@ export function saveDraft(sessionId: string, text: string): void {
 }
 
 export function clearDraft(sessionId: string): void {
+    markDraftEdited(sessionId)
     const drafts = hydrate()
     delete drafts[sessionId]
     persist()

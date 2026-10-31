@@ -2,8 +2,9 @@
 
 HAPI's web interface is a fully-featured PWA that can be installed on your phone for a native app-like experience.
 
-This page covers browser installation. For the SwiftUI/UIKit and Kotlin
-Compose clients, see [Native apps (iOS / Android)](./native-apps.md).
+The web app and PWA are free and full-featured. This page
+covers browser installation. For the paid iOS and Android apps, see
+[Native apps (iOS / Android)](./native-apps.md).
 
 ## What is PWA?
 
@@ -76,6 +77,10 @@ On Android, HAPI appears in the system share sheet. When you share content to HA
 3. The app is then redirected (303) to the share picker, which reads the stored content
 
 This lets you share images, PDFs, text, and other files directly into a session from any app.
+The share-target session picker starts with recent active sessions; typing a
+query or choosing a date range searches the full snapshot. See the [session
+list behavior guide](./session-list.md#share-target-picker) for its ordering
+and matching rules.
 
 ### Native / deep-link ingest
 
@@ -127,7 +132,7 @@ HAPI supports push notifications to alert you when agents need attention.
 ### Native app notifications
 
 The [native Android and iOS apps](./native-apps.md#notifications) use FCM and
-APNs. Official builds use encrypted push relay delivery by default; private
+APNs. App Store and Google Play builds use encrypted push relay delivery by default; private
 builds need matching provider configuration. If a native provider accepts a
 notification for any device in your namespace, the hub skips the Web Push
 duplicate for that dispatch. Missing registrations or failed sends retain the
