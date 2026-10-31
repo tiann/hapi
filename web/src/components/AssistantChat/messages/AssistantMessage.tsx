@@ -1,4 +1,5 @@
 import { MessagePrimitive, useAuiState, type TextMessagePart } from '@assistant-ui/react'
+import { useLayoutEffect, useState } from 'react'
 import { Reasoning, ReasoningGroup } from '@/components/assistant-ui/reasoning'
 import { HappyToolMessage } from '@/components/AssistantChat/messages/ToolMessage'
 import { CliOutputBlock } from '@/components/CliOutputBlock'
@@ -21,6 +22,73 @@ const MESSAGE_PART_COMPONENTS = {
     ReasoningGroup: ReasoningGroup,
     tools: TOOL_COMPONENTS
 } as const
+
+export function isElementVisibleWithinViewport(target: HTMLElement, viewport: HTMLElement): boolean {
+    const targetRect = target.getBoundingClientRect()
+    const viewportRect = viewport.getBoundingClientRect()
+    return targetRect.bottom > viewportRect.top
+        && targetRect.top < viewportRect.bottom
+        && targetRect.right > viewportRect.left
+        && targetRect.left < viewportRect.right
+}
+
+function usePromptInputVisible(replyToMessageId: string | undefined): boolean {
+    const [visible, setVisible] = useState(false)
+
+    useLayoutEffect(() => {
+        if (!replyToMessageId) {
+            setVisible(false)
+            return
+        }
+
+        let disposed = false
+        let intersectionObserver: IntersectionObserver | null = null
+        let mutationObserver: MutationObserver | null = null
+
+        const findTarget = () => document.getElementById(getConversationMessageAnchorId(replyToMessageId))
+        const bindTarget = () => {
+            if (disposed) return
+            const target = findTarget()
+            if (!target) {
+                setVisible(false)
+                if (!mutationObserver && typeof MutationObserver !== 'undefined') {
+                    const root = document.querySelector('.chat-scroll-y') ?? document.body
+                    mutationObserver = new MutationObserver(bindTarget)
+                    mutationObserver.observe(root, { childList: true, subtree: true })
+                }
+                return
+            }
+
+            mutationObserver?.disconnect()
+            mutationObserver = null
+            const viewport = target.closest<HTMLElement>('.chat-scroll-y')
+            if (!viewport) {
+                setVisible(false)
+                return
+            }
+
+            if (typeof IntersectionObserver === 'undefined') {
+                setVisible(isElementVisibleWithinViewport(target, viewport))
+                return
+            }
+
+            intersectionObserver?.disconnect()
+            intersectionObserver = new IntersectionObserver(([entry]) => {
+                if (!disposed) setVisible(entry?.isIntersecting === true && entry.intersectionRatio > 0)
+            }, { root: viewport, threshold: [0, 0.01] })
+            intersectionObserver.observe(target)
+        }
+
+        bindTarget()
+        return () => {
+            disposed = true
+            intersectionObserver?.disconnect()
+            mutationObserver?.disconnect()
+        }
+    }, [replyToMessageId])
+
+    return visible
+}
 
 export function HappyAssistantMessage() {
     const ctx = useHappyChatContext()
@@ -57,6 +125,8 @@ export function HappyAssistantMessage() {
     const messageModel = useAuiState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.model)
     const turnCount = useAuiState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.turnCount)
     const roundSummary = useAuiState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.roundSummary)
+    const replyToMessageId = useAuiState(({ message }) => (message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined)?.replyToMessageId)
+    const promptInputVisible = usePromptInputVisible(replyToMessageId)
 
     const metadata = { durationMs, usage, model: messageModel ?? null, turnCount, roundSummary }
 
@@ -91,6 +161,12 @@ export function HappyAssistantMessage() {
                 showFork={showForkCurrent}
                 historyActionPending={ctx.historyActionPending}
                 onFork={showForkCurrent ? () => ctx.onForkConversation!() : undefined}
+                onJumpToPrompt={() => { void ctx.jumpToPrompt(messageId, replyToMessageId) }}
+                onJumpToConversationStart={() => { void ctx.scrollToConversationStart() }}
+                showPromptNavigation={!promptInputVisible}
+                isLoadingConversationStart={ctx.isLoadingConversationStart}
+                isLoadingPrompt={ctx.loadingPromptMessageId === messageId}
+                isNavigationInFlight={ctx.isNavigationInFlight}
             />
         </MessagePrimitive.Root>
     )

@@ -9,6 +9,13 @@ import { getConversationMessageAnchorId } from '@/chat/outline'
 import { MessageActions } from '@/components/AssistantChat/messages/MessageActions'
 import { useTranslation } from '@/lib/use-translation'
 
+export function isTurnInputMessage(
+    invokedAt: number | null | undefined,
+    status: HappyChatMessageMetadata['status']
+): boolean {
+    return invokedAt !== null && status !== 'failed'
+}
+
 export function HappyUserMessage() {
     const ctx = useHappyChatContext()
     const { t } = useTranslation()
@@ -24,6 +31,11 @@ export function HappyUserMessage() {
         if (s.message.role !== 'user') return undefined
         const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
         return custom?.status
+    })
+    const invokedAt = useAuiState((s) => {
+        if (s.message.role !== 'user') return null
+        const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+        return custom?.invokedAt
     })
     const localId = useAuiState((s) => {
         if (s.message.role !== 'user') return null
@@ -48,6 +60,7 @@ export function HappyUserMessage() {
         return s.message.content.find((part): part is TextMessagePart => part.type === 'text')?.text ?? ''
     })
     if (role !== 'user') return null
+    const isTurnInput = isTurnInputMessage(invokedAt, status)
     const canRetry = status === 'failed' && typeof localId === 'string' && Boolean(ctx.onRetryMessage)
     const onRetry = canRetry ? () => ctx.onRetryMessage!(localId) : undefined
     const showStatus = shouldShowMessageStatus(status)
@@ -87,6 +100,7 @@ export function HappyUserMessage() {
             <MessagePrimitive.Root
                 id={elementId}
                 data-hapi-message-role="user"
+                data-hapi-turn-input={isTurnInput ? 'true' : undefined}
                 className="happy-message scroll-mt-4 px-1 min-w-0 max-w-full overflow-x-hidden"
             >
                 <div className="ml-auto w-full max-w-[92%]">
@@ -104,6 +118,7 @@ export function HappyUserMessage() {
         <MessagePrimitive.Root
             id={elementId}
             data-hapi-message-role="user"
+            data-hapi-turn-input={isTurnInput ? 'true' : undefined}
             className="happy-message flex flex-col items-end scroll-mt-4"
         >
             <div className={getUserBubbleClassName(status)}>
