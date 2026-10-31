@@ -99,6 +99,22 @@ function createSession(): Session {
 }
 
 describe('bootstrapExistingSession', () => {
+    it.each(['claude', 'grok', 'pi'])('preserves fork title ownership through %s bootstrap', async flavor => {
+        const session = createSession()
+        const seed = { text: 'Fork: Current parent title', updatedAt: 123 }
+        session.metadata = { ...session.metadata!, flavor, forkedFrom: 'parent', summary: seed,
+            forkTitleSeed: seed, titleLocked: true, forkTitleGenerationAttemptedAt: 456 }
+        const client = { updateMetadata: vi.fn() }
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue(client)
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+        const result = await bootstrapExistingSession({ sessionId: session.id, flavor, workingDirectory: '/tmp/project' })
+        const expected = { forkedFrom: 'parent', summary: seed, forkTitleSeed: seed, titleLocked: true,
+            forkTitleGenerationAttemptedAt: 456 }
+        expect(result.metadata).toMatchObject(expected)
+        expect(client.updateMetadata.mock.calls[0][0](session.metadata)).toMatchObject(expected)
+    })
     beforeEach(() => {
         getSessionMock.mockReset()
         getOrCreateSessionMock.mockReset()

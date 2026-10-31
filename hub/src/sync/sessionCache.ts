@@ -1107,7 +1107,10 @@ export class SessionCache {
             }
 
             const currentMetadata = session.metadata ?? { path: '', host: '' }
-            const newMetadata = name === undefined ? { ...currentMetadata } : { ...currentMetadata, name }
+            const { forkTitleSeed: _seed, forkTitleGenerationAttemptedAt: _attempt, ...rest } = currentMetadata
+            const newMetadata = name === undefined
+                ? { ...rest, forkTitleSeed: null, forkTitleGenerationAttemptedAt: null }
+                : { ...rest, name, forkTitleSeed: null, forkTitleGenerationAttemptedAt: null }
 
             const result = this.store.sessions.updateSessionMetadata(
                 sessionId,
@@ -1132,6 +1135,61 @@ export class SessionCache {
         throw new Error('Session was modified concurrently. Please try again.')
     }
 
+    /** Seed an already-bound shared child without overwriting a newer title. */
+    async seedForkTitle(sessionId: string, seed: { text: string; updatedAt: number } | undefined): Promise<void> {
+        if (!seed) return
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.refreshSession(sessionId)
+            const metadata = session?.metadata
+            if (!session || !metadata || metadata.name?.trim() || metadata.titleLocked === true) return
+            if (metadata.forkTitleGenerationAttemptedAt !== undefined) return
+            if (metadata.summary && (metadata.summary.text !== metadata.forkTitleSeed?.text
+                || metadata.summary.updatedAt !== metadata.forkTitleSeed?.updatedAt)) return
+            const result = this.store.sessions.updateSessionMetadata(sessionId,
+                { ...metadata, summary: seed, forkTitleSeed: seed }, session.metadataVersion, session.namespace,
+                { touchUpdatedAt: false })
+            if (result.result === 'error') return
+            if (result.result === 'success') { this.refreshSession(sessionId); return }
+        }
+    }
+
+    /** Persistent CAS claim deduplicates native readiness and REST completion. */
+    claimForkTitleGeneration(sessionId: string, expected: { text: string; updatedAt: number } | undefined): boolean {
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.refreshSession(sessionId)
+            const metadata = session?.metadata
+            if (!session || !metadata?.forkedFrom || metadata.forkTitleGenerationAttemptedAt !== undefined
+                || metadata.name?.trim() || metadata.titleLocked === true
+                || metadata.summary?.text !== expected?.text || metadata.summary?.updatedAt !== expected?.updatedAt
+                || metadata.forkTitleSeed?.text !== expected?.text || metadata.forkTitleSeed?.updatedAt !== expected?.updatedAt) return false
+            const result = this.store.sessions.updateSessionMetadata(sessionId,
+                { ...metadata, forkTitleGenerationAttemptedAt: Date.now() }, session.metadataVersion, session.namespace,
+                { touchUpdatedAt: false })
+            if (result.result === 'error') return false
+            if (result.result === 'success') { this.refreshSession(sessionId); return true }
+        }
+        return false
+    }
+
+    /** Only replace the exact fork seed captured before the provider request. */
+    async updateForkTitle(sessionId: string, text: string, expected: { text: string; updatedAt: number } | undefined): Promise<boolean> {
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.refreshSession(sessionId)
+            const metadata = session?.metadata
+            if (!session || !metadata?.forkedFrom || metadata.name?.trim() || metadata.titleLocked === true
+                || metadata.summary?.text !== expected?.text || metadata.summary?.updatedAt !== expected?.updatedAt
+                || metadata.forkTitleSeed?.text !== expected?.text || metadata.forkTitleSeed?.updatedAt !== expected?.updatedAt) return false
+            const { forkTitleSeed: _seed, forkTitleGenerationAttemptedAt: _attempt, ...rest } = metadata
+            const result = this.store.sessions.updateSessionMetadata(sessionId,
+                { ...rest, summary: { text, updatedAt: Date.now() }, forkTitleSeed: null,
+                    forkTitleGenerationAttemptedAt: null }, session.metadataVersion, session.namespace,
+                { touchUpdatedAt: false })
+            if (result.result === 'error') return false
+            if (result.result === 'success') { this.refreshSession(sessionId); return true }
+        }
+        return false
+    }
+
     async updateSessionSummary(sessionId: string, text: string, titleLocked?: boolean): Promise<void> {
         // Keep the generated/native title separate from metadata.name. A
         // manually chosen name must continue to win in the Web title helper,
@@ -1143,12 +1201,15 @@ export class SessionCache {
             }
 
             const currentMetadata = session.metadata ?? { path: '', host: '' }
+            const { forkTitleSeed: _seed, forkTitleGenerationAttemptedAt: _attempt, ...rest } = currentMetadata
             const newMetadata = {
-                ...currentMetadata,
+                ...rest,
                 summary: {
                     text,
                     updatedAt: Date.now()
-                }
+                },
+                forkTitleSeed: null,
+                forkTitleGenerationAttemptedAt: null
             }
 
             const result = this.store.sessions.updateSessionMetadata(

@@ -222,7 +222,7 @@ export class SharedCodexRoot {
         await this.initialSettings(options);
         if (this.stopping) throw new Error('Codex execution is stopping');
         this.registerControls(); this.ready();
-        this.heartbeat = setInterval(() => this.alive(), 2_000); this.alive(); this.session.emitSessionReady();
+        this.heartbeat = setInterval(() => this.alive(), 2_000); this.alive();
     }
     private publishSteering(): void {
         this.publishCompaction();

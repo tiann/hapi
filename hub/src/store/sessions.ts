@@ -72,7 +72,9 @@ const SIMPLE_RESUME_TOKENS = [
 // `null` remains the explicit-clear sentinel handled by carryForwardIfMissing.
 const HUB_OWNED_METADATA_FIELDS = [
     'titleSuggestionAutoAttemptedAt',
-    'titleSuggestionTurn'
+    'titleSuggestionTurn',
+    'forkTitleSeed',
+    'forkTitleGenerationAttemptedAt'
 ] as const
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

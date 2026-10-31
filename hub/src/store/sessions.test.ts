@@ -474,7 +474,9 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
                 path: '/tmp/project',
                 host: 'example',
                 titleSuggestionAutoAttemptedAt: 1234,
-                titleSuggestionTurn: { first: true, completed: false }
+                titleSuggestionTurn: { first: true, completed: false },
+                forkTitleSeed: { text: 'Fork: Parent', updatedAt: 1234 },
+                forkTitleGenerationAttemptedAt: 5678
             },
             null,
             'default'
@@ -490,6 +492,8 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         expect(result.result).toBe('success')
         expect(getMetadata(store, session.id)?.titleSuggestionAutoAttemptedAt).toBe(1234)
         expect(getMetadata(store, session.id)?.titleSuggestionTurn).toEqual({ first: true, completed: false })
+        expect(getMetadata(store, session.id)?.forkTitleSeed).toEqual({ text: 'Fork: Parent', updatedAt: 1234 })
+        expect(getMetadata(store, session.id)?.forkTitleGenerationAttemptedAt).toBe(5678)
         store.close()
     })
 
