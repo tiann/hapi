@@ -999,6 +999,48 @@ class SessionListViewModelTest {
         assertFalse(state.showUnreadOnly) // transient default off
     }
 
+    @Test
+    fun `returning home ends the selected-session exception in the unread lens`() = runTest {
+        // Rows start unread deterministically: content ahead of every watermark.
+        val sessions = FakeSessionStore().apply {
+            set(
+                summary("a", updatedAt = 100).copy(contentRevision = 100),
+                summary("b", updatedAt = 100).copy(contentRevision = 100),
+            )
+        }
+        val (viewModel) = buildViewModel(sessions)
+        viewModel.setUnreadOnly(true)
+        assertEquals(setOf("a", "b"), viewModel.uiState.first { it.rows.size == 2 }.rows.map { it.id }.toSet())
+
+        viewModel.markRead("a") // acknowledges a's head; stays visible as the open session
+        viewModel.onSessionOpened("a")
+        val open = viewModel.uiState.first { it.unreadCount == 1 }
+        assertEquals(setOf("a", "b"), open.rows.map { it.id }.toSet()) // a kept by selection, b by unread
+
+        // Returning home closes the chat and the list screen returns: the read
+        // session must leave the lens instead of lingering as "still selected".
+        viewModel.onChatClosed()
+        val closed = viewModel.uiState.first { it.rows.map { it.id } == listOf("b") }
+        assertEquals(1, closed.unreadCount) // only b is genuinely unread now
+    }
+
+    @Test
+    fun `returning home ends the selected-session exception in the active-only lens`() = runTest {
+        val sessions = FakeSessionStore().apply {
+            set(summary("live", updatedAt = 900, active = true), summary("cold", updatedAt = 800))
+        }
+        val (viewModel) = buildViewModel(sessions)
+        viewModel.setActiveOnly(true)
+        assertEquals(listOf("live"), viewModel.uiState.first { it.showActiveOnly }.rows.map { it.id })
+
+        viewModel.onSessionOpened("cold") // the inactive open session stays visible
+        assertEquals(setOf("live", "cold"), viewModel.uiState.first { it.rows.size == 2 }.rows.map { it.id }.toSet())
+
+        // Back to the list: the closed, inactive session leaves the lens.
+        viewModel.onChatClosed()
+        assertEquals(listOf("live"), viewModel.uiState.first { it.rows.size == 1 }.rows.map { it.id })
+    }
+
     // ------------------------------------------------------ active / buckets --
 
     @Test

@@ -433,6 +433,18 @@ class SessionListViewModel(
         }
     }
 
+    /**
+     * Call when returning home (the chat screen closes, Back lands on the
+     * list): ends the selected-session exception so a read, closed session
+     * leaves the unread lens (and the active-only lens — both keep the open
+     * session visible). The web gets this for free — its selection is the
+     * chat route and vanishes with it — while this plain [MutableStateFlow]
+     * must be cleared.
+     */
+    fun onChatClosed() {
+        selectedSessionId.value = null
+    }
+
     /** `PUT /sessions/:id/pin` with optimistic re-sort; failures surface on [errors]. */
     fun setPinMode(sessionId: String, mode: PinMode) {
         scope.launch {
