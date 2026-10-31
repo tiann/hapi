@@ -1311,7 +1311,7 @@ describe('listSessions query params', () => {
         })
     })
 
-    
+
     it('attributes + steers Pi without sending deliveryMode on peer-messages', async () => {
         const targetId = '05d9f0f2-9273-4137-933c-07459a1146a2'
         const sourceId = '6212dae5-8a60-4284-b7a5-c09aa3571ce4'

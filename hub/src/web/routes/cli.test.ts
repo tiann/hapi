@@ -328,7 +328,6 @@ describe('POST /cli/sessions/:id/peer-messages', () => {
             body: JSON.stringify({
                 targetSessionId: targetId,
                 text: 'handoff',
-                peer: { sourceSessionId: targetId, sourceName: 'forged' }
             })
         })
 
@@ -422,5 +421,71 @@ describe('POST /cli/sessions/:id/peer-messages', () => {
         })
 
         expect(response.status).toBe(409)
+    })
+
+    it('rejects deliveryMode on peer-messages (queue+/steer ACK contract)', async () => {
+        const app = createApp({
+            resolveSessionAccess: (id: string) => {
+                if (id === sourceId || id === targetId) {
+                    return {
+                        ok: true as const,
+                        sessionId: id,
+                        session: { id, active: true, metadata: { name: 'S' } }
+                    }
+                }
+                return { ok: false as const, reason: 'not-found' as const }
+            },
+            sendMessage: async () => {
+                throw new Error('should not send')
+            }
+        } as never)
+
+        const response = await app.request(`/cli/sessions/${sourceId}/peer-messages`, {
+            method: 'POST',
+            headers: {
+                ...authHeaders(),
+                'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+                targetSessionId: targetId,
+                text: 'handoff',
+                deliveryMode: 'steer'
+            })
+        })
+
+        expect(response.status).toBe(400)
+    })
+
+    it('rejects forged peer body fields on peer-messages (path source only)', async () => {
+        const app = createApp({
+            resolveSessionAccess: (id: string) => {
+                if (id === sourceId || id === targetId) {
+                    return {
+                        ok: true as const,
+                        sessionId: id,
+                        session: { id, active: true, metadata: { name: 'S' } }
+                    }
+                }
+                return { ok: false as const, reason: 'not-found' as const }
+            },
+            sendMessage: async () => {
+                throw new Error('should not send')
+            }
+        } as never)
+
+        const response = await app.request(`/cli/sessions/${sourceId}/peer-messages`, {
+            method: 'POST',
+            headers: {
+                ...authHeaders(),
+                'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+                targetSessionId: targetId,
+                text: 'handoff',
+                peer: { sourceSessionId: targetId, sourceName: 'forged' }
+            })
+        })
+
+        expect(response.status).toBe(400)
     })
 })

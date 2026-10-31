@@ -668,8 +668,9 @@ export const CliPeerDeliverRequestSchema = z.object({
     targetSessionId: z.string().trim().min(1).max(128),
     text: z.string().min(1),
     localId: z.string().min(1).optional(),
-    deliveryMode: MessageDeliveryModeSchema.optional()
-})
+    // deliveryMode is intentionally absent: peer-messages + /steer ACK need a
+    // normal queue row. Pi native-steers body deliveryMode=steer on emit.
+}).strict()
 export type CliPeerDeliverRequest = z.infer<typeof CliPeerDeliverRequestSchema>
 
 /** Hub session ids are UUIDs today; shared validator for CLI session-id checks. */
