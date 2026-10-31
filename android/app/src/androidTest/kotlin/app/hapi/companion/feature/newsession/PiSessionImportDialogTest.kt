@@ -10,6 +10,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import app.hapi.companion.R
 import app.hapi.companion.ui.theme.HapiTheme
@@ -91,6 +92,16 @@ class PiSessionImportDialogTest {
 
         compose.onNodeWithTag("pi-import-session-list")
             .performScrollToNode(hasTestTag("pi-import-session-pi-16"))
+        // On the CI's 320x640dp screens the capped list also extends below
+        // the sheet's fold. Unlike the sibling codex sheet (where geometry
+        // dumps proved semantic scrolling dispatches nothing), this sheet's
+        // outer column does respond to `performScrollTo` on the Import
+        // button below the list — scrolling it into view carries row 16 on
+        // screen too, and the drag-gesture route that works on the codex
+        // sheet is a no-op here (verified by a per-drag geometry dump: nine
+        // identical row centers). So drive the button's semantic scroll.
+        compose.onNodeWithText(compose.activity.getString(R.string.pi_import_confirm))
+            .performScrollTo()
         compose.onNodeWithTag("pi-import-session-pi-16")
             .performClick()
         compose.runOnIdle { assertEquals(listOf("pi-16"), toggled) }
