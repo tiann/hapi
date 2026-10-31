@@ -62,11 +62,20 @@ interface SocketIoListener {
  * Reconnect policy: any transport loss (socket closed, IO failure, watchdog
  * timeout without server pings) retries forever with capped exponential
  * backoff; every attempt re-invokes [tokenProvider] so an expired JWT
- * self-heals. Namespace CONNECT_ERROR counts against [maxAuthRetries] because
- * auth rejection is deterministic per token: after that many attempts the
- * client stops and reports [SocketIoListener.onDisconnected], letting the UI
- * own the retry. This mirrors the web hook's behavior (error state + explicit
- * retry) rather than the JS client's silent infinite auth retry loop.
+ * self-heals. Loss bookkeeping is per attempt: [openSocket] re-arms the loss
+ * latch and supersedes the previous socket, so failures during the connect
+ * phase (refused socket, HTTP error) also schedule the next attempt — engine
+ * OPEN never fires there — and late close events from a superseded attempt
+ * cannot schedule a rogue one. Namespace CONNECT_ERROR counts against
+ * [maxAuthRetries] because auth rejection is deterministic per token: after
+ * that many attempts the client stops and reports
+ * [SocketIoListener.onDisconnected], letting the UI own the retry. Below that
+ * budget the retry is scheduled directly from the CONNECT_ERROR handler — the
+ * hub (socket.io v4 middleware-error semantics) keeps the transport open
+ * after rejecting auth, so waiting for our own close handshake to complete
+ * would tie retry liveness to peer behavior. This mirrors the web hook's
+ * behavior (error state + explicit retry) rather than the JS client's silent
+ * infinite auth retry loop.
  *
  * Thread model: OkHttp callbacks are funneled through an unbounded channel to
  * the reader coroutine; [connect]/[disconnect]/[emit] are safe from any thread.
@@ -87,15 +96,17 @@ class SocketIoClient(
     private sealed interface WireEvent {
         data object Opened : WireEvent
         data class Text(val frame: String) : WireEvent
-        data class Closed(val code: Int, val reason: String) : WireEvent
-        data class Failure(val throwable: Throwable) : WireEvent
+        data class Closed(val code: Int, val reason: String, val socket: WebSocket) : WireEvent
+        data class Failure(val throwable: Throwable, val socket: WebSocket) : WireEvent
     }
 
     private val wire = Channel<WireEvent>(Channel.UNLIMITED)
     private var readerJob: Job? = null
     private var attemptJob: Job? = null
     private var watchdogJob: Job? = null
-    private var webSocket: WebSocket? = null
+
+    /** Current attempt's socket; [WireEvent]s from any other socket are stale. */
+    @Volatile private var webSocket: WebSocket? = null
 
     private val closedByUser = AtomicBoolean(false)
     private val givenUp = AtomicBoolean(false)
@@ -166,6 +177,12 @@ class SocketIoClient(
         val token = runCatching { tokenProvider() }.getOrNull()
         synchronized(this) {
             if (closedByUser.get() || givenUp.get()) return
+            // Per-attempt loss bookkeeping: this attempt re-arms the loss
+            // latch and supersedes the previous socket. Resetting only in
+            // onOpen left the latch consumed after a connect-phase failure
+            // (engine OPEN never fires there), stalling the retry loop after
+            // one refused socket / HTTP error.
+            transportLostHandled.set(false)
             pendingAuthToken = token
             webSocket = httpClient.newWebSocket(
                 Request.Builder().url(SocketIoFrames.websocketUrl(baseUrl)).build(),
@@ -178,7 +195,6 @@ class SocketIoClient(
 
     private val wireListener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
-            transportLostHandled.set(false)
             wire.trySend(WireEvent.Opened)
         }
 
@@ -193,15 +209,15 @@ class SocketIoClient(
          */
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
             webSocket.close(NORMAL_CLOSE_CODE, null)
-            wire.trySend(WireEvent.Closed(code, reason))
+            wire.trySend(WireEvent.Closed(code, reason, webSocket))
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            wire.trySend(WireEvent.Closed(code, reason))
+            wire.trySend(WireEvent.Closed(code, reason, webSocket))
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            wire.trySend(WireEvent.Failure(t))
+            wire.trySend(WireEvent.Failure(t, webSocket))
         }
     }
 
@@ -231,15 +247,15 @@ class SocketIoClient(
                 lastActivityMs = nowMs()
                 handleEnginePacket(event.frame)
             }
-            is WireEvent.Closed -> handleTransportLost("closed (${event.code} ${event.reason})")
-            is WireEvent.Failure -> handleTransportLost("error (${event.throwable.message ?: "io"})")
+            is WireEvent.Closed -> handleTransportLost("closed (${event.code} ${event.reason})", event.socket)
+            is WireEvent.Failure -> handleTransportLost("error (${event.throwable.message ?: "io"})", event.socket)
         }
     }
 
     private fun handleEnginePacket(frame: String) {
         when (frame.firstOrNull()) {
             '0' -> handleOpenPacket(frame)
-            '1' -> handleTransportLost("server closed")
+            '1' -> webSocket?.let { handleTransportLost("server closed", it) }
             '2' -> webSocket?.send(SocketIoFrames.PONG)
             '4' -> handleSocketIoPacket(frame.substring(1))
             else -> Unit // Unknown engine packet type: ignore.
@@ -312,8 +328,19 @@ class SocketIoClient(
                     webSocket?.close(NORMAL_CLOSE_CODE, "connect_error")
                     listener.onDisconnected("connect_error: $message")
                 } else {
-                    // Retry with a freshly provided token (transport-close
-                    // path below picks up the backoff scheduling).
+                    // Retry with a freshly provided token. The retry is
+                    // scheduled here rather than via this socket's transport
+                    // -close event: the hub keeps the transport open after a
+                    // middleware rejection (socket.io v4 semantics), so
+                    // waiting for our own close handshake would tie retry
+                    // liveness to peer behavior. The armed loss latch plus
+                    // the stale-socket guard make the late close events
+                    // no-ops.
+                    namespaceConnected = false
+                    webSocketOpen = false
+                    watchdogJob?.cancel()
+                    transportLostHandled.set(true)
+                    scheduleAttempt(nextBackoff())
                     webSocket?.close(NORMAL_CLOSE_CODE, "connect_error")
                 }
             }
@@ -331,8 +358,12 @@ class SocketIoClient(
         }
     }
 
-    private fun handleTransportLost(reason: String) {
+    private fun handleTransportLost(reason: String, socket: WebSocket) {
         if (closedByUser.get() || givenUp.get()) return
+        // Events from a superseded attempt's socket must not be mistaken for
+        // the current attempt dying (that would schedule a rogue attempt
+        // while the current one is still connecting).
+        if (socket !== webSocket) return
         // onClosing and the completed-close onClosed can both fire for one
         // loss; only the first schedules the reconnect.
         if (!transportLostHandled.compareAndSet(false, true)) return
@@ -341,9 +372,14 @@ class SocketIoClient(
         namespaceConnected = false
         watchdogJob?.cancel()
         if (everOpened.get() && wasOpen) listener.onDisconnected(reason)
+        scheduleAttempt(nextBackoff())
+    }
+
+    /** Caps exponential backoff at [backoffMaxMs]; caller retries forever. */
+    private fun nextBackoff(): Long {
         val backoff = (backoffFirstMs shl reconnectAttempt.coerceAtMost(10)).coerceAtMost(backoffMaxMs)
         reconnectAttempt++
-        scheduleAttempt(backoff)
+        return backoff
     }
 
     @Synchronized

@@ -296,6 +296,39 @@ class SocketIoClientTest {
     }
 
     @Test
+    fun `consecutive connect phase failures keep retrying until a socket upgrades`() {
+        // Two plain HTTP failures (no WebSocket upgrade → engine OPEN never
+        // fires), then a healthy socket: the retry loop must not stall after
+        // the first failed attempt.
+        server.enqueue(MockResponse().setResponseCode(502))
+        server.enqueue(MockResponse().setResponseCode(503))
+        val serverSocket = ServerSocket()
+        server.enqueue(upgrade(serverSocket))
+        val listener = RecordingListener()
+        val client = SocketIoClient(
+            baseUrl = server.url("/").toString().removeSuffix("/"),
+            namespace = "/terminal",
+            tokenProvider = { "jwt" },
+            listener = listener,
+            scope = scope,
+            backoffFirstMs = 50,
+            backoffMaxMs = 50,
+        )
+        runBlocking {
+            withTimeout(10_000) {
+                client.connect()
+                awaitUntil("serverSocket sockets isNotEmpty") { serverSocket.sockets.isNotEmpty() }
+                serverSocket.sockets.first().send(SocketIoFrames.encodeOpen())
+                awaitUntil("serverSocket received any it startsWith ") { serverSocket.received.any { it.startsWith("40") } }
+                serverSocket.sockets.first().send(SocketIoFrames.decodeConnectAck("/terminal"))
+                awaitUntil("listener events contains connected termi") { listener.events.contains("connected:/terminal") }
+                client.disconnect()
+            }
+        }
+        assertTrue(server.requestCount >= 3, "expected retries past both failures, got ${server.requestCount}")
+    }
+
+    @Test
     fun `emit while disconnected is dropped silently`() {
         val serverSocket = ServerSocket()
         server.enqueue(upgrade(serverSocket))
