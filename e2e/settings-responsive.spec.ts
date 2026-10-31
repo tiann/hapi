@@ -19,7 +19,7 @@ test.describe('settings responsive layout', () => {
         await expect(page.getByRole('listbox')).toHaveCount(0)
     })
 
-    test('desktop keeps navigation visible and renders Display as the default detail', async ({ page }) => {
+    test('desktop keeps navigation visible and renders Display as the default detail', async ({ page }, testInfo) => {
         await page.setViewportSize({ width: 1280, height: 800 })
         await page.goto(fixture)
 
@@ -29,6 +29,14 @@ test.describe('settings responsive layout', () => {
         await expect(page.getByRole('heading', { name: 'Appearance' })).toBeVisible()
         await expect(page.getByText('Appearance, typography, and session list preferences.')).toBeVisible()
         await expect(page.getByText('Choose a category to adjust HAPI to your workflow.')).toBeHidden()
+
+        const projectOrder = page.getByRole('radiogroup', { name: 'Project order' })
+        await expect(projectOrder).toBeVisible()
+        await expect(projectOrder.getByRole('radio', { name: 'Recent activity' })).toHaveAttribute('aria-checked', 'true')
+        await expect(projectOrder.getByRole('radio', { name: 'Most sessions' })).toHaveAttribute('aria-checked', 'false')
+        await page.screenshot({ path: testInfo.outputPath('settings-project-order.png'), fullPage: true })
+        await projectOrder.getByRole('radio', { name: 'Most sessions' }).click()
+        await expect(projectOrder.getByRole('radio', { name: 'Most sessions' })).toHaveAttribute('aria-checked', 'true')
 
         const appBadgeToggle = page.getByRole('checkbox', { name: 'Taskbar unread badge' })
         await expect(appBadgeToggle).not.toBeChecked()
