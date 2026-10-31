@@ -92,6 +92,7 @@ export class AcpSdkBackend implements AgentBackend {
     private transport: AcpStdioTransport | null = null;
     private permissionHandler: ((request: PermissionRequest) => void) | null = null;
     private stderrErrorHandler: ((error: AcpStderrError) => void) | null = null;
+    private transportClosedHandler: ((error: Error) => void) | null = null;
     private readonly pendingPermissions = new Map<string, PendingPermission>();
     private readonly sessionModelsMetadata = new Map<string, AcpSessionModelsMetadata>();
     private readonly sessionConfigOptions = new Map<string, AcpConfigOptionDescriptor[]>();
@@ -221,6 +222,10 @@ export class AcpSdkBackend implements AgentBackend {
         }
 
         this.transport = transport;
+
+        this.transport.onClose((error) => {
+            this.transportClosedHandler?.(error);
+        });
 
         this.transport.onNotification((method, params) => {
             this.handleNotification(method, params);
@@ -878,6 +883,18 @@ export class AcpSdkBackend implements AgentBackend {
 
     onStderrError(handler: (error: AcpStderrError) => void): void {
         this.stderrErrorHandler = handler;
+    }
+
+    /**
+     * Subscribe to an unexpected ACP transport close. The callback is kept
+     * outside AgentBackend because only launchers that own ACP process
+     * lifetime (currently DSH) need this low-level signal.
+     */
+    onTransportClosed(handler: ((error: Error) => void) | null): void {
+        this.transportClosedHandler = handler;
+        this.transport?.onClose((error) => {
+            this.transportClosedHandler?.(error);
+        });
     }
 
     /**
