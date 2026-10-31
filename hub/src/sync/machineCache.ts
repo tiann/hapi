@@ -8,6 +8,7 @@ type MachineAlivePayload = {
     machineId: string
     time: number
     health?: unknown
+    aliveSessions?: string[]
 }
 
 const METADATA_RETRY_ATTEMPTS = 5
