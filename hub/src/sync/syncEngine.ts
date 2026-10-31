@@ -3347,7 +3347,10 @@ export class SyncEngine {
         const targetMachine = this.resolveOnlineMachineForSession(
             session,
             namespace,
-            { strictMachineId: flavor === 'cursor' || ((flavor === 'pi' || flavor === 'opencode') && resumeToken !== undefined) }
+            {
+                strictMachineId: flavor === 'cursor'
+                    || ((flavor === 'pi' || flavor === 'opencode' || flavor === 'dsh') && resumeToken !== undefined)
+            }
         )
         if (!targetMachine) {
             return { type: 'error', message: 'No machine online', code: 'no_machine_online' }
