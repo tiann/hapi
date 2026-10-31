@@ -334,6 +334,29 @@ html:has(.chat-scroll-y) #root {
     touch-action: pan-y;
 }
 
+/* Keep file-preview content aligned to the previous left edge while reserving
+ * the scrollbar slot on the right on both touch and pointer devices. */
+.file-preview-scroll-y {
+    overflow-x: hidden;
+    scrollbar-gutter: stable;
+}
+
+/* Older WebViews without scrollbar-gutter still need a stable right slot. */
+@supports not (scrollbar-gutter: stable) {
+    .file-preview-scroll-y {
+        overflow-y: scroll;
+    }
+}
+
+/* Include the reserved scrollbar width in the visible content width so the
+ * outer left and right edge spacing remains equal. */
+.file-preview-scroll-content {
+    position: relative;
+    width: calc(100% + var(--file-preview-scrollbar-compensation, 0px));
+    max-width: calc(var(--content-max-w, 960px) + var(--file-preview-scrollbar-compensation, 0px));
+    left: var(--file-preview-scroll-content-offset, 0px);
+}
+
 /* Keep only the two primary session surfaces visually quiet while idle.
  * Preserve scrollbar width/gutters so hiding the thumb cannot shift content. */
 .scrollbar-auto-hide {
@@ -516,6 +539,41 @@ html:has(.chat-scroll-y) #root {
 
 .sidebar-resize-handle[data-dragging] {
     opacity: 0.6;
+}
+
+.sidebar-show-button {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    z-index: 20;
+    width: 36px;
+    height: 48px;
+    cursor: pointer;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 0;
+    transform: translateY(-50%);
+    border: 0;
+    background: transparent;
+    color: var(--app-hint);
+    transition: color 0.15s;
+}
+
+.sidebar-show-button svg {
+    display: block;
+    width: 24px;
+    height: 40px;
+    flex-shrink: 0;
+}
+
+.sidebar-show-button:hover {
+    color: var(--app-fg);
+}
+
+.sidebar-show-button:focus-visible {
+    color: var(--app-link);
+    outline: 2px solid var(--app-link);
+    outline-offset: 2px;
 }
 
 /*

@@ -20,6 +20,7 @@ import app.hapi.companion.di.LocalAppGraph
 import app.hapi.companion.fcm.PushNotifications
 import app.hapi.companion.feature.settings.ThemeMode
 import app.hapi.companion.feature.settings.ThemeSettings
+import app.hapi.companion.feature.share.parseSharedIntent
 import app.hapi.companion.push.PushBinding
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.protocol.pairing.BindLink
@@ -72,6 +73,7 @@ class MainActivity : AppCompatActivity() {
             // (or re-trigger a notification navigation).
             handleBindIntent(intent)
             handleOpenSessionIntent(intent)
+            handleShareIntent(intent)
         }
         setContent {
             // Follow-system default renders for the first frames while the
@@ -98,6 +100,20 @@ class MainActivity : AppCompatActivity() {
         super.onNewIntent(intent)
         handleBindIntent(intent)
         handleOpenSessionIntent(intent)
+        handleShareIntent(intent)
+    }
+
+    private fun handleShareIntent(intent: Intent?) {
+        val input = intent?.let(::parseSharedIntent) ?: return
+        appGraph.receiveShare(input)
+        // The inbox owns the handoff now. Do not replay external extras if
+        // Android later recreates this activity from its current Intent.
+        setIntent(Intent(intent).apply {
+            removeExtra(Intent.EXTRA_STREAM)
+            removeExtra(Intent.EXTRA_TEXT)
+            removeExtra(Intent.EXTRA_HTML_TEXT)
+            clipData = null
+        })
     }
 
     private fun handleBindIntent(intent: Intent?) {

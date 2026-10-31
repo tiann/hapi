@@ -495,11 +495,36 @@ function dropSupersededReasoningSnapshots(messages: DecryptedMessage[]): Decrypt
         getReasoningStreamId(message.content) === null || survivors.has(message.id))
 }
 
+/** Pick the dropped Agent/Task tool calls that spawned sidechain rows still in
+ *  the window. The tracer can only attach sidechain rows to their parent card,
+ *  so trimming the parent away hides every row of a long subagent run and can
+ *  leave the tail showing a single message. */
+function findDroppedSubagentParents(
+    kept: DecryptedMessage[],
+    dropped: DecryptedMessage[]
+): DecryptedMessage[] {
+    if (dropped.length === 0) return []
+    const parentToolUseIds = new Set<string>()
+    for (const message of kept) {
+        const normalized = normalizeDecryptedMessage(message)
+        if (normalized?.isSidechain && normalized.parentToolUseId) {
+            parentToolUseIds.add(normalized.parentToolUseId)
+        }
+    }
+    if (parentToolUseIds.size === 0) return []
+    return dropped.filter((message) => {
+        const normalized = normalizeDecryptedMessage(message)
+        return normalized?.role === 'agent' && normalized.content.some((content) => (
+            content.type === 'tool-call' && parentToolUseIds.has(content.id)
+        ))
+    })
+}
+
 function trimPreservingQueued(
     incoming: DecryptedMessage[],
     regularLimit: number,
     mode: 'append' | 'prepend'
-): { kept: DecryptedMessage[]; dropped: DecryptedMessage[] } {
+): { kept: DecryptedMessage[]; dropped: DecryptedMessage[]; oldest: MessagePosition | null } {
     const messages = dropSupersededReasoningSnapshots(incoming)
     const queued = messages.filter(isQueuedForInvocation)
     const queuedIds = new Set(queued.map((message) => message.id))
@@ -508,9 +533,18 @@ function trimPreservingQueued(
     const regular = nonQueued.filter((message) => !isCodexAgentRunMessage(message))
     const regularTrim = sliceForTrim(regular, Math.max(0, regularLimit - queued.length), mode)
     const agentRunTrim = sliceForTrim(agentRuns, AGENT_RUN_WINDOW_SIZE, mode)
+    const kept = mergeMessages([...regularTrim.kept, ...agentRunTrim.kept], queued)
+    const parents = findDroppedSubagentParents(regularTrim.kept, regularTrim.dropped)
+    const parentIds = new Set(parents.map((message) => message.id))
     return {
-        kept: mergeMessages([...regularTrim.kept, ...agentRunTrim.kept], queued),
-        dropped: [...regularTrim.dropped, ...agentRunTrim.dropped]
+        kept: parents.length > 0 ? mergeMessages(kept, parents) : kept,
+        dropped: [
+            ...regularTrim.dropped.filter((message) => !parentIds.has(message.id)),
+            ...agentRunTrim.dropped
+        ],
+        // Pinned parents sit outside the contiguous window; paging older must
+        // resume from the window edge, not from them, or the gap is skipped.
+        oldest: derivePosition(kept, 'oldest')
     }
 }
 
@@ -559,7 +593,7 @@ function mergeIntoWindow(
     const regularLimit = options.regularLimit
         ?? (previous.viewMode === 'history' ? HISTORY_WINDOW_SIZE : VISIBLE_WINDOW_SIZE)
     const merged = mergeMessages(previous.messages, retainedIncoming)
-    const { kept, dropped } = trimPreservingQueued(merged, regularLimit, mode)
+    const { kept, dropped, oldest: oldestKept } = trimPreservingQueued(merged, regularLimit, mode)
     let next = buildState(previous, {
         messages: kept,
         ...(options.advanceTailRevision
@@ -570,11 +604,10 @@ function mergeIntoWindow(
         return next
     }
     if (mode === 'append') {
-        const oldest = derivePosition(kept, 'oldest')
         return buildState(next, {
             hasMore: true,
-            oldestPositionAt: oldest?.at ?? next.oldestPositionAt,
-            oldestPositionSeq: oldest?.seq ?? next.oldestPositionSeq
+            oldestPositionAt: oldestKept?.at ?? next.oldestPositionAt,
+            oldestPositionSeq: oldestKept?.seq ?? next.oldestPositionSeq
         })
     }
     const newest = derivePosition(kept, 'newest')
@@ -624,7 +657,7 @@ function applyLatestResponse(
         : previous.messages
     const authoritative = mergeMessages(preserved, retainedResponseMessages)
     const incoming = mergeMessages(authoritative, concurrentServerRows)
-    const { kept, dropped } = trimPreservingQueued(incoming, VISIBLE_WINDOW_SIZE, 'append')
+    const { kept, dropped, oldest: oldestKept } = trimPreservingQueued(incoming, VISIBLE_WINDOW_SIZE, 'append')
     const snapshotHead = pagePosition(response.page.snapshotHeadAt, response.page.snapshotHeadSeq)
         ?? derivePosition(response.messages, 'newest')
     const newestKept = derivePosition(kept, 'newest')
@@ -634,7 +667,7 @@ function applyLatestResponse(
     const responseOldest = pagePosition(response.page.nextBeforeAt, response.page.nextBeforeSeq)
     const previousOldest = readPosition(previous.oldestPositionAt, previous.oldestPositionSeq)
     const oldest = dropped.length > 0
-        ? derivePosition(kept, 'oldest')
+        ? oldestKept
         : options.replaceServerRows
             ? responseOldest
             : responseOldest ?? previousOldest
@@ -904,10 +937,10 @@ async function waitForTailSyncDrain(
 }
 
 function enterTailMode(previous: InternalState): InternalState {
-    const { kept, dropped } = trimPreservingQueued(previous.messages, VISIBLE_WINDOW_SIZE, 'append')
+    const { kept, dropped, oldest: oldestKept } = trimPreservingQueued(previous.messages, VISIBLE_WINDOW_SIZE, 'append')
     const forceLatest = previous.requiresLatestReset
     const oldest = dropped.length > 0
-        ? derivePosition(kept, 'oldest')
+        ? oldestKept
         : readPosition(previous.oldestPositionAt, previous.oldestPositionSeq)
     return buildState(previous, {
         messages: kept,

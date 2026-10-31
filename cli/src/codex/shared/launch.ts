@@ -10,7 +10,7 @@ import type { CodexAppServerClient } from '../codexAppServerClient';
 export const SharedLaunchSchema = z.object({
     startedBy: z.enum(['runner', 'terminal']).optional(),
     codexArgs: z.array(z.string()).optional(),
-    permissionMode: z.enum(['default', 'read-only', 'safe-yolo', 'autoReview', 'yolo']).optional(),
+    permissionMode: z.enum(['default', 'read-only', 'autoReview', 'yolo']).optional(),
     resumeSessionId: z.string().optional(), resumeLast: z.boolean().optional(), resumeAll: z.boolean().optional(),
     existingSessionId: z.string().optional(),
     /** Hub-preallocated stub — create/adopt, not reopen. */
@@ -46,7 +46,6 @@ export function resolveSharedCodex(): CodexCommand {
 export function sharedLaunchConfig(options: SharedLaunchOptions, cwd: string): {
     cwd: string; serverArgs: string[]; tuiArgs: string[]; threadParams: Record<string, unknown>;
 } {
-    if (options.permissionMode === 'safe-yolo') throw new Error('safe-yolo is not a native shared permission mode. Choose default, read-only, autoReview, or yolo.');
     const args = options.codexArgs ?? [];
     const serverArgs: string[] = [];
     let tuiArgs: string[] = [];

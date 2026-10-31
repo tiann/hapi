@@ -72,7 +72,7 @@ FCM/APNs with the [native push contract](../api/native-companion-contract.md).
 The apps have their own navigation and rendering. Protocol fixture conformance
 does not imply web UI parity: the terminal, Work Graph and realtime voice
 controls remain web features. See [Native apps](./native-apps.md) for current
-capabilities, platform differences and build/pairing instructions.
+capabilities, platform differences and install/pairing instructions.
 
 ## Data Flow
 

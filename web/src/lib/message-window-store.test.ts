@@ -1678,6 +1678,62 @@ describe('history view and older pagination', () => {
 
         expect(getMessageWindowState(id).messages.some((message) => message.id === 'root')).toBe(true)
     })
+
+    it('keeps the Agent tool call whose sidechain rows survive the trim', async () => {
+        const id = sessionId('subagent-parent')
+        const claudeOutput = (msgId: string, seq: number, data: Record<string, unknown>) => ({
+            id: msgId,
+            seq,
+            localId: null,
+            content: { role: 'agent', content: { type: 'output', data } },
+            createdAt: seq,
+            invokedAt: seq
+        } as DecryptedMessage)
+        const parent = claudeOutput('agent-call', 1, {
+            type: 'assistant',
+            uuid: 'agent-call',
+            message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_agent', name: 'Agent', input: { prompt: 'work' } }] }
+        })
+        const sidechain = Array.from({ length: VISIBLE_WINDOW_SIZE + 5 }, (_, index) => claudeOutput(`side-${index}`, index + 2, {
+            type: 'assistant',
+            uuid: `side-${index}`,
+            isSidechain: true,
+            parentToolUseId: 'toolu_agent',
+            message: { role: 'assistant', content: [{ type: 'text', text: `step ${index}` }] }
+        }))
+        ingestIncomingMessages(id, [parent, ...sidechain])
+
+        const state = getMessageWindowState(id)
+        expect(state.messages[0]?.id).toBe('agent-call')
+        expect(state.messages).toHaveLength(VISIBLE_WINDOW_SIZE + 1)
+
+        // Paging older resumes at the window edge, not at the pinned parent.
+        setMessageViewMode(id, 'history')
+        const getMessages = vi.fn().mockResolvedValue(beforeResponse(
+            [parent, ...sidechain.slice(0, 5)],
+            { nextBeforeAt: null, nextBeforeSeq: null }
+        ))
+        await fetchOlderMessages(createApi(getMessages), id)
+        expect(getMessages.mock.calls[0]?.[1]).toMatchObject({ beforeSeq: 7 })
+        expect(getMessageWindowState(id).messages).toHaveLength(VISIBLE_WINDOW_SIZE + 6)
+
+        // Compacting back to the tail and trimming again keeps both invariants.
+        setMessageViewMode(id, 'tail')
+        ingestIncomingMessages(id, [claudeOutput('side-next', VISIBLE_WINDOW_SIZE + 7, {
+            type: 'assistant',
+            uuid: 'side-next',
+            isSidechain: true,
+            parentToolUseId: 'toolu_agent',
+            message: { role: 'assistant', content: [{ type: 'text', text: 'next step' }] }
+        })])
+        const compacted = getMessageWindowState(id)
+        expect(compacted.messages[0]?.id).toBe('agent-call')
+        expect(compacted.messages[1]?.seq).toBe(8)
+        expect(compacted.messages).toHaveLength(VISIBLE_WINDOW_SIZE + 1)
+
+        await fetchOlderMessages(createApi(getMessages), id)
+        expect(getMessages.mock.calls[1]?.[1]).toMatchObject({ beforeSeq: 8 })
+    })
 })
 
 describe('optimistic and queued-message operations', () => {

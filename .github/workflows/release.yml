@@ -7,6 +7,11 @@ on:
 
 permissions:
     contents: write
+    # npm Trusted Publishing (OIDC); no npm token is stored in the repo.
+    id-token: write
+
+concurrency:
+    group: release-${{ github.ref }}
 
 jobs:
     release:
@@ -14,8 +19,22 @@ jobs:
         steps:
             - uses: actions/checkout@v4
             - uses: oven-sh/setup-bun@v2
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 24
+            # Trusted Publishing needs npm >= 11.5.1.
+            - run: npm install -g npm@11
+            - name: Check tag matches CLI version
+              run: |
+                  VERSION="$(node -p "require('./cli/package.json').version")"
+                  if [[ "v$VERSION" != "$GITHUB_REF_NAME" ]]; then
+                      echo "::error::Tag $GITHUB_REF_NAME does not match cli/package.json version $VERSION"
+                      exit 1
+                  fi
             - run: bun install --frozen-lockfile
             - run: bun run build:single-exe:all
+            - name: Publish to npm
+              run: bun run --cwd cli publish-npm
             - name: Package release artifacts
               run: |
                   cd cli/dist-exe

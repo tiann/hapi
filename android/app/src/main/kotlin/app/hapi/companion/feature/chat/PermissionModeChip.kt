@@ -25,9 +25,7 @@ import app.hapi.protocol.catalog.PermissionModes
  * it only when the flavor offers it, and hide `default` everywhere except
  * copilot (model=auto sessions still surface the bottom-right mode chip).
  *
- * This consults the *unfiltered* flavor catalog: the concurrent-clients
- * Safe-Yolo carve-out only narrows the switcher, never the chip. Unknown
- * wire ids stay hidden (no raw fallback — same as the web span, which keys
+ * Unknown wire ids stay hidden (no raw fallback — same as the web span, which keys
  * off `isPermissionModeAllowedForFlavor`).
  */
 object PermissionModeChipRule {

@@ -4,8 +4,11 @@ import { I18nProvider } from '@/lib/i18n-context'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SESSION_REFERENCE_STEER_SUFFIX } from '@hapi/protocol/sessionCitation'
 
+const platformState = vi.hoisted(() => ({ isTelegram: false }))
+
 vi.mock('@/hooks/usePlatform', () => ({
     usePlatform: () => ({
+        isTelegram: platformState.isTelegram,
         haptic: { notification: vi.fn(), impact: vi.fn() },
     }),
 }))
@@ -38,6 +41,7 @@ function renderMenu(overrides: Partial<React.ComponentProps<typeof SessionAction
 
 beforeEach(() => {
     vi.clearAllMocks()
+    platformState.isTelegram = false
 })
 
 describe('SessionActionMenu - Pin action', () => {
@@ -316,5 +320,33 @@ describe('SessionActionMenu - Copy reference action', () => {
                 `See session "upstream issue/pr discovery" (/sessions/abc-def) for context.${SESSION_REFERENCE_STEER_SUFFIX}`
             )
         })
+    })
+})
+
+describe('SessionActionMenu - separate window action', () => {
+    it('opens the session separately and closes the menu', () => {
+        const onClose = vi.fn()
+
+        renderMenu({ onClose })
+        const link = screen.getByRole('menuitem', { name: 'Open in separate window' })
+        link.addEventListener('click', (event) => event.preventDefault(), { once: true })
+        fireEvent.click(link)
+
+        expect(onClose).toHaveBeenCalledOnce()
+        expect(link).toHaveAttribute('href', '/sessions/sess-123?sidebar=hidden')
+        expect(link).toHaveAttribute('target', '_blank')
+        expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+        const icon = link.querySelector('svg')
+        expect(icon?.querySelectorAll('rect')).toHaveLength(2)
+        expect(icon?.querySelectorAll('path')).toHaveLength(0)
+    })
+
+    it('does not render the action inside Telegram', () => {
+        platformState.isTelegram = true
+
+        renderMenu()
+
+        expect(screen.queryByRole('menuitem', { name: 'Open in separate window' })).toBeNull()
+
     })
 })

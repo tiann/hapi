@@ -7,14 +7,21 @@ const {
     getOrCreateMachineMock,
     sessionSyncClientMock,
     notifyRunnerSessionStartedMock,
-    readSettingsMock
+    readSettingsMock,
+    getProcessStartMarkerMock
 } = vi.hoisted(() => ({
     getSessionMock: vi.fn(),
     getOrCreateSessionMock: vi.fn(),
     getOrCreateMachineMock: vi.fn(),
     sessionSyncClientMock: vi.fn(),
     notifyRunnerSessionStartedMock: vi.fn(async () => ({})),
-    readSettingsMock: vi.fn()
+    readSettingsMock: vi.fn(),
+    getProcessStartMarkerMock: vi.fn<(pid: number) => string | null>(() => null)
+}))
+
+vi.mock('@/utils/process', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/utils/process')>()),
+    getProcessStartMarker: getProcessStartMarkerMock
 }))
 
 vi.mock('@/api/api', () => ({
@@ -99,13 +106,15 @@ describe('bootstrapExistingSession', () => {
         sessionSyncClientMock.mockReset()
         notifyRunnerSessionStartedMock.mockClear()
         readSettingsMock.mockReset()
+        getProcessStartMarkerMock.mockClear()
         delete process.env[HAPI_SESSION_ID_ENV]
     })
 
-    it('loads an existing HAPI session and reports it to the runner', async () => {
+    it('does not wait for metadata when an existing session has no stale history capabilities', async () => {
         const session = createSession()
         const sessionClient = {
-            updateMetadata: vi.fn()
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => false)
         }
         getSessionMock.mockResolvedValue(session)
         getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
@@ -115,7 +124,8 @@ describe('bootstrapExistingSession', () => {
         const result = await bootstrapExistingSession({
             sessionId: 'hapi-session-1',
             flavor: 'codex',
-            workingDirectory: '/tmp/project'
+            workingDirectory: '/tmp/project',
+            requireMetadataFlush: metadata => Boolean(metadata?.capabilities?.conversationHistory)
         })
 
         expect(result.sessionInfo.id).toBe('hapi-session-1')
@@ -123,6 +133,7 @@ describe('bootstrapExistingSession', () => {
         expect(result.workingDirectory).toBe('/tmp/project')
         expect(sessionSyncClientMock).toHaveBeenCalledWith(session)
         expect(sessionClient.updateMetadata).toHaveBeenCalledOnce()
+        expect(sessionClient.flushMetadata).not.toHaveBeenCalled()
         expect(notifyRunnerSessionStartedMock).toHaveBeenCalledWith(
             'hapi-session-1',
             expect.objectContaining({
@@ -229,7 +240,8 @@ describe('bootstrapExistingSession', () => {
             }
         }
         const sessionClient = {
-            updateMetadata: vi.fn()
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true)
         }
         getSessionMock.mockResolvedValue(session)
         getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
@@ -291,6 +303,67 @@ describe('bootstrapExistingSession', () => {
         )
     })
 
+    it('clears stale history capabilities before reporting a Codex session as started', async () => {
+        const session = createSession()
+        const existingMetadata = session.metadata
+        if (!existingMetadata) throw new Error('expected test session metadata')
+
+        session.metadata = {
+            ...existingMetadata,
+            capabilities: {
+                terminal: true,
+                conversationHistory: { forkCurrent: true }
+            }
+        }
+        let releaseMetadataFlush: (() => void) | undefined
+        let resolveMetadataFlushStarted: (() => void) | undefined
+        const metadataFlushStarted = new Promise<void>((resolve) => {
+            resolveMetadataFlushStarted = resolve
+        })
+        const sessionClient = {
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => {
+                resolveMetadataFlushStarted?.()
+                await new Promise<void>((resolve) => {
+                    releaseMetadataFlush = resolve
+                })
+                return true
+            })
+        }
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue(sessionClient)
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        const bootstrapPromise = bootstrapExistingSession({
+            sessionId: 'hapi-session-1',
+            flavor: 'codex',
+            workingDirectory: '/tmp/project',
+            metadataOverrides: {
+                capabilities: {
+                    terminal: true,
+                    conversationHistory: undefined
+                }
+            },
+            requireMetadataFlush: metadata => Boolean(metadata?.capabilities?.conversationHistory)
+        })
+        await metadataFlushStarted
+        expect(notifyRunnerSessionStartedMock).not.toHaveBeenCalled()
+        releaseMetadataFlush!()
+        const result = await bootstrapPromise
+
+        expect(result.metadata.capabilities).toEqual({ terminal: true })
+        const updateHandler = sessionClient.updateMetadata.mock.calls[0][0]
+        expect(updateHandler(session.metadata).capabilities).toEqual({ terminal: true })
+        expect(sessionClient.flushMetadata).toHaveBeenCalledOnce()
+        expect(notifyRunnerSessionStartedMock).toHaveBeenCalledWith(
+            'hapi-session-1',
+            expect.objectContaining({
+                capabilities: { terminal: true }
+            })
+        )
+    })
+
     it('advertises remote terminal capability in session metadata', () => {
         const metadata = buildSessionMetadata({
             flavor: 'codex',
@@ -301,6 +374,56 @@ describe('bootstrapExistingSession', () => {
         })
 
         expect(metadata.capabilities?.terminal).toBe(true)
+    })
+
+    it('reports the start marker of its own process next to hostPid', () => {
+        // The runner compares this against the live PID before adopting an
+        // untracked webhook, so a reused PID is never pinned to this session.
+        getProcessStartMarkerMock.mockReturnValueOnce('Mon Sep 28 10:00:00 2026')
+
+        const metadata = buildSessionMetadata({
+            flavor: 'claude',
+            startedBy: 'runner',
+            workingDirectory: '/tmp/project',
+            machineId: 'machine-1',
+            now: 123
+        })
+
+        expect(getProcessStartMarkerMock).toHaveBeenCalledWith(process.pid)
+        expect(metadata.hostPid).toBe(process.pid)
+        expect(metadata.hostStartMarker).toBe('Mon Sep 28 10:00:00 2026')
+    })
+
+    it('omits the start marker when the platform probe fails', () => {
+        // null from the probe must not reach the hub as a null string.
+        getProcessStartMarkerMock.mockReturnValueOnce(null)
+
+        const metadata = buildSessionMetadata({
+            flavor: 'claude',
+            startedBy: 'runner',
+            workingDirectory: '/tmp/project',
+            machineId: 'machine-1',
+            now: 123
+        })
+
+        expect(metadata.hostStartMarker).toBeUndefined()
+    })
+
+    it('does not probe the start marker for terminal sessions', () => {
+        // The runner only reads the marker of runner-started sessions; the
+        // probe is a synchronous process spawn (PowerShell on Windows) that a
+        // terminal start must not pay for.
+        const metadata = buildSessionMetadata({
+            flavor: 'cursor',
+            startedBy: 'terminal',
+            workingDirectory: '/tmp/project',
+            machineId: 'machine-1',
+            now: 123
+        })
+
+        expect(getProcessStartMarkerMock).not.toHaveBeenCalled()
+        expect(metadata.hostPid).toBe(process.pid)
+        expect(metadata).not.toHaveProperty('hostStartMarker')
     })
 })
 
@@ -504,7 +627,7 @@ describe('buildMachineMetadata runner-only capabilities', () => {
     it('advertises capabilities and supervisedRestart only for asRunner', () => {
         process.env.HAPI_RUNNER_SUPERVISED = '1'
         const metadata = buildMachineMetadata({ asRunner: true, startedCliMtimeMs: 42 })
-        expect(metadata.capabilities).toEqual(expect.arrayContaining(['cursor-chat-store-status', 'stop-runner']))
+        expect(metadata.capabilities).toEqual(expect.arrayContaining(['cursor-chat-store-status', 'stop-runner', 'workspace-file-access']))
         expect(metadata.startedCliMtimeMs).toBe(42)
         expect(metadata.installedCliMtimeMs).toBe(1_700_000_000_000)
         expect(metadata.supervisedRestart).toBe(true)

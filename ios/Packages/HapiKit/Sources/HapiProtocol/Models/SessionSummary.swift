@@ -97,6 +97,8 @@ public struct SessionSummary: Codable, Equatable, Sendable {
     public var active: Bool
     public var thinking: Bool
     public var activeAt: Int
+    public var createdAt: Int?
+    public var lastUserMessageAt: Int?
     public var updatedAt: Int
     public var pinned: Bool?
     public var globalPinned: Bool?
@@ -124,6 +126,8 @@ public struct SessionSummary: Codable, Equatable, Sendable {
         thinking: Bool,
         activeAt: Int,
         updatedAt: Int,
+        createdAt: Int? = nil,
+        lastUserMessageAt: Int? = nil,
         pinned: Bool? = nil,
         globalPinned: Bool? = nil,
         metadata: SessionSummaryMetadata? = nil,
@@ -146,6 +150,8 @@ public struct SessionSummary: Codable, Equatable, Sendable {
         self.thinking = thinking
         self.activeAt = activeAt
         self.updatedAt = updatedAt
+        self.lastUserMessageAt = lastUserMessageAt
+        self.createdAt = createdAt
         self.pinned = pinned
         self.globalPinned = globalPinned
         self.metadata = metadata
