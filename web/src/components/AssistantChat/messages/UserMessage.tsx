@@ -48,6 +48,17 @@ export function HappyUserMessage() {
         return s.message.content.find((part): part is TextMessagePart => part.type === 'text')?.text ?? ''
     })
     if (role !== 'user') return null
+    if (messageId.startsWith('user-text:__transcript-gap__')) {
+        return (
+            <MessagePrimitive.Root
+                id={elementId}
+                data-hapi-transcript-gap="true"
+                className="happy-message text-center text-xs text-[var(--app-hint)]"
+            >
+                {t('message.historyGap')}
+            </MessagePrimitive.Root>
+        )
+    }
     const canRetry = status === 'failed' && typeof localId === 'string' && Boolean(ctx.onRetryMessage)
     const onRetry = canRetry ? () => ctx.onRetryMessage!(localId) : undefined
     const showStatus = shouldShowMessageStatus(status)
@@ -104,6 +115,7 @@ export function HappyUserMessage() {
         <MessagePrimitive.Root
             id={elementId}
             data-hapi-message-role="user"
+            data-hapi-message-status={status}
             className="happy-message flex flex-col items-end scroll-mt-4"
         >
             <div className={getUserBubbleClassName(status)}>

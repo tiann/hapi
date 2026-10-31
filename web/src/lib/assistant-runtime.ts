@@ -16,6 +16,7 @@ import type { ToolGroupBlock, VisibleChatBlock } from '@/chat/toolGroups'
 import { visibleBlockRole } from '@/chat/toolGroups'
 import type { AttachmentMetadata, MessageStatus as HappyMessageStatus, Session } from '@/types/api'
 import { orderItemsById } from '@/lib/attachmentOrder'
+import { TRANSCRIPT_TURN_GAP_SUFFIX } from '@/lib/message-window-store'
 
 /**
  * Aggregated metadata for a multi-turn response group, surfaced on the
@@ -53,6 +54,8 @@ export type HappyChatMessageMetadata = {
      * per-message footer is rendered unchanged.
      */
     turnCount?: number
+    /** Thread message id of the user prompt that precedes this assistant response. */
+    replyToMessageId?: string
 }
 
 export type HappyRuntimeExtras = Readonly<{
@@ -359,6 +362,42 @@ export function aggregateResponseGroups(
 export type BlockWithThreadMessageId = {
     block: VisibleChatBlock
     threadMessageId: string
+}
+
+/**
+ * Associate every assistant-role block with the latest real user prompt.
+ * The converter may join adjacent assistant blocks into one card and keeps
+ * metadata from its first block, so assigning the target to every block keeps
+ * the relationship intact regardless of where a joined response starts.
+ */
+export function buildAssistantReplyTargets(
+    blocks: readonly BlockWithThreadMessageId[]
+): Map<string, string> {
+    const targets = new Map<string, string>()
+    let latestUserMessageId: string | null = null
+
+    for (const { block, threadMessageId } of blocks) {
+        if (block.id.startsWith('__transcript-gap__')) {
+            // The navigation window trimmed the middle of the transcript: the
+            // retained tail must never link back to a head prompt (rows
+            // omitted inside one turn still belong to its prompt).
+            if (!block.id.endsWith(TRANSCRIPT_TURN_GAP_SUFFIX)) latestUserMessageId = null
+            continue
+        }
+        const role = visibleBlockRole(block)
+        if (role === 'user') {
+            // A failed send never started a turn, so it is not a turn input.
+            if (block.kind !== 'user-text' || block.status !== 'failed') {
+                latestUserMessageId = threadMessageId
+            }
+            continue
+        }
+        if (role === 'assistant' && latestUserMessageId !== null) {
+            targets.set(threadMessageId, latestUserMessageId)
+        }
+    }
+
+    return targets
 }
 
 /**
@@ -781,6 +820,8 @@ export function useHappyRuntime(props: {
      * soon as assistant-ui emits the corresponding AppendMessage.
      */
     pendingSendIntentRef?: React.MutableRefObject<ComposerSendIntent>
+    /** Shared with HappyThread: resolves a response's prompt after its card is re-keyed by a prepend. */
+    replyTargetsRef?: React.MutableRefObject<ReadonlyMap<string, string>>
 }) {
     const isRunning = props.isRunning ?? props.session.thinking
     const activeTurnStartedAt = props.session.activeTurnStartedAt ?? null
@@ -904,6 +945,12 @@ export function useHappyRuntime(props: {
         [props.blocks]
     )
 
+    const replyTargets = useMemo(
+        () => buildAssistantReplyTargets(blocksWithThreadIds),
+        [blocksWithThreadIds]
+    )
+    if (props.replyTargetsRef) props.replyTargetsRef.current = replyTargets
+
     const convertBlock = useCallback(
         ({ block, threadMessageId }: BlockWithThreadMessageId): ThreadMessageLike => {
             const message = toThreadMessageLike(
@@ -912,7 +959,8 @@ export function useHappyRuntime(props: {
                 responseGroupTimestamps.get(block) ?? getBlockPresentationTimestamp(block)
             )
             const aggregate = aggregates.get(block.id)
-            if (!aggregate) return message
+            const replyToMessageId = replyTargets.get(threadMessageId)
+            if (!aggregate && !replyToMessageId) return message
             const existing = message.metadata?.custom as HappyChatMessageMetadata | undefined
             return {
                 ...message,
@@ -920,17 +968,20 @@ export function useHappyRuntime(props: {
                     ...message.metadata,
                     custom: {
                         ...(existing ?? { kind: 'assistant' }),
-                        usage: aggregate.usage,
-                        model: aggregate.model,
-                        invokedAt: aggregate.invokedAt,
-                        durationMs: aggregate.durationMs,
-                        turnCount: aggregate.turnCount,
-                        roundSummary: aggregate.roundSummary
+                        ...(aggregate ? {
+                            usage: aggregate.usage,
+                            model: aggregate.model,
+                            invokedAt: aggregate.invokedAt,
+                            durationMs: aggregate.durationMs,
+                            turnCount: aggregate.turnCount,
+                            roundSummary: aggregate.roundSummary
+                        } : {}),
+                        replyToMessageId
                     } satisfies HappyChatMessageMetadata
                 }
             }
         },
-        [aggregates, responseGroupTimestamps]
+        [aggregates, replyTargets, responseGroupTimestamps]
     )
 
     // Use cached message converter for performance optimization

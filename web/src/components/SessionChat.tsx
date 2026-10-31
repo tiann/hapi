@@ -22,7 +22,7 @@ import type {
 import type { ChatBlock, NormalizedMessage } from '@/chat/types'
 import type { SuggestionHandler, Suggestion } from '@/hooks/useActiveSuggestions'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
-import { reduceChatBlocks } from '@/chat/reducer'
+import { reduceChatBlocks, type LatestUsage } from '@/chat/reducer'
 import { reconcileChatBlocks } from '@/chat/reconcile'
 import { buildConversationOutline } from '@/chat/outline'
 import { buildVisibleChatBlocks, isToolGroupBlock, type ToolGroupBlock } from '@/chat/toolGroups'
@@ -603,9 +603,10 @@ type SessionChatProps = {
     messagesVersion: number
     historyVersion: number
     tailRevision: number
+    liveUsage?: LatestUsage | null
     onBack: () => void
     onRefresh: () => void | Promise<void>
-    onLoadMore: (onBeforeApply?: (historyVersion: number) => boolean) => Promise<OlderLoadOutcome>
+    onLoadMore: (onBeforeApply?: (historyVersion: number) => boolean, options?: { shouldInstallBoundary?: () => boolean }) => Promise<OlderLoadOutcome>
     onCancelLoadMore: () => void
     // Returns the accepted mutation's attempt id, or false when
     // pre-mutation guards (no-api / no-session / pending) rejected the call OR async
@@ -1556,6 +1557,11 @@ function SessionChatInner(props: SessionChatProps) {
         }),
         [normalizedMessages, normalizedGoalStateMessages, props.session.agentState]
     )
+    // History-mode trims can drop the newest rows; streamed usage stays live.
+    const latestUsage = props.liveUsage
+        && (!reduced.latestUsage || props.liveUsage.timestamp > reduced.latestUsage.timestamp)
+        ? props.liveUsage
+        : reduced.latestUsage
     const reconciled = useMemo(
         () => reconcileChatBlocks(reduced.blocks, blocksByIdRef.current),
         [reduced.blocks]
@@ -1822,26 +1828,58 @@ function SessionChatInner(props: SessionChatProps) {
         props.onRefresh()
     }, [switchSession, props.onRefresh])
 
-    const handleToggleFiles = useCallback(() => {
+    const closeOutlineBeforeHidingThread = useCallback(() => {
+        // Before hiding the thread (Files/Terminal routes or the terminal
+        // panel), re-assert tail mode while the outline is open: the store
+        // releases the loaded-history boundary and the window compacts back
+        // to the bounded tail. Without this, selected-session SSE keeps
+        // ingesting on subroutes and the no-trim boundary branch grows the
+        // rendered and persisted window without limit.
+        if (outlineOpen && props.viewMode === 'tail') {
+            props.onViewModeChange('tail')
+        }
         setOutlineOpen(false)
+    }, [outlineOpen, props.viewMode, props.onViewModeChange])
+
+    const handleToggleFiles = useCallback(() => {
+        closeOutlineBeforeHidingThread()
         navigate({
             to: '/sessions/$sessionId/files',
             params: { sessionId: props.session.id },
             ...PRESERVE_SESSION_SIDEBAR_SCROLL,
         })
-    }, [navigate, props.session.id])
+    }, [closeOutlineBeforeHidingThread, navigate, props.session.id])
 
     const handleToggleOutline = useCallback(() => {
-        setOutlineOpen((open) => !open)
-    }, [])
+        // Closing the outline while still at the tail ends the loaded-history
+        // browsing session: re-assert tail mode so the store releases the
+        // history boundary and the window compacts back to the bounded tail
+        // (mirrors the in-panel close controls in HappyThread).
+        setOutlineOpen((open) => {
+            if (open && props.viewMode === 'tail') {
+                props.onViewModeChange('tail')
+            }
+            return !open
+        })
+    }, [props.viewMode, props.onViewModeChange])
 
     const handleViewTerminal = useCallback(() => {
+        closeOutlineBeforeHidingThread()
         navigate({
             to: '/sessions/$sessionId/terminal',
             params: { sessionId: props.session.id },
             ...PRESERVE_SESSION_SIDEBAR_SCROLL,
         })
-    }, [navigate, props.session.id])
+    }, [closeOutlineBeforeHidingThread, navigate, props.session.id])
+
+    const handleToggleTerminalPanel = useCallback(() => {
+        setTerminalVisible((visible) => {
+            if (!visible) {
+                closeOutlineBeforeHidingThread()
+            }
+            return !visible
+        })
+    }, [closeOutlineBeforeHidingThread])
 
     // Scheduled message state — lifted here so useHappyRuntime can read the ref.
     //
@@ -1864,6 +1902,7 @@ function SessionChatInner(props: SessionChatProps) {
     // ordinary sends.
     const pendingSendIntentRef = useRef<ComposerSendIntent>('default')
     const attachmentOrderRef = useRef<string[]>([])
+    const replyTargetsRef = useRef<ReadonlyMap<string, string>>(new Map())
     const restoredSendErrorIdRef = useRef<number | null>(null)
 
     useEffect(() => {
@@ -2007,6 +2046,7 @@ function SessionChatInner(props: SessionChatProps) {
         isRunning: props.session.thinking || hasRunningChildAgent,
         onSendMessage: handleSend,
         attachmentOrderRef,
+        replyTargetsRef,
         onAbort: handleAbort,
         attachmentAdapter,
         allowSendWhenInactive: true,
@@ -2024,7 +2064,7 @@ function SessionChatInner(props: SessionChatProps) {
                 filesActive={false}
                 onToggleOutline={handleToggleOutline}
                 outlineActive={outlineOpen}
-                onToggleTerminal={canViewAgentTerminal ? () => setTerminalVisible(v => !v) : undefined}
+                onToggleTerminal={canViewAgentTerminal ? handleToggleTerminalPanel : undefined}
                 terminalActive={terminalVisible}
                 api={props.api}
                 titleSuggestionAvailable={props.titleSuggestionAvailable}
@@ -2084,6 +2124,7 @@ function SessionChatInner(props: SessionChatProps) {
                         // React reconciliation issues when switching sessions rapidly.
                         // Without prefixes, React may reuse the wrong component's DOM/localStorage.
                         key={`thread-${props.session.id}`}
+                        replyTargetsRef={replyTargetsRef}
                         api={props.api}
                         session={props.session}
                         serviceTier={effectiveCodexServiceTier}
@@ -2257,10 +2298,10 @@ function SessionChatInner(props: SessionChatProps) {
                         thinking={props.session.thinking}
                         agentState={props.session.agentState}
                         backgroundTaskCount={props.session.backgroundTaskCount}
-                        contextSize={reduced.latestUsage?.contextSize}
-                        contextCacheRead={reduced.latestUsage?.cacheRead}
-                        contextWindow={reduced.latestUsage?.contextWindow ?? piContextWindow}
-                        contextModel={reduced.latestUsage?.model ?? props.session.model}
+                        contextSize={latestUsage?.contextSize}
+                        contextCacheRead={latestUsage?.cacheRead}
+                        contextWindow={latestUsage?.contextWindow ?? piContextWindow}
+                        contextModel={latestUsage?.model ?? props.session.model}
                         controlledByUser={controlledByUser}
                         onCollaborationModeChange={
                             codexCollaborationModeSupported && props.session.active && !controlledByUser

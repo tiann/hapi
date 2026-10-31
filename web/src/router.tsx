@@ -405,6 +405,7 @@ function SessionPage() {
         messagesVersion,
         historyVersion,
         tailRevision,
+        liveUsage,
         setViewMode,
     } = useMessages(api, sessionId)
 
@@ -866,6 +867,7 @@ function SessionPage() {
             messagesVersion={messagesVersion}
             historyVersion={historyVersion}
             tailRevision={tailRevision}
+            liveUsage={liveUsage}
             onBack={goBack}
             onRefresh={refreshSelectedSession}
             onLoadMore={loadMoreMessages}

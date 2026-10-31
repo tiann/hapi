@@ -9,7 +9,7 @@ const onFork = vi.fn(async (_localId?: string) => {})
 const state = {
     message: { id: 'user-text:interrupted', role: 'user', createdAt: new Date(10),
         content: [{ type: 'text', text: 'Interrupted prompt' }],
-        metadata: { custom: { kind: 'user', localId: 'local-interrupted' } } },
+        metadata: { custom: { kind: 'user', localId: 'local-interrupted' } as Record<string, unknown> } },
     thread: { isRunning: true, messages: [] }
 }
 const ctx = {
@@ -49,6 +49,9 @@ describe('user-only completed fork boundary', () => {
     beforeEach(() => {
         localStorage.clear()
         onFork.mockClear()
+        state.message.id = 'user-text:interrupted'
+        state.message.content = [{ type: 'text', text: 'Interrupted prompt' }]
+        state.message.metadata.custom = { kind: 'user', localId: 'local-interrupted' }
         state.thread.isRunning = true
         ctx.metadata.flavor = 'codex'
         ctx.metadata.capabilities.conversationHistory.forkAtMessage = true
@@ -91,5 +94,27 @@ describe('user-only completed fork boundary', () => {
         mount()
         expect(screen.queryByRole('button', { name: 'Fork' })).toBeNull()
         expect(onFork).not.toHaveBeenCalled()
+    })
+})
+
+describe('HappyUserMessage transcript gap', () => {
+    beforeEach(() => {
+        localStorage.setItem('hapi-lang', 'zh-CN')
+        state.message.id = 'user-text:__transcript-gap__601-801'
+        state.message.content = [{ type: 'text', text: 'synthetic gap text' }]
+        state.message.metadata.custom = {}
+    })
+
+    it('renders a localized neutral boundary instead of a user bubble', () => {
+        const { container } = render(
+            <I18nProvider>
+                <HappyUserMessage />
+            </I18nProvider>
+        )
+
+        expect(screen.getByText('部分历史消息未加载')).toBeInTheDocument()
+        expect(container.querySelector('[data-hapi-transcript-gap="true"]')).toBeInTheDocument()
+        expect(container.querySelector('[data-hapi-message-role="user"]')).toBeNull()
+        expect(screen.queryByText('synthetic gap text')).toBeNull()
     })
 })

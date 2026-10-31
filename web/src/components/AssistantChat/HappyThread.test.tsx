@@ -4,16 +4,24 @@ import { useState, type ComponentProps } from 'react'
 import { I18nProvider } from '@/lib/i18n-context'
 import {
     ConversationOutlinePanel,
+    ConversationStartStatus,
     captureScrollAnchor,
     getHistoryCoverageRetryDelay,
     getPullToLoadState,
-    getScrollIntent,
     getScrollToBottomButtonVisibility,
     hasAppliedHistoryVersion,
     isNestedScrollEvent,
+    findPromptTarget,
+    findPreviousUserMessage,
+    scrollTargetIntoView,
+    smoothScrollViewportToTop,
+    getScrollIntent,
+    loadOlderForNavigationWithRetry,
+    loadAllOlderMessages,
     locateOutlineTargetMessage,
     prependMissingUserSnapshot,
     restoreScrollAnchor,
+    runAfterPendingHistoryLoad,
     shouldLoadOlderForViewport,
     shouldCancelInitialScrollSettling,
     shouldRenderScrollToBottomButton,
@@ -60,6 +68,216 @@ describe('nested scroll event ownership', () => {
         expect(isNestedScrollEvent(childEvent)).toBe(true)
 
         nested.remove()
+    })
+})
+
+describe('ConversationStartStatus', () => {
+    it('announces loading and completion states', () => {
+        const { rerender } = render(
+            <I18nProvider><ConversationStartStatus status="loading" /></I18nProvider>
+        )
+        expect(screen.getByRole('status')).toHaveTextContent('Loading earlier messages…')
+
+        rerender(<I18nProvider><ConversationStartStatus status="success" /></I18nProvider>)
+        expect(screen.getByRole('status')).toHaveTextContent('Reached conversation start')
+    })
+
+    it('uses an alert for load failures', () => {
+        render(<I18nProvider><ConversationStartStatus status="error" /></I18nProvider>)
+        expect(screen.getByRole('alert')).toHaveTextContent('Could not load earlier messages. Try again.')
+    })
+
+    it('announces prompt loading separately from conversation-start loading', () => {
+        render(<I18nProvider><ConversationStartStatus status="loading" kind="prompt" /></I18nProvider>)
+        expect(screen.getByRole('status')).toHaveTextContent('Loading turn input…')
+    })
+})
+
+describe('scrollTargetIntoView', () => {
+    it('accepts a clamped max-scroll landing for a target near the end', async () => {
+        const viewport = document.createElement('div')
+        const target = document.createElement('div')
+        Object.defineProperty(viewport, 'scrollHeight', { value: 1_000 })
+        Object.defineProperty(viewport, 'clientHeight', { value: 100 })
+        viewport.scrollTop = 900 // already at the maximum scroll position
+        const scrollTo = vi.fn()
+        viewport.scrollTo = scrollTo
+        target.getBoundingClientRect = () => ({
+            top: 50, left: 0, right: 0, bottom: 90, width: 0, height: 40,
+            x: 0, y: 0, toJSON: () => ({})
+        }) as DOMRect
+        viewport.getBoundingClientRect = () => ({
+            top: 0, left: 0, right: 0, bottom: 100, width: 0, height: 100,
+            x: 0, y: 0, toJSON: () => ({})
+        }) as DOMRect
+
+        // The target cannot scroll any closer (browser clamp at max scroll):
+        // the helper must accept the best reachable landing immediately
+        // instead of spinning until the retry deadline.
+        await scrollTargetIntoView(viewport, target)
+        expect(scrollTo).toHaveBeenCalledTimes(1)
+    })
+
+    it('cancels retry loop immediately when signal is aborted', async () => {
+        const viewport = document.createElement('div')
+        const target = document.createElement('div')
+        Object.defineProperty(viewport, 'scrollHeight', { value: 1000 })
+        Object.defineProperty(viewport, 'clientHeight', { value: 100 })
+        viewport.scrollTop = 0
+        const scrollTo = vi.fn()
+        viewport.scrollTo = scrollTo
+        target.getBoundingClientRect = () => ({
+            top: 500, left: 0, right: 0, bottom: 0, width: 0, height: 0,
+            x: 0, y: 0, toJSON: () => ({})
+        }) as DOMRect
+        viewport.getBoundingClientRect = () => ({
+            top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0,
+            x: 0, y: 0, toJSON: () => ({})
+        }) as DOMRect
+
+        const controller = new AbortController()
+        controller.abort()
+
+        await scrollTargetIntoView(viewport, target, controller.signal)
+        expect(scrollTo).not.toHaveBeenCalled()
+    })
+})
+
+describe('smoothScrollViewportToTop', () => {
+    it('cancels active scroll retries when signal is aborted before start', async () => {
+        vi.useFakeTimers()
+        const viewport = document.createElement('div')
+        Object.defineProperty(viewport, 'scrollHeight', { value: 1000 })
+        viewport.scrollTop = 500
+        const scrollTo = vi.fn()
+        viewport.scrollTo = scrollTo
+        const controller = new AbortController()
+
+        const promise = smoothScrollViewportToTop(viewport, controller.signal)
+        controller.abort()
+        await vi.runAllTimersAsync()
+        await promise
+
+        expect(scrollTo).not.toHaveBeenCalled()
+        expect(viewport.scrollTop).toBe(500)
+        vi.useRealTimers()
+    })
+
+    it('stops retrying and does not clamp scrollTop to 0 when aborted during animation watch', async () => {
+        vi.useFakeTimers()
+        const viewport = document.createElement('div')
+        Object.defineProperty(viewport, 'scrollHeight', { value: 1000 })
+        viewport.scrollTop = 500
+        const scrollTo = vi.fn()
+        viewport.scrollTo = scrollTo
+        const controller = new AbortController()
+
+        const promise = smoothScrollViewportToTop(viewport, controller.signal)
+        // Advance past settle (3 stable frames at 50ms = 150ms)
+        await vi.advanceTimersByTimeAsync(150)
+        expect(scrollTo).toHaveBeenCalledWith({ top: 0, behavior: 'smooth' })
+
+        // Abort while watching animation
+        controller.abort()
+        await vi.advanceTimersByTimeAsync(5000)
+        await promise
+
+        // Should not have forced scrollTop = 0 on deadline
+        expect(viewport.scrollTop).toBe(500)
+        vi.useRealTimers()
+    })
+})
+
+describe('assistant prompt lookup', () => {
+    it('finds the nearest preceding user message', () => {
+        const viewport = document.createElement('div')
+        viewport.innerHTML = `
+            <div class="happy-thread-messages">
+                <div id="hapi-message-user-text:first" data-hapi-message-role="user"></div>
+                <div id="hapi-message-agent-text:first-answer"></div>
+                <div id="hapi-message-user-text:second" data-hapi-message-role="user"></div>
+                <div id="hapi-message-agent-text:second-answer"></div>
+            </div>
+        `
+
+        expect(findPreviousUserMessage(viewport, 'agent-text:second-answer')?.id)
+            .toBe('hapi-message-user-text:second')
+    })
+
+    it('skips failed sends when looking up the turn input', () => {
+        const viewport = document.createElement('div')
+        viewport.innerHTML = `
+            <div class="happy-thread-messages">
+                <div id="hapi-message-user-text:delivered" data-hapi-message-role="user"></div>
+                <div id="hapi-message-user-text:failed" data-hapi-message-role="user" data-hapi-message-status="failed"></div>
+                <div id="hapi-message-agent-text:answer"></div>
+            </div>
+        `
+
+        expect(findPreviousUserMessage(viewport, 'agent-text:answer')?.id)
+            .toBe('hapi-message-user-text:delivered')
+    })
+
+    it('stops at a transcript-gap boundary instead of linking to a head prompt', () => {
+        const viewport = document.createElement('div')
+        viewport.innerHTML = `
+            <div class="happy-thread-messages">
+                <div id="hapi-message-user-text:head-prompt" data-hapi-message-role="user"></div>
+                <div id="hapi-message-agent-text:head-answer"></div>
+                <div id="hapi-message-__transcript-gap__601-801" data-hapi-message-role="user"></div>
+                <div id="hapi-message-agent-text:tail-answer"></div>
+            </div>
+        `
+
+        // The first retained tail response has no reachable prompt: the scan
+        // must not fall through to the head prompt across the gap boundary.
+        expect(findPreviousUserMessage(viewport, 'agent-text:tail-answer')).toBeNull()
+
+        expect(findPromptTarget(viewport, 'agent-text:tail-answer')).toBeNull()
+    })
+
+    it('returns null when the prompt is outside the loaded history window', () => {
+        const viewport = document.createElement('div')
+        viewport.innerHTML = `
+            <div class="happy-thread-messages">
+                <div id="hapi-message-agent-text:answer"></div>
+            </div>
+        `
+
+        expect(findPreviousUserMessage(viewport, 'agent-text:answer')).toBeNull()
+    })
+
+    it('recognizes user-role CLI output as a turn input', () => {
+        const viewport = document.createElement('div')
+        viewport.innerHTML = `
+            <div class="happy-thread-messages">
+                <div id="hapi-message-cli-output:command" data-hapi-message-role="user"></div>
+                <div id="hapi-message-cli-output:result"></div>
+            </div>
+        `
+
+        expect(findPreviousUserMessage(viewport, 'cli-output:result')?.id)
+            .toBe('hapi-message-cli-output:command')
+    })
+
+    it('resolves a re-keyed tail response through its reply target, not a newer turn', () => {
+        const viewport = document.createElement('div')
+        viewport.innerHTML = `
+            <div class="happy-thread-messages">
+                <div id="hapi-message-user-text:prompt" data-hapi-message-role="user"></div>
+                <div id="hapi-message-agent-text:older-answer"></div>
+                <div id="hapi-message-user-text:streamed" data-hapi-message-role="user"></div>
+            </div>
+        `
+        document.body.append(viewport)
+
+        // The clicked card (agent-text:answer) was merged into older-answer.
+        expect(findPromptTarget(viewport, 'agent-text:answer')).toBeNull()
+        expect(findPromptTarget(viewport, 'agent-text:answer', new Map([
+            ['agent-text:older-answer', 'user-text:prompt'],
+            ['agent-text:answer', 'user-text:prompt']
+        ]))?.id).toBe('hapi-message-user-text:prompt')
+        viewport.remove()
     })
 })
 
@@ -337,6 +555,30 @@ describe('scroll anchor helpers', () => {
         })
     })
 
+    it('keeps the first conversation-start smooth-scroll frame as upward when the pre-jump baseline is preserved', () => {
+        // After load-all, restoration leaves the viewport near the bottom.
+        // Zeroing previousScrollTop before smooth scroll makes the first
+        // near-bottom frame look non-upward and can flip view mode to tail.
+        expect(getScrollIntent({
+            scrollTop: 24_800,
+            previousScrollTop: 0,
+            scrollHeight: 25_200,
+            clientHeight: 530
+        })).toMatchObject({
+            isNearBottom: true,
+            isScrollingUp: false
+        })
+        expect(getScrollIntent({
+            scrollTop: 24_800,
+            previousScrollTop: 24_967,
+            scrollHeight: 25_200,
+            clientHeight: 530
+        })).toMatchObject({
+            isNearBottom: true,
+            isScrollingUp: true
+        })
+    })
+
     it('shows the jump button only while scrolling down away from the bottom', () => {
         const downward = getScrollIntent({
             scrollTop: 610,
@@ -530,6 +772,25 @@ describe('outline target loading', () => {
         expect(target).toBeNull()
         expect(loadOlderPreservingScroll).toHaveBeenCalledTimes(1)
     })
+
+    it('stops pagination loop immediately when signal is aborted', async () => {
+        const controller = new AbortController()
+        const loadOlderPreservingScroll = vi.fn(async () => {
+            controller.abort()
+            return true
+        })
+
+        const target = await locateOutlineTargetMessage({
+            targetMessageId: 'user-text:target',
+            findTarget: () => null,
+            hasMoreMessages: () => true,
+            loadOlderPreservingScroll,
+            signal: controller.signal
+        })
+
+        expect(target).toBeNull()
+        expect(loadOlderPreservingScroll).toHaveBeenCalledTimes(1)
+    })
 })
 
 describe('share turn snapshots', () => {
@@ -545,5 +806,193 @@ describe('share turn snapshots', () => {
         const fallback = { html: '', text: 'prompt', role: 'user' as const }
 
         expect(prependMissingUserSnapshot([user], fallback)).toEqual([user])
+    })
+})
+
+describe('conversation-start loading', () => {
+    it('loads every older page from one action', async () => {
+        let remainingPages = 3
+        const loadOlderPreservingScroll = vi.fn(async () => {
+            remainingPages -= 1
+            return true
+        })
+
+        await expect(loadAllOlderMessages({
+            hasMoreMessages: () => remainingPages > 0,
+            loadOlderPreservingScroll
+        })).resolves.toBe(true)
+        expect(loadOlderPreservingScroll).toHaveBeenCalledTimes(3)
+    })
+
+    it('stops when a page fails to load', async () => {
+        const loadOlderPreservingScroll = vi.fn(async () => false)
+
+        await expect(loadAllOlderMessages({
+            hasMoreMessages: () => true,
+            loadOlderPreservingScroll
+        })).resolves.toBe(false)
+        expect(loadOlderPreservingScroll).toHaveBeenCalledOnce()
+    })
+
+    it('cancels pagination loop immediately when signal is aborted', async () => {
+        const controller = new AbortController()
+        let pagesLoaded = 0
+        const loadOlderPreservingScroll = vi.fn(async () => {
+            pagesLoaded += 1
+            controller.abort()
+            return true
+        })
+
+        const result = await loadAllOlderMessages({
+            hasMoreMessages: () => true,
+            loadOlderPreservingScroll,
+            signal: controller.signal
+        })
+
+        expect(result).toBe(false)
+        expect(pagesLoaded).toBe(1)
+    })
+})
+
+describe('pending history navigation', () => {
+    it('waits for the active prepend before scrolling to a loaded prompt', async () => {
+        let settleLoad!: (value: boolean) => void
+        const pendingLoad = new Promise<boolean>((resolve) => {
+            settleLoad = resolve
+        })
+        const scrollToPrompt = vi.fn(() => true)
+
+        const navigation = runAfterPendingHistoryLoad(pendingLoad, scrollToPrompt)
+        await Promise.resolve()
+        expect(scrollToPrompt).not.toHaveBeenCalled()
+
+        settleLoad(true)
+        await expect(navigation).resolves.toBe(true)
+        expect(scrollToPrompt).toHaveBeenCalledOnce()
+    })
+})
+
+describe('navigation history loading', () => {
+    it('retries transient stops until a page loads', async () => {
+        const loadOlder = vi.fn()
+            .mockResolvedValueOnce('transient-stop')
+            .mockResolvedValueOnce('transient-stop')
+            .mockResolvedValueOnce('loaded')
+        const wait = vi.fn(async () => {})
+
+        await expect(loadOlderForNavigationWithRetry(loadOlder, { wait })).resolves.toBe(true)
+        expect(loadOlder).toHaveBeenCalledTimes(3)
+        expect(wait).toHaveBeenCalledTimes(2)
+    })
+
+    it('does not retry a terminal stop', async () => {
+        const loadOlder = vi.fn(async () => 'terminal-stop' as const)
+        const wait = vi.fn(async () => {})
+
+        await expect(loadOlderForNavigationWithRetry(loadOlder, { wait })).resolves.toBe(false)
+        expect(loadOlder).toHaveBeenCalledOnce()
+        expect(wait).not.toHaveBeenCalled()
+    })
+
+    it('bounds repeated transient stops', async () => {
+        const loadOlder = vi.fn(async () => 'transient-stop' as const)
+        const wait = vi.fn(async () => {})
+
+        await expect(loadOlderForNavigationWithRetry(loadOlder, {
+            maxTransientRetries: 2,
+            wait
+        })).resolves.toBe(false)
+        expect(loadOlder).toHaveBeenCalledTimes(3)
+        expect(wait).toHaveBeenCalledTimes(2)
+    })
+
+    it('cancels retry loop immediately when signal is aborted', async () => {
+        const controller = new AbortController()
+        const loadOlder = vi.fn(async () => {
+            controller.abort()
+            return 'transient-stop' as const
+        })
+        const wait = vi.fn(async () => {})
+
+        await expect(loadOlderForNavigationWithRetry(loadOlder, {
+            wait,
+            signal: controller.signal
+        })).resolves.toBe(false)
+        expect(loadOlder).toHaveBeenCalledOnce()
+        expect(wait).not.toHaveBeenCalled()
+    })
+})
+
+describe('navigation operation ownership', () => {
+    it('cancels pending page loading and permits a new navigation before the first page settles', async () => {
+        let settleFirstPage!: (value: boolean) => void
+        const firstPagePromise = new Promise<boolean>((resolve) => {
+            settleFirstPage = resolve
+        })
+        const controller1 = new AbortController()
+        const firstNavigation = loadAllOlderMessages({
+            hasMoreMessages: () => true,
+            loadOlderPreservingScroll: () => firstPagePromise,
+            signal: controller1.signal
+        })
+
+        // Cancel first navigation while first page is pending
+        controller1.abort()
+
+        // Second navigation starts immediately with its own controller
+        const controller2 = new AbortController()
+        const secondLoad = vi.fn(async () => true)
+        let remainingPages = 2
+        const secondNavigation = loadAllOlderMessages({
+            hasMoreMessages: () => {
+                remainingPages -= 1
+                return remainingPages >= 0
+            },
+            loadOlderPreservingScroll: secondLoad,
+            signal: controller2.signal
+        })
+
+        // Second navigation completes successfully
+        await expect(secondNavigation).resolves.toBe(true)
+        expect(secondLoad).toHaveBeenCalledTimes(2)
+
+        // First page now eventually settles
+        settleFirstPage(true)
+        await expect(firstNavigation).resolves.toBe(false)
+    })
+
+    it('does not execute stale callbacks when operation ownership changes', async () => {
+        let settleLoad!: (value: boolean) => void
+        const pendingLoad = new Promise<boolean>((resolve) => {
+            settleLoad = resolve
+        })
+        let currentToken = 1
+        const operation1Token = currentToken
+        const operation1Callback = vi.fn()
+
+        const nav1 = runAfterPendingHistoryLoad(pendingLoad, () => {
+            if (currentToken === operation1Token) {
+                operation1Callback()
+            }
+            return true
+        })
+
+        // Cancel nav1 and start nav2 with new token
+        currentToken = 2
+        const nav2Callback = vi.fn()
+        const nav2 = runAfterPendingHistoryLoad(Promise.resolve(true), () => {
+            if (currentToken === 2) {
+                nav2Callback()
+            }
+            return true
+        })
+
+        await expect(nav2).resolves.toBe(true)
+        expect(nav2Callback).toHaveBeenCalledOnce()
+
+        // Settle nav1's pending load
+        settleLoad(true)
+        await nav1
+        expect(operation1Callback).not.toHaveBeenCalled()
     })
 })
