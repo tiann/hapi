@@ -182,7 +182,7 @@ private fun ActivityDayLegend(activityEpochDays: Set<Long>) {
     }
 }
 
-/** Locale-aware day label for the active-range summary row (machine `YYYY-MM-DD` stays in [SessionDateRangeFilter]). */
+/** Locale-aware day label for the filter sheet (machine `YYYY-MM-DD` stays in [SessionDateRangeFilter]). */
 internal fun formatEpochDayLocalized(epochDay: Long): String =
     LocalDate.ofEpochDay(epochDay)
         .format(DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).withLocale(JavaLocale.getDefault()))

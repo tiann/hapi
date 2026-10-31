@@ -20,6 +20,12 @@ function fixture(shared = true, childMetadata: Partial<Metadata> = {}, flavor = 
         path: '/tmp/work', host: 'test', machineId: 'machine', flavor, codexSessionId: 'native-child',
         forkedFrom: source.id, capabilities: { concurrentClients: true }, ...childMetadata
     }, null, 'default') : undefined
+    if (child && childMetadata.titleLocked === true) {
+        const current = store.sessions.getSession(child.id)!
+        store.sessions.updateSessionMetadata(child.id, { ...(current.metadata as Metadata), titleLocked: true },
+            current.metadataVersion, 'default', { allowTitleUpdate: true, titleLocked: true })
+        ;(engine as any).sessionCache.refreshSession(child.id)
+    }
     if (child) engine.handleSessionAlive({ sid: child.id, time: Date.now() })
     const internal = engine as any
     internal.rpcGateway.forkConversation = async () => ({ nativeSessionId: 'native-child',
@@ -78,7 +84,7 @@ describe('fork title generation', () => {
                 const id = f.child!.id
                 if (action === 'manual-name') await f.engine.renameSession(id, 'Chosen child name')
                 if (action === 'manual-summary') await f.engine.updateSessionSummary(id, 'User-generated draft')
-                if (action === 'locked') f.setMetadata(id, metadata => ({ ...metadata, titleLocked: true }))
+                if (action === 'locked') await f.engine.renameSession(id, undefined, true)
                 if (action === 'deleted') f.store.sessions.deleteSession(id, 'default')
                 if (action === 'stopped') f.engine.stop()
                 finish('Provider result')
@@ -86,6 +92,10 @@ describe('fork title generation', () => {
                 expect((f.store.sessions.getSession(id)?.metadata as Metadata | undefined)?.summary?.text).not.toBe('Provider result')
                 if (action === 'manual-name') expect(f.engine.getSession(id)?.metadata?.name).toBe('Chosen child name')
                 if (action === 'manual-summary') expect(f.engine.getSession(id)?.metadata?.summary?.text).toBe('User-generated draft')
+                if (action === 'manual-name' || action === 'manual-summary') {
+                    expect(f.engine.getSession(id)?.metadata?.forkTitleSeed).toBeUndefined()
+                    expect(f.engine.getSession(id)?.metadata?.forkTitleGenerationAttemptedAt).toBeUndefined()
+                }
             } finally { f.close() }
         })
 

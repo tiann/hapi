@@ -287,6 +287,46 @@ export type PiLocalSessionWithMessages = z.infer<typeof PiLocalSessionWithMessag
 export type ListPiSessionsRpcRequest = z.infer<typeof ListPiSessionsRpcRequestSchema>
 export type ListPiSessionsRpcResponse = z.infer<typeof ListPiSessionsRpcResponseSchema>
 
+export const OpencodeImportedMessageContentSchema = CodexImportedMessageSchema
+
+export const OpencodeImportedMessageSchema = z.object({
+    localId: z.string().min(1),
+    createdAt: z.number(),
+    content: OpencodeImportedMessageContentSchema
+})
+
+export const OpencodeLocalSessionSummarySchema = z.object({
+    id: z.string().min(1),
+    title: z.string(),
+    lastUserMessage: z.string().nullable().optional(),
+    cwd: z.string().nullable().optional(),
+    file: z.string().min(1),
+    modifiedAt: z.number()
+})
+
+export const OpencodeLocalSessionWithMessagesSchema = OpencodeLocalSessionSummarySchema.extend({
+    messages: z.array(OpencodeImportedMessageSchema)
+})
+
+export const MAX_OPENCODE_SESSION_IMPORTS = 200
+
+export const ListOpencodeSessionsRpcRequestSchema = z.object({
+    cwd: z.string().nullable().optional(),
+    sessionIds: z.array(z.string().min(1)).max(MAX_OPENCODE_SESSION_IMPORTS).optional()
+})
+
+export const ListOpencodeSessionsRpcResponseSchema = z.union([
+    z.object({ success: z.literal(true), sessions: z.array(z.union([OpencodeLocalSessionWithMessagesSchema, OpencodeLocalSessionSummarySchema])) }),
+    z.object({ success: z.literal(false), error: z.string() })
+])
+
+export type OpencodeImportedMessageContent = z.infer<typeof OpencodeImportedMessageContentSchema>
+export type OpencodeImportedMessage = z.infer<typeof OpencodeImportedMessageSchema>
+export type OpencodeLocalSessionSummary = z.infer<typeof OpencodeLocalSessionSummarySchema>
+export type OpencodeLocalSessionWithMessages = z.infer<typeof OpencodeLocalSessionWithMessagesSchema>
+export type ListOpencodeSessionsRpcRequest = z.infer<typeof ListOpencodeSessionsRpcRequestSchema>
+export type ListOpencodeSessionsRpcResponse = z.infer<typeof ListOpencodeSessionsRpcResponseSchema>
+
 export const SessionCollaborationModeRequestSchema = z.object({
     mode: CodexCollaborationModeSchema
 })
@@ -306,7 +346,9 @@ export const SessionModelRequestSchema = z.object({
             provider: z.string().trim().min(1),
             modelId: z.string().trim().min(1),
         }),
-    ]).nullable()
+    ]).nullable(),
+    /** Effort to apply together with the model, e.g. cleared when the new model does not offer it. */
+    effort: z.string().trim().min(1).nullable().optional()
 })
 
 export type SessionModelRequest = z.infer<typeof SessionModelRequestSchema>
@@ -334,13 +376,17 @@ export const SessionServiceTierRequestSchema = z.object({
 export type SessionServiceTierRequest = z.infer<typeof SessionServiceTierRequestSchema>
 
 export const RenameSessionRequestSchema = z.object({
-    name: z.string().min(1).max(255)
+    name: z.string().min(1).max(255).optional(),
+    titleLocked: z.boolean().optional()
+}).refine(value => value.name !== undefined || value.titleLocked !== undefined, {
+    message: 'name or titleLocked is required'
 })
 
 export type RenameSessionRequest = z.infer<typeof RenameSessionRequestSchema>
 
 export const UpdateSessionSummaryRequestSchema = z.object({
-    text: z.string().trim().min(1).max(255)
+    text: z.string().trim().min(1).max(255),
+    titleLocked: z.boolean().optional()
 })
 
 export type UpdateSessionSummaryRequest = z.infer<typeof UpdateSessionSummaryRequestSchema>
@@ -602,6 +648,12 @@ export type ForkConversationRpcResult = {
     forkSession?: boolean
 }
 
+/** Raw RPC response, including generic serialized handler failures. */
+export type ForkConversationRpcResponse = ForkConversationRpcResult | {
+    /** Serialized CLI handler failure returned through the generic RPC layer. */
+    error: string
+}
+
 export type RewindConversationErrorCode =
     | 'ambiguous_native_boundary'
     | 'ambiguous_native_boundary_fork_safe'
@@ -773,6 +825,50 @@ export type PathExistsResponse = {
 }
 
 export type MachinePathsExistsResponse = PathExistsResponse
+
+/** Requests served by the long-lived runner for archived-session file access. */
+export type WorkspaceReadFileRequest = {
+    cwd: string
+    path: string
+    maxBytes?: number
+}
+
+export type WorkspaceListDirectoryRequest = {
+    cwd: string
+    path?: string
+}
+
+export type WorkspaceStatFilesRequest = {
+    cwd: string
+    paths: string[]
+}
+
+export type WorkspaceGitStatusRequest = {
+    cwd: string
+    timeout?: number
+}
+
+export type WorkspaceGitDiffNumstatRequest = {
+    cwd: string
+    staged?: boolean
+    timeout?: number
+}
+
+export type WorkspaceGitDiffFileRequest = {
+    cwd: string
+    filePath: string
+    staged?: boolean
+    timeout?: number
+}
+
+export type WorkspaceRipgrepRequest = {
+    cwd: string
+    args: string[]
+    fileSearch?: {
+        query: string
+        limit: number
+    }
+}
 
 export type CodexModelSummary = {
     id: string
@@ -959,6 +1055,21 @@ export type PiModelsResponse = {
 
 export type ListPiModelsResponse = PiModelsResponse
 
+/** One row of the `claude` CLI's own model picker, as reported by its `initialize` control response. */
+export type ClaudeModelSummary = {
+    /** What `claude --model` accepts: an alias that follows the family (`opus`) or a full model id. */
+    value: string
+    displayName?: string
+    /** Effort levels the model accepts: `[]` = no effort control, undefined = unknown. */
+    effortLevels?: string[]
+}
+
+export type ClaudeModelsResponse = {
+    success: boolean
+    availableModels?: ClaudeModelSummary[]
+    error?: string
+}
+
 export type PiCommandSummary = {
     name: string
     description?: string
@@ -1023,4 +1134,44 @@ export type UsageSummaryResponse = {
     byAgent: UsageSummaryBucket[]
     byModel: UsageSummaryBucket[]
     updatedAt: number
+}
+
+/** A stretch an agent was working: from `thinking` turning on to it turning
+ *  off. `end` is null while the turn is still going. */
+export type AgentActivityTurn = {
+    start: number
+    end: number | null
+    endReason: 'idle' | 'session_end' | 'expired' | 'hub_restart' | null
+    startedBy: 'hub_prompt' | 'agent' | 'patch'
+}
+
+/** The agent waiting on the user inside a turn: a permission prompt or a
+ *  question. `end` is null while it is still waiting. */
+export type AgentActivityWait = {
+    start: number
+    end: number | null
+    kind: 'permission' | 'input'
+    tool: string
+}
+
+export type AgentActivitySession = {
+    id: string
+    flavor: string | null
+    /** The agent's own session id (Claude session, Codex thread, ...). */
+    agentSessionId: string | null
+    machineId: string | null
+    host: string | null
+    machineName: string | null
+    path: string | null
+    title: string | null
+    turns: AgentActivityTurn[]
+    waits: AgentActivityWait[]
+}
+
+/** GET /api/activity: when agents in the caller's namespace were working. */
+export type AgentActivityResponse = {
+    since: number
+    until: number
+    generatedAt: number
+    sessions: AgentActivitySession[]
 }

@@ -145,7 +145,10 @@ export class SharedCodexProjection {
             else if (event.type === 'exec_command_begin' && callId) {
                 send({ type: 'tool-call', name: 'CodexBash', callId, input: event }, key);
             } else if (event.type === 'exec_command_end' && callId) {
-                send({ type: 'tool-call-result', callId, output: { ...event, stdout: event.output } }, key);
+                const failed = ['failed', 'cancelled', 'canceled', 'declined', 'interrupted'].includes(String(event.status))
+                    || (typeof event.exit_code === 'number' && event.exit_code !== 0)
+                    || Boolean(event.error);
+                send({ type: 'tool-call-result', callId, output: { ...event, stdout: event.output }, is_error: failed }, key);
             } else if (event.type === 'patch_apply_begin' && callId) {
                 send({ type: 'tool-call', name: 'CodexPatch', callId, input: { changes: event.changes, auto_approved: event.auto_approved } }, key);
             } else if (event.type === 'patch_apply_end' && callId) {

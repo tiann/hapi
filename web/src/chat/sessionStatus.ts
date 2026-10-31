@@ -1,6 +1,6 @@
 import { isObject } from '@hapi/protocol'
-import type { ThreadGoal, TodoItem } from '@/types/api'
-import type { ChatBlock, NormalizedMessage, ToolCallBlock } from '@/chat/types'
+import type { BackgroundTask, ThreadGoal, TodoItem } from '@/types/api'
+import type { ChatBlock, ToolCallBlock } from '@/chat/types'
 import { isSubagentToolName } from '@/chat/subagentTool'
 import { getCodexAgentActivity, getCodexAgentSummary } from '@/components/ToolCard/codexAgents'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
@@ -18,7 +18,7 @@ export type SessionStatusTerminal = {
     id: string
     command: string
     cwd: string | null
-    startedAt: number
+    startedAt: number | null
 }
 
 export type SessionStatusData = {
@@ -26,21 +26,18 @@ export type SessionStatusData = {
     tasks: TodoItem[]
     subagents: SessionStatusSubagent[]
     terminals: SessionStatusTerminal[]
-    undiscoveredTerminalCount: number
-    possibleTerminalCommands: string[]
 }
 
-const BACKGROUND_START_RE = /Command running in background with ID:\s*([^\s<]+)/
-const TASK_ID_RE = /<task-id>\s*([^<]+?)\s*<\/task-id>/
-
-function findBackgroundTaskId(value: unknown): string | null {
-    if (typeof value === 'string') return value.match(BACKGROUND_START_RE)?.[1] ?? null
+function matchesText(value: unknown, pattern: RegExp): boolean {
+    if (typeof value === 'string') return pattern.test(value)
     const values = Array.isArray(value) ? value : isObject(value) ? Object.values(value) : []
-    for (const item of values) {
-        const taskId = findBackgroundTaskId(item)
-        if (taskId) return taskId
-    }
-    return null
+    return values.some((item) => matchesText(item, pattern))
+}
+
+// Matches "running in background with ID: <id>" and "moved to the background (ID: <id>)".
+function backgroundLaunchPattern(taskId: string): RegExp {
+    const id = taskId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    return new RegExp(`background[^\\n]*\\bID: ${id}(?![\\w-])`)
 }
 
 function commandFromInput(input: unknown): string | null {
@@ -49,19 +46,6 @@ function commandFromInput(input: unknown): string | null {
     if (!isObject(input) || !Array.isArray(input.command)) return null
     const parts = input.command.filter((part): part is string => typeof part === 'string')
     return parts.length > 0 ? parts.join(' ') : null
-}
-
-function terminalFromBlock(block: ToolCallBlock): SessionStatusTerminal | null {
-    if (block.tool.name !== 'Bash') return null
-    const taskId = findBackgroundTaskId(block.tool.result)
-    if (!taskId) return null
-
-    return {
-        id: taskId,
-        command: commandFromInput(block.tool.input) ?? block.tool.description ?? block.tool.name,
-        cwd: getInputStringAny(block.tool.input, ['cwd', 'workdir', 'path']),
-        startedAt: block.tool.startedAt ?? block.createdAt
-    }
 }
 
 function collectToolBlocks(blocks: readonly ChatBlock[]): ToolCallBlock[] {
@@ -73,43 +57,24 @@ function collectToolBlocks(blocks: readonly ChatBlock[]): ToolCallBlock[] {
     return tools
 }
 
-function backgroundTaskCompletions(messages: readonly NormalizedMessage[]): {
-    ids: Set<string>
-    latestUnknownAt: number | null
-} {
-    const ids = new Set<string>()
-    let latestUnknownAt: number | null = null
-
-    for (const message of messages) {
-        if (message.role !== 'agent') continue
-        for (const content of message.content) {
-            if (content.type !== 'sidechain') continue
-            const prompt = content.prompt.trimStart()
-            if (!prompt.startsWith('<task-notification>')) continue
-            const taskId = prompt.match(TASK_ID_RE)?.[1]?.trim()
-            if (taskId) ids.add(taskId)
-            else latestUnknownAt = Math.max(latestUnknownAt ?? 0, message.createdAt)
-        }
-    }
-
-    return { ids, latestUnknownAt }
-}
-
 function buildBackgroundTerminals(
     tools: readonly ToolCallBlock[],
-    messages: readonly NormalizedMessage[]
-): { confirmed: SessionStatusTerminal[]; uncertain: SessionStatusTerminal[] } {
-    const terminals = tools
-        .map(terminalFromBlock)
-        .filter((terminal): terminal is SessionStatusTerminal => terminal !== null)
-    const completions = backgroundTaskCompletions(messages)
-    const remaining = terminals.filter((terminal) => !completions.ids.has(terminal.id))
-    const latestUnknownAt = completions.latestUnknownAt
-    if (latestUnknownAt === null) return { confirmed: remaining, uncertain: [] }
-    return {
-        confirmed: remaining.filter((terminal) => terminal.startedAt > latestUnknownAt),
-        uncertain: remaining.filter((terminal) => terminal.startedAt <= latestUnknownAt)
-    }
+    tasks: readonly BackgroundTask[]
+): SessionStatusTerminal[] {
+    return tasks.map((task) => {
+        // Claude's snapshot carries the Bash description, not the command;
+        // the tool result that started the task names its exact ID.
+        const launch = task.type === 'local_bash' && task.id ? backgroundLaunchPattern(task.id) : null
+        const block = launch
+            ? tools.find((tool) => tool.tool.name === 'Bash' && matchesText(tool.tool.result, launch))
+            : undefined
+        return {
+            id: task.id,
+            command: (block && commandFromInput(block.tool.input)) || task.description || task.type,
+            cwd: block ? getInputStringAny(block.tool.input, ['cwd', 'workdir', 'path']) : null,
+            startedAt: block ? block.tool.startedAt ?? block.createdAt : null
+        }
+    })
 }
 
 function subagentTitle(block: ToolCallBlock): string {
@@ -152,38 +117,22 @@ export function buildSessionStatusData(args: {
     goal: ThreadGoal | null | undefined
     tasks: readonly TodoItem[] | null | undefined
     blocks: readonly ChatBlock[]
-    messages: readonly NormalizedMessage[]
-    backgroundTaskCount?: number
+    backgroundTasks?: readonly BackgroundTask[]
 }): SessionStatusData | null {
     const tools = collectToolBlocks(args.blocks)
-    const detectedTerminals = buildBackgroundTerminals(tools, args.messages)
-    const terminals = args.backgroundTaskCount === undefined
-        ? [...detectedTerminals.confirmed, ...detectedTerminals.uncertain]
-        : args.backgroundTaskCount > 0
-            ? detectedTerminals.confirmed.slice(-args.backgroundTaskCount)
-            : []
-    const undiscoveredTerminalCount = args.backgroundTaskCount === undefined
-        ? 0
-        : Math.max(0, args.backgroundTaskCount - terminals.length)
-    const possibleTerminalCommands = undiscoveredTerminalCount > 0
-        ? detectedTerminals.uncertain.map((terminal) => terminal.command)
-        : []
     const data: SessionStatusData = {
         goal: args.goal ?? null,
         tasks: args.tasks ? [...args.tasks] : [],
         subagents: tools
             .map(subagentFromBlock)
             .filter((subagent): subagent is SessionStatusSubagent => subagent !== null),
-        terminals,
-        undiscoveredTerminalCount,
-        possibleTerminalCommands
+        terminals: buildBackgroundTerminals(tools, args.backgroundTasks ?? [])
     }
 
     return data.goal
         || data.tasks.length > 0
         || data.subagents.length > 0
         || data.terminals.length > 0
-        || data.undiscoveredTerminalCount > 0
         ? data
         : null
 }

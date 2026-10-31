@@ -958,3 +958,156 @@ describe('ingestNotifySummaryFromMessage cause stamping', () => {
             .not.toBe(two.id)
     })
 })
+
+describe('notify cause consumption watermark', () => {
+    it('sticky notify advances causeSeq to the assistant seq so the window stays bounded', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('sess-watermark-sticky', {}, null, 'default')
+
+        const user = store.messages.addMessage(session.id, userInbound('the only prompt'))
+        const firstAssistant = store.messages.addMessage(session.id, assistantOutput(notifyFooter('Turn one')))
+        const first = ingestNotify(store, session.id, 'default', firstAssistant.content, firstAssistant.id)
+        expect(first?.event.payloadJson).toMatchObject({ causeMessageId: user.id, causeSeq: user.seq })
+
+        // Automation-style follow-ups: every turn ends with a notify footer but
+        // no new invoked inbound arrives. The sticky copies must keep the
+        // identity but advance the watermark past each assistant turn —
+        // otherwise the frozen causeSeq makes every later notify re-read the
+        // whole session tail.
+        const secondAssistant = store.messages.addMessage(session.id, assistantOutput(notifyFooter('Auto step')))
+        const second = ingestNotify(store, session.id, 'default', secondAssistant.content, secondAssistant.id)
+        expect(second?.event.payloadJson).toMatchObject({
+            causeMessageId: user.id,
+            causeText: 'the only prompt',
+            causeKind: 'webapp',
+            causeSeq: secondAssistant.seq
+        })
+
+        const thirdAssistant = store.messages.addMessage(session.id, assistantOutput(notifyFooter('Auto step two')))
+        const third = ingestNotify(store, session.id, 'default', thirdAssistant.content, thirdAssistant.id)
+        expect(third?.event.payloadJson).toMatchObject({
+            causeMessageId: user.id,
+            causeText: 'the only prompt',
+            causeSeq: thirdAssistant.seq
+        })
+        expect((third?.event.payloadJson as { causeSeq?: number })?.causeSeq)
+            .toBeGreaterThan((second?.event.payloadJson as { causeSeq?: number })?.causeSeq ?? 0)
+    })
+
+    it('sticky chain resumes each load after the previous watermark, not the original inbound', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('sess-watermark-resume', {}, null, 'default')
+
+        const user = store.messages.addMessage(session.id, userInbound('prompt'))
+        const firstAssistant = store.messages.addMessage(session.id, assistantOutput(notifyFooter('First')))
+        ingestNotify(store, session.id, 'default', firstAssistant.content, firstAssistant.id)
+
+        // Long agent tail without footers, then a sticky notify.
+        for (let i = 0; i < 20; i += 1) {
+            store.messages.addMessage(session.id, agentToolRow())
+        }
+
+        const loadCalls: string[] = []
+        const messageStore = store.messages as unknown as {
+            getMessagesAfterSeq: (sessionId: string, afterSeq: number) => unknown[]
+            getAllMessages: (sessionId: string) => unknown[]
+        }
+        const realAfterSeq = messageStore.getMessagesAfterSeq.bind(messageStore)
+        const realAll = messageStore.getAllMessages.bind(messageStore)
+        messageStore.getMessagesAfterSeq = (sessionId, afterSeq) => {
+            loadCalls.push(`after:${afterSeq}`)
+            return realAfterSeq(sessionId, afterSeq)
+        }
+        messageStore.getAllMessages = (sessionId) => {
+            loadCalls.push('all')
+            return realAll(sessionId)
+        }
+
+        const stickyAssistant = store.messages.addMessage(session.id, assistantOutput(notifyFooter('Sticky')))
+        ingestNotify(store, session.id, 'default', stickyAssistant.content, stickyAssistant.id)
+        // Sticky notify loads incrementally from the previous cause (the only
+        // stamped resume point so far), never the full session.
+        expect(loadCalls).toEqual([`after:${user.seq}`])
+
+        const stickyTwo = store.messages.addMessage(session.id, assistantOutput(notifyFooter('Sticky two')))
+        ingestNotify(store, session.id, 'default', stickyTwo.content, stickyTwo.id)
+        // The next load resumes after the advanced watermark (the previous
+        // sticky assistant), not after the original frozen inbound seq.
+        expect(loadCalls).toEqual([`after:${user.seq}`, `after:${stickyAssistant.seq}`])
+    })
+
+    it('retention-trimmed cursor row still loads incrementally via causeSeq', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('sess-watermark-trimmed', {}, null, 'default')
+
+        const user = store.messages.addMessage(session.id, userInbound('prompt'))
+        const firstAssistant = store.messages.addMessage(session.id, assistantOutput(notifyFooter('First')))
+        const first = ingestNotify(store, session.id, 'default', firstAssistant.content, firstAssistant.id)
+        expect(first?.event.payloadJson).toMatchObject({
+            causeMessageId: user.id,
+            causeCursorMessageId: user.id
+        })
+
+        // Retention trims old rows: the cursor message disappears while the
+        // ledger row (and its causeSeq watermark) survives. A dangling cursor
+        // id must not degrade the next notify into a full session read.
+        ;(store as unknown as { db: { run: (sql: string, ...params: unknown[]) => void } }).db.run(
+            'DELETE FROM messages WHERE session_id = ? AND seq <= ?',
+            session.id,
+            user.seq
+        )
+        expect(store.messages.getSeqById(session.id, user.id)).toBeNull()
+
+        const fullReads = { count: 0 }
+        const messageStore = store.messages as unknown as { getAllMessages: (sessionId: string) => unknown[] }
+        const realAll = messageStore.getAllMessages.bind(messageStore)
+        messageStore.getAllMessages = (sessionId) => {
+            fullReads.count += 1
+            return realAll(sessionId)
+        }
+
+        const nextUser = store.messages.addMessage(session.id, userInbound('after trim'))
+        const nextAssistant = store.messages.addMessage(session.id, assistantOutput(notifyFooter('After trim')))
+        const next = ingestNotify(store, session.id, 'default', nextAssistant.content, nextAssistant.id)
+        expect(next?.event.payloadJson).toMatchObject({ causeMessageId: nextUser.id, causeText: 'after trim' })
+
+        const stickyAssistant = store.messages.addMessage(session.id, assistantOutput(notifyFooter('Sticky')))
+        const sticky = ingestNotify(store, session.id, 'default', stickyAssistant.content, stickyAssistant.id)
+        expect(sticky?.event.payloadJson).toMatchObject({
+            causeMessageId: nextUser.id,
+            causeSeq: stickyAssistant.seq
+        })
+        expect(fullReads.count).toBe(0)
+    })
+
+    it('legacy row without causeSeq or cursor still full-reads and consumes correctly', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('sess-watermark-legacy', {}, null, 'default')
+        const oldUser = store.messages.addMessage(session.id, userInbound('old prompt'))
+        const oldAssistant = store.messages.addMessage(session.id, assistantOutput(notifyFooter('Legacy')))
+        store.workGraph.insertEvent('default', {
+            source_kind: 'session',
+            source_ref: session.id,
+            event_type: 'work_ad',
+            related_session_id: session.id,
+            summary: 'legacy',
+            provenance: 'AGENT_NOTIFY_SUMMARY',
+            payload_json: {
+                status: 'done',
+                messageId: oldAssistant.id,
+                causeMessageId: oldUser.id,
+                causeText: 'old prompt',
+                causeKind: 'webapp'
+            },
+            principal: { kind: 'agent', id: `session:${session.id}`, on_behalf_of: '1' }
+        })
+
+        // No causeSeq and no causeCursorMessageId: the loader must fall back to
+        // the full read and still consume the already-attributed inbound.
+        const nextUser = store.messages.addMessage(session.id, userInbound('new prompt'))
+        const nextAssistant = store.messages.addMessage(session.id, assistantOutput(notifyFooter('Next')))
+        const next = ingestNotify(store, session.id, 'default', nextAssistant.content, nextAssistant.id)
+        expect(next?.event.payloadJson).toMatchObject({ causeMessageId: nextUser.id, causeText: 'new prompt' })
+        expect((next?.event.payloadJson as { causeSeq?: number })?.causeSeq).toBe(nextUser.seq)
+    })
+})

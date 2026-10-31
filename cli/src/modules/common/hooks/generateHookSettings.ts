@@ -22,12 +22,15 @@ type HookSettings = {
     };
     hooks: {
         SessionStart: HookCommandConfig[];
+        PreCompact: HookCommandConfig[];
         UserPromptSubmit?: HookCommandConfig[];
         PreToolUse?: HookCommandConfig[];
         PermissionRequest?: HookCommandConfig[];
         PostModelSwitch?: HookCommandConfig[];
         PostToolUse?: HookCommandConfig[];
         PostToolUseFailure?: HookCommandConfig[];
+        Stop?: HookCommandConfig[];
+        StopFailure?: HookCommandConfig[];
         SessionEnd?: HookCommandConfig[];
     };
 };
@@ -64,7 +67,10 @@ export function buildHookSettings(
         ]
     };
     const hooks: HookSettings['hooks'] = {
-        SessionStart: [{ matcher: '*', ...commandHook }]
+        SessionStart: [{ matcher: '*', ...commandHook }],
+        // One source for automatic starts in both SDK and interactive modes.
+        // Manual /compact already announces its start in claudeRemote.
+        PreCompact: [{ matcher: 'auto', ...commandHook }]
     };
     if (trackPermissionMode || includeLocalPermissions) {
         hooks.UserPromptSubmit = [commandHook];
@@ -79,6 +85,8 @@ export function buildHookSettings(
         }];
         hooks.PostToolUse = [{ matcher: '*', ...commandHook }];
         hooks.PostToolUseFailure = [{ matcher: '*', ...commandHook }];
+        hooks.Stop = [commandHook];
+        hooks.StopFailure = [commandHook];
         hooks.SessionEnd = [{ matcher: '*', ...commandHook }];
     }
 

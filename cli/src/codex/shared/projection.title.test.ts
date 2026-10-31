@@ -31,6 +31,14 @@ function params(item: unknown, turnId = 'turn') { return { threadId: 'thread', t
 function history(...items: unknown[]) { return { turns: [{ id: 'turn', status: 'completed', items }] }; }
 
 describe('shared Codex titles', () => {
+    it('keeps a user lock on live tool completions and historical title projection', async () => {
+        const f = fixture()
+        f.update(metadata => ({ ...metadata, titleLocked: true }))
+        await f.projection.notification('item/completed', params(titleItem('locked', 'Agent')))
+        await f.projection.history(history(titleItem('old-locked', 'Historical')))
+        expect(f.metadata()).toMatchObject({ name: 'Manual name', titleLocked: true })
+    })
+
     it('never restores inherited title tools onto a fork, while a new live rename still works', async () => {
         const f = fixture();
         f.update(metadata => ({ ...metadata, name: undefined, forkedFrom: 'parent' }));

@@ -8,6 +8,7 @@ import { codexPlanProposalId } from './plan';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 type NativeTurn = { id: string; status: string; items: unknown[] };
+type NativeRequest = { id: string | number; method: string; params: unknown };
 
 vi.mock('../codexAppServerClient', () => ({
     CodexAppServerClient: class {
@@ -17,9 +18,12 @@ vi.mock('../codexAppServerClient', () => ({
         queue: Array<{ id: string; clientUserMessageId: unknown; input: unknown }> = [];
         notify?: (method: string, params: unknown) => void;
         abandoned?: () => void;
+        serverRequest?: (request: NativeRequest) => void;
+        responses: Array<{ id: string | number; result: unknown }> = [];
         setNotificationHandler(handler: typeof this.notify) { this.notify = handler; }
         setTransportAbandonedHandler(handler: (() => void) | null) { this.abandoned = handler ?? undefined; }
-        setServerRequestHandler() {}
+        setServerRequestHandler(handler: (request: NativeRequest) => void) { this.serverRequest = handler; }
+        respond(id: string | number, result: unknown) { this.responses.push({ id, result }); }
         async connect() {}
         async initialize() { this.initialized = true; }
         isInitialized() { return this.initialized; }
@@ -53,7 +57,7 @@ afterEach(async () => {
     finally { vi.useRealTimers(); }
 });
 
-async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) {
+async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'] }) {
     const directory = await mkdtemp('/tmp/hapi-shared-root-');
     let state: AgentState = { steeringActive: true };
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
@@ -82,7 +86,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
     const end = opts?.end ?? (async () => { throw new Error('Unexpected root archive'); });
     const root = new SharedCodexRoot({ session, workingDirectory: directory } as SessionBootstrapResult, {
         directory, generation: 'test', endpoint: 'mock', settingsFor: () => undefined,
-        create: async () => { throw new Error('Unexpected root creation'); },
+        create: opts?.create ?? (async () => { throw new Error('Unexpected root creation'); }),
         end
     } satisfies RootHost);
     cleanups.push(async () => { await root.close(false); await rm(directory, { recursive: true, force: true }); });
@@ -94,6 +98,8 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end'] }) 
         queue: Array<{ id: string; clientUserMessageId: string; input: unknown }>;
         notify(method: string, params: unknown): void;
         abandoned(): void;
+        serverRequest(request: NativeRequest): void;
+        responses: Array<{ id: string | number; result: unknown }>;
     };
     return {
         root, native, rpc, send, consumed, uncertain, metadata: () => metadata, state: () => state, updateState,
@@ -118,6 +124,145 @@ async function startCompaction(f: Awaited<ReturnType<typeof fixture>>, id = 'inp
     f.native.notify('item/started', { threadId: 'thread', turnId, item: { id: 'compact', type: 'contextCompaction' } });
     return turn;
 }
+
+describe('optional bounded history replay', () => {
+    it.each([
+        { selected: true, fullHistory: false, bounded: true },
+        { selected: true, fullHistory: true, bounded: false },
+        { selected: false, fullHistory: false, bounded: false },
+    ])('reads the expected history window: %j', async ({ selected, fullHistory, bounded }) => {
+        const f = await fixture();
+        vi.stubEnv('HAPI_CODEX_LAZY_HISTORY_IDS', selected ? ' other, thread ' : 'other');
+        const request = vi.spyOn(f.root.client, 'request');
+        request.mockResolvedValueOnce({ thread: { id: 'thread', historyMode: 'paginated' } });
+        if (bounded) request.mockResolvedValueOnce({ data: [{ id: 'new', items: [] }], nextCursor: 'older' });
+        else request.mockResolvedValueOnce({ data: [{ id: 'old', items: [] }], nextCursor: 'next' })
+            .mockResolvedValueOnce({ data: [{ id: 'new', items: [] }] });
+        try {
+            expect((await f.root.readThread('thread', fullHistory)).turns).toEqual(
+                bounded ? [{ id: 'new', items: [] }] : [{ id: 'old', items: [] }, { id: 'new', items: [] }]);
+            const calls = request.mock.calls.filter(([method]) => method === 'thread/turns/list');
+            expect(calls).toHaveLength(bounded ? 1 : 2);
+            expect(calls[0]?.[1]).toMatchObject(bounded
+                ? { sortDirection: 'desc', limit: 1, itemsView: 'full' }
+                : { sortDirection: 'asc', itemsView: 'full' });
+        } finally { request.mockRestore(); vi.unstubAllEnvs(); }
+    });
+
+    it('retains legacy history reads when the native thread does not support pagination', async () => {
+        const f = await fixture();
+        vi.stubEnv('HAPI_CODEX_LAZY_HISTORY_IDS', 'thread');
+        const request = vi.spyOn(f.root.client, 'request');
+        request.mockResolvedValueOnce({ thread: { id: 'thread' } })
+            .mockResolvedValueOnce({ thread: { id: 'thread', turns: [{ id: 'old', items: [] }] } });
+        try {
+            expect((await f.root.readThread()).turns).toEqual([{ id: 'old', items: [] }]);
+            expect(request).toHaveBeenLastCalledWith('thread/read', { threadId: 'thread', includeTurns: true });
+        } finally { request.mockRestore(); vi.unstubAllEnvs(); }
+    });
+
+    it.each([true, false])('preserves initial subscription and child discovery; selected root: %s', async selected => {
+        const f = await fixture();
+        vi.stubEnv('HAPI_CODEX_LAZY_HISTORY_IDS', selected ? 'thread' : 'other');
+        const request = vi.spyOn(f.root.client, 'request');
+        try {
+            await f.root.bind('thread', {}, true);
+            expect(request).toHaveBeenCalledWith('thread/resume', { threadId: 'thread' });
+            expect(request.mock.calls.some(([method]) => method === 'thread/list')).toBe(true);
+        } finally { request.mockRestore(); vi.unstubAllEnvs(); }
+    });
+
+    it('restores loaded child subscriptions, pending questions and live events after a lazy-root reconnect', async () => {
+        const f = await fixture();
+        vi.stubEnv('HAPI_CODEX_LAZY_HISTORY_IDS', 'thread');
+        const question: NativeRequest = { id: 'native-question', method: 'item/tool/requestUserInput', params: {
+            threadId: 'child', turnId: 'child-turn', itemId: 'question',
+            questions: [{ id: 'choice', header: 'Choose', question: 'Which?', options: [{ label: 'A', description: 'A' }] }]
+        } };
+        const original = f.root.client.request.bind(f.root.client);
+        const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            const p = params as Record<string, unknown> | undefined;
+            if (method === 'thread/list') return { data: [{ id: 'child', parentThreadId: 'thread' }, { id: 'unloaded', parentThreadId: 'thread' }] };
+            if (method === 'thread/loaded/list') return { data: ['child', 'unrelated'] };
+            if (method === 'thread/read' && p?.threadId === 'child') return { thread: { id: 'child', parentThreadId: 'thread' } };
+            if (method === 'thread/resume' && p?.threadId === 'child') {
+                f.native.serverRequest(question);
+                f.native.notify('item/completed', { threadId: 'child', turnId: 'child-turn',
+                    item: { id: 'answer', type: 'agentMessage', text: 'Child still connected' } });
+                return { thread: { id: 'child' } };
+            }
+            return original(method, params);
+        });
+        try {
+            await f.root.activate();
+            f.native.serverRequest(question);
+            await vi.waitFor(() => expect(Object.keys(f.state().requests ?? {})).toHaveLength(1));
+            const oldKey = Object.keys(f.state().requests!)[0];
+            f.native.initialized = false; f.native.abandoned();
+            await vi.waitFor(() => expect(request).toHaveBeenCalledWith('thread/resume', { threadId: 'child', excludeTurns: true }));
+            await vi.waitFor(() => {
+                expect(f.state().completedRequests?.[oldKey]?.status).toBe('canceled');
+                expect(Object.keys(f.state().requests ?? {})).toHaveLength(1);
+                expect(Object.keys(f.state().requests!)[0]).not.toBe(oldKey);
+            });
+            const newKey = Object.keys(f.state().requests!)[0];
+            await f.rpc.get(RPC_METHODS.Permission)!({ id: newKey, approved: true, answers: { choice: ['A'] } });
+            await vi.waitFor(() => expect(f.native.responses).toContainEqual({
+                id: 'native-question', result: { answers: { choice: { answers: ['A'] } } }
+            }));
+            await vi.waitFor(() => expect(f.send).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'agent-run-trace', agentId: 'child', message: expect.objectContaining({ type: 'message', message: 'Child still connected' })
+            }), expect.any(String)));
+            expect(request.mock.calls.some(([method, params]) => method === 'thread/resume'
+                && ['unloaded', 'unrelated'].includes(String((params as Record<string, unknown>)?.threadId)))).toBe(false);
+            expect(request.mock.calls.some(([method, params]) => method === 'thread/read'
+                && (params as Record<string, unknown>)?.includeTurns === true
+                && (params as Record<string, unknown>)?.threadId === 'child')).toBe(false);
+            expect(request.mock.calls.some(([method, params]) => method === 'thread/turns/list'
+                && (params as Record<string, unknown>)?.threadId === 'child')).toBe(false);
+        } finally { request.mockRestore(); vi.unstubAllEnvs(); }
+    });
+});
+describe('historical fork during generation', () => {
+    it('rejects steered and unknown-status boundaries before creating a child', async () => {
+        const create = vi.fn<RootHost['create']>()
+        const f = await fixture({ create })
+        f.native.thread.turns = [
+            { id: 'earlier', status: 'completed', items: [
+                { id: 'u1', type: 'userMessage', clientId: 'first' },
+                { id: 'u2', type: 'userMessage', clientId: 'steer' }
+            ] },
+            { id: 'unknown', status: 'unknown', items: [{ id: 'u3', type: 'userMessage', clientId: 'unknown' }] },
+            { id: 'running', status: 'inProgress', items: [] }
+        ]
+        await f.root.refresh()
+        await f.root.activate()
+        await expect(f.rpc.get(RPC_METHODS.ForkConversation)!({ messageLocalId: 'steer' })).rejects.toThrow('first message')
+        await expect(f.rpc.get(RPC_METHODS.ForkConversation)!({ messageLocalId: 'unknown' })).rejects.toThrow('completed')
+        expect(create).not.toHaveBeenCalled()
+    })
+    it('creates a child before a completed turn without interrupting the active source', async () => {
+        const initialSettings = vi.fn(async () => {})
+        const create = vi.fn<RootHost['create']>(async () => ({ threadId: 'child',
+            session: { sessionId: 'child-session' }, initialSettings }) as unknown as SharedCodexRoot)
+        const f = await fixture({ create })
+        f.native.thread.turns = [
+            { id: 'earlier', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'local-earlier' }] },
+            { id: 'running', status: 'inProgress', items: [{ id: 'u2', type: 'userMessage', clientId: 'local-running' }] }
+        ]
+        await f.root.refresh()
+        await f.root.activate()
+        const request = vi.spyOn(f.root.client, 'request')
+        const fork = f.rpc.get(RPC_METHODS.ForkConversation)!
+        await expect(fork({ messageLocalId: 'local-earlier' })).resolves.toEqual({ nativeSessionId: 'child', sessionId: 'child-session' })
+        expect(create).toHaveBeenCalledWith('thread/fork', expect.objectContaining({ threadId: 'thread', beforeTurnId: 'earlier' }), f.root)
+        expect(f.state().steeringActive).toBe(true)
+        expect(request.mock.calls.some(([method]) => method === 'turn/interrupt')).toBe(false)
+        await expect(fork({})).rejects.toThrow('busy')
+        await expect(fork({ messageLocalId: 'local-running' })).rejects.toThrow('completed')
+        expect(create).toHaveBeenCalledTimes(1)
+    })
+})
 
 describe('compaction delivery confirmation', () => {
     it('does not turn uncertainty discovered by a cold snapshot into live compaction evidence', async () => {

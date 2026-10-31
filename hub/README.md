@@ -39,17 +39,25 @@ Dictation and voice-assistant provider keys can also be added from **Settings â†
 - `TRANSCRIPTION_BASE_URL` and `TRANSCRIPTION_MODEL` - OpenAI-compatible/local transcription endpoint and model.
 - `TRANSCRIPTION_API_KEY` - Optional bearer token for the OpenAI-compatible endpoint.
 
-### Optional (fork titles)
+### Optional (automatic session titles)
+
+When the configured OpenAI-compatible title provider is available, the Hub
+performs one best-effort automatic title suggestion after the first completed
+turn when the session has no manual name or existing summary. Automatic
+failures are silent and never block the agent conversation. The manual
+**Generate** action remains available.
+
+For forked sessions, the child immediately shows `Fork: <source title>` and
+the Hub uses the same provider on the completed fork snapshot without waiting
+for another turn. Missing configuration or provider failure keeps the initial
+title. An explicit rename, title edit, or title lock made during generation wins
+over the pending result. Inherited Codex title-tool history does not rename a
+fork; new live rename calls still work.
 
 Configure `HAPI_TITLE_PROVIDER_BASE_URL`, `HAPI_TITLE_PROVIDER_API_KEY`, and
-`HAPI_TITLE_PROVIDER_MODEL` on the Hub to automatically name a fork from its
-recent conversation, using the same provider as the manual **Generate** action.
-The child immediately shows `Fork: <source title>` while the request runs.
-No new conversation turn is needed. Missing configuration or provider failure
-keeps this initial title, and manual **Generate** remains available.
-An explicit rename, title edit, or title lock made during generation wins over
-the pending result. Inherited Codex title-tool history does not rename a fork;
-new live rename calls still work.
+`HAPI_TITLE_PROVIDER_MODEL` on the Hub. The automatic first-turn attempt and the
+fork attempt are persisted across restarts. No automatic request is made
+without a configured provider.
 
 ### Optional
 
@@ -110,7 +118,7 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 
 ### Sessions (`src/web/routes/sessions.ts`)
 
-- `GET /api/sessions` - List all sessions. Each summary includes `hasConversationContent`, derived from stored conversation messages (not titles or lifecycle events); full session SSE updates carry changes to this flag.
+- `GET /api/sessions` - List all sessions. The default order is global-pinned, project-pinned, then `lastUserMessageAt ?? createdAt` descending (creation time and ID break ties); `?order=updatedAt` requests pure recency. Each summary includes `hasConversationContent`, derived from stored conversation messages (not titles or lifecycle events); full session SSE updates carry changes to this flag. See the [client contract](../docs/api/client-contract/rest.md) for the wire-level ordering rules.
 - `GET /api/sessions/:id` - Get session details.
 - `POST /api/sessions/:id/abort` - Abort session.
 - `POST /api/sessions/:id/switch` - Hand off session control to the web.
@@ -157,6 +165,10 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 
 - `GET /api/usage/summary` - Get cache-aware token usage for the owner namespace (`range=7d|30d|all`).
 
+### Activity (`src/web/routes/activity.ts`)
+
+- `GET /api/activity` - When agents in the caller's namespace were working (`since`/`until` epoch ms, default last 24 h, max 31 days): each session's turns from the `session_turns` table, plus the permission prompts and questions it waited on. Used by `hapi usage`.
+
 ### Storage (`src/web/routes/storage.ts`)
 
 - `GET /api/storage/sqlite` - SQLite database/WAL/SHM sizes for the owner namespace.
@@ -168,6 +180,11 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 - `GET /api/sessions/:id/git-diff-file` - File-specific diff.
 - `GET /api/sessions/:id/file` - Read file content.
 - `GET /api/sessions/:id/files` - File search with ripgrep.
+
+For inactive sessions, including archived sessions, these read-only file and Git operations fall back to
+the matching online Runner when it advertises `workspace-file-access`. The
+Runner reads the current workspace under its configured roots; HAPI does not
+copy or snapshot files during archive.
 
 ### Events (`src/web/routes/events.ts`)
 

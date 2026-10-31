@@ -978,7 +978,7 @@ describe('session model', () => {
         expect(activity[0].updatedAt).toBe(messages[0]?.createdAt)
     })
 
-    it('sets backgroundTaskCount from Claude background_tasks_changed snapshots', () => {
+    it('sets background tasks from Claude background_tasks_changed snapshots', () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []
         const cache = new SessionCache(store, createPublisher(events))
@@ -1002,7 +1002,7 @@ describe('session model', () => {
                 return stored ? { ok: true, value: stored } : { ok: false, reason: 'not-found' }
             },
             emitAccessError: () => {},
-            onBackgroundTaskCount: (sessionId, count) => cache.setBackgroundTaskCount(sessionId, count)
+            onBackgroundTasks: (sessionId, tasks) => cache.setBackgroundTasks(sessionId, tasks)
         })
         const send = (data: unknown) => handlers.get('message')?.({
             sid: session.id,
@@ -1012,11 +1012,15 @@ describe('session model', () => {
             type: 'system',
             subtype: 'background_tasks_changed',
             uuid: `snapshot-${taskIds.length}`,
-            tasks: taskIds.map((task_id) => ({ task_id, task_type: 'local_bash' }))
+            tasks: taskIds.map((task_id) => ({ task_id, task_type: 'local_bash', description: `run ${task_id}` }))
         })
 
         snapshot(['b1', 'b2'])
         expect(cache.getSession(session.id)?.backgroundTaskCount).toBe(2)
+        expect(cache.getSession(session.id)?.backgroundTasks).toEqual([
+            { id: 'b1', type: 'local_bash', description: 'run b1' },
+            { id: 'b2', type: 'local_bash', description: 'run b2' }
+        ])
 
         // The Bash tool result that announces a background task is not a count signal.
         send({
@@ -3700,6 +3704,61 @@ describe('session model', () => {
         }
     })
 
+    it('does not resume a native OpenCode session on a same-host machine when its recorded machine is offline', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'opencode-offline-recorded-machine-resume',
+                {
+                    path: '/remote/project',
+                    host: 'shared-host-label',
+                    machineId: 'recorded-machine-offline',
+                    flavor: 'opencode',
+                    opencodeSessionId: 'opencode-native-offline',
+                    lifecycleState: 'archived'
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'recorded-machine-offline',
+                { host: 'shared-host-label', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'wrong-same-host-machine',
+                { host: 'shared-host-label', platform: 'linux', happyCliVersion: '0.1.0' },
+                { status: 'running' },
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'wrong-same-host-machine', time: Date.now() })
+
+            let spawnCalled = false
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                spawnCalled = true
+                return { type: 'success', sessionId: session.id }
+            }
+
+            expect(await engine.reopenSession(session.id, 'default')).toEqual({
+                type: 'error',
+                message: 'No machine online',
+                code: 'no_machine_online'
+            })
+            expect(spawnCalled).toBe(false)
+            expect(engine.getSession(session.id)?.metadata?.lifecycleState).toBe('archived')
+        } finally {
+            engine.stop()
+        }
+    })
+
     it('resumeSession fresh-spawns when inactive cursor session has no agent id and no user messages', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
@@ -4007,6 +4066,30 @@ describe('session model', () => {
             const s2 = cache.getOrCreateSession(
                 'pi-tag-2',
                 { path: '/tmp/project', host: 'two', machineId: 'machine-2', flavor: 'pi', piSessionId: 'native-pi-id' },
+                null,
+                'default'
+            )
+
+            await cache.deduplicateByAgentSessionId(s2.id)
+
+            expect(cache.getSession(s1.id)).toBeDefined()
+            expect(cache.getSession(s2.id)).toBeDefined()
+            store.close()
+        })
+
+        it('does not merge the same OpenCode session id across different machines', async () => {
+            const store = new Store(':memory:')
+            const events: SyncEvent[] = []
+            const cache = new SessionCache(store, createPublisher(events))
+            const s1 = cache.getOrCreateSession(
+                'opencode-tag-1',
+                { path: '/tmp/project', host: 'one', machineId: 'machine-1', flavor: 'opencode', opencodeSessionId: 'native-opencode-id' },
+                null,
+                'default'
+            )
+            const s2 = cache.getOrCreateSession(
+                'opencode-tag-2',
+                { path: '/tmp/project', host: 'two', machineId: 'machine-2', flavor: 'opencode', opencodeSessionId: 'native-opencode-id' },
                 null,
                 'default'
             )

@@ -3,6 +3,8 @@ import HapiClient
 import HapiProtocol
 import HapiUI
 import Observation
+import SwiftUI
+import UniformTypeIdentifiers
 
 /// Chat top-bar state: title cascade + status dot + meta line.
 struct ChatHeaderUI: Equatable {
@@ -80,6 +82,70 @@ final class ChatModel {
 
     /// Delayed session-pipe notice; stable until the hub handshake arrives.
     var isReconnecting: Bool { chat.reconnectNotice.isVisible }
+
+    // MARK: Export
+
+    /// A hub answer that needs the user's decision before saving.
+    enum ExportPrompt: Equatable {
+        case warning(count: Int, limit: Int, estimatedBytes: Int)
+        case tooLarge(count: Int, estimatedBytes: Int, maxBytes: Int)
+    }
+
+    private(set) var isExporting = false
+    var exportPrompt: ExportPrompt?
+    /// Set when the export is ready; drives the Files save panel.
+    var exportDocument: SessionExportDocument?
+
+    /// `GET /export` (web JSON download); a large export asks first and is
+    /// retried with `force`.
+    func exportConversation(force: Bool = false) {
+        guard !isExporting else { return }
+        isExporting = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.isExporting = false }
+            do {
+                switch try await self.hub.api.exportSession(sessionId: self.sessionId, force: force) {
+                case .file(let file):
+                    self.exportDocument = SessionExportDocument(file: file)
+                case .warning(let count, let limit, let estimatedBytes):
+                    self.exportPrompt = .warning(count: count, limit: limit, estimatedBytes: estimatedBytes)
+                case .tooLarge(let count, let estimatedBytes, let maxBytes):
+                    self.exportPrompt = .tooLarge(count: count, estimatedBytes: estimatedBytes, maxBytes: maxBytes)
+                }
+            } catch {
+                self.showNotice(hubErrorMessage(error) ?? String(localized: "Failed to export conversation"))
+            }
+        }
+    }
+
+    func exportFinished(_ result: Result<URL, any Error>) {
+        exportDocument = nil
+        switch result {
+        case .success:
+            showNotice(String(localized: "Conversation exported"))
+        case .failure(let error as CocoaError) where error.code == .userCancelled:
+            break
+        case .failure:
+            showNotice(String(localized: "Failed to export conversation"))
+        }
+    }
+
+    /// Loaded user messages with a native fork/rewind point, newest first.
+    var historyPointMessages: [UserTextBlock] {
+        blocks.reversed().compactMap { visible in
+            guard case .block(.userText(let message)) = visible else { return nil }
+            let actions = interactor.historyActions(forMessageLocalId: message.localId)
+            return actions.fork || actions.rewind ? message : nil
+        }
+    }
+
+    /// Lifecycle actions need a known state: nil until the detail or the
+    /// list row is loaded (the header defaults to inactive before that).
+    var sessionIsActive: Bool? {
+        hub.sessionStore.detail(for: sessionId)?.active
+            ?? hub.sessionStore.sessions.first { $0.id == sessionId }?.active
+    }
 
     // MARK: Wiring
 
@@ -626,5 +692,24 @@ final class ChatModel {
             return String(tail)
         }
         return nil
+    }
+}
+
+/// The export as a Files document (`fileExporter`); never read back.
+struct SessionExportDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+
+    let file: SessionExportFile
+
+    init(file: SessionExportFile) {
+        self.file = file
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        throw CocoaError(.featureUnsupported)
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: file.data)
     }
 }

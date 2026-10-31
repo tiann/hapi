@@ -50,6 +50,19 @@ public struct AnchoredTranscriptList<Item: Identifiable & Equatable>: UIViewCont
     public func updateUIViewController(_ controller: TranscriptCollectionController<Item>, context: Context) {
         var next = self
         next.environment = context.environment
+        // SwiftUI re-runs this update only when an environment value read here
+        // changes (strictly so on iOS 27; even `@Environment(\.self)` is tracked
+        // per key). Hosted rows render from the copied snapshot in their own
+        // hosting roots, so read every value they follow at runtime.
+        _ = context.environment.dynamicTypeSize
+        _ = context.environment.legibilityWeight
+        _ = context.environment.hapiTypography
+        _ = context.environment.locale
+        _ = context.environment.layoutDirection
+        _ = context.environment.colorScheme
+        _ = context.environment.hapiTheme
+        _ = context.environment.hapiOpenURL
+        _ = context.environment.isEnabled
         controller.update(next)
     }
 }
