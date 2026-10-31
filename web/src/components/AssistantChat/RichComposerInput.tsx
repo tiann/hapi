@@ -36,6 +36,11 @@ import type { SessionSummary } from '@/types/api'
 
 export type RichComposerInputHandle = {
     focus: () => void
+    /** Replace the complete serialized composer value and place the mirror caret. */
+    replaceText: (
+        text: string,
+        selection?: ComposerSelection,
+    ) => { text: string; selection: ComposerSelection }
     /**
      * Re-read the contenteditable → serialize session chips to
      * `[title](/sessions/<id>)` and push into composer state. Call before
@@ -859,6 +864,22 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         focus: () => {
             rootRef.current?.focus()
         },
+        replaceText: (next, selection) => {
+            const root = rootRef.current
+            if (!root) {
+                const mirror = mirrorComposerSegments(parseComposerSegments(next))
+                const fallbackSelection = selection ?? { start: mirror.length, end: mirror.length }
+                return { text: next, selection: fallbackSelection }
+            }
+            const currentSegments = segmentsFromEditor(root)
+            const currentSelection = getMirrorSelection(root)
+            recordUndo(currentSegments, currentSelection)
+            const nextSegments = parseComposerSegments(next)
+            const mirror = mirrorComposerSegments(nextSegments)
+            const nextSelection = selection ?? { start: mirror.length, end: mirror.length }
+            const serialized = commitSegments(root, nextSegments, nextSelection)
+            return { text: serialized, selection: nextSelection }
+        },
         flushSerializedText: () => {
             const root = rootRef.current
             if (!root) return value
@@ -896,7 +917,15 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
             const serialized = commitSegments(root, result.segments, result.selection)
             return { text: serialized, selection: result.selection }
         },
-    }), [commitSegments, onMirrorChange, onValueChange, recordUndo, value])
+    }), [
+        commitSegments,
+        onMirrorChange,
+        onValueChange,
+        recordUndo,
+        renderEditorSegments,
+        syncFromValue,
+        value,
+    ])
 
     useEffect(() => () => {
         if (tooltipTimerRef.current) clearTimeout(tooltipTimerRef.current)
