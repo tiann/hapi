@@ -5,6 +5,7 @@ import {
     getUsageScanStates,
     recordUsageScan,
     transferUsageSession,
+    transferUsageSessionInTransaction,
     type UsageEvent,
     type UsageScanState
 } from './usage'
@@ -32,5 +33,9 @@ export class UsageStore {
 
     transferSession(fromSessionId: string, toSessionId: string): void {
         transferUsageSession(this.db, fromSessionId, toSessionId)
+    }
+
+    transferSessionInTransaction(fromSessionId: string, toSessionId: string): void {
+        transferUsageSessionInTransaction(this.db, fromSessionId, toSessionId)
     }
 }

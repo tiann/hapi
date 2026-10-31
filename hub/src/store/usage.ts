@@ -220,48 +220,50 @@ export function getUsageScanStates(db: Database, sessionIds: string[]): Map<stri
     }]))
 }
 
-export function transferUsageSession(db: Database, fromSessionId: string, toSessionId: string): void {
+export function transferUsageSessionInTransaction(db: Database, fromSessionId: string, toSessionId: string): void {
     if (fromSessionId === toSessionId) return
 
-    db.transaction(() => {
-        db.prepare(`
-            INSERT OR IGNORE INTO usage_events (
-                session_id,
-                source_key,
-                source_seq,
-                created_at,
-                agent,
-                model,
-                kind,
-                input_tokens,
-                output_tokens,
-                cache_read_tokens,
-                cache_creation_tokens,
-                last_input_tokens,
-                last_output_tokens,
-                last_cache_read_tokens,
-                last_cache_creation_tokens
-            )
-            SELECT
-                ?,
-                source_key,
-                source_seq,
-                created_at,
-                agent,
-                model,
-                kind,
-                input_tokens,
-                output_tokens,
-                cache_read_tokens,
-                cache_creation_tokens,
-                last_input_tokens,
-                last_output_tokens,
-                last_cache_read_tokens,
-                last_cache_creation_tokens
-            FROM usage_events
-            WHERE session_id = ?
-        `).run(toSessionId, fromSessionId)
-        db.prepare('DELETE FROM usage_events WHERE session_id = ?').run(fromSessionId)
-        db.prepare('DELETE FROM usage_scan_state WHERE session_id IN (?, ?)').run(fromSessionId, toSessionId)
-    })()
+    db.prepare(`
+        INSERT OR IGNORE INTO usage_events (
+            session_id,
+            source_key,
+            source_seq,
+            created_at,
+            agent,
+            model,
+            kind,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_creation_tokens,
+            last_input_tokens,
+            last_output_tokens,
+            last_cache_read_tokens,
+            last_cache_creation_tokens
+        )
+        SELECT
+            ?,
+            source_key,
+            source_seq,
+            created_at,
+            agent,
+            model,
+            kind,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_creation_tokens,
+            last_input_tokens,
+            last_output_tokens,
+            last_cache_read_tokens,
+            last_cache_creation_tokens
+        FROM usage_events
+        WHERE session_id = ?
+    `).run(toSessionId, fromSessionId)
+    db.prepare('DELETE FROM usage_events WHERE session_id = ?').run(fromSessionId)
+    db.prepare('DELETE FROM usage_scan_state WHERE session_id IN (?, ?)').run(fromSessionId, toSessionId)
+}
+
+export function transferUsageSession(db: Database, fromSessionId: string, toSessionId: string): void {
+    db.transaction(() => transferUsageSessionInTransaction(db, fromSessionId, toSessionId))()
 }

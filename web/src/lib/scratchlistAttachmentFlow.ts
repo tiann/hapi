@@ -27,13 +27,14 @@ async function blobToBase64(blob: Blob): Promise<string> {
 /** Client-only marker stashed on park payloads after chat→hub migrate (#1226). */
 export type ParkAttachmentMetadata = AttachmentMetadata & {
     migratedFromPath?: string
+    migratedFromAttachmentId?: string
 }
 
 /** True when any composer attachment still lives on the normal chat upload path. */
 export function attachmentsNeedScratchlistMigration(
     attachments: AttachmentMetadata[] | undefined
 ): boolean {
-    return (attachments ?? []).some((att) => !isHubScratchlistAttachmentPath(att.path))
+    return (attachments ?? []).some((att) => !att.path || !isHubScratchlistAttachmentPath(att.path))
 }
 
 /** Result of preparing a scratchlist park (migrate only — add happens in commit). */
@@ -59,12 +60,17 @@ export async function finalizeMigratedScratchlistParkCleanup(
     accepted: boolean,
 ): Promise<void> {
     const list = (attachments ?? []) as ParkAttachmentMetadata[]
-    const migrated = list.filter((att) => typeof att.migratedFromPath === 'string' && att.migratedFromPath.length > 0)
+    const migrated = list.filter((att) => (
+        (typeof att.migratedFromPath === 'string' && att.migratedFromPath.length > 0)
+        || (typeof att.migratedFromAttachmentId === 'string' && att.migratedFromAttachmentId.length > 0)
+    ))
     if (migrated.length === 0) return
 
     if (accepted) {
         await Promise.allSettled(
-            migrated.map((att) => api.deleteUploadFile(sessionId, att.migratedFromPath!))
+            migrated.map((att) => att.migratedFromAttachmentId
+                ? api.deleteAttachment(sessionId, att.migratedFromAttachmentId)
+                : api.deleteUploadFile(sessionId, att.migratedFromPath!))
         )
         return
     }
@@ -84,6 +90,7 @@ export type PendingParkAttachment = {
     contentType?: string
     file?: File
     path?: string
+    attachmentId?: string
     hubAttachment?: ScratchlistAttachmentMetadata
     previewUrl?: string
 }
@@ -136,10 +143,12 @@ export async function prepareScratchlistParkAttachments(
                 chip.path && !isHubScratchlistAttachmentPath(chip.path)
                     ? chip.path
                     : undefined
+            const migratedFromAttachmentId = chip.attachmentId
             prepared.push({
                 ...result.attachment,
                 previewUrl: chip.previewUrl,
                 ...(migratedFromPath ? { migratedFromPath } : {}),
+                ...(migratedFromAttachmentId ? { migratedFromAttachmentId } : {}),
             })
         }
         return prepared
@@ -169,7 +178,7 @@ export async function migrateChatPathAttachmentsToScratchlist(
     const createdHubIds: string[] = []
     try {
         for (const attachment of attachments) {
-            if (isHubScratchlistAttachmentPath(attachment.path)) {
+            if (attachment.path && isHubScratchlistAttachmentPath(attachment.path)) {
                 migrated.push(attachment)
                 continue
             }
@@ -189,7 +198,7 @@ export async function migrateChatPathAttachmentsToScratchlist(
             migrated.push({
                 ...result.attachment,
                 previewUrl: attachment.previewUrl,
-                migratedFromPath: attachment.path,
+                ...(attachment.path ? { migratedFromPath: attachment.path } : {}),
             })
         }
         return migrated
@@ -204,7 +213,7 @@ export async function migrateChatPathAttachmentsToScratchlist(
 export async function stageScratchlistAttachmentsForComposeSend(
     api: ApiClient,
     sessionId: string,
-    attachments: ScratchlistAttachmentMetadata[]
+    attachments: AttachmentMetadata[]
 ): Promise<AttachmentMetadata[]> {
     const staged: AttachmentMetadata[] = []
     try {
@@ -212,7 +221,7 @@ export async function stageScratchlistAttachmentsForComposeSend(
             const blob = await api.fetchScratchlistAttachmentBlob(sessionId, attachment.id)
             const content = await blobToBase64(blob)
             const upload = await api.uploadFile(sessionId, attachment.filename, content, attachment.mimeType)
-            if (!upload.success || !upload.path) {
+            if (!upload.success || (!upload.path && !upload.attachmentId)) {
                 throw new Error(`Failed to stage attachment ${attachment.filename}`)
             }
             let previewUrl: string | undefined
@@ -224,15 +233,47 @@ export async function stageScratchlistAttachmentsForComposeSend(
                 filename: attachment.filename,
                 mimeType: attachment.mimeType,
                 size: attachment.size,
-                path: upload.path,
-                previewUrl
+                ...(upload.path ? { path: upload.path } : {}),
+                ...(upload.attachmentId ? { attachmentId: upload.attachmentId } : {}),
+                ...(!upload.attachmentId && previewUrl ? { previewUrl } : {})
             })
         }
         return staged
     } catch (error) {
-        await Promise.allSettled(
-            staged.map((att) => api.deleteUploadFile(sessionId, att.path))
-        )
+        await cleanupStagedComposeAttachments(api, sessionId, staged)
+        throw error
+    }
+}
+
+export async function cleanupStagedComposeAttachments(
+    api: ApiClient,
+    sessionId: string,
+    attachments: AttachmentMetadata[],
+): Promise<void> {
+    await Promise.allSettled(
+        attachments.flatMap((attachment) => attachment.attachmentId
+            ? [api.deleteAttachment(sessionId, attachment.attachmentId)]
+            : attachment.path
+                ? [api.deleteUploadFile(sessionId, attachment.path)]
+                : [])
+    )
+}
+
+/** Run a send after staging and reclaim the staged copy when the send is rejected. */
+export async function sendStagedComposeAttachments<T>(
+    api: ApiClient,
+    sessionId: string,
+    attachments: AttachmentMetadata[],
+    send: () => Promise<T | false>,
+): Promise<T | false> {
+    try {
+        const accepted = await send()
+        if (accepted === false) {
+            await cleanupStagedComposeAttachments(api, sessionId, attachments)
+        }
+        return accepted
+    } catch (error) {
+        await cleanupStagedComposeAttachments(api, sessionId, attachments)
         throw error
     }
 }

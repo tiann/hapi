@@ -13,7 +13,7 @@ afterEach(() => {
     }
 })
 
-describe('schema migration v26 to v27', () => {
+describe('schema migration v26 to v31', () => {
     it('adds an index used by the session-list future-scheduled lookups', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v26-'))
         tempDirs.push(dir)
@@ -59,9 +59,52 @@ describe('schema migration v26 to v27', () => {
         const minPlan = minPlanStatement.all('a', 'b', 123) as Array<{ detail: string }>
         minPlanStatement.finalize()
 
-        expect(version.user_version).toBe(29)
+        expect(version.user_version).toBe(31)
         expect(countPlan.some((row) => row.detail.includes('idx_messages_future_scheduled_queued'))).toBe(true)
         expect(minPlan.some((row) => row.detail.includes('idx_messages_future_scheduled_queued'))).toBe(true)
+        migrated.close()
+    })
+
+    it('adds durable attachment tables to an existing V29 database', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v29-attachments-'))
+        tempDirs.push(dir)
+        const dbPath = join(dir, 'hapi.db')
+        const attachmentsRoot = join(dir, 'attachments')
+
+        new Store(dbPath, { attachmentsRoot }).close()
+        const legacy = new Database(dbPath)
+        legacy.exec(`
+            DROP TABLE attachment_deletions;
+            DROP TABLE attachments;
+            PRAGMA user_version = 29;
+        `)
+        legacy.close()
+
+        const migrated = new Store(dbPath, { attachmentsRoot })
+        const internalDb = (migrated as unknown as { db: Database }).db
+        const table = internalDb.prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'attachments'"
+        ).get() as { name: string } | null
+        const deletions = internalDb.prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'attachment_deletions'"
+        ).get() as { name: string } | null
+        const columns = internalDb.prepare('PRAGMA table_info(attachments)').all() as Array<{ name: string }>
+        const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
+
+        expect(table?.name).toBe('attachments')
+        expect(deletions?.name).toBe('attachment_deletions')
+        expect(columns.map((column) => column.name)).toEqual([
+            'id',
+            'namespace',
+            'session_id',
+            'filename',
+            'mime_type',
+            'size',
+            'sha256',
+            'original_path',
+            'created_at'
+        ])
+        expect(version.user_version).toBe(31)
         migrated.close()
     })
 })
