@@ -22,6 +22,14 @@ import kotlinx.serialization.Serializable
  * `hapi.codexImportedSessions` → a DataStore JSON blob here). Powers the
  * dialog's "Imported" badge and the selection-clearing rule after a bulk
  * import. Added for slice A (codex session import).
+ *
+ * Hub scoping: the web twin is naturally per-hub — localStorage partitions by
+ * hub origin — so a thread imported on hub A never reads as imported on hub B.
+ * The store therefore takes the hub origin as a [DataStoreCodexImportedSessionsStore.hubKey]
+ * and persists one blob per hub; the exposed markers only ever describe the
+ * constructing hub. Thread ids are machine-local, not globally unique, so
+ * without this scoping the same local history on another hub would be wrongly
+ * badged and suppressed from default selection there.
  */
 @Serializable
 data class CodexImportedSessionsData(
@@ -57,16 +65,24 @@ class MemoryCodexImportedSessionsStore : CodexImportedSessionsStore {
 }
 
 /**
- * DataStore-backed production impl: one JSON blob under a string key in the
- * app-wide `hapi_prefs` store (same precedent as [DataStoreNewSessionPrefs]).
- * Corrupt data degrades to empty markers. The web's "drop non-finite
- * timestamps on read" guard has no analogue: JSON numbers cannot encode
- * NaN/Infinity, so a decoded `Long` is always finite.
+ * DataStore-backed production impl: one JSON blob per hub under a
+ * hub-prefixed string key in the app-wide `hapi_prefs` store (same
+ * per-hub-key precedent as the chat drafts' `draft:<hub>:<id>`), so markers
+ * partition with the active hub exactly like the web's per-origin
+ * localStorage. Constructed per active hub (see `HubGraph`); thread ids are
+ * machine-local and must not leak across hubs. Corrupt data degrades to
+ * empty markers. The web's "drop non-finite timestamps on read" guard has no
+ * analogue: JSON numbers cannot encode NaN/Infinity, so a decoded `Long` is
+ * always finite.
  */
 class DataStoreCodexImportedSessionsStore(
     private val dataStore: DataStore<Preferences>,
     scope: CoroutineScope,
+    /** Hub origin scoping this store (e.g. `https://hub.example`). */
+    hubKey: String,
 ) : CodexImportedSessionsStore {
+
+    private val key: Preferences.Key<String> = stringPreferencesKey("codex_imported_sessions:$hubKey")
 
     private val mutable = MutableStateFlow<Map<String, Long>>(emptyMap())
 
@@ -76,7 +92,7 @@ class DataStoreCodexImportedSessionsStore(
         scope.launch {
             dataStore.data
                 .catch { error -> if (error is IOException) emit(emptyPreferences()) else throw error }
-                .map { prefs -> decode(prefs[KEY]) }
+                .map { prefs -> decode(prefs[key]) }
                 .collect { mutable.value = it }
         }
     }
@@ -85,17 +101,17 @@ class DataStoreCodexImportedSessionsStore(
         val additions = ids.mapNotNull { it.trim().ifEmpty { null } }.associateWith { importedAt }
         if (additions.isEmpty()) return
         dataStore.edit { prefs ->
-            val next = decode(prefs[KEY]).let { it + additions }
-            prefs[KEY] = HapiJson.encodeToString(CodexImportedSessionsData.serializer(), CodexImportedSessionsData(next))
+            val next = decode(prefs[key]).let { it + additions }
+            prefs[key] = HapiJson.encodeToString(CodexImportedSessionsData.serializer(), CodexImportedSessionsData(next))
         }
     }
 
     override suspend fun clearMarker(id: String) {
         dataStore.edit { prefs ->
-            val current = decode(prefs[KEY])
+            val current = decode(prefs[key])
             if (id in current) {
                 val next = current - id
-                prefs[KEY] = HapiJson.encodeToString(CodexImportedSessionsData.serializer(), CodexImportedSessionsData(next))
+                prefs[key] = HapiJson.encodeToString(CodexImportedSessionsData.serializer(), CodexImportedSessionsData(next))
             }
         }
     }
@@ -107,9 +123,5 @@ class DataStoreCodexImportedSessionsStore(
         } catch (_: Exception) {
             emptyMap()
         }
-    }
-
-    private companion object {
-        val KEY: Preferences.Key<String> = stringPreferencesKey("codex_imported_sessions")
     }
 }

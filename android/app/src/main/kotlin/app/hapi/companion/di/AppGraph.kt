@@ -3,8 +3,6 @@ package app.hapi.companion.di
 import android.content.Context
 import androidx.datastore.preferences.preferencesDataStore
 import app.hapi.companion.fcm.RegisterDeviceWorker
-import app.hapi.companion.feature.newsession.CodexImportedSessionsStore
-import app.hapi.companion.feature.newsession.DataStoreCodexImportedSessionsStore
 import app.hapi.companion.feature.newsession.DataStoreNewSessionPrefs
 import app.hapi.companion.feature.newsession.NewSessionPrefs
 import app.hapi.companion.feature.pairing.PairingClient
@@ -63,7 +61,7 @@ data class AuthTerminal(
 )
 
 /** Process-wide Preferences DataStore (hub roster + future app settings). */
-private val Context.hapiDataStore by preferencesDataStore(name = "hapi_prefs")
+internal val Context.hapiDataStore by preferencesDataStore(name = "hapi_prefs")
 
 /**
  * Process-singleton graph, hand-rolled (no Hilt by design — see plan track B).
@@ -119,14 +117,6 @@ class AppGraph(context: Context) {
      * hub scoping is unnecessary.
      */
     val newSessionPrefs: NewSessionPrefs = DataStoreNewSessionPrefs(appContext.hapiDataStore)
-
-    /**
-     * Codex import markers (thread id → imported-at), the DataStore twin of
-     * the web's localStorage `hapi.codexImportedSessions` (slice A). App-wide
-     * for the same reason as [newSessionPrefs].
-     */
-    val codexImportedSessionsStore: CodexImportedSessionsStore =
-        DataStoreCodexImportedSessionsStore(appContext.hapiDataStore, scope)
 
     /** Appearance choice (B-M4e); MainActivity reads it at setContent. */
     val themePrefs: ThemePrefs = ThemePrefs(appContext.hapiDataStore)
