@@ -1566,8 +1566,8 @@ export class MessageService {
             if (skipSessionIds?.has(sessionId)) {
                 return
             }
+            if (this.matureReleaseInFlightSessions.has(sessionId)) return
             if (this.pendingOrderedDeliverableReleaseSessions.has(sessionId)) {
-                if (this.matureReleaseInFlightSessions.has(sessionId)) return
                 this.matureReleaseInFlightSessions.add(sessionId)
                 try {
                     await this.releaseDeliverableQueuedMessages(sessionId, now)
@@ -1577,14 +1577,13 @@ export class MessageService {
                 return
             }
             // A text-only session has no asynchronous materialization work.
-            // Run it without holding the in-flight marker so two synchronous
-            // ticks retain the historical re-emit behavior.
+            // It still observes the session lock above so it cannot overtake an
+            // active A/B/C handoff whose attachment was just cancelled.
             const hasAttachments = messages.some((message) => getUserMessageAttachments(message.content).length > 0)
             if (!hasAttachments) {
                 await this.releaseMatureScheduledMessagesForSession(messages)
                 return
             }
-            if (this.matureReleaseInFlightSessions.has(sessionId)) return
             this.matureReleaseInFlightSessions.add(sessionId)
             try {
                 await this.releaseMatureScheduledMessagesForSession(messages)

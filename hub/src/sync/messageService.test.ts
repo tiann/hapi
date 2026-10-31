@@ -3056,6 +3056,90 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
         ])
     })
 
+    it('keeps periodic text-only delivery behind a cancelled attachment handoff', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'cancelled-handoff-serialization')
+        const cliEmitted: unknown[] = []
+        const deletedPaths: string[] = []
+        let materializeStarted!: () => void
+        const started = new Promise<void>((resolve) => { materializeStarted = resolve })
+        let resolveMaterialization!: () => void
+        const materialization = new Promise<void>((resolve) => { resolveMaterialization = resolve })
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    },
+                    timeout: (_ms: number) => ({
+                        emit: (_event: string, _data: unknown, callback: AckCallback) => {
+                            if (namespace === '/cli') callback(null, [{ removed: true }])
+                        },
+                    }),
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } },
+            }),
+        } as unknown as Server
+        const service = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => {
+                    materializeStarted()
+                    await materialization
+                    return attachments.map((attachment) => ({ ...attachment, path: '/tmp/cancelled-handoff.png' }))
+                },
+                deleteMaterializedScheduledAttachments: async (_sessionId, attachments) => {
+                    deletedPaths.push(...attachments.map((attachment) => attachment.path))
+                },
+            },
+        )
+        const scheduledAt = Date.now() - 1_000
+        const first = store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'attachment A',
+                    attachments: [makeHubScratchlistAttachment(session.id, 'cancelled-handoff-serialization')],
+                },
+            },
+            'cancelled-handoff-a',
+            scheduledAt,
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate B' } },
+            'cancelled-handoff-b',
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'scheduled C' } },
+            'cancelled-handoff-c',
+            scheduledAt,
+        )
+
+        const initial = service.releaseDeliverableHandoffMessages(session.id, Date.now())
+        await started
+        await expect(service.cancelQueuedMessage(session.id, first.id)).resolves.toMatchObject({
+            status: 'cancelled',
+            localId: 'cancelled-handoff-a',
+        })
+        await service.releaseMatureScheduledMessages(Date.now())
+        expect(cliEmitted).toHaveLength(0)
+
+        resolveMaterialization()
+        await initial
+        expect(deletedPaths).toEqual(['/tmp/cancelled-handoff.png'])
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual([
+            'cancelled-handoff-b',
+            'cancelled-handoff-c',
+        ])
+    })
+
     it('emits mature messages to /cli', async () => {
         const store = makeStore()
         const session = makeSession(store, 'release-emit')
