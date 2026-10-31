@@ -60,6 +60,36 @@ export function PlusIcon(props: IconProps) {
     )
 }
 
+/** Full-screen/expand corners icon. */
+export function FullscreenIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <path d="M8 3H3v5" />
+            <path d="m3 3 5 5" />
+            <path d="M16 3h5v5" />
+            <path d="m21 3-5 5" />
+            <path d="M8 21H3v-5" />
+            <path d="m3 21 5-5" />
+            <path d="M16 21h5v-5" />
+            <path d="m21 21-5-5" />
+        </>,
+        props
+    )
+}
+
+/** Exit full-screen/restore corners icon. */
+export function FullscreenExitIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <path d="M8 3v5H3" />
+            <path d="M16 3v5h5" />
+            <path d="M8 21v-5H3" />
+            <path d="M16 21v-5h5" />
+        </>,
+        props
+    )
+}
+
 export function ShareIcon(props: IconProps) {
     return createIcon(
         <path d="M9 8.25H7.5a2.25 2.25 0 0 0-2.25 2.25v9a2.25 2.25 0 0 0 2.25 2.25h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25H15m0-3-3-3m0 0-3 3m3-3v12" />,

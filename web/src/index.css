@@ -334,6 +334,11 @@ html:has(.chat-scroll-y) #root {
     touch-action: pan-y;
 }
 
+/* Keep the share canvas centered between both edges of its scrollbar. */
+.hapi-share-preview-scroll {
+    scrollbar-gutter: stable both-edges;
+}
+
 /* Keep file-preview content aligned to the previous left edge while reserving
  * the scrollbar slot on the right on both touch and pointer devices. */
 .file-preview-scroll-y {
