@@ -9,6 +9,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
@@ -311,26 +312,30 @@ class CodexImportController(
 
     /** Checkbox toggle, blocked while busy (web `toggleSession`, multiple mode). */
     fun toggleSession(sessionId: String) {
-        val current = state.value
-        if (current.importing || current.loading) return
-        update {
-            it.copy(
-                dialogSelection = if (sessionId in it.dialogSelection) {
-                    it.dialogSelection - sessionId
-                } else {
-                    it.dialogSelection + sessionId
-                },
-                // The selection changed — a stale row-missing notice is obsolete.
-                confirmSelectionMissing = false,
-            )
+        update { current ->
+            if (current.importing || current.loading) {
+                current
+            } else {
+                current.copy(
+                    dialogSelection = if (sessionId in current.dialogSelection) {
+                        current.dialogSelection - sessionId
+                    } else {
+                        current.dialogSelection + sessionId
+                    },
+                    // The selection changed — a stale row-missing notice is obsolete.
+                    confirmSelectionMissing = false,
+                )
+            }
         }
     }
 
     /** Checks exactly the filtered rows (web `selectAll` replaces, no union). */
     fun selectAll() {
-        val current = state.value
-        val filtered = CodexImportLogic.filterSessions(current.sessions, current.workdirFilter, current.searchQuery)
-        update { it.copy(dialogSelection = LinkedHashSet(filtered.map { it.id }), confirmSelectionMissing = false) }
+        update { current ->
+            val filtered =
+                CodexImportLogic.filterSessions(current.sessions, current.workdirFilter, current.searchQuery)
+            current.copy(dialogSelection = LinkedHashSet(filtered.map { it.id }), confirmSelectionMissing = false)
+        }
     }
 
     fun clearSelection() {
@@ -388,32 +393,55 @@ class CodexImportController(
      * [CodexImportUiState.duplicateDetectError].
      */
     fun bulkImport(sessionIds: List<String>) {
-        val current = state.value
-        if (current.importing || current.loading || sessionIds.isEmpty()) return
-        val requestMachineId = current.machineId ?: formMachineId.ifEmpty { null }
+        if (sessionIds.isEmpty()) return
+        // The busy guard and the importing=true transition are one atomic
+        // step, so two racing Confirm taps can never double-launch (the
+        // captures reset each CAS attempt — they reflect exactly the attempt
+        // whose transition won).
+        var requestMachineId: String? = null
+        var started = false
         // A fresh import attempt supersedes any retained merge/detect
         // feedback from the previous batch (including a merge error retained
         // through a dismissed confirm).
-        update { it.copy(importing = true, duplicateDetectError = null, duplicateMergeError = null) }
+        update { current ->
+            started = false
+            requestMachineId = null
+            if (current.importing || current.loading) {
+                current
+            } else {
+                started = true
+                requestMachineId = current.machineId
+                current.copy(importing = true, duplicateDetectError = null, duplicateMergeError = null)
+            }
+        }
+        if (!started) return
+        val machineId = requestMachineId ?: formMachineId.ifEmpty { null }
         scope.launch {
             try {
                 val result = gateway.syncCodexSession(
                     CodexDesktopSyncRequest(
                         sessionIds = sessionIds,
                         cwd = currentDirectory.trim().ifEmpty { null },
-                        machineId = requestMachineId,
+                        machineId = machineId,
                     ),
                 )
                 if (!result.success) {
                     throw IllegalStateException(normalizeError(result.error, strings.loadFailed))
                 }
                 store.markImported(sessionIds)
-                val keepSelection = CodexImportLogic.clearBatchImportedCodexSelection(
-                    state.value.selectedSessionId,
-                    sessionIds,
-                )
                 resetDialogFields()
-                update { it.copy(open = false, selectedSessionId = keepSelection) }
+                // The keep-selection read rides the atomic transition — a
+                // concurrent update between a stale read and this write can
+                // no longer resurrect a dropped inline selection.
+                update { current ->
+                    current.copy(
+                        open = false,
+                        selectedSessionId = CodexImportLogic.clearBatchImportedCodexSelection(
+                            current.selectedSessionId,
+                            sessionIds,
+                        ),
+                    )
+                }
                 // Duplicate detection (slice B) — second hop after the import
                 // itself succeeded; scope == the batch just imported.
                 val importedHapiIds = result.hapiSessionIds ?: emptyList()
@@ -471,10 +499,19 @@ class CodexImportController(
      * `ConfirmDialog` catches into its own error slot.
      */
     fun mergeDuplicates() {
-        val current = state.value
-        if (current.mergingDuplicates || current.pendingDuplicateSessionIds.isEmpty()) return
-        val pendingBatch = current.pendingDuplicateSessionIds
-        update { it.copy(mergingDuplicates = true, duplicateMergeError = null) }
+        // Guard + mergingDuplicates=true in one atomic step (no double-launch
+        // under racing taps); the batch capture resets each CAS attempt.
+        var pendingBatch: List<String> = emptyList()
+        update { current ->
+            pendingBatch = emptyList()
+            if (current.mergingDuplicates || current.pendingDuplicateSessionIds.isEmpty()) {
+                current
+            } else {
+                pendingBatch = current.pendingDuplicateSessionIds
+                current.copy(mergingDuplicates = true, duplicateMergeError = null)
+            }
+        }
+        if (pendingBatch.isEmpty()) return
         scope.launch {
             try {
                 val result = gateway.mergeCodexDuplicateSessions(
@@ -511,19 +548,24 @@ class CodexImportController(
         // so the in-flight progress and the eventual outcome stay observable
         // (an AlertDialog's back/outside dismissal routes here, same as the
         // already-disabled cancel button; success ends the in-flight window
-        // before its own cleanup below).
-        if (state.value.mergingDuplicates) return
-        // A failed merge's error is retained through the dismissal — it must
-        // not vanish with the dialog (the web twin toasts it outside the
-        // dialog; the #2149 import-error retention shape). It renders on the
-        // inline section while the confirm is closed, and clears on the next
-        // bulk import or merge attempt.
-        update {
-            it.copy(
-                pendingDuplicateSessionIds = emptyList(),
-                pendingDuplicateHapiSessionIds = emptyList(),
-                duplicateSessionGroups = emptyList(),
-            )
+        // before its own cleanup below). The guard rides the atomic
+        // transition, so a merge settling concurrently with the dismissal
+        // cannot slip the cleanup past a stale guard read.
+        update { current ->
+            if (current.mergingDuplicates) {
+                current
+            } else {
+                // A failed merge's error is retained through the dismissal —
+                // it must not vanish with the dialog (the web twin toasts it
+                // outside the dialog; the #2149 import-error retention shape).
+                // It renders on the inline section while the confirm is
+                // closed, and clears on the next bulk import or merge attempt.
+                current.copy(
+                    pendingDuplicateSessionIds = emptyList(),
+                    pendingDuplicateHapiSessionIds = emptyList(),
+                    duplicateSessionGroups = emptyList(),
+                )
+            }
         }
     }
 
@@ -536,13 +578,25 @@ class CodexImportController(
      * (web `handleArchive` catch, no toast channel).
      */
     fun archive(sessionId: String) {
-        val current = state.value
-        if (current.importing || current.loading) return
-        val machineId = current.machineId ?: formMachineId.ifEmpty { null }
-        update { it.copy(archiveError = null) }
+        // Guard + error reset in one atomic step; the machine capture resets
+        // each CAS attempt (it reflects exactly the winning transition).
+        var machineId: String? = null
+        var started = false
+        update { current ->
+            started = false
+            machineId = null
+            if (current.importing || current.loading) {
+                current
+            } else {
+                started = true
+                machineId = current.machineId
+                current.copy(archiveError = null)
+            }
+        }
+        if (!started) return
         scope.launch {
             try {
-                val result = gateway.archiveCodexSession(sessionId, machineId)
+                val result = gateway.archiveCodexSession(sessionId, machineId ?: formMachineId.ifEmpty { null })
                 if (!result.success) {
                     throw IllegalStateException(result.error.orEmpty())
                 }
@@ -570,9 +624,18 @@ class CodexImportController(
      * [CodexImportUiState.restartError] on failure.
      */
     fun restart() {
-        val current = state.value
-        if (current.restartingDesktop) return
-        update { it.copy(restartingDesktop = true, restartStarted = false, restartError = null) }
+        // Guard + restartingDesktop=true in one atomic step (no double-probe).
+        var started = false
+        update { current ->
+            started = false
+            if (current.restartingDesktop) {
+                current
+            } else {
+                started = true
+                current.copy(restartingDesktop = true, restartStarted = false, restartError = null)
+            }
+        }
+        if (!started) return
         scope.launch {
             try {
                 val status = gateway.getCodexDesktopStatus()
@@ -700,23 +763,38 @@ class CodexImportController(
      * the list and not imported).
      */
     private fun applyDialogInitializations() {
-        val current = state.value
-        if (!current.open) return
-        val options = CodexImportLogic.workdirOptions(current.sessions)
-        val default = CodexImportLogic.defaultWorkdirFilter(current.sessions, currentDirectory)
-        if (!hasInitializedWorkdirFilter && current.sessions.isNotEmpty()) {
-            hasInitializedWorkdirFilter = true
-            update { it.copy(workdirFilter = default) }
-        } else if (current.workdirFilter != CodexImportLogic.ALL_WORKDIR_FILTER &&
-            current.workdirFilter !in options
-        ) {
-            update { it.copy(workdirFilter = default) }
-        }
-        if (!hasInitializedSelection) {
-            hasInitializedSelection = true
-            val defaultSelected = current.selectedSessionId
-                ?.takeIf { id -> current.sessions.any { it.id == id } && current.importedMarkers[id] == null }
-            update { it.copy(dialogSelection = defaultSelected?.let { setOf(it) } ?: emptySet()) }
+        // One-shot latch reads happen outside the transition (they are
+        // controller-private and only advance here); every state-derived
+        // decision — including the marker merge — folds inside, so a marker
+        // emission or scan settling between read and write can no longer
+        // produce an init computed from a stale snapshot.
+        val initWorkdirFilter = !hasInitializedWorkdirFilter
+        val initSelection = !hasInitializedSelection
+        if (initWorkdirFilter) hasInitializedWorkdirFilter = true
+        if (initSelection) hasInitializedSelection = true
+        update { current ->
+            if (!current.open) {
+                current
+            } else {
+                var next = current
+                val options = CodexImportLogic.workdirOptions(current.sessions)
+                val default = CodexImportLogic.defaultWorkdirFilter(current.sessions, currentDirectory)
+                if (initWorkdirFilter && current.sessions.isNotEmpty()) {
+                    next = next.copy(workdirFilter = default)
+                } else if (current.workdirFilter != CodexImportLogic.ALL_WORKDIR_FILTER &&
+                    current.workdirFilter !in options
+                ) {
+                    next = next.copy(workdirFilter = default)
+                }
+                if (initSelection) {
+                    val defaultSelected = current.selectedSessionId
+                        ?.takeIf { id ->
+                            current.sessions.any { it.id == id } && current.importedMarkers[id] == null
+                        }
+                    next = next.copy(dialogSelection = defaultSelected?.let { setOf(it) } ?: emptySet())
+                }
+                next
+            }
         }
     }
 
@@ -737,7 +815,17 @@ class CodexImportController(
         }
     }
 
+    /**
+     * Atomic CAS ([MutableStateFlow.update]) — the controller is mutated from
+     * the UI thread and from background work (the marker collector, scans,
+     * imports) on `Dispatchers.Default`, so a read-copy-write here could
+     * resurrect fields a concurrent update had just changed — e.g. a late
+     * marker emission rewriting a snapshot where the dialog was still open
+     * (reopening a closed dialog) or busy was still set (stranding the form).
+     * Transforms must stay side-effect-pure; they may re-run while the CAS
+     * retries.
+     */
     private fun update(transform: (CodexImportUiState) -> CodexImportUiState) {
-        mutable.value = transform(mutable.value)
+        mutable.update(transform)
     }
 }

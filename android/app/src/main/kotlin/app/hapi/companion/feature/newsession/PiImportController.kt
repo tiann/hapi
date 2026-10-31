@@ -8,6 +8,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
@@ -278,43 +279,54 @@ class PiImportController(
         loadJob = scope.launch { performLoad(directory, machineId, generation) }
     }
 
-    /** Checkbox toggle, blocked while busy (web `toggle`). */
+    /**
+     * Checkbox toggle, blocked while busy (web `toggle`). The busy guard rides
+     * inside the atomic transition — a concurrent scan/import settle can no
+     * longer slip a toggle past the guard (or lose one to it).
+     */
     fun toggleSession(sessionId: String) {
-        val current = state.value
-        if (current.importing || current.loading) return
-        update {
-            it.copy(
-                dialogSelection = if (sessionId in it.dialogSelection) {
-                    it.dialogSelection - sessionId
-                } else {
-                    it.dialogSelection + sessionId
-                },
-            )
+        update { current ->
+            if (current.importing || current.loading) {
+                current
+            } else {
+                current.copy(
+                    dialogSelection = if (sessionId in current.dialogSelection) {
+                        current.dialogSelection - sessionId
+                    } else {
+                        current.dialogSelection + sessionId
+                    },
+                )
+            }
         }
     }
 
     /** Checks exactly the filtered rows (web SelectAll replaces, no union). */
     fun selectAll() {
-        val current = state.value
-        if (current.importing) return
-        val filtered = PiImportLogic.filterSessions(current.sessions, current.directoryFilter, current.searchQuery)
-        if (filtered.isEmpty()) return
-        update { it.copy(dialogSelection = LinkedHashSet(filtered.map { it.id })) }
+        update { current ->
+            if (current.importing) {
+                current
+            } else {
+                val filtered =
+                    PiImportLogic.filterSessions(current.sessions, current.directoryFilter, current.searchQuery)
+                if (filtered.isEmpty()) {
+                    current
+                } else {
+                    current.copy(dialogSelection = LinkedHashSet(filtered.map { it.id }))
+                }
+            }
+        }
     }
 
     fun clearSelection() {
-        if (state.value.importing) return
-        update { it.copy(dialogSelection = emptySet()) }
+        update { current -> if (current.importing) current else current.copy(dialogSelection = emptySet()) }
     }
 
     fun setDirectoryFilter(filter: String) {
-        if (state.value.importing) return
-        update { it.copy(directoryFilter = filter) }
+        update { current -> if (current.importing) current else current.copy(directoryFilter = filter) }
     }
 
     fun setSearchQuery(query: String) {
-        if (state.value.importing) return
-        update { it.copy(searchQuery = query) }
+        update { current -> if (current.importing) current else current.copy(searchQuery = query) }
     }
 
     /**
@@ -347,17 +359,33 @@ class PiImportController(
      * machine as fallback.
      */
     fun bulkImport(sessionIds: List<String>) {
-        val current = state.value
-        if (current.importing || current.loading || sessionIds.isEmpty()) return
-        val requestMachineId = current.machineId ?: formMachineId.ifEmpty { null }
-        update { it.copy(importing = true, successNotice = null, failedNotice = null) }
+        if (sessionIds.isEmpty()) return
+        // The busy guard and the importing=true transition are one atomic
+        // step, so two racing Confirm taps can never double-launch (the
+        // captures reset each CAS attempt — they reflect exactly the attempt
+        // whose transition won).
+        var requestMachineId: String? = null
+        var started = false
+        update { current ->
+            started = false
+            requestMachineId = null
+            if (current.importing || current.loading) {
+                current
+            } else {
+                started = true
+                requestMachineId = current.machineId
+                current.copy(importing = true, successNotice = null, failedNotice = null)
+            }
+        }
+        if (!started) return
+        val machineId = requestMachineId ?: formMachineId.ifEmpty { null }
         scope.launch {
             try {
                 val result = gateway.importPiSessions(
                     PiImportSessionsRequest(
                         sessionIds = sessionIds,
                         cwd = currentDirectory.trim().ifEmpty { null },
-                        machineId = requestMachineId,
+                        machineId = machineId,
                     ),
                 )
                 val importedCount = result.results.count { it.hapiSessionId != null && it.error == null }
@@ -523,17 +551,33 @@ class PiImportController(
      * when it is among the options (else all directories), query cleared.
      * Re-applied on the open edge and after every settled scan while open.
      */
+    /**
+     * The web init effect (`PiSessionImportDialog` L39-45), weak on purpose:
+     * checkboxes = exactly the inline selection (membership in the list is
+     * **not** required, unlike the codex dialog), directory = the form cwd
+     * when it is among the options (else all directories), query cleared.
+     * Re-applied on the open edge and after every settled scan while open.
+     * All reads fold into the atomic transition — a concurrent state change
+     * (import settling, marker-less resets) can no longer be overwritten by
+     * values derived from a stale snapshot.
+     */
     private fun applyDialogInitializations() {
-        val current = state.value
-        if (!current.open) return
-        val options = PiImportLogic.directoryOptions(current.sessions)
         val formCwd = currentDirectory.trim().takeIf { it.isNotEmpty() }
-        update {
-            it.copy(
-                dialogSelection = current.selectedSessionId?.let { id -> setOf(id) } ?: emptySet(),
-                directoryFilter = if (formCwd != null && formCwd in options) formCwd else PiImportLogic.ALL_DIRECTORIES,
-                searchQuery = "",
-            )
+        update { current ->
+            if (!current.open) {
+                current
+            } else {
+                val options = PiImportLogic.directoryOptions(current.sessions)
+                current.copy(
+                    dialogSelection = current.selectedSessionId?.let { id -> setOf(id) } ?: emptySet(),
+                    directoryFilter = if (formCwd != null && formCwd in options) {
+                        formCwd
+                    } else {
+                        PiImportLogic.ALL_DIRECTORIES
+                    },
+                    searchQuery = "",
+                )
+            }
         }
     }
 
@@ -541,7 +585,15 @@ class PiImportController(
         strings.successTitle + "\n" +
             (if (count == 1) strings.successBodyOne else strings.successBodyMany.format(count))
 
+    /**
+     * Atomic CAS ([MutableStateFlow.update]) — the controller is mutated from
+     * the UI thread and from background work (scans, imports) on
+     * `Dispatchers.Default`, so a read-copy-write here could resurrect fields
+     * a concurrent update had just changed (e.g. reopen a closed dialog or
+     * strand `importing=true`). Transforms must stay side-effect-pure; they
+     * may re-run while the CAS retries.
+     */
     private fun update(transform: (PiImportUiState) -> PiImportUiState) {
-        mutable.value = transform(mutable.value)
+        mutable.update(transform)
     }
 }

@@ -28,16 +28,25 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.SupervisorJob
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 
 /**
  * Controller-level pin of the codex import flow (slice A) against the web
@@ -1308,5 +1317,99 @@ class CodexImportControllerTest {
 
         assertEquals("Operation timed out", controller.state.value.restartError)
         assertFalse(controller.state.value.restartStarted)
+    }
+
+    // --------------------------------------------- concurrent state safety --
+
+    /**
+     * Review item: the controller mutates its StateFlow from the UI thread
+     * and from background work (the marker collector, import jobs) — updates
+     * are atomic CAS, so a late marker emission can never overwrite a newer
+     * snapshot (reopen a dialog the user just dismissed) or strand
+     * `importing=true`. Runs with real concurrency: the controller scope and
+     * the hammering workers share `Dispatchers.Default` (the production
+     * wiring) while the UI-side calls come from this test body.
+     */
+    @Test
+    fun `concurrent marker emissions never reopen a closed dialog or strand busy`() = runTest {
+        val sessions = (1..200).map { session("thread-$it") }
+        val backing = MutableStateFlow<Map<String, Long>>(emptyMap())
+        val store = object : CodexImportedSessionsStore {
+            override val markers: StateFlow<Map<String, Long>> = backing
+            override suspend fun markImported(ids: List<String>, importedAt: Long) = Unit
+            override suspend fun clearMarker(id: String) = Unit
+        }
+        val gateway = FakeGateway().apply {
+            codexSessionsResult = CodexLocalSessionsResponse(
+                success = true,
+                sessions = sessions,
+                machineId = "m1",
+            )
+            syncResult = CodexDesktopScriptResponse(success = true)
+        }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val controller = CodexImportController(scope = scope, gateway = gateway, store = store)
+        val sawReopen = AtomicBoolean(false)
+        val rounds = 3
+        try {
+            repeat(rounds) { round ->
+                controller.openDialog("/repo", "m1")
+                awaitOnDefault(10_000) {
+                    controller.state.value.let { !it.loading && it.sessions.size == sessions.size }
+                }
+                controller.selectAll()
+
+                // Bulk import hangs on the gate; dismiss mid-flight, then
+                // hammer the marker store from eight workers.
+                val gate = CompletableDeferred<Unit>()
+                gateway.syncGate = gate
+                controller.confirm() // 200 checked rows → bulk import
+                awaitOnDefault(10_000) { controller.state.value.importing }
+                controller.close()
+
+                val sampler = scope.launch {
+                    while (isActive) {
+                        if (controller.state.value.open) sawReopen.set(true)
+                        if (!controller.state.value.importing) break
+                        yield()
+                    }
+                }
+                val workers = (1..8).map { worker ->
+                    scope.launch {
+                        repeat(50) { emission ->
+                            backing.value = mapOf("thread-$emission" to (worker * 1_000L + emission))
+                            yield()
+                        }
+                    }
+                }
+                gate.complete(Unit)
+                workers.joinAll()
+
+                awaitOnDefault(10_000) {
+                    controller.state.value.let { state ->
+                        !state.importing && !state.loading && state.importedMarkers == backing.value
+                    }
+                }
+                val state = controller.state.value
+                assertFalse(state.open, "round $round: the dismissal held — dialog stays closed")
+                assertFalse(state.importing, "round $round: busy clears after the import settles")
+                assertFalse(state.loading, "round $round: no stranded scan flag")
+                assertEquals(backing.value, state.importedMarkers, "round $round: the last marker emission wins, no lost update")
+                sampler.join()
+            }
+            assertFalse(sawReopen.get(), "no sampled state ever saw the dismissed dialog reopen")
+            assertEquals(rounds, gateway.syncCalls.size, "exactly one import per round — the busy guard holds")
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    /** Bounded real-time wait (the work runs outside the test scheduler). */
+    private suspend fun awaitOnDefault(timeoutMs: Long, condition: () -> Boolean) {
+        withContext(Dispatchers.Default) {
+            val deadline = System.currentTimeMillis() + timeoutMs
+            while (!condition() && System.currentTimeMillis() < deadline) delay(5)
+        }
+        assertTrue(condition(), "condition not met within ${timeoutMs}ms")
     }
 }
