@@ -62,4 +62,60 @@ class RoutesTest {
         assertEquals("%E6%A0%87%E9%A2%98", Routes.encodeRouteArg("标题"))
     }
 
+    @Test
+    fun `citation href to route to argument is a closed round trip`() {
+        // Markdown citation (parseSessionPathHref percent-decodes) -> navigate
+        // (Routes.chat percent-encodes) -> navigation hands back the decoded
+        // id once. Covers the id classes the review called out: `/`, `%`,
+        // space.
+        for (href in listOf("/sessions/a%2Fb", "/sessions/b%25c", "/sessions/a%20b")) {
+            val id = SessionPathLinks.parseSessionPathHref(href)
+            assertEquals(true, id != null, "href no longer parses: $href")
+            val segment = Routes.chat(id!!).removePrefix("chat/")
+            assertFalse(segment.contains('/'))
+            assertEquals(id, navDecodeSegment(segment))
+        }
+    }
+
+    @Test
+    fun `nested citation chains keep one distinct entry per session and pop back in order`() {
+        // A cites B, B cites C (push, launchSingleTop — Navigation.kt's
+        // onOpenSession). Model of the NavHost back stack: push dedupes only
+        // an IDENTICAL top route; Back pops entries in order. Special-char
+        // ids at every level must keep their entries distinct and
+        // round-trippable — before the encode fix `a/b` produced a route that
+        // matched no destination at all.
+        val idA = "sess/a"
+        val idB = "b%c"
+        val idC = "c d"
+
+        val backStack = mutableListOf(Routes.HOME)
+        fun push(route: String) {
+            if (backStack.last() != route) backStack += route
+        }
+
+        push(Routes.chat(idA))
+        push(Routes.chat(idB))
+        push(Routes.chat(idC))
+        assertEquals(
+            listOf(Routes.HOME, Routes.chat(idA), Routes.chat(idB), Routes.chat(idC)),
+            backStack,
+        )
+
+        // Re-citing the chat already on top dedupes (launchSingleTop).
+        push(Routes.chat(idC))
+        assertEquals(4, backStack.size)
+
+        // Back chain: C → B → A, each entry still the same encoded route it
+        // was pushed as (route equality is what popBackStack matches on).
+        while (backStack.last() != Routes.HOME) backStack.removeAt(backStack.lastIndex)
+        assertEquals(Routes.HOME, backStack.last())
+
+        // Every pushed route still carries its full id in one segment.
+        for (id in listOf(idA, idB, idC)) {
+            val segment = Routes.chat(id).removePrefix("chat/")
+            assertFalse(segment.contains('/'))
+            assertEquals(id, navDecodeSegment(segment))
+        }
+    }
 }
