@@ -6,6 +6,7 @@ import { realpathSync } from 'node:fs';
 import { z } from 'zod';
 import { configuration } from '@/configuration';
 import { getProcessStartMarker, isProcessAlive } from '@/utils/process';
+import { windowsGenerationMayBeAlive, type WindowsProcessTable } from '@/utils/windowsProcessStop';
 import { withSettingsFileLock } from '@hapi/protocol/settingsFileLock';
 
 const RuntimeSchema = z.object({
@@ -32,10 +33,12 @@ export function runtimeAlive(record: CodexRuntimeRecord): boolean {
     return isProcessAlive(record.pid) && getProcessStartMarker(record.pid) === record.marker;
 }
 
-function generationMayBeAlive(pid: number, marker?: string, snapshot?: ReadonlyMap<number, string | null>): boolean {
-    if (snapshot) {
+function generationMayBeAlive(pid: number, marker?: string, snapshot?: ReadonlyMap<number, string | null> | WindowsProcessTable | null): boolean {
+    if (snapshot !== undefined) {
+        if (snapshot === null) return true;
         if (!snapshot.has(pid)) return false;
-        const actual = snapshot.get(pid);
+        const entry = snapshot.get(pid);
+        const actual = typeof entry === 'object' && entry !== null ? entry.marker : entry;
         return !actual || !marker || actual === marker;
     }
     if (!isProcessAlive(pid)) return false;
@@ -43,7 +46,7 @@ function generationMayBeAlive(pid: number, marker?: string, snapshot?: ReadonlyM
     // A failed OS probe is not evidence that the engine exited.
     return !actual || !marker || actual === marker;
 }
-export function runtimeMayBeAlive(owner: CodexRuntimeRecord, snapshot?: ReadonlyMap<number, string | null>): boolean {
+export function runtimeMayBeAlive(owner: CodexRuntimeRecord, snapshot?: ReadonlyMap<number, string | null> | WindowsProcessTable | null): boolean {
     return generationMayBeAlive(owner.pid, owner.marker, snapshot)
         || Boolean(owner.serverPid && generationMayBeAlive(owner.serverPid, owner.serverMarker, snapshot));
 }
