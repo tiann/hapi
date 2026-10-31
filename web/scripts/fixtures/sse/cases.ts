@@ -77,6 +77,33 @@ export const sseFixtureCases: SseFixtureCase[] = [
         ]
     },
     {
+        name: 'metadata-dsh-session-id-applied',
+        description: 'A newer metadata patch adds the native DSH session id; the applied session retains it so native summary projections keep the resume token.',
+        initialSession: baseSession({
+            model: null,
+            metadata: {
+                path: '/home/dev/project',
+                host: 'devbox',
+                name: 'project',
+                flavor: 'dsh'
+            }
+        }),
+        patches: [
+            {
+                metadata: {
+                    version: 4,
+                    value: {
+                        path: '/home/dev/project',
+                        host: 'devbox',
+                        name: 'project',
+                        flavor: 'dsh',
+                        dshSessionId: 'dsh-session-1'
+                    }
+                }
+            }
+        ]
+    },
+    {
         name: 'metadata-equal-version-dropped',
         description: 'A metadata wrapper whose version equals the cached metadataVersion is dropped even though its value differs — the gate is strictly-greater on version, never a value comparison (dual SSE connections can replay the same version).',
         initialSession: baseSession(),
