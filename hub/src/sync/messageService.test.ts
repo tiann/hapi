@@ -2747,6 +2747,161 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
         expect(store.messages.lookupQueuedMessage(session.id, text.id).status).toBe('absent')
     })
 
+    it('keeps the cancellation hold until every overlapping cancellation settles', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'overlapping-materialization-cancels')
+        const cliEmitted: unknown[] = []
+        const deletedPaths: string[] = []
+        let materializeStarted!: () => void
+        const started = new Promise<void>((resolve) => { materializeStarted = resolve })
+        let resolveMaterialization!: (attachments: AttachmentMetadata[]) => void
+        const materialization = new Promise<AttachmentMetadata[]>((resolve) => {
+            resolveMaterialization = resolve
+        })
+        let ackCount = 0
+        let secondAck: AckCallback | undefined
+        let bothCancelsStarted!: () => void
+        const cancelsStarted = new Promise<void>((resolve) => { bothCancelsStarted = resolve })
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    },
+                    timeout: (_ms: number) => ({
+                        emit: (_event: string, _data: unknown, callback: AckCallback) => {
+                            if (namespace !== '/cli') return
+                            ackCount += 1
+                            if (ackCount === 1) {
+                                setTimeout(() => callback(new Error('timeout'), []), 10)
+                            } else if (ackCount === 2) {
+                                secondAck = callback
+                                bothCancelsStarted()
+                            }
+                        },
+                    }),
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } },
+            }),
+        } as unknown as Server
+        const service = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => {
+                    materializeStarted()
+                    return await materialization
+                },
+                deleteMaterializedScheduledAttachments: async (_sessionId, attachments) => {
+                    deletedPaths.push(...attachments.map((attachment) => attachment.path))
+                },
+            },
+        )
+        const message = store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'overlap',
+                    attachments: [makeHubScratchlistAttachment(session.id, 'overlap')],
+                },
+            },
+            'overlap-cancel',
+            Date.now() - 1_000,
+        )
+
+        const release = service.releaseMatureScheduledMessages(Date.now())
+        await started
+        const firstCancel = service.cancelQueuedMessage(session.id, message.id)
+        const secondCancel = service.cancelQueuedMessage(session.id, message.id)
+        await cancelsStarted
+
+        await expect(firstCancel).resolves.toEqual({ status: 'busy', localId: 'overlap-cancel' })
+        resolveMaterialization([{
+            id: 'overlap-attachment',
+            filename: 'overlap.png',
+            mimeType: 'image/png',
+            size: 10,
+            path: '/tmp/overlap-staged.png',
+        }])
+        await release
+
+        expect(cliEmitted).toHaveLength(0)
+        expect(deletedPaths).toEqual(['/tmp/overlap-staged.png'])
+        expect(store.messages.lookupQueuedMessage(session.id, message.id).status).toBe('queued')
+
+        secondAck!(null, [{ removed: false }])
+        await expect(secondCancel).resolves.toEqual({ status: 'cancelled', localId: 'overlap-cancel' })
+        expect(store.messages.lookupQueuedMessage(session.id, message.id).status).toBe('absent')
+    })
+
+    it('keeps immediate replay behind an earlier mature attachment awaiting staging', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'ordered-replay-behind-staging')
+        const cliEmitted: unknown[] = []
+        let materializeStarted!: () => void
+        const started = new Promise<void>((resolve) => { materializeStarted = resolve })
+        let resolveMaterialization!: () => void
+        const materialization = new Promise<void>((resolve) => { resolveMaterialization = resolve })
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    },
+                    timeout: (_ms: number) => ({ emit: () => {} }),
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } },
+            }),
+        } as unknown as Server
+        const service = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => {
+                    materializeStarted()
+                    await materialization
+                    return attachments.map((attachment) => ({ ...attachment, path: '/tmp/ordered-staged.png' }))
+                },
+            },
+        )
+        store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'attachment first',
+                    attachments: [makeHubScratchlistAttachment(session.id, 'ordered-replay')],
+                },
+            },
+            'ordered-attachment-first',
+            Date.now() - 1_000,
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'text second' } },
+            'ordered-text-second',
+        )
+
+        const release = service.releaseDeliverableQueuedMessages(session.id, Date.now())
+        await started
+        expect(service.replayImmediateQueuedMessages(session.id)).toBe(0)
+        expect(cliEmitted).toHaveLength(0)
+
+        resolveMaterialization()
+        await release
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual([
+            'ordered-attachment-first',
+            'ordered-text-second',
+        ])
+    })
+
     it('emits mature messages to /cli', async () => {
         const store = makeStore()
         const session = makeSession(store, 'release-emit')

@@ -229,9 +229,19 @@ export class MessageService {
     /** A deferred materialization has not emitted its row to the CLI yet. */
     private readonly materializingScheduledMessageKeys = new Set<string>()
     /** Cancellation has priority over a retry whose materialization is pending. */
-    private readonly cancellingScheduledMessageKeys = new Set<string>()
+    private readonly cancellingScheduledMessageKeys = new Map<string, number>()
     /** Keep mature delivery FIFO per session without blocking unrelated sessions. */
     private readonly matureReleaseInFlightSessions = new Set<string>()
+
+    private beginScheduledMessageCancellation(key: string): void {
+        this.cancellingScheduledMessageKeys.set(key, (this.cancellingScheduledMessageKeys.get(key) ?? 0) + 1)
+    }
+
+    private endScheduledMessageCancellation(key: string): void {
+        const pending = this.cancellingScheduledMessageKeys.get(key) ?? 0
+        if (pending <= 1) this.cancellingScheduledMessageKeys.delete(key)
+        else this.cancellingScheduledMessageKeys.set(key, pending - 1)
+    }
 
     private withScheduledAttachmentLocks<T>(sessionIds: readonly string[], fn: () => Promise<T>): Promise<T> {
         if (this.options.withScheduledAttachmentLocks) {
@@ -759,7 +769,7 @@ export class MessageService {
         // durable unknown state and require a second explicit resolution.
         if (isDispatching) {
             const cancellationPending = this.materializingScheduledMessageKeys.has(materializingKey)
-            if (cancellationPending) this.cancellingScheduledMessageKeys.add(materializingKey)
+            if (cancellationPending) this.beginScheduledMessageCancellation(materializingKey)
             try {
                 const ackResult = await this.requestCliCancelAck(sessionId, localId, messageId, 500)
                 if (ackResult === 'consumed') {
@@ -793,7 +803,7 @@ export class MessageService {
                 }
                 return { status: 'busy', localId }
             } finally {
-                if (cancellationPending) this.cancellingScheduledMessageKeys.delete(materializingKey)
+                if (cancellationPending) this.endScheduledMessageCancellation(materializingKey)
             }
         }
 
@@ -860,7 +870,7 @@ export class MessageService {
         // Delete it directly and let the materializer's post-await state check
         // suppress its stale snapshot when the RPC eventually resolves.
         if (this.materializingScheduledMessageKeys.has(materializingKey)) {
-            this.cancellingScheduledMessageKeys.add(materializingKey)
+            this.beginScheduledMessageCancellation(materializingKey)
             try {
                 const ack = await this.requestCliCancelAck(sessionId, localId, messageId, 500)
                 if (ack === 'consumed') {
@@ -891,7 +901,7 @@ export class MessageService {
                 }
                 if (recheck.status === 'absent') return { status: 'cancelled', localId }
             } finally {
-                this.cancellingScheduledMessageKeys.delete(materializingKey)
+                this.endScheduledMessageCancellation(materializingKey)
             }
         }
 
@@ -1377,6 +1387,20 @@ export class MessageService {
     replayImmediateQueuedMessages(sessionId: string): number {
         const queued = this.store.messages.getImmediateQueuedLocalMessages(sessionId)
         if (queued.length === 0 || this.store.isOpenCodeClearDeliveryGated(sessionId)) return 0
+
+        // Keep reconnect replay behind any earlier mature scheduled row. During
+        // an OpenCode clear handoff, an attachment row may still be awaiting
+        // Hub -> CLI staging; replaying a later immediate prompt here would
+        // overtake it and break the finalized sequence order.
+        const firstSeq = queued[0]!.seq
+        const now = Date.now()
+        const hasEarlierMatureScheduled = this.store.messages
+            .getUninvokedLocalMessages(sessionId, { deliverableOnly: true })
+            .some((message) => message.seq < firstSeq
+                && message.scheduledAt !== null
+                && message.scheduledAt <= now)
+        if (hasEarlierMatureScheduled) return 0
+
         for (const msg of queued) {
             const update = {
                 id: msg.id,

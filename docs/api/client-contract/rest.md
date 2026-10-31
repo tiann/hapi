@@ -84,7 +84,7 @@ Source: `hub/src/web/routes/messages.ts`; schemas `MessagesQuerySchema`, `SendMe
 | Method & path | Request | Response |
 |---|---|---|
 | `GET /api/sessions/:id/messages` | Query: `limit?` (1–200, default 50), cursor pairs `beforeSeq+beforeAt` \| `afterSeq+afterAt` (+ optional `untilSeq+untilAt`, `epoch` with `after`) | `MessagesResponse` `{messages: DecryptedMessage[], page: {direction, limit, epoch, reset, nextBefore*/nextAfter*, snapshotHead*, hasMore}}` — full cursor semantics in [Pagination](./pagination.md) |
-| `POST /api/sessions/:id/messages` | `{text, localId?, attachments?, scheduledAt?, deliveryMode?: 'queue'\|'steer'}` — text or attachments required; `scheduledAt` requires `localId`, must be ≤ 7 days out, excludes attachments and steer | `{ok: true}` — the message itself arrives via SSE (`message-received`), reconciled by `localId` |
+| `POST /api/sessions/:id/messages` | `{text, localId?, attachments?, scheduledAt?, deliveryMode?: 'queue'\|'steer'}` — text or attachments required; `scheduledAt` requires `localId`, must be ≤ 7 days out, disallows steer, and any attachments must use durable `hapi-hub:scratchlist/` paths so the hub can materialize them when due | `{ok: true}` — the message itself arrives via SSE (`message-received`), reconciled by `localId` |
 | `DELETE /api/sessions/:id/messages/:messageId` | — | `{status: 'cancelled', localId}` \| `{status: 'invoked', message}` \| `{status: 'busy', localId}` (cancel; `busy` = native delivery/removal is unresolved) |
 | `POST /api/sessions/:id/messages/:messageId/steer` | — | `{status: 'steered', localId}` \| `{status: 'invoked', message}` \| `{status: 'failed', error, localId}` |
 | `POST /api/sessions/:id/messages/:messageId/retry` | — | `{status: 'retried', localId}` \| `{status: 'already-queued', localId}` \| `{status: 'retry-unavailable', localId}` \| `{status: 'invoked', message}` \| `{status: 'not-found'}` — explicit retry only; never automatic replay |
@@ -232,16 +232,17 @@ Source: `hub/src/web/routes/sessions.ts` (scratchlist section); schemas `Scratch
 
 | Method & path | Request | Response |
 |---|---|---|
-| `GET /api/sessions/:id/scratchlist` | — | `{entries: ScratchlistEntry[]}` (`{entryId, text, createdAt, updatedAt, attachments[]}`) |
-| `POST /api/sessions/:id/scratchlist` | `{text, entryId?, createdAt?, attachments?}` (text ≤ 10 000; text or attachments required) | `201 {entry}`; `200 {entry}` when `entryId` already exists (idempotent retry); `409 code: 'scratchlist_at_cap'` at 200 entries |
+| `GET /api/sessions/:id/scratchlist` | — | `{entries: ScratchlistEntry[]}` in persisted `position` order (`{entryId, text, createdAt, updatedAt, position, attachments[]}`) |
+| `POST /api/sessions/:id/scratchlist` | `{text, entryId?, createdAt?, position?, attachments?}` (text ≤ 10 000; text or attachments required) | `201 {entry}`; `200 {entry}` when `entryId` already exists (idempotent retry); `409 code: 'scratchlist_at_cap'` at 200 entries |
+| `PUT /api/sessions/:id/scratchlist/reorder` | `{entryIds}` — every current entry id exactly once | `{entries}` in the new persisted order; `400` when ids do not exactly match the session scratchlist |
 | `PUT /api/sessions/:id/scratchlist/:entryId` | `{text?, attachments?}` (at least one) | `{entry}` |
-| `DELETE /api/sessions/:id/scratchlist/:entryId` | — | `{ok: true}` |
+| `DELETE /api/sessions/:id/scratchlist/:entryId` | Optional query `expectedUpdatedAt` | `{ok: true}`; with `expectedUpdatedAt`, returns `{deleted, reason?}` and refuses to delete a row changed since the caller read it |
 | `GET /api/sessions/:id/scratchlist/limits` | — | `{limits}` (attachment size/count/byte budgets) |
 | `POST /api/sessions/:id/scratchlist/upload` | JSON `{filename, content (base64), mimeType}` | `{success, attachment}`; `413 code: 'scratchlist_attachment_too_large'` |
 | `GET /api/sessions/:id/scratchlist/attachments/:attachmentId` | — | **Raw bytes** (`Content-Type` from stored metadata) |
 | `DELETE /api/sessions/:id/scratchlist/attachments/:attachmentId` | — | `{ok: true}`; `409 code: 'scratchlist_attachment_in_use'` while referenced by an entry |
 
-Mutations bump `scratchlistUpdatedAt` in the session's SSE patch — use it as a refetch trigger, not as data.
+Mutations bump `scratchlistUpdatedAt` in the session's SSE patch — use it as a refetch trigger, not as data. Scratchlist attachment metadata may be used in scheduled messages; scheduled delivery materializes durable Hub paths to the CLI host in attachment order.
 
 ### Voice dictation (the one multipart endpoint)
 
