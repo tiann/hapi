@@ -37,6 +37,10 @@ import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.GrokModelsResponse
 import app.hapi.protocol.wire.MachineListDirectoryResponse
 import app.hapi.protocol.wire.MachinePathsExistsResponse
+import app.hapi.protocol.wire.PiImportSessionsRequest
+import app.hapi.protocol.wire.PiImportSessionsResponse
+import app.hapi.protocol.wire.PiLocalSessionsResponse
+import app.hapi.protocol.wire.ReopenSessionResponse
 import app.hapi.protocol.wire.ResumeSessionResponse
 import app.hapi.protocol.wire.SpawnResponse
 import app.hapi.protocol.wire.SpawnSessionRequest
@@ -299,6 +303,16 @@ class CodexSessionSyncDialogTest {
 
             override suspend fun restartCodexDesktop(): CodexDesktopScriptResponse =
                 error("unexpected")
+
+            // Slice-C seams (PR #2151 line): unused in this test.
+            override suspend fun piSessions(cwd: String?, machineId: String?): PiLocalSessionsResponse =
+                error("unexpected")
+
+            override suspend fun importPiSessions(payload: PiImportSessionsRequest): PiImportSessionsResponse =
+                error("unexpected")
+
+            override suspend fun reopenSession(sessionId: String): ReopenSessionResponse =
+                error("unexpected")
         }
         val controller = CodexImportController(
             scope = newScope(),
@@ -455,6 +469,16 @@ class CodexSessionSyncDialogTest {
                 error("unexpected")
 
             override suspend fun restartCodexDesktop(): CodexDesktopScriptResponse =
+                error("unexpected")
+
+            // Slice-C seams (PR #2151 line): unused in this test.
+            override suspend fun piSessions(cwd: String?, machineId: String?): PiLocalSessionsResponse =
+                error("unexpected")
+
+            override suspend fun importPiSessions(payload: PiImportSessionsRequest): PiImportSessionsResponse =
+                error("unexpected")
+
+            override suspend fun reopenSession(sessionId: String): ReopenSessionResponse =
                 error("unexpected")
         }
         val controller = CodexImportController(
