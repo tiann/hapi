@@ -40,6 +40,7 @@ export type SessionSummaryMetadata = {
     path: string
     machineId?: string
     summary?: { text: string }
+    promptTitle?: string
     flavor?: string | null
     worktree?: WorktreeMetadata
     agentSessionId?: string
@@ -203,6 +204,7 @@ export function toSessionSummaryMetadata(metadata: Metadata | null | undefined):
         path: metadata.path,
         machineId: metadata.machineId ?? undefined,
         summary: metadata.summary ? { text: metadata.summary.text } : undefined,
+        promptTitle: metadata.promptTitle,
         flavor: metadata.flavor ?? null,
         worktree: metadata.worktree,
         agentSessionId: getSummaryAgentSessionId(metadata),

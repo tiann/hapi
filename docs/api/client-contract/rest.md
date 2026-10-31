@@ -341,3 +341,10 @@ preserves the existing name/summary fields. A manual rename alone does not lock 
 session. Agent metadata writes cannot set or clear this flag. While locked, the
 Hub preserves both `name` and `summary` across agent writes; user title saves
 remain allowed. Unlocking preserves the current title until a future update.
+
+`metadata.promptTitle` is an optional, Hub-owned provisional title: the first
+non-command user prompt, with whitespace collapsed and capped at 80 characters.
+The Hub sets it once, only while the session has neither `name` nor `summary`;
+agent metadata writes cannot set or clear it. Clients display titles in the
+order `name`, `summary`, `promptTitle`, then the path fallback. Because
+`promptTitle` is separate from `summary`, it never blocks generated or native titles.
