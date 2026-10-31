@@ -5,6 +5,10 @@ React Mini App / PWA for monitoring and controlling hapi sessions.
 ## What it does
 
 - Session list with status, pending approvals, todos, and summaries.
+- Manual project-group expansion/collapse is remembered in this browser across
+  reloads, separately for each Hub, user/namespace, machine, and project. Search
+  and selected-session reveal do not overwrite saved choices. Untouched groups
+  keep their existing default behavior; preferences do not sync across devices.
 - Chat view with streaming updates and message sending.
 - Permission approval and denial workflows.
 - Codex `request_user_input` choices honor `isOther`: **None of the above**

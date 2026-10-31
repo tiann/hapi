@@ -945,6 +945,46 @@ describe('SessionList collapse behavior', () => {
         })
     })
 
+    it('reveals a temporarily collapsed matching group when selection changes into it during search', () => {
+        const sessions = [
+            makeSession({
+                id: 'session-a',
+                updatedAt: 100,
+                metadata: { path: '/work/proj-a', name: 'Task Alpha', flavor: 'codex' },
+            }),
+            makeSession({
+                id: 'session-b',
+                updatedAt: 90,
+                metadata: { path: '/work/proj-b', name: 'Task Beta', flavor: 'codex' },
+            }),
+        ]
+        const view = render(renderSessionList(sessions, 'session-a'))
+
+        // Start search matching both tasks
+        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+        const searchInput = screen.getByPlaceholderText(SEARCH_PLACEHOLDER)
+        fireEvent.change(searchInput, { target: { value: 'Task' } })
+
+        const headerA = screen.getByTitle('/work/proj-a')
+        const panelA = headerA.nextElementSibling
+        expect(panelA?.getAttribute('data-open')).toBe('true')
+
+        // Switch selection to session-b
+        view.rerender(renderSessionList(sessions, 'session-b'))
+        const headerB = screen.getByTitle('/work/proj-b')
+        const panelB = headerB.nextElementSibling
+        expect(panelB?.getAttribute('data-open')).toBe('true')
+
+        // Collapse proj-a temporarily while searching
+        fireEvent.click(headerA)
+        expect(panelA?.getAttribute('data-open')).toBeNull()
+
+        // Switch selection back to session-a (e.g. browser back navigation)
+        view.rerender(renderSessionList(sessions, 'session-a'))
+        // Proj-a should be revealed again
+        expect(panelA?.getAttribute('data-open')).toBe('true')
+    })
+
     it('toggles the running section with the keyboard', () => {
         localStorage.setItem('hapi-pin-in-progress-sessions', 'true')
         const sessions = [
