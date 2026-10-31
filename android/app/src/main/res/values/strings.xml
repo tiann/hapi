@@ -6,6 +6,8 @@
     <string name="code_copy">Copy</string>
     <string name="code_copied">Copied</string>
     <string name="code_plain_fallback">text</string>
+    <string name="code_wrap_enable">Enable word wrap</string>
+    <string name="code_wrap_disable">Disable word wrap</string>
     <string name="diff_binary_file">Binary file not shown</string>
     <string name="diff_show_more">Show %1$d more lines</string>
     <string name="diff_collapse">Collapse</string>
@@ -309,6 +311,7 @@
     <string name="chat_picker_photos">Photo library</string>
     <string name="chat_picker_camera">Camera</string>
     <string name="chat_picker_files">Files</string>
+    <string name="chat_picker_clipboard">Paste from clipboard</string>
 
     <!-- Dictation errors (B-M3ce) -->
     <string name="chat_dictation_start_failed">Could not start recording</string>

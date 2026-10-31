@@ -742,6 +742,34 @@ class ChatViewModelInteractionTest {
         assertEquals("latest keystrokes", harness.drafts.map["replacement"])
     }
 
+    @Test fun `unsent draft survives a cited chat pushed above and returns with Back`() = runTest {
+        // Review item: citation navigation PUSHES the cited chat (Navigation
+        // keeps the citing entry — and its ViewModel — on the back stack), so
+        // Back must return to the original draft intact. At the ViewModel
+        // level the covered cycle is exactly setTranscriptVisible(false) on
+        // dispose and (true) on return; the nested-route half (A cites B,
+        // B cites C, back-chain unwinds) is covered by RoutesTest.
+        val harness = InteractionHarness(this)
+        val vm = harness.viewModel
+        vm.start()
+        testScheduler.runCurrent()
+        vm.setComposerText("unsent draft")
+
+        // Cited chat pushed above: the transcript leaves composition.
+        vm.setTranscriptVisible(false)
+        testScheduler.runCurrent()
+        assertEquals("unsent draft", vm.composer.value.text)
+
+        // Back returns to the citing chat: same text, and the debounced
+        // save landed too (process death would restore the same draft).
+        vm.setTranscriptVisible(true)
+        testScheduler.advanceTimeBy(20)
+        testScheduler.runCurrent()
+        assertEquals("unsent draft", vm.composer.value.text)
+        assertEquals("unsent draft", harness.drafts.map[IX_SESSION])
+        vm.stop()
+    }
+
     @Test fun `share waits for draft restore and handoff before allowing an explicit send`() = runTest {
         val harness = InteractionHarness(this)
         val vm = harness.viewModel

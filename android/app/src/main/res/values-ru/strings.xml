@@ -6,6 +6,8 @@
     <string name="code_copy">Копировать</string>
     <string name="code_copied">Скопировано</string>
     <string name="code_plain_fallback">текст</string>
+    <string name="code_wrap_enable">Включить перенос строк</string>
+    <string name="code_wrap_disable">Отключить перенос строк</string>
     <string name="diff_binary_file">Двоичный файл не показан</string>
     <string name="diff_show_more">Показать ещё строк: %1$d</string>
     <string name="diff_collapse">Свернуть</string>
@@ -309,6 +311,7 @@
     <string name="chat_picker_photos">Галерея</string>
     <string name="chat_picker_camera">Камера</string>
     <string name="chat_picker_files">Файлы</string>
+    <string name="chat_picker_clipboard">Вставить из буфера обмена</string>
 
     <!-- Dictation errors (B-M3ce) -->
     <string name="chat_dictation_start_failed">Не удалось начать запись</string>

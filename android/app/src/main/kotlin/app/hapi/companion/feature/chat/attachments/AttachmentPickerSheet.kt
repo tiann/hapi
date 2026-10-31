@@ -16,6 +16,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -24,9 +25,10 @@ import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.companion.ui.theme.hapi
 
 /**
- * The composer "+" sheet (B-M3f): three attachment sources. The launchers
- * (photo picker / TakePicture / OpenDocument) live in the screen — this is
- * pure chrome.
+ * The composer "+" sheet (B-M3f): attachment sources. The launchers (photo
+ * picker / TakePicture / OpenDocument) live in the screen — this is pure
+ * chrome. A fourth "paste from clipboard" row (paste-to-attach) renders only
+ * when the caller passes both [clipboardLabel] and [onPasteFromClipboard].
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -35,6 +37,9 @@ fun AttachmentPickerSheet(
     onPickPhotos: () -> Unit,
     onTakePhoto: () -> Unit,
     onPickFiles: () -> Unit,
+    /** Clip label/mime for the clipboard row; non-null (with the callback) shows it. */
+    clipboardLabel: String? = null,
+    onPasteFromClipboard: (() -> Unit)? = null,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(modifier = Modifier.padding(bottom = 20.dp)) {
@@ -47,12 +52,20 @@ fun AttachmentPickerSheet(
             PickerRow(glyph = "🖼", label = stringResource(R.string.chat_picker_photos), onClick = { onDismiss(); onPickPhotos() })
             PickerRow(glyph = "📷", label = stringResource(R.string.chat_picker_camera), onClick = { onDismiss(); onTakePhoto() })
             PickerRow(glyph = "📄", label = stringResource(R.string.chat_picker_files), onClick = { onDismiss(); onPickFiles() })
+            if (clipboardLabel != null && onPasteFromClipboard != null) {
+                PickerRow(
+                    glyph = "📋",
+                    label = stringResource(R.string.chat_picker_clipboard),
+                    detail = clipboardLabel,
+                    onClick = { onDismiss(); onPasteFromClipboard() },
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun PickerRow(glyph: String, label: String, onClick: () -> Unit) {
+private fun PickerRow(glyph: String, label: String, onClick: () -> Unit, detail: String? = null) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -62,7 +75,19 @@ private fun PickerRow(glyph: String, label: String, onClick: () -> Unit) {
     ) {
         Text(text = glyph, fontSize = 20.sp)
         Spacer(modifier = Modifier.width(16.dp))
-        Text(text = label, style = MaterialTheme.typography.bodyLarge)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = label, style = MaterialTheme.typography.bodyLarge)
+            // Secondary line for the clipboard row (clip label / mime).
+            detail?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.hapi.hint,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
     }
 }
 
@@ -75,6 +100,7 @@ private fun AttachmentPickerRowsPreview() {
                 PickerRow(glyph = "🖼", label = "Photo library", onClick = {})
                 PickerRow(glyph = "📷", label = "Camera", onClick = {})
                 PickerRow(glyph = "📄", label = "Files", onClick = {})
+                PickerRow(glyph = "📋", label = "Paste from clipboard", detail = "image/png", onClick = {})
             }
         }
     }
