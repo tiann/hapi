@@ -1,12 +1,12 @@
 import type { ClaudeModelSummary } from './apiTypes'
 
+// Fallback aliases in Claude Code's /model order, used until its live catalog
+// arrives. Each resolves to the newest model of its family.
 export const CLAUDE_MODEL_LABELS = {
-    sonnet: 'Sonnet',
-    'sonnet[1m]': 'Sonnet 1M',
     opus: 'Opus',
-    'opus[1m]': 'Opus 1M',
     fable: 'Fable',
-    'fable[1m]': 'Fable 1M'
+    sonnet: 'Sonnet',
+    haiku: 'Haiku'
 } as const
 
 export type ClaudeModelPreset = keyof typeof CLAUDE_MODEL_LABELS

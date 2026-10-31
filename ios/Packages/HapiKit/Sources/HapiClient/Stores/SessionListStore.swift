@@ -8,8 +8,7 @@ import Observation
 /// `SessionListStore`).
 @MainActor
 public protocol SessionListStoring: AnyObject {
-    /// Sorted with `sortSessionSummaries` (globalPinned > pinned > active >
-    /// pending > recency).
+    /// Sorted with `sortSessionSummaries` (manual pins, then user-input recency).
     var sessions: [SessionSummary] { get }
 
     /// `GET /api/sessions` — replaces the list wholesale. Throws on failure.
@@ -169,7 +168,16 @@ public final class SessionListStore: SessionListStoring {
         // A later-started refresh already applied fresher server truth.
         guard generation > lastAppliedRefresh else { return }
         lastAppliedRefresh = generation
-        setSessions(sortSessionSummaries(list))
+        // A user-input SSE patch can overtake an in-flight REST snapshot.
+        let clocks = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0.lastUserMessageAt) })
+        let reconciled = list.map { row in
+            var next = row
+            if let cached = clocks[row.id] ?? nil, cached > (row.lastUserMessageAt ?? Int.min) {
+                next.lastUserMessageAt = cached
+            }
+            return next
+        }
+        setSessions(sortSessionSummaries(reconciled))
     }
 
     public func scheduleRefresh() {
@@ -369,6 +377,7 @@ public final class SessionListStore: SessionListStoring {
         var summary = SummaryPatching.toSessionSummary(session)
         summary.futureScheduledMessageCount = existing?.futureScheduledMessageCount ?? 0
         summary.nextScheduledAt = existing?.nextScheduledAt
+        summary.lastUserMessageAt = session.lastUserMessageAt.map { max(existing?.lastUserMessageAt ?? 0, $0) } ?? existing?.lastUserMessageAt
         if let index {
             list[index] = summary
         } else {

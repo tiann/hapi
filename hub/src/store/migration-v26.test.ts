@@ -29,8 +29,10 @@ describe('schema migration v26 to v27', () => {
 
         const migrated = new Store(dbPath)
         const internalDb = (migrated as unknown as { db: Database }).db
-        const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
-        const countPlan = internalDb.prepare(`
+        const versionStatement = internalDb.prepare('PRAGMA user_version')
+        const version = versionStatement.get() as { user_version: number }
+        versionStatement.finalize()
+        const countPlanStatement = internalDb.prepare(`
             EXPLAIN QUERY PLAN
             SELECT session_id, COUNT(*) FROM messages
             WHERE session_id IN (?, ?)
@@ -40,8 +42,10 @@ describe('schema migration v26 to v27', () => {
               AND scheduled_at > ?
               AND delivery_state = 'queued'
             GROUP BY session_id
-        `).all('a', 'b', 123) as Array<{ detail: string }>
-        const minPlan = internalDb.prepare(`
+        `)
+        const countPlan = countPlanStatement.all('a', 'b', 123) as Array<{ detail: string }>
+        countPlanStatement.finalize()
+        const minPlanStatement = internalDb.prepare(`
             EXPLAIN QUERY PLAN
             SELECT session_id, MIN(scheduled_at) FROM messages
             WHERE session_id IN (?, ?)
@@ -51,9 +55,11 @@ describe('schema migration v26 to v27', () => {
               AND scheduled_at > ?
               AND delivery_state = 'queued'
             GROUP BY session_id
-        `).all('a', 'b', 123) as Array<{ detail: string }>
+        `)
+        const minPlan = minPlanStatement.all('a', 'b', 123) as Array<{ detail: string }>
+        minPlanStatement.finalize()
 
-        expect(version.user_version).toBe(29)
+        expect(version.user_version).toBe(30)
         expect(countPlan.some((row) => row.detail.includes('idx_messages_future_scheduled_queued'))).toBe(true)
         expect(minPlan.some((row) => row.detail.includes('idx_messages_future_scheduled_queued'))).toBe(true)
         migrated.close()

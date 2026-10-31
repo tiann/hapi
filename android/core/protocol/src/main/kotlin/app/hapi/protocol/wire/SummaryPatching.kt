@@ -167,6 +167,8 @@ object SummaryPatching {
         thinking = session.thinking,
         activeAt = session.activeAt,
         updatedAt = session.updatedAt,
+        createdAt = session.createdAt,
+        lastUserMessageAt = session.lastUserMessageAt,
         hasConversationContent = session.hasConversationContent,
         pinned = session.pinned ?: false,
         globalPinned = session.globalPinned ?: false,
@@ -215,6 +217,7 @@ object SummaryPatching {
             thinking = patch.thinking ?: current.thinking,
             activeAt = patch.activeAt ?: current.activeAt,
             updatedAt = patch.updatedAt?.let { max(current.updatedAt, it) } ?: current.updatedAt,
+            lastUserMessageAt = patch.lastUserMessageAt?.let { max(current.lastUserMessageAt ?: 0, it) } ?: current.lastUserMessageAt,
             backgroundTaskCount = patch.backgroundTaskCount ?: current.backgroundTaskCount,
             model = when (val model = patch.model) {
                 is OptionalField.Present -> model.value
@@ -309,6 +312,7 @@ object SummaryPatching {
         return current.active == next.active
             && current.thinking == next.thinking
             && current.updatedAt == next.updatedAt
+            && current.lastUserMessageAt == next.lastUserMessageAt
             && current.backgroundTaskCount == next.backgroundTaskCount
             && current.model == next.model
             && current.modelReasoningEffort == next.modelReasoningEffort

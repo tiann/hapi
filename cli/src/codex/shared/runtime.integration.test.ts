@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer } from 'node:http';
+import { EventEmitter } from 'node:events';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -13,19 +14,19 @@ import { notifyRunnerSessionStarted } from '@/runner/controlClient';
 
 const state = vi.hoisted(() => ({ home: '', sessions: new Map<string, MockSession>(), beforeBootstrap: undefined as (() => Promise<void>) | undefined }));
 const BOOTSTRAP_START_MARKER = vi.hoisted(() => 'Tue Sep 29 09:00:00 2026');
-class MockSession {
+class MockSession extends EventEmitter {
     readonly sessionId = randomUUID();
     state: AgentState = { requests: { 'old-worker': { tool: 'request_user_input', arguments: {}, createdAt: 0 } } }; metadata: Metadata;
     messages: unknown[] = []; consumed: string[] = []; dead = false;
     user?: (message: { content: { text: string } }, id?: string) => void;
     rpc = new Map<string, (params: unknown) => Promise<unknown>>();
     rpcHandlerManager = { registerHandler: (name: string, fn: (params: unknown) => Promise<unknown>) => { this.rpc.set(name, fn); } };
-    constructor(cwd: string) { this.metadata = { path: cwd, host: 'test', hostPid: process.pid, machineId: 'test', flavor: 'codex', capabilities: { concurrentClients: true } }; }
+    constructor(cwd: string) { super(); this.metadata = { path: cwd, host: 'test', hostPid: process.pid, machineId: 'test', flavor: 'codex', capabilities: { concurrentClients: true } }; }
     getMetadata() { return this.metadata; }
     updateMetadata(fn: (m: Metadata) => Metadata) { this.metadata = fn(this.metadata); }
     updateAgentState(fn: (s: AgentState) => AgentState) { this.state = fn(this.state); }
     onUserMessage(fn: MockSession['user']) { this.user = fn; }
-    onCancelQueuedMessage() {} onRetryQueuedMessage() {} onReconnect() {} on() {}
+    onCancelQueuedMessage() {} onRetryQueuedMessage() {} onReconnect() {}
     sendUserMessage(text: string) { this.messages.push({ user: text }); }
     sendAgentMessage(body: unknown) { this.messages.push(body); }
     sendSessionEvent(body: unknown) { this.messages.push(body); }

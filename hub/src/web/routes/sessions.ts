@@ -1,3 +1,4 @@
+import { compareSessionSummaries } from '@hapi/protocol'
 import {
     CursorMigrateToAcpRequestSchema,
     DeleteUploadRequestSchema,
@@ -79,8 +80,6 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return engine
         }
 
-        const getPendingCount = (s: Session) => s.agentState?.requests ? Object.keys(s.agentState.requests).length : 0
-
         const namespace = c.get('namespace')
         const limitRaw = c.req.query('limit')
         const parsedLimit = limitRaw === undefined ? null : Number(limitRaw)
@@ -95,24 +94,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 if (order === 'updatedAt') {
                     return b.updatedAt - a.updatedAt
                 }
-                if (Boolean(a.globalPinned) !== Boolean(b.globalPinned)) {
-                    return a.globalPinned ? -1 : 1
-                }
-                if (Boolean(a.pinned) !== Boolean(b.pinned)) {
-                    return a.pinned ? -1 : 1
-                }
-                // Active sessions first (web session list)
-                if (a.active !== b.active) {
-                    return a.active ? -1 : 1
-                }
-                // Within active sessions, sort by pending requests count
-                const aPending = getPendingCount(a)
-                const bPending = getPendingCount(b)
-                if (a.active && aPending !== bPending) {
-                    return bPending - aPending
-                }
-                // Then by updatedAt
-                return b.updatedAt - a.updatedAt
+                return compareSessionSummaries(a, b)
             })
         if (limit !== null) {
             sessionRecords = sessionRecords.slice(0, limit)
@@ -715,12 +697,11 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             }
         }
 
-        // Only Claude applies a model and an effort as one config change; Pi
-        // commits the model before setting its thinking level, so a failure in
-        // between would leave half of the request applied.
+        // Pi commits the model before setting its thinking level, so a failure
+        // in between would leave half of the request applied.
         const { model, effort } = parsed.data
-        if (effort !== undefined && flavor !== 'claude') {
-            return c.json({ error: 'Effort can only be sent with a model change for Claude sessions' }, 400)
+        if (effort !== undefined && flavor !== 'claude' && flavor !== 'agy') {
+            return c.json({ error: 'Effort can only be sent with a model change for Claude and Antigravity sessions' }, 400)
         }
 
         try {

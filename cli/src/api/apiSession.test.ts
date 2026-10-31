@@ -170,6 +170,70 @@ function triggerIncomingUserMessage(
     })
 }
 
+describe('ApiSessionClient input buffered during initialization', () => {
+    function message(text: string, localId: string, seq: number) {
+        return {
+            id: `message-${seq}`, seq, localId,
+            content: { role: 'user', content: { type: 'text', text }, meta: { sentFrom: 'webapp' } },
+        }
+    }
+
+    it.each([false, true])('cancels buffered input before a user-message handler is ready (callback=%s)', async (withCallback) => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]!
+        const update = socket.listeners.get('update')![0]!
+        const cancel = vi.fn(() => false)
+        if (withCallback) client.onCancelQueuedMessage(cancel)
+        await update({ body: { t: 'new-message', message: message('cancel me', 'local-1', 1) } })
+        await update({ body: { t: 'new-message', message: message('keep me', 'local-2', 2) } })
+        const ack = vi.fn()
+
+        await update({ body: { t: 'cancel-queued-message', localId: 'local-1' } }, ack)
+        expect(ack).toHaveBeenCalledWith({ removed: true, inFlight: false, indeterminate: false, consumed: false })
+        expect(cancel).not.toHaveBeenCalled()
+        const onMessage = vi.fn()
+        client.onUserMessage(onMessage)
+        expect(onMessage).toHaveBeenCalledTimes(1)
+        expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ content: { type: 'text', text: 'keep me' } }), 'local-2')
+        client.close()
+    })
+
+    it.each([false, true])('replaces buffered input on retry without flushing twice (callback=%s)', async (withCallback) => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]!
+        const update = socket.listeners.get('update')![0]!
+        const cancel = vi.fn(() => 'consumed' as const)
+        if (withCallback) client.onCancelQueuedMessage(cancel)
+        await update({ body: { t: 'new-message', message: message('original', 'local-1', 1) } })
+        const ack = vi.fn()
+        await update({ body: { t: 'retry-queued-message', localId: 'local-1', message: message('replacement', 'local-1', 1) } }, ack)
+        expect(ack).toHaveBeenCalledWith({ removed: false, accepted: true })
+        expect(cancel).not.toHaveBeenCalled()
+        const onMessage = vi.fn()
+        client.onUserMessage(onMessage)
+        expect(onMessage).toHaveBeenCalledTimes(1)
+        expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ content: { type: 'text', text: 'replacement' } }), 'local-1')
+        client.close()
+    })
+
+    it.each(['in-flight', 'consumed', 'indeterminate'] as const)('keeps %s cancellation semantics after input leaves the buffer', async (result) => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const update = socketHarness.sockets[0]!.listeners.get('update')![0]!
+        const cancel = vi.fn(async () => result)
+        client.onCancelQueuedMessage(cancel)
+        const ack = vi.fn()
+        await update({ body: { t: 'cancel-queued-message', localId: 'local-1' } }, ack)
+        expect(cancel).toHaveBeenCalledWith('local-1')
+        expect(ack).toHaveBeenCalledWith({
+            removed: false, inFlight: result === 'in-flight', indeterminate: result === 'indeterminate', consumed: result === 'consumed',
+        })
+        client.close()
+    })
+})
+
 describe('ApiSessionClient lazy materialization', () => {
     it('does not connect or materialize without a real user message', async () => {
         socketHarness.sockets.length = 0

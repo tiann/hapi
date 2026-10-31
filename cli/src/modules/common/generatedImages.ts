@@ -1,6 +1,6 @@
 import { basename, extname } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { constants } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { open } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { asString, isObject } from '@hapi/protocol'
@@ -13,9 +13,12 @@ import { asString, isObject } from '@hapi/protocol'
  * or other special file from hanging the caller before its type can be checked.
  */
 export async function readBoundedRegularFile(path: string, maxBytes: number): Promise<Buffer> {
+    // O_NONBLOCK prevents opening a POSIX FIFO without a writer from hanging
+    // the session file RPC before the regular-file check can run. Windows does
+    // not expose the same FIFO open semantics, so retain its normal read flag.
     const flags = process.platform === 'win32'
         ? 'r'
-        : constants.O_RDONLY | constants.O_NONBLOCK
+        : constants.O_RDONLY | (constants.O_NONBLOCK ?? 0)
     const handle = await open(path, flags)
     try {
         const info = await handle.stat()

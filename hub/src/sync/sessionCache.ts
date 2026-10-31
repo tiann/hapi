@@ -245,6 +245,7 @@ export class SessionCache {
             seq: stored.seq,
             createdAt: stored.createdAt,
             updatedAt: stored.updatedAt,
+            lastUserMessageAt: stored.lastUserMessageAt,
             pinned: stored.pinned,
             globalPinned: stored.globalPinned,
             active: existing?.active ?? stored.active,
@@ -386,6 +387,9 @@ export class SessionCache {
         if (patch.thinking !== undefined) session.thinking = patch.thinking
         if (patch.activeAt !== undefined) session.activeAt = patch.activeAt
         if (patch.updatedAt !== undefined) session.updatedAt = Math.max(session.updatedAt, patch.updatedAt)
+        if (patch.lastUserMessageAt !== undefined) {
+            session.lastUserMessageAt = Math.max(session.lastUserMessageAt ?? 0, patch.lastUserMessageAt)
+        }
         if (patch.model !== undefined) session.model = patch.model
         if (patch.modelReasoningEffort !== undefined) session.modelReasoningEffort = patch.modelReasoningEffort
         if (patch.effort !== undefined) session.effort = patch.effort
@@ -660,6 +664,24 @@ export class SessionCache {
             type: 'session-updated',
             sessionId,
             data: { backgroundTaskCount: tasks.length, backgroundTasks: tasks } satisfies SessionPatch
+        })
+    }
+
+    refreshLastUserMessageAt(sessionId: string): void {
+        const stored = this.store.sessions.getSession(sessionId)
+        if (stored?.lastUserMessageAt === undefined) return
+        const session = this.sessions.get(sessionId)
+        if (!session) {
+            this.refreshSession(sessionId)
+            return
+        }
+        if (stored.lastUserMessageAt <= (session.lastUserMessageAt ?? -Infinity)) return
+        session.lastUserMessageAt = stored.lastUserMessageAt
+        this.publisher.emit({
+            type: 'session-updated',
+            sessionId,
+            namespace: session.namespace,
+            data: { lastUserMessageAt: session.lastUserMessageAt } satisfies SessionPatch
         })
     }
 

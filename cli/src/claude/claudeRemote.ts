@@ -71,6 +71,7 @@ export async function claudeRemote(opts: {
     onSessionFound: (id: string, extras?: { forkedFrom?: string }) => void,
     onThinkingChange?: (thinking: boolean) => void,
     onMessage: (message: SDKMessage) => void,
+    onContextUsage?: (usage: { model?: string, maxTokens?: number }) => void,
     onFirstResult?: (initialMessage: string) => void,
     onCompactResultAccepted?: () => void,
     onCompletionEvent?: (message: string) => void,
@@ -553,6 +554,13 @@ export async function claudeRemote(opts: {
                 updateThinking(true);
 
                 const systemInit = message as SDKSystemMessage;
+
+                if (opts.onContextUsage) {
+                    // Older CLIs may not support get_context_usage; the converter's seed stays.
+                    response.getContextUsage().then(opts.onContextUsage, (e) => {
+                        logger.debug('[claudeRemote] get_context_usage failed', e);
+                    });
+                }
 
                 // Claude silently starts in default when plan/auto is unavailable
                 // (e.g. auto disabled by settings); surface it instead of

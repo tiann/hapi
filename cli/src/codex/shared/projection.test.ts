@@ -5,6 +5,24 @@ import { codexPlanProposalId } from './plan';
 import { extractNotifySummary } from '@hapi/protocol/messages';
 
 describe('shared history projection', () => {
+    it.each([undefined, 'root'])('projects command outcomes for live output and replay (parent: %s)', async parentThreadId => {
+        const send = vi.fn();
+        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {}, parentThreadId);
+        const items = [
+            { id: 'failed', type: 'commandExecution', command: 'sleep 100', status: 'failed', exitCode: -1, durationMs: 2000 },
+            { id: 'cancelled', type: 'commandExecution', command: 'sleep 100', status: 'cancelled' },
+            { id: 'exit', type: 'commandExecution', command: 'exit 2', status: 'completed', exitCode: 2 },
+            { id: 'ok', type: 'commandExecution', command: 'echo ok', status: 'completed', exitCode: 0 }
+        ];
+        for (const item of items) await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item });
+        const results = () => send.mock.calls.map(([body]) => parentThreadId ? body.message : body).filter(body => body.type === 'tool-call-result');
+        expect(results().map(body => body.is_error)).toEqual([true, true, true, false]);
+        expect(results()[0].output).toMatchObject({ command: 'sleep 100', exit_code: -1, duration_ms: 2000 });
+        projection.reset(); send.mockClear();
+        await projection.history({ turns: [{ id: 'turn', status: 'completed', items }] });
+        expect(results().map(body => body.is_error)).toEqual([true, true, true, false]);
+    });
     it.each([undefined, 'root'])('publishes only final summaries in live output and history replay (parent: %s)', async parentThreadId => {
         const send = vi.fn();
         const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;

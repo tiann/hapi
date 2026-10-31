@@ -497,6 +497,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         claudeEnvVars: session.claudeEnvVars,
                         claudeArgs: session.claudeArgs,
                         onMessage,
+                        onContextUsage: (usage) => sdkToLogConverter.applyContextUsage(usage.model, usage.maxTokens),
                         onFirstResult: (initialMessage) => {
                             // SDK streams omit Claude Code's native ai-title; it is only in the transcript.
                             const sessionId = session.sessionId;

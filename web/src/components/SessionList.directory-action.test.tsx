@@ -397,12 +397,14 @@ describe('SessionList selection', () => {
             id: 'session-first',
             active: true,
             updatedAt: 200,
+            lastUserMessageAt: 200,
             metadata: { path: '/work/hapi', name: 'First session', flavor: 'codex' }
         })
         const second = makeSession({
             id: 'session-second',
             active: true,
             updatedAt: 100,
+            lastUserMessageAt: 100,
             metadata: { path: '/work/hapi', name: 'Second session', flavor: 'codex' }
         })
 
@@ -430,7 +432,7 @@ describe('SessionList selection', () => {
 
         rerender(renderList([
             { ...first, updatedAt: 200 },
-            { ...second, updatedAt: 300 }
+            { ...second, updatedAt: 300, lastUserMessageAt: 300 }
         ]))
 
         fireEvent.mouseUp(screen.getByRole('button', { name: /Second session/ }), { button: 0 })

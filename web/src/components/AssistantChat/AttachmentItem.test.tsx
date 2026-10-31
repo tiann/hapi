@@ -117,7 +117,7 @@ describe('AttachmentItem', () => {
 
         const dragHandle = screen.getByTestId('attachment-drag-handle')
         const removeButton = screen.getByRole('button', { name: 'Remove attachment' })
-        expect(dragHandle.parentElement).toHaveClass('gap-1.5', 'px-2')
+        expect(dragHandle.parentElement).toHaveClass('gap-1.5', 'pl-2', 'pr-2')
 
         for (const control of [dragHandle, removeButton]) {
             expect(control).toHaveClass('hapi-composer-attachment-file-control', 'h-6', 'w-6', '-mx-1', 'items-center')

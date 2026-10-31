@@ -222,7 +222,7 @@ public enum SessionListSearch {
             group.sorted { lhs, rhs in
                 let left = index.scores[lhs.id] ?? 0
                 let right = index.scores[rhs.id] ?? 0
-                return left != right ? left > right : lhs.updatedAt > rhs.updatedAt
+                return left != right ? left > right : sessionOrderPrecedes(lhs, rhs)
             }
         }
         let globalPins = matched.filter { $0.globalPinned == true }

@@ -118,7 +118,18 @@ describe('EffortField', () => {
         expect(values).not.toContain('max')
     })
 
-    it('renders nothing for agents without an effort field', () => {
+    it('shows only the selected AGY family efforts and forwards a change', () => {
+        const onChange = vi.fn()
+        const { container } = render(<EffortField {...baseProps} agent="agy" effort="medium"
+            agyOptions={[{ value: 'medium', label: 'Medium' }, { value: 'high', label: 'High' }]}
+            onEffortChange={onChange} />)
+        const select = container.querySelector('select') as HTMLSelectElement
+        expect(Array.from(select.options).map((option) => option.value)).toEqual(['auto', 'medium', 'high'])
+        fireEvent.change(select, { target: { value: 'high' } })
+        expect(onChange).toHaveBeenCalledWith('high')
+    })
+
+    it('hides AGY effort until the selected model has adjustable levels', () => {
         const { container } = render(
             <EffortField {...baseProps} agent="agy" />
         )

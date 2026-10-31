@@ -2,108 +2,63 @@ package app.hapi.protocol.wire
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 
-/** Pins the exact `sortSessionSummaries` order from `web/src/hooks/useSSE.ts`. */
 class SessionSortingTest {
-
-    private fun summary(
-        id: String,
-        active: Boolean = false,
-        updatedAt: Long = 0,
-        pinned: Boolean? = null,
-        globalPinned: Boolean? = null,
-        pendingRequestsCount: Int = 0,
-    ): SessionSummary = SessionSummary(
-        id = id,
-        active = active,
-        thinking = false,
-        activeAt = 0,
-        updatedAt = updatedAt,
-        pinned = pinned,
-        globalPinned = globalPinned,
-        metadata = null,
-        metadataVersion = 0,
-        agentStateVersion = 0,
-        todosUpdatedAt = 0,
-        todoProgress = null,
-        pendingRequestsCount = pendingRequestsCount,
-        pendingRequestKinds = emptyList(),
-        pendingRequests = emptyList(),
-        backgroundTaskCount = 0,
-        futureScheduledMessageCount = 0,
-        nextScheduledAt = null,
-        model = null,
-        modelReasoningEffort = null,
-        effort = null,
-    )
+    private fun summary(id: String, createdAt: Long? = null, at: Long? = null) =
+        SessionSummary(id = id, active = false, createdAt = createdAt, lastUserMessageAt = at)
 
     @Test
-    fun `globalPinned beats pinned beats active beats recency`() {
-        val sorted = sortSessionSummaries(
-            listOf(
-                summary("recent-inactive", updatedAt = 9_000),
-                summary("active", active = true, updatedAt = 1_000),
-                summary("pinned", pinned = true, updatedAt = 500),
-                summary("global", globalPinned = true, updatedAt = 100),
-            )
-        )
-        assertEquals(listOf("global", "pinned", "active", "recent-inactive"), sorted.map { it.id })
+    fun `output and status do not reorder but new input does`() {
+        val old = summary("old", 1, 100).copy(updatedAt = 90_000, active = true, thinking = true, pendingRequestsCount = 4)
+        val newer = summary("new", 2, 200)
+        assertEquals(listOf("new", "old"), sortSessionSummaries(listOf(old, newer)).map { it.id })
+        assertEquals(listOf("old", "new"), sortSessionSummaries(listOf(old.copy(lastUserMessageAt = 300), newer)).map { it.id })
     }
 
     @Test
-    fun `among active sessions pendingRequestsCount descends before updatedAt`() {
-        val sorted = sortSessionSummaries(
-            listOf(
-                summary("a", active = true, updatedAt = 9_000, pendingRequestsCount = 0),
-                summary("b", active = true, updatedAt = 1_000, pendingRequestsCount = 2),
-                summary("c", active = true, updatedAt = 5_000, pendingRequestsCount = 1),
-            )
-        )
-        assertEquals(listOf("b", "c", "a"), sorted.map { it.id })
+    fun `manual pins still come first`() {
+        val rows = listOf(summary("new", at = 99), summary("project", at = 2).copy(pinned = true), summary("global", at = 1).copy(globalPinned = true))
+        assertEquals(listOf("global", "project", "new"), sortSessionSummaries(rows).map { it.id })
     }
 
     @Test
-    fun `inactive sessions ignore pendingRequestsCount (web left-active guard)`() {
-        val sorted = sortSessionSummaries(
-            listOf(
-                summary("low-pending-recent", updatedAt = 9_000, pendingRequestsCount = 0),
-                summary("high-pending-old", updatedAt = 1_000, pendingRequestsCount = 5),
-            )
-        )
-        assertEquals(listOf("low-pending-recent", "high-pending-old"), sorted.map { it.id })
+    fun `creation fallback and timestamp ties are deterministic`() {
+        val rows = listOf(summary("b", 2), summary("a", 2), summary("old", 1))
+        assertEquals(listOf("a", "b", "old"), sortSessionSummaries(rows).map { it.id })
+        assertEquals(listOf("a", "b", "old"), sortSessionSummaries(rows.reversed()).map { it.id })
     }
 
     @Test
-    fun `pinned sections sort by recency within themselves`() {
-        val sorted = sortSessionSummaries(
-            listOf(
-                summary("g-old", globalPinned = true, updatedAt = 100),
-                summary("p-new", pinned = true, updatedAt = 9_000),
-                summary("g-new", globalPinned = true, updatedAt = 5_000),
-                summary("p-old", pinned = true, updatedAt = 200),
-            )
+    fun `missing ordering timestamps sort after present timestamps`() {
+        val rows = listOf(
+            summary("missing"),
+            summary("created", createdAt = 100),
+            summary("user-input", at = 200),
         )
-        assertEquals(listOf("g-new", "g-old", "p-new", "p-old"), sorted.map { it.id })
+        val expected = listOf("user-input", "created", "missing")
+        assertEquals(expected, sortSessionSummaries(rows).map { it.id })
+        assertEquals(expected, sortSessionSummaries(rows.reversed()).map { it.id })
     }
 
     @Test
-    fun `null pin flags count as false and ties keep prior order (stable)`() {
-        val a = summary("a", updatedAt = 1_000, pinned = null)
-        val b = summary("b", updatedAt = 1_000, pinned = false)
-        val c = summary("c", updatedAt = 1_000)
-        assertEquals(listOf("a", "b", "c"), sortSessionSummaries(listOf(a, b, c)).map { it.id })
-        assertEquals(listOf("c", "b", "a"), sortSessionSummaries(listOf(c, b, a)).map { it.id })
+    fun `tied user input timestamps compare missing creation times as zero`() {
+        val rows = listOf(
+            summary("a-missing", at = 200),
+            summary("b-zero", createdAt = 0, at = 200),
+            summary("c-created", createdAt = 100, at = 200),
+        )
+        val expected = listOf("c-created", "a-missing", "b-zero")
+        assertEquals(expected, sortSessionSummaries(rows).map { it.id })
+        assertEquals(expected, sortSessionSummaries(rows.reversed()).map { it.id })
     }
 
     @Test
-    fun `updatedAt comparison survives long deltas`() {
-        // Long-range timestamps must not overflow an Int subtraction.
-        val sorted = sortSessionSummaries(
-            listOf(
-                summary("old", updatedAt = 1_000L),
-                summary("new", updatedAt = 1_000L + Int.MAX_VALUE.toLong() * 3),
-            )
-        )
-        assertEquals(listOf("new", "old"), sorted.map { it.id })
+    fun `patch clock is monotonic and render relevant`() {
+        val row = summary("a", at = 100)
+        val next = SummaryPatching.applySessionSummaryPatch(row, SessionPatch(lastUserMessageAt = 200))
+        assertEquals(200L, next.lastUserMessageAt)
+        assertFalse(SummaryPatching.isRenderIrrelevantPatch(row, next))
+        assertEquals(200L, SummaryPatching.applySessionSummaryPatch(next, SessionPatch(lastUserMessageAt = 50)).lastUserMessageAt)
     }
 }

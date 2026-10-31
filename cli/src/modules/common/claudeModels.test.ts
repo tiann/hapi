@@ -88,6 +88,49 @@ afterEach(() => {
 })
 
 describe('parseClaudeModelsProbeLine', () => {
+    it('shows resolved versions for family labels while preserving selectable aliases', () => {
+        expect(parseClaudeModelsProbeLine(successLine([
+            { value: 'opus', displayName: 'Opus', resolvedModel: 'claude-opus-5-5' },
+            { value: 'sonnet', displayName: 'Sonnet', resolvedModel: 'claude-sonnet-5-5' },
+            { value: 'haiku', displayName: 'Haiku', resolvedModel: 'claude-haiku-5-5' },
+            { value: 'fable', displayName: 'Fable', resolvedModel: 'claude-fable-5-1' },
+        ]))).toEqual({
+            kind: 'models',
+            models: [
+                { value: 'opus', displayName: 'Opus 5.5' },
+                { value: 'sonnet', displayName: 'Sonnet 5.5' },
+                { value: 'haiku', displayName: 'Haiku 5.5' },
+                { value: 'fable', displayName: 'Fable 5.1' },
+            ],
+        })
+    })
+
+    it('omits snapshot dates and keeps extended context in resolved labels', () => {
+        expect(parseClaudeModelsProbeLine(successLine([
+            { value: 'opus', displayName: 'Opus', resolvedModel: 'claude-opus-4-1-20250805' },
+            { value: 'opus[1m]', displayName: 'Opus', resolvedModel: 'claude-opus-4-6[1m]' },
+            { value: 'sonnet[1m]', displayName: 'Sonnet 1M', resolvedModel: 'claude-sonnet-4-6' },
+        ]))).toMatchObject({ models: [
+            { value: 'opus', displayName: 'Opus 4.1' },
+            { value: 'opus[1m]', displayName: 'Opus 4.6 1M' },
+            { value: 'sonnet[1m]', displayName: 'Sonnet 4.6 1M' },
+        ] })
+    })
+
+    it('preserves supplied labels and exposes custom resolved IDs without guessing versions', () => {
+        expect(parseClaudeModelsProbeLine(successLine([
+            { value: 'opus', displayName: 'Opus' },
+            { value: 'opus', displayName: 'Opus 5.5', resolvedModel: 'claude-opus-5-5' },
+            { value: 'opus', displayName: 'Team deployment', resolvedModel: 'custom-opus' },
+            { value: 'opus', displayName: 'Opus', resolvedModel: 'custom-opus' },
+        ]))).toMatchObject({ models: [
+            { displayName: 'Opus' },
+            { displayName: 'Opus 5.5' },
+            { displayName: 'Team deployment' },
+            { displayName: 'Opus (custom-opus)' },
+        ] })
+    })
+
     it('keeps only the fields HAPI uses and folds effort support into levels', () => {
         const result = parseClaudeModelsProbeLine(successLine([
             OPUS_ROW,

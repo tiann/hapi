@@ -5,6 +5,8 @@ import { dirname } from 'node:path'
 import { MachineStore } from './machineStore'
 import { MessageStore } from './messageStore'
 import { addMessage } from './messages'
+import { clearCachedStatements } from './statementCache'
+import { backfillLastUserMessageAt } from './sessionUserActivity'
 import type { StoredMessage } from './types'
 import { PushStore } from './pushStore'
 import { FcmStore } from './fcmStore'
@@ -46,7 +48,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 29
+const SCHEMA_VERSION: number = 30
 const REQUIRED_TABLES = [
     'sessions',
     'session_read_states',
@@ -318,6 +320,7 @@ export class Store {
 
     close(): void {
         if (this.closed) return
+        clearCachedStatements(this.db)
         this.db.close()
         this.closed = true
 
@@ -364,7 +367,8 @@ export class Store {
             25: () => this.migrateFromV25ToV26(),
             26: () => this.migrateFromV26ToV27(),
             27: () => this.migrateFromV27ToV28(),
-            28: () => this.createSessionReadSchema(),
+            28: () => this.migrateFromV28ToV29(),
+            29: () => this.createSessionReadSchema(),
         })
 
         if (currentVersion === 0) {
@@ -419,6 +423,7 @@ export class Store {
                 machine_id TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
+                last_user_message_at INTEGER,
                 metadata TEXT,
                 metadata_version INTEGER DEFAULT 1,
                 agent_state TEXT,
@@ -1072,6 +1077,18 @@ export class Store {
                   AND scheduled_at IS NOT NULL
                   AND delivery_state = 'queued';
         `)
+    }
+
+    /** v28→v29: persist a stable, user-input-only list ordering clock. */
+    private migrateFromV28ToV29(): void {
+        const columns = this.getSessionColumnNames()
+        if (columns.size === 0 || columns.has('last_user_message_at')) return
+        this.db.transaction(() => {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN last_user_message_at INTEGER')
+            if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'").get()) {
+                backfillLastUserMessageAt(this.db)
+            }
+        })()
     }
 
     /**

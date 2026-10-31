@@ -181,6 +181,21 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
     }
 
     /**
+     * Ask Claude for the active model's effective context window (what /context shows:
+     * honors CLAUDE_CODE_DISABLE_1M_CONTEXT and settings autoCompactWindow).
+     */
+    async getContextUsage(): Promise<{ model?: string, maxTokens?: number }> {
+        if (!this.childStdin) {
+            throw new Error('getContextUsage requires --input-format stream-json')
+        }
+
+        const response = await this.request({
+            subtype: 'get_context_usage'
+        }, this.childStdin) as { response?: { model?: string, maxTokens?: number } }
+        return response.response ?? {}
+    }
+
+    /**
      * Change Claude's native permission mode without restarting the process
      */
     async setPermissionMode(mode: ClaudePermissionMode): Promise<void> {
@@ -207,6 +222,7 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
 
         return new Promise((resolve, reject) => {
             this.pendingControlResponses.set(requestId, (response) => {
+                this.pendingControlResponses.delete(requestId)
                 if (response.subtype === 'success') {
                     resolve(response)
                 } else {

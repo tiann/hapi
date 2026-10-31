@@ -27,6 +27,7 @@ export type WorkspaceFilePathPolicy = {
 type WorkspaceReadFileRequest = {
     cwd?: unknown
     path?: unknown
+    maxBytes?: unknown
 }
 
 type WorkspaceListDirectoryRequest = {
@@ -180,7 +181,11 @@ export function registerWorkspaceFileHandlers(
                 if (!stats.isFile()) {
                     throw new Error('Path is not a regular file')
                 }
-                const buffer = await readBoundedRegularFile(resolved.path, MAX_WORKSPACE_FILE_BYTES)
+                const requestedMaxBytes = typeof data.maxBytes === 'number' && Number.isFinite(data.maxBytes) && data.maxBytes > 0
+                    ? Math.floor(data.maxBytes)
+                    : MAX_WORKSPACE_FILE_BYTES
+                const maxBytes = Math.min(requestedMaxBytes, MAX_WORKSPACE_FILE_BYTES)
+                const buffer = await readBoundedRegularFile(resolved.path, maxBytes)
                 return {
                     success: true,
                     content: buffer.toString('base64'),

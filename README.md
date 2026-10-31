@@ -63,7 +63,7 @@ Developers can build the apps from source: [iOS](ios/README.md), [Android](andro
 
 ## Build from source
 
-Requires Bun 1.4.0.
+Requires Bun 1.4.4.
 
 ```bash
 bun install

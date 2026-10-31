@@ -569,6 +569,13 @@ describe('buildGoalStateMessages', () => {
 })
 
 describe('buildAgyComposerModelOptions', () => {
+    it('groups model effort variants into one family option', () => {
+        expect(buildAgyComposerModelOptions([
+            { modelId: 'gemini-4-argon-medium', name: 'Gemini 4 Argon (Medium)' },
+            { modelId: 'gemini-4-argon-high', name: 'Gemini 4 Argon (High)' },
+        ])).toEqual([{ value: 'gemini-4-argon', label: 'Gemini 4 Argon' }])
+    })
+
     it('maps the machine catalog into composer options and keeps the id when agy sent no label', () => {
         expect(buildAgyComposerModelOptions([
             { modelId: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)' },

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { PassThrough, Writable } from 'node:stream';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { logger } from '@/ui/logger';
 import { buildAgyHeadlessArgs, AgyHeadlessDriver } from './agyHeadlessDriver';
@@ -11,8 +12,10 @@ import type { AgyMode, PermissionMode } from '../types';
 function fakeAgyProcess(lines: string[], exitCode = 0): ChildProcessWithoutNullStreams {
     const child = spawn(process.execPath, ['-e', `
         const lines = ${JSON.stringify(lines)};
-        for (const line of lines) process.stdout.write(line + '\\n');
-        process.exit(${exitCode});
+        require('node:readline').createInterface({ input: process.stdin }).once('line', () => {
+            for (const line of lines) process.stdout.write(line + '\\n');
+            process.exit(${exitCode});
+        });
     `], { stdio: ['pipe', 'pipe', 'pipe'] }) as ChildProcessWithoutNullStreams;
     return child;
 }
@@ -26,18 +29,30 @@ function scriptableFakeChild(chunks: string[], exitCode = 0): ChildProcessWithou
     run: () => void;
     feedStdout: (chunk: string) => void;
 } {
-    const stdout = new EventEmitter() as unknown as ChildProcessWithoutNullStreams['stdout'];
-    const stderr = new EventEmitter() as unknown as ChildProcessWithoutNullStreams['stderr'];
-    for (const stream of [stdout, stderr]) {
-        (stream as unknown as { setEncoding: () => void }).setEncoding = () => {};
-    }
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
     let killed = false;
+    let closed = false;
     const child = new EventEmitter() as unknown as ChildProcessWithoutNullStreams;
+    const close = (code: number | null, signal: string | null = null) => {
+        if (!closed) child.emit('close', code, signal);
+    };
+    const stdin = new Writable({
+        write(_chunk, _encoding, callback) { callback(); },
+        final(callback) { callback(); queueMicrotask(() => close(0)); },
+    });
     Object.assign(child, {
-        stdout,
-        stderr,
+        stdin, stdout, stderr, exitCode: null, signalCode: null,
         get killed() { return killed; },
-        kill: () => { killed = true; },
+        kill: (signal = 'SIGTERM') => {
+            killed = true;
+            queueMicrotask(() => close(null, signal));
+            return true;
+        },
+    });
+    child.on('close', (code, signal) => {
+        closed = true;
+        Object.assign(child, { exitCode: code, signalCode: signal });
     });
     let chunkIndex = 0;
     const run = () => {
@@ -91,13 +106,12 @@ const FULL_TURN = [
 ];
 
 describe('buildAgyHeadlessArgs', () => {
-    it('builds the per-turn print-mode args', () => {
+    it('builds persistent stream args without placing the prompt on the command line', () => {
         const args = buildAgyHeadlessArgs({
-            prompt: 'hello',
             permissionMode: 'request-review',
         });
         expect(args).toEqual([
-            '-p', 'hello',
+            '--input-format', 'stream-json',
             '--output-format', 'stream-json',
             '--print-timeout', '30m',
         ]);
@@ -105,9 +119,8 @@ describe('buildAgyHeadlessArgs', () => {
 
     it('adds resume/model/mode/effort/skip-permissions flags', () => {
         const args = buildAgyHeadlessArgs({
-            prompt: 'hi',
             conversationId: 'conv-1',
-            model: 'gemini-3.5-flash-medium',
+            model: 'gemini-3.5-flash',
             permissionMode: 'always-proceed',
             mode: 'plan',
             effort: 'high',
@@ -115,7 +128,7 @@ describe('buildAgyHeadlessArgs', () => {
         expect(args).toContain('--conversation');
         expect(args).toContain('conv-1');
         expect(args).toContain('--model');
-        expect(args).toContain('gemini-3.5-flash-medium');
+        expect(args).toContain('gemini-3.5-flash');
         expect(args).toContain('--mode');
         expect(args).toContain('plan');
         expect(args).toContain('--effort');
@@ -124,12 +137,49 @@ describe('buildAgyHeadlessArgs', () => {
     });
 
     it('omits --dangerously-skip-permissions for request-review', () => {
-        const args = buildAgyHeadlessArgs({ prompt: 'hi', permissionMode: 'request-review' });
+        const args = buildAgyHeadlessArgs({ permissionMode: 'request-review' });
         expect(args).not.toContain('--dangerously-skip-permissions');
+    });
+
+    it('rejects a conflicting unnormalized variant instead of spawning an invalid selection', () => {
+        expect(() => buildAgyHeadlessArgs({
+            permissionMode: 'request-review', model: 'gemini-4-argon-medium', effort: 'high',
+        })).toThrow('conflicts with effort high');
+    });
+
+    it('avoids redundant effort flags for an exact variant', () => {
+        const args = buildAgyHeadlessArgs({
+            permissionMode: 'request-review', model: 'gemini-4-argon-medium', effort: 'medium',
+        });
+        expect(args).toContain('gemini-4-argon-medium');
+        expect(args).not.toContain('--effort');
+    });
+
+    it.each(['xhigh', 'max'] as const)('passes native %s effort', (effort) => {
+        const args = buildAgyHeadlessArgs({
+            permissionMode: 'request-review', model: 'gemini-4-argon', effort,
+        });
+        expect(args[args.indexOf('--effort') + 1]).toBe(effort);
     });
 });
 
 describe('AgyHeadlessDriver', () => {
+    it('restores a conflicting legacy selection without spawning or retrying', async () => {
+        const { session, queue, client } = createSession();
+        const spawnAgy = vi.fn();
+        const driver = new AgyHeadlessDriver({ session, spawnAgy });
+        queue.push('hello', { permissionMode: 'request-review', model: 'gemini-4-argon-medium', effort: 'high' }, 'local-1');
+        queue.close();
+        await driver.launch();
+        session.stopKeepAlive();
+        expect(spawnAgy).not.toHaveBeenCalled();
+        expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['local-1']);
+        expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'abort-restore', text: 'hello' });
+        expect(client.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'error', message: expect.stringContaining('conflicts with effort high'),
+        });
+    });
+
     it('maps a full NDJSON turn onto the transcript-entry channel and adopts the conversation id', async () => {
         const { session, queue, client, sent } = createSession();
         const driver = new AgyHeadlessDriver({
@@ -260,7 +310,7 @@ describe('AgyHeadlessDriver', () => {
         await new Promise((r) => setTimeout(r, 20));
         child.run();
         await new Promise((r) => setTimeout(r, 20));
-        child.run(); // fourth run: no chunks left → emits close (the turn boundary)
+        child.run(); // fourth run: no chunks left → closes the process after its result
         await new Promise((r) => setTimeout(r, 200));
         queue.close();
         session.stopKeepAlive();
@@ -685,14 +735,19 @@ describe('AgyHeadlessDriver', () => {
         expect(plannerEntries.map((e) => e!.content)).toEqual(['Let me check', 'Done: listed']);
     });
 
-    it('carries the queued model (display label) on emitted planner entries', async () => {
+    it.each([
+        { model: 'gemini-3.5-flash-medium', effort: undefined, label: 'Gemini 3.5 Flash (Medium)' },
+        { model: 'gemini-3.5-flash', effort: 'high', label: 'Gemini 3.5 Flash (High)' },
+        { model: 'gemini-4-argon', effort: 'high', label: 'gemini-4-argon-high' },
+        { model: 'custom-high', effort: 'medium', label: 'custom-high' },
+    ])('carries the queued model (display label) on emitted planner entries: $model / $effort', async ({ model, effort, label }) => {
         const { session, queue, sent } = createSession();
         const driver = new AgyHeadlessDriver({
             session,
             spawnAgy: () => fakeAgyProcess(FULL_TURN),
         });
 
-        queue.push('hello', { permissionMode: 'request-review', model: 'gemini-3.5-flash-medium' }, 'local-1');
+        queue.push('hello', { permissionMode: 'request-review', model, effort }, 'local-1');
         const launchPromise = driver.launch();
         await new Promise((r) => setTimeout(r, 500));
         queue.close();
@@ -705,7 +760,7 @@ describe('AgyHeadlessDriver', () => {
         expect(plannerEntries.length).toBeGreaterThan(0);
         // Display label, not the raw wire id.
         for (const entry of plannerEntries) {
-            expect(entry!.model).toBe('Gemini 3.5 Flash (Medium)');
+            expect(entry!.model).toBe(label);
         }
     });
 
@@ -768,7 +823,7 @@ describe('AgyHeadlessDriver', () => {
         await new Promise((r) => setTimeout(r, 30));
         child.run(); // one chunk
         await new Promise((r) => setTimeout(r, 20));
-        child.run(); // no chunks left → close (the turn boundary)
+        child.run(); // no chunks left → close after the result
         await new Promise((r) => setTimeout(r, 500));
         queue.close();
         session.stopKeepAlive();
@@ -1443,9 +1498,9 @@ describe('AgyHeadlessDriver', () => {
         session.stopKeepAlive();
         await launchPromise;
 
-        // The prompt must never be written to logs — only <redacted> markers.
+        // The prompt travels over stdin and must never be written to debug logs.
         const allLogs = debugSpy.mock.calls.map((c) => c.join(' ')).join('\n');
-        expect(allLogs).toContain('<redacted>');
+        expect(allLogs).toContain('--input-format stream-json');
         expect(allLogs).not.toContain('super-secret-prompt-text');
         debugSpy.mockRestore();
     });

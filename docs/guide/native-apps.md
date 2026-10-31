@@ -89,12 +89,27 @@ directory browsing and session creation.
 |---|---|
 | Chat and permissions | Streaming messages, history, tool inspection, approvals and question answering on both platforms. |
 | Composer | Text, photos/camera/files, drafts, queued-message actions, `/` command suggestions and steering when supported by the session. |
+| Android incoming shares | Share files, photos, text or links to HAPI, choose a session and confirm sending from its composer. The picker can switch paired hubs and explicitly restore stopped sessions. |
 | Session controls | Both support pin, rename, stopping a turn and sending to resume an inactive session. Active sessions can be archived; inactive sessions can be reopened explicitly or deleted. |
 | Files and Git | Open **Session files** from the chat menu to browse/search files, inspect Git status and read diffs. |
 | Scratchlist | On iOS, tap the tray beside the composer attachment button to enter **Save draft** mode; Android uses the chat menu. Text and attachments sync within the session. |
 | Dictation | Record audio, transcribe through a configured hub provider, then edit the inserted text before sending. |
 | Usage and storage | Available only to the hub owner (`default` namespace). |
 | Display | English/Simplified Chinese, theme preferences, system text scaling and machine filtering on the session list. |
+
+### Share to an Android session
+
+In another app, choose **Share → HAPI**, then select a session. Use the hub
+menu to choose another paired hub, or search the session list. A stopped
+session asks for restoration before files can upload. HAPI adds the files and
+any accompanying text to the session composer, preserving its existing draft;
+review the content and tap **Send**.
+
+Files use the existing attachment limits and image compression policy. Failed
+files must be retried or removed before continuing. Before import, pending
+content stays in private local storage for up to 24 hours, including while
+pairing or recovering from process recreation. After import, ordinary Android
+attachment behavior applies: leaving the chat discards unsent attachments.
 
 ### Session-list parity
 

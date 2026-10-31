@@ -34,12 +34,17 @@ Source: `hub/src/web/routes/sessions.ts`; shapes `SessionSchema` (`shared/src/sc
 | `GET /api/sessions` | Query: `limit?` (1–500), `order?=updatedAt` | `{sessions: (SessionSummary & {futureScheduledMessageCount, nextScheduledAt})[]}` |
 | `GET /api/sessions/:id` | — | `{session: Session}` (full record incl. `metadata`, `agentState`, `todos`, versions) |
 
-Default list order is `globalPinned` → `pinned` → `active` →
-`pendingRequestsCount` (only among active sessions) → `updatedAt` descending.
-`order=updatedAt` bypasses those priority buckets and returns pure `updatedAt`
-recency, which is useful for clients that need a flat newest-first list. The
-Hub's `updatedAt` is the session activity clock; `activeAt` is transport
-keep-alive state and is not the list recency key. The Web session list may
+Default list order is `globalPinned` → `pinned` →
+`lastUserMessageAt ?? createdAt` descending, then `createdAt` descending and
+`id` ascending. `lastUserMessageAt` is optional (absent before any user input),
+is persisted on Session and SessionSummary, and advances monotonically only
+when genuine user messages are inserted, using their original timestamps.
+Agent output, prompt echoes, delivery acknowledgements, liveness and pending
+request counts do not change the default order. User-message deletion does
+not rewind the timestamp.
+`order=updatedAt` explicitly requests pure activity recency (e.g. peer discovery).
+`updatedAt` retains its activity/unread/date-filter semantics; `activeAt`
+remains transport keep-alive state. The Web session list may
 apply client-side grouping and search ranking after receiving this response;
 `GET /api/sessions` itself has no text-search parameter. List badges come from
 `SessionSummary.pendingRequestsCount` (authoritative total) and
@@ -143,8 +148,8 @@ Source: `hub/src/web/routes/sessions.ts`; flavor gates in `shared/src/modes.ts` 
 | Method & path | Request | Applies to |
 |---|---|---|
 | `POST /api/sessions/:id/permission-mode` | `{mode: PermissionMode}` | All flavors except `pi` and `dsh` (per-flavor allowed sets in `modes.ts`) |
-| `POST /api/sessions/:id/model` | `{model: string \| {provider, modelId} \| null}` | Flavors with `supportsModelChange` (not `dsh`); remote-only for codex/cursor/grok |
-| `POST /api/sessions/:id/effort` | `{effort: string \| null}` | claude, grok, pi (`supportsEffort`) |
+| `POST /api/sessions/:id/model` | `{model: string \| {provider, modelId} \| null, effort?: string \| null}` | Flavors with `supportsModelChange` (not `dsh`); remote-only for codex/cursor/grok. Only claude and agy accept `effort` with a model change. |
+| `POST /api/sessions/:id/effort` | `{effort: string \| null}` | agy, claude, grok, pi (`supportsEffort`) |
 | `POST /api/sessions/:id/model-reasoning-effort` | `{modelReasoningEffort: string \| null}` | codex, opencode (remote-only) |
 | `POST /api/sessions/:id/service-tier` | `{serviceTier: 'fast' \| 'standard'}` | codex (remote-only) |
 | `POST /api/sessions/:id/collaboration-mode` | `{mode: 'default' \| 'plan'}` | codex (remote-only) |

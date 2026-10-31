@@ -6,31 +6,40 @@ attention easy to find while still allowing older sessions to be searched.
 
 ## Ordering and grouping
 
-The Hub/API provides the session list with this baseline order:
+The default order follows **your most recent input**, not the agent's most
+recent output. Sending a new message moves a session forward once. Streaming,
+tool/Todo updates, waiting for approval, completion, and reconnects do not
+reorder ordinary rows. Status and unread indicators still update live.
 
 1. Globally pinned sessions.
 2. Project-pinned sessions.
-3. Active sessions.
-4. Among active sessions, sessions with more pending requests first.
-5. `updatedAt` descending as the recency tie-breaker.
+3. `lastUserMessageAt` descending (or `createdAt` before any user input).
+4. Creation time descending, then session ID for deterministic ties.
 
-The Web app then groups sessions by machine and project directory. Within a
-project, pinned sessions come first, followed by active sessions and then
-inactive sessions; rows with the same status are ordered by `updatedAt`.
-Project groups use their pinned/active state and newest member when deciding
-their position.
+The Web app groups sessions by machine and project directory. Within a project,
+pins come first, followed by the same user-input order. Project and machine
+groups use their pinned state and newest member's ordering key, not live
+activity. There is no fixed-order preference to configure.
+
+The Hub persists the original user-message timestamp, including local CLI
+input. Historical imports and duplicate/echoed messages do not acquire a fresh
+ordering timestamp. Deletion or rewind does not rewind this monotonic clock.
+An unattended session's new output is indicated as unread rather than moving
+it ahead of conversations you have interacted with more recently.
 
 The detailed API contract is documented in [REST — sessions](../api/client-contract/rest.md#sessions--list--detail)
 and [SSE — keep-alive noise](../api/client-contract/sse.md#keep-alive-noise).
 
-`updatedAt` is the session activity clock used by the list and date filter. It
-is different from `activeAt`: `activeAt` is the CLI connection keep-alive
+`updatedAt` remains the session activity clock used by timestamps and the date
+filter, not the ordering key. It is different from `activeAt`: `activeAt` is the CLI connection keep-alive
 clock and does not, by itself, move a session in the list. A connected session
 can therefore be idle; see [active is transport liveness, not agent health](../api/client-contract/sse.md#active-is-transport-liveness-not-agent-health).
 
 When enabled in **Settings → Display**, the optional in-progress layout moves
 active sessions into Working, Pending, Active, and Idle sections. Global and
-project pins remain distinct from these sections.
+project pins remain distinct from these sections. This optional layout still
+moves rows between sections as their status changes, but orders rows within
+each section by user input rather than ongoing output.
 
 ## Text search
 
@@ -50,7 +59,7 @@ searchable field. Queries containing `*` or `?` use wildcard matching, where
 Search results are ranked by relevance rather than by date alone. Title and
 worktree matches are more prominent than summary, machine, path, or ID-only
 matches; token-boundary matches and exact/contiguous title phrases receive
-additional preference. When relevance is tied, `updatedAt` descending is used
+additional preference. When relevance is tied, the stable user-input order is used
 as the tie-breaker. This means an older session with a distinctive title can
 appear above a newer session that only matches a common path segment.
 

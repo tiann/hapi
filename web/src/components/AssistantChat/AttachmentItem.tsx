@@ -158,7 +158,7 @@ export function AttachmentItem(props: { dragHandleProps?: AttachmentDragHandlePr
 
     return (
         <AttachmentPrimitive.Root
-            className="relative flex items-center gap-1.5 rounded-lg bg-[var(--app-subtle-bg)] px-2 py-2 text-base text-[var(--app-fg)]"
+            className={`relative flex items-center gap-1.5 rounded-lg bg-[var(--app-subtle-bg)] py-2 pr-2 text-base text-[var(--app-fg)] ${!props.dragHandleProps && !isParking ? 'pl-3' : 'pl-2'}`}
             onPointerDown={surfacePointerDown}
             onContextMenu={props.dragHandleProps?.onSurfaceContextMenu}
         >

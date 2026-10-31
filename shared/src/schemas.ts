@@ -353,6 +353,7 @@ export const BackgroundTaskSchema = z.object({
 export type BackgroundTask = z.infer<typeof BackgroundTaskSchema>
 
 export const SessionSchema = z.object({
+    lastUserMessageAt: z.number().optional(),
     hasConversationContent: z.boolean().optional(),
     id: z.string(),
     namespace: z.string(),
@@ -422,6 +423,7 @@ const VersionedTeamStatePatchSchema = z.object({
 })
 
 export const SessionPatchSchema = z.object({
+    lastUserMessageAt: z.number().optional(),
     active: z.boolean().optional(),
     thinking: z.boolean().optional(),
     activeTurnStartedAt: z.number().nullable().optional(),

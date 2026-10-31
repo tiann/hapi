@@ -442,7 +442,8 @@ describe('Windows orphan startMarker format agreement', () => {
                     startMarker: iso, // as listWindowsProcessesWithCommandLine would set
                 },
             ],
-            sessionId
+            sessionId,
+            1 // Synthetic self PID: never collide with the fixture PID (4242).
         )
         expect(targets).toEqual([{ pid: 4242, startMarker: iso }])
     })

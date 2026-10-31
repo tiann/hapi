@@ -65,6 +65,24 @@ function optionalString(value: unknown): string | undefined {
     return typeof value === 'string' && value.trim() ? value : undefined
 }
 
+/** Recent Claude versions label family aliases without their resolved version. */
+function getClaudeModelDisplayName(row: Record<string, unknown>): string | undefined {
+    const displayName = optionalString(row.displayName)
+    const resolvedModel = optionalString(row.resolvedModel)
+    if (!displayName || !resolvedModel) return displayName
+
+    const family = /^(Opus|Sonnet|Haiku|Fable)(?:\s+(1M))?$/i.exec(displayName)
+    if (!family) return displayName
+
+    const version = new RegExp(
+        `^claude-${family[1].toLowerCase()}-(\\d+(?:-\\d+)*?)(?:-\\d{8})?(\\[1m\\])?$`
+    ).exec(resolvedModel)
+    if (!version) return `${displayName} (${resolvedModel})`
+
+    const context = family[2] || version[2] ? ' 1M' : ''
+    return `${family[1]} ${version[1].replaceAll('-', '.')}${context}`
+}
+
 /**
  * A row without `supportsEffort` (or with `null`) has no effort control, but
  * only when the CLI reports effort support at all: a CLI that predates the
@@ -84,7 +102,7 @@ function parseClaudeCatalog(rawModels: unknown): ClaudeModelSummary[] {
             continue
         }
         const model: ClaudeModelSummary = { value }
-        const displayName = optionalString(row.displayName)
+        const displayName = getClaudeModelDisplayName(row)
         if (displayName) model.displayName = displayName
         if (reportsEffortSupport && row.supportsEffort !== true) {
             model.effortLevels = []

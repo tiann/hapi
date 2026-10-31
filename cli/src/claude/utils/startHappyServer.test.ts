@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ApiSessionClient } from '@/api/apiSession'
+import * as peerMessages from '@/modules/pingPeer/pingPeer'
 import { startHappyServer, toClaudeAllowedHapiMcpTools } from './startHappyServer'
 
 type ToolResult = {
@@ -126,6 +127,54 @@ describe('startHappyServer skill_lookup', () => {
         expect(displayImage?.description).toContain('human user')
         expect(displayImage?.description).toContain('does not provide image input to the model')
         expect(displayImage?.description).toContain('cannot be used to read, inspect, or analyze image contents')
+    })
+
+    it.each([
+        [undefined, 'accepted'],
+        [undefined, 'steered'],
+        ['auto', 'accepted'],
+        ['auto', 'steered'],
+        ['auto', 'invoked'],
+        ['queue', 'accepted'],
+        ['steer', 'steered'],
+        ['steer', 'invoked']
+    ] as const)('forwards ping_peer mode %s and reports %s through MCP', async (deliveryMode, delivery) => {
+        const ping = vi.spyOn(peerMessages, 'pingPeer').mockResolvedValue({
+            sessionId: 'peer-id', name: 'Peer', resumed: false,
+            localId: 'ping-peer-test', delivery
+        })
+        try {
+            const mcp = await connect(false)
+            const tools = await mcp.listTools()
+            const tool = tools.tools.find((entry) => entry.name === 'ping_peer')
+            expect(tool?.inputSchema.properties?.deliveryMode).toMatchObject({ enum: ['auto', 'queue', 'steer'] })
+            expect(tool?.description).toContain('auto (default)')
+            const result = await mcp.callTool({
+                name: 'ping_peer',
+                arguments: { sessionIdPrefix: 'peer-id', message: 'hello', ...(deliveryMode ? { deliveryMode } : {}) }
+            }) as ToolResult
+            expect(result.isError).toBe(false)
+            expect(ping).toHaveBeenCalledWith({ sessionIdPrefix: 'peer-id', message: 'hello', deliveryMode })
+            expect(result.content?.[0]?.text).toBe(delivery === 'accepted'
+                ? 'Accepted for peer-id (Peer) localId=ping-peer-test — delivery shows in the recipient chat when its runtime consumes it'
+                : `${delivery} to peer-id (Peer) localId=ping-peer-test`)
+        } finally {
+            ping.mockRestore()
+        }
+    })
+
+    it('rejects invalid ping_peer delivery modes at the MCP boundary', async () => {
+        const ping = vi.spyOn(peerMessages, 'pingPeer')
+        try {
+            const mcp = await connect(false)
+            const result = await mcp.callTool({
+                name: 'ping_peer', arguments: { sessionIdPrefix: 'peer-id', message: 'hello', deliveryMode: 'interrupt' }
+            }) as ToolResult
+            expect(result.isError).toBe(true)
+            expect(ping).not.toHaveBeenCalled()
+        } finally {
+            ping.mockRestore()
+        }
     })
 
     it('displays audio through display_media and emits a generated media message', async () => {

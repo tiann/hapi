@@ -26,6 +26,7 @@ import { clearAgentTerminalBuffer } from '../socket/agentTerminalBuffer'
 import type { SSEManager } from '../sse/sseManager'
 import { CursorLegacyMigrator, type CursorLegacyMigratorOptions } from '../cursor/cursorLegacyMigrator'
 
+import { isUserInputMessage } from '../store/sessionUserActivity'
 import { EventPublisher, type SyncEventListener } from './eventPublisher'
 import { MachineCache, type Machine } from './machineCache'
 import { MessageService, type RetryIndeterminateMessageResult } from './messageService'
@@ -257,6 +258,9 @@ export class SyncEngine {
         })
         this.eventPublisher.subscribe((event) => {
             if (event.type === 'message-received') {
+                if (isUserInputMessage(event.message.content)) {
+                    this.sessionCache.refreshLastUserMessageAt(event.sessionId)
+                }
                 if (!this.sessionCache.getSession(event.sessionId)?.hasConversationContent
                     && hasConversationMessageContent(event.message.content)) {
                     this.sessionCache.refreshConversationContent(event.sessionId)
@@ -4421,12 +4425,14 @@ export class SyncEngine {
         }
     }
 
-    async readSessionFile(sessionId: string, path: string): Promise<RpcReadFileResponse> {
+    async readSessionFile(sessionId: string, path: string, options?: { maxBytes?: number }): Promise<RpcReadFileResponse> {
         try {
-            return await this.rpcGateway.readSessionFile(sessionId, path)
+            return options === undefined
+                ? await this.rpcGateway.readSessionFile(sessionId, path)
+                : await this.rpcGateway.readSessionFile(sessionId, path, options)
         } catch (error) {
             return await this.withInactiveWorkspaceFallback(sessionId, error, ({ machineId, cwd }) =>
-                this.rpcGateway.readWorkspaceFile(machineId, { cwd, path })
+                this.rpcGateway.readWorkspaceFile(machineId, { cwd, path, ...options })
             )
         }
     }
