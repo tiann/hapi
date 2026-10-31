@@ -157,4 +157,93 @@ class TerminalInputTest {
     fun pageOrderMatchesWeb() {
         assertEquals(listOf("control", "navigation", "shell", "symbols"), DIRECT_KEY_PAGE_IDS)
     }
+
+    // ------------------------------------------------- hardware key mapping --
+
+    @Test
+    fun enterMapsToCrAndCtrlEnterToLf() {
+        assertEquals("\r", hardwareKeySequence(TerminalKeyEvent(TerminalKeyCodes.ENTER)))
+        assertEquals("\n", hardwareKeySequence(TerminalKeyEvent(TerminalKeyCodes.ENTER, ctrl = true)))
+    }
+
+    @Test
+    fun backspaceMapsToDelAndForwardDelToCsi3() {
+        assertEquals(listOf(127), hardwareKeySequence(TerminalKeyEvent(TerminalKeyCodes.DEL))!!.map { it.code })
+        val forwardDel = hardwareKeySequence(TerminalKeyEvent(TerminalKeyCodes.FORWARD_DEL))!!
+        assertEquals(listOf(27, 91, 51, 126), forwardDel.map { it.code })
+    }
+
+    @Test
+    fun tabMapsToTabAndShiftTabToEscZ() {
+        assertEquals("\t", hardwareKeySequence(TerminalKeyEvent(TerminalKeyCodes.TAB)))
+        val shiftTab = hardwareKeySequence(TerminalKeyEvent(TerminalKeyCodes.TAB, shift = true))!!
+        assertEquals(listOf(27, 91, 90), shiftTab.map { it.code })
+    }
+
+    @Test
+    fun escapeAndCtrlSpaceMapToControlBytes() {
+        assertEquals(27, hardwareKeySequence(TerminalKeyEvent(TerminalKeyCodes.ESCAPE))!![0].code)
+        assertEquals(0, hardwareKeySequence(TerminalKeyEvent(TerminalKeyCodes.SPACE, ctrl = true))!![0].code)
+        assertEquals(" ", hardwareKeySequence(TerminalKeyEvent(TerminalKeyCodes.SPACE)))
+    }
+
+    @Test
+    fun dpadKeysMapToCsiArrowsMatchingTheQuickKeys() {
+        val navigation = DIRECT_KEY_PAGES.getValue("navigation")
+        assertEquals(
+            navigation.first { it.label == "↑" }.sequence,
+            hardwareKeySequence(TerminalKeyEvent(TerminalKeyCodes.DPAD_UP)),
+        )
+        assertEquals(
+            navigation.first { it.label == "↓" }.sequence,
+            hardwareKeySequence(TerminalKeyEvent(TerminalKeyCodes.DPAD_DOWN)),
+        )
+        assertEquals(
+            navigation.first { it.label == "←" }.sequence,
+            hardwareKeySequence(TerminalKeyEvent(TerminalKeyCodes.DPAD_LEFT)),
+        )
+        assertEquals(
+            navigation.first { it.label == "→" }.sequence,
+            hardwareKeySequence(TerminalKeyEvent(TerminalKeyCodes.DPAD_RIGHT)),
+        )
+    }
+
+    @Test
+    fun homeEndAndPageKeysMatchTheQuickKeySequences() {
+        val navigation = DIRECT_KEY_PAGES.getValue("navigation")
+        assertEquals(
+            navigation.first { it.label == "Home" }.sequence,
+            hardwareKeySequence(TerminalKeyEvent(TerminalKeyCodes.MOVE_HOME)),
+        )
+        assertEquals(
+            navigation.first { it.label == "End" }.sequence,
+            hardwareKeySequence(TerminalKeyEvent(TerminalKeyCodes.MOVE_END)),
+        )
+        assertEquals(
+            navigation.first { it.label == "PgUp" }.sequence,
+            hardwareKeySequence(TerminalKeyEvent(TerminalKeyCodes.PAGE_UP)),
+        )
+        assertEquals(
+            navigation.first { it.label == "PgDn" }.sequence,
+            hardwareKeySequence(TerminalKeyEvent(TerminalKeyCodes.PAGE_DOWN)),
+        )
+    }
+
+    @Test
+    fun ctrlLetterMapsToControlCodeAndAltLetterPrefixesEscape() {
+        val ctrlC = TerminalKeyEvent(TerminalKeyCodes.LETTER_FIRST + 2, ctrl = true) // KEYCODE_C
+        assertEquals(3, hardwareKeySequence(ctrlC)!![0].code)
+        val altX = TerminalKeyEvent(TerminalKeyCodes.LETTER_FIRST + 23, alt = true) // KEYCODE_X
+        assertEquals(listOf(27, 'x'.code), hardwareKeySequence(altX)!!.map { it.code })
+        val ctrlAltC = TerminalKeyEvent(TerminalKeyCodes.LETTER_FIRST + 2, ctrl = true, alt = true)
+        assertEquals(listOf(27, 99), hardwareKeySequence(ctrlAltC)!!.map { it.code })
+    }
+
+    @Test
+    fun plainAndUnknownKeysFallThroughToTheTextPipeline() {
+        assertEquals(null, hardwareKeySequence(TerminalKeyEvent(TerminalKeyCodes.LETTER_FIRST + 2)))
+        assertEquals(null, hardwareKeySequence(TerminalKeyEvent(TerminalKeyCodes.LETTER_FIRST + 2, shift = true)))
+        assertEquals(null, hardwareKeySequence(TerminalKeyEvent(keyCode = 0)))
+        assertEquals(null, hardwareKeySequence(TerminalKeyEvent(keyCode = -1, ctrl = true)))
+    }
 }

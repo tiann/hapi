@@ -750,4 +750,6 @@
     <string name="terminal_direct_page_shell">Оболочка</string>
     <string name="terminal_direct_page_symbols">Символы</string>
     <string name="terminal_paste">Вставить</string>
+    <string name="terminal_direct_type_input">Ввод с клавиатуры терминала</string>
+    <string name="terminal_direct_type_placeholder">Введите здесь — клавиши идут прямо в терминал</string>
 </resources>

@@ -66,6 +66,74 @@ data class QuickInput(
     val modifier: String? = null,
 )
 
+/**
+ * Key codes the Direct input target maps to terminal bytes. Values are
+ * android.view.KeyEvent's, restated here so the mapping stays pure Kotlin and
+ * JVM-testable without the framework (the screen layer passes
+ * `nativeKeyEvent.keyCode` through).
+ */
+object TerminalKeyCodes {
+    const val DPAD_UP = 19
+    const val DPAD_DOWN = 20
+    const val DPAD_LEFT = 21
+    const val DPAD_RIGHT = 22
+    const val TAB = 61
+    const val SPACE = 62
+    const val ENTER = 66
+    /** Backspace. */
+    const val DEL = 67
+    const val PAGE_UP = 92
+    const val PAGE_DOWN = 93
+    const val ESCAPE = 111
+    const val FORWARD_DEL = 112
+    const val MOVE_HOME = 122
+    const val MOVE_END = 123
+    const val LETTER_FIRST = 29 // KEYCODE_A
+    const val LETTER_LAST = 54 // KEYCODE_Z
+}
+
+/** One hardware/IME key press at the Direct input target. */
+data class TerminalKeyEvent(
+    val keyCode: Int,
+    val ctrl: Boolean = false,
+    val alt: Boolean = false,
+    val shift: Boolean = false,
+)
+
+/**
+ * Terminal bytes for one hardware key, or null when the key is not ours to
+ * intercept (plain printable letters reach the PTY through the field's text
+ * pipeline; unknown keys fall through to normal input). Intercepted keys
+ * reuse the sticky-modifier rules: Alt prefixes ESC, Ctrl maps a letter to
+ * its C0 code.
+ */
+fun hardwareKeySequence(event: TerminalKeyEvent): String? {
+    val base: String = when (event.keyCode) {
+        TerminalKeyCodes.DPAD_UP -> "\u001b[A"
+        TerminalKeyCodes.DPAD_DOWN -> "\u001b[B"
+        TerminalKeyCodes.DPAD_LEFT -> "\u001b[D"
+        TerminalKeyCodes.DPAD_RIGHT -> "\u001b[C"
+        TerminalKeyCodes.ENTER -> if (event.ctrl) "\n" else "\r"
+        TerminalKeyCodes.DEL -> "\u007f"
+        TerminalKeyCodes.FORWARD_DEL -> "\u001b[3~"
+        TerminalKeyCodes.TAB -> if (event.shift) "\u001b[Z" else "\t"
+        TerminalKeyCodes.ESCAPE -> "\u001b"
+        TerminalKeyCodes.SPACE -> if (event.ctrl) "\u0000" else " "
+        TerminalKeyCodes.PAGE_UP -> "\u001b[5~"
+        TerminalKeyCodes.PAGE_DOWN -> "\u001b[6~"
+        TerminalKeyCodes.MOVE_HOME -> "\u001b[H"
+        TerminalKeyCodes.MOVE_END -> "\u001b[F"
+        in TerminalKeyCodes.LETTER_FIRST..TerminalKeyCodes.LETTER_LAST ->
+            // Modifierless letters flow through the text pipeline; only
+            // Ctrl/Alt combos need interception (IMEs never deliver those
+            // as text).
+            if (!event.ctrl && !event.alt) return null
+            else ('a' + (event.keyCode - TerminalKeyCodes.LETTER_FIRST)).toString()
+        else -> return null
+    }
+    return applyModifierState(base, ModifierState(ctrl = event.ctrl, alt = event.alt))
+}
+
 /** Sticky modifier ids used by [QuickInput.modifier]. */
 const val MODIFIER_CTRL = "ctrl"
 const val MODIFIER_ALT = "alt"

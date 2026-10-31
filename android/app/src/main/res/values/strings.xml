@@ -750,4 +750,6 @@
     <string name="terminal_direct_page_shell">Shell</string>
     <string name="terminal_direct_page_symbols">Symbols</string>
     <string name="terminal_paste">Paste</string>
+    <string name="terminal_direct_type_input">Terminal keyboard input</string>
+    <string name="terminal_direct_type_placeholder">Type here — keys go straight to the terminal</string>
 </resources>
