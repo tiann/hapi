@@ -16,6 +16,7 @@ import { UserStore } from './userStore'
 import { TurnStore } from './turnStore'
 import { UsageStore } from './usageStore'
 import { WorkGraphStore } from './workGraphStore'
+import { MigrationStore } from './migrationStore'
 
 export type {
     NativeDevicePlatform,
@@ -26,6 +27,7 @@ export type {
     StoredFcmDevice,
     StoredScratchlistEntry,
     StoredSession,
+    SessionTodoSource,
     StoredUser,
     VersionedUpdateResult
 } from './types'
@@ -41,13 +43,14 @@ export { TurnStore } from './turnStore'
 export type { SessionTurn, SessionTurnEndReason, SessionTurnTrigger } from './turns'
 export { UsageStore } from './usageStore'
 export { WorkGraphStore } from './workGraphStore'
+export { MigrationStore } from './migrationStore'
 export {
     WorkGraphNotFoundError,
     WorkGraphPrincipalError,
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 29
+const SCHEMA_VERSION: number = 30
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -61,7 +64,8 @@ const REQUIRED_TABLES = [
     'usage_scan_state',
     'events',
     'event_links',
-    'session_turns'
+    'session_turns',
+    'migration_state'
 ] as const
 
 export class Store {
@@ -79,6 +83,7 @@ export class Store {
     readonly usage: UsageStore
     readonly turns: TurnStore
     readonly workGraph: WorkGraphStore
+    readonly migrations: MigrationStore
 
     /**
      * Filesystem path of the underlying SQLite database, or ':memory:' for
@@ -134,6 +139,7 @@ export class Store {
         this.usage = new UsageStore(this.db)
         this.turns = new TurnStore(this.db)
         this.workGraph = new WorkGraphStore(this.db)
+        this.migrations = new MigrationStore(this.db)
     }
 
     runInTransaction<T>(work: () => T): T {
@@ -364,6 +370,7 @@ export class Store {
             26: () => this.migrateFromV26ToV27(),
             27: () => this.migrateFromV27ToV28(),
             28: () => this.migrateFromV28ToV29(),
+            29: () => this.migrateFromV29ToV30(),
         })
 
         if (currentVersion === 0) {
@@ -429,6 +436,8 @@ export class Store {
                 service_tier TEXT,
                 todos TEXT,
                 todos_updated_at INTEGER,
+                todos_source_at INTEGER,
+                todos_source_seq INTEGER,
                 team_state TEXT,
                 team_state_updated_at INTEGER,
                 pinned INTEGER NOT NULL DEFAULT 0,
@@ -640,6 +649,11 @@ export class Store {
             CREATE UNIQUE INDEX IF NOT EXISTS idx_session_turns_one_open
                 ON session_turns(session_id)
                 WHERE ended_at IS NULL;
+
+            CREATE TABLE IF NOT EXISTS migration_state (
+                migration_id TEXT PRIMARY KEY,
+                completed_at INTEGER NOT NULL
+            );
         `)
     }
 
@@ -1010,34 +1024,6 @@ export class Store {
         }
     }
 
-    /** v23→v24: add the iOS push envelope key. */
-    private migrateFromV23ToV24(): void {
-        const fcmColumns = this.db.prepare('PRAGMA table_info(fcm_devices)').all() as Array<{ name: string }>
-        if (fcmColumns.length > 0 && !fcmColumns.some((column) => column.name === 'push_key')) {
-            this.db.exec('ALTER TABLE fcm_devices ADD COLUMN push_key TEXT')
-        }
-    }
-
-    /** v24→v25: add durable unknown-delivery state for steers. */
-    private migrateFromV24ToV25(): void {
-        const messageColumns = this.getMessageColumnNames()
-        if (messageColumns.size > 0 && !messageColumns.has('delivery_state')) {
-            this.db.exec("ALTER TABLE messages ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'queued'")
-        }
-    }
-
-    /** v25→v26: make empty immediate-queue heartbeat replay an indexed lookup. */
-    private migrateFromV25ToV26(): void {
-        this.db.exec(`
-            CREATE INDEX IF NOT EXISTS idx_messages_immediate_queued
-                ON messages(session_id, seq)
-                WHERE invoked_at IS NULL
-                  AND local_id IS NOT NULL
-                  AND scheduled_at IS NULL
-                  AND delivery_state = 'queued';
-        `)
-    }
-
     /**
      * v26→v27: make the session-list future-scheduled lookups indexed.
      * GET /api/sessions runs countFutureScheduledBySessionIds and
@@ -1163,6 +1149,56 @@ export class Store {
             CREATE INDEX IF NOT EXISTS idx_event_links_namespace_to
                 ON event_links(namespace, to_event_id);
         `)
+    }
+
+    /** v23→v24: add the iOS push envelope key. */
+    private migrateFromV23ToV24(): void {
+        const columns = this.db.prepare('PRAGMA table_info(fcm_devices)').all() as Array<{ name: string }>
+        if (columns.length > 0 && !columns.some((column) => column.name === 'push_key')) {
+            this.db.exec('ALTER TABLE fcm_devices ADD COLUMN push_key TEXT')
+        }
+    }
+
+    /** v24→v25: add durable unknown-delivery state for steers. */
+    private migrateFromV24ToV25(): void {
+        const messageColumns = this.getMessageColumnNames()
+        if (messageColumns.size > 0 && !messageColumns.has('delivery_state')) {
+            this.db.exec("ALTER TABLE messages ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'queued'")
+        }
+    }
+
+    /** v25→v26: make empty immediate-queue heartbeat replay an indexed lookup. */
+    private migrateFromV25ToV26(): void {
+        this.db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_messages_immediate_queued
+                ON messages(session_id, seq)
+                WHERE invoked_at IS NULL
+                  AND local_id IS NOT NULL
+                  AND scheduled_at IS NULL
+                  AND delivery_state = 'queued';
+        `)
+    }
+
+    /** v29→v30: persist structured-task backfill state and canonical source positions. */
+    private migrateFromV29ToV30(): void {
+        this.migrateFromV27ToV28()
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS migration_state (
+                migration_id TEXT PRIMARY KEY,
+                completed_at INTEGER NOT NULL
+            );
+        `)
+        const columns = this.getSessionColumnNames()
+        // A partially built legacy database may not have the sessions table yet.
+        // createSchema runs after the legacy migration ladder and creates the
+        // current columns in that case.
+        if (columns.size === 0) return
+        if (!columns.has('todos_source_at')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN todos_source_at INTEGER')
+        }
+        if (!columns.has('todos_source_seq')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN todos_source_seq INTEGER')
+        }
     }
 
     private getSessionColumnNames(): Set<string> {

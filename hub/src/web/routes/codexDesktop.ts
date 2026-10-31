@@ -7,6 +7,8 @@ import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import type { CodexCollaborationMode } from '@hapi/protocol/types'
 import { Hono } from 'hono'
 import type { Machine, SyncEngine } from '../../sync/syncEngine'
+import { SessionCache } from '../../sync/sessionCache'
+import type { EventPublisher } from '../../sync/eventPublisher'
 import type { Store, StoredMessage } from '../../store'
 import { truncateOversizedMessageContent } from '../../store/contentCodec'
 import type { WebAppEnv } from '../middleware/auth'
@@ -1348,6 +1350,11 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
 
     if (appendedMessages.length > 0) {
         emitImportedMessageEvents(engine, canonical.sessionId, appendedMessages)
+        if (engine?.rebuildSessionTodos) {
+            engine.rebuildSessionTodos(canonical.sessionId, { touchUpdatedAt: false })
+        } else {
+            rebuildImportedSessionTodos(options.store, canonical.sessionId, { touchUpdatedAt: false })
+        }
     }
 
     if (engine) {
@@ -1393,6 +1400,15 @@ function emitImportedMessageEvents(
             }
         })
     }
+}
+
+function rebuildImportedSessionTodos(
+    store: Store,
+    sessionId: string,
+    options: { touchUpdatedAt?: boolean } = {}
+): void {
+    const sessionCache = new SessionCache(store, { emit: () => {} } as unknown as EventPublisher)
+    sessionCache.rebuildTodosFromTranscript(sessionId, options)
 }
 
 function getPathExts(): string[] {
@@ -2098,6 +2114,13 @@ function importSingleCodexSession(options: {
             engine?.handleRealtimeEvent({ type: 'session-updated', sessionId })
         } else {
             emitImportedMessageEvents(engine, sessionId, appendedMessages)
+        }
+        if (appendedMessages.length > 0) {
+            if (engine?.rebuildSessionTodos) {
+                engine.rebuildSessionTodos(sessionId, { touchUpdatedAt: false })
+            } else {
+                rebuildImportedSessionTodos(options.store, sessionId, { touchUpdatedAt: false })
+            }
         }
 
         const output = [
