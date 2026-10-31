@@ -46,6 +46,7 @@ public func isRenderIrrelevantSessionPatch(session: Session, patch: SessionPatch
         }
     }
     if let value = patch.updatedAt, value != session.updatedAt { return false }
+    if let value = patch.lastUserMessageAt, value != session.lastUserMessageAt { return false }
     // Versioned wrappers never equal the session's plain fields in the TS
     // reference (object identity), so their presence is always relevant.
     if patch.metadata != nil { return false }
@@ -92,6 +93,7 @@ public func applySessionDetailPatch(session: Session, patch: SessionPatch) -> Se
     // Monotonic with the hub's applySessionPatch: a rejected stale
     // metadata/agentState replay must not rewind updatedAt.
     if let value = patch.updatedAt { assign(\.updatedAt, max(next.updatedAt, value)) }
+    if let value = patch.lastUserMessageAt { assign(\.lastUserMessageAt, max(next.lastUserMessageAt ?? 0, value)) }
     if let field = patch.model { assign(\.model, field.wireValue) }
     if let field = patch.modelReasoningEffort { assign(\.modelReasoningEffort, field.wireValue) }
     if let field = patch.effort { assign(\.effort, field.wireValue) }

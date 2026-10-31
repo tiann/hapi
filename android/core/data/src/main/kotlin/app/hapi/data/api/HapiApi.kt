@@ -14,6 +14,7 @@ import app.hapi.protocol.wire.DenyPermissionRequest
 import app.hapi.protocol.wire.FileReadResponse
 import app.hapi.protocol.wire.FileSearchResponse
 import app.hapi.protocol.wire.GitCommandResponse
+import app.hapi.protocol.wire.GrokModelsResponse
 import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.HubHealthResponse
 import app.hapi.protocol.wire.ListDirectoryResponse
@@ -533,6 +534,19 @@ class HapiApi internal constructor(
      */
     suspend fun getMachineCodexModels(machineId: String): CodexModelsResponse =
         request("GET", url("api", "machines", machineId, "codex-models").build())
+
+    /**
+     * `GET /api/machines/:id/grok-models?cwd=` — directory-scoped Grok probe
+     * (RPC-wrapped). Consumed for `autoPermissionModeSupported` (create-form
+     * Auto gate, web ref: `useGrokModelsForCwd`); the cwd must exist.
+     */
+    suspend fun getMachineGrokModelsForCwd(machineId: String, cwd: String): GrokModelsResponse =
+        request(
+            "GET",
+            url("api", "machines", machineId, "grok-models")
+                .apply { addQueryParameter("cwd", cwd) }
+                .build(),
+        )
 
     // --------------------------------------------------------- git & files --
     // RAW-stdout contract (`docs/api/client-contract/rest.md` "Git & files"):

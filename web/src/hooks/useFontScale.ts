@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from 'react'
 
-export type FontScale = 0.8 | 0.9 | 1 | 1.1 | 1.2
+export type FontScale = 0.8 | 0.9 | 1 | 1.1 | 1.2 | 1.3
 
 export function getFontScaleOptions(): ReadonlyArray<{ value: FontScale; label: string }> {
     return [
@@ -9,6 +9,7 @@ export function getFontScaleOptions(): ReadonlyArray<{ value: FontScale; label: 
         { value: 1, label: '100%' },
         { value: 1.1, label: '110%' },
         { value: 1.2, label: '120%' },
+        { value: 1.3, label: '130%' },
     ]
 }
 
@@ -57,7 +58,7 @@ function safeRemoveItem(key: string): void {
 
 function parseFontScale(raw: string | null): FontScale {
     const value = Number(raw)
-    if (value === 0.8 || value === 0.9 || value === 1 || value === 1.1 || value === 1.2) {
+    if (value === 0.8 || value === 0.9 || value === 1 || value === 1.1 || value === 1.2 || value === 1.3) {
         return value
     }
     return 1

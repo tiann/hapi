@@ -10,6 +10,10 @@ import app.hapi.companion.feature.pairing.PairingClientFactory
 import app.hapi.companion.feature.settings.AppLanguage
 import app.hapi.companion.feature.settings.LanguagePrefs
 import app.hapi.companion.feature.settings.ThemePrefs
+import app.hapi.companion.feature.share.ContentResolverShareReader
+import app.hapi.companion.feature.share.ShareInbox
+import app.hapi.companion.feature.share.SharedInput
+import java.io.File
 import app.hapi.data.push.EncryptedPrefsPushIdentityStore
 import app.hapi.data.push.PushIdentityManager
 import app.hapi.data.push.PushMessageDecoder
@@ -78,6 +82,27 @@ class AppGraph(context: Context) {
 
     /** The protocol-configured Json (lenient, ignores unknown keys). */
     val json: Json = HapiJson
+
+    val shareIntakeFailed = MutableStateFlow(false)
+    val shareInbox = ShareInbox(File(appContext.noBackupFilesDir, "share-inbox"),
+        ContentResolverShareReader(appContext.contentResolver), scope,
+        onFailure = { shareIntakeFailed.value = true })
+
+    fun receiveShare(input: SharedInput) {
+        if (input.isEmpty) {
+            shareIntakeFailed.value = true
+            return
+        }
+        scope.launch {
+            try {
+                shareInbox.receive(input)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                shareIntakeFailed.value = true
+            }
+        }
+    }
 
     val hubRegistryStorage: HubRegistryStorage =
         DataStoreHubRegistryStorage(appContext.hapiDataStore)
@@ -222,6 +247,11 @@ class AppGraph(context: Context) {
     /** Idempotent-enough for the single Application.onCreate call site. */
     fun start() {
         scope.launch {
+            try {
+                shareInbox.load()
+            } catch (_: Exception) {
+                shareIntakeFailed.value = true
+            }
             hubRegistry.load()
             mutableReady.value = true
             // Roster is loaded: the registrar's first emission re-registers

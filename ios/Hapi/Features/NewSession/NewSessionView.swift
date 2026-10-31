@@ -42,6 +42,10 @@ struct NewSessionView: View {
             .onChange(of: session.machineStore.listRevision) {
                 model.machinesChanged()
             }
+            // Directory-scoped catalogs wait for the typed path to exist.
+            .onChange(of: model.agentModelsRequest) {
+                model.refreshAgentModelsIfNeeded()
+            }
         }
         .sheet(isPresented: directoryBrowserPresented) {
             RemoteDirectoryBrowserView(
@@ -342,7 +346,7 @@ struct NewSessionView: View {
                             .foregroundStyle(.red)
                         Spacer()
                         Button("Retry") {
-                            model.retryCodexModels()
+                            model.retryModels()
                         }
                         .font(.footnote)
                     }

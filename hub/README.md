@@ -39,6 +39,19 @@ Dictation and voice-assistant provider keys can also be added from **Settings â†
 - `TRANSCRIPTION_BASE_URL` and `TRANSCRIPTION_MODEL` - OpenAI-compatible/local transcription endpoint and model.
 - `TRANSCRIPTION_API_KEY` - Optional bearer token for the OpenAI-compatible endpoint.
 
+### Optional (automatic session titles)
+
+When the configured OpenAI-compatible title provider is available, the Hub
+performs one best-effort automatic title suggestion after the first completed
+turn when the session has no manual name or existing summary. Automatic
+failures are silent and never block the agent conversation. The manual
+**Generate** action remains available.
+
+Configure `HAPI_TITLE_PROVIDER_BASE_URL`, `HAPI_TITLE_PROVIDER_API_KEY`, and
+`HAPI_TITLE_PROVIDER_MODEL` on the Hub. The attempt is persisted across restarts;
+manual or Agent titles arriving during generation are preserved. No automatic
+request is made without a configured provider.
+
 ### Optional
 
 - `HAPI_LISTEN_HOST` - HTTP bind address (default: 127.0.0.1).
@@ -55,6 +68,7 @@ Dictation and voice-assistant provider keys can also be added from **Settings â†
 - `FCM_SERVICE_ACCOUNT_PATH` - Service-account JSON for private Firebase builds; the app must use the same project. Invalid configured credentials disable Android push instead of switching projects.
 - `HAPI_IOS_PUSH` - `relay` (default), `apns`, or `off`.
 - `HAPI_PUSH_RELAY_URL` - Shared Android/iOS push relay (default: `https://push.hapi.run`; persisted as `iosPushRelayUrl`). Independent of the `--relay` network tunnel.
+- `HAPI_SESSION_IDLE_TIMEOUT_MS` - Keep-alive-idle window in ms (default: 43200000 / 12 h; `0` disables). See "Session liveness" below.
 
 Official native apps register their encryption keys automatically; no push
 provider setup is needed on a fresh hub. See the [native companion push
@@ -97,7 +111,7 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 
 ### Sessions (`src/web/routes/sessions.ts`)
 
-- `GET /api/sessions` - List all sessions. Each summary includes `hasConversationContent`, derived from stored conversation messages (not titles or lifecycle events); full session SSE updates carry changes to this flag.
+- `GET /api/sessions` - List all sessions. The default order is global-pinned, project-pinned, then `lastUserMessageAt ?? createdAt` descending (creation time and ID break ties); `?order=updatedAt` requests pure recency. Each summary includes `hasConversationContent`, derived from stored conversation messages (not titles or lifecycle events); full session SSE updates carry changes to this flag. See the [client contract](../docs/api/client-contract/rest.md) for the wire-level ordering rules.
 - `GET /api/sessions/:id` - Get session details.
 - `POST /api/sessions/:id/abort` - Abort session.
 - `POST /api/sessions/:id/switch` - Hand off session control to the web.
@@ -144,6 +158,10 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 
 - `GET /api/usage/summary` - Get cache-aware token usage for the owner namespace (`range=7d|30d|all`).
 
+### Activity (`src/web/routes/activity.ts`)
+
+- `GET /api/activity` - When agents in the caller's namespace were working (`since`/`until` epoch ms, default last 24 h, max 31 days): each session's turns from the `session_turns` table, plus the permission prompts and questions it waited on. Used by `hapi usage`.
+
 ### Storage (`src/web/routes/storage.ts`)
 
 - `GET /api/storage/sqlite` - SQLite database/WAL/SHM sizes for the owner namespace.
@@ -155,6 +173,11 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 - `GET /api/sessions/:id/git-diff-file` - File-specific diff.
 - `GET /api/sessions/:id/file` - Read file content.
 - `GET /api/sessions/:id/files` - File search with ripgrep.
+
+For inactive sessions, including archived sessions, these read-only file and Git operations fall back to
+the matching online Runner when it advertises `workspace-file-access`. The
+Runner reads the current workspace under its configured roots; HAPI does not
+copy or snapshot files during archive.
 
 ### Events (`src/web/routes/events.ts`)
 
@@ -251,6 +274,20 @@ See `src/sync/syncEngine.ts` for the main session/message manager:
 - Event publishing to SSE and Telegram.
 - Git operations and file search.
 - Activity tracking and timeouts.
+
+### Session liveness
+
+Two separate signals, deliberately (tiann/hapi#1820):
+
+- **`active` / `activeAt`** - transport. The CLI socket is connected; `session-alive` refreshes it every ~2 s. `sessionCache.expireInactive` drops `active` after 30 s of silence.
+- **`metadata.lifecycleState`** - agent health. `running` -> `idle` -> `running`, plus `archived`.
+
+Keep-alives prove a socket, not an agent. A session can therefore heartbeat for days with no messages, no thinking and no background tasks - `active: true` forever, which `expireInactive` can never catch. `sessionCache.reconcileKeepaliveIdle` (same 5 s tick) closes that gap: after `HAPI_SESSION_IDLE_TIMEOUT_MS` with no agent progress it moves `lifecycleState` `running` -> `idle`.
+
+- `active` is left alone on purpose. The CLI really is reachable, and flipping it would let `resumeSession` spawn a second agent against a live process, and unlock dedup-merge / delete on it.
+- Progress means a message in either direction, a queued prompt, or a background task - never a keep-alive. Sessions that are thinking, running background tasks or holding a pending permission request are never marked.
+- `idle` reverts to `running` on the next progress, within one tick.
+- `metadata.idleReconcileExempt: true` opts a session out entirely.
 
 ## Storage
 

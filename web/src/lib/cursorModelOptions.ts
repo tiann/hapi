@@ -1,8 +1,11 @@
 import {
+    CURSOR_AUTO_MODEL_ID,
     cursorCliSkuBaseId,
+    cursorModelBaseMatches,
     findBestCliSkuForAcpWire,
     isCursorAcpCatalogModelId,
-    isCursorAcpWireModelId as isSharedCursorAcpWireModelId
+    isCursorAcpWireModelId as isSharedCursorAcpWireModelId,
+    isCursorAutoModelId
 } from '@hapi/protocol'
 import type { CursorModelSummary } from '@/types/api'
 
@@ -46,14 +49,25 @@ export function cursorModelDedupeKey(modelId: string): string {
     return cursorModelBaseId(modelId)
 }
 
-function isDefaultCursorModelId(modelId: string): boolean {
-    const normalized = modelId.trim().toLowerCase()
-    return normalized === 'auto' || normalized === 'default' || normalized === 'default[]'
+/** Existing catalog base for a CLI sku base, tolerating the legacy `cursor-` prefix. */
+function findCatalogBaseKey(
+    catalog: CursorModelCatalog,
+    skuBaseId: string
+): string | null {
+    if (catalog.variantsByBase.has(skuBaseId)) {
+        return skuBaseId
+    }
+    for (const baseKey of catalog.variantsByBase.keys()) {
+        if (cursorModelBaseMatches(skuBaseId, baseKey)) {
+            return baseKey
+        }
+    }
+    return null
 }
 
 function normalizeCurrentModel(model?: string | null): string | null {
     const trimmed = model?.trim()
-    if (!trimmed || isDefaultCursorModelId(trimmed)) {
+    if (!trimmed || isCursorAutoModelId(trimmed)) {
         return null
     }
     return trimmed
@@ -199,18 +213,18 @@ export function buildCursorModelCatalog(
     availableModels: readonly CursorModelSummary[],
     options?: {
         currentModel?: string | null
-        /** New-session spawn uses `auto`; active session uses `null` for default. */
+        /** Auto row is always CLI `auto`; kept for caller compatibility. */
         defaultValue?: null | 'auto'
     }
 ): CursorModelCatalog {
-    const defaultValue = options?.defaultValue === 'auto' ? 'auto' : null
+    const defaultValue = CURSOR_AUTO_MODEL_ID
     const variantsByBase = new Map<string, CursorModelVariantOption[]>()
     const wireToBase = new Map<string, string>()
     const baseLabels = new Map<string, string>()
 
     const addWire = (rawModelId: string): void => {
         const modelId = rawModelId.trim()
-        if (!modelId || isDefaultCursorModelId(modelId)) {
+        if (!modelId || isCursorAutoModelId(modelId)) {
             return
         }
 
@@ -262,13 +276,16 @@ export function appendCliSkusToCatalog(
 
     for (const sku of cliSkus) {
         const modelId = sku.modelId.trim()
-        if (!modelId || isDefaultCursorModelId(modelId) || isCursorAcpWireModelId(modelId)) {
+        if (!modelId || isCursorAutoModelId(modelId) || isCursorAcpWireModelId(modelId)) {
             continue
         }
 
         const baseId = cursorCliSkuBaseId(modelId)
-        const existing = catalog.variantsByBase.get(baseId)
-        if (!existing || existing.length === 0) {
+        // CLI sku bases may carry the legacy `cursor-` family prefix
+        // (`cursor-grok-4.6-high` → ACP base `grok-4.6`).
+        const catalogBaseId = findCatalogBaseKey(catalog, baseId)
+        const existing = catalogBaseId ? catalog.variantsByBase.get(catalogBaseId) : undefined
+        if (!catalogBaseId || !existing || existing.length === 0) {
             continue
         }
 
@@ -281,7 +298,7 @@ export function appendCliSkusToCatalog(
             label: sku.name?.trim() && sku.name !== modelId ? sku.name.trim() : modelId,
             sortKey: modelId
         })
-        catalog.wireToBase.set(modelId, baseId)
+        catalog.wireToBase.set(modelId, catalogBaseId)
     }
 
     return catalog
@@ -354,7 +371,7 @@ export function buildFlatCursorModelPickerOptions(
     catalog: CursorModelCatalog,
     options?: { defaultValue?: null | 'auto' }
 ): Array<{ value: string; label: string }> {
-    const defaultValue = options?.defaultValue === 'auto' ? 'auto' : null
+    const defaultValue = CURSOR_AUTO_MODEL_ID
     const rows: Array<{ value: string; label: string }> = []
 
     for (const [baseId, variants] of catalog.variantsByBase) {

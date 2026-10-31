@@ -4,6 +4,7 @@ import WebSocket from 'ws';
 import { logger } from '@/ui/logger';
 import { JsonLineParser } from '@/utils/jsonLineParser';
 import { killProcessByChildProcess } from '@/utils/process';
+import { CODEX_WEBSOCKET_MAX_PAYLOAD } from './websocketLimits';
 import type {
     CollaborationModeListResponse,
     InitializeParams,
@@ -229,7 +230,7 @@ export class CodexAppServerClient extends JsonLineParser {
             const url = endpoint.startsWith('unix://') ? `ws+unix://${endpoint.slice(7)}:/` : endpoint;
             const socket = new WebSocket(url, {
                 headers: { Host: 'localhost', ...(this.options.token ? { Authorization: `Bearer ${this.options.token}` } : {}) },
-                maxPayload: 64 * 1024 * 1024,
+                maxPayload: CODEX_WEBSOCKET_MAX_PAYLOAD,
                 perMessageDeflate: false,
                 handshakeTimeout: 10_000
             });

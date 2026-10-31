@@ -140,6 +140,50 @@ afterEach(() => {
 })
 
 describe('mobile initial scroll settling', () => {
+    it('checks the final keyboard position before clearing intent at scrollend', () => {
+        const { container, viewport } = renderThread()
+        const sentinel = container.querySelector('.chat-scroll-content > [aria-hidden="true"]')!
+        vi.spyOn(sentinel, 'getBoundingClientRect').mockImplementation(() => ({
+            top: -viewport.scrollTop,
+            bottom: 1 - viewport.scrollTop
+        } as DOMRect))
+        fireEvent.keyDown(viewport, { key: 'Home' })
+        fireEvent.keyUp(viewport, { key: 'Home' })
+        act(() => {
+            vi.advanceTimersByTime(1_000)
+        })
+        viewport.scrollTop = 0
+        fireEvent(viewport, new Event('scrollend'))
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+        expect(viewport.scrollTop).toBe(0)
+    })
+
+    it.each([false, true])('keeps delayed keyboard intent only until scrollend (ended=%s)', (ended) => {
+        const { container, viewport, onViewModeChange } = renderThread()
+        const sentinel = container.querySelector('.chat-scroll-content > [aria-hidden="true"]')!
+        vi.spyOn(sentinel, 'getBoundingClientRect').mockImplementation(() => ({
+            top: -viewport.scrollTop,
+            bottom: 1 - viewport.scrollTop
+        } as DOMRect))
+
+        fireEvent.keyDown(viewport, { key: 'Home' })
+        fireEvent.keyUp(viewport, { key: 'Home' })
+        act(() => {
+            vi.advanceTimersByTime(1_000)
+        })
+        if (ended) fireEvent(viewport, new Event('scrollend'))
+        viewport.scrollTop = 520
+        fireEvent.scroll(viewport)
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+
+        expect(viewport.scrollTop).toBe(ended ? 702 : 520)
+        if (!ended) expect(onViewModeChange).toHaveBeenLastCalledWith('history')
+    })
+
     it('does not snap back after pointer cancellation ends a touch swipe', () => {
         const { viewport, onViewModeChange } = renderThread()
         expect(viewport.scrollTop).toBe(702)
@@ -307,6 +351,46 @@ describe('explicit tail scrolling', () => {
 
         viewport.scrollTop = 870
         fireEvent.scroll(viewport)
+        expect(onViewModeChange).not.toHaveBeenCalledWith('history')
+    })
+})
+
+describe('tail following survives layout-driven movement', () => {
+    it('re-pins to the tail when content grows without a user gesture', () => {
+        const { viewport, onViewModeChange } = renderThread()
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+        expect(viewport.scrollTop).toBe(702)
+
+        // Streaming assistant output grows the transcript while the viewport
+        // sits still, so distanceFromBottom increases without any scroll input.
+        Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 1_400 })
+        fireEvent.scroll(viewport)
+        act(() => {
+            vi.advanceTimersByTime(0)
+        })
+
+        expect(viewport.scrollTop).toBe(870)
+        expect(onViewModeChange).not.toHaveBeenCalledWith('history')
+    })
+
+    it('re-pins to the tail when the mobile keyboard shrinks the viewport', () => {
+        const { viewport, onViewModeChange } = renderThread()
+        act(() => {
+            vi.advanceTimersByTime(1_800)
+        })
+        expect(viewport.scrollTop).toBe(702)
+
+        // Opening the keyboard shortens the visual viewport; the browser
+        // reports a scroll without any upward gesture from the user.
+        Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 400 })
+        fireEvent.scroll(viewport)
+        act(() => {
+            vi.advanceTimersByTime(0)
+        })
+
+        expect(viewport.scrollTop).toBe(832)
         expect(onViewModeChange).not.toHaveBeenCalledWith('history')
     })
 })

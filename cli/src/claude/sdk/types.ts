@@ -61,6 +61,7 @@ export interface SDKSystemMessage extends SDKMessage {
     tools?: string[]
     skills?: string[]
     slash_commands?: string[]
+    permissionMode?: string
     /**
      * Present on `subtype: 'status'` messages that report a /compact outcome.
      * Claude emits a `status: 'compacting'` message first, then a second one
@@ -124,6 +125,11 @@ export interface ControlRequest {
 
 export interface InterruptRequest extends ControlRequest {
     subtype: 'interrupt'
+}
+
+export interface SetPermissionModeRequest extends ControlRequest {
+    subtype: 'set_permission_mode'
+    mode: ClaudePermissionMode
 }
 
 export interface CanUseToolRequest extends ControlRequest {

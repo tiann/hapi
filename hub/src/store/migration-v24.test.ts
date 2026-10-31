@@ -31,29 +31,38 @@ describe('schema migration v23 to v26', () => {
 
         const migrated = new Store(dbPath)
         const internalDb = (migrated as unknown as { db: Database }).db
-        const columns = internalDb.prepare('PRAGMA table_info(fcm_devices)').all() as Array<{ name: string }>
-        const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
+        const columnsStatement = internalDb.prepare('PRAGMA table_info(fcm_devices)')
+        const versionStatement = internalDb.prepare('PRAGMA user_version')
+        const messageColumnsStatement = internalDb.prepare('PRAGMA table_info(messages)')
+        try {
+            const columns = columnsStatement.all() as Array<{ name: string }>
+            const version = versionStatement.get() as { user_version: number }
 
-        expect(columns.some((col) => col.name === 'push_key')).toBe(true)
-        const messageColumns = internalDb.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>
-        expect(messageColumns.some((col) => col.name === 'delivery_state')).toBe(true)
-        expect(version.user_version).toBe(26)
+            expect(columns.some((col) => col.name === 'push_key')).toBe(true)
+            const messageColumns = messageColumnsStatement.all() as Array<{ name: string }>
+            expect(messageColumns.some((col) => col.name === 'delivery_state')).toBe(true)
+            expect(version.user_version).toBe(29)
 
-        // Existing Android rows survive with a NULL push key.
-        const devices = migrated.fcm.getDevicesByNamespace('default')
-        expect(devices).toHaveLength(1)
-        expect(devices[0].token).toBe('fcm-tok-1')
-        expect(devices[0].pushKey).toBeNull()
+            // Existing Android rows survive with a NULL push key.
+            const devices = migrated.fcm.getDevicesByNamespace('default')
+            expect(devices).toHaveLength(1)
+            expect(devices[0].token).toBe('fcm-tok-1')
+            expect(devices[0].pushKey).toBeNull()
 
-        // And the migrated DB accepts new iOS rows.
-        migrated.fcm.upsertDevice('default', {
-            token: 'a1b2',
-            platform: 'ios',
-            deviceId: 'iphone-1',
-            pushKey: Buffer.alloc(32, 7).toString('base64')
-        })
-        expect(migrated.fcm.getDevicesByNamespace('default', ['ios'])).toHaveLength(1)
-        migrated.close()
+            // And the migrated DB accepts new iOS rows.
+            migrated.fcm.upsertDevice('default', {
+                token: 'a1b2',
+                platform: 'ios',
+                deviceId: 'iphone-1',
+                pushKey: Buffer.alloc(32, 7).toString('base64')
+            })
+            expect(migrated.fcm.getDevicesByNamespace('default', ['ios'])).toHaveLength(1)
+        } finally {
+            columnsStatement.finalize()
+            versionStatement.finalize()
+            messageColumnsStatement.finalize()
+            migrated.close()
+        }
     })
 
     it('adds messages.delivery_state to an already-upgraded V24 database', () => {
@@ -64,6 +73,9 @@ describe('schema migration v23 to v26', () => {
         new Store(dbPath).close()
         const legacy = new Database(dbPath)
         legacy.exec(`
+            -- V26/V27 indexes depend on delivery_state and did not exist in V24.
+            DROP INDEX idx_messages_immediate_queued;
+            DROP INDEX idx_messages_future_scheduled_queued;
             ALTER TABLE messages DROP COLUMN delivery_state;
             PRAGMA user_version = 24;
         `)
@@ -71,10 +83,24 @@ describe('schema migration v23 to v26', () => {
 
         const migrated = new Store(dbPath)
         const internalDb = (migrated as unknown as { db: Database }).db
-        const columns = internalDb.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>
-        const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
-        expect(columns.some((col) => col.name === 'delivery_state')).toBe(true)
-        expect(version.user_version).toBe(26)
-        migrated.close()
+        const columnsStatement = internalDb.prepare('PRAGMA table_info(messages)')
+        const versionStatement = internalDb.prepare('PRAGMA user_version')
+        const indexesStatement = internalDb.prepare('PRAGMA index_list(messages)')
+        try {
+            const columns = columnsStatement.all() as Array<{ name: string }>
+            const version = versionStatement.get() as { user_version: number }
+            const indexes = indexesStatement.all() as Array<{ name: string }>
+            expect(columns.some((col) => col.name === 'delivery_state')).toBe(true)
+            expect(version.user_version).toBe(29)
+            expect(indexes.map((index) => index.name)).toEqual(expect.arrayContaining([
+                'idx_messages_immediate_queued',
+                'idx_messages_future_scheduled_queued'
+            ]))
+        } finally {
+            columnsStatement.finalize()
+            versionStatement.finalize()
+            indexesStatement.finalize()
+            migrated.close()
+        }
     })
 })

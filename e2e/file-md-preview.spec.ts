@@ -20,6 +20,8 @@ test.describe('file markdown preview e2e', () => {
         await expect(page.getByRole('heading', { name: 'Teams and channels' })).toBeVisible()
         await expect(page.getByRole('cell', { name: 'general' })).toBeVisible()
         await expect(page.locator('.aui-md-codeblock')).toBeVisible()
+        await expect(page.getByRole('link', { name: 'Related note' })).toHaveAttribute('href', /\/sessions\/session-1\/file\?path=/)
+        await expect(page.getByRole('img', { name: 'Page 001' })).toHaveAttribute('src', /^data:image\/png;base64,/)
 
         await page.getByTestId('markdown-mode-source').click()
         await expect(page.getByTestId('markdown-source-view')).toContainText('# Teams and channels')
@@ -29,5 +31,17 @@ test.describe('file markdown preview e2e', () => {
         await expect(page.getByRole('heading', { name: 'Teams and channels' })).toBeVisible()
 
         await page.screenshot({ path: SCREENSHOT_PATH, fullPage: true })
+    })
+
+    test('routes relative Markdown links through memory history', async ({ page }) => {
+        await page.goto('/e2e-fixtures/file-md-preview-fixture.html')
+        await page.getByRole('link', { name: 'Related note' }).click()
+        await expect(page.getByTestId('file-target-route')).toBeVisible()
+    })
+
+    test('routes session references through memory history', async ({ page }) => {
+        await page.goto('/e2e-fixtures/file-md-preview-fixture.html')
+        await page.getByRole('link', { name: 'Session reference' }).click()
+        await expect(page.getByTestId('session-target-route')).toBeVisible()
     })
 })

@@ -52,6 +52,7 @@ public struct SessionPatch: Equatable, Sendable {
     /// (mirroring `web/src/lib/sessionPatch.ts`).
     public var activeTurnStartedAt: PatchField<Int>?
     public var activeAt: Int?
+    public var lastUserMessageAt: Int?
     public var updatedAt: Int?
     public var metadata: VersionedValue<SessionMetadata>?
     public var agentState: VersionedValue<AgentState>?
@@ -75,6 +76,7 @@ public struct SessionPatch: Equatable, Sendable {
         activeTurnStartedAt: PatchField<Int>? = nil,
         activeAt: Int? = nil,
         updatedAt: Int? = nil,
+        lastUserMessageAt: Int? = nil,
         metadata: VersionedValue<SessionMetadata>? = nil,
         agentState: VersionedValue<AgentState>? = nil,
         todos: VersionedValue<[TodoItem]>? = nil,
@@ -94,6 +96,7 @@ public struct SessionPatch: Equatable, Sendable {
         self.activeTurnStartedAt = activeTurnStartedAt
         self.activeAt = activeAt
         self.updatedAt = updatedAt
+        self.lastUserMessageAt = lastUserMessageAt
         self.metadata = metadata
         self.agentState = agentState
         self.todos = todos
@@ -117,6 +120,7 @@ extension SessionPatch: Codable {
         case activeTurnStartedAt
         case activeAt
         case updatedAt
+        case lastUserMessageAt
         case metadata
         case agentState
         case todos
@@ -130,6 +134,8 @@ extension SessionPatch: Codable {
         case copilotAgentMode
         case backgroundTaskCount
         case scratchlistUpdatedAt
+        // Web-only status-panel list; accepted so the patch is not refetched.
+        case backgroundTasks
     }
 
     public init(from decoder: Decoder) throws {
@@ -145,6 +151,7 @@ extension SessionPatch: Codable {
         activeTurnStartedAt = try Self.decodePatchField(Int.self, in: container, forKey: .activeTurnStartedAt)
         activeAt = try container.decodeIfPresent(Int.self, forKey: .activeAt)
         updatedAt = try container.decodeIfPresent(Int.self, forKey: .updatedAt)
+        lastUserMessageAt = try container.decodeIfPresent(Int.self, forKey: .lastUserMessageAt)
         metadata = try container.decodeIfPresent(VersionedValue<SessionMetadata>.self, forKey: .metadata)
         agentState = try container.decodeIfPresent(VersionedValue<AgentState>.self, forKey: .agentState)
         todos = try container.decodeIfPresent(VersionedValue<[TodoItem]>.self, forKey: .todos)
@@ -167,6 +174,7 @@ extension SessionPatch: Codable {
         try Self.encodePatchField(activeTurnStartedAt, in: &container, forKey: .activeTurnStartedAt)
         try container.encodeIfPresent(activeAt, forKey: .activeAt)
         try container.encodeIfPresent(updatedAt, forKey: .updatedAt)
+        try container.encodeIfPresent(lastUserMessageAt, forKey: .lastUserMessageAt)
         try container.encodeIfPresent(metadata, forKey: .metadata)
         try container.encodeIfPresent(agentState, forKey: .agentState)
         try container.encodeIfPresent(todos, forKey: .todos)

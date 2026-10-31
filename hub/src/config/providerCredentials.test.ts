@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
     applyProviderCredentialsFromSettings,
+    getConfiguredElevenLabsMaxDurationSeconds,
     getProviderEnvironment,
     getTranscriptionCredentialStatus,
     maskSecret,
@@ -23,6 +24,7 @@ const MANAGED_KEYS = [
     'GOOGLE_API_KEY',
     'DASHSCOPE_API_KEY',
     'QWEN_API_KEY',
+    'ELEVENLABS_MAX_DURATION_SECONDS',
 ] as const
 
 function makeTempDir(): string {
@@ -414,5 +416,135 @@ describe('providerCredentials', () => {
         expect(status.openaiCompatible.apiKey.hint).toBe('••••-key')
         expect(status.openaiCompatible.baseUrl).toBeNull()
         expect(status.openaiCompatible.model).toBeNull()
+    })
+
+    describe('elevenLabsMaxDurationSeconds', () => {
+        it('defaults to 1800s with source "none" when nothing is configured', async () => {
+            dir = makeTempDir()
+            writeFileSync(join(dir, 'settings.json'), JSON.stringify({}))
+            await applyProviderCredentialsFromSettings(dir)
+
+            expect(getConfiguredElevenLabsMaxDurationSeconds()).toBe(1800)
+            const status = await getTranscriptionCredentialStatus(dir)
+            expect(status.elevenLabsMaxDurationSeconds).toEqual({
+                value: 1800,
+                source: 'none',
+                editable: true,
+            })
+        })
+
+        it('persists a configured value through Settings and takes effect immediately (no restart)', async () => {
+            dir = makeTempDir()
+            writeFileSync(join(dir, 'settings.json'), JSON.stringify({}))
+            await applyProviderCredentialsFromSettings(dir)
+
+            const status = await updateTranscriptionCredentials(dir, { elevenLabsMaxDurationSeconds: 3600 })
+            expect(status.elevenLabsMaxDurationSeconds).toEqual({
+                value: 3600,
+                source: 'settings',
+                editable: true,
+            })
+            // The in-memory overlay (what the token route reads) updates on the same
+            // process without needing applyProviderCredentialsFromSettings to re-run.
+            expect(getConfiguredElevenLabsMaxDurationSeconds()).toBe(3600)
+
+            const saved = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8')) as {
+                elevenLabsMaxDurationSeconds?: number
+            }
+            expect(saved.elevenLabsMaxDurationSeconds).toBe(3600)
+        })
+
+        it('resets to the default when set to null', async () => {
+            dir = makeTempDir()
+            writeFileSync(join(dir, 'settings.json'), JSON.stringify({ elevenLabsMaxDurationSeconds: 3600 }))
+            await applyProviderCredentialsFromSettings(dir)
+            expect(getConfiguredElevenLabsMaxDurationSeconds()).toBe(3600)
+
+            const status = await updateTranscriptionCredentials(dir, { elevenLabsMaxDurationSeconds: null })
+            expect(status.elevenLabsMaxDurationSeconds).toEqual({
+                value: 1800,
+                source: 'none',
+                editable: true,
+            })
+            expect(getConfiguredElevenLabsMaxDurationSeconds()).toBe(1800)
+        })
+
+        it('rejects out-of-range values with a clear message and does not persist them', async () => {
+            dir = makeTempDir()
+            writeFileSync(join(dir, 'settings.json'), JSON.stringify({}))
+            await applyProviderCredentialsFromSettings(dir)
+
+            await expect(
+                updateTranscriptionCredentials(dir, { elevenLabsMaxDurationSeconds: 59 })
+            ).rejects.toThrow(/must be an integer between 60 and 7200/)
+            await expect(
+                updateTranscriptionCredentials(dir, { elevenLabsMaxDurationSeconds: 7201 })
+            ).rejects.toThrow(/must be an integer between 60 and 7200/)
+
+            expect(getConfiguredElevenLabsMaxDurationSeconds()).toBe(1800)
+            const saved = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf8')) as {
+                elevenLabsMaxDurationSeconds?: number
+            }
+            expect(saved.elevenLabsMaxDurationSeconds).toBeUndefined()
+        })
+
+        it('refuses to change a value locked by the environment', async () => {
+            dir = makeTempDir()
+            writeFileSync(join(dir, 'settings.json'), JSON.stringify({}))
+            process.env.ELEVENLABS_MAX_DURATION_SECONDS = '3600'
+            await applyProviderCredentialsFromSettings(dir)
+
+            expect(getConfiguredElevenLabsMaxDurationSeconds()).toBe(3600)
+            await expect(
+                updateTranscriptionCredentials(dir, { elevenLabsMaxDurationSeconds: 1800 })
+            ).rejects.toThrow(/environment variable/)
+
+            const status = await getTranscriptionCredentialStatus(dir)
+            expect(status.elevenLabsMaxDurationSeconds).toEqual({
+                value: 3600,
+                source: 'env',
+                editable: false,
+            })
+        })
+
+        it('does not let an invalid env value break status for every other provider', async () => {
+            dir = makeTempDir()
+            writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+                providerCredentials: { OPENAI_API_KEY: 'sk-live-openai' }
+            }))
+            process.env.ELEVENLABS_MAX_DURATION_SECONDS = 'not-a-number'
+            await applyProviderCredentialsFromSettings(dir)
+
+            // The hot path (actually issuing a voice token) must still fail loudly.
+            expect(() => getConfiguredElevenLabsMaxDurationSeconds()).toThrow(/must be an integer between/)
+
+            // But viewing/updating credentials status is shared by every provider and
+            // must not 500 just because ElevenLabs' duration env var is misconfigured.
+            const status = await getTranscriptionCredentialStatus(dir)
+            expect(status.elevenLabsMaxDurationSeconds).toEqual({
+                value: 1800,
+                source: 'env',
+                editable: false,
+            })
+            expect(status.openai).toEqual({
+                configured: true,
+                source: 'settings',
+                hint: '••••enai',
+                editable: true,
+            })
+
+            const updated = await updateTranscriptionCredentials(dir, { groq: 'gsk-live-groq' })
+            expect(updated.groq.configured).toBe(true)
+        })
+
+        it('ignores a stale out-of-range value already on disk rather than crashing', async () => {
+            dir = makeTempDir()
+            writeFileSync(join(dir, 'settings.json'), JSON.stringify({ elevenLabsMaxDurationSeconds: 9999 }))
+            await applyProviderCredentialsFromSettings(dir)
+
+            expect(getConfiguredElevenLabsMaxDurationSeconds()).toBe(1800)
+            const status = await getTranscriptionCredentialStatus(dir)
+            expect(status.elevenLabsMaxDurationSeconds.source).toBe('none')
+        })
     })
 })

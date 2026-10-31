@@ -133,14 +133,16 @@ describe('NewSession preferences', () => {
         expect(loadPreferredLaunchSettings('machine-1', 'codex')).toBeNull()
     })
 
-    it('falls back when remembered static Claude options are no longer available', () => {
+    it('keeps a remembered Claude model the built-in list lacks, but drops an unknown effort', () => {
+        // Claude models come from the machine's catalog; a pinned model it no
+        // longer lists is shown as such rather than silently replaced.
         expect(resolvePreferredLaunchSettings('claude', {
-            model: 'retired-model',
+            model: 'claude-opus-4-1',
             cursorSelectedBase: 'auto',
             effort: 'ultra',
             modelReasoningEffort: 'default'
         })).toEqual({
-            model: 'auto',
+            model: 'claude-opus-4-1',
             cursorSelectedBase: 'auto',
             effort: 'auto',
             modelReasoningEffort: 'default',
@@ -161,6 +163,24 @@ describe('NewSession preferences', () => {
             effort: 'auto',
             modelReasoningEffort: 'xhigh',
             permissionMode: 'read-only'
+        })
+    })
+
+    it('does not reset a remembered Kimi alias against the static Default-only list', () => {
+        // Kimi's catalog is dynamic; validating against MODEL_OPTIONS.kimi
+        // (only 'auto') must not turn a saved alias back into Default before
+        // the real catalog arrives.
+        expect(resolvePreferredLaunchSettings('kimi', {
+            model: 'GLM-5.3-flash',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default'
+        })).toEqual({
+            model: 'GLM-5.3-flash',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default',
+            permissionMode: 'default'
         })
     })
 

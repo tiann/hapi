@@ -15,13 +15,19 @@ import SwiftUI
 ///   an optional unread dot; a quiet second line has project left and a small status
 ///   indicator right. No preview, task progress, machine/path details or badges.
 ///   Disconnected titles/icons are secondary, without dimming attention;
-/// - long-press context menu → pin (none/project/global) + archive with
-///   optimistic store updates; failures land in an alert.
+/// - long-press context menu → rename, pin (none/project/global), then
+///   archive for active sessions or reopen/delete for inactive ones (web
+///   `SessionActionMenu`), with optimistic store updates; failures land in
+///   an alert.
 struct SessionListView: View {
     @Environment(\.hapiTheme) private var theme
     let model: SessionListModel
     var selection: Binding<String?>? = nil
     let onOpenSession: (String) -> Void
+
+    @State private var renameTarget: SessionRowUI?
+    @State private var renameText = ""
+    @State private var deleteTarget: SessionRowUI?
 
     var body: some View {
         // Minute-tick timeline keeps the relative-age labels honest without
@@ -65,6 +71,40 @@ struct SessionListView: View {
             }
         } message: {
             Text(model.actionError ?? "")
+        }
+        .alert(
+            "Rename Session",
+            isPresented: Binding(
+                get: { renameTarget != nil },
+                set: { if !$0 { renameTarget = nil } }
+            ),
+            presenting: renameTarget
+        ) { row in
+            TextField("Session name", text: $renameText)
+            Button("Cancel", role: .cancel) {}
+            Button("Save") {
+                let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                // An untouched title must not freeze an agent-generated one.
+                if name != row.title {
+                    model.renameSession(sessionId: row.id, name: name)
+                }
+            }
+            .disabled(!SessionNameRules.isValid(renameText))
+        }
+        .alert(
+            "Delete Session",
+            isPresented: Binding(
+                get: { deleteTarget != nil },
+                set: { if !$0 { deleteTarget = nil } }
+            ),
+            presenting: deleteTarget
+        ) { row in
+            Button("Delete", role: .destructive) {
+                model.deleteSession(sessionId: row.id)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { row in
+            Text(SessionNameRules.deleteMessage(title: row.title))
         }
     }
 
@@ -153,6 +193,12 @@ struct SessionListView: View {
     @ViewBuilder
     private func contextMenuActions(_ row: SessionRowUI) -> some View {
         let summary = row.summary
+        Button {
+            renameText = row.title
+            renameTarget = row
+        } label: {
+            Label("Rename…", systemImage: "pencil")
+        }
         if summary.pinned == true || summary.globalPinned == true {
             Button {
                 model.setPinMode(sessionId: row.id, mode: .none)
@@ -174,10 +220,27 @@ struct SessionListView: View {
                 Label("Pin Globally", systemImage: "pin.circle")
             }
         }
-        Button(role: .destructive) {
-            model.archiveSession(sessionId: row.id)
-        } label: {
-            Label("Archive", systemImage: "archivebox")
+        // The hub archives live sessions only (409 for an inactive one);
+        // inactive history is reopened or deleted instead.
+        if summary.active {
+            Button(role: .destructive) {
+                model.archiveSession(sessionId: row.id)
+            } label: {
+                Label("Archive", systemImage: "archivebox")
+            }
+        } else {
+            Button {
+                model.reopenSession(sessionId: row.id) { sessionId in
+                    onOpenSession(sessionId)
+                }
+            } label: {
+                Label("Reopen", systemImage: "arrow.clockwise")
+            }
+            Button(role: .destructive) {
+                deleteTarget = row
+            } label: {
+                Label("Delete…", systemImage: "trash")
+            }
         }
     }
 
@@ -196,6 +259,14 @@ struct SessionListView: View {
                 Label("Hub unreachable", systemImage: "wifi.slash")
             } description: {
                 Text("Pull to retry once you are back online.")
+            }
+        } else if model.isSearching {
+            ContentUnavailableView.search(text: model.searchQuery)
+        } else if model.hasActiveFilters {
+            ContentUnavailableView {
+                Label("No matching sessions", systemImage: "line.3.horizontal.decrease.circle")
+            } description: {
+                Text("Clear the filters to see every session.")
             }
         } else {
             ContentUnavailableView {
@@ -318,6 +389,20 @@ struct SessionRowView: View {
             return Text("\(title) · \(count) requests")
         }
         return title
+    }
+}
+
+// MARK: - Rename / delete copy (shared by the list and the chat menu)
+
+enum SessionNameRules {
+    /// Hub `PATCH /sessions/:id` accepts 1–255 characters.
+    static func isValid(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && trimmed.utf16.count <= 255
+    }
+
+    static func deleteMessage(title: String) -> String {
+        String(format: String(localized: "Delete “%@”? This can't be undone."), title)
     }
 }
 

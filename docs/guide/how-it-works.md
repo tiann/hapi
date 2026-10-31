@@ -36,7 +36,7 @@ hapi runner start # Run background service for remote session spawning
 hapi ping-peer --list  # Shell peer shortlist (prefer MCP list_peers in-session)
 ```
 
-MCP peer tools (same hub/namespace as the session): `list_peers` (discover), `inspect_peer` (read), `ping_peer` (message). These work from runner-spawned sessions even when the hub is on another host - see [Installation → Split hub + remote runner](./installation.md#split-hub-remote-runner-peer-discovery).
+MCP peer tools (same hub/namespace as the session): `list_peers` (discover), `inspect_peer` (read), `ping_peer` (message). These work from runner-spawned sessions even when the hub is on another host - see [Installation → Split hub + remote runner](./installation.md#split-hub-remote-runner-peer-discovery). Runners that must keep agents out of other sessions' contexts can hide all three with `HAPI_DISABLE_PEER_TOOLS=1` - see [Installation → Disabling peer tools](./installation.md#disabling-peer-tools-on-a-runner).
 
 ### HAPI Hub
 
@@ -72,7 +72,7 @@ FCM/APNs with the [native push contract](../api/native-companion-contract.md).
 The apps have their own navigation and rendering. Protocol fixture conformance
 does not imply web UI parity: the terminal, Work Graph and realtime voice
 controls remain web features. See [Native apps](./native-apps.md) for current
-capabilities, platform differences and build/pairing instructions.
+capabilities, platform differences and install/pairing instructions.
 
 ## Data Flow
 

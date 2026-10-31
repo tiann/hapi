@@ -36,14 +36,15 @@ final class SessionListFilterTests: XCTestCase {
         XCTAssertTrue(model.hasRefreshedOnce)
     }
 
-    func testEmptyAndSingleMachineHaveNoFilterAffordance() {
+    func testEmptyAndSingleMachineHaveNoMachineFilter() {
         let sessions = HomeFilterTestSessions()
         let model = HomeFilterTestData.model(sessions: sessions)
         XCTAssertFalse(model.showsFilterMenu)
         XCTAssertFalse(model.filters.isActive)
         sessions.sessions = [HomeFilterTestData.summary("a", machine: "mac")]
         model.selectMachine("mac")
-        XCTAssertFalse(model.showsFilterMenu)
+        XCTAssertTrue(model.showsFilterMenu, "The unread lens applies to a single machine too")
+        XCTAssertFalse(model.showsMachineFilter)
         XCTAssertNil(model.activeMachineFilter)
         XCTAssertNil(model.filterSummary)
         XCTAssertEqual(model.rows.count, 1)
@@ -166,6 +167,50 @@ final class SessionListFilterTests: XCTestCase {
         XCTAssertEqual(model.rows.count, 1)
     }
 
+    func testUnreadLensKeepsTheSelectedSessionAndMarkAllReadClearsIt() {
+        var stale = HomeFilterTestData.summary("seen", machine: "mac")
+        stale.updatedAt = 10
+        var fresh = HomeFilterTestData.summary("fresh", machine: "mac")
+        fresh.updatedAt = 20
+        let sessions = HomeFilterTestSessions([fresh, stale])
+        let lastSeen = LastSeenStore()
+        lastSeen.markSeen(sessionId: "seen", seenAt: 10)
+        let model = SessionListModel(sessionStore: sessions, machineStore: HomeFilterTestMachines(),
+                                     lastSeenStore: lastSeen, hubUrl: "test")
+        XCTAssertEqual(model.unreadCount, 1)
+
+        model.setUnreadOnly(true)
+        XCTAssertEqual(model.rows.map(\.id), ["fresh"])
+        XCTAssertEqual(model.filterSummary, String(localized: "Unread only"))
+        model.selectedSessionId = "seen"
+        XCTAssertEqual(model.rows.map(\.id), ["fresh", "seen"])
+
+        model.markAllRead()
+        XCTAssertEqual(model.unreadCount, 0)
+        XCTAssertEqual(model.rows.map(\.id), ["seen"])
+        model.clearFilters()
+        XCTAssertFalse(model.filters.unreadOnly)
+    }
+
+    func testSearchRanksTitlesWithinPinSections() {
+        var pinned = HomeFilterTestData.summary("pinned", machine: "mac")
+        pinned.pinned = true
+        pinned.metadata?.name = "deploy notes"
+        var exact = HomeFilterTestData.summary("exact", machine: "mac")
+        exact.metadata?.name = "deploy"
+        var other = HomeFilterTestData.summary("other", machine: "mac")
+        other.metadata?.name = "refactor"
+        let sessions = HomeFilterTestSessions(sortSessionSummaries([other, exact, pinned]))
+        let model = HomeFilterTestData.model(sessions: sessions)
+
+        model.searchQuery = "deploy"
+        XCTAssertTrue(model.isSearching)
+        XCTAssertEqual(model.rows.map(\.id), ["pinned", "exact"])
+        XCTAssertEqual(SessionListModel.pinnedCount(of: model.rows), 1)
+        model.searchQuery = "   "
+        XCTAssertEqual(model.rows.count, 3)
+    }
+
     func testConnectionNoticeHasOneMessageAndHealthyStateIsEmpty() {
         XCTAssertNil(SessionConnectionNotice(state: .connected, showsCachedSessions: false).message)
         XCTAssertEqual(SessionConnectionNotice(state: .backoff(attempt: 2), showsCachedSessions: false).message, "Reconnecting…")
@@ -201,6 +246,22 @@ final class HomeFilterTestSessions: SessionListStoring {
         sessions = sortSessionSummaries(sessions)
     }
     func archiveSession(sessionId: String) async throws { sessions.removeAll { $0.id == sessionId } }
+    func renameSession(sessionId: String, name: String) async throws {
+        guard let index = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
+        sessions[index].metadata?.name = name
+    }
+    /// Scripted lifecycle answers for `SessionLifecycleActionTests`.
+    var deleteError: (any Error)?
+    var reopenError: (any Error)?
+    var reopenTarget: String?
+    func deleteSession(sessionId: String) async throws {
+        if let deleteError { throw deleteError }
+        sessions.removeAll { $0.id == sessionId }
+    }
+    func reopenSession(sessionId: String) async throws -> ReopenSessionResponse {
+        if let reopenError { throw reopenError }
+        return ReopenSessionResponse(ok: true, sessionId: reopenTarget ?? sessionId, resumed: true)
+    }
 }
 
 @MainActor @Observable

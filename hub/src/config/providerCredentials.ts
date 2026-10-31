@@ -7,7 +7,8 @@
  * `getProviderEnvironment()` — they are never copied into `process.env`.
  */
 
-import { getSettingsFile, readSettings, updateSettings, type Settings } from './settings'
+import { getSettingsFile, readSettings, readSettingsCached, updateSettings, type Settings } from './settings'
+import { VOICE_MAX_DURATION_DEFAULT_SECONDS, resolveVoiceMaxDurationSeconds } from '@hapi/protocol/voice'
 
 export const PROVIDER_CREDENTIAL_ENV_KEYS = [
     'OPENAI_API_KEY',
@@ -48,6 +49,12 @@ export interface OpenAICompatibleCredentialStatus {
     apiKey: MaskedCredentialStatus
 }
 
+export interface MaxDurationStatus {
+    value: number
+    source: ProviderCredentialSource
+    editable: boolean
+}
+
 export interface TranscriptionCredentialStatus {
     openai: MaskedCredentialStatus
     elevenlabs: MaskedCredentialStatus
@@ -59,6 +66,7 @@ export interface TranscriptionCredentialStatus {
         geminiLive: MaskedCredentialStatus
         qwenRealtime: MaskedCredentialStatus
     }
+    elevenLabsMaxDurationSeconds: MaxDurationStatus
 }
 
 export interface TranscriptionCredentialsUpdate {
@@ -73,15 +81,66 @@ export interface TranscriptionCredentialsUpdate {
     }
     geminiLive?: string | null
     qwenRealtime?: string | null
+    /** null resets to VOICE_MAX_DURATION_DEFAULT_SECONDS */
+    elevenLabsMaxDurationSeconds?: number | null
 }
 
 export type ProviderCredentialsMap = Partial<Record<ProviderCredentialEnvKey, string>>
 
 let envLockedKeys = new Set<ProviderCredentialEnvKey>()
+let settingsBackedMaxDurationSeconds: number | undefined
 
 export function resetProviderCredentialEnvLocksForTests(): void {
     envLockedKeys = new Set()
     settingsBackedCredentials = {}
+    settingsBackedMaxDurationSeconds = undefined
+}
+
+function isMaxDurationEnvLocked(): boolean {
+    return Boolean(process.env.ELEVENLABS_MAX_DURATION_SECONDS?.trim())
+}
+
+/** Coerce a stored value to a valid cap, dropping anything that's since fallen out of range. */
+function normalizeStoredMaxDuration(value: unknown): number | undefined {
+    if (typeof value !== 'number') return undefined
+    try {
+        return resolveVoiceMaxDurationSeconds(String(value))
+    } catch {
+        return undefined
+    }
+}
+
+/**
+ * Effective ElevenLabs ConvAI conversation cap (seconds). Env wins when set;
+ * otherwise the Settings-backed override, else the documented default.
+ */
+export function getConfiguredElevenLabsMaxDurationSeconds(): number {
+    if (isMaxDurationEnvLocked()) {
+        return resolveVoiceMaxDurationSeconds(process.env.ELEVENLABS_MAX_DURATION_SECONDS)
+    }
+    return settingsBackedMaxDurationSeconds ?? VOICE_MAX_DURATION_DEFAULT_SECONDS
+}
+
+function buildMaxDurationStatus(maxDurationSeconds: number | undefined): MaxDurationStatus {
+    if (isMaxDurationEnvLocked()) {
+        // A misconfigured env value still throws where it must (token issuance,
+        // via getConfiguredElevenLabsMaxDurationSeconds) so voice stays broken
+        // loudly until fixed. Here it must not take down the status/update
+        // endpoints shared by every other provider's credentials.
+        try {
+            return {
+                value: resolveVoiceMaxDurationSeconds(process.env.ELEVENLABS_MAX_DURATION_SECONDS),
+                source: 'env',
+                editable: false,
+            }
+        } catch {
+            return { value: VOICE_MAX_DURATION_DEFAULT_SECONDS, source: 'env', editable: false }
+        }
+    }
+    if (maxDurationSeconds !== undefined) {
+        return { value: maxDurationSeconds, source: 'settings', editable: true }
+    }
+    return { value: VOICE_MAX_DURATION_DEFAULT_SECONDS, source: 'none', editable: true }
 }
 
 export function maskSecret(value: string): string {
@@ -220,12 +279,17 @@ export async function applyProviderCredentialsFromSettings(dataDir: string): Pro
     const settings = await readSettings(getSettingsFile(dataDir))
     if (settings === null) {
         setSettingsBackedCredentials({})
+        settingsBackedMaxDurationSeconds = undefined
         return
     }
     setSettingsBackedCredentials(readProviderCredentials(settings))
+    settingsBackedMaxDurationSeconds = normalizeStoredMaxDuration(settings.elevenLabsMaxDurationSeconds)
 }
 
-function buildStatus(stored: ProviderCredentialsMap): TranscriptionCredentialStatus {
+function buildStatus(
+    stored: ProviderCredentialsMap,
+    maxDurationSeconds: number | undefined
+): TranscriptionCredentialStatus {
     const openai = statusForKey('OPENAI_API_KEY', stored)
     const elevenlabs = statusForKey('ELEVENLABS_API_KEY', stored)
     const deepgram = statusForKey('DEEPGRAM_API_KEY', stored)
@@ -257,15 +321,19 @@ function buildStatus(stored: ProviderCredentialsMap): TranscriptionCredentialSta
             geminiLive,
             qwenRealtime,
         },
+        elevenLabsMaxDurationSeconds: buildMaxDurationStatus(maxDurationSeconds),
     }
 }
 
 export async function getTranscriptionCredentialStatus(
     dataDir: string
 ): Promise<TranscriptionCredentialStatus> {
-    const settings = await readSettings(getSettingsFile(dataDir))
+    const settings = await readSettingsCached(getSettingsFile(dataDir))
     const stored = settings === null ? {} : readProviderCredentials(settings)
-    return buildStatus(stored)
+    const maxDurationSeconds = settings === null
+        ? undefined
+        : normalizeStoredMaxDuration(settings.elevenLabsMaxDurationSeconds)
+    return buildStatus(stored, maxDurationSeconds)
 }
 
 function normalizeOptionalSecret(value: string | null | undefined): string | null | undefined {
@@ -318,6 +386,25 @@ function syncSettingsCredentialsOverlay(stored: ProviderCredentialsMap): void {
     setSettingsBackedCredentials(stored)
 }
 
+/** Validates range/integer-ness; throws rather than letting a bad value reach ElevenLabs as a 422. */
+function applyMaxDurationPatch(
+    settings: Settings,
+    value: number | null | undefined
+): Settings {
+    if (value === undefined) return settings
+    if (isMaxDurationEnvLocked()) {
+        throw new Error(
+            'ELEVENLABS_MAX_DURATION_SECONDS is set by an environment variable and cannot be changed from Settings'
+        )
+    }
+    if (value === null) {
+        const { elevenLabsMaxDurationSeconds: _drop, ...rest } = settings
+        return rest
+    }
+    resolveVoiceMaxDurationSeconds(String(value))
+    return { ...settings, elevenLabsMaxDurationSeconds: value }
+}
+
 export async function updateTranscriptionCredentials(
     dataDir: string,
     update: TranscriptionCredentialsUpdate
@@ -362,12 +449,16 @@ export async function updateTranscriptionCredentials(
             normalizeOptionalSecret(update.qwenRealtime)
         )
 
+        const nextSettings = applyMaxDurationPatch(settings, update.elevenLabsMaxDurationSeconds)
+        const nextMaxDurationSeconds = normalizeStoredMaxDuration(nextSettings.elevenLabsMaxDurationSeconds)
+
         return {
-            settings: { ...settings, providerCredentials: nextStored },
-            result: nextStored,
+            settings: { ...nextSettings, providerCredentials: nextStored },
+            result: { stored: nextStored, maxDurationSeconds: nextMaxDurationSeconds },
             afterCommit: () => {
                 syncSettingsCredentialsOverlay(nextStored)
+                settingsBackedMaxDurationSeconds = nextMaxDurationSeconds
             },
         }
-    }).then((nextStored) => buildStatus(nextStored))
+    }).then((next) => buildStatus(next.stored, next.maxDurationSeconds))
 }

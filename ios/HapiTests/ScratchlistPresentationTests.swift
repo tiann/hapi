@@ -12,6 +12,36 @@ private struct ScratchlistOfflineHTTP: HTTPPerforming {
 
 @MainActor
 final class ScratchlistPresentationTests: XCTestCase {
+    private func hasAccessibilityIdentifier(_ identifier: String, in view: UIView) -> Bool {
+        if view.accessibilityIdentifier == identifier { return true }
+        if let elements = view.accessibilityElements {
+            for element in elements {
+                if let identifiable = element as? UIAccessibilityIdentification,
+                   identifiable.accessibilityIdentifier == identifier {
+                    return true
+                }
+            }
+        }
+        let elementCount = view.accessibilityElementCount()
+        if elementCount != NSNotFound {
+            for index in 0..<elementCount {
+                guard let element = view.accessibilityElement(at: index) else { continue }
+                if let identifiable = element as? UIAccessibilityIdentification,
+                   identifiable.accessibilityIdentifier == identifier {
+                    return true
+                }
+                if let child = element as? UIView,
+                   hasAccessibilityIdentifier(identifier, in: child) {
+                    return true
+                }
+            }
+        }
+        for child in view.subviews {
+            if hasAccessibilityIdentifier(identifier, in: child) { return true }
+        }
+        return false
+    }
+
     private func interactor() -> ChatInteractor {
         let url = URL(string: "https://scratchlist.invalid")!
         let http = ScratchlistOfflineHTTP()
@@ -156,8 +186,17 @@ final class ScratchlistPresentationTests: XCTestCase {
         window.makeKeyAndVisible()
         defer { window.endEditing(true); window.isHidden = true }
         try await Task.sleep(for: .milliseconds(250))
-        let proposal = CGSize(width: 390, height: 2000)
-        let browsingHeight = host.sizeThatFits(in: proposal).height
+        window.layoutIfNeeded()
+        host.view.layoutIfNeeded()
+        var hasPreview = hasAccessibilityIdentifier("scratchlist.recent", in: window)
+        for _ in 0..<50 {
+            if hasPreview { break }
+            try await Task.sleep(for: .milliseconds(10))
+            window.layoutIfNeeded()
+            host.view.layoutIfNeeded()
+            hasPreview = hasAccessibilityIdentifier("scratchlist.recent", in: window)
+        }
+        XCTAssertTrue(hasPreview, "The recent Scratchlist preview should be visible before focusing the composer")
         interactor.focusComposer()
         func hasFirstResponder(_ view: UIView) -> Bool {
             view.isFirstResponder || view.subviews.contains(where: hasFirstResponder)
@@ -167,8 +206,15 @@ final class ScratchlistPresentationTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertTrue(hasFirstResponder(window))
-        try await Task.sleep(for: .milliseconds(250))
-        XCTAssertLessThan(host.sizeThatFits(in: proposal).height, browsingHeight - 40)
+        hasPreview = hasAccessibilityIdentifier("scratchlist.recent", in: window)
+        for _ in 0..<50 {
+            if !hasPreview { break }
+            try await Task.sleep(for: .milliseconds(10))
+            window.layoutIfNeeded()
+            host.view.layoutIfNeeded()
+            hasPreview = hasAccessibilityIdentifier("scratchlist.recent", in: window)
+        }
+        XCTAssertFalse(hasPreview, "The recent Scratchlist preview should disappear after focusing the composer")
         XCTAssertEqual(interactor.composerText, "补充一条回归测试")
         XCTAssertEqual(interactor.composerDestination, .scratchlist)
         XCTAssertEqual(interactor.scratchlistCount, 3)

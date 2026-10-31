@@ -30,6 +30,8 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
 import app.hapi.companion.feature.chat.LocalChatInteractions
+import app.hapi.companion.feature.chat.permissions.PermissionVerdictLabel
+import app.hapi.companion.feature.chat.permissions.PermissionVerdicts
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.ChatToolCall
@@ -105,7 +107,7 @@ fun ToolCallBlockView(block: ToolCallBlock, basePath: String?, modifier: Modifie
                             )
                         }
                     }
-                } else PermissionStateRow(permission)
+                } else PermissionStateRow(permission, tool, interactions?.flavor)
             }
             if (steps != null) {
                 androidx.compose.material3.TextButton(onClick = { inspection?.openTool(block.id) }) {
@@ -193,11 +195,14 @@ private fun StatusChip(text: String, container: androidx.compose.ui.graphics.Col
  * Read-only permission verdict: highlighted banner while pending (renders
  * only without a [LocalChatInteractions] provider — previews/tests; the live
  * chat replaces it with [PendingPermissionFooter]), subdued line once decided.
+ * Settled labels come from [PermissionVerdicts.classify] — the web
+ * `formatPermissionSummary` port covering codex/claude decision, mode and
+ * allowedTools (`Bash(command)` qualifier) inference.
  */
 @Composable
-private fun PermissionStateRow(permission: ToolPermission) {
-    when (permission.status) {
-        "pending" -> Surface(
+private fun PermissionStateRow(permission: ToolPermission, tool: ChatToolCall, flavor: String?) {
+    if (permission.status == "pending") {
+        Surface(
             color = MaterialTheme.colorScheme.tertiaryContainer,
             contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
             modifier = Modifier.fillMaxWidth(),
@@ -209,16 +214,28 @@ private fun PermissionStateRow(permission: ToolPermission) {
                 )
             }
         }
-        "approved" -> PermissionLine(
-            stringResource(R.string.chat_tool_approved) + (permission.mode?.let { " · $it" } ?: ""),
-        )
-        "denied" -> PermissionLine(
-            stringResource(R.string.chat_tool_denied) + (permission.reason?.let { " · $it" } ?: ""),
-            error = true,
-        )
-        "resolved" -> PermissionLine(stringResource(R.string.chat_tool_resolved))
-        "canceled" -> PermissionLine(stringResource(R.string.chat_tool_canceled))
+        return
     }
+    val verdict = remember(permission, tool.name, tool.input, flavor) {
+        PermissionVerdicts.classify(permission, tool.name, tool.input, flavor)
+    }
+    PermissionLine(
+        text = permissionVerdictLabel(verdict.label) + (verdict.reason?.let { " · $it" } ?: ""),
+        error = verdict.label == PermissionVerdictLabel.DENIED || verdict.label == PermissionVerdictLabel.ABORTED,
+    )
+}
+
+@Composable
+private fun permissionVerdictLabel(label: PermissionVerdictLabel): String = when (label) {
+    PermissionVerdictLabel.WAITING_FOR_APPROVAL -> stringResource(R.string.chat_tool_awaiting_approval_badge)
+    PermissionVerdictLabel.APPROVED -> stringResource(R.string.chat_tool_approved)
+    PermissionVerdictLabel.APPROVED_FOR_SESSION -> stringResource(R.string.chat_tool_approved_for_session)
+    PermissionVerdictLabel.APPROVED_ALLOW_ALL_EDITS -> stringResource(R.string.chat_tool_approved_allow_all_edits)
+    PermissionVerdictLabel.DENIED -> stringResource(R.string.chat_tool_denied)
+    PermissionVerdictLabel.ABORTED -> stringResource(R.string.chat_tool_aborted)
+    PermissionVerdictLabel.CANCELED -> stringResource(R.string.chat_tool_canceled)
+    PermissionVerdictLabel.RESOLVED -> stringResource(R.string.chat_tool_resolved)
+    PermissionVerdictLabel.ALLOW -> stringResource(R.string.chat_perm_allow)
 }
 
 @Composable

@@ -129,12 +129,14 @@ class SummaryPatchingTest {
         metadata: SessionMetadata? = null,
         agentState: AgentState? = null,
         todos: List<TodoItem>? = null,
+        hasConversationContent: Boolean = false,
     ): Session = Session(
         id = "session-1",
         namespace = "default",
         seq = 1,
         createdAt = 1_000,
         updatedAt = 2_000,
+        hasConversationContent = hasConversationContent,
         active = true,
         activeAt = 1_000,
         metadata = metadata,
@@ -163,11 +165,14 @@ class SummaryPatchingTest {
             ),
             agentState = AgentState(requests = mapOf("r1" to request("Bash", createdAt = 50))),
             todos = listOf(TodoItem(content = "a", status = "completed")),
+            hasConversationContent = true,
         )
         val summary = SummaryPatching.toSessionSummary(session)
         assertEquals("session-1", summary.id)
         assertTrue(summary.active)
         assertTrue(summary.thinking)
+        // Carried through for the sidebar's empty-stub hiding (web parity).
+        assertTrue(summary.hasConversationContent)
         assertEquals(false, summary.pinned)
         assertEquals(false, summary.globalPinned)
         assertEquals(3, summary.metadataVersion)

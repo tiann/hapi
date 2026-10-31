@@ -3,6 +3,7 @@ import { Hono } from 'hono'
 import type { Session, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { createSessionsRoutes } from './sessions'
+import { RpcTargetMissingError } from '../../sync/rpcGateway'
 
 function createSession(overrides?: Partial<Session>): Session {
     const baseMetadata = {
@@ -70,6 +71,7 @@ function createApp(session: Session, opts?: {
     implementCodexPlan?: SyncEngine['implementCodexPlan']
     rewindConversation?: SyncEngine['rewindConversation']
     suggestSessionTitle?: SyncEngine['suggestSessionTitle']
+    renameSession?: SyncEngine['renameSession']
     updateSessionSummary?: SyncEngine['updateSessionSummary']
     setSessionPinned?: (sessionId: string, pinned: boolean) => void
     setSessionPinMode?: (sessionId: string, mode: 'none' | 'project' | 'global') => void
@@ -118,6 +120,17 @@ function createApp(session: Session, opts?: {
         options: [{ value: 'low', name: 'Low' }],
         currentValue: 'low'
     })
+    const listKimiModelsForSession = async () => ({
+        success: true,
+        availableModels: [
+            {
+                modelId: 'GLM-5.3-flash',
+                name: 'thehive / GLM-5.3-flash',
+                provider: 'thehive'
+            }
+        ],
+        currentModelId: 'GLM-5.3-flash'
+    })
     const resumeSession = opts?.resumeSession ?? (async (sessionId: string) => ({ type: 'success', sessionId }))
     const reopenSession = opts?.reopenSession ?? (async (sessionId: string) => ({
         type: 'success' as const,
@@ -140,6 +153,7 @@ function createApp(session: Session, opts?: {
         listOpencodeReasoningEffortOptionsForSession,
         listGrokModelsForSession,
         listGrokReasoningEffortOptionsForSession,
+        listKimiModelsForSession,
         resumeSession,
         reopenSession,
         getCursorChatStoreStatus: opts?.getCursorChatStoreStatus ?? (async () => ({
@@ -168,6 +182,7 @@ function createApp(session: Session, opts?: {
         implementCodexPlan: opts?.implementCodexPlan,
         rewindConversation: opts?.rewindConversation ?? (async () => ({ type: 'success' })),
         suggestSessionTitle: opts?.suggestSessionTitle ?? (async () => 'Generated title'),
+        renameSession: opts?.renameSession ?? (async () => {}),
         updateSessionSummary: opts?.updateSessionSummary ?? (async () => {})
     } as Partial<SyncEngine>
 
@@ -260,6 +275,47 @@ describe('sessions routes', () => {
         expect(await response.json()).toEqual({ error: 'No Runner online', code: 'no_machine_online' })
         expect(clears).toBe(0)
     })
+    it('accepts a lock-only save without converting a generated title to a manual name', async () => {
+        const calls: unknown[] = []
+        const { app } = createApp(createSession(), { renameSession: async (...args) => { calls.push(args) } })
+        const response = await app.request('/api/sessions/session-1', {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ titleLocked: true })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([['session-1', undefined, true]])
+    })
+
+    it.each([true, false])('passes explicit title lock %s atomically through both user title routes', async (titleLocked) => {
+        const calls: unknown[] = []
+        const { app } = createApp(createSession(), {
+            renameSession: async (...args) => { calls.push(args) },
+            updateSessionSummary: async (...args) => { calls.push(args) }
+        })
+        for (const [suffix, field] of [['', 'name'], ['/summary', 'text']]) {
+            const response = await app.request(`/api/sessions/session-1${suffix}`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ [field]: 'Chosen', titleLocked })
+            })
+            expect(response.status).toBe(200)
+        }
+        expect(calls).toEqual([['session-1', 'Chosen', titleLocked], ['session-1', 'Chosen', titleLocked]])
+    })
+
+    it('rejects invalid lock values and missing-session title saves', async () => {
+        const { app } = createApp(createSession())
+        for (const suffix of ['', '/summary']) {
+            expect((await app.request(`/api/sessions/session-1${suffix}`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: 'Title', text: 'Title', titleLocked: 'true' })
+            })).status).toBe(400)
+        }
+        const other = createApp(createSession(), { sessionExists: false }).app
+        expect((await other.request('/api/sessions/session-1', {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: 'Title', titleLocked: false })
+        })).status).toBe(404)
+    })
+
     it('generates a title suggestion without changing session metadata', async () => {
         const suggest = async (sessionId: string) => {
             expect(sessionId).toBe('session-1')
@@ -357,6 +413,24 @@ describe('sessions routes', () => {
         expect(await response.json()).toEqual({
             success: true,
             models: [{ id: 'gpt-5.5', displayName: 'GPT-5.5', isDefault: true }]
+        })
+    })
+
+    it('returns a stable code when the Codex session model RPC target is absent', async () => {
+        const session = createSession()
+        const { app } = createApp(session, {
+            listCodexModelsForSession: async () => {
+                throw new RpcTargetMissingError('session-1:listCodexModels', 'handler-not-registered')
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/codex-models')
+
+        expect(response.status).toBe(503)
+        expect(await response.json()).toEqual({
+            success: false,
+            error: 'RPC handler not registered: session-1:listCodexModels',
+            code: 'rpc_target_missing'
         })
     })
 
@@ -737,6 +811,70 @@ describe('sessions routes', () => {
         ])
     })
 
+    it('applies a Claude model and the effort it keeps in one session config change', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'haiku', effort: null })
+        })
+
+        expect(response.status).toBe(200)
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { model: 'haiku', effort: null }]
+        ])
+    })
+
+    it.each(['high', null])('applies an Antigravity model and effort %s atomically', async (effort) => {
+        const { app, applySessionConfigCalls } = createApp(createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'agy' }
+        }))
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gemini-4-argon', effort })
+        })
+
+        expect(response.status).toBe(200)
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { model: 'gemini-4-argon', effort }]
+        ])
+    })
+
+    it('rejects an effort sent with a model change for Pi, which applies the two separately', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'pi' }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gpt-5.6-sol', effort: null })
+        })
+
+        expect(response.status).toBe(400)
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
+    it('rejects an effort sent with a model change for a flavor without effort', async () => {
+        const { app, applySessionConfigCalls } = createApp(createSession())
+
+        const response = await app.request('/api/sessions/session-1/model', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ model: 'gpt-5.5', effort: 'high' })
+        })
+
+        expect(response.status).toBe(400)
+        expect(applySessionConfigCalls).toEqual([])
+    })
+
     it('rejects model changes for local Codex sessions', async () => {
         const session = createSession({
             agentState: {
@@ -906,6 +1044,22 @@ describe('sessions routes', () => {
         expect(applySessionConfigCalls).toEqual([])
     })
 
+    it('applies effort changes for Antigravity sessions', async () => {
+        const { app, applySessionConfigCalls } = createApp(createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'agy' }
+        }))
+        const response = await app.request('/api/sessions/session-1/effort', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ effort: 'high' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { effort: 'high' }]
+        ])
+    })
+
     it('applies effort changes for Claude sessions', async () => {
         const session = createSession({
             metadata: {
@@ -996,6 +1150,40 @@ describe('sessions routes', () => {
             success: true,
             options: [{ value: 'low', name: 'Low' }],
             currentValue: 'low'
+        })
+    })
+
+    it('returns the Kimi catalog for an active Kimi session over its own connection', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'kimi' }
+        })
+        const { app } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/kimi-models')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            success: true,
+            availableModels: [
+                {
+                    modelId: 'GLM-5.3-flash',
+                    name: 'thehive / GLM-5.3-flash',
+                    provider: 'thehive'
+                }
+            ],
+            currentModelId: 'GLM-5.3-flash'
+        })
+    })
+
+    it('rejects kimi-models for non-Kimi sessions', async () => {
+        const { app } = createApp(createSession())
+
+        const response = await app.request('/api/sessions/session-1/kimi-models')
+
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({
+            success: false,
+            error: 'Kimi models are only available for Kimi sessions'
         })
     })
 
@@ -1102,6 +1290,24 @@ describe('sessions routes', () => {
         expect(applySessionConfigCalls).toEqual([
             ['session-1', { permissionMode: 'plan' }]
         ])
+    })
+
+    it('rejects Safe Yolo for Codex', async () => {
+        const session = createSession({
+            active: false,
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex' }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/permission-mode', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ mode: 'safe-yolo' })
+        })
+
+        expect(response.status).toBe(400)
+        expect(await response.json()).toEqual({ error: 'Invalid permission mode for session flavor' })
+        expect(applySessionConfigCalls).toEqual([])
     })
 
     it('applies permission mode changes for inactive sessions', async () => {
@@ -1416,6 +1622,32 @@ describe('sessions routes', () => {
             expect(await response.json()).toEqual({ ok: true })
         })
 
+        // tiann/hapi#1820: 'idle' is a live lifecycle. Once a keepalive-only
+        // session finally loses its socket it must stay archivable, exactly
+        // like a stale 'running' row — comparing against the 'running'
+        // literal here would strand it behind a 409.
+        it('archives an inactive session left in the keepalive-idle lifecycle', async () => {
+            const calls: string[] = []
+            const session = createSession({
+                active: false,
+                metadata: {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    flavor: 'cursor',
+                    lifecycleState: 'idle'
+                }
+            })
+            const { app } = createApp(session, {
+                archiveSession: async (sessionId: string) => { calls.push(sessionId) }
+            })
+
+            const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
+
+            expect(response.status).toBe(200)
+            expect(await response.json()).toEqual({ ok: true })
+            expect(calls).toEqual(['session-1'])
+        })
+
         it('returns 2xx and skips archiveSession when the row is already archived (idempotent)', async () => {
             let called = false
             const session = createSession({
@@ -1617,9 +1849,9 @@ describe('sessions routes', () => {
 
     it('honors optional limit on GET /sessions after sort', async () => {
         const sessions = [
-            createSession({ id: 'older-active', active: true, updatedAt: 10 }),
-            createSession({ id: 'newer-active', active: true, updatedAt: 20 }),
-            createSession({ id: 'inactive', active: false, updatedAt: 30 })
+            createSession({ id: 'older-active', active: true, updatedAt: 99, lastUserMessageAt: 10 }),
+            createSession({ id: 'newer-active', active: true, updatedAt: 20, lastUserMessageAt: 20 }),
+            createSession({ id: 'inactive', active: false, updatedAt: 30, lastUserMessageAt: 30 })
         ]
         const scheduledIds: string[][] = []
         const engine = {
@@ -1642,8 +1874,8 @@ describe('sessions routes', () => {
         const limited = await app.request('/api/sessions?limit=2')
         expect(limited.status).toBe(200)
         const limitedBody = await limited.json() as { sessions: Array<{ id: string }> }
-        expect(limitedBody.sessions.map((s) => s.id)).toEqual(['newer-active', 'older-active'])
-        expect(scheduledIds.at(-1)).toEqual(['newer-active', 'older-active'])
+        expect(limitedBody.sessions.map((s) => s.id)).toEqual(['inactive', 'newer-active'])
+        expect(scheduledIds.at(-1)).toEqual(['inactive', 'newer-active'])
 
         const unlimited = await app.request('/api/sessions')
         expect(unlimited.status).toBe(200)

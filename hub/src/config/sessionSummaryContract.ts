@@ -1,6 +1,6 @@
 import {
     getSettingsFile,
-    readSettingsOrThrow,
+    readSettingsOrThrowCached,
     updateSettings,
     type Settings
 } from './settings'
@@ -15,7 +15,7 @@ export function isSessionSummaryContractSettingEnabled(settings: Settings): bool
 }
 
 export async function readSessionSummaryContractEnabled(dataDir: string): Promise<boolean> {
-    const settings = await readSettingsOrThrow(getSettingsFile(dataDir))
+    const settings = await readSettingsOrThrowCached(getSettingsFile(dataDir))
     return isSessionSummaryContractSettingEnabled(settings)
 }
 

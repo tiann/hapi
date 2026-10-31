@@ -4,11 +4,16 @@ import type { SessionSummary } from '@/types/api'
 import { markSessionSeen } from '@/lib/sessionLastSeen'
 import { canUseAppBadging, countUnreadSessions, useAppBadge } from './useAppBadge'
 
-function createSession(id: string, updatedAt: number): SessionSummary {
+function createSession(
+    id: string,
+    updatedAt: number,
+    thinking = false,
+    active = thinking,
+): SessionSummary {
     return {
         id,
-        active: false,
-        thinking: false,
+        active,
+        thinking,
         activeAt: updatedAt,
         updatedAt,
         // Has real conversation content, so it's eligible for the sidebar's
@@ -71,6 +76,35 @@ describe('useAppBadge', () => {
         expect(countUnreadSessions(
             [createSession('session-a', 11), createSession('session-b', 20)],
             { 'session-a': 10, 'session-b': 20 },
+        )).toBe(1)
+    })
+
+    it('does not count a session while it is generating, then counts it after completion', () => {
+        const lastSeenById = { 'session-a': 10 }
+
+        expect(countUnreadSessions(
+            [createSession('session-a', 11, true)],
+            lastSeenById,
+        )).toBe(0)
+
+        expect(countUnreadSessions(
+            [createSession('session-a', 11)],
+            lastSeenById,
+        )).toBe(1)
+    })
+
+    it('preserves a manually marked unread session while it is generating', () => {
+        expect(countUnreadSessions(
+            [createSession('session-a', 12, true)],
+            { 'session-a': 10 },
+            { 'session-a': 11 },
+        )).toBe(1)
+    })
+
+    it('counts an inactive session even if its thinking flag is stale', () => {
+        expect(countUnreadSessions(
+            [createSession('session-a', 11, true, false)],
+            { 'session-a': 10 },
         )).toBe(1)
     })
 

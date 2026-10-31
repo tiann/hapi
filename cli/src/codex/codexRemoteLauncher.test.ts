@@ -1144,6 +1144,7 @@ function createSessionStub(
     const sessionEvents: Array<{ type: string; [key: string]: unknown }> = [];
     const codexMessages: unknown[] = [];
     const summaryMessages: unknown[] = [];
+    const metadataUpdates: Array<Record<string, unknown>> = [];
     const thinkingChanges: boolean[] = [];
     const foundSessionIds: string[] = [];
     const resetThreadCalls: string[] = [];
@@ -1156,6 +1157,11 @@ function createSessionStub(
         requests: {},
         completedRequests: {}
     };
+    let metadata: Record<string, unknown> = {
+        path: '/tmp/hapi-update',
+        host: 'localhost',
+        name: 'issue-triage-#54'
+    };
 
     const rpcHandlers = new Map<string, (params: unknown) => unknown>();
     const client = {
@@ -1164,7 +1170,10 @@ function createSessionStub(
                 rpcHandlers.set(method, handler);
             }
         },
-        updateMetadata(_handler: (metadata: Record<string, unknown>) => Record<string, unknown>) {},
+        updateMetadata(handler: (current: Record<string, unknown>) => Record<string, unknown>) {
+            metadata = handler(metadata);
+            metadataUpdates.push({ ...metadata });
+        },
         updateAgentState(handler: (state: FakeAgentState) => FakeAgentState) {
             agentState = handler(agentState);
         },
@@ -1239,6 +1248,8 @@ function createSessionStub(
         sessionEvents,
         codexMessages,
         summaryMessages,
+        metadataUpdates,
+        getMetadata: () => metadata,
         thinkingChanges,
         foundSessionIds,
         resetThreadCalls,
@@ -1257,6 +1268,57 @@ function createSessionStub(
 }
 
 describe('codexRemoteLauncher', () => {
+    it('keeps plan cards distinct across native turns and stable within each turn', async () => {
+        harness.suppressTurnCompletion = true;
+        const { session, codexMessages } = createSessionStub(['first'], createMode(), false, false);
+        const running = codexRemoteLauncher(session as never);
+        for (let index = 1; index <= 2; index += 1) {
+            await vi.waitFor(() => expect(harness.startTurnThreadIds).toHaveLength(index));
+            const turnId = `turn-${index}`;
+            for (const status of ['pending', 'completed']) {
+                harness.dispatchNotification?.('turn/plan/updated', {
+                    threadId: 'thread-1', turnId, plan: [{ step: 'work', status }]
+                });
+            }
+            harness.dispatchNotification?.('turn/completed', { threadId: 'thread-1', turn: { id: turnId, status: 'completed' } });
+            if (index === 1) session.queue.push('second', createMode());
+        }
+        session.queue.close();
+        await expect(running).resolves.toBe('exit');
+        const plans = codexMessages.filter((message): message is Record<string, unknown> =>
+            typeof message === 'object' && message !== null && 'callId' in message);
+        for (const type of ['tool-call', 'tool-call-result']) {
+            expect(plans.filter(message => message.type === type).map(message => message.callId)).toEqual([
+                'codex-plan-state:turn-1', 'codex-plan-state:turn-1',
+                'codex-plan-state:turn-2', 'codex-plan-state:turn-2'
+            ]);
+        }
+    });
+
+    it('persists the matching live app-server duration and ignores child or stale terminals', async () => {
+        harness.suppressTurnCompletion = true;
+        const { session, codexMessages } = createSessionStub(['first message']);
+        const now = vi.spyOn(Date, 'now').mockReturnValue(10_000);
+        const running = codexRemoteLauncher(session as never);
+        try {
+            await vi.waitFor(() => expect(harness.startTurnThreadIds).toHaveLength(1));
+            now.mockReturnValue(20_000);
+            harness.dispatchNotification?.('turn/completed', { threadId: 'child', turn: { id: 'child-turn', status: 'completed' } });
+            harness.dispatchNotification?.('turn/completed', { threadId: 'thread-1', turn: { id: 'old', status: 'completed' } });
+            expect(codexMessages.filter(message => typeof message === 'object' && message !== null
+                && 'type' in message && message.type === 'turn_duration')).toHaveLength(0);
+            now.mockReturnValue(49_426);
+            harness.dispatchNotification?.('turn/completed', { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } });
+            await expect(running).resolves.toBe('exit');
+            expect(codexMessages.filter(message => typeof message === 'object' && message !== null
+                && 'type' in message && message.type === 'turn_duration')).toEqual([
+                expect.objectContaining({ turn_id: 'turn-1', durationMs: 39_426 })
+            ]);
+        } finally {
+            now.mockRestore();
+        }
+    });
+
     it('invalidates queued steer handlers after abort or cleanup', () => {
         expect(isCurrentSteerHandler(3, 3, false)).toBe(true);
         expect(isCurrentSteerHandler(4, 3, false)).toBe(false);
@@ -3309,15 +3371,13 @@ describe('codexRemoteLauncher', () => {
 
     it('applies parent-thread hapi change_title after disabling MCP-side title writes', async () => {
         harness.emitParentTitleChange = true;
-        const { session, codexMessages, summaryMessages } = createSessionStub();
+        const { session, codexMessages, summaryMessages, getMetadata } = createSessionStub();
 
         await codexRemoteLauncher(session as never);
 
         expect(harness.bridgeOptions).toEqual([{ emitTitleSummary: false }]);
-        expect(summaryMessages).toContainEqual(expect.objectContaining({
-            type: 'summary',
-            summary: 'Parent Title'
-        }));
+        expect(summaryMessages).toEqual([]);
+        expect(getMetadata().name).toBe('Parent Title');
         expect(codexMessages).toContainEqual(expect.objectContaining({
             type: 'tool-call',
             name: 'mcp__hapi__change_title',
@@ -3430,11 +3490,11 @@ describe('codexRemoteLauncher', () => {
         expect(harness.compactThreadIds).toEqual(['thread-1']);
         expect(sessionEvents).toContainEqual({
             type: 'message',
-            message: 'Compaction started'
+            message: '📦 Compaction started'
         });
         expect(sessionEvents).toContainEqual({
             type: 'message',
-            message: 'Compaction completed'
+            message: '📦 Compaction completed'
         });
     });
 
@@ -3454,7 +3514,7 @@ describe('codexRemoteLauncher', () => {
         expect(harness.startTurnMessages).toEqual(['first message']);
         expect(sessionEvents).not.toContainEqual({
             type: 'message',
-            message: 'Compaction completed'
+            message: '📦 Compaction completed'
         });
 
         harness.dispatchNotification?.('item/completed', {
@@ -3473,7 +3533,7 @@ describe('codexRemoteLauncher', () => {
         expect(harness.startTurnMessages).toEqual(['first message', 'after compact']);
         expect(sessionEvents).toContainEqual({
             type: 'message',
-            message: 'Compaction completed'
+            message: '📦 Compaction completed'
         });
     });
 
@@ -3490,7 +3550,7 @@ describe('codexRemoteLauncher', () => {
         expect(harness.compactThreadIds).toEqual(['thread-1']);
         expect(sessionEvents).toContainEqual({
             type: 'message',
-            message: 'Compaction completed'
+            message: '📦 Compaction completed'
         });
         expect(session.thinking).toBe(false);
     });
@@ -3523,5 +3583,221 @@ describe('codexRemoteLauncher', () => {
             type: 'message',
             message: '/compact does not accept arguments'
         });
+    });
+
+    it('announces automatic compaction when it starts, before it completes', async () => {
+        harness.suppressTurnCompletion = true;
+        const { session, sessionEvents } = createSessionStub(['first message']);
+
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => {
+            expect(harness.startTurnMessages).toEqual(['first message']);
+        });
+
+        harness.dispatchNotification?.('item/started', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: { id: 'compact-item-1', type: 'contextCompaction' }
+        });
+
+        await vi.waitFor(() => {
+            expect(sessionEvents).toContainEqual({
+                type: 'message',
+                message: '📦 Compaction started'
+            });
+        });
+
+        harness.dispatchNotification?.('item/completed', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: { id: 'compact-item-1', type: 'contextCompaction' }
+        });
+        harness.dispatchNotification?.('turn/completed', {
+            threadId: 'thread-1',
+            turn: { id: 'turn-1', status: 'completed' }
+        });
+
+        await expect(running).resolves.toBe('exit');
+        const startCount = sessionEvents.filter(
+            (event) => event.type === 'message' && event.message === '📦 Compaction started'
+        ).length;
+        expect(startCount).toBe(1);
+    });
+
+    it('dedups duplicate automatic compaction starts and keeps foreign-thread starts out of the parent stream', async () => {
+        harness.suppressTurnCompletion = true;
+        const { session, sessionEvents, codexMessages } = createSessionStub(['first message']);
+
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => {
+            expect(harness.startTurnMessages).toEqual(['first message']);
+        });
+
+        const startParams = {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: { id: 'compact-item-1', type: 'contextCompaction' }
+        };
+        harness.dispatchNotification?.('item/started', startParams);
+        harness.dispatchNotification?.('item/started', startParams);
+
+        await vi.waitFor(() => {
+            expect(sessionEvents).toContainEqual({
+                type: 'message',
+                message: '📦 Compaction started'
+            });
+        });
+
+        harness.dispatchNotification?.('item/started', {
+            threadId: 'foreign-thread',
+            turnId: 'foreign-turn',
+            item: { id: 'compact-item-foreign', type: 'contextCompaction' }
+        });
+
+        harness.dispatchNotification?.('item/completed', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: { id: 'compact-item-1', type: 'contextCompaction' }
+        });
+        harness.dispatchNotification?.('turn/completed', {
+            threadId: 'thread-1',
+            turn: { id: 'turn-1', status: 'completed' }
+        });
+
+        await expect(running).resolves.toBe('exit');
+        const startCount = sessionEvents.filter(
+            (event) => event.type === 'message' && event.message === '📦 Compaction started'
+        ).length;
+        expect(startCount).toBe(1);
+        expect(codexMessages).toContainEqual(expect.objectContaining({
+            type: 'agent-run-trace'
+        }));
+    });
+
+    it('announces successive compactions in one turn without suppression', async () => {
+        harness.suppressTurnCompletion = true;
+        const { session, sessionEvents } = createSessionStub(['first message']);
+
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => {
+            expect(harness.startTurnMessages).toEqual(['first message']);
+        });
+
+        harness.dispatchNotification?.('item/started', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: { id: 'compact-item-1', type: 'contextCompaction' }
+        });
+        harness.dispatchNotification?.('item/started', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: { id: 'compact-item-2', type: 'contextCompaction' }
+        });
+
+        await vi.waitFor(() => {
+            const startCount = sessionEvents.filter(
+                (event) => event.type === 'message' && event.message === '📦 Compaction started'
+            ).length;
+            expect(startCount).toBe(2);
+        });
+
+        harness.dispatchNotification?.('item/completed', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: { id: 'compact-item-2', type: 'contextCompaction' }
+        });
+        harness.dispatchNotification?.('turn/completed', {
+            threadId: 'thread-1',
+            turn: { id: 'turn-1', status: 'completed' }
+        });
+
+        await expect(running).resolves.toBe('exit');
+    });
+
+    it('suppresses automatic compaction start notification while manual /compact is in flight', async () => {
+        harness.suppressTurnCompletion = true;
+        harness.deferCompactCompletion = true;
+        const { session, sessionEvents, rpcHandlers } = createSessionStub(
+            ['first message', '/compact'],
+            createMode(),
+            false,
+            false
+        );
+
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => {
+            expect(harness.compactThreadIds).toEqual(['thread-1']);
+        });
+        await vi.waitFor(() => {
+            expect(sessionEvents).toContainEqual({
+                type: 'message',
+                message: '📦 Compaction started'
+            });
+        });
+        const startCountBefore = sessionEvents.filter(
+            (event) => event.type === 'message' && event.message === '📦 Compaction started'
+        ).length;
+
+        harness.dispatchNotification?.('item/started', {
+            threadId: 'thread-1',
+            turnId: 'compact-turn',
+            item: { id: 'compact-item-manual', type: 'contextCompaction' }
+        });
+
+        harness.dispatchNotification?.('item/completed', {
+            threadId: 'thread-1',
+            turnId: 'compact-turn',
+            item: { id: 'compact-item-manual', type: 'contextCompaction' }
+        });
+        harness.dispatchNotification?.('turn/completed', {
+            threadId: 'thread-1',
+            turn: { id: 'compact-turn', status: 'completed' }
+        });
+
+        await rpcHandlers.get('switch')?.({});
+        await expect(running).resolves.toBe('switch');
+        const startCount = sessionEvents.filter(
+            (event) => event.type === 'message' && event.message === '📦 Compaction started'
+        ).length;
+        expect(startCount).toBe(startCountBefore);
+    });
+
+    it('binds deferred manual compact to its actual turn, ignoring a stale compaction start', async () => {
+        harness.suppressTurnCompletion = true;
+        harness.deferCompactCompletion = true;
+        const { session, sessionEvents } = createSessionStub(['first message', '/compact'], createMode(), true);
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => { expect(harness.compactThreadIds).toEqual(['thread-1']); });
+        harness.dispatchNotification?.('item/started', { threadId: 'thread-1', turnId: 'stale-turn', item: { id: 'stale-item', type: 'contextCompaction' } });
+        harness.dispatchNotification?.('turn/started', { threadId: 'thread-1', turn: { id: 'compact-actual' } });
+        harness.dispatchNotification?.('item/completed', { threadId: 'thread-1', turnId: 'compact-actual', item: { id: 'compact-item-1', type: 'contextCompaction' } });
+        harness.dispatchNotification?.('turn/completed', { threadId: 'thread-1', turn: { id: 'compact-actual', status: 'completed' } });
+        const exitReason = await running;
+        expect(exitReason).toBe('exit');
+        expect(sessionEvents).toContainEqual({ type: 'message', message: '📦 Compaction completed' });
+    });
+
+    it('drops unscoped compaction starts while child agents are active', async () => {
+        harness.suppressTurnCompletion = true;
+        const { session, sessionEvents } = createSessionStub(['first message']);
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => { expect(harness.startTurnMessages).toEqual(['first message']); });
+        harness.dispatchNotification?.('item/started', { item: { id: 'call-spawn', type: 'collabAgentToolCall', tool: 'spawnAgent', prompt: 'x', receiverThreadIds: [] } });
+        harness.dispatchNotification?.('item/started', { item: { id: 'compact-item-1', type: 'contextCompaction' } });
+        harness.dispatchNotification?.('turn/completed', { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } });
+        await expect(running).resolves.toBe('exit');
+        expect(sessionEvents.filter((e) => e.type === 'message' && e.message === '📦 Compaction started')).toHaveLength(0);
+    });
+
+    it('emits child compaction trace with exact agent id, type and statusText', async () => {
+        harness.suppressTurnCompletion = true;
+        const { session, codexMessages } = createSessionStub(['first message']);
+        const running = codexRemoteLauncher(session as never);
+        await vi.waitFor(() => { expect(harness.startTurnMessages).toEqual(['first message']); });
+        harness.dispatchNotification?.('item/started', { threadId: 'child-1', turnId: 'cturn-1', item: { id: 'compact-child-1', type: 'contextCompaction' } });
+        harness.dispatchNotification?.('turn/completed', { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } });
+        await expect(running).resolves.toBe('exit');
+        const traces = codexMessages.filter((m) => (m as Record<string, unknown>).type === 'agent-run-trace');
+        expect(traces).toContainEqual(expect.objectContaining({ agentId: 'child-1', message: expect.objectContaining({ type: 'compaction_started', statusText: '📦 Compaction started' }) }));
     });
 });

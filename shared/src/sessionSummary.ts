@@ -28,12 +28,15 @@ export type PendingRequest = {
     since: number
 }
 
-function classifyKind(tool: string): PendingRequestKind {
+/** Whether a request asks the user to answer something (a question, a plan)
+ *  or to allow a tool. */
+export function classifyKind(tool: string): PendingRequestKind {
     return INPUT_REQUEST_TOOLS.has(tool) ? 'input' : 'permission'
 }
 
 export type SessionSummaryMetadata = {
     name?: string
+    titleLocked?: boolean
     path: string
     machineId?: string
     summary?: { text: string }
@@ -52,6 +55,10 @@ export type SessionSummary = {
     thinking: boolean
     activeAt: number
     updatedAt: number
+    /** Creation time is the stable order key before the first user message. */
+    createdAt?: number
+    /** Original timestamp of the latest user message; absent before any input. */
+    lastUserMessageAt?: number
     pinned?: boolean
     globalPinned?: boolean
     metadata: SessionSummaryMetadata | null
@@ -192,6 +199,7 @@ export function toSessionSummaryMetadata(metadata: Metadata | null | undefined):
     }
     return {
         name: metadata.name,
+        titleLocked: metadata.titleLocked,
         path: metadata.path,
         machineId: metadata.machineId ?? undefined,
         summary: metadata.summary ? { text: metadata.summary.text } : undefined,
@@ -211,6 +219,8 @@ export function toSessionSummary(session: Session): SessionSummary {
         thinking: session.thinking,
         activeAt: session.activeAt,
         updatedAt: session.updatedAt,
+        createdAt: session.createdAt,
+        lastUserMessageAt: session.lastUserMessageAt,
         pinned: session.pinned ?? false,
         globalPinned: session.globalPinned ?? false,
         metadata: toSessionSummaryMetadata(session.metadata),
