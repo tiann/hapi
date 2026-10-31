@@ -3321,7 +3321,7 @@ export class SyncEngine {
                 code: 'replacement_link_failed'
             }
         }
-        await this.messageService.releaseDeliverableQueuedMessages(replacementSessionId)
+        await this.messageService.releaseDeliverableHandoffMessages(replacementSessionId)
         return { type: 'success', sessionId: replacementSessionId }
     }
 

@@ -586,6 +586,36 @@ describe('useHubScratchlist - update', () => {
         expect(fetchCount).toBe(2)
     })
 
+    it('rethrows a 404 for attachment updates so insertion can clean uploads', async () => {
+        const sid = makeSid()
+        const uploaded = {
+            id: 'uploaded-attachment',
+            filename: 'inserted.txt',
+            mimeType: 'text/plain',
+            size: 8,
+            path: `hapi-hub:scratchlist/default/${sid}/uploaded.txt`,
+        }
+        let fetchCount = 0
+        const api = createMockApi({
+            getScratchlist: async () => {
+                fetchCount += 1
+                return fetchCount === 1
+                    ? { entries: [{ entryId: 'a', text: 'before', createdAt: 1, updatedAt: 1 }] }
+                    : { entries: [] }
+            },
+            updateScratchlistEntry: async () => {
+                throw new ApiError('Not found', 404)
+            }
+        })
+        const { result } = renderHook(() => useHubScratchlist(sid, api), { wrapper: createWrapper() })
+        await waitFor(() => expect(result.current.entries.length).toBe(1))
+
+        await act(async () => {
+            await expect(result.current.update('a', 'before', [uploaded])).rejects.toBeInstanceOf(ApiError)
+        })
+        await waitFor(() => expect(result.current.entries).toHaveLength(0))
+    })
+
     it('rethrows non-404 update errors after rolling back the optimistic edit', async () => {
         const sid = makeSid()
         const api = createMockApi({

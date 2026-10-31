@@ -546,10 +546,10 @@ export function useHubScratchlist(
         try {
             await updateMutation.mutateAsync({ entryId: id, text: truncated, attachments })
         } catch (error) {
-            // A missing row is reconciled by onError. Preserve other errors
-            // for the confirmation path; inline editing catches this promise
-            // at its event boundary because it has no error dialog.
-            if (!isScratchlistNotFound(error)) throw error
+            // Text-only 404s are reconciled by onError and remain a no-op for
+            // inline editing. Attachment updates must reject even on 404 so the
+            // insertion flow can delete uploads that never became referenced.
+            if (!isScratchlistNotFound(error) || attachments !== undefined) throw error
         }
     }, [updateMutation])
 

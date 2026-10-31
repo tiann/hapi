@@ -1427,6 +1427,17 @@ export class MessageService {
         return replayable.length
     }
 
+    /** Serialize the initial clear-handoff drain with periodic mature delivery. */
+    async releaseDeliverableHandoffMessages(sessionId: string, now: number = Date.now()): Promise<number> {
+        if (this.matureReleaseInFlightSessions.has(sessionId)) return 0
+        this.matureReleaseInFlightSessions.add(sessionId)
+        try {
+            return await this.releaseDeliverableQueuedMessages(sessionId, now)
+        } finally {
+            this.matureReleaseInFlightSessions.delete(sessionId)
+        }
+    }
+
     /** Release a completed clear handoff in finalized seq order. */
     async releaseDeliverableQueuedMessages(sessionId: string, now: number = Date.now()): Promise<number> {
         if (this.store.isOpenCodeClearDeliveryGated(sessionId)) return 0

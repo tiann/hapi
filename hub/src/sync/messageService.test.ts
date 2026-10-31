@@ -2981,6 +2981,81 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
         ])
     })
 
+    it('serializes an initial handoff drain with periodic mature delivery', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'serialized-initial-handoff')
+        const cliEmitted: unknown[] = []
+        let materializeCalls = 0
+        let materializeStarted!: () => void
+        const started = new Promise<void>((resolve) => { materializeStarted = resolve })
+        let resolveMaterialization!: () => void
+        const materialization = new Promise<void>((resolve) => { resolveMaterialization = resolve })
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    },
+                    timeout: (_ms: number) => ({ emit: () => {} }),
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } },
+            }),
+        } as unknown as Server
+        const service = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => {
+                    materializeCalls += 1
+                    materializeStarted()
+                    await materialization
+                    return attachments.map((attachment) => ({ ...attachment, path: '/tmp/serialized-handoff.png' }))
+                },
+            },
+        )
+        const scheduledAt = Date.now() - 1_000
+        store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'attachment A',
+                    attachments: [makeHubScratchlistAttachment(session.id, 'serialized-initial-handoff')],
+                },
+            },
+            'serialized-handoff-a',
+            scheduledAt,
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate B' } },
+            'serialized-handoff-b',
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'scheduled C' } },
+            'serialized-handoff-c',
+            scheduledAt,
+        )
+
+        const initial = service.releaseDeliverableHandoffMessages(session.id, Date.now())
+        await started
+        await service.releaseMatureScheduledMessages(Date.now())
+        expect(materializeCalls).toBe(1)
+        expect(cliEmitted).toHaveLength(0)
+
+        resolveMaterialization()
+        await initial
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual([
+            'serialized-handoff-a',
+            'serialized-handoff-b',
+            'serialized-handoff-c',
+        ])
+    })
+
     it('emits mature messages to /cli', async () => {
         const store = makeStore()
         const session = makeSession(store, 'release-emit')
