@@ -1036,10 +1036,13 @@ private class TerminalViewModelHolder(
                 baseUrl = hubGraph.hubUrl,
                 sessionId = sessionId,
                 tokenProvider = {
-                    // Store reads may block; the fallback exchange is network
-                    // I/O (same pattern as the settings holder).
+                    // Store reads may block; the exchange is network I/O (same
+                    // pattern as the settings holder). ensureFreshToken() on
+                    // EVERY attempt: it returns the cached JWT only while it is
+                    // provably fresh and re-exchanges an expired one — reading
+                    // currentJwt() first would reconnect with a stale token.
                     withContext(Dispatchers.IO) {
-                        hubGraph.session.authenticator.currentJwt() ?: hubGraph.session.ensureFreshToken()
+                        hubGraph.session.ensureFreshToken()
                     }
                 },
                 listener = listener,

@@ -296,6 +296,55 @@ class SocketIoClientTest {
     }
 
     @Test
+    fun `expired token rejection recovers on the next attempt with a fresh token`() {
+        val expiredSocket = ServerSocket()
+        val freshSocket = ServerSocket()
+        server.enqueue(upgrade(expiredSocket))
+        server.enqueue(upgrade(freshSocket))
+        val listener = RecordingListener()
+        // TokenAuthenticator semantics: the provider keeps serving the cached
+        // (expired) JWT until a refresh swaps it; the reconnect attempt must
+        // carry the fresh one.
+        val tokens = ArrayDeque(listOf("expired-jwt", "fresh-jwt"))
+        val client = SocketIoClient(
+            baseUrl = server.url("/").toString().removeSuffix("/"),
+            namespace = "/terminal",
+            tokenProvider = { tokens.removeFirstOrNull() ?: "fresh-jwt" },
+            listener = listener,
+            scope = scope,
+            backoffFirstMs = 50,
+            backoffMaxMs = 50,
+        )
+        runBlocking {
+            withTimeout(10_000) {
+                client.connect()
+                // Attempt 1: the hub rejects the expired JWT.
+                awaitUntil("expiredSocket sockets isNotEmpty") { expiredSocket.sockets.isNotEmpty() }
+                val expired = expiredSocket.sockets.first()
+                expired.send(SocketIoFrames.encodeOpen())
+                awaitUntil("expiredSocket received expired jwt connect") {
+                    expiredSocket.received.any { it.startsWith("40") && it.contains("expired-jwt") }
+                }
+                expired.send(SocketIoFrames.encodeConnectError("/terminal", "invalid token"))
+                awaitUntil("listener events contains connect error invalid") {
+                    listener.events.contains("connect-error:invalid token")
+                }
+
+                // Attempt 2 (auto-retry, token re-fetched): fresh JWT accepted.
+                awaitUntil("freshSocket sockets isNotEmpty") { freshSocket.sockets.isNotEmpty() }
+                val fresh = freshSocket.sockets.first()
+                fresh.send(SocketIoFrames.encodeOpen())
+                awaitUntil("freshSocket received fresh jwt connect") {
+                    freshSocket.received.any { it.startsWith("40") && it.contains("fresh-jwt") }
+                }
+                fresh.send(SocketIoFrames.decodeConnectAck("/terminal"))
+                awaitUntil("listener events contains connected termi") { listener.events.contains("connected:/terminal") }
+                client.disconnect()
+            }
+        }
+    }
+
+    @Test
     fun `consecutive connect phase failures keep retrying until a socket upgrades`() {
         // Two plain HTTP failures (no WebSocket upgrade → engine OPEN never
         // fires), then a healthy socket: the retry loop must not stall after
