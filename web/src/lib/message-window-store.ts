@@ -1362,6 +1362,19 @@ export function updateMessageStatus(sessionId: string, localId: string, status: 
     })
 }
 
+export function removeUninvokedMessage(sessionId: string, localId: string): void {
+    if (!localId) return
+    updateState(sessionId, (previous) => {
+        const messages = previous.messages.filter((message) => {
+            const matches = message.localId === localId || message.id === localId
+            return !matches || message.invokedAt !== null
+        })
+        return messages.length === previous.messages.length
+            ? previous
+            : buildState(previous, { messages })
+    }, true)
+}
+
 export function removeOptimisticMessage(sessionId: string, localId: string): void {
     if (!localId) return
     updateState(sessionId, (previous) => {

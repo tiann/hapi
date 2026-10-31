@@ -9,6 +9,7 @@ import { useCancelQueuedMessage } from './useCancelQueuedMessage'
 const storeMocks = vi.hoisted(() => ({
     appendOptimisticMessage: vi.fn(),
     removeOptimisticMessage: vi.fn(),
+    removeUninvokedMessage: vi.fn(),
     markMessagesConsumed: vi.fn(),
     markMessagesRequeued: vi.fn(),
 }))
@@ -16,6 +17,7 @@ const storeMocks = vi.hoisted(() => ({
 vi.mock('@/lib/message-window-store', () => ({
     appendOptimisticMessage: storeMocks.appendOptimisticMessage,
     removeOptimisticMessage: storeMocks.removeOptimisticMessage,
+    removeUninvokedMessage: storeMocks.removeUninvokedMessage,
     markMessagesConsumed: storeMocks.markMessagesConsumed,
     markMessagesRequeued: storeMocks.markMessagesRequeued,
 }))
@@ -72,6 +74,7 @@ describe('useCancelQueuedMessage', () => {
         let visible = true
         storeMocks.appendOptimisticMessage.mockImplementation(() => { visible = true })
         storeMocks.removeOptimisticMessage.mockImplementation(() => { visible = false })
+        storeMocks.removeUninvokedMessage.mockImplementation(() => { visible = false })
         let reply!: (value: unknown) => void
         const api = {
             cancelMessage: vi.fn().mockReturnValue(new Promise(resolve => { reply = resolve })),
@@ -89,6 +92,39 @@ describe('useCancelQueuedMessage', () => {
         await act(async () => { reply({ status: 'busy', localId: 'local-1' }); await cancellation })
         expect(api.getQueuedState).toHaveBeenCalledWith('session-1', ['local-1'])
         expect(visible).toBe(false)
+        expect(storeMocks.markMessagesConsumed).not.toHaveBeenCalled()
+    })
+
+    it('preserves SSE consumption received before a delayed empty queued-state response', async () => {
+        let release!: (value: unknown) => void
+        const held = new Promise(resolve => { release = resolve })
+        let current = makeSnapshot()
+        storeMocks.appendOptimisticMessage.mockImplementation((_sessionId, message) => { current = message })
+        storeMocks.removeUninvokedMessage.mockImplementation(() => {
+            if (current.invokedAt === null) current = null as unknown as DecryptedMessage
+        })
+        const api = {
+            cancelMessage: vi.fn().mockResolvedValue({ status: 'busy', localId: 'local-1' }),
+            getQueuedState: vi.fn().mockReturnValue(held),
+        } as unknown as ApiClient
+        const snapshot = makeSnapshot()
+        const { result } = renderHook(() => useCancelQueuedMessage(api), { wrapper: createWrapper() })
+
+        let cancellation!: Promise<unknown>
+        await act(async () => {
+            cancellation = result.current.mutateAsync({ sessionId: 'session-1', messageId: snapshot.id, localId: 'local-1', snapshot })
+        })
+        await waitFor(() => expect(api.getQueuedState).toHaveBeenCalledWith('session-1', ['local-1']))
+        // The full message arrives through SSE while the empty queued-state
+        // response is still held in flight.
+        current = { ...current, invokedAt: 2_000, status: 'sent' }
+        await act(async () => {
+            release({ invokedLocalMessages: [], queuedLocalIds: [], indeterminateLocalIds: [] })
+            await cancellation
+        })
+
+        expect(storeMocks.removeUninvokedMessage).toHaveBeenCalledWith('session-1', 'local-1')
+        expect(current).toMatchObject({ id: 'server-message-id', localId: 'local-1', invokedAt: 2_000, status: 'sent' })
         expect(storeMocks.markMessagesConsumed).not.toHaveBeenCalled()
     })
 

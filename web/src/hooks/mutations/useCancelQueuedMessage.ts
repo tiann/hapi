@@ -7,6 +7,7 @@ import {
     markMessagesConsumed,
     markMessagesRequeued,
     removeOptimisticMessage,
+    removeUninvokedMessage,
 } from '@/lib/message-window-store'
 import { usePlatform } from '@/hooks/usePlatform'
 
@@ -121,7 +122,9 @@ export function useCancelQueuedMessage(api: ApiClient | null) {
                             && !state.indeterminateLocalIds?.includes(input.localId)) {
                             // Another client may have abandoned/deleted the row
                             // before this busy response restored its stale snapshot.
-                            removeOptimisticMessage(input.sessionId, input.localId)
+                            // Keep an authoritative row restored by a concurrent SSE
+                            // event while this queued-state response was in flight.
+                            removeUninvokedMessage(input.sessionId, input.localId)
                         }
                     } catch {
                         // SSE / the next reconnect will reconcile the held row.
