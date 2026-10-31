@@ -212,9 +212,15 @@ fun ChatComposer(
                         // the content-origin coordinate space with
                         // visibleItemsInfo offsets; keyed on Unit + updated
                         // callbacks so upload-status list churn never cancels
-                        // a drag mid-gesture.
+                        // a drag mid-gesture. The dragged chip's slot is the
+                        // issue-time anchor (ReorderDragAnchor), never re-read
+                        // from layoutInfo: the layout lags a just-issued move
+                        // by a frame, and reading the stale order made the
+                        // next event over the same slot fire the move again —
+                        // swapping the pair straight back.
                         val listState = rememberLazyListState()
                         var draggingId by remember { mutableStateOf<String?>(null) }
+                        val dragAnchor = remember { ReorderDragAnchor() }
                         val currentOnMove by rememberUpdatedState(onAttachmentMove)
                         val haptics = LocalHapticFeedback.current
 
@@ -231,29 +237,35 @@ fun ChatComposer(
                                 .pointerInput(Unit) {
                                     detectDragGesturesAfterLongPress(
                                         onDragStart = { offset ->
-                                            val picked = itemUnder(offset.x)?.key as? String
-                                            if (picked != null) {
-                                                draggingId = picked
+                                            val picked = itemUnder(offset.x)
+                                            val pickedId = picked?.key as? String
+                                            if (picked != null && pickedId != null) {
+                                                draggingId = pickedId
+                                                dragAnchor.start(picked.index)
                                                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                             }
                                         },
                                         onDrag = { change, _ ->
                                             change.consume()
-                                            val active = draggingId
-                                                ?: return@detectDragGesturesAfterLongPress
-                                            val activeItem = listState.layoutInfo.visibleItemsInfo
-                                                .firstOrNull { it.key == active }
-                                                ?: return@detectDragGesturesAfterLongPress
+                                            if (!dragAnchor.active) {
+                                                return@detectDragGesturesAfterLongPress
+                                            }
                                             val target = itemUnder(change.position.x)
                                                 ?: return@detectDragGesturesAfterLongPress
                                             // Swap on crossing; keyed items keep
                                             // identity across swaps (no animateItem).
-                                            if (target.index != activeItem.index) {
-                                                currentOnMove(activeItem.index, target.index)
+                                            dragAnchor.enterSlot(target.index)?.let { (from, to) ->
+                                                currentOnMove(from, to)
                                             }
                                         },
-                                        onDragEnd = { draggingId = null },
-                                        onDragCancel = { draggingId = null },
+                                        onDragEnd = {
+                                            draggingId = null
+                                            dragAnchor.reset()
+                                        },
+                                        onDragCancel = {
+                                            draggingId = null
+                                            dragAnchor.reset()
+                                        },
                                     )
                                 },
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
