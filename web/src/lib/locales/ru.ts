@@ -564,7 +564,8 @@ export default {
   'media.displayed.audio': 'Показано аудио',
   'media.displayed.file': 'Показан файл',
   'media.displayed.header': '{label}: {fileName}',
-  'media.displayed.unavailable': '{label} недоступно. {error}',
+  'media.displayed.unavailable': '{label} недоступно.',
+  'media.displayed.retry': 'Повторить',
 
   // Карточка инструмента
   'tool.askQuestion': 'Другое',
