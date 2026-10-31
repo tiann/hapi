@@ -88,6 +88,8 @@ class SocketIoTerminalGateway(
     private val listener: TerminalEventListener,
     scope: CoroutineScope,
     httpClient: OkHttpClient? = null,
+    backoffFirstMs: Long = 1_000,
+    backoffMaxMs: Long = 5_000,
 ) : TerminalGateway, SocketIoListener {
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -99,6 +101,8 @@ class SocketIoTerminalGateway(
         listener = this,
         scope = scope,
         httpClient = httpClient ?: defaultGatewayClient(),
+        backoffFirstMs = backoffFirstMs,
+        backoffMaxMs = backoffMaxMs,
     )
 
     override val isConnected: Boolean
