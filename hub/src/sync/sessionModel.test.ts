@@ -871,7 +871,7 @@ describe('session model', () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
             store,
-            { of: () => ({ to: () => ({ emit() {} }) }) } as never,
+            { of: () => ({ to: () => ({ emit() {} }), adapter: { rooms: { get: () => undefined } } }) } as never,
             new RpcRegistry(),
             { broadcast() {} } as never
         )
@@ -899,7 +899,7 @@ describe('session model', () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
             store,
-            { of: () => ({ to: () => ({ emit() {} }) }) } as never,
+            { of: () => ({ to: () => ({ emit() {} }), adapter: { rooms: { get: () => undefined } } }) } as never,
             new RpcRegistry(),
             { broadcast() {} } as never
         )
