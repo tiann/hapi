@@ -482,7 +482,8 @@ private fun MarkdownInlineText(
     )
 }
 
-private class InlineContext(val colors: HapiExtendedColors, val handler: MarkdownLinkHandler) {
+/** internal for the JVM link-routing tests (appendLink). */
+internal class InlineContext(val colors: HapiExtendedColors, val handler: MarkdownLinkHandler) {
     val linkStyles = TextLinkStyles(
         style = SpanStyle(
             color = colors.link,
@@ -625,19 +626,18 @@ private fun AnnotatedString.Builder.appendInlineCode(literal: String, ctx: Inlin
     }
 }
 
-private fun AnnotatedString.Builder.appendLink(node: Link, ctx: InlineContext) {
+internal fun AnnotatedString.Builder.appendLink(node: Link, ctx: InlineContext) {
     val destination = node.destination.orEmpty()
 
-    // Autolinked URLs (text == destination) may have swallowed trailing CJK
-    // punctuation; split it back out as plain text (web parity).
-    val onlyChild = node.firstChild
-    val isAutolink = onlyChild is MdText && onlyChild.next == null && onlyChild.literal == destination
-    if (isAutolink) {
-        val split = MarkdownTransforms.stripCjkAutolinkArtifacts(destination)
-        appendClassifiedLink(split.url, ctx) { append(split.url) }
-        if (split.trailing.isNotEmpty()) append(split.trailing)
-        return
-    }
+    // Resolve by href before any label shape (web A() order: file path
+    // first, session id second — markdown-text.tsx). The autolink heuristic
+    // below used to run FIRST and swallowed every link whose label equals
+    // its destination — including [/sessions/x](/sessions/x) citations and
+    // [src/a.ts](src/a.ts) file links, which it reclassified as bare URLs;
+    // scheme-less targets classify as Blocked there and rendered inert.
+    // Safe overlap-wise: URLs are unreachable here (both resolvers reject
+    // scheme-bearing targets; session ids exclude dots, file targets require
+    // an allowlisted extension).
 
     // Explicit [label](relative/file.ext) → session file viewer.
     val filePath = MarkdownTransforms.rewriteExplicitLinkTarget(destination)
@@ -649,14 +649,24 @@ private fun AnnotatedString.Builder.appendLink(node: Link, ctx: InlineContext) {
         return
     }
 
-    // Explicit [title](/sessions/<id>) → the cited session's chat (web A()
-    // order: file first, session second).
+    // Explicit [title](/sessions/<id>) → the cited session's chat.
     val citedSession = SessionPathLinks.parseSessionPathHref(destination)
     if (citedSession != null) {
         val listener = LinkInteractionListener { ctx.handler.onSessionReference(citedSession) }
         withLink(LinkAnnotation.Clickable("hapi-session:$citedSession", ctx.linkStyles, listener)) {
             appendInlineChildren(node, ctx, insideLink = true)
         }
+        return
+    }
+
+    // Autolinked URLs (text == destination) may have swallowed trailing CJK
+    // punctuation; split it back out as plain text (web parity).
+    val onlyChild = node.firstChild
+    val isAutolink = onlyChild is MdText && onlyChild.next == null && onlyChild.literal == destination
+    if (isAutolink) {
+        val split = MarkdownTransforms.stripCjkAutolinkArtifacts(destination)
+        appendClassifiedLink(split.url, ctx) { append(split.url) }
+        if (split.trailing.isNotEmpty()) append(split.trailing)
         return
     }
 
