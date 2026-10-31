@@ -42,6 +42,15 @@ fragment = "1.8.5"
 # Per-app locales (B-M5a): AppCompatDelegate.setApplicationLocales back to
 # API 26 (appcompat 1.7.1, 2025-06, on Google Maven).
 appcompat = "1.7.1"
+# Wear OS companion (:wear). androidx.wear.compose 1.7.x requires compileSdk
+# 37 + AGP 9.1 (AAR metadata check) — this repo pins AGP 8.11.1/compileSdk 36
+# deliberately, so :wear stays on the last compose-material/-foundation that
+# doesn't require either bump: 1.6.2 (stable, verified on Google Maven).
+# play-services-wearable 20.0.1 also verified on Google Maven at scaffold time.
+wearCompose = "1.6.2"
+playServicesWearable = "20.0.1"
+# RemoteInputIntentHelper: the system mic/keyboard sheet for proactive replies.
+wearInput = "1.2.0"
 
 [libraries]
 # AndroidX
@@ -93,6 +102,13 @@ androidx-work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx"
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging", version.ref = "firebaseMessaging" }
 # Constraint-only (see :app build file) — nothing in the app uses fragments.
 androidx-fragment = { group = "androidx.fragment", name = "fragment", version.ref = "fragment" }
+
+# Wear OS companion (:wear)
+androidx-wear-compose-material = { group = "androidx.wear.compose", name = "compose-material", version.ref = "wearCompose" }
+androidx-wear-compose-foundation = { group = "androidx.wear.compose", name = "compose-foundation", version.ref = "wearCompose" }
+androidx-wear-compose-navigation = { group = "androidx.wear.compose", name = "compose-navigation", version.ref = "wearCompose" }
+play-services-wearable = { group = "com.google.android.gms", name = "play-services-wearable", version.ref = "playServicesWearable" }
+androidx-wear-input = { group = "androidx.wear", name = "wear-input", version.ref = "wearInput" }
 
 # Testing
 junit = { group = "junit", name = "junit", version.ref = "junit" }
