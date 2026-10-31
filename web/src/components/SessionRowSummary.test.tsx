@@ -162,6 +162,58 @@ describe('SessionRowSummary background status', () => {
 
         expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('New activity')
     })
+
+    it('renders an issue chip linking to the latest-linked GitHub issue', () => {
+        const session = makeSummary({
+            metadata: {
+                path: '/demo/status',
+                name: 'Background demo',
+                flavor: 'claude',
+                externalRefs: [
+                    { kind: 'github_issue', url: 'https://github.com/heavygee/hapi/issues/235', repo: 'heavygee/hapi', number: 235, linkedAt: 1 },
+                    { kind: 'github_issue', url: 'https://github.com/heavygee/hapi/issues/236', repo: 'heavygee/hapi', number: 236, linkedAt: 2 },
+                ],
+            },
+        })
+        render(
+            <I18nProvider>
+                <SessionRowSummary session={session} />
+            </I18nProvider>
+        )
+
+        const chip = screen.getByTestId('issue-ref-chip')
+        expect(chip).toHaveTextContent('#236')
+        expect(chip).toHaveAttribute('href', 'https://github.com/heavygee/hapi/issues/236')
+    })
+
+    it('renders no issue chip when the session has no linked issue', () => {
+        renderSummary(true)
+        expect(screen.queryByTestId('issue-ref-chip')).not.toBeInTheDocument()
+    })
+
+    it('suppresses the issue chip when showIssueChip is false, even with a linked issue (Codex review)', () => {
+        // Regression: the composer's @-mention tooltip is pointer-events-none
+        // (display-only), but a real <a> stays keyboard-focusable even
+        // inside one, landing an unreachable-by-mouse link in the tab order
+        // inside a transient role="tooltip" container.
+        const session = makeSummary({
+            metadata: {
+                path: '/demo/status',
+                name: 'Background demo',
+                flavor: 'claude',
+                externalRefs: [
+                    { kind: 'github_issue', url: 'https://github.com/heavygee/hapi/issues/235', repo: 'heavygee/hapi', number: 235, linkedAt: 1 },
+                ],
+            },
+        })
+        render(
+            <I18nProvider>
+                <SessionRowSummary session={session} showIssueChip={false} />
+            </I18nProvider>
+        )
+
+        expect(screen.queryByTestId('issue-ref-chip')).not.toBeInTheDocument()
+    })
 })
 
 describe('SessionRowSummary time label', () => {

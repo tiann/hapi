@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { Hono } from 'hono'
+import { parseIssueUrl } from '@hapi/protocol/schemas'
 import type { Session, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { createSessionsRoutes } from './sessions'
@@ -65,6 +66,9 @@ function createApp(session: Session, opts?: {
     sessionExists?: boolean
     archiveSession?: (sessionId: string) => Promise<void>
     getCursorChatStoreStatus?: SyncEngine['getCursorChatStoreStatus']
+    setSessionExternalRefs?: SyncEngine['setSessionExternalRefs']
+    mutateSessionExternalRefs?: SyncEngine['mutateSessionExternalRefs']
+    githubPrAwarenessEnabled?: boolean
     listCodexModelsForSession?: SyncEngine['listCodexModelsForSession']
     forkConversation?: SyncEngine['forkConversation']
     clearConversation?: SyncEngine['clearConversation']
@@ -73,6 +77,7 @@ function createApp(session: Session, opts?: {
     suggestSessionTitle?: SyncEngine['suggestSessionTitle']
     renameSession?: SyncEngine['renameSession']
     updateSessionSummary?: SyncEngine['updateSessionSummary']
+    linkIssue?: SyncEngine['linkIssue']
     setSessionPinned?: (sessionId: string, pinned: boolean) => void
     setSessionPinMode?: (sessionId: string, mode: 'none' | 'project' | 'global') => void
 }) {
@@ -161,6 +166,8 @@ function createApp(session: Session, opts?: {
             status: { onDisk: true, store: 'acp' as const }
         })),
         archiveSession: archiveSessionMock,
+        setSessionExternalRefs: opts?.setSessionExternalRefs ?? (async () => {}),
+        mutateSessionExternalRefs: opts?.mutateSessionExternalRefs ?? (async (_sessionId, mutate) => mutate([])),
         setSessionPinned: opts?.setSessionPinned ?? (() => {}),
         setSessionPinMode: opts?.setSessionPinMode ?? (() => {}),
         getSessionExport: opts?.getSessionExport ?? (() => ({
@@ -183,7 +190,8 @@ function createApp(session: Session, opts?: {
         rewindConversation: opts?.rewindConversation ?? (async () => ({ type: 'success' })),
         suggestSessionTitle: opts?.suggestSessionTitle ?? (async () => 'Generated title'),
         renameSession: opts?.renameSession ?? (async () => {}),
-        updateSessionSummary: opts?.updateSessionSummary ?? (async () => {})
+        updateSessionSummary: opts?.updateSessionSummary ?? (async () => {}),
+        linkIssue: opts?.linkIssue ?? (async () => {})
     } as Partial<SyncEngine>
 
     const app = new Hono<WebAppEnv>()
@@ -191,12 +199,170 @@ function createApp(session: Session, opts?: {
         c.set('namespace', 'default')
         await next()
     })
-    app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+    app.route('/api', createSessionsRoutes(() => engine as SyncEngine, {
+        isGithubPrAwarenessEnabled: () => opts?.githubPrAwarenessEnabled ?? true
+    }))
 
     return { app, applySessionConfigCalls }
 }
 
 describe('sessions routes', () => {
+    it('returns structured externalRefs for a session', async () => {
+        const externalRefs = [{
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 1160,
+            url: 'https://github.com/tiann/hapi/pull/1160',
+            role: 'primary' as const
+        }]
+        const session = createSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'cursor',
+                externalRefs
+            }
+        })
+        const { app } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/external-refs')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ externalRefs })
+    })
+
+    it('returns an empty externalRefs array when metadata has none', async () => {
+        const { app } = createApp(createSession())
+
+        const response = await app.request('/api/sessions/session-1/external-refs')
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ externalRefs: [] })
+    })
+
+    it('rejects PUT external-refs when github PR awareness is disabled', async () => {
+        const { app } = createApp(createSession(), { githubPrAwarenessEnabled: false })
+        const response = await app.request('/api/sessions/session-1/external-refs', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                externalRefs: [{
+                    kind: 'github_pr',
+                    repo: 'tiann/hapi',
+                    number: 1162,
+                    url: 'https://github.com/tiann/hapi/pull/1162',
+                    role: 'primary'
+                }]
+            })
+        })
+        expect(response.status).toBe(403)
+        expect(await response.json()).toMatchObject({ code: 'github_pr_awareness_disabled' })
+    })
+
+    it('puts external-refs when awareness is enabled', async () => {
+        const calls: unknown[] = []
+        const externalRefs = [{
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 1162,
+            url: 'https://github.com/tiann/hapi/pull/1162',
+            role: 'primary' as const,
+            source: 'user' as const,
+            linkedAt: 1_700_000_000_000
+        }]
+        const { app } = createApp(createSession(), {
+            githubPrAwarenessEnabled: true,
+            setSessionExternalRefs: async (_sessionId, refs) => {
+                calls.push(refs)
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/external-refs', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ externalRefs })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ ok: true, externalRefs })
+        expect(calls).toEqual([externalRefs])
+    })
+
+    it('rejects PUT external-refs with two primary GitHub PRs', async () => {
+        const { app } = createApp(createSession(), {
+            githubPrAwarenessEnabled: true
+        })
+
+        const response = await app.request('/api/sessions/session-1/external-refs', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                externalRefs: [
+                    {
+                        kind: 'github_pr',
+                        repo: 'tiann/hapi',
+                        number: 1,
+                        url: 'https://github.com/tiann/hapi/pull/1',
+                        role: 'primary'
+                    },
+                    {
+                        kind: 'github_pr',
+                        repo: 'tiann/hapi',
+                        number: 2,
+                        url: 'https://github.com/tiann/hapi/pull/2',
+                        role: 'primary'
+                    }
+                ]
+            })
+        })
+
+        expect(response.status).toBe(400)
+    })
+
+    it('returns 400 when upsert exceeds MAX_EXTERNAL_REFS', async () => {
+        const { InvalidExternalRefsError } = await import('../../sync/externalRefErrors')
+        const { app } = createApp(createSession(), {
+            mutateSessionExternalRefs: async () => {
+                throw new InvalidExternalRefsError('at most 32 external refs are allowed')
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/external-refs/upsert', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                ref: {
+                    kind: 'github_pr',
+                    repo: 'tiann/hapi',
+                    number: 99,
+                    url: 'https://github.com/tiann/hapi/pull/99',
+                    role: 'secondary'
+                }
+            })
+        })
+
+        expect(response.status).toBe(400)
+        expect(await response.json()).toMatchObject({ error: 'at most 32 external refs are allowed' })
+    })
+
+    it('allows PUT empty externalRefs to unlink', async () => {
+        const calls: unknown[] = []
+        const { app } = createApp(createSession(), {
+            setSessionExternalRefs: async (_sessionId, refs) => {
+                calls.push(refs)
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/external-refs', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ externalRefs: [] })
+        })
+
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([[]])
+    })
+
     it('dispatches plan implementation using the authenticated namespace and returns stale/unknown outcomes', async () => {
         const session = createSession({ metadata: { path: '/tmp', host: 'test', flavor: 'codex', capabilities: { concurrentClients: true } } })
         const calls: unknown[] = []
@@ -357,6 +523,95 @@ describe('sessions routes', () => {
         })
 
         expect(response.status).toBe(400)
+    })
+
+    it('links a github issue via the full URL', async () => {
+        const calls: Array<[string, unknown]> = []
+        const { app } = createApp(createSession(), {
+            linkIssue: async (sessionId, ref) => { calls.push([sessionId, ref]) }
+        })
+
+        const response = await app.request('/api/sessions/session-1/link-issue', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: 'https://github.com/heavygee/hapi/issues/235' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(calls).toHaveLength(1)
+        const [sessionId, ref] = calls[0]!
+        expect(sessionId).toBe('session-1')
+        expect(ref).toMatchObject({ kind: 'github_issue', url: 'https://github.com/heavygee/hapi/issues/235', repo: 'heavygee/hapi', number: 235 })
+    })
+
+    it('links a github issue via the owner/repo#N shorthand', async () => {
+        const calls: Array<[string, unknown]> = []
+        const { app } = createApp(createSession(), {
+            linkIssue: async (sessionId, ref) => { calls.push([sessionId, ref]) }
+        })
+
+        const response = await app.request('/api/sessions/session-1/link-issue', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: 'heavygee/hapi#235' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(calls[0]![1]).toMatchObject({ repo: 'heavygee/hapi', number: 235 })
+    })
+
+    it('links a GHE-hosted issue (Codex review: a board item can come from a non-github.com board)', async () => {
+        // Regression: parseIssueUrl used to hardcode github.com, so a board
+        // item from a GHE-hosted board (e.g. a view-scoped Lockhouse board)
+        // would 400 here, and the client-side auto-link gate in router.tsx
+        // never even attempted the call — no error surfaced anywhere.
+        const calls: Array<[string, unknown]> = []
+        const { app } = createApp(createSession(), {
+            linkIssue: async (sessionId, ref) => { calls.push([sessionId, ref]) }
+        })
+
+        const response = await app.request('/api/sessions/session-1/link-issue', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: 'https://lhs.ghe.com/lockhouse/repo/issues/203' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(calls[0]![1]).toMatchObject({ kind: 'github_issue', url: 'https://lhs.ghe.com/lockhouse/repo/issues/203', repo: 'lockhouse/repo', number: 203 })
+    })
+
+    it('rejects a missing or unparsable issue url', async () => {
+        const { app } = createApp(createSession())
+        const missing = await app.request('/api/sessions/session-1/link-issue', {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
+        })
+        expect(missing.status).toBe(400)
+        const bad = await app.request('/api/sessions/session-1/link-issue', {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: 'not an issue url' })
+        })
+        expect(bad.status).toBe(400)
+    })
+
+    it('maps a concurrent-modification error to 409', async () => {
+        const { app } = createApp(createSession(), {
+            linkIssue: async () => { throw new Error('Session was modified concurrently. Please try again.') }
+        })
+
+        const response = await app.request('/api/sessions/session-1/link-issue', {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: 'heavygee/hapi#235' })
+        })
+        expect(response.status).toBe(409)
+    })
+
+    it('maps a session-not-found error to 404 instead of 500', async () => {
+        const { app } = createApp(createSession(), {
+            linkIssue: async () => { throw new Error('Session not found') }
+        })
+
+        const response = await app.request('/api/sessions/session-1/link-issue', {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: 'heavygee/hapi#235' })
+        })
+        expect(response.status).toBe(404)
     })
 
     it('updates the persisted pin mode', async () => {
@@ -1909,4 +2164,31 @@ describe('sessions routes', () => {
         expect(body.sessions.map((s) => s.id)).toEqual(['new-inactive'])
     })
 
+})
+
+describe('parseIssueUrl', () => {
+    it('parses a full github.com issue URL', () => {
+        expect(parseIssueUrl('https://github.com/heavygee/hapi/issues/235')).toEqual({
+            url: 'https://github.com/heavygee/hapi/issues/235', repo: 'heavygee/hapi', number: 235
+        })
+    })
+
+    it('parses a bare host (no scheme) and a trailing slash', () => {
+        expect(parseIssueUrl('github.com/heavygee/hapi/issues/235/')).toEqual({
+            url: 'https://github.com/heavygee/hapi/issues/235', repo: 'heavygee/hapi', number: 235
+        })
+    })
+
+    it('parses the owner/repo#N shorthand', () => {
+        expect(parseIssueUrl('heavygee/hapi#235')).toEqual({
+            url: 'https://github.com/heavygee/hapi/issues/235', repo: 'heavygee/hapi', number: 235
+        })
+    })
+
+    it('rejects anything that is not a recognizable issue reference', () => {
+        expect(parseIssueUrl('not an issue url')).toBeNull()
+        expect(parseIssueUrl('https://github.com/heavygee/hapi')).toBeNull()
+        expect(parseIssueUrl('https://github.com/heavygee/hapi/issues/not-a-number')).toBeNull()
+        expect(parseIssueUrl('heavygee/hapi#not-a-number')).toBeNull()
+    })
 })

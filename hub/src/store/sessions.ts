@@ -2,6 +2,7 @@ import type { Database } from 'bun:sqlite'
 import { prepareCached } from './statementCache'
 import { bumpSessionDeletionEpoch } from './sessionInvalidation'
 import { randomUUID } from 'node:crypto'
+import { MAX_EXTERNAL_REFS, reconcileExternalRefs, toValidExternalRefs } from '@hapi/protocol/schemas'
 import { preserveSessionTitle } from './sessionTitleLock'
 
 import type { StoredSession, VersionedUpdateResult } from './types'
@@ -39,6 +40,19 @@ import { updateVersionedField } from './versionedUpdates'
 //     write-once-keep semantics. Mirror of pickExistingSessionMetadata
 //     in cli/src/agent/sessionFactory.ts.
 //
+//   - CONTRIBUTION_FIELDS: structured session↔PR/issue links (externalRefs).
+//     Sparse resume/bootstrap writes must not wipe a prior primary PR
+//     association. tiann/hapi#1160 / PR #1161. A write reaching this generic
+//     merge path with its own nonempty externalRefs is virtually always a
+//     CLI metadata sync spreading a (possibly stale) local cache snapshot,
+//     not a deliberate "replace with exactly this" call — those go through
+//     the dedicated external-refs routes/sessionCache methods instead, which
+//     never reach this function. So a present-but-incomplete next array is
+//     reconciled (unioned by identity, freshest field-level state per
+//     identity) rather than treated as the new complete truth, matching the
+//     same reasoning `mergeSessionMetadataForSessionMerge` in
+//     hub/src/sync/sessionCache.ts applies (hapi#238).
+//
 // `cursorSessionProtocol` is paired with `cursorSessionId`: protocol is
 // tied to a specific chat id, so a write that explicitly sets a new
 // `cursorSessionId` must drop a stale prior protocol. Handled in
@@ -67,6 +81,8 @@ const SIMPLE_RESUME_TOKENS = [
     'copilotSessionId',
     'piSessionId'
 ] as const
+
+const CONTRIBUTION_FIELDS = ['externalRefs'] as const
 
 // Hub-owned metadata that must survive sparse CLI metadata replacements.
 // `null` remains the explicit-clear sentinel handled by carryForwardIfMissing.
@@ -108,6 +124,87 @@ function carryForwardIfMissing(
     return result
 }
 
+// Named CONTRIBUTION_FIELDS (matching scripts/tooling/verify-
+// externalrefs-preserve.mjs's incident-driven check for this exact field +
+// name). Omitted-key sparse writes use carryForwardIfMissing; present-but-
+// incomplete arrays union via reconcileExternalRefs (Codex review, hapi#238).
+// Explicit `[]` clears win (do not resurrect prior refs); a nonempty-but-
+// fully-malformed write preserves prior instead of wiping it. The one
+// invariant a union must not violate: ExternalRefsSchema allows at most one
+// primary github_pr, so if combining would produce two, next's own primary
+// wins and prior's is dropped rather than left to fail downstream validation.
+function mergeContributionFields(
+    prior: Record<string, unknown>,
+    next: Record<string, unknown>,
+    merged: Record<string, unknown> | null,
+    options?: { replaceExternalRefs?: boolean }
+): Record<string, unknown> | null {
+    merged = carryForwardIfMissing(prior, next, merged, CONTRIBUTION_FIELDS)
+    // Omitted key — carryForwardIfMissing above already handled it.
+    if (next.externalRefs === undefined) {
+        return merged
+    }
+
+    // Dedicated mutation callers (mutateSessionExternalRefs: link_issue,
+    // link_pr, remove-primary, ...) already read the session's current refs
+    // fresh and apply a pure transform inside the metadata-version retry
+    // loop — the array they pass here IS the full intended result, not a
+    // possibly-sparse snapshot. Routing it through the union-with-prior
+    // logic below would silently resurrect whatever it just removed (review
+    // finding: removing a primary PR while an issue ref is also attached
+    // restored the PR, since the issue-only result looked exactly like a
+    // sparse/stale write missing the PR it didn't know about).
+    if (options?.replaceExternalRefs) {
+        merged = merged ?? { ...next }
+        merged.externalRefs = toValidExternalRefs(next.externalRefs)
+        return merged
+    }
+
+    const priorRefs = toValidExternalRefs(prior.externalRefs)
+    // An explicit, genuinely empty `next.externalRefs: []` is a deliberate
+    // unlink-to-empty, not a sparse/stale write merely missing some refs it
+    // didn't know about yet — checked against the raw input, before
+    // sanitization, so it can't be confused with the all-elements-rejected
+    // case below.
+    const isDeliberateClear = Array.isArray(next.externalRefs) && next.externalRefs.length === 0
+    const nextRefs = toValidExternalRefs(next.externalRefs)
+
+    merged = merged ?? { ...next }
+    if (isDeliberateClear) {
+        merged.externalRefs = []
+        return merged
+    }
+    if (nextRefs.length === 0) {
+        // Something nonempty was sent (or next.externalRefs wasn't even an
+        // array), but nothing in it survived validation. Treating this the
+        // same as a deliberate clear would unlink every valid ref over one
+        // malformed element or a wholly garbage payload. Preserve what's
+        // already persisted instead.
+        merged.externalRefs = priorRefs
+        return merged
+    }
+    let combined = reconcileExternalRefs(priorRefs, nextRefs)
+    const primaries = combined.filter(ref => ref.kind === 'github_pr' && ref.role === 'primary')
+    if (primaries.length > 1) {
+        const nextPrimary = nextRefs.find(ref => ref.kind === 'github_pr' && ref.role === 'primary')
+        combined = combined.filter(ref => !(ref.kind === 'github_pr' && ref.role === 'primary') || ref === nextPrimary)
+    }
+    // Two independently-valid writers can each sit near MAX_EXTERNAL_REFS;
+    // their union has no upper bound of its own and ExternalRefsSchema does
+    // (review finding). Persisting an over-limit array doesn't just reject
+    // the extra refs — it fails MetadataSchema validation on the *next*
+    // read, nulling out the whole metadata object (name, path, flavor,
+    // resume ids, every ref), not just externalRefs. Falling back to
+    // priorRefs — the same "can't trust this union" response the
+    // all-malformed branch above already uses — preserves everything
+    // already safely persisted.
+    if (combined.length > MAX_EXTERNAL_REFS) {
+        combined = priorRefs
+    }
+    merged.externalRefs = combined
+    return merged
+}
+
 function preserveCursorProtocolPair(
     prior: Record<string, unknown>,
     next: Record<string, unknown>,
@@ -130,7 +227,11 @@ function preserveCursorProtocolPair(
     return merged
 }
 
-export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
+export function mergeSessionMetadata(
+    prior: unknown,
+    next: unknown,
+    options?: { replaceExternalRefs?: boolean }
+): unknown {
     if (!isPlainObject(prior) || !isPlainObject(next)) {
         return next
     }
@@ -138,6 +239,7 @@ export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     merged = carryForwardIfMissing(prior, next, merged, PARSE_IDENTITY_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, ROUTING_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, SIMPLE_RESUME_TOKENS)
+    merged = mergeContributionFields(prior, next, merged, options)
     merged = carryForwardIfMissing(prior, next, merged, HUB_OWNED_METADATA_FIELDS)
     merged = preserveCursorProtocolPair(prior, next, merged)
     return merged ?? next
@@ -424,7 +526,14 @@ export function updateSessionMetadata(
     metadata: unknown,
     expectedVersion: number,
     namespace: string,
-    options?: { touchUpdatedAt?: boolean; allowUnarchive?: boolean; allowTitleUpdate?: boolean; titleLocked?: boolean; inheritTitleLockFrom?: string }
+    options?: {
+        touchUpdatedAt?: boolean
+        allowUnarchive?: boolean
+        replaceExternalRefs?: boolean
+        allowTitleUpdate?: boolean
+        titleLocked?: boolean
+        inheritTitleLockFrom?: string
+    }
 ): VersionedUpdateResult<unknown | null> {
     const now = Date.now()
     const touchUpdatedAt = options?.touchUpdatedAt !== false
@@ -442,7 +551,11 @@ export function updateSessionMetadata(
                 ? getSessionByNamespace(db, options.inheritTitleLockFrom, namespace)?.metadata : null
             const titleOwner = isPlainObject(prior) && prior.titleLocked === true ? prior
                 : isPlainObject(sourceTitle) && sourceTitle.titleLocked === true ? sourceTitle : prior
-            let merged = preserveSessionTitle(titleOwner, mergeSessionMetadata(prior, metadata), options)
+            let merged = preserveSessionTitle(
+                titleOwner,
+                mergeSessionMetadata(prior, metadata, { replaceExternalRefs: options?.replaceExternalRefs }),
+                options
+            )
 
             // #1911 M1: unauthorized un-archive of hub-archived rows.
             // Return success + merge-preserved archive fields — NOT version-mismatch

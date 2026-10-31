@@ -30,7 +30,11 @@ import {
     SESSION_ID_PREFIX_PARAM_DESCRIPTION,
 } from '@hapi/protocol/sessionCitation'
 import { PingPeerError, formatInspectPeerReport, formatPeerSessionsList, inspectPeer, listPeerSessions, peerListFetchLimit, pingPeer } from "@/modules/pingPeer/pingPeer";
+import { buildGithubPrExternalRef, isSameGithubPrIdentity, parseGithubPrInput } from "@hapi/protocol";
 import { applySessionDisplayRename, normalizeSessionDisplayTitle } from "@/agent/sessionDisplayRename";
+import { fetchGithubPrAwarenessEnabled } from "@/api/fetchGithubPrAwareness";
+import { upsertSessionExternalRef } from "@/api/upsertSessionExternalRef";
+import { applyLinkIssue } from "@/agent/sessionIssueLink";
 
 type StartHappyServerOptions = {
     /**
@@ -40,6 +44,18 @@ type StartHappyServerOptions = {
      */
     emitTitleSummary?: boolean;
     enableChangeTitle?: boolean;
+    enableLinkPr?: boolean;
+    /**
+     * How often to re-read hub githubPrAwareness and sync RegisteredTool
+     * visibility for idle HTTP MCP clients (Claude). `0` disables polling.
+     * Default 15s. Tests may pass a shorter interval.
+     */
+    awarenessPollMs?: number;
+    /**
+     * When true (default), each HTTP MCP request re-syncs link_pr visibility
+     * before handling. Tests can disable this to prove poll-only updates.
+     */
+    syncLinkPrOnRequest?: boolean;
     skillLookup?: {
         workingDirectory: string;
         flavor: string;
@@ -66,12 +82,23 @@ export function toClaudeAllowedHapiMcpTools(toolNames: string[]): string[] {
         .map((toolName) => `mcp__hapi__${toolName}`);
 }
 
+type LinkPrMode = boolean | 'dynamic'
+
 function createHapiMcpServer(
     client: ApiSessionClient,
     emitTitleSummary: boolean,
     enableChangeTitle: boolean,
+    /**
+     * `true`/`false` pin registration. `'dynamic'` registers `link_pr` and
+     * toggles list visibility via RegisteredTool.enable/disable + list_changed
+     * without destroying the MCP transport (stdio bridge caches its session).
+     */
+    enableLinkPr: LinkPrMode,
     skillLookup: StartHappyServerOptions['skillLookup']
-): McpServer {
+): {
+    mcp: McpServer
+    setLinkPrVisible?: (enabled: boolean) => void
+} {
     const handler = async (title: string) => {
         logger.debug('[hapiMCP] Changing title to:', title);
         try {
@@ -229,6 +256,133 @@ function createHapiMcpServer(
             };
         });
     }
+
+    let setLinkPrVisible: ((enabled: boolean) => void) | undefined
+    if (enableLinkPr !== false) {
+        const linkPrInputSchema: z.ZodTypeAny = z.object({
+            url: z.string().optional().describe('GitHub PR URL (https://github.com/owner/repo/pull/N)'),
+            repo: z.string().optional().describe('owner/repo slug when not passing url'),
+            number: z.number().int().positive().optional().describe('PR number when not passing url'),
+            role: z.enum(['primary', 'secondary']).optional().describe('Defaults to primary'),
+        });
+
+        const linkPrTool = mcp.registerTool<any, any>('link_pr', {
+            description: 'Attach the current HAPI session to a GitHub pull request. Call as soon as you open, adopt, or are handed a PR for this session\'s work. Requires hub githubPrAwareness. Self-session only.',
+            title: 'Link Pull Request',
+            inputSchema: linkPrInputSchema,
+        }, async (args: { url?: string; repo?: string; number?: number; role?: 'primary' | 'secondary' }) => {
+            if (enableLinkPr === 'dynamic') {
+                const awarenessEnabled = await fetchGithubPrAwarenessEnabled();
+                if (!awarenessEnabled) {
+                    return {
+                        content: [{
+                            type: 'text' as const,
+                            text: 'Failed to link PR: GitHub PR awareness is disabled in hub settings (Settings → General)',
+                        }],
+                        isError: true,
+                    };
+                }
+            }
+
+            const raw = args.url?.trim()
+                || (args.repo && args.number ? `${args.repo}#${args.number}` : '')
+            const parsed = parseGithubPrInput(raw)
+            if (!parsed.ok) {
+                return {
+                    content: [{ type: 'text' as const, text: `Failed to link PR: ${parsed.error}` }],
+                    isError: true,
+                }
+            }
+
+            const ref = buildGithubPrExternalRef({
+                repo: parsed.repo,
+                number: parsed.number,
+                url: parsed.url,
+                role: args.role ?? 'primary',
+                source: 'agent',
+                linkedAt: Date.now(),
+            })
+
+            try {
+                const response = await upsertSessionExternalRef(client.sessionId, ref)
+                if (!response.ok) {
+                    throw new Error(response.error ?? `HTTP ${response.status}`)
+                }
+                const persisted = response.externalRefs?.some((candidate) =>
+                    candidate.kind === 'github_pr'
+                    // `.host`, not `.hostname` — isSameGithubPrIdentity compares
+                    // against hostFromGithubPrUrl(candidate.url), which retains a
+                    // non-default port; passing a port-stripped host here would
+                    // report "not persisted" for a successfully-stored
+                    // port-qualified ref (review finding, hapi#2147).
+                    && isSameGithubPrIdentity(candidate, ref.repo, ref.number, new URL(ref.url).host)
+                    && candidate.role === ref.role
+                )
+                if (!persisted) {
+                    throw new Error('Hub did not persist the PR link (awareness may be disabled)')
+                }
+                return {
+                    content: [{
+                        type: 'text' as const,
+                        text: `Linked ${parsed.repo}#${parsed.number} to this session`,
+                    }],
+                    isError: false,
+                }
+            } catch (error) {
+                return {
+                    content: [{
+                        type: 'text' as const,
+                        text: `Failed to link PR: ${error instanceof Error ? error.message : String(error)}`,
+                    }],
+                    isError: true,
+                }
+            }
+        });
+        if (enableLinkPr === 'dynamic') {
+            linkPrTool.disable();
+            // MCP SDK 1.25.1 enable()/disable() always emit tools/list_changed —
+            // even when the flag is unchanged. Guard to avoid list→notify→list loops.
+            setLinkPrVisible = (enabled) => {
+                if (enabled === linkPrTool.enabled) return;
+                if (enabled) linkPrTool.enable();
+                else linkPrTool.disable();
+            };
+        }
+    }
+
+    // Always-on, no opt-in toggle (hapi#235/#238 operator decision: "unless
+    // someone uses it, they're not gonna see it" — no chrome to gate for
+    // operators who never link an issue).
+    const linkIssueInputSchema: z.ZodTypeAny = z.object({
+        url: z.string().describe('GitHub issue URL (https://github.com/<owner>/<repo>/issues/<n>) or the [host:]<owner>/<repo>#<n> shorthand'),
+    });
+    mcp.registerTool<any, any>('link_issue', {
+        description: 'Attach a GitHub issue reference to the current HAPI session (self-session only). Shows as a chip on the session row/detail. Re-linking the same issue refreshes it rather than duplicating.',
+        title: 'Link GitHub Issue',
+        inputSchema: linkIssueInputSchema,
+    }, async (args: { url: string }) => {
+        const outcome = await applyLinkIssue(client.sessionId, args.url);
+        if (outcome.ok) {
+            return {
+                content: [
+                    {
+                        type: 'text' as const,
+                        text: `Linked ${outcome.ref.repo}#${outcome.ref.number}`,
+                    },
+                ],
+                isError: false,
+            };
+        }
+        return {
+            content: [
+                {
+                    type: 'text' as const,
+                    text: `Failed to link issue: ${outcome.error}`,
+                },
+            ],
+            isError: true,
+        };
+    });
 
     mcp.registerTool<any, any>('display_image', {
         description: `Display a local image file to the human user inline in the current HAPI chat session. ${DISPLAY_IMAGE_PROMPT_CURSOR}`,
@@ -493,7 +647,7 @@ function createHapiMcpServer(
         });
     }
 
-    return mcp;
+    return { mcp, setLinkPrVisible };
 }
 
 function readMcpSessionId(req: IncomingMessage): string | undefined {
@@ -510,11 +664,34 @@ function readMcpSessionId(req: IncomingMessage): string | undefined {
 export async function startHappyServer(client: ApiSessionClient, options: StartHappyServerOptions = {}) {
     const emitTitleSummary = options.emitTitleSummary ?? true;
     const enableChangeTitle = options.enableChangeTitle ?? true;
+    // Pin false/true for tests. Production omits the option → 'dynamic': keep
+    // link_pr registered and toggle list visibility without destroying sessions.
+    const linkPrMode: LinkPrMode = options.enableLinkPr === undefined
+        ? 'dynamic'
+        : options.enableLinkPr;
     const transports = new Map<string, StreamableHTTPServerTransport>();
     const mcps = new Map<string, McpServer>();
+    const linkPrVisibilitySyncers = new Set<(enabled: boolean) => void>();
+
+    const syncLinkPrVisibility = async (): Promise<void> => {
+        if (linkPrMode !== 'dynamic' || linkPrVisibilitySyncers.size === 0) return;
+        const enabled = await fetchGithubPrAwarenessEnabled();
+        for (const sync of linkPrVisibilitySyncers) {
+            sync(enabled);
+        }
+    };
 
     const createMcpTransport = () => {
-        const mcp = createHapiMcpServer(client, emitTitleSummary, enableChangeTitle, options.skillLookup);
+        const { mcp, setLinkPrVisible } = createHapiMcpServer(
+            client,
+            emitTitleSummary,
+            enableChangeTitle,
+            linkPrMode,
+            options.skillLookup
+        );
+        if (setLinkPrVisible) {
+            linkPrVisibilitySyncers.add(setLinkPrVisible);
+        }
         const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),
             onsessioninitialized: (sessionId) => {
@@ -523,9 +700,11 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
             },
             onsessionclosed: (sessionId) => {
                 transports.delete(sessionId);
-                const server = mcps.get(sessionId);
                 mcps.delete(sessionId);
-                void server?.close();
+                if (setLinkPrVisible) {
+                    linkPrVisibilitySyncers.delete(setLinkPrVisible);
+                }
+                void mcp.close();
             },
         });
         void mcp.connect(transport);
@@ -535,9 +714,15 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
     const server = createServer(async (req, res) => {
         try {
             const sessionId = readMcpSessionId(req);
+            const isNewSession = !sessionId;
             const transport = sessionId
                 ? transports.get(sessionId)
                 : createMcpTransport();
+            // New sessions always seed visibility once. Existing sessions re-sync
+            // on each request unless tests disable syncLinkPrOnRequest (poll-only).
+            if (isNewSession || options.syncLinkPrOnRequest !== false) {
+                await syncLinkPrVisibility();
+            }
 
             if (!transport) {
                 if (!res.headersSent) {
@@ -568,9 +753,29 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
         hapiMcpUrl: mcpUrl,
     }));
 
+    // Idle HTTP clients (Claude) may never send another HAPI request after the
+    // initial catalog. Poll hub awareness so enable/disable + list_changed still
+    // fire when Settings flips while the session is quiet.
+    const awarenessPollMs = options.awarenessPollMs ?? 15_000;
+    let awarenessPollTimer: ReturnType<typeof setInterval> | undefined;
+    if (linkPrMode === 'dynamic' && awarenessPollMs > 0) {
+        awarenessPollTimer = setInterval(() => {
+            void syncLinkPrVisibility();
+        }, awarenessPollMs);
+        awarenessPollTimer.unref?.();
+    }
+
+    // HAPI_DISABLE_PEER_TOOLS=1: peer tools are neither registered nor
+    // advertised, so wrapped agents cannot browse or message other sessions.
     const peerToolsDisabled = isPeerToolsDisabled();
+
+    // Always include link_pr in the stdio --tools shortlist when dynamic so the
+    // bridge can register then enable/disable; HTTP listTools still honors the
+    // live visibility flag via RegisteredTool.enable/disable.
     const toolNames = [
         ...(enableChangeTitle ? ['change_title'] : []),
+        ...(linkPrMode !== false ? ['link_pr'] : []),
+        'link_issue',
         'display_image',
         'display_video',
         'display_media',
@@ -585,11 +790,16 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
         toolNames,
         stop: () => {
             logger.debug('[hapiMCP] Stopping server');
+            if (awarenessPollTimer) {
+                clearInterval(awarenessPollTimer);
+                awarenessPollTimer = undefined;
+            }
             for (const mcp of mcps.values()) {
                 mcp.close();
             }
             transports.clear();
             mcps.clear();
+            linkPrVisibilitySyncers.clear();
             server.close();
         }
     };

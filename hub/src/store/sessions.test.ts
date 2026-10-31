@@ -466,6 +466,43 @@ describe('updateSessionMetadata: refuse un-archive (#1911 M1)', () => {
 })
 
 describe('updateSessionMetadata: protocol resume token preservation', () => {
+    it('preserves externalRefs when a sparse replacement omits them', () => {
+        const store = makeStore()
+        const externalRefs = [{
+            kind: 'github_pr',
+            repo: 'tiann/hapi',
+            number: 1160,
+            url: 'https://github.com/tiann/hapi/pull/1160',
+            role: 'primary'
+        }]
+        const session = store.sessions.getOrCreateSession(
+            'external-refs-preserve',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                externalRefs
+            },
+            null,
+            'default'
+        )
+
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                lifecycleState: 'running'
+            },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+        expect(getMetadata(store, session.id)?.externalRefs).toEqual(externalRefs)
+        store.close()
+    })
+
     it('preserves the automatic title attempt marker across sparse metadata updates', () => {
         const store = makeStore()
         const session = store.sessions.getOrCreateSession(
@@ -490,6 +527,76 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         expect(result.result).toBe('success')
         expect(getMetadata(store, session.id)?.titleSuggestionAutoAttemptedAt).toBe(1234)
         expect(getMetadata(store, session.id)?.titleSuggestionTurn).toEqual({ first: true, completed: false })
+        store.close()
+    })
+
+    it('unions a sparse write\'s own distinct ref with prior refs, but still clears with explicit []', () => {
+        // A write reaching this generic merge path with its own nonempty
+        // externalRefs is virtually always a CLI metadata sync spreading a
+        // local cache snapshot (title/model/resume changes etc.), not a
+        // deliberate "replace my externalRefs with exactly X" call — those
+        // go through the dedicated external-refs routes/sessionCache methods
+        // instead, which never reach this function. Treating an unrelated
+        // distinct ref in that snapshot as "the new complete truth" would
+        // silently drop a PR/issue link the snapshot simply predates
+        // (hapi-meta-daily.sh / out-of-band hapi link-issue incident class,
+        // hapi#238) — union by identity instead.
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'external-refs-explicit',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                externalRefs: [{
+                    kind: 'github_pr',
+                    repo: 'tiann/hapi',
+                    number: 1160,
+                    url: 'https://github.com/tiann/hapi/pull/1160',
+                    role: 'primary'
+                }]
+            },
+            null,
+            'default'
+        )
+
+        const replacement = [{
+            kind: 'github_pr',
+            repo: 'owner/other',
+            number: 42,
+            url: 'https://github.com/owner/other/pull/42',
+            role: 'secondary'
+        }]
+        let version = session.metadataVersion
+        let result = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                externalRefs: replacement
+            },
+            version,
+            'default'
+        )
+        expect(result.result).toBe('success')
+        if (result.result === 'success') version = result.version
+        const unioned = getMetadata(store, session.id)?.externalRefs as Array<{ number: number }> | undefined
+        expect(unioned?.map(ref => ref.number).sort((a, b) => a - b)).toEqual([42, 1160])
+
+        result = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                externalRefs: []
+            },
+            version,
+            'default'
+        )
+        expect(result.result).toBe('success')
+        expect(getMetadata(store, session.id)?.externalRefs).toEqual([])
         store.close()
     })
 
@@ -1072,6 +1179,390 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         const metadata = getMetadata(store, session.id) as Record<string, unknown> | null
         expect(metadata?.cursorSessionId).toBe('stable-id')
         expect(metadata?.cursorSessionProtocol).toBe('stream-json')
+    })
+
+    // P1 from Codex review (hapi#238): a sparse CLI metadata write (e.g. from
+    // a null/stale local cache) that omits or doesn't yet know about
+    // externalRefs must not wipe an issue/PR link set via `hapi link-issue`.
+    it('preserves externalRefs when a sparse metadata write omits them entirely', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'sparse-write-omits-refs',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                externalRefs: [
+                    { kind: 'github_issue', url: 'https://github.com/acme/repo/issues/1', repo: 'acme/repo', number: 1, linkedAt: 1 }
+                ]
+            },
+            null,
+            'default'
+        )
+
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example' },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+
+        const metadata = getMetadata(store, session.id)
+        expect(metadata?.externalRefs).toEqual([
+            { kind: 'github_issue', url: 'https://github.com/acme/repo/issues/1', repo: 'acme/repo', number: 1, linkedAt: 1 }
+        ])
+    })
+
+    it('unions externalRefs when a sparse write carries its own stale-but-present array', () => {
+        const store = makeStore()
+        const refOne = { kind: 'github_issue', url: 'https://github.com/acme/repo/issues/1', repo: 'acme/repo', number: 1, linkedAt: 1 }
+        const refTwo = { kind: 'github_issue', url: 'https://github.com/acme/repo/issues/2', repo: 'acme/repo', number: 2, linkedAt: 2 }
+        const session = store.sessions.getOrCreateSession(
+            'sparse-write-stale-refs',
+            { path: '/tmp/project', host: 'example', externalRefs: [refOne, refTwo] },
+            null,
+            'default'
+        )
+
+        // Simulates a CLI write built from a local cache that predates the
+        // second `hapi link-issue` call — its own payload still only has the
+        // first ref, not an omitted key, so a plain undefined-only
+        // carry-forward would miss this and clobber ref #2.
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example', externalRefs: [refOne] },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+
+        const metadata = getMetadata(store, session.id)
+        expect(metadata?.externalRefs).toEqual([refOne, refTwo])
+    })
+
+    // Review finding: a dedicated mutation (mutateSessionExternalRefs, behind
+    // link_issue/link_pr/remove-primary) computes the full intended result
+    // from a freshly-read current state — it is never a sparse snapshot like
+    // the CLI write above, so unioning it with prior is exactly wrong: an
+    // issue-only array (after removing a primary PR) looks identical to a
+    // stale write that merely doesn't know about the PR yet, and the union
+    // silently resurrected it. `replaceExternalRefs: true` opts out of that
+    // union for this one call.
+    it('replaceExternalRefs: true replaces outright instead of unioning with prior — does not resurrect a removed ref', () => {
+        const store = makeStore()
+        const prRef = { kind: 'github_pr', url: 'https://github.com/tiann/hapi/pull/1163', repo: 'tiann/hapi', number: 1163, role: 'primary', source: 'user', linkedAt: 1 }
+        const issueRef = { kind: 'github_issue', url: 'https://github.com/tiann/hapi/issues/238', repo: 'tiann/hapi', number: 238, linkedAt: 2 }
+        const session = store.sessions.getOrCreateSession(
+            'replace-no-resurrect',
+            { path: '/tmp/project', host: 'example', externalRefs: [prRef, issueRef] },
+            null,
+            'default'
+        )
+
+        // Mirrors remove-primary's own transform: drop the PR, keep the rest.
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example', externalRefs: [issueRef] },
+            session.metadataVersion,
+            'default',
+            { replaceExternalRefs: true }
+        )
+        expect(result.result).toBe('success')
+
+        const metadata = getMetadata(store, session.id)
+        expect(metadata?.externalRefs).toEqual([issueRef])
+    })
+
+    it('replaceExternalRefs: true still honors an explicit empty-array clear', () => {
+        const store = makeStore()
+        const ref = { kind: 'github_issue', url: 'https://github.com/acme/repo/issues/1', repo: 'acme/repo', number: 1, linkedAt: 1 }
+        const session = store.sessions.getOrCreateSession(
+            'replace-clear',
+            { path: '/tmp/project', host: 'example', externalRefs: [ref] },
+            null,
+            'default'
+        )
+
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example', externalRefs: [] },
+            session.metadataVersion,
+            'default',
+            { replaceExternalRefs: true }
+        )
+        expect(result.result).toBe('success')
+
+        const metadata = getMetadata(store, session.id)
+        expect(metadata?.externalRefs).toEqual([])
+    })
+
+    // Review finding: a sparse-write union (the generic, non-replace path)
+    // has no cap of its own even though ExternalRefsSchema does — two
+    // independently-valid sets of refs near the 32 limit can union past it.
+    // Persisting that doesn't just lose the extras: MetadataSchema
+    // validation fails on the *next* read, nulling out the whole metadata
+    // object (name, path, flavor, resume ids, every ref), not just
+    // externalRefs. Falls back to priorRefs instead, the same "can't trust
+    // this union" response the all-malformed-elements case already uses.
+    it('falls back to priorRefs when a sparse-write union would exceed MAX_EXTERNAL_REFS', () => {
+        const store = makeStore()
+        const makeRef = (n: number) => ({
+            kind: 'github_issue', url: `https://github.com/acme/repo/issues/${n}`, repo: 'acme/repo', number: n, linkedAt: n
+        })
+        const priorRefs = Array.from({ length: 20 }, (_, i) => makeRef(i + 1))
+        const nextRefs = Array.from({ length: 20 }, (_, i) => makeRef(i + 1000))
+        const session = store.sessions.getOrCreateSession(
+            'union-over-cap',
+            { path: '/tmp/project', host: 'example', externalRefs: priorRefs },
+            null,
+            'default'
+        )
+
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example', externalRefs: nextRefs },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+
+        const metadata = getMetadata(store, session.id)
+        // Union of 40 distinct refs exceeds the 32 cap — must not persist
+        // it, and critically must not corrupt the rest of metadata either.
+        expect(metadata?.path).toBe('/tmp/project')
+        expect((metadata?.externalRefs as unknown[] | undefined)?.length).toBeLessThanOrEqual(32)
+        expect(metadata?.externalRefs).toEqual(priorRefs)
+    })
+
+    // Found by Meta during a soup absorb and independently confirmed by hand
+    // against this exact code (not just the test): an explicit
+    // `externalRefs: []` is a deliberate unlink-to-empty, not a sparse/stale
+    // write merely missing some refs it didn't know about yet — those two
+    // looked identical as "an empty-ish array" before this fix, so the
+    // union-recovery logic silently resurrected the cleared ref.
+    it('honors an explicit externalRefs: [] clear instead of resurrecting the prior ref', () => {
+        const store = makeStore()
+        const ref = { kind: 'github_issue', url: 'https://github.com/acme/repo/issues/1', repo: 'acme/repo', number: 1, linkedAt: 1 }
+        const session = store.sessions.getOrCreateSession(
+            'explicit-unlink-to-empty',
+            { path: '/tmp/project', host: 'example', externalRefs: [ref] },
+            null,
+            'default'
+        )
+
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example', externalRefs: [] },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+
+        const metadata = getMetadata(store, session.id)
+        expect(metadata?.externalRefs).toEqual([])
+    })
+
+    // Codex review (hapi#238): updateMetadataSchema accepts metadata as
+    // z.unknown(), so a malformed externalRefs element from an authenticated
+    // CLI used to reach reconcileExternalRefs' identity comparison and throw
+    // (e.g. calling .toLowerCase() on a ref missing `repo`) — caught by
+    // updateSessionMetadata's own try/catch, but that collapsed the ENTIRE
+    // write into a generic error instead of just dropping the one bad ref.
+    it('drops a malformed externalRefs element instead of throwing and failing the whole write, preserving the prior ref', () => {
+        // Codex review (hapi#238, fresh finding after this exact fix landed):
+        // a nonempty-but-wholly-invalid array must NOT be treated the same
+        // as an explicit `externalRefs: []` clear — that would silently
+        // unlink every valid ref over one malformed element. Updated from
+        // this test's own earlier expectation (which asserted the
+        // then-current, since-corrected "clears to []" behavior).
+        const store = makeStore()
+        const ref = { kind: 'github_issue', url: 'https://github.com/acme/repo/issues/1', repo: 'acme/repo', number: 1, linkedAt: 1 }
+        const session = store.sessions.getOrCreateSession(
+            'malformed-ref-element',
+            { path: '/tmp/project', host: 'example', externalRefs: [ref] },
+            null,
+            'default'
+        )
+
+        const malformed = { kind: 'github_issue' } // missing url/repo/number/linkedAt entirely
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example', name: 'renamed', externalRefs: [malformed] },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+
+        const metadata = getMetadata(store, session.id)
+        expect(metadata?.name).toBe('renamed')
+        expect(metadata?.externalRefs).toEqual([ref])
+    })
+
+    it('still honors an explicit externalRefs: [] clear, distinct from an all-rejected nonempty array', () => {
+        const store = makeStore()
+        const ref = { kind: 'github_issue', url: 'https://github.com/acme/repo/issues/1', repo: 'acme/repo', number: 1, linkedAt: 1 }
+        const session = store.sessions.getOrCreateSession(
+            'explicit-clear-vs-all-rejected',
+            { path: '/tmp/project', host: 'example', externalRefs: [ref] },
+            null,
+            'default'
+        )
+
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example', externalRefs: [] },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+
+        const metadata = getMetadata(store, session.id)
+        expect(metadata?.externalRefs).toEqual([])
+    })
+
+    it('keeps the valid refs and drops only the malformed one when a write mixes both', () => {
+        const store = makeStore()
+        const validRef = { kind: 'github_issue', url: 'https://github.com/acme/repo/issues/1', repo: 'acme/repo', number: 1, linkedAt: 1 }
+        const session = store.sessions.getOrCreateSession(
+            'mixed-valid-and-malformed-refs',
+            { path: '/tmp/project', host: 'example', externalRefs: [validRef] },
+            null,
+            'default'
+        )
+
+        const newValidRef = { kind: 'github_issue', url: 'https://github.com/acme/repo/issues/2', repo: 'acme/repo', number: 2, linkedAt: 2 }
+        const malformed = { kind: 'github_issue', url: 'not even a url', repo: 'acme/repo', number: 2, linkedAt: 2 }
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example', externalRefs: [newValidRef, malformed] },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+
+        const metadata = getMetadata(store, session.id)
+        expect(metadata?.externalRefs).toEqual([validRef, newValidRef])
+    })
+
+    // Codex review (hapi#238): toValidExternalRefs used to filter the raw
+    // array by `.safeParse(item).success` but return the original `item`,
+    // discarding ExternalRefSchema's own canonical-URL transform — the
+    // schema hardening a round earlier was a no-op from this function's own
+    // callers' point of view, since the non-canonical raw url still ended up
+    // persisted.
+    it('drops a non-canonical (non-https) url instead of persisting it raw', () => {
+        // Reconciled with the upstream-shaped schema (tiann/hapi#1160-#1163):
+        // GithubIssueExternalRefSchema rejects a non-https url outright rather
+        // than rewriting it to canonical form — every real write path
+        // (parseIssueUrl) already produces a canonical https url, so a
+        // non-https one here is dropped by toValidExternalRefs like any
+        // other malformed element.
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'persists-canonical-url',
+            { path: '/tmp/project', host: 'example' },
+            null,
+            'default'
+        )
+
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                externalRefs: [{ kind: 'github_issue', url: 'http://github.com/acme/repo/issues/1', repo: 'acme/repo', number: 1, linkedAt: 1 }]
+            },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+
+        const metadata = getMetadata(store, session.id)
+        expect(metadata?.externalRefs).toEqual([])
+    })
+
+    // Codex review (hapi#238, second finding on this path): identity-only
+    // collision handling (plain array-length no-op check) let a stale write
+    // silently roll back a field-level update already applied directly to
+    // the stored ref by out-of-band tooling (hapi-meta-daily.sh PR-chip
+    // status updates), since both arrays had the same length and identity.
+    it('preserves a newer field-level update on a matching ref instead of rolling it back to a stale copy', () => {
+        const store = makeStore()
+        const freshPrRef = { kind: 'github_pr', url: 'https://github.com/acme/repo/pull/9', repo: 'acme/repo', number: 9, linkedAt: 5, role: 'primary', statusCheckedAt: 200 }
+        const session = store.sessions.getOrCreateSession(
+            'preserve-field-update-on-collision',
+            { path: '/tmp/project', host: 'example', externalRefs: [freshPrRef] },
+            null,
+            'default'
+        )
+
+        // Simulates a CLI write built from a cache snapshot taken before
+        // hapi-meta-daily.sh applied the status update directly to storage —
+        // same identity, same linkedAt, but stale status fields.
+        const stalePrRef = { kind: 'github_pr', url: 'https://github.com/acme/repo/pull/9', repo: 'acme/repo', number: 9, linkedAt: 5, role: 'primary', statusCheckedAt: 100 }
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example', externalRefs: [stalePrRef] },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+
+        const metadata = getMetadata(store, session.id)
+        expect(metadata?.externalRefs).toEqual([freshPrRef])
+    })
+
+    // Codex review (hapi#238, third finding on this path): hapi-meta-daily.sh's
+    // own status-refresh writes bump statusCheckedAt without touching
+    // linkedAt — comparing linkedAt alone made every such refresh a tie,
+    // which defaulted to keeping prior (correct for the test above, where
+    // PRIOR held the fresher out-of-band update) but wrong here, where the
+    // refresh is itself the incoming `next` write and got discarded,
+    // leaving the cached chip status stuck forever.
+    it('accepts a status refresh arriving as the write itself, even though linkedAt is unchanged', () => {
+        const store = makeStore()
+        const stalePrRef = { kind: 'github_pr', url: 'https://github.com/acme/repo/pull/9', repo: 'acme/repo', number: 9, linkedAt: 5, role: 'primary', statusCheckedAt: 100 }
+        const session = store.sessions.getOrCreateSession(
+            'accept-status-refresh-same-linkedat',
+            { path: '/tmp/project', host: 'example', externalRefs: [stalePrRef] },
+            null,
+            'default'
+        )
+
+        const freshPrRef = { kind: 'github_pr', url: 'https://github.com/acme/repo/pull/9', repo: 'acme/repo', number: 9, linkedAt: 5, role: 'primary', statusCheckedAt: 200 }
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example', externalRefs: [freshPrRef] },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+
+        const metadata = getMetadata(store, session.id)
+        expect(metadata?.externalRefs).toEqual([freshPrRef])
+    })
+
+    it('still applies a legitimate re-link with a bumped linkedAt over the prior entry', () => {
+        const store = makeStore()
+        const oldRef = { kind: 'github_issue', url: 'https://github.com/acme/repo/issues/1', repo: 'acme/repo', number: 1, linkedAt: 1 }
+        const session = store.sessions.getOrCreateSession(
+            'relink-bumps-linkedat',
+            { path: '/tmp/project', host: 'example', externalRefs: [oldRef] },
+            null,
+            'default'
+        )
+
+        const newRef = { kind: 'github_issue', url: 'https://github.com/acme/repo/issues/1', repo: 'acme/repo', number: 1, linkedAt: 2 }
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example', externalRefs: [newRef] },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+
+        const metadata = getMetadata(store, session.id)
+        expect(metadata?.externalRefs).toEqual([newRef])
     })
 
     // P2 from cold review: the broadcast on a successful update must

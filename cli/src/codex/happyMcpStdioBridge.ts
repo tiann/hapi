@@ -26,7 +26,17 @@ import {
 } from '@hapi/protocol/sessionCitation';
 import { isPeerToolsDisabled, PEER_TOOL_NAMES } from '@/modules/common/peerTools';
 
-const DEFAULT_TOOL_NAMES = ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer'];
+const DEFAULT_TOOL_NAMES = [
+  'change_title',
+  // `link_pr`/`link_issue` are opt-in; internal launchers add them via --tools
+  // after probing the hub.
+  'display_image',
+  'display_video',
+  'display_media',
+  'list_peers',
+  'ping_peer',
+  'inspect_peer',
+];
 
 function parseArgs(argv: string[]): { url: string | null; toolNames: Set<string> } {
   let url: string | null = null;
@@ -122,7 +132,105 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       );
     }
 
+    const linkPrInputSchema: z.ZodTypeAny = z.object({
+      url: z.string().optional().describe('GitHub PR URL'),
+      repo: z.string().optional().describe('owner/repo'),
+      number: z.number().int().positive().optional().describe('PR number'),
+      role: z.enum(['primary', 'secondary']).optional(),
+    });
 
+    if (toolNames.has('link_pr')) {
+      const linkPrTool = server.registerTool<any, any>(
+        'link_pr',
+        {
+          description: 'Attach the current HAPI session to a GitHub pull request',
+          title: 'Link Pull Request',
+          inputSchema: linkPrInputSchema,
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            const client = await ensureHttpClient();
+            await syncLinkPrVisibilityFromHttp(client);
+            if (!linkPrTool.enabled) {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: 'GitHub PR awareness is disabled in Settings → Features. Enable it, then retry link_pr.',
+                  },
+                ],
+                isError: true,
+              };
+            }
+            const response = await client.callTool({ name: 'link_pr', arguments: args });
+            return response as any;
+          } catch (error) {
+            return {
+              content: [
+                { type: 'text' as const, text: `Failed to link PR: ${error instanceof Error ? error.message : String(error)}` },
+              ],
+              isError: true,
+            };
+          }
+        }
+      );
+      // Start hidden until the first HTTP listTools sync confirms awareness.
+      linkPrTool.disable();
+
+      async function syncLinkPrVisibilityFromHttp(client: Client): Promise<void> {
+        try {
+          const listed = await client.listTools();
+          const visible = listed.tools.some((tool) => tool.name === 'link_pr');
+          // Guard: SDK enable/disable always emit list_changed even when unchanged.
+          if (visible === linkPrTool.enabled) return;
+          if (visible) linkPrTool.enable();
+          else linkPrTool.disable();
+        } catch {
+          // Keep prior visibility on transient HTTP errors.
+        }
+      }
+
+      // Periodic sync so Codex listTools tracks hub toggles without destroying
+      // the cached HTTP MCP session.
+      const visibilityTimer = setInterval(() => {
+        void ensureHttpClient()
+          .then((client) => syncLinkPrVisibilityFromHttp(client))
+          .catch(() => undefined);
+      }, 15_000);
+      visibilityTimer.unref?.();
+      void ensureHttpClient()
+        .then((client) => syncLinkPrVisibilityFromHttp(client))
+        .catch(() => undefined);
+    }
+
+    const linkIssueInputSchema: z.ZodTypeAny = z.object({
+      url: z.string().describe('GitHub issue URL (https://github.com/<owner>/<repo>/issues/<n>) or the [host:]<owner>/<repo>#<n> shorthand'),
+    });
+
+    if (toolNames.has('link_issue')) {
+      server.registerTool<any, any>(
+        'link_issue',
+        {
+          description: 'Attach a GitHub issue reference to the current HAPI session (self-session only). Shows as a chip on the session row/detail. Re-linking the same issue refreshes it rather than duplicating.',
+          title: 'Link GitHub Issue',
+          inputSchema: linkIssueInputSchema,
+        },
+        async (args: Record<string, unknown>) => {
+          try {
+            const client = await ensureHttpClient();
+            const response = await client.callTool({ name: 'link_issue', arguments: args });
+            return response as any;
+          } catch (error) {
+            return {
+              content: [
+                { type: 'text' as const, text: `Failed to link issue: ${error instanceof Error ? error.message : String(error)}` },
+              ],
+              isError: true,
+            };
+          }
+        }
+      );
+    }
 
     const displayImageInputSchema: z.ZodTypeAny = z.object({
       path: z.string().describe('Absolute filesystem path of the local image to display to the human user. This file is sent for user display, not provided to the model for image inspection'),

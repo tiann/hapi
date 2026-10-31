@@ -17,6 +17,7 @@ import { createAuthMiddleware, type WebAppEnv } from './middleware/auth'
 import { createAuthRoutes } from './routes/auth'
 import { createBindRoutes } from './routes/bind'
 import { createEventsRoutes } from './routes/events'
+import { createFeaturesRoutes } from './routes/features'
 import { createSessionsRoutes } from './routes/sessions'
 import { createMessagesRoutes } from './routes/messages'
 import { createPermissionsRoutes } from './routes/permissions'
@@ -34,6 +35,7 @@ import { createDevicesRoutes } from './routes/devices'
 import { createVoiceRoutes } from './routes/voice'
 import { createHubSettingsRoutes } from './routes/hubSettings'
 import { createWorkGraphRoutes } from './routes/workGraph'
+import { createBoardRoutes } from './routes/todoBoard'
 import type { SSEManager } from '../sse/sseManager'
 import type { VisibilityTracker } from '../visibility/visibilityTracker'
 import type { Server as BunServer, ServerWebSocket } from 'bun'
@@ -287,6 +289,7 @@ function createWebApp(options: {
     app.route('/api', createBindRoutes(options.jwtSecret, options.store))
 
     app.use('/api/*', createAuthMiddleware(options.jwtSecret))
+    app.route('/api', createFeaturesRoutes())
     app.route('/api', createEventsRoutes(options.getSseManager, options.getSyncEngine, options.getVisibilityTracker))
     app.route('/api', createSessionsRoutes(options.getSyncEngine))
     app.route('/api', createMessagesRoutes(options.getSyncEngine))
@@ -315,6 +318,7 @@ function createWebApp(options: {
     app.route('/api', createVoiceRoutes({ dataDir: configuration.dataDir }))
     // Path is intentionally NOT `/api/events` — that route is the SSE stream.
     app.route('/api', createWorkGraphRoutes(options.store))
+    app.route('/api', createBoardRoutes(configuration.dataDir))
 
     // Skip static serving in relay mode, show helpful message on root
     if (options.relayMode) {

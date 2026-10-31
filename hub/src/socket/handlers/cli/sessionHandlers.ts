@@ -13,6 +13,18 @@ import { shouldRecordSessionActivity } from '../../../sync/sessionActivity'
 import type { CliSocketWithData } from '../../socketTypes'
 import type { SessionEndReason } from '@hapi/protocol'
 import type { AccessErrorReason, AccessResult } from './types'
+import { getConfiguration } from '../../../configuration'
+import { stripExternalRefsWhenAwarenessDisabled, externalRefsInMetadataValid } from '../../../sync/externalRefsPolicy'
+
+function gateExternalRefs(metadata: unknown): unknown {
+    let awarenessEnabled = false
+    try {
+        awarenessEnabled = getConfiguration().githubPrAwareness
+    } catch {
+        awarenessEnabled = false
+    }
+    return stripExternalRefsWhenAwarenessDisabled(metadata, awarenessEnabled)
+}
 
 type SessionAlivePayload = {
     sid: string
@@ -74,6 +86,33 @@ const HUB_OWNED_METADATA_KEYS = [
     'titleSuggestionAutoAttemptedAt',
     'titleSuggestionTurn'
 ] as const
+
+/**
+ * CLI `update-metadata` often sends a local cache snapshot, not a deliberate
+ * value for every field — an `externalRefs: []` on this path is almost
+ * always "my cache doesn't track this field," not an intentional unlink
+ * (unlink has its own dedicated path, not this generic metadata sync).
+ * Dropping the key here lets `mergeSessionMetadata`'s carry-forward logic
+ * keep whatever links are already stored, the same way an omitted key
+ * always has — instead of its `nextRefs.length === 0` explicit-clear check
+ * (added for an actual intentional-clear caller) misreading this routine,
+ * empty-by-default CLI snapshot as one (Codex review, hapi#238).
+ */
+function omitEmptyExternalRefsOnCliMetadataWrite(metadata: unknown): unknown {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+        return metadata
+    }
+    if (!Object.prototype.hasOwnProperty.call(metadata, 'externalRefs')) {
+        return metadata
+    }
+    const refs = (metadata as Record<string, unknown>).externalRefs
+    if (!Array.isArray(refs) || refs.length > 0) {
+        return metadata
+    }
+    const next = { ...(metadata as Record<string, unknown>) }
+    delete next.externalRefs
+    return next
+}
 
 function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown {
     if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) return incoming
@@ -293,9 +332,15 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
+        const gatedMetadata = gateExternalRefs(omitEmptyExternalRefsOnCliMetadataWrite(metadata))
+        if (!externalRefsInMetadataValid(gatedMetadata)) {
+            cb({ result: 'error' })
+            return
+        }
+
         const result = store.sessions.updateSessionMetadata(
             sid,
-            preserveHubOwnedMetadata(metadata, sessionAccess.value.metadata),
+            preserveHubOwnedMetadata(gatedMetadata, sessionAccess.value.metadata),
             expectedVersion,
             sessionAccess.value.namespace
         )

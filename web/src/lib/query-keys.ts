@@ -3,6 +3,17 @@ export const queryKeys = {
     session: (sessionId: string) => ['session', sessionId] as const,
     messages: (sessionId: string) => ['messages', sessionId] as const,
     machines: ['machines'] as const,
+    boards: ['boards'] as const,
+    boardItems: (boardId: string) => ['board-items', boardId] as const,
+    // Prefix-only, for invalidating every configured board's items cache at
+    // once (useBoardItemActions, Codex review hapi#238) — the same issue can
+    // be a member of more than one board (e.g. an unfiltered project and one
+    // of its saved views), so a write started from board A must not leave
+    // board B's cache silently stale, with no polling to ever self-correct.
+    boardItemsAll: ['board-items'] as const,
+    boardAssignableUsers: (boardId: string, url: string, search: string) => ['board-assignable-users', boardId, url, search] as const,
+    boardItemComments: (boardId: string, url: string) => ['board-item-comments', boardId, url] as const,
+    issueTemplates: (boardId: string, repo: string) => ['issue-templates', boardId, repo] as const,
     sqliteStorage: ['sqlite-storage'] as const,
     hubSettings: ['hub-settings'] as const,
     usageSummary: (range: string, timeZone: string) => ['usage-summary', range, timeZone] as const,
@@ -42,4 +53,5 @@ export const queryKeys = {
     machineClaudeModels: (machineId: string) => ['machine-claude-models', machineId] as const,
     skills: (sessionId: string) => ['skills', sessionId] as const,
     scratchlist: (sessionId: string) => ['scratchlist', sessionId] as const,
+    features: ['features'] as const,
 }

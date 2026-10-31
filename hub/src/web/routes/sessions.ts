@@ -7,6 +7,7 @@ import {
     getPermissionModesForFlavor,
     isLiveLifecycleState,
     isPermissionModeAllowedForFlavor,
+    LinkIssueRequestSchema,
     RenameSessionRequestSchema,
     SetSessionPinnedRequestSchema,
     ResumeSessionRequestSchema,
@@ -21,6 +22,9 @@ import {
     SessionServiceTierRequestSchema,
     SessionModelRequestSchema,
     SessionPermissionModeRequestSchema,
+    SetExternalRefsRequestSchema,
+    UpsertExternalRefRequestSchema,
+    upsertGithubPrIntoExternalRefs,
     UpdateSessionSummaryRequestSchema,
     supportsModelChange,
     supportsEffort,
@@ -28,17 +32,32 @@ import {
     UploadFileRequestSchema
 } from '@hapi/protocol'
 import { RPC_METHODS, RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMethods'
+import { parseIssueUrl } from '@hapi/protocol/schemas'
 import type { SlashCommand } from '@hapi/protocol/apiTypes'
 import { Hono, type Context } from 'hono'
+import { getConfiguration } from '../../configuration'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
 import { RpcTargetMissingError } from '../../sync/rpcGateway'
 import type { WebAppEnv } from '../middleware/auth'
 import { loadScratchlistAttachmentLimitsFromEnv } from '../../config/scratchlistAttachmentLimits'
 import { validateScratchlistAttachmentsForWrite, scratchlistSessionBytesBeforeForPut } from '../../scratchlistAttachments/validate'
 import { TitleSuggestionError } from '../../sync/titleSuggestion'
+import { mapExternalRefRouteError } from '../../sync/externalRefErrors'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+
+export type SessionsRouteOptions = {
+    isGithubPrAwarenessEnabled?: () => boolean
+}
+
+function defaultGithubPrAwarenessEnabled(): boolean {
+    try {
+        return getConfiguration().githubPrAwareness
+    } catch {
+        return false
+    }
+}
 
 function commandsFromMetadataSlashCommands(names: readonly string[] | undefined): SlashCommand[] {
     if (!names?.length) {
@@ -71,8 +90,12 @@ function estimateBase64Bytes(base64: string): number {
     return Math.floor((len * 3) / 4) - padding
 }
 
-export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
+export function createSessionsRoutes(
+    getSyncEngine: () => SyncEngine | null,
+    options: SessionsRouteOptions = {}
+): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
+    const isGithubPrAwarenessEnabled = options.isGithubPrAwarenessEnabled ?? defaultGithubPrAwarenessEnabled
 
     app.get('/sessions', (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
@@ -159,6 +182,122 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         return c.json({ session: sessionResult.session })
+    })
+
+    app.get('/sessions/:id/external-refs', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const externalRefs = sessionResult.session.metadata?.externalRefs ?? []
+        return c.json({ externalRefs })
+    })
+
+    app.put('/sessions/:id/external-refs', async (c) => {
+        if (!isGithubPrAwarenessEnabled()) {
+            return c.json({
+                error: 'GitHub PR awareness is disabled',
+                code: 'github_pr_awareness_disabled'
+            }, 403)
+        }
+
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = SetExternalRefsRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body: externalRefs is required' }, 400)
+        }
+
+        try {
+            await engine.setSessionExternalRefs(sessionResult.sessionId, parsed.data.externalRefs)
+            return c.json({ ok: true, externalRefs: parsed.data.externalRefs })
+        } catch (error) {
+            const mapped = mapExternalRefRouteError(error, 'Failed to update external refs')
+            return c.json({ error: mapped.message }, mapped.status)
+        }
+    })
+
+    app.post('/sessions/:id/external-refs/upsert', async (c) => {
+        if (!isGithubPrAwarenessEnabled()) {
+            return c.json({
+                error: 'GitHub PR awareness is disabled',
+                code: 'github_pr_awareness_disabled'
+            }, 403)
+        }
+
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = UpsertExternalRefRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body: ref is required' }, 400)
+        }
+
+        const ref = parsed.data.ref
+        if (ref.kind !== 'github_pr') {
+            return c.json({ error: 'Invalid body: ref must be a github_pr reference' }, 400)
+        }
+        try {
+            const externalRefs = await engine.mutateSessionExternalRefs(sessionResult.sessionId, (current) =>
+                upsertGithubPrIntoExternalRefs(current, ref)
+            )
+            return c.json({ ok: true, externalRefs })
+        } catch (error) {
+            const mapped = mapExternalRefRouteError(error, 'Failed to upsert external ref')
+            return c.json({ error: mapped.message }, mapped.status)
+        }
+    })
+
+    app.post('/sessions/:id/external-refs/remove-primary', async (c) => {
+        if (!isGithubPrAwarenessEnabled()) {
+            return c.json({
+                error: 'GitHub PR awareness is disabled',
+                code: 'github_pr_awareness_disabled'
+            }, 403)
+        }
+
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        try {
+            const externalRefs = await engine.mutateSessionExternalRefs(sessionResult.sessionId, (current) =>
+                current.filter((candidate) => candidate.kind !== 'github_pr' || candidate.role !== 'primary')
+            )
+            return c.json({ ok: true, externalRefs })
+        } catch (error) {
+            const mapped = mapExternalRefRouteError(error, 'Failed to remove primary external ref')
+            return c.json({ error: mapped.message }, mapped.status)
+        }
     })
 
     app.get('/sessions/:id/cursor-chat-store', async (c) => {
@@ -895,6 +1034,49 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             const message = error instanceof Error ? error.message : 'Failed to update session summary'
             if (message.includes('concurrently') || message.includes('version')) {
                 return c.json({ error: message }, 409)
+            }
+            return c.json({ error: message }, 500)
+        }
+    })
+
+    app.patch('/sessions/:id/link-issue', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = LinkIssueRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body: url is required' }, 400)
+        }
+
+        const target = parseIssueUrl(parsed.data.url)
+        if (!target) {
+            return c.json({ error: 'Could not parse a GitHub issue URL (expected e.g. https://github.com/<owner>/<repo>/issues/<n> or [host:]<owner>/<repo>#<n>)' }, 400)
+        }
+
+        try {
+            await engine.linkIssue(sessionResult.sessionId, {
+                kind: 'github_issue',
+                url: target.url,
+                repo: target.repo,
+                number: target.number,
+                linkedAt: Date.now()
+            })
+            return c.json({ ok: true })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to link issue'
+            if (message.includes('concurrently') || message.includes('version')) {
+                return c.json({ error: message }, 409)
+            }
+            if (message.includes('not found')) {
+                return c.json({ error: message }, 404)
             }
             return c.json({ error: message }, 500)
         }

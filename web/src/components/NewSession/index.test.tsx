@@ -842,6 +842,33 @@ describe('NewSession launch preferences', () => {
         })
     })
 
+    it('calls onSessionCreated (board-spawn briefing delivery), not just onSuccess, for the plain create-session path', async () => {
+        // hapi#238 Codex review: the board-spawn briefing must only ever be
+        // delivered for a genuine fresh spawn, never the Codex duplicate-
+        // merge / Codex-import-resume / Pi-import-reopen paths that share
+        // this same onSuccess callback — so router.tsx wires briefing
+        // delivery to a separate onSessionCreated prop, fired only here.
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'session-1' })
+        const onSessionCreated = vi.fn()
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onSessionCreated={onSessionCreated}
+                onCancel={() => {}}
+            />
+        )
+
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('session-1'))
+        expect(onSessionCreated).toHaveBeenCalledWith('session-1')
+    })
+
     it('restores the AGY model from a browse-return draft', async () => {
         savePreferredAgent('agy')
         saveNewSessionFormDraft({

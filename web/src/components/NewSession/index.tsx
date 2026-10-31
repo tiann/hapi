@@ -25,6 +25,7 @@ import { useSessions } from '@/hooks/queries/useSessions'
 import { useActiveSuggestions, type Suggestion } from '@/hooks/useActiveSuggestions'
 import { useDirectorySuggestions } from '@/hooks/useDirectorySuggestions'
 import { useRecentPaths } from '@/hooks/useRecentPaths'
+import { seedComposerDraftIfEmpty } from '@/lib/seedComposerDraft'
 import { useTranslation } from '@/lib/use-translation'
 import { getCodexModelReasoningEfforts } from '@/lib/codexModelCapabilities'
 import {
@@ -95,10 +96,22 @@ export function NewSession(props: {
     machines: Machine[]
     isLoading?: boolean
     onSuccess: (sessionId: string) => void
+    /**
+     * Fires only for a genuine fresh spawn (the plain create-session success
+     * path) — never for the Codex duplicate-merge redirect, Codex-import
+     * resume, or Pi-import reopen paths, which `onSuccess` also covers.
+     * Those three represent unrelated operator actions reachable from the
+     * same /sessions/new page a board-spawn navigated to; delivering a
+     * board's briefing to whatever session one of them produces would send
+     * the wrong content to the wrong session (Codex review, hapi#238).
+     */
+    onSessionCreated?: (sessionId: string) => void
     onCancel: () => void
     onChooseFolder?: (args: { machineId: string | null; directory: string }) => void
     initialDirectory?: string
     initialMachineId?: string
+    /** Seeds the new session's composer draft (editable, not sent automatically) once creation succeeds — e.g. a board item's title/URL/body (hapi#235/#238). */
+    initialMessage?: string
 }) {
     const { haptic } = usePlatform()
     const { t } = useTranslation()
@@ -1374,6 +1387,17 @@ export function NewSession(props: {
         trimmedDirectory
     ])
 
+    // Every success path (plain spawn, Codex import, Pi import, duplicate
+    // merge) must seed the composer draft the same way — four call sites
+    // independently doing this already produced a missed spot (hapi#238
+    // Codex review, caught twice across two review passes), so centralize it
+    // here instead of leaving a fifth success path to copy-paste wrong.
+    // See seedComposerDraftIfEmpty's doc comment for why an existing draft
+    // at the target session id is preserved, not overwritten.
+    const seedInitialMessageDraft = useCallback((sessionId: string) => {
+        seedComposerDraftIfEmpty(sessionId, props.initialMessage)
+    }, [props.initialMessage])
+
     const handleMergeDuplicateSessions = useCallback(async () => {
         if (isMergingDuplicateSessions || pendingDuplicateSessionIds.length === 0) return
 
@@ -1395,7 +1419,10 @@ export function NewSession(props: {
             )
             closeDuplicateMergeDialog()
             await refetchSessions()
-            if (redirectSessionId) props.onSuccess(redirectSessionId)
+            if (redirectSessionId) {
+                seedInitialMessageDraft(redirectSessionId)
+                props.onSuccess(redirectSessionId)
+            }
         } catch (mergeError) {
             addToast({
                 title: t('codexSync.duplicates.merge.failed.title'),
@@ -1420,6 +1447,7 @@ export function NewSession(props: {
         props.api,
         props.onSuccess,
         refetchSessions,
+        seedInitialMessageDraft,
         t
     ])
 
@@ -1845,6 +1873,7 @@ export function NewSession(props: {
                     clearNewSessionFormDraft()
                     setLastUsedMachineId(machineId)
                     addRecentPath(machineId, trimmedDirectory)
+                    seedInitialMessageDraft(resumedSessionId)
                     props.onSuccess(resumedSessionId)
                     return
                 }
@@ -1875,6 +1904,7 @@ export function NewSession(props: {
                 clearNewSessionFormDraft()
                 setLastUsedMachineId(machineId)
                 addRecentPath(machineId, trimmedDirectory)
+                seedInitialMessageDraft(reopened.sessionId)
                 props.onSuccess(reopened.sessionId)
                 return
             }
@@ -1934,6 +1964,8 @@ export function NewSession(props: {
                 clearNewSessionFormDraft()
                 setLastUsedMachineId(machineId)
                 addRecentPath(machineId, trimmedDirectory)
+                seedInitialMessageDraft(result.sessionId)
+                props.onSessionCreated?.(result.sessionId)
                 props.onSuccess(result.sessionId)
                 return
             }

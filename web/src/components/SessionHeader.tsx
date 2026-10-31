@@ -7,6 +7,7 @@ import { sessionArchiveMutationKey, sessionModelMutationKey, useSessionActions }
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
+import { LinkPrDialog } from '@/components/LinkPrDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ArchiveSessionDialog } from '@/components/ArchiveSessionDialog'
 import { DeleteSessionDialog } from '@/components/DeleteSessionDialog'
@@ -17,12 +18,21 @@ import { retargetSharePendingTransfer } from '@/lib/sharePendingState'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { useTranslation } from '@/lib/use-translation'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
+import { IssueRefChip } from '@/components/IssueRefChip'
+import { getLinkedGithubIssue, type BoardItemMatch } from '@/lib/externalRefs'
 import { isFastServiceTier } from '@/components/AssistantChat/codexFastMode'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { getSessionProjectLabel, getSessionProjectPath } from '@/lib/sessionProjectLabel'
 import { useToast } from '@/lib/toast-context'
 import { queryKeys } from '@/lib/query-keys'
 import { markCodexSessionsImported } from '@/lib/codexImportedSessions'
+import { useFeatures } from '@/hooks/queries/useFeatures'
+import {
+    DEFAULT_PR_CHIP_DISPLAY,
+    getPrimaryGithubPrRef,
+    resolveGithubPrChipDisplay
+} from '@hapi/protocol'
+import { formatGithubPrChipDetailParts } from '@/components/SessionPrChip'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useMachineLabels } from '@/hooks/useMachineLabels'
 import { formatAbsoluteDateTime, formatRelativeTime } from '@/lib/relativeTime'
@@ -156,6 +166,9 @@ export function SessionHeader(props: {
     reopenHint?: string
     onSessionDeleted?: () => void
     onSessionReopened?: (newSessionId: string) => void | Promise<void>
+    /** The board item (if any) this session's linked GitHub issue is tracked on. */
+    linkedIssueBoardMatch?: BoardItemMatch | null
+    onOpenBoardItem?: (match: BoardItemMatch) => void
 }) {
     const { t, locale } = useTranslation()
     const queryClient = useQueryClient()
@@ -218,19 +231,39 @@ export function SessionHeader(props: {
         fastMode: headerMetadata.fastMode && showFastBadge,
     })
     const showMobileMetadata = (headerMetadata.agent && agentLabel !== null) || mobileSecondary !== null
+    const linkedIssue = getLinkedGithubIssue(session.metadata)
 
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
     const menuId = useId()
     const menuAnchorRef = useRef<HTMLButtonElement | null>(null)
     const [renameOpen, setRenameOpen] = useState(false)
+    const [linkPrOpen, setLinkPrOpen] = useState(false)
     const [exportOpen, setExportOpen] = useState(false)
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
     const [isSyncingCodex, setIsSyncingCodex] = useState(false)
     const [isSyncingPi, setIsSyncingPi] = useState(false)
+    const { features } = useFeatures(api)
+    const githubPrAwarenessEnabled = Boolean(features?.githubPrAwareness.enabled)
+    const prChipDisplay = features?.prChipDisplay
+    const primaryPrRef = getPrimaryGithubPrRef(session.metadata?.externalRefs)
+    const prClockTick = useMinuteTick(githubPrAwarenessEnabled && Boolean(primaryPrRef))
+    const linkedPr = useMemo(() => {
+        if (!githubPrAwarenessEnabled || !primaryPrRef) return null
+        void prClockTick
+        const nowMs = Date.now()
+        const profile = prChipDisplay ?? DEFAULT_PR_CHIP_DISPLAY
+        const display = resolveGithubPrChipDisplay(primaryPrRef, profile, nowMs)
+        const parts = formatGithubPrChipDetailParts(primaryPrRef, display, t)
+        return {
+            glyph: parts.glyph,
+            detail: parts.detail,
+            href: primaryPrRef.url
+        }
+    }, [githubPrAwarenessEnabled, primaryPrRef, prChipDisplay, prClockTick, t])
 
-    const { archiveSession, reopenSession, renameSession, suggestSessionTitle, updateSessionSummary, setPinMode, deleteSession, isPending: isActionPending } = useSessionActions(
+    const { archiveSession, reopenSession, renameSession, upsertExternalRef, removePrimaryExternalRef, suggestSessionTitle, updateSessionSummary, setPinMode, deleteSession, isPending: isActionPending } = useSessionActions(
         api,
         session.id,
         session.metadata?.flavor ?? null
@@ -402,8 +435,16 @@ export function SessionHeader(props: {
 
                     {/* Session info - two lines: title and path */}
                     <div className="min-w-0 flex-1">
-                        <div className="truncate font-semibold">
-                            {title}
+                        <div className="flex min-w-0 items-center gap-1.5">
+                            <span className="min-w-0 flex-1 truncate font-semibold">{title}</span>
+                            {linkedIssue ? (
+                                <IssueRefChip
+                                    ref={linkedIssue}
+                                    className="h-5"
+                                    boardMatch={props.linkedIssueBoardMatch}
+                                    onOpenBoardItem={props.onOpenBoardItem}
+                                />
+                            ) : null}
                         </div>
                         {showMobileMetadata ? (
                             <div className="flex min-w-0 flex-nowrap items-center gap-2 overflow-hidden text-xs text-[var(--app-hint)] sm:hidden">
@@ -534,6 +575,8 @@ export function SessionHeader(props: {
                 sessionPinned={Boolean(session.pinned)}
                 sessionGlobalPinned={Boolean(session.globalPinned)}
                 onRename={() => setRenameOpen(true)}
+                onLinkPr={githubPrAwarenessEnabled ? () => setLinkPrOpen(true) : undefined}
+                linkedPr={linkedPr}
                 onMarkUnread={() => markSessionUnread(session.id, session.updatedAt)}
                 onSetPinMode={api ? (mode) => void handleSetPinMode(mode) : undefined}
                 onExport={() => setExportOpen(true)}
@@ -571,6 +614,15 @@ export function SessionHeader(props: {
                 onRename={renameSession}
                 onSuggestTitle={api && props.titleSuggestionAvailable ? suggestSessionTitle : undefined}
                 onUpdateSummary={api && props.titleSuggestionAvailable ? updateSessionSummary : undefined}
+                isPending={isPending}
+            />
+
+            <LinkPrDialog
+                isOpen={linkPrOpen}
+                onClose={() => setLinkPrOpen(false)}
+                currentPrimaryLabel={primaryPrRef ? `${primaryPrRef.repo}#${primaryPrRef.number}` : null}
+                onUpsert={upsertExternalRef}
+                onRemovePrimary={primaryPrRef ? removePrimaryExternalRef : undefined}
                 isPending={isPending}
             />
 

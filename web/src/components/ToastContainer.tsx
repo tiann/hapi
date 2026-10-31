@@ -2,6 +2,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { PRESERVE_SESSION_SIDEBAR_SCROLL } from '@/lib/sessionNavigation'
 import { Toast } from '@/components/ui/Toast'
 import { useToast } from '@/lib/toast-context'
+import { markExplicitSessionNavigationIntent } from '@/lib/explicitSessionNavigationIntent'
 
 export function ToastContainer() {
     const navigate = useNavigate()
@@ -25,6 +26,7 @@ export function ToastContainer() {
                     onClick={() => {
                         removeToast(toast.id)
                         if (toast.sessionId) {
+                            markExplicitSessionNavigationIntent()
                             void navigate({
                                 to: '/sessions/$sessionId',
                                 params: { sessionId: toast.sessionId },

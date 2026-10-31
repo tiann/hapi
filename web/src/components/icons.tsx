@@ -67,6 +67,21 @@ export function ShareIcon(props: IconProps) {
     )
 }
 
+export function FilterIcon(props: IconProps) {
+    return createIcon(
+        <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />,
+        props,
+        2
+    )
+}
+
+export function ExternalLinkIcon(props: IconProps) {
+    return createIcon(
+        <path d="M13.5 6H18m0 0v4.5M18 6l-7.5 7.5M8.25 6H7.5a2.25 2.25 0 0 0-2.25 2.25v9A2.25 2.25 0 0 0 7.5 19.5h9a2.25 2.25 0 0 0 2.25-2.25v-.75" />,
+        props
+    )
+}
+
 export function PlusCircleIcon(props: IconProps) {
     return createIcon(
         <path d="M12 9v6m3-3H9m12 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />,
@@ -183,6 +198,42 @@ export function WrapIcon(props: IconProps) {
             <path d="M3 12h13a3 3 0 0 1 0 6h-4" />
             <polyline points="15 15 12 18 15 21" />
             <path d="M3 18h4" />
+        </>,
+        props,
+        2
+    )
+}
+
+export function RefreshIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <path d="M3 12a9 9 0 1 0 3-6.7" />
+            <polyline points="3 4 3 10 9 10" />
+        </>,
+        props,
+        2
+    )
+}
+
+// Shared between a board card's "Session" badge and the detail pane's "Open
+// session" action (hapi#238: both must read as the same affordance wherever
+// they appear, not two different-looking buttons for the same action).
+export function SessionLinkedIcon(props: IconProps) {
+    return createIcon(
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />,
+        props,
+        2
+    )
+}
+
+// A kanban-style board glyph — shared by the reverse "this issue is tracked
+// on a board" affordance (IssueRefChip) wherever it appears, the same way
+// SessionLinkedIcon above is shared across the forward board->session link.
+export function BoardIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <rect x="3" y="4" width="18" height="16" rx="2" />
+            <path d="M9 4v16M15 4v16" />
         </>,
         props,
         2

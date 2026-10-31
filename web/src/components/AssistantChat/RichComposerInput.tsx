@@ -1241,6 +1241,14 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
                                 session={mentionTooltip.session}
                                 showDetailedStatus
                                 nestedTooltips={false}
+                                // This tooltip is `pointer-events-none` (display-only,
+                                // not an interactive surface) — the issue chip is a
+                                // real <a>, which stays keyboard-focusable even inside
+                                // a pointer-events-none container, landing an
+                                // unreachable-by-mouse link in the tab order inside a
+                                // transient role="tooltip" (invalid ARIA tooltip
+                                // semantics: no focusable content) — Codex review.
+                                showIssueChip={false}
                             />
                         ) : (
                             <>
