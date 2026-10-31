@@ -1755,7 +1755,8 @@ export function SessionList(props: {
             ? filterUnreadSessionsOnly(
                 timeFiltered,
                 selectedSessionId,
-                id => lastSeenById?.[id] ?? 0
+                id => lastSeenById?.[id] ?? 0,
+                getSessionManualUnreadAt
             )
             : timeFiltered
         return activeMachineFilter === null

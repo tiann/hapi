@@ -508,7 +508,7 @@ describe('search target loading', () => {
         expect(onInitialTargetConsumed).toHaveBeenCalledTimes(3)
     })
 
-    it('waits for assistant-ui to apply the current message window before anchoring', () => {
+    it('waits for assistant-ui to apply the current message window before anchoring', async () => {
         const onLoadMessageContext = vi.fn().mockResolvedValue(true)
         const onInitialTargetConsumed = vi.fn()
         searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 0 }
@@ -533,13 +533,55 @@ describe('search target loading', () => {
         expect(onInitialTargetConsumed).not.toHaveBeenCalled()
 
         searchTargetTestState.extras = { messagesVersion: 2, historyVersion: 0 }
-        act(() => {
+        await act(async () => {
             result.rerender(renderHappyThread())
+            await Promise.resolve()
+            await Promise.resolve()
+            await Promise.resolve()
         })
 
-        expect(onLoadMessageContext).not.toHaveBeenCalled()
+        expect(onLoadMessageContext).toHaveBeenCalledTimes(1)
         expect(onInitialTargetConsumed).toHaveBeenCalledTimes(1)
         expect(result.container.querySelector('[data-testid="search-target-status"]')).not.toBeInTheDocument()
+    })
+
+    it('refreshes cached server context before anchoring an already-rendered target', async () => {
+        let resolveContext: ((loaded: boolean) => void) | undefined
+        const onLoadMessageContext = vi.fn(() => new Promise<boolean>((resolve) => {
+            resolveContext = resolve
+        }))
+        const onInitialTargetConsumed = vi.fn()
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 0 }
+        searchTargetTestState.renderMessages = () => (
+            <div data-hapi-source-message-id="target-message">cached target</div>
+        )
+
+        const { renderHappyThread } = renderSearchThread({
+            initialTargetMessageId: 'target-message',
+            searchRequestId: 7,
+            onLoadMessageContext,
+            onInitialTargetConsumed,
+            messagesVersion: 1,
+            historyVersion: 0,
+            rawMessagesCount: 1
+        })
+        render(renderHappyThread())
+
+        await act(async () => {
+            await Promise.resolve()
+        })
+
+        expect(onLoadMessageContext).toHaveBeenCalledWith('target-message')
+        expect(onInitialTargetConsumed).not.toHaveBeenCalled()
+
+        await act(async () => {
+            resolveContext?.(true)
+            await Promise.resolve()
+            await Promise.resolve()
+            await Promise.resolve()
+        })
+
+        expect(onInitialTargetConsumed).toHaveBeenCalledTimes(1)
     })
 
     it('clears a fallback card highlight when the search target is dismissed', async () => {

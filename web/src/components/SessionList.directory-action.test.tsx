@@ -1455,6 +1455,65 @@ describe('SessionList search toggle', () => {
         }
     })
 
+    it('includes a manually unread running session in the content-search scope', async () => {
+        vi.useFakeTimers()
+        const runningUnread = makeSession({
+            id: 'manually-unread-running',
+            active: true,
+            thinking: true,
+            updatedAt: 100,
+            metadata: { path: '/work/hapi', name: 'Running but marked unread', flavor: 'codex' },
+        })
+        const seenSession = makeSession({
+            id: 'seen-content-match',
+            updatedAt: 100,
+            metadata: { path: '/work/hapi', name: 'Seen', flavor: 'codex' },
+        })
+        markSessionUnread(runningUnread.id, runningUnread.updatedAt)
+        markSessionSeen(seenSession.id, seenSession.updatedAt)
+        const api = {
+            searchSessionContent: vi.fn().mockResolvedValue({ results: [] }),
+        } as unknown as ApiClient
+
+        try {
+            renderWithProviders(
+                <SessionList
+                    sessions={[runningUnread, seenSession]}
+                    selectedSessionId={null}
+                    onSelect={vi.fn()}
+                    onNewSession={vi.fn()}
+                    onRefresh={vi.fn()}
+                    isLoading={false}
+                    renderHeader={false}
+                    api={api}
+                />
+            )
+
+            fireEvent.click(screen.getByRole('button', { name: 'Unread only' }))
+            fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+            fireEvent.click(screen.getByTestId('session-list-search-scope'))
+            fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'content' } })
+
+            await act(async () => {
+                vi.advanceTimersByTime(180)
+                await Promise.resolve()
+                await Promise.resolve()
+            })
+
+            expect(api.searchSessionContent).toHaveBeenLastCalledWith(
+                'content',
+                50,
+                expect.any(AbortSignal),
+                [runningUnread.id]
+            )
+        } finally {
+            vi.useRealTimers()
+            localStorage.removeItem('hapi.sessionLastSeen.v1')
+            localStorage.removeItem('hapi.sessionManualUnread.v1')
+            localStorage.removeItem('hapi.sessionLastSeenBaseline.v1')
+        }
+    })
+
     it('explains when no content result may be incomplete because long messages were truncated', async () => {
         vi.useFakeTimers()
         try {

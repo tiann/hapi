@@ -1326,6 +1326,10 @@ export async function loadMessageContext(
             updateState(sessionId, (previous) => {
                 if (previous.olderGeneration !== generation) return previous
                 return buildState(previous, {
+                    // The cached window may predate appends or a rewind. Force
+                    // the next tail sync to replace it instead of leaving a
+                    // stale suffix rendered behind the dismissed jump.
+                    requiresLatestReset: previous.messages.length > 0 || previous.requiresLatestReset,
                     isLoadingMore: false,
                     warning: null
                 })
@@ -1338,6 +1342,7 @@ export async function loadMessageContext(
             updateState(sessionId, (previous) => {
                 if (previous.olderGeneration !== generation) return previous
                 return buildState(previous, {
+                    requiresLatestReset: previous.messages.length > 0 || previous.requiresLatestReset,
                     isLoadingMore: false,
                     warning: 'The searched message is no longer available'
                 })

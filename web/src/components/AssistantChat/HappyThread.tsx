@@ -916,6 +916,7 @@ export function HappyThread(props: {
     const onLoadNewerRef = useRef(props.onLoadNewer)
     const loadingNewerRef = useRef(false)
     const searchTargetInputKeyRef = useRef<string | null>(null)
+    const searchTargetValidatedRequestKeyRef = useRef<string | null>(null)
     const searchTargetRetryTimerRef = useRef<number | null>(null)
     const searchTargetQueryRetryCountRef = useRef(0)
     const searchTargetContextRetryCountRef = useRef(0)
@@ -1705,6 +1706,7 @@ export function HappyThread(props: {
         clearCoverageCheckTimer()
         clearFailureRetryTimer()
         clearSearchTargetRetryTimer()
+        searchTargetValidatedRequestKeyRef.current = null
         searchTargetQueryRetryCountRef.current = 0
         searchTargetContextRetryCountRef.current = 0
         searchTargetRenderRetryCountRef.current = 0
@@ -1771,6 +1773,7 @@ export function HappyThread(props: {
             // start a fresh jump instead of being stuck at `complete`.
             if (searchTargetJumpRef.current !== null) {
                 searchTargetJumpRef.current = null
+                searchTargetValidatedRequestKeyRef.current = null
                 clearSearchTargetRetryTimer()
                 searchTargetQueryRetryCountRef.current = 0
                 searchTargetContextRetryCountRef.current = 0
@@ -1778,6 +1781,7 @@ export function HappyThread(props: {
             }
             return
         }
+        const searchRequestKey = `${props.sessionId}\u0000${props.searchRequestId ?? 0}\u0000${targetSearchQuery}`
         searchTargetHistoryLockRef.current = true
         autoScrollEnabledRef.current = false
         atBottomRef.current = false
@@ -1860,13 +1864,22 @@ export function HappyThread(props: {
                 dismissSearchTarget()
                 return
             }
-            jump.phase = 'waiting-runtime'
+            if (jump.phase !== 'waiting-render') {
+                jump.phase = 'waiting-runtime'
+            }
             searchTargetRenderRetryCountRef.current += 1
             scheduleSearchTargetRetry(SEARCH_TARGET_QUERY_RETRY_DELAY_MS)
             return
         }
 
-        const target = findConversationMessageAnchor(targetMessageId, targetSearchQuery)
+        // Even when a cached window already renders the target row, refresh
+        // bounded server context once per search request so offline appends or
+        // rewinds update epoch, snapshot head, and forward pagination cursors.
+        const hasValidatedServerContext = !props.onLoadMessageContext
+            || searchTargetValidatedRequestKeyRef.current === searchRequestKey
+        const target = hasValidatedServerContext
+            ? findConversationMessageAnchor(targetMessageId, targetSearchQuery)
+            : null
         if (target instanceof HTMLElement) {
             const targetRange = targetSearchQuery
                 ? findConversationMessageTextRange(target, targetSearchQuery)
@@ -1945,9 +1958,10 @@ export function HappyThread(props: {
                 }
                 return
             }
+            searchTargetValidatedRequestKeyRef.current = searchRequestKey
             current.phase = 'waiting-render'
             searchTargetRenderRetryCountRef.current = 0
-            scheduleSearchTargetRetry(0)
+            setSearchTargetRetryVersion((version) => version + 1)
         }).catch(() => {
             const current = searchTargetJumpRef.current
             if (!current || current.messageId !== targetMessageId || current.requestId !== searchRequestId) return
