@@ -214,6 +214,13 @@
     <string name="sessions_search_close">Закрыть поиск</string>
     <string name="sessions_search_no_results">Нет сессий, подходящих под запрос «%1$s»</string>
     <string name="sessions_search_no_results_hint">Попробуйте другой запрос или очистите поиск.</string>
+    <string name="sessions_unread_filter">Только непрочитанные</string>
+    <string name="sessions_unread_empty_title">Непрочитанных сессий нет</string>
+    <string name="sessions_unread_empty_hint">Вы всё прочитали. Сессии появляются здесь, когда приходит новая активность.</string>
+    <string name="sessions_mark_all_read">Отметить все прочитанными (%1$d)</string>
+    <string name="sessions_mark_all_read_title">Отметить все как прочитанные?</string>
+    <string name="sessions_mark_all_read_description">Это отметит %1$d непрочитанных сессий как прочитанные на этом устройстве.</string>
+    <string name="sessions_mark_all_read_confirm">Подтвердить</string>
     <string name="sessions_empty_loading_title">Загрузка сессий…</string>
     <string name="sessions_empty_offline_title">Хаб недоступен</string>
     <string name="sessions_empty_title">Сессий пока нет</string>
@@ -227,6 +234,7 @@
     <string name="sessions_action_pin_project">Закрепить за проектом</string>
     <string name="sessions_action_pin_global">Закрепить глобально</string>
     <string name="sessions_action_rename">Переименовать</string>
+    <string name="sessions_action_mark_unread">Отметить непрочитанной</string>
     <string name="sessions_action_reopen">Открыть заново</string>
     <string name="sessions_action_archive">Архивировать</string>
     <string name="sessions_action_delete">Удалить</string>

@@ -221,6 +221,13 @@
     <string name="sessions_search_close">关闭搜索</string>
     <string name="sessions_search_no_results">没有匹配“%1$s”的会话</string>
     <string name="sessions_search_no_results_hint">换个关键词，或清除搜索。</string>
+    <string name="sessions_unread_filter">仅未读</string>
+    <string name="sessions_unread_empty_title">没有未读会话</string>
+    <string name="sessions_unread_empty_hint">全部读完了，有新活动时会出现在这里。</string>
+    <string name="sessions_mark_all_read">全部标为已读（%1$d）</string>
+    <string name="sessions_mark_all_read_title">全部标为已读？</string>
+    <string name="sessions_mark_all_read_description">将在这台设备上把 %1$d 个未读会话标为已读。</string>
+    <string name="sessions_mark_all_read_confirm">确认</string>
     <string name="sessions_empty_loading_title">正在加载会话…</string>
     <string name="sessions_empty_offline_title">无法连接 hub</string>
     <string name="sessions_empty_title">还没有会话</string>
@@ -234,6 +241,7 @@
     <string name="sessions_action_pin_project">项目置顶</string>
     <string name="sessions_action_pin_global">全局置顶</string>
     <string name="sessions_action_rename">重命名</string>
+    <string name="sessions_action_mark_unread">标为未读</string>
     <string name="sessions_action_reopen">重新打开</string>
     <string name="sessions_action_archive">归档</string>
     <string name="sessions_action_delete">删除</string>

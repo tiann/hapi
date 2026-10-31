@@ -164,11 +164,12 @@ private fun TestScope.buildViewModel(
     sessions: FakeSessionStore = FakeSessionStore(),
     machines: FakeMachineStore = FakeMachineStore(),
     zoneProvider: () -> ZoneId = { ZoneId.of("UTC") },
+    lastSeenStore: LastSeenStore = LastSeenStore(backgroundScope),
 ): Triple<SessionListViewModel, FakeSessionStore, FakeMachineStore> {
     val viewModel = SessionListViewModel(
         sessionStore = sessions,
         machineStore = machines,
-        lastSeenStore = LastSeenStore(backgroundScope),
+        lastSeenStore = lastSeenStore,
         scope = backgroundScope,
         hubKey = "hub-test",
         zoneProvider = zoneProvider,
@@ -774,5 +775,109 @@ class SessionListViewModelTest {
         )
         val state = viewModel.uiState.first { it.rows.size == 3 }
         assertEquals(setOf("named-stub", "content", "agent-stub"), state.rows.map { it.id }.toSet())
+    }
+
+    // ------------------------------------------------------- unread system --
+
+    @Test
+    fun `unread lens hides seen rows keeps the open session and mark-all-read empties it`() = runTest {
+        // Sessions preset BEFORE the ViewModel: the SSE collector's first
+        // emission is the preset list, drop(1) skips it — no baseline seeding,
+        // so every row starts unread deterministically.
+        val sessions = FakeSessionStore().apply { set(summary("a", updatedAt = 100), summary("b", updatedAt = 100)) }
+        val (viewModel) = buildViewModel(sessions)
+        assertEquals(2, viewModel.uiState.first { it.rows.size == 2 }.unreadCount)
+
+        viewModel.setUnreadOnly(true)
+        assertEquals(setOf("a", "b"), viewModel.uiState.first { it.rows.size == 2 }.rows.map { it.id }.toSet())
+
+        viewModel.onSessionOpened("a") // stamps a's watermark; stays visible as the open session
+        val lensed = viewModel.uiState.first { it.unreadCount == 1 }
+        assertEquals(setOf("a", "b"), lensed.rows.map { it.id }.toSet()) // a kept by selection, b by unread
+        assertTrue(lensed.rows.first { it.id == "b" }.unread)
+
+        viewModel.markAllSessionsRead()
+        val emptied = viewModel.uiState.first { it.unreadCount == 0 }
+        assertEquals(listOf("a"), emptied.rows.map { it.id }) // only the open session survives the lens
+    }
+
+    @Test
+    fun `mark unread brings a read row back into the lens`() = runTest {
+        val sessions = FakeSessionStore().apply { set(summary("a", updatedAt = 100), summary("b", updatedAt = 100)) }
+        val lastSeen = LastSeenStore(backgroundScope).apply {
+            markSeen("a", 100)
+            markSeen("b", 100)
+        }
+        val (viewModel) = buildViewModel(sessions, lastSeenStore = lastSeen)
+        assertEquals(0, viewModel.uiState.first { it.rows.size == 2 }.unreadCount)
+
+        viewModel.setUnreadOnly(true)
+        // Nothing unread — the lens keeps the list empty until a row is marked.
+        viewModel.uiState.first { it.unreadCount == 0 }
+        viewModel.markSessionUnread("a")
+        val relit = viewModel.uiState.first { it.unreadCount == 1 }
+        assertEquals(listOf("a"), relit.rows.map { it.id })
+        assertTrue(relit.rows.single().unread)
+    }
+
+    @Test
+    fun `unread count stays hub-wide under a machine filter`() = runTest {
+        val sessions = FakeSessionStore().apply {
+            set(summary("a", updatedAt = 100, machineId = "m1"), summary("b", updatedAt = 100, machineId = "m2"))
+        }
+        val (viewModel) = buildViewModel(sessions)
+        viewModel.uiState.first { it.rows.size == 2 }
+        viewModel.setMachineFilter("m1")
+        val state = viewModel.uiState.first { it.activeMachineFilter == "m1" }
+        assertEquals(listOf("a"), state.rows.map { it.id })
+        assertEquals(2, state.unreadCount) // count ignores the machine scope, like the toolbar action
+        assertFalse(state.showUnreadOnly) // transient default off
+    }
+
+    @Test
+    fun `back from the chat ends the selected-session exception in the unread lens`() = runTest {
+        val sessions = FakeSessionStore().apply { set(summary("a", updatedAt = 100), summary("b", updatedAt = 100)) }
+        val (viewModel) = buildViewModel(sessions)
+        viewModel.setUnreadOnly(true)
+        assertEquals(setOf("a", "b"), viewModel.uiState.first { it.rows.size == 2 }.rows.map { it.id }.toSet())
+
+        viewModel.onSessionOpened("a") // stamps a's watermark; stays visible as the open session
+        val open = viewModel.uiState.first { it.unreadCount == 1 }
+        assertEquals(setOf("a", "b"), open.rows.map { it.id }.toSet()) // a kept by selection, b by unread
+
+        // Back closes the chat and the list screen returns: the read session
+        // must leave the lens instead of lingering as "still selected".
+        viewModel.onChatClosed()
+        val closed = viewModel.uiState.first { it.rows.map { it.id } == listOf("b") }
+        assertEquals(1, closed.unreadCount) // only b is genuinely unread now
+    }
+
+    @Test
+    fun `mark-all-read under a machine filter stamps the whole hub like its count`() = runTest {
+        val sessions = FakeSessionStore().apply {
+            set(summary("a", updatedAt = 100, machineId = "m1"), summary("b", updatedAt = 100, machineId = "m2"))
+        }
+        val (viewModel) = buildViewModel(sessions)
+        viewModel.uiState.first { it.rows.size == 2 }
+        viewModel.setMachineFilter("m1")
+        viewModel.setUnreadOnly(true)
+        val scoped = viewModel.uiState.first { it.activeMachineFilter == "m1" && it.showUnreadOnly }
+        assertEquals(listOf("a"), scoped.rows.map { it.id })
+        assertEquals(2, scoped.unreadCount) // the dialog's count is hub-wide
+
+        viewModel.markAllSessionsRead()
+        // The toolbar action stamps every session on the hub — the count it
+        // showed (2) is the set it cleared, and the filtered-out machine's
+        // rows lose their unread mark too, not just the visible subset.
+        val cleared = viewModel.uiState.first { it.unreadCount == 0 }
+        assertTrue(cleared.rows.isEmpty()) // nothing unread survives the lens
+
+        viewModel.setUnreadOnly(false)
+        val visible = viewModel.uiState.first { !it.showUnreadOnly && it.activeMachineFilter == "m1" }
+        assertEquals(listOf("a"), visible.rows.map { it.id })
+        assertFalse(visible.rows.single().unread)
+        viewModel.setMachineFilter(null)
+        val hub = viewModel.uiState.first { it.activeMachineFilter == null && it.rows.size == 2 }
+        assertFalse(hub.rows.first { it.id == "b" }.unread) // m2 stamped despite being out of scope
     }
 }

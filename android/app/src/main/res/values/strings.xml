@@ -214,6 +214,13 @@
     <string name="sessions_search_close">Close search</string>
     <string name="sessions_search_no_results">No sessions matching “%1$s”</string>
     <string name="sessions_search_no_results_hint">Try another term, or clear the search.</string>
+    <string name="sessions_unread_filter">Unread only</string>
+    <string name="sessions_unread_empty_title">No unread sessions</string>
+    <string name="sessions_unread_empty_hint">You\'re all caught up. Sessions light up here when new activity arrives.</string>
+    <string name="sessions_mark_all_read">Mark all as read (%1$d)</string>
+    <string name="sessions_mark_all_read_title">Mark all as read?</string>
+    <string name="sessions_mark_all_read_description">This will mark %1$d unread sessions as read on this device.</string>
+    <string name="sessions_mark_all_read_confirm">Confirm</string>
     <string name="sessions_empty_loading_title">Loading sessions…</string>
     <string name="sessions_empty_offline_title">Hub unreachable</string>
     <string name="sessions_empty_title">No sessions yet</string>
@@ -227,6 +234,7 @@
     <string name="sessions_action_pin_project">Pin to project</string>
     <string name="sessions_action_pin_global">Pin globally</string>
     <string name="sessions_action_rename">Rename</string>
+    <string name="sessions_action_mark_unread">Mark unread</string>
     <string name="sessions_action_reopen">Reopen</string>
     <string name="sessions_action_archive">Archive</string>
     <string name="sessions_action_delete">Delete</string>
