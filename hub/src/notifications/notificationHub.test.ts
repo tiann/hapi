@@ -3,6 +3,7 @@ import type { Session, SyncEvent, SyncEventListener, SyncEngine } from '../sync/
 import type { SessionEndReason } from '@hapi/protocol'
 import type { NotificationChannel, TaskNotification } from './notificationTypes'
 import { NotificationHub } from './notificationHub'
+import { WxPusherChannel } from '../wxpusher/channel'
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -244,5 +245,57 @@ describe('NotificationHub', () => {
         expect(channel.sessionCompletions[0]?.id).toBe(completedSession.id)
 
         hub.stop()
+    })
+
+    it('continues with later completion channels after a WxPusher request times out', async () => {
+        const engine = new FakeSyncEngine()
+        const laterChannel = new StubChannel()
+        const originalFetch = globalThis.fetch
+        const originalConsoleError = console.error
+        const fetchMock = async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+            const signal = init?.signal
+            return await new Promise<Response>((_resolve, reject) => {
+                if (!signal) {
+                    reject(new Error('missing abort signal'))
+                    return
+                }
+                const rejectOnAbort = () => reject(signal.reason ?? new DOMException('The operation was aborted.', 'AbortError'))
+                if (signal.aborted) {
+                    rejectOnAbort()
+                    return
+                }
+                signal.addEventListener('abort', rejectOnAbort, { once: true })
+            })
+        }
+        globalThis.fetch = fetchMock as unknown as typeof fetch
+        console.error = () => {}
+
+        try {
+            const wxPusherChannel = new WxPusherChannel(
+                'AT_TEST',
+                ['UID_ONE'],
+                [],
+                'https://hapi.example.com',
+                null,
+                false,
+                5
+            )
+            const hub = new NotificationHub(engine as unknown as SyncEngine, [wxPusherChannel, laterChannel])
+            const session = createSession({ id: 'session-timeout', active: false })
+            engine.setSession(session)
+
+            engine.emit({
+                type: 'session-ended',
+                sessionId: session.id,
+                reason: 'completed' satisfies SessionEndReason
+            })
+            await sleep(25)
+
+            expect(laterChannel.sessionCompletions).toHaveLength(1)
+            hub.stop()
+        } finally {
+            globalThis.fetch = originalFetch
+            console.error = originalConsoleError
+        }
     })
 })
