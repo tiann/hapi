@@ -165,6 +165,37 @@ describe('useSSE connection liveness (mobile suspend/resume)', () => {
     })
 })
 
+describe('useSSE scratchlist status invalidation', () => {
+    beforeEach(() => {
+        vi.useFakeTimers()
+        FakeEventSource.instances = []
+        vi.stubGlobal('EventSource', FakeEventSource)
+    })
+
+    afterEach(() => {
+        vi.unstubAllGlobals()
+        vi.useRealTimers()
+    })
+
+    it('invalidates both the session scratchlist and batch status queries', () => {
+        const { unmount, queryClient } = renderUseSSE()
+        const invalidateQueries = vi.spyOn(queryClient, 'invalidateQueries').mockResolvedValue(undefined)
+
+        act(() => {
+            FakeEventSource.instances[0]?.simulateMessage({
+                type: 'session-updated',
+                sessionId: 'session-1',
+                data: { scratchlistUpdatedAt: 1234 }
+            })
+            vi.advanceTimersByTime(20)
+        })
+
+        expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.scratchlist('session-1') })
+        expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: queryKeys.scratchlistSessionIds })
+        unmount()
+    })
+})
+
 function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
     return {
         id: 'session-1',

@@ -33,6 +33,7 @@ Source: `hub/src/web/routes/sessions.ts`; shapes `SessionSchema` (`shared/src/sc
 |---|---|---|
 | `GET /api/sessions` | Query: `limit?` (1–500), `order?=updatedAt` | `{sessions: (SessionSummary & {futureScheduledMessageCount, nextScheduledAt})[]}` |
 | `GET /api/sessions/:id` | — | `{session: Session}` (full record incl. `metadata`, `agentState`, `todos`, versions) |
+| `GET /api/sessions/scratchlist-status` | — | `{sessionIds: string[]}` — session IDs in the caller's namespace with at least one scratchlist entry |
 
 Default list order is `globalPinned` → `pinned` →
 `lastUserMessageAt ?? createdAt` descending, then `createdAt` descending and

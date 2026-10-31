@@ -6,6 +6,7 @@ import {
     expandSelectedSessionCollapseOverrides,
     groupSessionsByDirectory,
     filterActiveSessionsOnly,
+    filterScratchlistSessionsOnly,
     filterUnreadSessionsOnly,
     UNKNOWN_MACHINE_ID,
     bucketRunningSessions,
@@ -607,6 +608,28 @@ describe('filterUnreadSessionsOnly', () => {
             () => 5000,
             () => 5000
         ).map(s => s.id)).toEqual(['manual-thinking'])
+    })
+})
+
+describe('filterScratchlistSessionsOnly', () => {
+    it('keeps sessions with scratchlist entries and drops empty sessions', () => {
+        const sessions = [
+            makeSession({ id: 'with-draft', metadata: { path: '/p' } }),
+            makeSession({ id: 'without-draft', metadata: { path: '/p' } }),
+        ]
+
+        expect(filterScratchlistSessionsOnly(sessions, null, new Set(['with-draft'])).map(s => s.id))
+            .toEqual(['with-draft'])
+    })
+
+    it('keeps the selected session visible even without a scratchlist entry', () => {
+        const sessions = [
+            makeSession({ id: 'with-draft', metadata: { path: '/p' } }),
+            makeSession({ id: 'selected-quiet', metadata: { path: '/p' } }),
+        ]
+
+        expect(filterScratchlistSessionsOnly(sessions, 'selected-quiet', new Set(['with-draft'])).map(s => s.id))
+            .toEqual(['with-draft', 'selected-quiet'])
     })
 })
 
