@@ -61,6 +61,7 @@ export const RPC_METHODS = {
     /** Deliver one queued message into the active Pi turn (native steer). */
     SteerQueuedMessage: 'steer-queued-message',
     ForkConversation: 'fork-conversation',
+    ForkArchivedCodex: 'fork-archived-codex',
     RewindConversation: 'rewind-conversation',
     ClearConversation: 'clear-conversation',
     ImplementCodexPlan: 'implement-codex-plan',

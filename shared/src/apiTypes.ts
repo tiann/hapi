@@ -654,6 +654,17 @@ export type ForkConversationRpcResponse = ForkConversationRpcResult | {
     error: string
 }
 
+/** Machine-scoped native history operation; never sends a source prompt. */
+export const ForkArchivedCodexRequestSchema = z.object({
+    operationId: z.string().uuid(),
+    sourceSessionId: z.string().uuid(),
+    sourceThreadId: z.string().min(1),
+    directory: z.string().min(1),
+    boundary: z.object({ localId: z.string().min(1), turnId: z.string().min(1) }).optional()
+})
+export type ForkArchivedCodexRequest = z.infer<typeof ForkArchivedCodexRequestSchema>
+export type ForkArchivedCodexResponse = { nativeSessionId: string } | { error: string; rollbackSafe: boolean }
+
 export type RewindConversationErrorCode =
     | 'ambiguous_native_boundary'
     | 'ambiguous_native_boundary_fork_safe'

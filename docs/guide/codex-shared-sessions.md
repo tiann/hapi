@@ -90,6 +90,25 @@ being received on the same app-server connection.
 
 ## Recovery and local data
 
+### Fork an archived conversation
+
+With an online Runner that advertises archived Codex forks, the Web chat can
+fork an inactive Codex conversation directly. The source stays inactive and
+archived in HAPI. A historical fork excludes the selected user message's native
+turn and all later turns; Fork current retains the whole persisted conversation.
+
+The Runner reads the native history, temporarily unarchives the native source
+when required, creates an independent branch, and restores the source archive.
+No prompt is sent to the source and no model turn is started by the fork itself.
+The new branch uses its own HAPI identity and Codex execution.
+
+If an operation is interrupted, retry the same fork boundary so HAPI can reconcile
+its persisted reservation. Reopen, archive and delete are blocked while that
+reservation is pending. An unconfirmed native fork without a returned thread id
+is never automatically repeated: inspect the Runner's operation journal under
+`$CODEX_HOME/hapi-archived-forks` before recovery. Missing history, an offline
+machine, a loaded native source, or a Runner needing an upgrade produces an error.
+
 - Hub outage: existing native threads continue. Reconnect reconciles history,
   queue and pending state with stable IDs.
 - Runner restart: use existing Runner process tracking/recovery. Live attachment

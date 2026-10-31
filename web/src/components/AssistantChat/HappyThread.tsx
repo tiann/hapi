@@ -532,6 +532,7 @@ export function HappyThread(props: {
     sessionId: string
     metadata: SessionMetadataSummary | null
     disabled: boolean
+    allowInactiveFork?: boolean
     onRefresh: () => void
     onContinuePlan?: () => void
     onRetryMessage?: (localId: string) => void
@@ -1768,6 +1769,7 @@ export function HappyThread(props: {
             onContinuePlan: props.onContinuePlan,
             onRetryMessage: props.onRetryMessage,
             historyActionPending: props.historyActionPending,
+            allowInactiveFork: props.allowInactiveFork,
             onForkConversation: props.onForkConversation,
             onRewindConversation: props.onRewindConversation,
             isLatestCompletedBoundary: props.isLatestCompletedBoundary,

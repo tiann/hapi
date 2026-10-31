@@ -71,6 +71,8 @@ const SIMPLE_RESUME_TOKENS = [
 // Hub-owned metadata that must survive sparse CLI metadata replacements.
 // `null` remains the explicit-clear sentinel handled by carryForwardIfMissing.
 const HUB_OWNED_METADATA_FIELDS = [
+    'codexArchivedFork',
+    'codexResumePending',
     'titleSuggestionAutoAttemptedAt',
     'titleSuggestionTurn'
 ] as const
