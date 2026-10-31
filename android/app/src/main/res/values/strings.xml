@@ -773,4 +773,5 @@
     <string name="codex_sync_duplicates_merge_success_body">Merged duplicates for the selected Codex sessions.</string>
     <string name="codex_sync_duplicates_merge_failed_title">Failed to merge duplicate sessions</string>
     <string name="codex_sync_duplicates_merge_failed_body">Failed to merge duplicate sessions.</string>
+    <string name="codex_sync_confirm_selection_missing">That session is no longer available — it may have been archived. Choose another session.</string>
 </resources>

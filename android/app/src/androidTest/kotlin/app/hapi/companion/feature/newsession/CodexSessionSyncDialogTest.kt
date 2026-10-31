@@ -18,10 +18,14 @@ import androidx.test.platform.app.InstrumentationRegistry
 import app.hapi.companion.R
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.protocol.wire.AgentAvailabilityResponse
+import app.hapi.protocol.wire.CodexArchiveSessionResponse
 import app.hapi.protocol.wire.CodexDesktopScriptResponse
+import app.hapi.protocol.wire.CodexDesktopStatusResponse
 import app.hapi.protocol.wire.CodexDesktopSyncRequest
+import app.hapi.protocol.wire.CodexDuplicateSessionsResponse
 import app.hapi.protocol.wire.CodexLocalSessionSummary
 import app.hapi.protocol.wire.CodexLocalSessionsResponse
+import app.hapi.protocol.wire.CodexMergeDuplicateSessionsResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.GrokModelsResponse
 import app.hapi.protocol.wire.MachineListDirectoryResponse
@@ -50,6 +54,10 @@ import org.junit.Test
  * 3. Back-dismissing the sheet mid bulk import keeps the outcome observable
  *    on the inline section — "Importing…" while in flight, the formatted
  *    failure once the hung sync resolves.
+ *
+ * Plus PR #2150: a single-row Confirm whose row was archived externally in
+ * the meantime keeps the sheet open with the visible notice and the checked
+ * row intact (never a silent close with no selection).
  */
 class CodexSessionSyncDialogTest {
 
@@ -199,6 +207,24 @@ class CodexSessionSyncDialogTest {
 
             override suspend fun resumeSession(sessionId: String, permissionMode: String?): ResumeSessionResponse =
                 error("unexpected")
+
+            // Slice-B seams (PR #2150 line): unused in this test.
+            override suspend fun archiveCodexSession(
+                sessionId: String,
+                machineId: String?,
+            ): CodexArchiveSessionResponse = error("unexpected")
+
+            override suspend fun getCodexDesktopStatus(): CodexDesktopStatusResponse =
+                error("unexpected")
+
+            override suspend fun getCodexDuplicateSessions(payload: CodexDesktopSyncRequest): CodexDuplicateSessionsResponse =
+                error("unexpected")
+
+            override suspend fun mergeCodexDuplicateSessions(payload: CodexDesktopSyncRequest): CodexMergeDuplicateSessionsResponse =
+                error("unexpected")
+
+            override suspend fun restartCodexDesktop(): CodexDesktopScriptResponse =
+                error("unexpected")
         }
         val controller = CodexImportController(
             scope = newScope(),
@@ -265,5 +291,116 @@ class CodexSessionSyncDialogTest {
         compose.onNodeWithText("Import failed: disk full").assertIsDisplayed()
         compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_inline_choose))
             .assertIsDisplayed()
+    }
+
+    /** 4 — single-row Confirm on an externally archived row keeps the sheet open (PR #2150). */
+    @Test
+    fun confirmWithAnExternallyArchivedRowKeepsTheSheetOpen() {
+        val gateway = object : NewSessionGateway {
+            override suspend fun spawn(machineId: String, request: SpawnSessionRequest): SpawnResponse =
+                error("unexpected")
+
+            override suspend fun listDirectory(
+                machineId: String,
+                path: String,
+                includeHidden: Boolean,
+            ): MachineListDirectoryResponse = error("unexpected")
+
+            override suspend fun pathsExist(
+                machineId: String,
+                paths: List<String>,
+            ): MachinePathsExistsResponse = error("unexpected")
+
+            override suspend fun agentAvailability(machineId: String): AgentAvailabilityResponse =
+                error("unexpected")
+
+            override suspend fun codexModels(machineId: String): CodexModelsResponse =
+                error("unexpected")
+
+            override suspend fun grokModels(machineId: String, cwd: String): GrokModelsResponse =
+                error("unexpected")
+
+            override suspend fun getCodexSessions(
+                cwd: String?,
+                machineId: String?,
+            ): CodexLocalSessionsResponse = CodexLocalSessionsResponse(
+                success = true,
+                sessions = listOf(session("a"), session("b")),
+                machineId = "m1",
+            )
+
+            // A single vanished row must never reach the sync call.
+            override suspend fun syncCodexSession(sync: CodexDesktopSyncRequest): CodexDesktopScriptResponse =
+                error("unexpected")
+
+            override suspend fun resumeSession(sessionId: String, permissionMode: String?): ResumeSessionResponse =
+                error("unexpected")
+
+            // The external archive (e.g. from the desktop client) succeeds.
+            override suspend fun archiveCodexSession(
+                sessionId: String,
+                machineId: String?,
+            ): CodexArchiveSessionResponse = CodexArchiveSessionResponse(success = true)
+
+            override suspend fun getCodexDesktopStatus(): CodexDesktopStatusResponse =
+                error("unexpected")
+
+            override suspend fun getCodexDuplicateSessions(payload: CodexDesktopSyncRequest): CodexDuplicateSessionsResponse =
+                error("unexpected")
+
+            override suspend fun mergeCodexDuplicateSessions(payload: CodexDesktopSyncRequest): CodexMergeDuplicateSessionsResponse =
+                error("unexpected")
+
+            override suspend fun restartCodexDesktop(): CodexDesktopScriptResponse =
+                error("unexpected")
+        }
+        val controller = CodexImportController(
+            scope = newScope(),
+            gateway = gateway,
+            store = MemoryCodexImportedSessionsStore(),
+        )
+        compose.setContent {
+            val state = controller.state.collectAsState()
+            HapiTheme(dynamicColor = false) {
+                if (state.value.open) {
+                    CodexSessionSyncDialog(
+                        state = state.value,
+                        onDismiss = controller::close,
+                        onToggleSession = controller::toggleSession,
+                        onSelectAll = controller::selectAll,
+                        onClearSelection = controller::clearSelection,
+                        onWorkdirFilterChange = controller::setWorkdirFilter,
+                        onSearchQueryChange = controller::setSearchQuery,
+                        onConfirm = controller::confirm,
+                        onArchive = controller::archive,
+                        onRestart = controller::restart,
+                    )
+                }
+            }
+        }
+
+        // This harness mounts only the sheet (no inline section), so the
+        // dialog opens directly.
+        compose.runOnIdle { controller.openDialog("/data/work", "m1") }
+        compose.waitUntil(10_000) { controller.state.value.sessions.size == 2 }
+        compose.onNodeWithTag("codex-sync-session-a").performClick()
+        compose.waitUntil(10_000) { controller.state.value.dialogSelection == setOf("a") }
+
+        // The checked row is archived externally before Confirm: the row
+        // disappears while the checkbox state keeps pointing at it.
+        compose.runOnIdle { controller.archive("a") }
+        compose.waitUntil(10_000) { controller.state.value.sessions.size == 1 }
+
+        compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_import))
+            .performClick()
+        compose.waitUntil(10_000) { controller.state.value.confirmSelectionMissing }
+
+        // The sheet stays open with the visible notice and the selection
+        // intact — never a silent close with no selection at all.
+        compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_title))
+            .assertIsDisplayed()
+        compose.onNodeWithText(compose.activity.getString(R.string.codex_sync_confirm_selection_missing))
+            .assertIsDisplayed()
+        assertTrue(controller.state.value.dialogSelection == setOf("a"))
     }
 }

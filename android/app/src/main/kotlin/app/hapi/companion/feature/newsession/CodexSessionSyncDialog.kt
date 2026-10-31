@@ -233,6 +233,17 @@ fun CodexSessionSyncDialog(
                 }
             }
 
+            // Single-row Confirm landed on a row that was archived/removed
+            // externally after it was checked: the dialog stays open with
+            // the selection intact (never a silent close with no selection).
+            if (state.confirmSelectionMissing) {
+                Text(
+                    stringResource(R.string.codex_sync_confirm_selection_missing),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+
             state.importError?.let { error ->
                 Text(
                     error,

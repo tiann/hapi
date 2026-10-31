@@ -780,4 +780,5 @@
     <string name="codex_sync_duplicates_merge_success_body">已按本次选中的 Codex 会话完成去重合并。</string>
     <string name="codex_sync_duplicates_merge_failed_title">重复会话合并失败</string>
     <string name="codex_sync_duplicates_merge_failed_body">重复会话合并失败。</string>
+    <string name="codex_sync_confirm_selection_missing">该会话已不可用——可能已被归档。请另选一个会话。</string>
 </resources>

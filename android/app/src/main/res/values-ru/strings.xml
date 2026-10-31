@@ -773,4 +773,5 @@
     <string name="codex_sync_duplicates_merge_success_body">Объединены дубликаты выбранных сессий Codex.</string>
     <string name="codex_sync_duplicates_merge_failed_title">Не удалось объединить дубликаты сессий</string>
     <string name="codex_sync_duplicates_merge_failed_body">Не удалось объединить дубликаты сессий.</string>
+    <string name="codex_sync_confirm_selection_missing">Эта сессия больше недоступна — возможно, она перенесена в архив. Выберите другую сессию.</string>
 </resources>

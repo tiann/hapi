@@ -103,6 +103,13 @@ data class CodexImportUiState(
      * only toasts `duplicates.detect.failed.*`; the import result stands).
      */
     val duplicateDetectError: String? = null,
+    /**
+     * A single-row Confirm found the checked row gone from the listing
+     * (archived externally, e.g. from the desktop client, after it was
+     * checked): the dialog stays open with the selection intact and this
+     * notice armed instead of closing with no selection at all.
+     */
+    val confirmSelectionMissing: Boolean = false,
 ) {
     val selectedSession: CodexLocalSessionSummary?
         get() = selectedSessionId?.let { id -> sessions.firstOrNull { it.id == id } }
@@ -153,7 +160,10 @@ sealed interface CodexImportAtCreateResult {
  *   imported.
  * - Confirm with exactly one checked row = inline select (+ apply that
  *   session's cwd to the form directory); more = bulk import. Bulk failure
- *   keeps the dialog open with selections intact.
+ *   keeps the dialog open with selections intact. A single-row Confirm
+ *   whose row was archived/removed externally in the meantime keeps the
+ *   dialog open with the selection intact + a visible notice — never a
+ *   silent close with no selection.
  * - After a successful bulk import the same batch is re-checked for
  *   duplicates (`POST /codex/duplicate-sessions`, only `sessionIds`):
  *   duplicates arm the merge-confirm state; a detection failure never
@@ -307,6 +317,8 @@ class CodexImportController(
                 } else {
                     it.dialogSelection + sessionId
                 },
+                // The selection changed — a stale row-missing notice is obsolete.
+                confirmSelectionMissing = false,
             )
         }
     }
@@ -315,11 +327,11 @@ class CodexImportController(
     fun selectAll() {
         val current = state.value
         val filtered = CodexImportLogic.filterSessions(current.sessions, current.workdirFilter, current.searchQuery)
-        update { it.copy(dialogSelection = LinkedHashSet(filtered.map { it.id })) }
+        update { it.copy(dialogSelection = LinkedHashSet(filtered.map { it.id }), confirmSelectionMissing = false) }
     }
 
     fun clearSelection() {
-        update { it.copy(dialogSelection = emptySet()) }
+        update { it.copy(dialogSelection = emptySet(), confirmSelectionMissing = false) }
     }
 
     fun setWorkdirFilter(filter: String) {
@@ -334,13 +346,21 @@ class CodexImportController(
      * Dialog Confirm (web `onConfirm` wiring in the create form): one checked
      * row selects it inline (and applies its cwd to the form directory), then
      * the dialog closes; more than one runs the bulk import (which closes the
-     * dialog only on success).
+     * dialog only on success). A single-row Confirm whose row has vanished
+     * from the listing meanwhile (archived externally) keeps the dialog open
+     * with the selection intact + a visible notice rather than closing with
+     * no selection at all.
      */
     fun confirm() {
         val current = state.value
         val checked = current.dialogSelection.toList()
         if (checked.size == 1) {
-            current.sessions.firstOrNull { it.id == checked[0] }?.let(::selectInline)
+            val picked = current.sessions.firstOrNull { it.id == checked[0] }
+            if (picked == null) {
+                update { it.copy(confirmSelectionMissing = true) }
+                return
+            }
+            selectInline(picked)
             // An inline pick is a clean exit — drop any stale failure left by
             // an earlier bulk attempt in the same dialog session.
             resetDialogFields()
@@ -692,6 +712,7 @@ class CodexImportController(
                 archiveError = null,
                 restartStarted = false,
                 restartError = null,
+                confirmSelectionMissing = false,
             )
         }
     }

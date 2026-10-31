@@ -347,6 +347,48 @@ class CodexImportControllerTest {
     }
 
     @Test
+    fun `confirm keeps the dialog open when the single checked row was archived`() = runTest {
+        val gateway = FakeGateway().apply {
+            codexSessionsResult = CodexLocalSessionsResponse(
+                success = true,
+                sessions = listOf(session("a"), session("b")),
+            )
+        }
+        val controller = buildController(gateway)
+        controller.openDialog("/repo", "m1")
+        advanceUntilIdle()
+        controller.toggleSession("a")
+
+        // The row is archived externally (e.g. from the desktop client) after
+        // it was checked — the listing no longer contains it.
+        controller.archive("a")
+        advanceUntilIdle()
+
+        controller.confirm()
+        advanceUntilIdle()
+
+        val state = controller.state.value
+        assertTrue(state.open, "dialog stays open instead of silently closing")
+        assertTrue(state.confirmSelectionMissing, "visible notice is armed")
+        assertEquals(setOf("a"), state.dialogSelection, "checked row is not cleared")
+        assertNull(state.selectedSessionId, "no selection was made")
+        assertEquals(0, gateway.syncCalls.size, "nothing is synced for a vanished row")
+
+        // Recovering: re-picking clears the notice and confirms fine (the
+        // stale archived id is dropped first so the single-row path runs).
+        controller.clearSelection()
+        assertFalse(controller.state.value.confirmSelectionMissing, "notice clears with the selection change")
+        controller.toggleSession("b")
+        controller.confirm()
+        advanceUntilIdle()
+
+        val recovered = controller.state.value
+        assertFalse(recovered.open)
+        assertFalse(recovered.confirmSelectionMissing)
+        assertEquals("b", recovered.selectedSessionId)
+    }
+
+    @Test
     fun `confirm with many rows bulk-imports, marks, trims selection and closes`() = runTest {
         val gateway = FakeGateway().apply {
             codexSessionsResult = CodexLocalSessionsResponse(
