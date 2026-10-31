@@ -96,5 +96,22 @@ fun CodexImportSection(
                 )
             }
         }
+        // A failed merge whose confirm was dismissed — the error stays
+        // observable here instead of vanishing with the dialog (web
+        // `duplicates.merge.failed.*` toast — inline here, same divergence).
+        state.duplicateMergeError?.let { detail ->
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    stringResource(R.string.codex_sync_duplicates_merge_failed_title),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Text(
+                    detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
     }
 }

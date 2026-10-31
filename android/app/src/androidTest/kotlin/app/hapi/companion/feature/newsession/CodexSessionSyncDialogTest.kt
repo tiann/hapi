@@ -102,6 +102,8 @@ class CodexSessionSyncDialogTest {
                     onWorkdirFilterChange = {},
                     onSearchQueryChange = {},
                     onConfirm = {},
+                    onArchive = {},
+                    onRestart = {},
                 )
             }
         }
@@ -255,6 +257,8 @@ class CodexSessionSyncDialogTest {
                         onWorkdirFilterChange = controller::setWorkdirFilter,
                         onSearchQueryChange = controller::setSearchQuery,
                         onConfirm = controller::confirm,
+                        onArchive = {},
+                        onRestart = {},
                     )
                 }
             }

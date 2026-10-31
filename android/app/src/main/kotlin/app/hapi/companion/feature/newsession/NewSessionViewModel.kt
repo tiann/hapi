@@ -169,6 +169,13 @@ data class CodexImportSectionUi(
      * (web toasts `duplicates.detect.failed.*`; inline here — divergence).
      */
     val duplicateDetectError: String? = null,
+    /**
+     * A failed duplicate merge whose confirm was dismissed — the error must
+     * not vanish with the dialog (web toasts it outside the dialog; the
+     * #2149 retention shape). Null while the confirm is open: the dialog
+     * owns the error then, this slot only carries the retained copy.
+     */
+    val duplicateMergeError: String? = null,
 )
 
 /**
@@ -1090,6 +1097,10 @@ class NewSessionViewModel(
             error = codexImportState.error ?: codexImportState.importError,
             busy = codexImportBusy,
             duplicateDetectError = codexImportState.duplicateDetectError,
+            // A merge failure retained through a dismissed confirm renders
+            // here — the confirm's own inline slot only exists while open.
+            duplicateMergeError = codexImportState.duplicateMergeError
+                ?.takeIf { !codexImportState.duplicateMergeConfirmOpen },
         )
 
         return NewSessionUiState(

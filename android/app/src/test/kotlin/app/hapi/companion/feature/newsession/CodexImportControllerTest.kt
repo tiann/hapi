@@ -83,6 +83,8 @@ class CodexImportControllerTest {
         var mergeResult: CodexMergeDuplicateSessionsResponse =
             CodexMergeDuplicateSessionsResponse(success = true)
         var mergeThrows: Exception? = null
+        /** Suspends the merge call until completed — pins the in-flight window. */
+        var mergeGate: CompletableDeferred<Unit>? = null
         var restartResult: CodexDesktopScriptResponse = CodexDesktopScriptResponse(success = true)
 
         override suspend fun spawn(machineId: String, request: SpawnSessionRequest): SpawnResponse =
@@ -147,6 +149,7 @@ class CodexImportControllerTest {
 
         override suspend fun mergeCodexDuplicateSessions(payload: CodexDesktopSyncRequest): CodexMergeDuplicateSessionsResponse {
             mergeCalls.add(payload)
+            mergeGate?.await()
             mergeThrows?.let { throw it }
             return mergeResult
         }
@@ -1087,6 +1090,79 @@ class CodexImportControllerTest {
         assertTrue(state.pendingDuplicateHapiSessionIds.isEmpty())
         assertTrue(state.duplicateSessionGroups.isEmpty())
         assertNull(state.duplicateMergeError)
+    }
+
+    @Test
+    fun `dismissing the merge confirm mid merge keeps progress and the final error observable`() = runTest {
+        val gateway = FakeGateway().apply {
+            syncResult = CodexDesktopScriptResponse(success = true, hapiSessionIds = listOf("h1"))
+            duplicateResult = CodexDuplicateSessionsResponse(
+                success = true,
+                duplicates = listOf(
+                    CodexDuplicateSessionGroup("a", hapiSessionIds = listOf("h1"), canonicalSessionId = "h1"),
+                ),
+            )
+            mergeGate = CompletableDeferred()
+            mergeResult = CodexMergeDuplicateSessionsResponse(success = false, error = "merge backend down")
+        }
+        val controller = buildController(gateway)
+        controller.bulkImport(listOf("a"))
+        advanceUntilIdle()
+
+        controller.mergeDuplicates()
+        runCurrent() // coroutine reaches the gated merge call
+        assertTrue(controller.state.value.mergingDuplicates)
+
+        // Back/outside dismissal while the merge is in flight: guarded —
+        // the batch stays armed so the progress stays observable.
+        controller.closeDuplicateMergeDialog()
+        val dismissed = controller.state.value
+        assertTrue(dismissed.duplicateMergeConfirmOpen, "confirm stays armed mid-merge")
+        assertTrue(dismissed.mergingDuplicates, "in-flight progress stays observable")
+
+        // The hung merge now fails: the final error lands in the still-open
+        // confirm (retryable), not nowhere.
+        gateway.mergeGate?.complete(Unit)
+        advanceUntilIdle()
+        val failed = controller.state.value
+        assertTrue(failed.duplicateMergeConfirmOpen, "failed merge stays confirmable/retryable")
+        assertEquals("merge backend down", failed.duplicateMergeError)
+        assertFalse(failed.mergingDuplicates)
+    }
+
+    @Test
+    fun `dismissing a failed merge retains the error until the next import`() = runTest {
+        val gateway = FakeGateway().apply {
+            syncResult = CodexDesktopScriptResponse(success = true, hapiSessionIds = listOf("h1"))
+            duplicateResult = CodexDuplicateSessionsResponse(
+                success = true,
+                duplicates = listOf(
+                    CodexDuplicateSessionGroup("a", hapiSessionIds = listOf("h1"), canonicalSessionId = "h1"),
+                ),
+            )
+            mergeResult = CodexMergeDuplicateSessionsResponse(success = false, error = "merge script died")
+        }
+        val controller = buildController(gateway)
+        controller.bulkImport(listOf("a"))
+        advanceUntilIdle()
+        controller.mergeDuplicates()
+        advanceUntilIdle()
+        assertEquals("merge script died", controller.state.value.duplicateMergeError)
+
+        // Dismiss the failed confirm: the slots clear but the error is
+        // retained (it renders on the inline section while closed) instead
+        // of vanishing with the dialog.
+        controller.closeDuplicateMergeDialog()
+        val dismissed = controller.state.value
+        assertFalse(dismissed.duplicateMergeConfirmOpen)
+        assertTrue(dismissed.pendingDuplicateSessionIds.isEmpty())
+        assertEquals("merge script died", dismissed.duplicateMergeError, "error survives the dismissal")
+
+        // A fresh bulk-import attempt supersedes the retained feedback.
+        controller.bulkImport(listOf("a"))
+        val restarted = controller.state.value
+        assertNull(restarted.duplicateMergeError, "new import clears the stale merge error")
+        advanceUntilIdle()
     }
 
     // -------------------------------------------------------- archive (B) --

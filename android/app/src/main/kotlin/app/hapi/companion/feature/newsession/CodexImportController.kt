@@ -176,7 +176,10 @@ sealed interface CodexImportAtCreateResult {
  * - Merge confirm failure keeps the confirm dialog open with the error
  *   inline (web rethrows out of `handleMergeDuplicateSessions` and
  *   `ConfirmDialog` catches into its error slot); success clears the
- *   pending state and navigates to the canonical session.
+ *   pending state and navigates to the canonical session. The confirm's
+ *   dismissal is guarded while a merge is in flight (progress + outcome
+ *   stay observable), and dismissing after a failure retains the error on
+ *   the inline section instead of swallowing it with the dialog.
  * - Archive removes the row (and the inline selection when it pointed at
  *   it); failures land in the dialog's red [CodexImportUiState.archiveError]
  *   banner. Restart probes `/codex/status` first — an unavailable client
@@ -388,7 +391,10 @@ class CodexImportController(
         val current = state.value
         if (current.importing || current.loading || sessionIds.isEmpty()) return
         val requestMachineId = current.machineId ?: formMachineId.ifEmpty { null }
-        update { it.copy(importing = true, duplicateDetectError = null) }
+        // A fresh import attempt supersedes any retained merge/detect
+        // feedback from the previous batch (including a merge error retained
+        // through a dismissed confirm).
+        update { it.copy(importing = true, duplicateDetectError = null, duplicateMergeError = null) }
         scope.launch {
             try {
                 val result = gateway.syncCodexSession(
@@ -481,6 +487,10 @@ class CodexImportController(
                     merged = result.merged,
                     importedHapiSessionIds = state.value.pendingDuplicateHapiSessionIds,
                 )
+                // Success owns its cleanup: end the in-flight window first so
+                // the guarded close actually clears (a user dismissal
+                // mid-merge is the guarded no-op), and drop any stale error.
+                update { it.copy(mergingDuplicates = false, duplicateMergeError = null) }
                 closeDuplicateMergeDialog()
                 redirectSessionId?.let(navigateToSession)
             } catch (cancellation: CancellationException) {
@@ -495,14 +505,24 @@ class CodexImportController(
         }
     }
 
-    /** `closeDuplicateMergeDialog`: clears all four pending slots at once. */
+    /** `closeDuplicateMergeDialog`: clears the pending slots — with two dismissal guarantees. */
     fun closeDuplicateMergeDialog() {
+        // While a merge is in flight this is a no-op: the confirm stays open
+        // so the in-flight progress and the eventual outcome stay observable
+        // (an AlertDialog's back/outside dismissal routes here, same as the
+        // already-disabled cancel button; success ends the in-flight window
+        // before its own cleanup below).
+        if (state.value.mergingDuplicates) return
+        // A failed merge's error is retained through the dismissal — it must
+        // not vanish with the dialog (the web twin toasts it outside the
+        // dialog; the #2149 import-error retention shape). It renders on the
+        // inline section while the confirm is closed, and clears on the next
+        // bulk import or merge attempt.
         update {
             it.copy(
                 pendingDuplicateSessionIds = emptyList(),
                 pendingDuplicateHapiSessionIds = emptyList(),
                 duplicateSessionGroups = emptyList(),
-                duplicateMergeError = null,
             )
         }
     }

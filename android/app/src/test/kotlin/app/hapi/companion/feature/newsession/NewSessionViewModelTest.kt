@@ -1733,4 +1733,60 @@ class NewSessionViewModelTest {
         assertEquals(listOf("h-9"), spawnedIds, "merge redirect rides the spawned one-shot")
         assertFalse(vm.codexImport.state.value.duplicateMergeConfirmOpen)
     }
+
+    @Test
+    fun `merge failure stays observable on the inline section after the confirm is dismissed`() = runTest {
+        val gateway = FakeGateway().apply {
+            codexSessionsResult = CodexLocalSessionsResponse(
+                success = true,
+                sessions = listOf(codexSession("thread-1"), codexSession("thread-2")),
+                machineId = "m1",
+            )
+            syncResult = CodexDesktopScriptResponse(
+                success = true,
+                sessionIds = listOf("thread-1", "thread-2"),
+                hapiSessionIds = listOf("h-1", "h-2"),
+            )
+            duplicateResult = CodexDuplicateSessionsResponse(
+                success = true,
+                duplicates = listOf(
+                    CodexDuplicateSessionGroup(
+                        codexSessionId = "thread-1",
+                        hapiSessionIds = listOf("h-1", "h-2"),
+                        canonicalSessionId = "h-1",
+                    ),
+                ),
+            )
+            mergeResult = CodexMergeDuplicateSessionsResponse(success = false, error = "merge script died")
+        }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs())
+        advanceUntilIdle()
+
+        vm.setAgent("codex")
+        vm.setDirectory("/repo")
+        vm.openCodexImportDialog()
+        advanceUntilIdle()
+        vm.codexImport.toggleSession("thread-1")
+        vm.codexImport.toggleSession("thread-2")
+        vm.codexImport.confirm()
+        advanceUntilIdle()
+        assertTrue(vm.codexImport.state.value.duplicateMergeConfirmOpen)
+
+        vm.mergeDuplicateCodexSessions()
+        advanceUntilIdle()
+
+        // The failed merge keeps its error in the open confirm — the section
+        // slot stays empty while the dialog owns the error.
+        assertEquals("merge script died", vm.codexImport.state.value.duplicateMergeError)
+        assertNull(vm.uiState.value.codexImport.duplicateMergeError,
+            "while the confirm is open the dialog owns the error")
+
+        // Dismissing the confirm must not swallow the failure (review: the
+        // error survives the dismissal like the web toast does).
+        vm.closeDuplicateMergeDialog()
+        advanceUntilIdle()
+        assertFalse(vm.codexImport.state.value.duplicateMergeConfirmOpen)
+        assertEquals("merge script died", vm.uiState.value.codexImport.duplicateMergeError,
+            "retained failure renders on the inline section")
+    }
 }
