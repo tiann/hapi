@@ -103,19 +103,19 @@
         }
       }
     },
-    "%@ rejected its stored credentials and was signed out. Pair it again from the hub menu." : {
+    "%@ rejected its stored credentials and was signed out. Pair it again from Settings." : {
       "extractionState" : "manual",
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ отклонил сохранённые учётные данные, и устройство вышло из аккаунта. Сопрягите его заново из меню хаба."
+            "value" : "%@ отклонил сохранённые учётные данные, и устройство вышло из аккаунта. Сопрягите его заново в настройках."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "%@ 拒绝了已保存的凭据，已退出登录。请从 Hub 菜单重新配对。"
+            "value" : "%@ 拒绝了已保存的凭据，已退出登录。请在设置中重新配对。"
           }
         }
       }

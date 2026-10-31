@@ -144,8 +144,9 @@ The app supports multiple hubs with one active selection. See the
   an already-paired hub can be selected directly.
 - **Simulator:** use manual entry because `DataScannerViewController` is
   unavailable. Camera pairing is optional on physical devices too.
-- **Sign out:** home → hub menu removes that hub's credentials and falls back
-  to another paired hub or pairing. A rejected access token, or a freshly
+- **Hubs:** Settings → Hubs switches between paired hubs and adds another.
+- **Sign out:** Settings → Hubs → Sign Out removes that hub's credentials and
+  falls back to another paired hub or pairing. A rejected access token, or a freshly
   issued JWT rejected again, triggers re-pairing. Temporary network/5xx refresh
   failures retain credentials.
 
@@ -352,10 +353,14 @@ sidebar requests 280–360pt (320pt ideal); the system collapses the same view
 hierarchy in compact windows. Foldable iPhones (iPhone Duo) use the same split
 once `UIHingeInteraction` (iOS 27.1+) reports a hinge: unfolded shows both
 columns, folded collapses to the phone stack without recreating the chat. Other
-iPhones keep their single `NavigationStack`. A side-by-side sidebar drops its
-inline "Sessions" title and moves the filter beside the hub menu, because the
-system sidebar toggle shares the trailing edge. On the folded Duo's 678pt outer
-screen the system moves Back and toolbar actions into a vertical side bar, so
+iPhones keep their single `NavigationStack`. The phone-width session list puts
+Settings on the leading edge and the filter on the trailing edge; on iOS 26+
+New Session sits beside the bottom search field (as in Messages), while iOS
+17/18 keeps it in the top bar. A side-by-side sidebar drops its inline
+"Sessions" title, keeps search at its top and moves the filter beside
+Settings, because the system sidebar toggle shares the trailing edge. On the
+folded Duo's 678pt outer screen the system moves Back and toolbar actions into
+a vertical side bar, so
 the session list drops its "Sessions" title (the empty top bar disappears) and
 the chat uses the leading-aligned system title/subtitle instead of the centered
 custom header (no agent icon). The chat title minimizes once the reader scrolls

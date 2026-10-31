@@ -2,9 +2,9 @@ import HapiClient
 import SwiftUI
 import UIKit
 
-/// Post-pairing home: the session list for the active hub, with the hub
-/// switcher (switch / add / settings / sign out), the "+" new-session sheet
-/// (A-M3c), the Settings sheet (A-M4e), and a unified session-filter menu.
+/// Post-pairing home: the session list for the active hub, with the "+"
+/// new-session sheet (A-M3c), the Settings sheet (A-M4e, which also switches,
+/// adds and signs out of hubs), and a unified session-filter menu.
 /// Degraded connections appear below navigation, not among its actions.
 /// iPhone pushes the chat; iPad and foldable iPhones select a stable detail in
 /// a native split that collapses to a stack when the window is compact.
@@ -15,7 +15,6 @@ struct HomeView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var listModel: SessionListModel
-    @State private var confirmSignOut = false
     @State private var showNewSession = false
     @State private var showSettings = false
     @State private var path: [String] = []
@@ -30,8 +29,8 @@ struct HomeView: View {
         usesSplitNavigation && horizontalSizeClass == .regular
     }
 
-    /// iPhone Duo outer screen: hub, filter and new session live in the
-    /// system's vertical bar, leaving the top bar to the title alone.
+    /// iPhone Duo outer screen: the system moves toolbar actions into its
+    /// vertical bar, leaving the top bar to the title alone.
     private var isFoldedOuterScreen: Bool {
         FoldableDevice.shared.hasHinge && horizontalSizeClass == .compact
     }
@@ -123,22 +122,43 @@ struct HomeView: View {
         .navigationBarTitleDisplayMode(.inline)
         .modifier(SidebarTitleRemoval(isSidebar: showsSideBySide || isFoldedOuterScreen))
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) { hubMenu }
+            ToolbarItem(placement: .topBarLeading) { settingsButton }
             if listModel.showsFilterMenu {
-                // Beside the hub menu when the system sidebar toggle shares
-                // the trailing edge, so the three icons do not bunch up.
+                // Beside Settings when the system sidebar toggle shares the
+                // trailing edge, so the icons do not bunch up.
                 ToolbarItem(placement: showsSideBySide ? .topBarLeading : .topBarTrailing) {
                     SessionFilterMenu(model: listModel)
                 }
             }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { showNewSession = true } label: {
-                    Label("New Session", systemImage: "plus")
-                        .frame(minWidth: 44, minHeight: 44)
-                }
-                .accessibilityIdentifier("home.new-session")
+            if !showsNewSessionBesideSearch {
+                ToolbarItem(placement: .topBarTrailing) { newSessionButton }
             }
         }
+        .modifier(NewSessionBesideSearch(isEnabled: showsNewSessionBesideSearch) { newSessionButton })
+    }
+
+    /// iOS 26 bottom search bar, as in Messages: New Session sits beside the
+    /// field. A side-by-side sidebar keeps search at its top, and older
+    /// systems keep search under the title.
+    private var showsNewSessionBesideSearch: Bool {
+        guard #available(iOS 26.0, *) else { return false }
+        return !showsSideBySide
+    }
+
+    private var newSessionButton: some View {
+        Button { showNewSession = true } label: {
+            Label("New Session", systemImage: "plus")
+                .frame(minWidth: 44, minHeight: 44)
+        }
+        .accessibilityIdentifier("home.new-session")
+    }
+
+    private var settingsButton: some View {
+        Button { showSettings = true } label: {
+            Label("Settings", systemImage: "gearshape")
+                .frame(minWidth: 44, minHeight: 44)
+        }
+        .accessibilityIdentifier("home.settings")
     }
 
     private func openSession(_ sessionId: String) {
@@ -162,61 +182,11 @@ struct HomeView: View {
         .id(sessionId)
     }
 
-    // MARK: - Hub switcher
-
-    private var hubMenu: some View {
-        Menu {
-            Section("Hubs") {
-                ForEach(model.hubs, id: \.self) { hub in
-                    Button {
-                        model.switchHub(to: hub)
-                    } label: {
-                        if hub == session.hubUrl {
-                            Label(HubDisplay.host(hub), systemImage: "checkmark")
-                        } else {
-                            Text(HubDisplay.host(hub))
-                        }
-                    }
-                }
-            }
-            Button {
-                model.showAddHub = true
-            } label: {
-                Label("Add Hub…", systemImage: "plus")
-            }
-            Divider()
-            Button {
-                showSettings = true
-            } label: {
-                Label("Settings", systemImage: "gearshape")
-            }
-            Button(role: .destructive) {
-                confirmSignOut = true
-            } label: {
-                Label("Sign Out…", systemImage: "rectangle.portrait.and.arrow.right")
-            }
-        } label: {
-            Label("Hubs", systemImage: "server.rack")
-                .frame(minWidth: 44, minHeight: 44)
-        }
-        .accessibilityValue(HubDisplay.host(session.hubUrl))
-        .accessibilityIdentifier("home.hubs")
-        .confirmationDialog(
-            "Sign out of \(HubDisplay.host(session.hubUrl))?",
-            isPresented: $confirmSignOut,
-            titleVisibility: .visible
-        ) {
-            Button("Sign Out", role: .destructive) { model.signOut(hub: session.hubUrl) }
-        } message: {
-            Text("Removes the stored access token for this hub. Pair again to reconnect.")
-        }
-    }
-
     private func authFailureBanner(failedHub: String) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
-            Text("\(HubDisplay.host(failedHub)) rejected its stored credentials and was signed out. Pair it again from the hub menu.")
+            Text("\(HubDisplay.host(failedHub)) rejected its stored credentials and was signed out. Pair it again from Settings.")
                 .font(.footnote)
             Spacer(minLength: 0)
             Button {
@@ -234,8 +204,8 @@ struct HomeView: View {
     }
 }
 
-/// A side-by-side sidebar's bar already holds hub, filter, new session and the
-/// system sidebar toggle; at 320pt the inline "Sessions" title only got a
+/// A side-by-side sidebar's bar already holds settings, filter, new session and
+/// the system sidebar toggle; at 320pt the inline "Sessions" title only got a
 /// truncated sliver. The title stays set for VoiceOver and collapsed stacks.
 private struct SidebarTitleRemoval: ViewModifier {
     let isSidebar: Bool
@@ -243,6 +213,28 @@ private struct SidebarTitleRemoval: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 18.0, *) {
             content.toolbar(removing: isSidebar ? .title : nil)
+        } else {
+            content
+        }
+    }
+}
+
+/// Places the system search field in the bottom bar with New Session on its
+/// trailing side. The OS branch is static and the toggle lives inside the
+/// toolbar, so resizing never replaces the session list's identity.
+private struct NewSessionBesideSearch<NewSessionButton: View>: ViewModifier {
+    let isEnabled: Bool
+    @ViewBuilder var newSessionButton: () -> NewSessionButton
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.toolbar {
+                if isEnabled {
+                    DefaultToolbarItem(kind: .search, placement: .bottomBar)
+                    ToolbarSpacer(.fixed, placement: .bottomBar)
+                    ToolbarItem(placement: .bottomBar) { newSessionButton() }
+                }
+            }
         } else {
             content
         }
