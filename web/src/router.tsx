@@ -1365,10 +1365,16 @@ export const routeTree = rootRoute.addChildren([
 
 type RouterHistory = Parameters<typeof createRouter>[0]['history']
 
-export function createAppRouter(history?: RouterHistory) {
+function normalizeRouterBasepath(baseUrl: string): string {
+    const normalized = baseUrl.replace(/\/+$/, '')
+    return normalized || '/'
+}
+
+export function createAppRouter(history?: RouterHistory, basepath = normalizeRouterBasepath(import.meta.env.BASE_URL)) {
     return createRouter({
         routeTree,
         history,
+        basepath,
         scrollRestoration: true,
         getScrollRestorationKey,
     })
