@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.StateRestorationTester
@@ -82,6 +83,8 @@ class HomeScreenTest {
     private val viewModel = SessionListViewModel(sessions, HomeMachines(), LastSeenStore(scope), scope)
     private val today = LocalDate.now().toEpochDay()
     @Volatile private var imeVisible = false
+    /** Compose's reported IME inset height, captured next to [imeVisible] for diagnostics. */
+    @Volatile private var composeImeBottom = -1
 
     @Before fun configureWindow() {
         compose.runOnUiThread {
@@ -100,7 +103,11 @@ class HomeScreenTest {
     @Composable
     private fun Content() {
         val showingKeyboard = WindowInsets.isImeVisible
-        SideEffect { imeVisible = showingKeyboard }
+        val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
+        SideEffect {
+            imeVisible = showingKeyboard
+            composeImeBottom = imeBottom
+        }
         HapiTheme(dynamicColor = false) {
             HomeScreen(
                 viewModel = viewModel,
@@ -151,6 +158,7 @@ class HomeScreenTest {
             "composeIsImeVisible=$imeVisible, " +
             "compatIsVisible=${insets?.isVisible(WindowInsetsCompat.Type.ime())}, " +
             "imeInsetBottom=${insets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom}, " +
+            "composeImeBottom=$composeImeBottom, " +
             "keyboard=$keyboard, " +
             "softInputMode=${compose.activity.window.attributes.softInputMode}"
     }
