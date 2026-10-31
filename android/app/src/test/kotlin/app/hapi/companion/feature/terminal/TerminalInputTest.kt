@@ -246,4 +246,64 @@ class TerminalInputTest {
         assertEquals(null, hardwareKeySequence(TerminalKeyEvent(keyCode = 0)))
         assertEquals(null, hardwareKeySequence(TerminalKeyEvent(keyCode = -1, ctrl = true)))
     }
+
+    // --------------------------------------------- typing field (shared target) --
+
+    @Test
+    fun typingFieldSendsTheImeInsertedDelta() {
+        assertEquals("diag", directTypeInserted("", "diag"))
+        assertEquals("g", directTypeInserted("dia", "diag"))
+    }
+
+    @Test
+    fun typingFieldReplaceSendsWhateverTheFieldNowHolds() {
+        // An IME replace (compose rewrite) is not an append — the whole text
+        // goes, since the field resets after every send anyway.
+        assertEquals("xterm", directTypeInserted("diag", "xterm"))
+    }
+
+    @Test
+    fun typingFieldNormalizesNewlinesToCr() {
+        assertEquals("a\rb", directTypeInserted("", "a\nb"))
+    }
+
+    @Test
+    fun typingFieldIgnoresNoOpChangesAndBackspaceOnEmpty() {
+        assertEquals(null, directTypeInserted("", "")) // backspace on the always-empty field
+        assertEquals(null, directTypeInserted("diag", "diag")) // same-text recomposition
+    }
+
+    // --------------------- sticky modifiers composed onto typed/hardware input --
+
+    @Test
+    fun stickyCtrlTurnsTypedLettersIntoControlCodes() {
+        // The typing-field dispatch chain (soft keyboards never set
+        // isCtrlPressed, so sticky Ctrl + IME letter is THE Ctrl+letter path):
+        // directTypeInserted -> applyModifierState(sticky).
+        val wire = applyModifierState(directTypeInserted("", "c")!!, ModifierState(ctrl = true))
+        assertEquals(3, wire[0].code)
+    }
+
+    @Test
+    fun stickyAltPrefixesTypedTextWithEscape() {
+        val wire = applyModifierState(directTypeInserted("", "x")!!, ModifierState(alt = true))
+        assertEquals(listOf(27, 'x'.code), wire.map { it.code })
+    }
+
+    @Test
+    fun stickyModifiersComposeOntoInterceptedHardwareBytes() {
+        // Hardware Enter is CR already; sticky Ctrl leaves CR alone (not a
+        // letter), sticky Alt makes it meta-CR (ESC CR).
+        val enter = hardwareKeySequence(TerminalKeyEvent(TerminalKeyCodes.ENTER))!!
+        assertEquals("\r", applyModifierState(enter, ModifierState(ctrl = true)))
+        assertEquals(listOf(27, 13), applyModifierState(enter, ModifierState(alt = true)).map { it.code })
+    }
+
+    @Test
+    fun typedDeltaConsumesTheStickyModifiersLikeAQuickKey() {
+        // One real send (typed text included) consumes the sticky state.
+        val state = ModifierState(ctrl = true)
+        val typed = directTypeInserted("", "c")!!
+        assertTrue(shouldResetModifiers(typed, state))
+    }
 }

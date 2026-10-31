@@ -1,6 +1,5 @@
 package app.hapi.companion.feature.terminal
 
-import android.view.KeyEvent as AndroidKeyEvent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -48,7 +47,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
@@ -551,50 +549,15 @@ private fun TerminalInputArea(
         } else {
             val clipboard = LocalClipboardManager.current
             val pasteLabel = stringResource(R.string.terminal_paste)
-            // The IME/hardware-key target of Direct mode: everything typed
-            // here goes straight to the PTY — the field never holds text (the
-            // terminal echoes), and hardware keys are intercepted below and
-            // mapped to terminal bytes.
-            var directDraft by rememberSaveable { mutableStateOf("") }
-            val directInputLabel = stringResource(R.string.terminal_direct_type_input)
-            OutlinedTextField(
-                value = directDraft,
-                onValueChange = { fresh ->
-                    // Append-only in practice (the field resets after every
-                    // send); an IME replace sends whatever the field now holds.
-                    val inserted = if (fresh.startsWith(directDraft)) fresh.removePrefix(directDraft) else fresh
-                    directDraft = ""
-                    if (inserted.isNotEmpty()) dispatch(inserted.replace("\n", "\r"))
-                },
-                placeholder = { Text(stringResource(R.string.terminal_direct_type_placeholder)) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 52.dp)
-                    .semantics { contentDescription = directInputLabel }
-                    .onPreviewKeyEvent { keyEvent ->
-                        val native = keyEvent.nativeKeyEvent
-                        // Consume on DOWN only — the matching UP is a no-op.
-                        if (native.action != AndroidKeyEvent.ACTION_DOWN) return@onPreviewKeyEvent false
-                        val sequence = hardwareKeySequence(
-                            TerminalKeyEvent(
-                                keyCode = native.keyCode,
-                                ctrl = native.isCtrlPressed,
-                                alt = native.isAltPressed,
-                                shift = native.isShiftPressed,
-                            ),
-                        )
-                        if (sequence == null) {
-                            false
-                        } else {
-                            dispatch(sequence)
-                            true
-                        }
-                    },
+            // The IME/hardware-key target of Direct mode (shared with the
+            // agent PTY panel): everything typed goes straight to the PTY —
+            // the field never holds text (the terminal echoes), and hardware
+            // keys are intercepted inside and mapped to terminal bytes.
+            TerminalTypeField(
+                dispatch = ::dispatch,
                 enabled = inputEnabled,
-                singleLine = true,
-                textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(onSend = { dispatch("\r") }),
+                label = stringResource(R.string.terminal_direct_type_input),
+                placeholder = stringResource(R.string.terminal_direct_type_placeholder),
             )
             SegmentedRow(
                 options = DIRECT_KEY_PAGE_IDS.map { page -> page to stringResource(directPageLabel(page)) },

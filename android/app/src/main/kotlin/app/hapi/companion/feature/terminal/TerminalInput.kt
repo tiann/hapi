@@ -139,6 +139,22 @@ const val MODIFIER_CTRL = "ctrl"
 const val MODIFIER_ALT = "alt"
 
 /**
+ * Bytes a typing field should send when its text changes from [previous] to
+ * [fresh]: the field never holds text (it resets after every send — the
+ * terminal echoes), so this is the IME-inserted delta with newlines normalized
+ * to CR, or null when the change carries nothing (an IME backspace on the
+ * always-empty field, or a no-op recomposition).
+ */
+fun directTypeInserted(previous: String, fresh: String): String? {
+    if (fresh == previous) return null
+    // Append-only in practice (the field resets after every send); an IME
+    // replace sends whatever the field now holds.
+    val inserted = if (fresh.startsWith(previous)) fresh.removePrefix(previous) else fresh
+    if (inserted.isEmpty()) return null
+    return inserted.replace("\n", "\r")
+}
+
+/**
  * Command-mode command templates (web `BASIC_COMMANDS`); tapping fills the
  * command box — it does not send.
  */

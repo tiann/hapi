@@ -42,6 +42,7 @@ import app.hapi.companion.feature.terminal.MODIFIER_CTRL
 import app.hapi.companion.feature.terminal.ModifierState
 import app.hapi.companion.feature.terminal.TerminalStatus
 import app.hapi.companion.feature.terminal.TerminalGrid
+import app.hapi.companion.feature.terminal.TerminalTypeField
 import app.hapi.companion.feature.terminal.TerminalUiState
 import app.hapi.companion.feature.terminal.applyModifierState
 import app.hapi.companion.feature.terminal.shouldResetModifiers
@@ -95,10 +96,11 @@ private val AGENT_QUICK_KEY_ROWS: List<List<AgentQuickKey>> = listOf(
 /**
  * Chat-embedded agent PTY view, the Android twin of the web
  * `AgentTerminalView`: status strip, shared [TerminalGrid] cell rendering with
- * auto-scroll, and the web quick-key rows (input is interactive — the panel is
- * NOT read-only). Composition drives the subscription lifecycle: entering
- * composition subscribes, leaving unsubscribes (the hub idles the CLI when the
- * last viewer goes), exactly like the web `visible` effect.
+ * auto-scroll, an IME/hardware-key typing target, and the web quick-key rows
+ * (input is interactive — the panel is NOT read-only). Composition drives the
+ * subscription lifecycle: entering composition subscribes, leaving
+ * unsubscribes (the hub idles the CLI when the last viewer goes), exactly like
+ * the web `visible` effect.
  */
 @Composable
 internal fun AgentTerminalPanel(
@@ -140,7 +142,7 @@ internal fun AgentTerminalPanel(
                         .fillMaxWidth()
                         .weight(1f),
                 )
-                AgentQuickKeys(
+                AgentTerminalInput(
                     // Web QuickKeyRows: disabled unless the socket is connected.
                     enabled = status == TerminalStatus.Connected,
                     onSend = viewModel::sendInput,
@@ -231,16 +233,18 @@ private fun AgentTerminalErrorBanner(message: String, onRetry: () -> Unit) {
     }
 }
 
-// -------------------------------------------------------------- quick keys --
+// -------------------------------------------------------------- input area --
 
 /**
- * Web `QuickKeyRows` + `useQuickKeyInput`: sticky Ctrl/Alt shared by every key
- * (toggling one clears the other), consumed by the first real send. There is
- * no command box — the web agent panel's only input surfaces are the xterm
- * itself (desktop) and these rows; on Android the rows are the input surface.
+ * The agent panel's input surface: the IME/hardware-key typing target (shared
+ * with the terminal screen's Direct mode — on Android the grid itself cannot
+ * take focus, so this field is the xterm the web panel has natively) above the
+ * web `QuickKeyRows` + `useQuickKeyInput`. Sticky Ctrl/Alt (toggling one
+ * clears the other) are shared by every surface and consumed by the first
+ * real send.
  */
 @Composable
-private fun AgentQuickKeys(
+private fun AgentTerminalInput(
     enabled: Boolean,
     onSend: (String) -> Unit,
     modifier: Modifier = Modifier,
@@ -255,7 +259,8 @@ private fun AgentQuickKeys(
         altActive = false
     }
 
-    /** Quick-key dispatch: apply sticky modifiers, send, consume them. */
+    /** Dispatch shared by the typing field and quick keys: apply the sticky
+     * modifiers, send, consume them. */
     fun dispatch(sequence: String) {
         if (!enabled || sequence.isEmpty()) return
         val modifierState = ModifierState(ctrl = ctrlActive, alt = altActive)
@@ -271,6 +276,12 @@ private fun AgentQuickKeys(
             .semantics { contentDescription = rowLabel },
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
+        TerminalTypeField(
+            dispatch = ::dispatch,
+            enabled = enabled,
+            label = stringResource(R.string.terminal_direct_type_input),
+            placeholder = stringResource(R.string.terminal_direct_type_placeholder),
+        )
         AGENT_QUICK_KEY_ROWS.forEach { row ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
