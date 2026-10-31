@@ -38,4 +38,4 @@ jobs:
             - uses: actions/checkout@v4
             - uses: oven-sh/setup-bun@v2
             - run: bun install --frozen-lockfile
-            - run: bun run --cwd cli test -- src/codex/utils/codexMcpProxy.test.ts
+            - run: bun run --cwd cli test -- src/codex/utils/codexMcpProxy.test.ts src/codex/shared/launch.test.ts
