@@ -112,7 +112,7 @@ export class CodexConversationHistory {
     }
 
     async fork(messageLocalId?: string): Promise<ForkConversationRpcResult> {
-        if (this.busy) throw new Error('Session is busy')
+        if (this.busy && !messageLocalId) throw new Error('Session is busy')
         const client = this.getClient()
         const threadId = this.threadId
         if (!client || !threadId) throw new Error('Codex thread is not ready')
@@ -129,6 +129,23 @@ export class CodexConversationHistory {
             const selectedIndex = turns.findIndex((turn) => turn.id === selectedTurnId)
             if (selectedIndex < 0) {
                 throw new Error('Selected turn not found')
+            }
+            const selected = turns[selectedIndex]!
+            const running = this.busy || turns.some(turn => turn.status === 'inProgress' || turn.status === 'in_progress')
+            if (selected.status === 'inProgress' || selected.status === 'in_progress'
+                || (running && !['completed', 'interrupted', 'failed'].includes(selected.status ?? ''))) {
+                throw new Error('Historical fork requires a completed turn')
+            }
+            // Excluding a native turn must also exclude its first HAPI user
+            // message. A steered message inside that turn is not a safe cutoff.
+            if (running && (selected.clientIds[0] !== messageLocalId || !selected.hasCompleteItems
+                || selected.userMessageCount !== selected.clientIds.length
+                || turns.flatMap(turn => turn.clientIds).filter(id => id === messageLocalId).length !== 1)) {
+                throw new Error('Cannot cut inside an ambiguous native turn. Select its first message.')
+            }
+            if (running && turns.slice(0, selectedIndex).some(turn =>
+                !['completed', 'interrupted', 'failed'].includes(turn.status ?? ''))) {
+                throw new Error('Historical fork requires a completed history prefix')
             }
             // Prefer stable inclusive lastTurnId of the previous turn. The first
             // turn has no predecessor, so fall back to experimental beforeTurnId

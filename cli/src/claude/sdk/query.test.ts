@@ -50,6 +50,54 @@ afterEach(() => {
 })
 
 describe('Query', () => {
+    it('routes context usage and permission mode responses independently', async () => {
+        const { Query } = await import('./query')
+        const stdin = new PassThrough()
+        const stdout = new PassThrough()
+        const query = new Query(stdin, stdout, Promise.resolve())
+
+        const contextUsage = query.getContextUsage()
+        const contextRequest = JSON.parse(stdin.read().toString())
+        const permissionMode = query.setPermissionMode('auto')
+        const permissionRequest = JSON.parse(stdin.read().toString())
+
+        expect(contextRequest.request).toEqual({ subtype: 'get_context_usage' })
+        expect(permissionRequest.request).toEqual({ subtype: 'set_permission_mode', mode: 'auto' })
+
+        const usage = { model: 'claude-fable-5-1', maxTokens: 200_000 }
+        for (const response of [
+            { subtype: 'success', request_id: permissionRequest.request_id },
+            { subtype: 'success', request_id: contextRequest.request_id, response: usage }
+        ]) {
+            stdout.write(JSON.stringify({ type: 'control_response', response }) + '\n')
+        }
+
+        await expect(permissionMode).resolves.toBeUndefined()
+        await expect(contextUsage).resolves.toEqual(usage)
+        stdout.end()
+    })
+
+    it('rejects unsupported context usage requests without ending the message stream', async () => {
+        const { Query } = await import('./query')
+        const stdin = new PassThrough()
+        const stdout = new PassThrough()
+        const query = new Query(stdin, stdout, Promise.resolve())
+
+        const contextUsage = query.getContextUsage()
+        const request = JSON.parse(stdin.read().toString())
+        const rejected = expect(contextUsage).rejects.toThrow('Unsupported request')
+        stdout.write(JSON.stringify({
+            type: 'control_response',
+            response: { subtype: 'error', request_id: request.request_id, error: 'Unsupported request' }
+        }) + '\n')
+        await rejected
+
+        const message = { type: 'system', subtype: 'init', model: 'claude-fable-5-1', session_id: 'test-session' }
+        stdout.end(JSON.stringify(message) + '\n')
+        await expect(query.next()).resolves.toEqual({ value: message, done: false })
+        await expect(query.next()).resolves.toEqual({ value: undefined, done: true })
+    })
+
     it('preserves externally set errors even if the process exits cleanly', async () => {
         const { Query } = await import('./query')
         const stdout = new PassThrough()

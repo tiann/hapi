@@ -23,6 +23,8 @@ export async function runKimi(opts: {
     model?: string;
     resumeSessionId?: string;
     existingSessionId?: string;
+    /** Fresh-spawn reserved hub id from `--hapi-session-id` (create/getOrCreate). */
+    reservedSessionId?: string;
     workingDirectory?: string;
 } = {}): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd();
@@ -57,7 +59,8 @@ export async function runKimi(opts: {
             startedBy,
             workingDirectory,
             agentState: initialState,
-            model: persistedModel
+            model: persistedModel,
+            reservedSessionId: opts.reservedSessionId
         });
     const { api, session } = bootstrap;
 
@@ -83,7 +86,7 @@ export async function runKimi(opts: {
     });
 
     lifecycle.registerProcessHandlers();
-    registerKillSessionHandler(session.rpcHandlerManager, lifecycle);
+    registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
     // Registered here, not in the remote launcher: the catalog is backend
     // independent, and a session running in local mode must answer the web

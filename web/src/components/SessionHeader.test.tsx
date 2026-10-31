@@ -58,6 +58,18 @@ function renderHeader(session: Session, extra?: { serviceTier?: string | null; t
     )
 }
 
+function renderHeaderWithApi(session: Session, api: ApiClient) {
+    return render(
+        <QueryClientProvider client={new QueryClient()}>
+            <ToastProvider>
+                <I18nProvider>
+                    <SessionHeader session={session} onBack={vi.fn()} api={api} />
+                </I18nProvider>
+            </ToastProvider>
+        </QueryClientProvider>
+    )
+}
+
 describe('resolveSessionHeaderMachineLabel', () => {
     it('prefers cached/display labels, then host, then short machine id', () => {
         expect(resolveSessionHeaderMachineLabel(
@@ -83,6 +95,38 @@ describe('resolveSessionHeaderMachineLabel', () => {
 })
 
 describe('SessionHeader', () => {
+    it('does not offer manual Codex sync while the HAPI session is active', () => {
+        const api = {
+            getMachines: vi.fn().mockResolvedValue({ machines: [] }),
+            getScratchlist: vi.fn().mockResolvedValue({ entries: [] }),
+            syncCodexSession: vi.fn()
+        } as unknown as ApiClient
+
+        renderHeaderWithApi(baseSession({
+            active: true,
+            metadata: { flavor: 'codex', path: '/repo', host: 'machine', codexSessionId: 'codex-thread-1' }
+        }), api)
+
+        fireEvent.click(screen.getByRole('button', { name: /More/ }))
+        expect(screen.queryByRole('menuitem', { name: /Sync Codex/ })).toBeNull()
+    })
+
+    it('keeps manual Codex sync available for an inactive imported thread', () => {
+        const api = {
+            getMachines: vi.fn().mockResolvedValue({ machines: [] }),
+            getScratchlist: vi.fn().mockResolvedValue({ entries: [] }),
+            syncCodexSession: vi.fn()
+        } as unknown as ApiClient
+
+        renderHeaderWithApi(baseSession({
+            active: false,
+            metadata: { flavor: 'codex', path: '/repo', host: 'machine', codexSessionId: 'codex-thread-1' }
+        }), api)
+
+        fireEvent.click(screen.getByRole('button', { name: /More/ }))
+        expect(screen.getByRole('menuitem', { name: /Sync Codex/ })).toBeInTheDocument()
+    })
+
     it('hides title generation when the Hub does not advertise the capability', () => {
         const api = {
             getMachines: vi.fn().mockResolvedValue({ machines: [] }),
@@ -275,6 +319,32 @@ describe('SessionHeader', () => {
 
         expect(screen.getByTestId('session-header-machine')).toHaveTextContent(/oos-linux/)
         expect(screen.getByTestId('session-header-age')).toHaveTextContent(/5m ago|5分钟前/)
+    })
+
+    it('shows the project label from the worktree base path separately from its branch', () => {
+        renderHeader(baseSession({
+            metadata: {
+                flavor: 'cursor',
+                path: '/home/user/coding/hapi-worktrees/fix-resume',
+                host: 'machine',
+                worktree: {
+                    basePath: '/home/user/coding/hapi',
+                    branch: 'fix/resume',
+                    name: 'fix-resume',
+                    worktreePath: '/home/user/coding/hapi-worktrees/fix-resume'
+                }
+            }
+        }))
+
+        expect(screen.getByTestId('session-header-project')).toHaveTextContent('project: coding/hapi')
+        expect(screen.getByText('worktree: fix/resume')).toBeInTheDocument()
+    })
+
+    it('hides the project label when its display setting is disabled', () => {
+        localStorage.setItem('hapi-session-header-metadata', JSON.stringify({ project: false }))
+        renderHeader(baseSession({ metadata: { flavor: 'cursor', path: '/home/user/coding/hapi', host: 'machine' } }))
+
+        expect(screen.queryByTestId('session-header-project')).not.toBeInTheDocument()
     })
 
     it('advances relative age on the minute tick without a session prop change', () => {

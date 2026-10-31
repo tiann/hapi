@@ -134,3 +134,23 @@ describe('composer-drafts', () => {
         }
     })
 })
+
+it('distinguishes same-text writes without invalidating another session draft', async () => {
+    const mod = await import('./composer-drafts')
+    mod.saveDraft('generation-source', 'continue')
+    const submitted = mod.getDraftRevision('generation-source')
+    mod.saveDraft('generation-other', 'other text')
+    expect(mod.getDraftRevision('generation-source')).toBe(submitted)
+    mod.saveDraft('generation-source', 'continue')
+    expect(mod.getDraftRevision('generation-source')).not.toBe(submitted)
+    expect(mod.getDraft('generation-source')).toBe('continue')
+})
+
+it('does not reuse a submitted generation after revision eviction', async () => {
+    const mod = await import('./composer-drafts')
+    mod.saveDraft('generation-evicted', 'continue')
+    const submitted = mod.getDraftRevision('generation-evicted')
+    for (let index = 0; index < 60; index++) mod.markDraftEdited(`generation-live-${index}`)
+    expect(mod.getDraftRevision('generation-evicted')).not.toBe(submitted)
+    expect(mod.getDraft('generation-evicted')).toBe('continue')
+})

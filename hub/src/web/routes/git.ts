@@ -18,6 +18,10 @@ const filePathSchema = z.object({
     path: z.string().min(1)
 })
 
+const boundedFileReadSchema = filePathSchema.extend({
+    maxBytes: z.coerce.number().int().min(1).max(10 * 1024 * 1024).optional()
+})
+
 const generatedImageSchema = z.object({
     imageId: z.string().min(1)
 })
@@ -149,12 +153,16 @@ export function createGitRoutes(getSyncEngine: () => SyncEngine | null): Hono<We
             return c.json({ success: false, error: 'Session path not available' })
         }
 
-        const parsed = filePathSchema.safeParse(c.req.query())
+        const parsed = boundedFileReadSchema.safeParse(c.req.query())
         if (!parsed.success) {
             return c.json({ error: 'Invalid file path' }, 400)
         }
 
-        const result = await runRpc(() => engine.readSessionFile(sessionResult.sessionId, parsed.data.path))
+        const result = await runRpc(() => engine.readSessionFile(
+            sessionResult.sessionId,
+            parsed.data.path,
+            parsed.data.maxBytes === undefined ? undefined : { maxBytes: parsed.data.maxBytes }
+        ))
         return c.json(result)
     })
 

@@ -43,6 +43,7 @@ export const codexCommand: CommandDefinition = {
                 resumeLast?: boolean
                 resumeAll?: boolean
                 existingSessionId?: string
+                reservedSessionId?: string
                 model?: string
                 modelReasoningEffort?: ReasoningEffort
                 serviceTier?: string
@@ -75,6 +76,12 @@ export const codexCommand: CommandDefinition = {
                     throw new Error(`Use native codex ${arg} outside HAPI, or /${arg} in an attached terminal`)
                 } else if (arg === '--started-by') {
                     options.startedBy = commandArgs[++i] as 'runner' | 'terminal'
+                } else if (arg === '--hapi-session-id') {
+                    const sessionId = commandArgs[++i]
+                    if (!sessionId) {
+                        throw new Error('Missing --hapi-session-id value')
+                    }
+                    options.reservedSessionId = sessionId
                 } else if (arg === '--existing-session-id') {
                     const sessionId = commandArgs[++i]
                     if (!sessionId) {

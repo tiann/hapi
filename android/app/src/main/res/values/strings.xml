@@ -90,6 +90,8 @@
     <string name="new_session_permission_mode">Permission mode</string>
     <string name="new_session_permission_managed">Managed by agent</string>
     <string name="new_session_permission_managed_desc">This agent manages its own permissions. YOLO mode is not available.</string>
+    <string name="new_session_grok_auto_unavailable">unavailable</string>
+    <string name="new_session_grok_auto_unavailable_desc">Grok did not enable Auto permissions for this account or CLI build.</string>
     <string name="new_session_yolo">YOLO mode</string>
     <string name="new_session_yolo_title">Bypass approvals and sandbox</string>
     <string name="new_session_yolo_desc">Uses dangerous agent flags when spawning.</string>
@@ -106,6 +108,8 @@
 
     <!-- Settings scaffold (B-M4e) -->
     <string name="settings_title">Settings</string>
+    <string name="settings_category_general">General</string>
+    <string name="settings_category_general_summary">Appearance, language, and about</string>
     <string name="settings_back">Back</string>
     <string name="settings_cancel">Cancel</string>
     <string name="settings_retry">Retry</string>
@@ -205,6 +209,11 @@
     <string name="sessions_filter_all">All</string>
     <string name="sessions_filter_unknown_machine">Unknown machine</string>
     <string name="sessions_offline_banner">Offline — showing cached sessions</string>
+    <string name="sessions_search_hint">Search sessions</string>
+    <string name="sessions_search_open">Search sessions</string>
+    <string name="sessions_search_close">Close search</string>
+    <string name="sessions_search_no_results">No sessions matching “%1$s”</string>
+    <string name="sessions_search_no_results_hint">Try another term, or clear the search.</string>
     <string name="sessions_empty_loading_title">Loading sessions…</string>
     <string name="sessions_empty_offline_title">Hub unreachable</string>
     <string name="sessions_empty_title">No sessions yet</string>
@@ -321,7 +330,10 @@
     <string name="chat_tool_awaiting_approval">Awaiting approval</string>
     <string name="chat_tool_awaiting_approval_badge">⏳ Awaiting approval</string>
     <string name="chat_tool_approved">✓ Approved</string>
+    <string name="chat_tool_approved_for_session">✓ Approved for session</string>
+    <string name="chat_tool_approved_allow_all_edits">✓ Approved: allow all edits</string>
     <string name="chat_tool_denied">✕ Denied</string>
+    <string name="chat_tool_aborted">✕ Aborted</string>
     <string name="chat_tool_resolved">Resolved in Codex</string>
     <string name="chat_tool_canceled">— Canceled</string>
     <string name="chat_tool_status_pending">pending</string>
@@ -361,6 +373,7 @@
     <string name="chat_perm_add_note">Add a note…</string>
     <string name="chat_perm_none_of_the_above">None of the above</string>
     <string name="chat_perm_other_note_optional">Optionally, add details in notes.</string>
+    <string name="chat_perm_open_signin_failed">Could not open the sign-in page. Check that a browser is installed and try again.</string>
 
     <!-- External links (B-M2d) -->
     <string name="chat_link_open_title">Open link?</string>
@@ -482,6 +495,11 @@
     <string name="scratchlist_delete">Delete</string>
     <string name="scratchlist_cancel">Cancel</string>
     <string name="scratchlist_save">Save</string>
+    <string name="scratchlist_action_move_up">Move note up</string>
+    <string name="scratchlist_action_move_down">Move note down</string>
+    <string name="scratchlist_action_copy">Copy text to clipboard (not images)</string>
+    <string name="scratchlist_action_copied">Copied!</string>
+    <string name="scratchlist_confirm_delete">Delete this scratchlist entry? This cannot be undone.</string>
     <string name="scratchlist_retry">Retry</string>
     <string name="scratchlist_load_failed">Couldn’t load the scratchlist</string>
     <string name="scratchlist_check_connection">Check the connection to your hub and try again.</string>
@@ -565,9 +583,48 @@
     <string name="chat_reconnecting_retry">Reconnecting… Tap to retry</string>
     <string name="sessions_filters">Filters</string>
     <string name="sessions_filters_active">Filters applied</string>
-    <string name="sessions_clear_filter">Clear filter</string>
+    <string name="sessions_filters_reset">Reset</string>
+    <string name="sessions_filters_done">Done</string>
+    <string name="sessions_filter_machines">Machines</string>
+    <string name="sessions_filter_dates">Activity dates</string>
+    <string name="sessions_filter_any_date">Any date</string>
+    <string name="sessions_filter_clear_dates">Clear date filter</string>
     <string name="sessions_machine_fallback">Machine · %1$s</string>
-    <string name="sessions_filter_summary">Filtered by: %1$s</string>
+    <string name="sessions_time_filter_label">Filter sessions by last activity</string>
+    <string name="sessions_time_filter_apply">Apply</string>
+    <string name="sessions_time_filter_clear">Clear</string>
+    <string name="sessions_time_filter_summary">%1$s – %2$s</string>
+    <string name="sessions_time_filter_empty_title">No sessions in this date range</string>
+    <string name="sessions_time_filter_empty_hint">Adjust or clear the date filter to see more sessions.</string>
+    <string name="sessions_time_filter_recent_activity">Recent activity</string>
     <string name="privacy_policy">Privacy Policy</string>
     <string name="privacy_open_failed">No app can open this link.</string>
+    <!-- Incoming Android shares. -->
+    <string name="share_title">Share to session</string>
+    <string name="share_choose_session">Choose a session</string>
+    <string name="share_search_hint">Search sessions</string>
+    <string name="share_copying">Preparing shared file…</string>
+    <string name="share_importing">Adding shared content…</string>
+    <string name="share_unreadable">Cannot read this file. Retry or remove it.</string>
+    <string name="share_too_large">File exceeds the attachment size limit.</string>
+    <string name="share_interrupted">Preparation was interrupted. Retry or remove this file.</string>
+    <string name="share_retry">Retry</string>
+    <string name="share_remove">Remove</string>
+    <string name="share_cancel">Cancel</string>
+    <string name="share_receive_failed">Cannot receive this share. Please share the content again.</string>
+    <string name="share_restore_title">Restore session?</string>
+    <string name="share_restore_message">This session is stopped. Restore it before adding the shared content?</string>
+    <string name="share_restore_confirm">Restore and add</string>
+    <string name="share_restore_label">Stopped · restore before adding</string>
+    <string name="share_target_failed">Cannot open this session. Check the connection and try again.</string>
+    <string name="share_refresh">Refresh sessions</string>
+    <string name="share_no_sessions">No matching sessions</string>
+    <string name="share_offline">Cannot refresh sessions. Check the connection or switch hubs.</string>
+    <string name="share_replace_title">Another share received</string>
+    <string name="share_replace_message">There is already shared content waiting to be added. Keep it and discard the new share, or replace it with the new share?</string>
+    <string name="share_keep_current">Keep current</string>
+    <string name="share_replace_current">Use new share</string>
+    <string name="share_error_title">Share unavailable</string>
+    <string name="share_ok">OK</string>
+    <string name="share_pair_first">Pair a hub to choose a session for the shared content.</string>
 </resources>

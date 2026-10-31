@@ -146,6 +146,7 @@ export default function SettingsDisplayPage() {
     const sessionHeaderOptions: ReadonlyArray<{ key: SessionHeaderMetadataKey; labelKey: string }> = [
         { key: 'showLabels', labelKey: 'settings.display.sessionHeader.showLabels' },
         { key: 'agent', labelKey: 'settings.display.sessionHeader.agent' },
+        { key: 'project', labelKey: 'settings.display.sessionHeader.project' },
         { key: 'machine', labelKey: 'settings.display.sessionHeader.machine' },
         { key: 'lastActive', labelKey: 'settings.display.sessionHeader.lastActive' },
         { key: 'model', labelKey: 'settings.display.sessionHeader.model' },
@@ -171,7 +172,7 @@ export default function SettingsDisplayPage() {
             </SettingsSection>
 
             <SettingsSection title={t('settings.display.typography')}>
-                <SettingsChoiceGroup label={t('settings.display.fontSize')} value={fontScale} columns={5} options={getFontScaleOptions()} onChange={setFontScale} />
+                <SettingsChoiceGroup label={t('settings.display.fontSize')} value={fontScale} columns={6} options={getFontScaleOptions()} onChange={setFontScale} />
                 <SettingsChoiceGroup label={t('settings.display.terminalFontSize')} value={terminalFontSize} columns={5} options={getTerminalFontSizeOptions()} onChange={setTerminalFontSize} />
             </SettingsSection>
 

@@ -40,7 +40,7 @@ public enum PermissionMode: String, Codable, CaseIterable, Sendable {
         case .plan: return "Plan Mode"
         case .ask: return "Ask Mode"
         case .debug: return "Debug Mode"
-        case .autoReview: return "Auto-review"
+        case .autoReview: return "Auto"
         case .readOnly: return "Read Only"
         case .safeYolo: return "Safe Yolo"
         case .yolo: return "Yolo"
@@ -82,11 +82,6 @@ public struct PermissionModeOption: Equatable, Sendable {
 }
 
 extension AgentFlavor {
-    /// New Codex sessions use the shared runtime, without HAPI Safe Yolo.
-    public var launchPermissionModes: [PermissionMode] {
-        permissionModes.filter { self != .codex || $0 != .safeYolo }
-    }
-
     /// Permission modes offered for this flavor, in picker order.
     ///
     /// Ports the per-flavor arrays in `shared/src/modes.ts`
@@ -94,7 +89,9 @@ extension AgentFlavor {
     /// Claude set, and Pi offers none (its RPC mode always auto-approves).
     public var permissionModes: [PermissionMode] {
         switch self {
-        case .codex, .gemini, .kimi, .copilot:
+        case .codex:
+            return [.default, .readOnly, .autoReview, .yolo]
+        case .gemini, .kimi, .copilot:
             return [.default, .readOnly, .safeYolo, .yolo]
         case .grok:
             return [.default, .auto, .plan, .bypassPermissions]

@@ -46,12 +46,13 @@ function ChevronIcon() {
     return <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M2.5 3.75L5 6.25L7.5 3.75" /></svg>
 }
 
-function VoiceAssistantIcon() {
+function VoiceAssistantIcon(props: { size?: number }) {
+    const size = props.size ?? 18
     return (
         <svg
             xmlns="http://www.w3.org/2000/svg"
-            width="18"
-            height="18"
+            width={size}
+            height={size}
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -67,6 +68,71 @@ function VoiceAssistantIcon() {
             <path d="M20 11v2" />
         </svg>
     )
+}
+
+/**
+ * Primary composer control fills the collapsed card height (Quest / touch).
+ * Empty → giant voice/dictate; draft → giant Send. Draft voice stays a
+ * compact toolbar circle (no width stolen from the text column).
+ * Expanded editor: stay compact — fill-height would become a full-shell strip.
+ */
+export function isComposerPrimaryFillHeight(args: {
+    canSend: boolean
+    voiceEnabled: boolean
+    voiceStatus: ConversationStatus
+    routesToScratchlist?: boolean
+    expanded?: boolean
+}): boolean {
+    if (args.expanded) return false
+    if (args.voiceStatus === 'connecting' || args.voiceStatus === 'connected') return true
+    if (args.routesToScratchlist) return true
+    if (args.canSend) return true
+    if (args.voiceEnabled) return true
+    // Disabled grey Send when empty + voice off — still fill so layout does not jump.
+    return true
+}
+
+/** Empty idle voice/dictate — FUE + morph target (not the fill-height gate). */
+export function isLargeEmptyVoicePrimary(args: {
+    canSend: boolean
+    voiceEnabled: boolean
+    voiceStatus: ConversationStatus
+    routesToScratchlist?: boolean
+}): boolean {
+    if (args.canSend) return false
+    if (args.routesToScratchlist) return false
+    if (!args.voiceEnabled) return false
+    if (args.voiceStatus === 'connecting' || args.voiceStatus === 'connected') return false
+    return true
+}
+
+/**
+ * When draft steals the primary for Send, keep voice/dictate reachable via the
+ * compact toolbar DictationButton (under the text — does not eat composer width).
+ */
+export function shouldShowDraftVoiceButton(args: {
+    canSend: boolean
+    voiceEnabled: boolean
+    voiceStatus: ConversationStatus
+    /** Mirror UnifiedButton: scratchlist routing owns Send; do not start voice. */
+    routesToScratchlist?: boolean
+}): boolean {
+    if (!args.canSend || !args.voiceEnabled) return false
+    if (args.routesToScratchlist) return false
+    if (args.voiceStatus === 'connecting' || args.voiceStatus === 'connected') return false
+    return true
+}
+
+export function unifiedButtonSizeClass(fillHeight: boolean): string {
+    // Fill the composer card column: fixed width, stretch height, soft square.
+    // Compact remains for isolated toolbar previews / legacy callers.
+    return fillHeight
+        ? 'h-full min-h-14 w-16 self-stretch rounded-none rounded-r-[20px]'
+        : 'h-8 w-8 rounded-full'
+}
+
+export function draftVoiceCompanionSizeClass(): string {
+    return 'h-full min-h-14 w-12 self-stretch rounded-none'
 }
 
 function SpeakerIcon(props: { muted?: boolean }) {
@@ -438,6 +504,66 @@ function ScratchlistToggleButton(props: {
     )
 }
 
+/**
+ * TerminalButton — just-in-time FUE for terminal → agent (#2011).
+ *
+ * The terminal icon is the only composer entry into the session PTY, so it
+ * carries the discovery tip for To agent / Selection to agent. First click
+ * shows the explainer only: navigating away would unmount this button (and
+ * the callout) before the operator could read it. Got it acknowledges and
+ * then performs the navigation they originally wanted.
+ */
+function TerminalButton(props: {
+    label: string
+    onTerminal: () => void
+    disabled: boolean
+}) {
+    const { t } = useTranslation()
+    const fue = useFue('composer-terminal-to-agent')
+    const buttonRef = useRef<HTMLButtonElement>(null)
+
+    return (
+        <>
+            <button
+                ref={buttonRef}
+                type="button"
+                aria-label={props.label}
+                title={props.label}
+                className="relative flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => {
+                    if (fue.status !== 'acknowledged') {
+                        fue.engage()
+                        return
+                    }
+                    props.onTerminal()
+                }}
+                disabled={props.disabled}
+            >
+                <TerminalIcon />
+                {fue.status !== 'acknowledged' ? (
+                    <FueDot
+                        pulsing={fue.status === 'unseen'}
+                        ariaLabel={t('fue.newFeatureDot')}
+                    />
+                ) : null}
+            </button>
+            {fue.status === 'engaging' ? (
+                <FueCallout
+                    title={t('terminal.toAgent.fueTitle')}
+                    body={t('terminal.toAgent.fueBody')}
+                    onDismiss={() => {
+                        fue.dismiss()
+                        props.onTerminal()
+                    }}
+                    dismissLabel={t('fue.gotIt')}
+                    closeAriaLabel={t('fue.closeAriaLabel')}
+                    anchorRef={buttonRef}
+                />
+            ) : null}
+        </>
+    )
+}
+
 function StopIcon() {
     return (
         <svg
@@ -474,10 +600,18 @@ export function UnifiedButton(props: {
     canSend: boolean
     voiceStatus: ConversationStatus
     voiceEnabled: boolean
+    dictationEnabled?: boolean
+    /** When false, the dictation Send button is hidden (direct send not eligible). */
+    dictationCanDirectSend?: boolean
     controlsDisabled: boolean
     onSend: (intent?: ComposerSendIntent) => void
     onVoiceToggle: () => void
     voiceLabel?: string
+    /**
+     * When true, stretch to the composer card height (beside input + toolbar).
+     * Default true — Quest / touch need a full-height primary control.
+     */
+    fillHeight?: boolean
     /**
      * When true, the send button repaints amber and the aria-label
      * announces "Send to scratchlist" instead of "Send message". The
@@ -496,8 +630,11 @@ export function UnifiedButton(props: {
     const isConnecting = props.voiceStatus === 'connecting'
     const isConnected = props.voiceStatus === 'connected'
     const isVoiceActive = isConnecting || isConnected
+    const isDictation = props.dictationEnabled ?? false
     const hasText = props.canSend
     const routesToScratchlist = props.routesToScratchlist ?? false
+    const fillHeight = props.fillHeight ?? true
+    const iconSize = fillHeight ? 28 : 18
 
     const handleClick = () => {
         if (isVoiceActive) {
@@ -533,7 +670,7 @@ export function UnifiedButton(props: {
         className = 'bg-black text-white'
         ariaLabel = t('composer.send')
     } else if (props.voiceEnabled) {
-        icon = <VoiceAssistantIcon />
+        icon = <VoiceAssistantIcon size={iconSize} />
         className = 'bg-black text-white'
         ariaLabel = props.voiceLabel ?? t('composer.voice')
     } else {
@@ -554,46 +691,85 @@ export function UnifiedButton(props: {
     )
 
     return (
-        <button
-            type="button"
-            onClick={handleClick}
-            disabled={isDisabled}
-            aria-label={ariaLabel}
-            title={ariaLabel}
-            className={`ml-1 flex h-8 w-8 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
-        >
-            {icon}
-        </button>
+        <>
+            <button
+                type="button"
+                onClick={handleClick}
+                disabled={isDisabled}
+                aria-label={ariaLabel}
+                title={ariaLabel}
+                data-testid="composer-unified-button"
+                data-size={fillHeight ? 'fill' : 'compact'}
+                className={`flex ${unifiedButtonSizeClass(fillHeight)} items-center justify-center transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
+            >
+                {icon}
+            </button>
+            {isDictation && isConnected && props.dictationCanDirectSend ? (
+                // Explicit send action while dictation is connected: mouse/touch
+                // users must be able to reach the session-bound stopAndSend path
+                // (handleSend's dictation branch) without first stopping the
+                // recording, or the transcript is only sendable via keyboard.
+                <button
+                    type="button"
+                    onClick={() => props.onSend('default')}
+                    disabled={props.controlsDisabled}
+                    aria-label={t('composer.send')}
+                    title={t('composer.send')}
+                    className="ml-1 flex self-center h-8 w-8 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 bg-black text-white"
+                >
+                    <SendIcon />
+                </button>
+            ) : null}
+        </>
     )
 }
 
 export function DictationButton(props: {
-    enabled: boolean
+    /**
+     * When false, hide. When true/omitted, show whenever a draft steals Send
+     * from the primary (assistant voice and dictation modes).
+     */
+    enabled?: boolean
     canSend: boolean
     voiceEnabled: boolean
     voiceStatus: ConversationStatus
     controlsDisabled: boolean
     onVoiceToggle: () => void
+    /** Override aria/title (dictate vs voice assistant). */
+    voiceLabel?: string
+    /** Flush companion beside fill-height Send (HappyComposer omitPrimary). */
+    variant?: 'toolbar' | 'companion'
+    routesToScratchlist?: boolean
 }) {
     const { t } = useTranslation()
-    if (
-        !props.enabled
-        || !props.canSend
-        || !props.voiceEnabled
-        || props.voiceStatus === 'connecting'
-        || props.voiceStatus === 'connected'
-    ) return null
+    if (props.enabled === false) return null
+    if (!shouldShowDraftVoiceButton({
+        canSend: props.canSend,
+        voiceEnabled: props.voiceEnabled,
+        voiceStatus: props.voiceStatus,
+        routesToScratchlist: props.routesToScratchlist,
+    })) return null
+
+    const label = props.voiceLabel ?? t('composer.dictate')
+    const companion = props.variant === 'companion'
+    const iconSize = companion ? 24 : 18
 
     return (
         <button
             type="button"
             onClick={props.onVoiceToggle}
             disabled={props.controlsDisabled}
-            aria-label={t('composer.dictate')}
-            title={t('composer.dictate')}
-            className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-50"
+            aria-label={label}
+            title={label}
+            data-testid="composer-draft-voice-button"
+            data-variant={companion ? 'companion' : 'toolbar'}
+            className={
+                companion
+                    ? `flex ${draftVoiceCompanionSizeClass()} items-center justify-center bg-black text-white transition-colors hover:bg-black/90 disabled:cursor-not-allowed disabled:opacity-50`
+                    : 'flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-50'
+            }
         >
-            <VoiceAssistantIcon />
+            <VoiceAssistantIcon size={iconSize} />
         </button>
     )
 }
@@ -621,6 +797,8 @@ export function ComposerButtons(props: {
     onSwitch: () => void
     voiceEnabled: boolean
     dictationEnabled?: boolean
+    /** When false, the dictation Send button is hidden (direct send not eligible). */
+    dictationCanDirectSend?: boolean
     voiceStatus: ConversationStatus
     voiceMicMuted?: boolean
     onVoiceToggle: () => void
@@ -652,6 +830,11 @@ export function ComposerButtons(props: {
     scratchlistMode?: boolean
     scratchlistCount?: number
     onScratchlistToggle?: () => void
+    /**
+     * When true, omit UnifiedButton — HappyComposer places it in a
+     * full-height column beside the input + toolbar.
+     */
+    omitPrimaryButton?: boolean
 }) {
     const { t } = useTranslation()
     const { layout } = useComposerToolbarLayout()
@@ -761,16 +944,11 @@ export function ComposerButtons(props: {
 
                 <ToolbarItemSlot item="terminal">
                 {props.showTerminalButton ? (
-                    <button
-                        type="button"
-                        aria-label={props.terminalLabel}
-                        title={props.terminalLabel}
-                        className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
-                        onClick={props.onTerminal}
+                    <TerminalButton
+                        label={props.terminalLabel}
+                        onTerminal={props.onTerminal}
                         disabled={props.terminalDisabled}
-                    >
-                        <TerminalIcon />
-                    </button>
+                    />
                 ) : null}
                 </ToolbarItemSlot>
 
@@ -888,34 +1066,49 @@ export function ComposerButtons(props: {
                 </OrderedToolbarItems>
             </div>
 
+            {/*
+              Draft voice/dictate: compact circle in the toolbar row (under text).
+              Primary column stays a single fill-height Send/voice control so we
+              do not steal horizontal space from the composer.
+            */}
             <DictationButton
-                enabled={props.dictationEnabled ?? false}
+                enabled={props.voiceEnabled}
                 canSend={props.canSend}
                 voiceEnabled={props.voiceEnabled}
                 voiceStatus={props.voiceStatus}
                 controlsDisabled={props.controlsDisabled}
                 onVoiceToggle={props.onVoiceToggle}
-            />
-
-            <UnifiedButton
-                canSend={props.canSend}
-                voiceStatus={props.voiceStatus}
-                voiceEnabled={props.voiceEnabled}
-                controlsDisabled={props.controlsDisabled}
-                onSend={props.onSend}
-                onVoiceToggle={props.onVoiceToggle}
-                voiceLabel={props.dictationEnabled ? t('composer.dictate') : undefined}
-                /*
-                 * Derived, NOT raw scratchlistMode. Mirror SessionChat's
-                 * shouldRouteToScratchlist: amber + "Send to scratchlist"
-                 * whenever mode is on and there is no pending schedule.
-                 * Attachments route to scratchlist too (hub upload adapter).
-                 */
+                voiceLabel={props.dictationEnabled ? t('composer.dictate') : t('composer.voice')}
                 routesToScratchlist={
                     (props.scratchlistMode ?? false)
                     && props.pendingSchedule == null
                 }
             />
+
+            {props.omitPrimaryButton ? null : (
+                <UnifiedButton
+                    canSend={props.canSend}
+                    voiceStatus={props.voiceStatus}
+                    voiceEnabled={props.voiceEnabled}
+                    dictationEnabled={props.dictationEnabled}
+                    dictationCanDirectSend={props.dictationCanDirectSend}
+                    controlsDisabled={props.controlsDisabled}
+                    onSend={props.onSend}
+                    onVoiceToggle={props.onVoiceToggle}
+                    voiceLabel={props.dictationEnabled ? t('composer.dictate') : undefined}
+                    fillHeight={false}
+                    /*
+                     * Derived, NOT raw scratchlistMode. Mirror SessionChat's
+                     * shouldRouteToScratchlist: amber + "Send to scratchlist"
+                     * whenever mode is on and there is no pending schedule.
+                     * Attachments route to scratchlist too (hub upload adapter).
+                     */
+                    routesToScratchlist={
+                        (props.scratchlistMode ?? false)
+                        && props.pendingSchedule == null
+                    }
+                />
+            )}
         </div>
     )
 }

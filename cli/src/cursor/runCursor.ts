@@ -34,6 +34,8 @@ export async function runCursor(opts: {
     resumeSessionId?: string;
     model?: string;
     existingSessionId?: string;
+    /** Fresh-spawn reserved hub id from `--hapi-session-id` (create/getOrCreate). */
+    reservedSessionId?: string;
     workingDirectory?: string;
 }): Promise<void> {
     const workingDirectory = opts.workingDirectory ?? getInvokedCwd();
@@ -56,7 +58,8 @@ export async function runCursor(opts: {
             startedBy,
             workingDirectory,
             agentState: state,
-            model: opts.model
+            model: opts.model,
+            reservedSessionId: opts.reservedSessionId
         });
     const { api, session } = bootstrap;
 
@@ -83,7 +86,7 @@ export async function runCursor(opts: {
     });
 
     lifecycle.registerProcessHandlers();
-    registerKillSessionHandler(session.rpcHandlerManager, lifecycle);
+    registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
 
     const syncSessionMode = () => {

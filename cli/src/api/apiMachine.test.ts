@@ -746,6 +746,35 @@ describe('ApiMachineClient SpawnHappySession handler', () => {
             client.shutdown()
         }
     })
+
+    it('returns childStarted:false on outside_workspace_roots so hub deletes the stub', async () => {
+        const machine = makeMachine('machine-spawn-outside')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+        const spawnSession = vi.fn()
+
+        client.setRPCHandlers({
+            spawnSession,
+            stopSession: vi.fn(async () => 'stopped' as const),
+            requestShutdown: vi.fn()
+        })
+
+        try {
+            const result = await callSpawnHappySession(client, machine.id, {
+                directory: '/tmp/definitely-outside-roots',
+                agent: 'claude',
+            })
+
+            expect(result).toEqual({
+                type: 'error',
+                errorMessage: "Directory is outside this machine's workspace roots",
+                code: 'outside_workspace_roots',
+                childStarted: false,
+            })
+            expect(spawnSession).not.toHaveBeenCalled()
+        } finally {
+            client.shutdown()
+        }
+    })
 })
 
 describe('ApiMachineClient keepAlive lifecycle', () => {

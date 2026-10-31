@@ -61,6 +61,18 @@ describe('claudeCommand arguments', () => {
         expect(runClaudeMock).toHaveBeenCalledWith({ model: 'claude-opus-4-1' })
     })
 
+    it.each(['--yolo', '--dangerously-skip-permissions'])('tracks %s as session permission mode without forwarding it', async (arg) => {
+        await claudeCommand.run(createCommandContext([arg]))
+
+        expect(runClaudeMock).toHaveBeenCalledWith({ permissionMode: 'bypassPermissions' })
+    })
+
+    it('keeps an explicit --permission-mode over a later --dangerously-skip-permissions', async () => {
+        await claudeCommand.run(createCommandContext(['--permission-mode', 'default', '--dangerously-skip-permissions']))
+
+        expect(runClaudeMock).toHaveBeenCalledWith({ permissionMode: 'default' })
+    })
+
     it.each(['--help', '-h', '--version', '-v', 'claude'])('forwards %s without special handling', async (arg) => {
         const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
         try {
@@ -72,9 +84,27 @@ describe('claudeCommand arguments', () => {
         }
     })
 
-    it('keeps arguments after -- opaque', async () => {
-        const args = ['--', '--model', 'literal', '--help']
-        await claudeCommand.run(createCommandContext(args))
-        expect(runClaudeMock).toHaveBeenCalledWith({ claudeArgs: args })
+    it('passes --hapi-session-id as reservedSessionId (adopt-stub, not reopen) (#1911)', async () => {
+        await claudeCommand.run(createCommandContext([
+            '--started-by', 'runner',
+            '--hapi-starting-mode', 'remote',
+            '--hapi-session-id', 'preallocated-hub-id',
+        ]))
+
+        expect(runClaudeMock).toHaveBeenCalledWith({
+            startedBy: 'runner',
+            startingMode: 'remote',
+            reservedSessionId: 'preallocated-hub-id',
+        })
+    })
+
+    it('passes --existing-session-id through for Claude fork/reuse', async () => {
+        await claudeCommand.run(createCommandContext([
+            '--existing-session-id', 'fork-child-id',
+        ]))
+
+        expect(runClaudeMock).toHaveBeenCalledWith({
+            existingSessionId: 'fork-child-id',
+        })
     })
 })

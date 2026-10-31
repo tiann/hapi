@@ -87,6 +87,8 @@ function subscribe(options: {
      * stop the loop itself.
      */
     stopAfterDelays?: number;
+    headers?: Record<string, string>;
+    mode?: 'v1' | 'v2';
 }) {
     let subscription: { close: () => void } | null = null;
     subscription = subscribeToOpencodeEvents({
@@ -94,6 +96,8 @@ function subscribe(options: {
         directory: SESSION_CWD,
         sessionId: 'ses_ours',
         onRetry: options.onRetry ?? (() => {}),
+        headers: options.headers,
+        mode: options.mode,
         fetchImpl: options.fetchImpl,
         sleep: async (ms: number) => {
             options.delays?.push(ms);
@@ -157,6 +161,46 @@ describe('subscribeToOpencodeEvents', () => {
         expect(fetchImpl.mock.calls[0][0]).toBe(EXPECTED_URL);
 
         subscription.close();
+        sse.close();
+    });
+
+    it('v2 mode: hits /api/event and unwraps the {data} envelope before retry parsing', async () => {
+        // Measured 2026-10-16 (opencode 2.0.29): /event answers with the SPA
+        // HTML fallback; the real stream is /api/event and every payload is
+        // { id, type, data: { …v1-shaped body… } }.
+        const seen: Array<string | null> = [];
+        const sse = createSseStream();
+        const fetchImpl = vi.fn(async (url: string, _init?: RequestInit) => {
+            seen.push(url);
+            return new Response(sse.stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+        });
+        const retries: number[] = [];
+        const subscription = subscribe({ fetchImpl, onRetry: (retry) => retries.push(retry.attempt), mode: 'v2' });
+        await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+        expect(seen[0]).toBe(EXPECTED_URL.replace('/event?', '/api/event?'));
+
+        // Real v2 shape (measured): the body inside `data` has NO type
+        // field — the discriminator lives on the envelope only.
+        sse.push({
+            id: 'evt_a',
+            type: 'session.status',
+            data: { sessionID: 'ses_ours', status: { type: 'retry', attempt: 1, message: 'Rate limit exceeded: free-models-per-day.', next: NOW + 30_000 } }
+        });
+
+        await vi.waitFor(() => expect(retries).toEqual([1]));
+        await subscription.close();
+        sse.close();
+    });
+
+    it('merges caller headers into every connect attempt (v2 Basic auth)', async () => {
+        const sse = createSseStream();
+        const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => new Response(sse.stream, { status: 200 }));
+        const auth = 'Basic ' + Buffer.from('opencode:pw').toString('base64');
+        const subscription = subscribe({ fetchImpl, headers: { authorization: auth } });
+
+        await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+        expect(fetchImpl.mock.calls[0][1]?.headers).toMatchObject({ authorization: auth, accept: 'text/event-stream' });
+        await subscription.close();
         sse.close();
     });
 

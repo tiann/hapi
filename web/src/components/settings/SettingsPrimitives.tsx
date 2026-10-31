@@ -50,9 +50,12 @@ export function SettingsSection(props: { title?: string; description?: string; c
     )
 }
 
-export function SettingsRow(props: { label: string; description?: string; trailing?: ReactNode; children?: ReactNode }) {
+export function SettingsRow(props: { label: string; description?: string; trailing?: ReactNode; children?: ReactNode; disabled?: boolean }) {
     return (
-        <div className="flex min-h-12 items-center justify-between gap-3 px-3 py-3">
+        <div
+            aria-disabled={props.disabled || undefined}
+            className={`flex min-h-12 items-center justify-between gap-3 px-3 py-3 ${props.disabled ? 'cursor-not-allowed opacity-50' : ''}`}
+        >
             <div className="min-w-0">
                 <div className="text-sm font-medium text-[var(--app-fg)]">{props.label}</div>
                 {props.description ? <div className="mt-0.5 text-xs leading-snug text-[var(--app-hint)]">{props.description}</div> : null}
@@ -63,12 +66,12 @@ export function SettingsRow(props: { label: string; description?: string; traili
     )
 }
 
-export function SettingsSwitch(props: { label: string; description?: string; checked: boolean; onChange: (checked: boolean) => void }) {
+export function SettingsSwitch(props: { label: string; description?: string; checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean }) {
     return (
-        <SettingsRow label={props.label} description={props.description} trailing={
-            <label className="relative inline-flex h-6 w-11 items-center">
-                <input type="checkbox" checked={props.checked} onChange={(event) => props.onChange(event.target.checked)} className="peer sr-only" aria-label={props.label} />
-                <span className="absolute inset-0 rounded-full bg-[var(--app-border)] transition-colors peer-checked:bg-[var(--app-link)]" />
+        <SettingsRow label={props.label} description={props.description} disabled={props.disabled} trailing={
+            <label className={`relative inline-flex h-6 w-11 items-center ${props.disabled ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
+                <input type="checkbox" checked={props.checked} disabled={props.disabled} onChange={(event) => props.onChange(event.target.checked)} className="peer sr-only" aria-label={props.label} />
+                <span className={`absolute inset-0 rounded-full transition-colors ${props.disabled ? 'bg-[var(--app-border)]' : 'bg-[var(--app-border)] peer-checked:bg-[var(--app-link)]'}`} />
                 <span className="absolute left-0.5 h-5 w-5 rounded-full bg-[var(--app-bg)] shadow-sm transition-transform peer-checked:translate-x-5" />
             </label>
         } />
@@ -82,13 +85,22 @@ export function SettingsChoiceGroup<T extends string | number>(props: {
     value: T
     options: ReadonlyArray<{ value: T; label: string; description?: string }>
     onChange: (value: T) => void
-    columns?: 2 | 4 | 5
+    columns?: 2 | 3 | 4 | 5 | 6
+    children?: ReactNode
 }) {
-    const columns = props.columns === 5 ? 'grid-cols-5' : props.columns === 4 ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-2'
+    const columns = props.columns === 6
+        ? 'grid-cols-6'
+        : props.columns === 5
+            ? 'grid-cols-5'
+        : props.columns === 4
+            ? 'grid-cols-2 sm:grid-cols-4'
+            : props.columns === 3
+                ? 'grid-cols-3'
+                : 'grid-cols-2'
     return (
-        <div className="px-3 py-3">
+        <div className={`${props.columns === 6 ? 'px-1 sm:px-3' : 'px-3'} py-3`}>
             <SettingsFieldLabel hidden={props.hideLabel} description={props.description}>{props.label}</SettingsFieldLabel>
-            <div role="radiogroup" aria-label={props.label} className={`grid ${columns} gap-2`}>
+            <div role="radiogroup" aria-label={props.label} className={`grid ${columns} ${props.columns === 6 ? 'gap-px sm:gap-1' : 'gap-2'}`}>
                 {props.options.map((option) => {
                     const selected = props.value === option.value
                     return (
@@ -98,7 +110,7 @@ export function SettingsChoiceGroup<T extends string | number>(props: {
                             role="radio"
                             aria-checked={selected}
                             onClick={() => props.onChange(option.value)}
-                            className={`min-w-0 rounded-lg border px-2 py-2 text-center text-sm transition-colors ${selected
+                            className={`min-w-0 rounded-lg border ${props.columns === 6 ? 'px-0 text-xs tracking-tight sm:text-sm sm:tracking-normal' : 'px-2 text-sm'} py-2 text-center transition-colors ${selected
                                 ? 'border-[var(--app-link)] bg-[var(--app-subtle-bg)] text-[var(--app-link)]'
                                 : 'border-[var(--app-border)] text-[var(--app-fg)] hover:bg-[var(--app-subtle-bg)]'}`}
                         >
@@ -108,6 +120,7 @@ export function SettingsChoiceGroup<T extends string | number>(props: {
                     )
                 })}
             </div>
+            {props.children}
         </div>
     )
 }

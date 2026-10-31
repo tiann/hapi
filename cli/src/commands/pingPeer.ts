@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import chalk from 'chalk'
+import { PeerDeliveryModeSchema, type PeerDeliveryMode } from '@/modules/pingPeer/deliveryMode'
 import { initializeToken } from '@/ui/tokenInit'
 import {
     PingPeerError,
@@ -18,6 +19,7 @@ type ParsedPingPeerArgs = {
     message?: string
     messageFile?: string
     waitActiveSecs?: number
+    deliveryMode?: PeerDeliveryMode
 }
 
 function showHelp(): void {
@@ -26,6 +28,7 @@ ${chalk.bold('hapi ping-peer')} - Resume a HAPI session (if needed) and send it 
 
 ${chalk.bold('Usage:')}
   hapi ping-peer <session-id-prefix> <message-text>
+  hapi ping-peer <session-id-prefix> <message-text> --delivery-mode auto|queue|steer
   hapi ping-peer <session-id-prefix> --message-file <path>
   hapi ping-peer <session-id-prefix> --message-file -   # read message from stdin
   hapi ping-peer --list
@@ -34,6 +37,16 @@ ${chalk.bold('Notes:')}
   Do not reinvent JWT + curl for peer handoffs. Prefer this command or MCP ping_peer / list_peers.
   Resolves by id prefix (8 chars OK). Same hub token/namespace as this CLI.
   Inactive sessions are resumed via POST /api/sessions/:id/resume, then messaged.
+  Delivery defaults to auto: steer a steerable active Codex turn, otherwise queue.
+  Auto resumes inactive targets; other agent flavors currently queue in auto mode.
+  Use auto for routine collaboration when queueing is an acceptable fallback.
+  Use queue for non-urgent updates that can wait. Use steer for important findings
+  the peer needs to know now to adjust its current work, not after its current turn.
+  State why the finding matters now and what the peer should adjust.
+  Explicit steer requires an active turn in Pi, Codex,
+  or Cursor ACP; it neither resumes inactive targets nor sends to idle targets.
+  Steer uses the existing queued-message action. If it fails after send, inspect the
+  target before retrying: the accepted message may still be queued or consumed.
   When a user cites [title](/sessions/<id>) or Copy-reference
   See session "…" (/sessions/<id>) for context, pass that <id> here.
   On a remote runner, --list needs HAPI_API_URL set to the runner hub, plus
@@ -59,6 +72,18 @@ export function parsePingPeerArgs(args: string[]): ParsedPingPeerArgs {
         }
         if (arg === '--list') {
             result.list = true
+            continue
+        }
+        if (arg === '--delivery-mode' || arg.startsWith('--delivery-mode=')) {
+            const value = arg === '--delivery-mode' ? args[++i] : arg.slice('--delivery-mode='.length)
+            const parsed = PeerDeliveryModeSchema.safeParse(value)
+            if (!parsed.success) {
+                throw new PingPeerError('bad_args', '--delivery-mode must be auto, queue or steer')
+            }
+            if (result.deliveryMode !== undefined) {
+                throw new PingPeerError('bad_args', '--delivery-mode may only be specified once')
+            }
+            result.deliveryMode = parsed.data
             continue
         }
         if (arg === '--message-file') {
@@ -180,11 +205,15 @@ export async function handlePingPeerCommand(args: string[]): Promise<void> {
     const result = await pingPeer({
         sessionIdPrefix: parsed.sessionIdPrefix,
         message,
+        deliveryMode: parsed.deliveryMode,
         waitActiveSecs: parsed.waitActiveSecs ?? envWaitActiveSecs(),
         onProgress: (line) => console.log(`hapi ping-peer: ${line}`)
     })
 
-    console.log(chalk.green(`hapi ping-peer: OK - delivered to ${result.sessionId}`))
+    const receipt = result.delivery === 'accepted'
+        ? `accepted for ${result.sessionId} localId=${result.localId} — delivery shows in the recipient chat when its runtime consumes it`
+        : `${result.delivery} to ${result.sessionId} localId=${result.localId}`
+    console.log(chalk.green(`hapi ping-peer: OK - ${receipt}`))
 }
 
 export const pingPeerCommand: CommandDefinition = {

@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildCliArgs, classifyRecoveredProcessGeneration, createSpawnDeduplicator, releaseRecoveredSpawnDedupe } from './run'
+import { buildCliArgs, classifyRecoveredProcessGeneration, createSpawnDeduplicator, probeRecoveredProcessGeneration, releaseRecoveredSpawnDedupe } from './run'
 
 describe('buildCliArgs', () => {
     it('adds --permission-mode for valid permission mode', () => {
@@ -162,16 +162,17 @@ describe('buildCliArgs', () => {
         expect(args).not.toContain('--hapi-session-id')
     })
 
-    it('passes --existing-session-id for cursor resume when sessionId is set (#991)', () => {
+    it('passes --existing-session-id for cursor resume when existingSessionId is set (#991)', () => {
         const args = buildCliArgs('cursor', {
             directory: '/tmp',
             resumeSessionId: 'cursor-csid-1',
-            sessionId: 'hapi-session-991',
+            existingSessionId: 'hapi-session-991',
         })
         expect(args).toContain('--existing-session-id')
         expect(args).toContain('hapi-session-991')
         expect(args).toContain('--resume')
         expect(args).toContain('cursor-csid-1')
+        expect(args).not.toContain('--hapi-session-id')
     })
 
     it('does not pass --collaboration-mode for non-codex agents', () => {
@@ -368,13 +369,87 @@ describe('buildCliArgs', () => {
         ])
     })
 
-    it('does not emit --hapi-session-id for a non-pty flavor', () => {
+    it('stamps --hapi-session-id for local HTTP sessionId hints (reap / adopt-stub)', () => {
+        // sessionId alone is not reopen — that was the round-4 Major when we
+        // collapsed everything onto --existing-session-id.
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            sessionId: 'spawned-test-456',
+        })
+        expect(args).toContain('--hapi-session-id')
+        expect(args[args.indexOf('--hapi-session-id') + 1]).toBe('spawned-test-456')
+        expect(args).not.toContain('--existing-session-id')
+    })
+
+    it('does not stamp UUID local-HTTP sessionId as adopt (would 404/409)', () => {
+        // #1911 Opus Major: controlServer passes sessionId through; UUID entered
+        // resolveReservedHubSessionId → adoptPreallocatedSession against a
+        // non-stub / missing row.
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            sessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        })
+        expect(args).not.toContain('--hapi-session-id')
+        expect(args).not.toContain('--existing-session-id')
+    })
+
+    it('stamps --hapi-session-id for reservedSessionId (fresh machine-spawn stub)', () => {
+        const args = buildCliArgs('codex', {
+            directory: '/tmp',
+            reservedSessionId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+            startingMode: 'remote',
+        })
+        expect(args).toContain('--hapi-session-id')
+        expect(args[args.indexOf('--hapi-session-id') + 1]).toBe('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee')
+        expect(args).not.toContain('--existing-session-id')
+    })
+
+    it('stamps --existing-session-id for Claude reopen/resume (not adopt --hapi-session-id)', () => {
+        // #1911 Opus Critical: syncEngine resume passes access.sessionId as
+        // existingSessionId; adopt-stub stamp → SessionNotAdoptableError → 409.
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            existingSessionId: 'live-hub-row-uuid',
+            resumeSessionId: 'native-claude-resume-token',
+            startingMode: 'remote',
+        })
+        expect(args).toContain('--existing-session-id')
+        expect(args[args.indexOf('--existing-session-id') + 1]).toBe('live-hub-row-uuid')
+        expect(args).not.toContain('--hapi-session-id')
+        expect(args).toContain('--resume')
+    })
+
+    it('stamps --existing-session-id for kimi and copilot reopen (same adopt trap)', () => {
+        for (const agent of ['kimi', 'copilot'] as const) {
+            const args = buildCliArgs(agent, {
+                directory: '/tmp',
+                existingSessionId: 'live-hub-row-uuid',
+                startingMode: 'remote',
+            })
+            expect(args).toContain('--existing-session-id')
+            expect(args[args.indexOf('--existing-session-id') + 1]).toBe('live-hub-row-uuid')
+            expect(args).not.toContain('--hapi-session-id')
+        }
+    })
+
+    it('prefers existingSessionId over reservedSessionId when both are set', () => {
+        const args = buildCliArgs('claude', {
+            directory: '/tmp',
+            existingSessionId: 'live-row',
+            reservedSessionId: 'stub-row',
+        })
+        expect(args).toContain('--existing-session-id')
+        expect(args).not.toContain('--hapi-session-id')
+    })
+
+    it('does not emit --hapi-session-id for a non-pty flavor that already uses --existing-session-id', () => {
         const args = buildCliArgs('opencode', {
             directory: '/tmp',
             existingSessionId: 'existing-hub-id',
             startingMode: 'remote',
         })
         expect(args).not.toContain('--hapi-session-id')
+        expect(args).toContain('--existing-session-id')
     })
 
 })
@@ -479,6 +554,28 @@ describe('createSpawnDeduplicator', () => {
 })
 
 describe('classifyRecoveredProcessGeneration', () => {
+    it('releases a recovered record from a different boot even when its PID is alive and its marker is unavailable', () => {
+        expect(classifyRecoveredProcessGeneration(true, null, 'old-marker', {
+            pid: 123, threadGroupId: 123,
+            currentBootId: 'new-boot', persistedBootId: 'old-boot'
+        })).toBe('exited')
+    })
+
+    it('releases a legacy process ID now occupied by a non-leader thread', () => {
+        expect(classifyRecoveredProcessGeneration(true, null, 'old-marker', {
+            pid: 123, threadGroupId: 456, currentBootId: null
+        })).toBe('exited')
+    })
+
+    it('does not treat missing boot or thread information as proof of exit', () => {
+        expect(classifyRecoveredProcessGeneration(true, null, 'old-marker', {
+            pid: 123, threadGroupId: null, currentBootId: null, persistedBootId: 'old-boot'
+        })).toBe('quarantined')
+        expect(classifyRecoveredProcessGeneration(true, 'old-marker', 'old-marker', {
+            pid: 123, threadGroupId: 123, currentBootId: 'new-boot'
+        })).toBe('verified')
+    })
+
     it('quarantines a live recovered child while its generation marker is unavailable', () => {
         expect(classifyRecoveredProcessGeneration(true, null, 'persisted-marker')).toBe('quarantined')
     })
@@ -505,5 +602,18 @@ describe('releaseRecoveredSpawnDedupe', () => {
 
         expect(calls).toBe(1)
         expect(recovered.has(123)).toBe(false)
+    })
+})
+
+
+describe.skipIf(process.platform !== 'linux')('Linux recovered process generation', () => {
+    it('releases a legacy PID actually occupied by a live non-leader thread', () => {
+        const tid = readdirSync(`/proc/${process.pid}/task`).map(Number).find(id => id !== process.pid)
+        expect(tid).toBeDefined()
+        // Use a real, still-live thread: signal 0 succeeds but ps -p cannot
+        // provide a process start marker, exactly as after the reported reboot.
+        expect(process.kill(tid!, 0)).toBe(true)
+        expect(probeRecoveredProcessGeneration(tid!, { processStartMarker: 'Sun Oct 25 04:46:27 2026' })).toBe('exited')
+        expect(process.kill(tid!, 0)).toBe(true)
     })
 })

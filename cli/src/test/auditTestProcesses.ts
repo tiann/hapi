@@ -24,7 +24,7 @@ export interface TestOwnedProcess {
 
 /**
  * Scans for live processes whose environment dump contains `marker`.
- * Returns an empty array on platforms without `ps eww` (Windows); THROWS on
+ * Returns an empty array on platforms without `ps axeww` (Windows); THROWS on
  * scan failure (unsupported flags, buffer exhaustion, permission errors) so
  * the audit can never silently report "zero survivors" while detached
  * test-owned processes remain alive.
@@ -38,11 +38,18 @@ export function findTestOwnedProcesses(marker: string): TestOwnedProcess[] {
 
     let output: string
     try {
-        // `-eo` (not `-axo`): procps-ng 4.x rejects `-x` with "must set
-        // personality" on some Linux builds. `e` shows the environment after
-        // the command; `ww` removes width truncation so the env dump is not
-        // cut off.
-        output = execFileSync('ps', ['eww', '-eo', 'pid=,ppid=,rss=,command='], {
+        // BSD-style full dump (`a` all users, `x` include tty-less processes,
+        // `e` show the environment after the command, `ww` remove width
+        // truncation so the env dump is not cut off). The SysV dashed forms
+        // must NOT be used: on macOS `ps eww` is terminal-scoped (and exits 1
+        // without a controlling terminal), while `ps -eww` treats `-e` as
+        // "all processes" and silently drops the environment — which would
+        // make the marker scan report "no survivors" while test-owned
+        // processes stay alive. procps-ng 4.x accepts the BSD `a`/`x` forms
+        // (only the dashed `-axo` combo is rejected with "must set
+        // personality" on some Linux builds), so this invocation is portable
+        // across darwin and Linux.
+        output = execFileSync('ps', ['axeww', '-eo', 'pid=,ppid=,rss=,command='], {
             encoding: 'utf8',
             maxBuffer: 64 * 1024 * 1024,
             stdio: ['ignore', 'pipe', 'pipe'],

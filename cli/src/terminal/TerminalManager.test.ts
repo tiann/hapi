@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
     TerminalManager,
+    buildFilteredEnv,
     normalizeTerminalInputForHost,
     resolveShellCommand
 } from './TerminalManager'
@@ -22,6 +23,87 @@ function setPlatform(value: NodeJS.Platform): void {
         configurable: true
     })
 }
+
+describe('buildFilteredEnv web Terminal PTY', () => {
+    it('strips secrets and agent-context markers and sets HAPI_USER_TERMINAL', () => {
+        const env = buildFilteredEnv({
+            PATH: '/usr/bin',
+            HOME: '/home/op',
+            HAPI_SESSION_ID: 'hub-session-1',
+            HAPI_AGENT_CONTEXT: '1',
+            CURSOR_AGENT: '1',
+            CURSOR_AGENT_SESSION_ID: 'cursor-sess',
+            CLAUDECODE: '1',
+            CLI_API_TOKEN: 'secret-token',
+            OPENAI_API_KEY: 'sk-test',
+            TERM: 'xterm-256color',
+        })
+
+        expect(env.HAPI_USER_TERMINAL).toBe('1')
+        expect(env.HAPI_SESSION_ID).toBe('hub-session-1')
+        expect(env.PATH).toBe('/usr/bin')
+        expect(env.HAPI_AGENT_CONTEXT).toBeUndefined()
+        expect(env.CURSOR_AGENT).toBeUndefined()
+        expect(env.CURSOR_AGENT_SESSION_ID).toBeUndefined()
+        expect(env.CLAUDECODE).toBeUndefined()
+        expect(env.CLI_API_TOKEN).toBeUndefined()
+        expect(env.OPENAI_API_KEY).toBeUndefined()
+    })
+
+    it('passes filtered env into Bun.spawn for a new terminal', () => {
+        const previousAgentContext = process.env.HAPI_AGENT_CONTEXT
+        const previousCursorAgent = process.env.CURSOR_AGENT
+        process.env.HAPI_AGENT_CONTEXT = '1'
+        process.env.CURSOR_AGENT = '1'
+
+        const terminal = {
+            write: vi.fn(),
+            resize: vi.fn(),
+            close: vi.fn()
+        } as unknown as Bun.Terminal
+        const proc = {
+            terminal,
+            killed: false,
+            exitCode: null,
+            signalCode: null,
+            kill: vi.fn()
+        } as unknown as Bun.Subprocess
+        const spawnMock = vi.fn((_cmd: string[], _opts: { env?: NodeJS.ProcessEnv }) => proc)
+        const previousBun = globalWithBun.Bun
+        globalWithBun.Bun = { spawn: spawnMock }
+
+        try {
+            const manager = new TerminalManager({
+                sessionId: 'session-env',
+                getSessionPath: () => '/tmp/project',
+                onReady: () => {},
+                onOutput: () => {},
+                onExit: () => {},
+                onError: () => {},
+                idleTimeoutMs: 0
+            })
+            manager.create('term-env', 80, 24)
+
+            expect(spawnMock).toHaveBeenCalled()
+            const spawnEnv = spawnMock.mock.calls[0]?.[1]?.env
+            expect(spawnEnv?.HAPI_USER_TERMINAL).toBe('1')
+            expect(spawnEnv?.HAPI_AGENT_CONTEXT).toBeUndefined()
+            expect(spawnEnv?.CURSOR_AGENT).toBeUndefined()
+        } finally {
+            globalWithBun.Bun = previousBun
+            if (previousAgentContext === undefined) {
+                delete process.env.HAPI_AGENT_CONTEXT
+            } else {
+                process.env.HAPI_AGENT_CONTEXT = previousAgentContext
+            }
+            if (previousCursorAgent === undefined) {
+                delete process.env.CURSOR_AGENT
+            } else {
+                process.env.CURSOR_AGENT = previousCursorAgent
+            }
+        }
+    })
+})
 
 describe('TerminalManager Windows support', () => {
     beforeAll(() => {

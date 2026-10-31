@@ -10,6 +10,13 @@ describe('sessionDisplayRename', () => {
         expect(normalizeSessionDisplayTitle(null)).toBeNull()
     })
 
+    it('keeps a locked title when a deferred callback runs after the user pins it', () => {
+        const metadata: Metadata = { path: '/repo', host: 'test', name: 'Pinned', titleLocked: true }
+        let updater!: (value: Metadata) => Metadata
+        applySessionDisplayRename({ updateMetadata: fn => { updater = fn } }, 'Agent title')
+        expect(updater(metadata)).toBe(metadata)
+    })
+
     it('sets metadata.name even when a spawn name already exists', () => {
         let metadata: Metadata = {
             path: '/tmp/project',

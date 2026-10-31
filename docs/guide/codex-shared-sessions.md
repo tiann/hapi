@@ -70,6 +70,13 @@ Native pending queue text is mirrored to HAPI. Native edits and acknowledged
 removals update it. Losing a queue entry during transport recovery is not proof
 that it was canceled or executed.
 
+During live context compaction, Web may show **Compacting context — waiting for
+message acceptance** for input just removed from the native queue. This is not
+an acceptance acknowledgement: only the native user-message event or history
+confirms consumption. Compaction completion, turn completion/interruption or a
+native disconnect withdraws this temporary status. Unconfirmed input retains
+the existing unknown-delivery recovery controls and is never automatically replayed.
+
 Codex arbitrates terminal/Web answers. A submitted Web answer is only a
 candidate. Native `serverRequest/resolved` closes the prompt with neutral
 **Resolved in Codex** status; HAPI does not invent the winner or their answer.
@@ -112,9 +119,10 @@ endpoints/tokens never go into HAPI session metadata or SSE.
 
 - Cold resume accepts root threads only. To revisit a child agent, resume its
   parent HAPI session; HAPI does not independently start a child execution.
-- HAPI's legacy `safe-yolo` auto-approval policy is not a native Codex mode;
-  shared sessions reject it instead of silently weakening or misreporting it.
-  Use `default`, `read-only`, `yolo`, or native `--approve-for-me`.
+- Codex permission modes are `default`, `read-only`, `autoReview`, and
+  `yolo`; HAPI's `safe-yolo` is not a native Codex mode. `autoReview` keeps the
+  workspace-write sandbox and routes escalations to Codex's native auto-review
+  (`approvals_reviewer = "auto_review"`, same as `--approve-for-me`).
 - Web-created new/fork roots preserve the standard native sandbox restrictions.
   Named permission profiles and external sandboxes must be created in the
   native TUI; HAPI never converts them silently to workspace-write.
@@ -125,6 +133,11 @@ endpoints/tokens never go into HAPI session metadata or SSE.
   sessions: a native mutation plus hub transcript truncation needs a commit
   barrier across every sender. Use **Fork at message** instead. Cuts inside a
   steered turn are rejected; select its first user message.
+- **Fork at message** can branch from a finished historical turn while a later
+  turn is still running. It excludes the selected user message's native turn
+  and all later turns; the source keeps running. The selected turn and retained
+  prefix must have finished, and queued messages or conflicting history actions
+  still block the operation. **Fork current** continues to require an idle session.
 - `--worktree` and unsupported launch flags fail explicitly; create/select the
   working directory before launch. `--oss` requires an explicit
   `--local-provider`. Bare resume pickers use `hapi resume` or the attached TUI.

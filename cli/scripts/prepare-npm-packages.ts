@@ -6,12 +6,11 @@
  * 2. Generates the main npm package (wrapper)
  * 3. Generates package.json for each platform package
  * 4. Copies binaries from dist-exe to npm package directories
- * 5. Updates optionalDependencies versions in main package.json
  *
  * Run after `bun run build:exe:all`
  */
 
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -188,30 +187,11 @@ async function preparePlatform(
     console.log(`Copied: ${srcBin} -> ${destBin}`);
 }
 
-function updateMainPackageOptionalDeps(version: string): void {
-    const pkgPath = join(projectRoot, 'package.json');
-    const content = readFileSync(pkgPath, 'utf-8');
-    const pkg = JSON.parse(content);
-
-    // Update optionalDependencies versions
-    if (!pkg.optionalDependencies) {
-        pkg.optionalDependencies = {};
-    }
-
-    pkg.optionalDependencies = buildOptionalDependencies(version);
-
-    writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
-    console.log(`Updated optionalDependencies in package.json to version ${version}`);
-}
-
 async function main(): Promise<void> {
     console.log('Preparing npm platform packages...\n');
 
     const mainPkg = await readMainPackageJson();
     console.log(`Version: ${mainPkg.version}\n`);
-
-    // Update optionalDependencies in main package.json
-    updateMainPackageOptionalDeps(mainPkg.version);
 
     const distExeDir = join(projectRoot, 'dist-exe');
     const npmDir = join(projectRoot, 'npm');

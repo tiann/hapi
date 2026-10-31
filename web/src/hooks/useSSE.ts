@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
+    compareSessionSummaries,
     computePendingRequestKinds,
     computePendingRequests,
     computePendingRequestsCount,
@@ -101,22 +102,6 @@ const RECONNECT_SLOW_AFTER_ATTEMPTS = 8
 const RECONNECT_SLOW_MAX_DELAY_MS = 300_000
 const INVALIDATION_BATCH_MS = 16
 
-function sortSessionSummaries(left: SessionSummary, right: SessionSummary): number {
-    if (Boolean(left.globalPinned) !== Boolean(right.globalPinned)) {
-        return left.globalPinned ? -1 : 1
-    }
-    if (Boolean(left.pinned) !== Boolean(right.pinned)) {
-        return left.pinned ? -1 : 1
-    }
-    if (left.active !== right.active) {
-        return left.active ? -1 : 1
-    }
-    if (left.active && left.pendingRequestsCount !== right.pendingRequestsCount) {
-        return right.pendingRequestsCount - left.pendingRequestsCount
-    }
-    return right.updatedAt - left.updatedAt
-}
-
 function isSessionRecord(value: unknown): value is Session {
     return SessionSchema.safeParse(value).success
 }
@@ -127,7 +112,7 @@ function isSessionRecord(value: unknown): value is Session {
  * The CLI keep-alive makes the hub re-broadcast a full session patch about
  * every 10s per active session even when nothing changed, and `activeAt` is
  * the sole field that moves. No component reads `activeAt` - the list shows
- * `updatedAt` and sorts on active/pendingRequestsCount/updatedAt - so storing
+ * `updatedAt` but sorts on pins and user input - so storing
  * it costs a new object identity and a full list re-render for nothing.
  */
 export function sameSessionSummaryMetadata(
@@ -158,6 +143,7 @@ export function isRenderIrrelevantPatch(current: SessionSummary, next: SessionSu
     return current.active === next.active
         && current.thinking === next.thinking
         && current.updatedAt === next.updatedAt
+        && current.lastUserMessageAt === next.lastUserMessageAt
         && current.backgroundTaskCount === next.backgroundTaskCount
         && current.model === next.model
         && current.modelReasoningEffort === next.modelReasoningEffort
@@ -487,6 +473,9 @@ export function useSSE(options: {
                 const existing = existingIndex >= 0 ? previous.sessions[existingIndex] : undefined
                 const summary = {
                     ...toSessionSummary(session),
+                    lastUserMessageAt: session.lastUserMessageAt === undefined
+                        ? existing?.lastUserMessageAt
+                        : Math.max(existing?.lastUserMessageAt ?? 0, session.lastUserMessageAt),
                     futureScheduledMessageCount: existing?.futureScheduledMessageCount ?? 0,
                     nextScheduledAt: existing?.nextScheduledAt ?? null
                 }
@@ -496,7 +485,7 @@ export function useSSE(options: {
                 } else {
                     nextSessions.push(summary)
                 }
-                nextSessions.sort(sortSessionSummaries)
+                nextSessions.sort(compareSessionSummaries)
                 return { ...previous, sessions: nextSessions }
             })
         }
@@ -529,6 +518,9 @@ export function useSSE(options: {
                     updatedAt: patch.updatedAt !== undefined
                         ? Math.max(current.updatedAt, patch.updatedAt)
                         : current.updatedAt,
+                    lastUserMessageAt: patch.lastUserMessageAt !== undefined
+                        ? Math.max(current.lastUserMessageAt ?? 0, patch.lastUserMessageAt)
+                        : current.lastUserMessageAt,
                     backgroundTaskCount: Object.prototype.hasOwnProperty.call(patch, 'backgroundTaskCount')
                         ? patch.backgroundTaskCount ?? 0
                         : current.backgroundTaskCount,
@@ -567,7 +559,7 @@ export function useSSE(options: {
                     return previous
                 }
                 nextSessions[index] = nextSummary
-                nextSessions.sort(sortSessionSummaries)
+                nextSessions.sort(compareSessionSummaries)
                 return { ...previous, sessions: nextSessions }
             })
             return patched

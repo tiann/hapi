@@ -437,6 +437,45 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+    it('refuses a transcript import for an active Codex thread when stored messages do not match its prefix', async () => {
+        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-active-sync-test-'))
+        const store = new Store(':memory:')
+        const codexSessionId = '10101010-1010-4010-8010-101010101010'
+        process.env.CODEX_HOME = codexHome
+
+        try {
+            createTranscript(codexHome, codexSessionId)
+            const liveSession = store.sessions.getOrCreateSession('live-session', {
+                path: 'C:\\work\\project',
+                flavor: 'codex',
+                codexSessionId
+            }, {}, 'default')
+            store.messages.addMessage(liveSession.id, {
+                role: 'user',
+                content: { type: 'text', text: 'different from the transcript' }
+            }, 'live-1')
+            const engine = {
+                getSessionsByNamespace: () => [{ ...liveSession, active: true }]
+            } as unknown as SyncEngine
+
+            const result = await importSelectedCodexSessions({
+                codexSessionIds: [codexSessionId],
+                store,
+                namespace: 'default',
+                getSyncEngine: () => engine
+            })
+
+            expect(result.success).toBe(false)
+            if (result.success) throw new Error('Expected active-session transcript import to fail')
+            expect(result.error).toContain('matching HAPI session is active')
+            expect(store.sessions.getSessionsByNamespace('default')).toHaveLength(1)
+            expect(store.messages.getAllMessages(liveSession.id)).toHaveLength(1)
+        } finally {
+            store.close()
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
+
     it('updates an existing forked import when syncing the original Codex session id', async () => {
         const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-source-test-'))
         const store = new Store(':memory:')

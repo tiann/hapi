@@ -2,13 +2,13 @@ import type { ClientToServerEvents } from '@hapi/protocol'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import type { CopilotAgentMode } from '@hapi/protocol'
-import type { AgentState, CodexCollaborationMode, Metadata, PermissionMode } from '@hapi/protocol/types'
+import type { AgentState, BackgroundTask, CodexCollaborationMode, Metadata, PermissionMode } from '@hapi/protocol/types'
 import { getReasoningStreamId, isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
 import type { Store, StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import { extractTodoWriteTodosFromMessageContent } from '../../../sync/todos'
 import { extractTeamStateFromMessageContent, applyTeamStateDelta } from '../../../sync/teams'
-import { extractBackgroundTaskDelta } from '../../../sync/backgroundTasks'
+import { extractBackgroundTasks } from '../../../sync/backgroundTasks'
 import { shouldRecordSessionActivity } from '../../../sync/sessionActivity'
 import type { CliSocketWithData } from '../../socketTypes'
 import type { SessionEndReason } from '@hapi/protocol'
@@ -68,7 +68,12 @@ const updateStateSchema = z.object({
     agentState: z.unknown().nullable()
 })
 
-const HUB_OWNED_METADATA_KEYS = ['supersededBySessionId', 'opencodeClearOperation'] as const
+const HUB_OWNED_METADATA_KEYS = [
+    'supersededBySessionId',
+    'opencodeClearOperation',
+    'titleSuggestionAutoAttemptedAt',
+    'titleSuggestionTurn'
+] as const
 
 function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown {
     if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) return incoming
@@ -91,7 +96,7 @@ export type SessionHandlersDeps = {
     onSessionReady?: (payload: SessionReadyPayload) => void
     onSessionEnd?: (payload: SessionEndPayload) => void
     onWebappEvent?: (event: SyncEvent) => void
-    onBackgroundTaskDelta?: (sessionId: string, delta: { started: number; completed: number }) => void
+    onBackgroundTasks?: (sessionId: string, tasks: BackgroundTask[]) => void
     onSessionActivity?: (sessionId: string, updatedAt: number) => void
     /** tiann/hapi#1820: any message is agent progress, either direction. */
     onAgentProgress?: (sessionId: string, at: number) => void
@@ -103,7 +108,7 @@ export type SessionHandlersDeps = {
 }
 
 export function registerSessionHandlers(socket: CliSocketWithData, deps: SessionHandlersDeps): void {
-    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionReady, onSessionEnd, onWebappEvent, onBackgroundTaskDelta, onSessionActivity, onAgentProgress, onSweepImmediateQueued, onMessagesConsumed } = deps
+    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionReady, onSessionEnd, onWebappEvent, onBackgroundTasks, onSessionActivity, onAgentProgress, onSweepImmediateQueued, onMessagesConsumed } = deps
 
     socket.on('native-queue-message', data => {
         const parsed = z.object({ sid: z.string(), localId: z.string().min(1), text: z.string().nullable() }).safeParse(data)
@@ -159,7 +164,19 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
+        // A background-task snapshot is session state, not chat: apply it
+        // without storing a hidden row.
+        const backgroundTasks = extractBackgroundTasks(content)
+        if (backgroundTasks !== null) {
+            onBackgroundTasks?.(sid, backgroundTasks)
+            return
+        }
+
+        const wasStored = Boolean(localId && store.messages.lookupQueuedMessage(sid, localId).status !== 'absent')
         const msg = store.messages.addMessage(sid, content, localId, undefined, createdAt)
+        // The durable row already exists; replay must not be mistaken for
+        // fresh agent progress or trigger another round of UI updates.
+        if (wasStored) return
 
         // A reasoning stream arrives as a series of growing snapshots under one
         // stable id, so a stream should cost one row rather than one per
@@ -224,11 +241,6 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                     }
                 })
             }
-        }
-
-        const bgDelta = extractBackgroundTaskDelta(content)
-        if (bgDelta) {
-            onBackgroundTaskDelta?.(sid, bgDelta)
         }
 
         const update = {

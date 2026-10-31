@@ -4,6 +4,7 @@ import {
     listConfiguredTranscriptionProviders,
     listConfiguredVoiceBackends,
     resolveEffectiveVoiceBackend,
+    resolveVoiceMaxDurationSeconds,
     resolveHubVoiceBackend
 } from './voice'
 
@@ -89,5 +90,31 @@ describe('resolveEffectiveVoiceBackend', () => {
 
     test('returns null when no backends configured', () => {
         expect(resolveEffectiveVoiceBackend([], null, null)).toBeNull()
+    })
+})
+
+describe('resolveVoiceMaxDurationSeconds', () => {
+    test('defaults to 1800s when unset or blank', () => {
+        expect(resolveVoiceMaxDurationSeconds(undefined)).toBe(1800)
+        expect(resolveVoiceMaxDurationSeconds('  ')).toBe(1800)
+    })
+
+    test('accepts the inclusive 60..7200 range', () => {
+        expect(resolveVoiceMaxDurationSeconds('60')).toBe(60)
+        expect(resolveVoiceMaxDurationSeconds(' 7200 ')).toBe(7200)
+    })
+
+    test('rejects out-of-range and non-integer values', () => {
+        for (const bad of ['59', '7201', '0', '-1', 'abc', '1800.5']) {
+            expect(() => resolveVoiceMaxDurationSeconds(bad)).toThrow(/between 60 and 7200/)
+        }
+    })
+})
+
+describe('buildVoiceAgentConfig max duration', () => {
+    test('omits conversation cap unless requested, includes it when given', () => {
+        expect(buildVoiceAgentConfig().conversation_config.conversation).toBeUndefined()
+        expect(buildVoiceAgentConfig({ maxDurationSeconds: 900 }).conversation_config.conversation)
+            .toEqual({ max_duration_seconds: 900 })
     })
 })

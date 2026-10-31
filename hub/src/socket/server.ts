@@ -10,6 +10,7 @@ import { registerCliHandlers } from './handlers/cli'
 import { registerTerminalHandlers } from './handlers/terminal'
 import { RpcRegistry } from './rpcRegistry'
 import { SOCKET_MAX_HTTP_BUFFER_SIZE } from './socketLimits'
+import type { BackgroundTask } from '@hapi/protocol/types'
 import type { SyncEvent } from '../sync/syncEngine'
 import { TerminalRegistry } from './terminalRegistry'
 import { clearUserTerminalBuffer } from './userTerminalBuffer'
@@ -42,7 +43,7 @@ export type SocketServerDeps = {
     onSessionReady?: (payload: { sid: string; time: number }) => void
     onSessionEnd?: (payload: { sid: string; time: number }) => void
     onMachineAlive?: (payload: { machineId: string; time: number; health?: unknown }) => void
-    onBackgroundTaskDelta?: (sessionId: string, delta: { started: number; completed: number }) => void
+    onBackgroundTasks?: (sessionId: string, tasks: BackgroundTask[]) => void
     onSessionActivity?: (sessionId: string, updatedAt: number) => void
     onAgentProgress?: (sessionId: string, at: number) => void
     onSweepImmediateQueued?: (sessionId: string, now: number) => void
@@ -131,7 +132,7 @@ export function createSocketServer(deps: SocketServerDeps): {
         onSessionEnd: deps.onSessionEnd,
         onMachineAlive: deps.onMachineAlive,
         onWebappEvent: deps.onWebappEvent,
-        onBackgroundTaskDelta: deps.onBackgroundTaskDelta,
+        onBackgroundTasks: deps.onBackgroundTasks,
         onSessionActivity: deps.onSessionActivity,
         onAgentProgress: deps.onAgentProgress,
         onSweepImmediateQueued: deps.onSweepImmediateQueued,

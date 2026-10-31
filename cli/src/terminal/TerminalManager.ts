@@ -38,6 +38,19 @@ const SENSITIVE_ENV_KEYS = new Set([
     'GOOGLE_API_KEY'
 ])
 
+/**
+ * Runner-injected / agent-harness markers. The web Terminal button opens a
+ * human-facing PTY (not an agent tool shell); inheriting these would make
+ * operator tools (lane B auth, stack-switch guards) refuse a real person.
+ * Keep HAPI_SESSION_ID so session-scoped CLI helpers still work.
+ */
+const AGENT_CONTEXT_ENV_KEYS = new Set([
+    'HAPI_AGENT_CONTEXT',
+    'CURSOR_AGENT',
+    'CURSOR_AGENT_SESSION_ID',
+    'CLAUDECODE',
+])
+
 function getOptionalBun(): typeof Bun | null {
     return typeof Bun === 'undefined' ? null : Bun
 }
@@ -103,17 +116,20 @@ export function normalizeTerminalInputForHost(data: string): string {
     return normalized
 }
 
-function buildFilteredEnv(): NodeJS.ProcessEnv {
+/** Env for web Terminal PTYs: strip secrets + agent-context; mark human-facing. */
+export function buildFilteredEnv(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {}
-    for (const [key, value] of Object.entries(process.env)) {
+    for (const [key, value] of Object.entries(source)) {
         if (!value) {
             continue
         }
-        if (SENSITIVE_ENV_KEYS.has(key)) {
+        if (SENSITIVE_ENV_KEYS.has(key) || AGENT_CONTEXT_ENV_KEYS.has(key)) {
             continue
         }
         env[key] = value
     }
+    // Positive signal for tooling that wants "web Terminal", not agent context.
+    env.HAPI_USER_TERMINAL = '1'
     if (!env.TERM) {
         env.TERM = 'xterm-256color'
     }

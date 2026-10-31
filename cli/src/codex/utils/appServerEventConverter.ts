@@ -1,5 +1,6 @@
 import { INCLUSIVE_INPUT_TOKEN_USAGE_MARKER } from '@hapi/protocol/usage';
 import { logger } from '@/ui/logger';
+import { codexAssistantText } from './assistantText';
 
 type ConvertedEvent = {
     type: string;
@@ -502,6 +503,7 @@ export class AppServerEventConverter {
     private readonly lastCommandOutputDeltaByItemId = new Map<string, string>();
     private readonly rawAgentToolCallIds = new Set<string>();
     private readonly rawAgentToolNames = new Map<string, string>();
+    private readonly announcedCompactionStarts = new Set<string>();
 
     private handleWrappedCodexEvent(paramsRecord: Record<string, unknown>): ConvertedEvent[] | null {
         const msg = asRecord(paramsRecord.msg);
@@ -970,6 +972,15 @@ export class AppServerEventConverter {
             }
 
             if (itemType === 'contextcompaction') {
+                if (method === 'item/started') {
+                    const compactionKey = `${asString(eventScope.thread_id) ?? ''}\0${itemId}`;
+                    if (this.announcedCompactionStarts.has(compactionKey)) {
+                        return events;
+                    }
+                    this.announcedCompactionStarts.add(compactionKey);
+                    events.push(scoped({ type: 'compaction_started', compaction_id: itemId }));
+                    return events;
+                }
                 if (method === 'item/completed') {
                     const threadId = asString(eventScope.thread_id);
                     const turnId = asString(eventScope.turn_id);
@@ -993,7 +1004,8 @@ export class AppServerEventConverter {
                     }
                     const text = extractItemText(item) ?? this.agentMessageBuffers.get(itemId);
                     if (text) {
-                        events.push(scoped({ type: 'agent_message', message: text }));
+                        const message = codexAssistantText(text, item.phase);
+                        if (message) events.push(scoped({ type: 'agent_message', message }));
                         this.completedAgentMessageItems.add(itemId);
                         this.agentMessageBuffers.delete(itemId);
                     }
@@ -1055,6 +1067,9 @@ export class AppServerEventConverter {
 
                 if (method === 'item/completed') {
                     const meta = this.commandMeta.get(itemId) ?? {};
+                    // Completion snapshots can arrive without a start (reconnect or late shutdown).
+                    const command = extractCommand(item.command ?? item.cmd ?? item.args);
+                    const cwd = asString(item.cwd ?? item.workingDirectory ?? item.working_directory);
                     const output = asString(item.aggregatedOutput ?? item.aggregated_output ?? item.output ?? item.result ?? item.stdout)
                         ?? this.commandOutputBuffers.get(itemId);
                     const stderr = asString(item.stderr);
@@ -1067,6 +1082,8 @@ export class AppServerEventConverter {
                         type: 'exec_command_end',
                         call_id: itemId,
                         ...meta,
+                        ...(command ? { command } : {}),
+                        ...(cwd ? { cwd } : {}),
                         ...(output ? { output } : {}),
                         ...(stderr ? { stderr } : {}),
                         ...(error ? { error } : {}),
@@ -1218,5 +1235,6 @@ export class AppServerEventConverter {
         this.lastCommandOutputDeltaByItemId.clear();
         this.rawAgentToolCallIds.clear();
         this.rawAgentToolNames.clear();
+        this.announcedCompactionStarts.clear();
     }
 }

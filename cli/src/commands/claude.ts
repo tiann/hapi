@@ -38,12 +38,12 @@ export const claudeCommand: CommandDefinition = {
                 }
                 options.permissionMode = mode as StartOptions['permissionMode']
                 hasExplicitPermissionMode = true
-            } else if (arg === '--yolo' && !hasExplicitPermissionMode) {
-                options.permissionMode = 'bypassPermissions'
-                unknownArgs.push('--dangerously-skip-permissions')
-            } else if (arg === '--dangerously-skip-permissions' && !hasExplicitPermissionMode) {
-                options.permissionMode = 'bypassPermissions'
-                unknownArgs.push(arg)
+            } else if (arg === '--yolo' || arg === '--dangerously-skip-permissions') {
+                // Not forwarded: Claude lets this flag override --permission-mode,
+                // so a later switch away from Yolo could never reach the TUI.
+                if (!hasExplicitPermissionMode) {
+                    options.permissionMode = 'bypassPermissions'
+                }
             } else if (arg === '--model') {
                 const model = args[++i]
                 if (!model) {
@@ -65,6 +65,15 @@ export const claudeCommand: CommandDefinition = {
                 unknownArgs.push('--effort', effort)
             } else if (arg === '--started-by') {
                 options.startedBy = args[++i] as 'runner' | 'terminal'
+            } else if (arg === '--hapi-session-id') {
+                // Fresh-spawn reserved id (hub prealloc / runner stamp). Create
+                // bootstrap with getOrCreate({ id }) — must NOT take the reopen
+                // path (`existingSessionId` / `--existing-session-id`).
+                const sessionId = args[++i]
+                if (!sessionId) {
+                    throw new Error('Missing --hapi-session-id value')
+                }
+                options.reservedSessionId = sessionId
             } else if (arg === '--existing-session-id') {
                 const sessionId = args[++i]
                 if (!sessionId) {

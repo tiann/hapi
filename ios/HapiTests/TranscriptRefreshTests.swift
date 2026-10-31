@@ -25,7 +25,6 @@ final class TranscriptRefreshTests: XCTestCase {
         var version = 0
         var basePath = "/before"
         var dark = false
-        var size = DynamicTypeSize.large
         var locale = Locale(identifier: "en")
         var direction = LayoutDirection.leftToRight
         var actionToken = 0
@@ -41,7 +40,6 @@ final class TranscriptRefreshTests: XCTestCase {
             let token = driver.actionToken
             ListView(driver: driver)
                 .hapiTheme(driver.dark ? .dark : .light)
-                .environment(\.dynamicTypeSize, driver.size)
                 .environment(\.locale, driver.locale)
                 .environment(\.layoutDirection, driver.direction)
                 .environment(\.hapiOpenURL, HapiOpenURLAction { _ in
@@ -95,6 +93,7 @@ final class TranscriptRefreshTests: XCTestCase {
     private func host(_ driver: Driver) throws -> (UIWindow, TranscriptCollectionController<Row>, UICollectionView) {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let window = UIWindow(windowScene: scene)
+        window.setDynamicTypeSize(.large)
         let host = UIHostingController(rootView: Harness(driver: driver))
         window.rootViewController = host
         window.makeKeyAndVisible()
@@ -153,6 +152,28 @@ final class TranscriptRefreshTests: XCTestCase {
         XCTAssertEqual(tail.frame.height, 180, accuracy: 1, "Recycled cells must use the latest offscreen value")
     }
 
+    func testEnvironmentOnlyChangesReachVisibleRows() async throws {
+        let driver = Driver()
+        let (window, controller, view) = try host(driver)
+        defer { window.isHidden = true }
+        await settle { driver.layouts.contains(0) }
+        await browse(view, index: 25)
+        #if DEBUG
+        let configurations = controller.cellConfigurationCount
+        #endif
+        // No item or closure capture changes: only the environment does.
+        driver.dark = true
+        await settle { driver.samples["25"]?.dark == true }
+        XCTAssertEqual(driver.samples["25"]?.dark, true, "A theme change must reach hosted rows")
+        #if DEBUG
+        XCTAssertEqual(controller.cellConfigurationCount, configurations)
+        #endif
+        window.setDynamicTypeSize(.accessibility2)
+        await settle { driver.samples["25"]?.size == .accessibility2 }
+        let cell = try XCTUnwrap(view.cellForItem(at: IndexPath(item: 25, section: 0)))
+        XCTAssertEqual(cell.frame.height, 180, accuracy: 1, "A system text size change must re-measure rows")
+    }
+
     func testEqualItemsReceiveLatestEnvironmentValueCapturesAndActions() async throws {
         let driver = Driver()
         let (window, controller, view) = try host(driver)
@@ -177,12 +198,21 @@ final class TranscriptRefreshTests: XCTestCase {
         // change; only ordinary data/context updates have a zero-config budget.
         driver.locale = Locale(identifier: "ar")
         driver.direction = .rightToLeft
-        driver.size = .accessibility2
+        window.setDynamicTypeSize(.accessibility2)
         let recycled = Sample(basePath: "/after", dark: true, size: .accessibility2, locale: "ar", direction: .rightToLeft)
         await settle { driver.samples["25"] == recycled }
         let cell = try XCTUnwrap(view.cellForItem(at: IndexPath(item: 25, section: 0)))
         XCTAssertEqual(cell.frame.height, 180, accuracy: 1, "Environment-only changes must still self-size")
         await browse(view, index: 60)
         XCTAssertEqual(driver.samples["60"], recycled)
+    }
+}
+
+private extension UIWindow {
+    /// Change text size as the system does. On iOS 27 a SwiftUI
+    /// `dynamicTypeSize` override does not reach a UIKit representable's
+    /// `context.environment`, and the app never overrides it above the list.
+    func setDynamicTypeSize(_ size: DynamicTypeSize) {
+        traitOverrides.preferredContentSizeCategory = UIContentSizeCategory(size)
     }
 }
