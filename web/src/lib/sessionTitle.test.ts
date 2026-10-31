@@ -32,6 +32,15 @@ describe('getSessionTitle', () => {
         })).toBe('share-title-parity')
     })
 
+    it('falls back to the last Windows path segment', () => {
+        expect(getSessionTitle({
+            id: 'abcdef0123456789',
+            metadata: {
+                path: 'C:\\Users\\dev\\projects\\widget',
+            },
+        })).toBe('widget')
+    })
+
     it('falls back to a short id when metadata is empty', () => {
         expect(getSessionTitle({ id: 'abcdef0123456789' })).toBe('abcdef01')
     })

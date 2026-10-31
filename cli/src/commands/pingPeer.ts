@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises'
 import chalk from 'chalk'
 import { PeerDeliveryModeSchema, type PeerDeliveryMode } from '@/modules/pingPeer/deliveryMode'
 import { initializeToken } from '@/ui/tokenInit'
+import { HAPI_SESSION_ID_ENV } from '@/agent/hapiSessionEnv'
 import {
     PingPeerError,
     exitCodeForPingPeerError,
@@ -35,7 +36,8 @@ ${chalk.bold('Usage:')}
 
 ${chalk.bold('Notes:')}
   Do not reinvent JWT + curl for peer handoffs. Prefer this command or MCP ping_peer / list_peers.
-  Resolves by id prefix (8 chars OK). Same hub token/namespace as this CLI.
+  Resolves by hub session id prefix (8 chars OK) or durable metadata.agentSessionId.
+  POST always targets the current hub row after resolve (hub ids rotate).
   Inactive sessions are resumed via POST /api/sessions/:id/resume, then messaged.
   Delivery defaults to auto: steer a steerable active Codex turn, otherwise queue.
   Auto resumes inactive targets; other agent flavors currently queue in auto mode.
@@ -207,6 +209,8 @@ export async function handlePingPeerCommand(args: string[]): Promise<void> {
         message,
         deliveryMode: parsed.deliveryMode,
         waitActiveSecs: parsed.waitActiveSecs ?? envWaitActiveSecs(),
+        // Inside a wrapped session, soft nametag via /cli/.../peer-messages (#1203).
+        authenticatedSourceSessionId: process.env[HAPI_SESSION_ID_ENV]?.trim() || undefined,
         onProgress: (line) => console.log(`hapi ping-peer: ${line}`)
     })
 

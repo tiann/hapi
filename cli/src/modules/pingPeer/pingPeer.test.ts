@@ -2,12 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MessageDeliveryModeSchema } from '@hapi/protocol'
 import { PeerDeliveryModeSchema } from './deliveryMode'
 import {
+    HAPI_PEER_DELIVERY_HEADER,
+    HAPI_PEER_DELIVERY_HEADER_VALUE
+} from '@hapi/protocol'
+import {
     PingPeerError,
     exitCodeForPingPeerError,
     inspectPeer,
     listPeerSessions,
     pingPeer,
     resolveSessionByPrefix,
+    resolvePeerSessionTarget,
     type PingPeerSessionSummary
 } from './pingPeer'
 
@@ -17,15 +22,23 @@ type MockResponse = {
 }
 
 function createHttpMock(handlers: {
-    post?: (url: string, body?: unknown) => MockResponse | Promise<MockResponse>
+    post?: (
+        url: string,
+        body?: unknown,
+        config?: { headers?: Record<string, string> }
+    ) => MockResponse | Promise<MockResponse>
     get?: (url: string, config?: { params?: Record<string, unknown> }) => MockResponse | Promise<MockResponse>
 }) {
     return {
-        post: vi.fn(async (url: string, body?: unknown) => {
+        post: vi.fn(async (
+            url: string,
+            body?: unknown,
+            config?: { headers?: Record<string, string> }
+        ) => {
             if (!handlers.post) {
                 throw new Error(`unexpected POST ${url}`)
             }
-            return handlers.post(url, body)
+            return handlers.post(url, body, config)
         }),
         get: vi.fn(async (url: string, config?: { params?: Record<string, unknown> }) => {
             if (!handlers.get) {
@@ -58,11 +71,192 @@ describe('resolveSessionByPrefix', () => {
         } catch (error) {
             expect(error).toBeInstanceOf(PingPeerError)
             expect((error as PingPeerError).code).toBe('ambiguous')
+            expect((error as PingPeerError).message).toMatch(/hub id prefix/)
+            expect((error as PingPeerError).message).toMatch(/name=/)
         }
     })
 
-    it('refuses unknown prefixes', () => {
+    it('refuses unknown prefixes with actionable hints', () => {
         expect(() => resolveSessionByPrefix(sessions, 'zzzz')).toThrowError(/no session matching/)
+        try {
+            resolveSessionByPrefix(sessions, 'zzzz')
+        } catch (error) {
+            expect((error as PingPeerError).message).toMatch(/agentSessionId prefix/)
+            expect((error as PingPeerError).message).toMatch(/Sample:/)
+        }
+    })
+
+    it('resolves by exact agentSessionId (case insensitive)', () => {
+        const withAgent: PingPeerSessionSummary[] = [
+            {
+                id: '11111111-1111-1111-1111-111111111111',
+                active: false,
+                updatedAt: 100,
+                metadata: {
+                    name: 'Stale row',
+                    flavor: 'cursor',
+                    agentSessionId: '8e1f4fd4-durable-agent'
+                }
+            },
+            {
+                id: '22222222-2222-2222-2222-222222222222',
+                active: true,
+                updatedAt: 200,
+                metadata: {
+                    name: 'Current row',
+                    flavor: 'cursor',
+                    agentSessionId: '8e1f4fd4-durable-agent'
+                }
+            }
+        ]
+        expect(resolveSessionByPrefix(withAgent, '8e1f4fd4-durable-agent').id).toBe(withAgent[1]!.id)
+        expect(resolveSessionByPrefix(withAgent, '8E1F4FD4-DURABLE-AGENT').id).toBe(withAgent[1]!.id)
+    })
+
+    it('resolves multiple hub rows for the same agentSessionId prefix to the active row', () => {
+        const withAgent: PingPeerSessionSummary[] = [
+            {
+                id: 'aaaaaaaa-1111-1111-1111-111111111111',
+                active: false,
+                updatedAt: 50,
+                metadata: { name: 'Old', flavor: 'cursor', agentSessionId: 'peer-agent-aaaa' }
+            },
+            {
+                id: 'bbbbbbbb-2222-2222-2222-222222222222',
+                active: true,
+                updatedAt: 100,
+                metadata: { name: 'Live', flavor: 'cursor', agentSessionId: 'peer-agent-aaaa' }
+            }
+        ]
+        expect(resolveSessionByPrefix(withAgent, 'peer-agent').id).toBe(withAgent[1]!.id)
+    })
+
+    it('refuses an agentSessionId prefix shared by distinct durable identities', () => {
+        const withAgent: PingPeerSessionSummary[] = [
+            {
+                id: 'aaaaaaaa-1111-1111-1111-111111111111',
+                active: false,
+                updatedAt: 50,
+                metadata: { name: 'A', flavor: 'cursor', agentSessionId: 'shared-prefix-1111' }
+            },
+            {
+                id: 'bbbbbbbb-2222-2222-2222-222222222222',
+                active: true,
+                updatedAt: 100,
+                metadata: { name: 'B', flavor: 'cursor', agentSessionId: 'shared-prefix-2222' }
+            }
+        ]
+        expect(() => resolveSessionByPrefix(withAgent, 'shared-prefix')).toThrow(PingPeerError)
+        try {
+            resolveSessionByPrefix(withAgent, 'shared-prefix')
+        } catch (error) {
+            expect((error as PingPeerError).code).toBe('ambiguous')
+            expect((error as PingPeerError).message).toMatch(/agentSessionId prefix/)
+        }
+    })
+
+    it('does not resolve agentSessionId substrings', () => {
+        const withAgent: PingPeerSessionSummary[] = [
+            {
+                id: 'aaaaaaaa-1111-1111-1111-111111111111',
+                active: true,
+                updatedAt: 100,
+                metadata: { name: 'A', agentSessionId: 'durable-shared-suffix' }
+            }
+        ]
+        expect(() => resolveSessionByPrefix(withAgent, 'shared-suffix')).toThrowError(/no session matching/)
+    })
+
+    it('refuses the same agentSessionId reused by different flavors', () => {
+        const withAgent: PingPeerSessionSummary[] = [
+            {
+                id: 'aaaaaaaa-1111-1111-1111-111111111111',
+                active: false,
+                updatedAt: 50,
+                metadata: { name: 'Cursor', flavor: 'cursor', agentSessionId: 'native-thread-1' }
+            },
+            {
+                id: 'bbbbbbbb-2222-2222-2222-222222222222',
+                active: true,
+                updatedAt: 100,
+                metadata: { name: 'Claude', flavor: 'claude', agentSessionId: 'native-thread-1' }
+            }
+        ]
+        expect(() => resolveSessionByPrefix(withAgent, 'native-thread-1'))
+            .toThrowError(/agentSessionId/)
+    })
+
+    it('refuses a Pi agentSessionId reused on different machines', () => {
+        const withAgent: PingPeerSessionSummary[] = [
+            {
+                id: 'aaaaaaaa-1111-1111-1111-111111111111',
+                active: false,
+                updatedAt: 50,
+                metadata: {
+                    name: 'Pi A',
+                    flavor: 'pi',
+                    machineId: 'machine-a',
+                    agentSessionId: 'pi-thread-1'
+                }
+            },
+            {
+                id: 'bbbbbbbb-2222-2222-2222-222222222222',
+                active: true,
+                updatedAt: 100,
+                metadata: {
+                    name: 'Pi B',
+                    flavor: 'pi',
+                    machineId: 'machine-b',
+                    agentSessionId: 'pi-thread-1'
+                }
+            }
+        ]
+        expect(() => resolveSessionByPrefix(withAgent, 'pi-thread-1'))
+            .toThrowError(/agentSessionId/)
+    })
+})
+
+describe('resolvePeerSessionTarget', () => {
+    const oldId = '36985b00-e7ba-448c-812c-9eb4f611ff6e'
+    const newId = '0b350082-d60d-4705-b0ab-d0d80a861660'
+
+    it('follows supersededBySessionId on a list match', async () => {
+        const sessions: PingPeerSessionSummary[] = [
+            {
+                id: oldId,
+                active: false,
+                metadata: { name: 'Build coordinator', supersededBySessionId: newId }
+            },
+            {
+                id: newId,
+                active: true,
+                metadata: { name: 'Build coordinator' }
+            }
+        ]
+        const resolved = await resolvePeerSessionTarget(sessions, oldId)
+        expect(resolved.id).toBe(newId)
+    })
+
+    it('fail-closed when cited id is gone — no title auto-routing', async () => {
+        const sessions: PingPeerSessionSummary[] = [
+            {
+                id: newId,
+                active: true,
+                metadata: { name: 'Build coordinator' }
+            }
+        ]
+        await expect(
+            resolvePeerSessionTarget(
+                sessions,
+                oldId
+            )
+        ).rejects.toMatchObject({ code: 'not_found' })
+    })
+
+    it('mentions list_peers when id is gone', async () => {
+        await expect(
+            resolvePeerSessionTarget([], oldId)
+        ).rejects.toThrow(/list_peers/)
     })
 })
 
@@ -78,15 +272,18 @@ describe('pingPeer', () => {
     it('sends to an already-active session without resume', async () => {
         const sessionId = '05d9f0f2-9273-4137-933c-07459a1146a2'
         const http = createHttpMock({
-            post: (url, body) => {
+            post: (url, body, config) => {
                 if (url.endsWith('/api/auth')) {
                     expect(body).toEqual({ accessToken: 'tok' })
                     return { status: 200, data: { token: 'jwt' } }
                 }
                 if (url.endsWith(`/api/sessions/${sessionId}/messages`)) {
+                    // Bare CLI: unattributed peer header + localId, no body source claim.
                     expect(body).toMatchObject({ text: 'hello peer' })
                     expect(typeof (body as { localId?: unknown }).localId).toBe('string')
                     expect(String((body as { localId?: unknown }).localId)).toMatch(/^ping-peer-/)
+                    expect(config?.headers?.[HAPI_PEER_DELIVERY_HEADER])
+                        .toBe(HAPI_PEER_DELIVERY_HEADER_VALUE)
                     return { status: 200, data: { ok: true } }
                 }
                 throw new Error(`unexpected POST ${url}`)
@@ -940,6 +1137,196 @@ describe('listSessions query params', () => {
         })
         expect(result.sessionId).toBe(sessionId)
         expect(pingParams[0]).toBeUndefined()
+    })
+
+    it('attributes via CLI peer-messages when authenticatedSourceSessionId is set', async () => {
+        const targetId = '05d9f0f2-9273-4137-933c-07459a1146a2'
+        const sourceId = '6212dae5-8a60-4284-b7a5-c09aa3571ce4'
+
+        const http = createHttpMock({
+            post: (url, body, config) => {
+                if (url.endsWith('/api/auth')) {
+                    return { status: 200, data: { token: 'jwt' } }
+                }
+                if (url.endsWith(`/cli/sessions/${sourceId}/peer-messages`)) {
+                    expect(body).toMatchObject({
+                        targetSessionId: targetId,
+                        text: 'handoff'
+                    })
+                    expect(typeof (body as { localId?: unknown }).localId).toBe('string')
+                    expect((body as { deliveryMode?: unknown }).deliveryMode).toBeUndefined()
+                    expect(config?.headers?.Authorization).toBe('Bearer tok')
+                    expect(config?.headers?.[HAPI_PEER_DELIVERY_HEADER]).toBeUndefined()
+                    return { status: 200, data: { ok: true } }
+                }
+                throw new Error(`unexpected POST ${url}`)
+            },
+            get: (url) => {
+                if (url.endsWith('/api/sessions')) {
+                    return {
+                        status: 200,
+                        data: {
+                            sessions: [{
+                                id: targetId,
+                                active: true,
+                                metadata: { name: 'Target' }
+                            }]
+                        }
+                    }
+                }
+                if (url.endsWith(`/api/sessions/${targetId}`)) {
+                    return {
+                        status: 200,
+                        data: {
+                            session: {
+                                id: targetId,
+                                active: true,
+                                metadata: { name: 'Target' }
+                            }
+                        }
+                    }
+                }
+                throw new Error(`unexpected GET ${url}`)
+            }
+        })
+
+        await pingPeer({
+            sessionIdPrefix: '05d9f0f2',
+            message: 'handoff',
+            accessToken: 'tok',
+            authenticatedSourceSessionId: sourceId,
+            apiUrl: 'http://127.0.0.1:3006',
+            http: http as never
+        })
+    })
+
+
+    it('attributes + steers Pi without sending deliveryMode on peer-messages', async () => {
+        const targetId = '05d9f0f2-9273-4137-933c-07459a1146a2'
+        const sourceId = '6212dae5-8a60-4284-b7a5-c09aa3571ce4'
+        let peerBody: unknown
+        const http = createHttpMock({
+            post: (url, body, config) => {
+                if (url.endsWith('/api/auth')) {
+                    return { status: 200, data: { token: 'jwt' } }
+                }
+                if (url.endsWith(`/cli/sessions/${sourceId}/peer-messages`)) {
+                    peerBody = body
+                    expect((body as { deliveryMode?: unknown }).deliveryMode).toBeUndefined()
+                    expect(config?.headers?.Authorization).toBe('Bearer tok')
+                    return { status: 200, data: { ok: true } }
+                }
+                if (url.includes('/messages/') && url.endsWith('/steer')) {
+                    return { status: 200, data: { status: 'steered' } }
+                }
+                throw new Error(`unexpected POST ${url}`)
+            },
+            get: (url) => {
+                if (url.endsWith('/api/sessions') || url.endsWith(`/api/sessions/${targetId}`)) {
+                    const session = {
+                        id: targetId,
+                        active: true,
+                        thinking: true,
+                        metadata: {
+                            name: 'Pi Peer',
+                            flavor: 'pi',
+                            // Avoid waitForPiReady polling in this unit test.
+                            piSessionId: 'pi-ready-1'
+                        }
+                    }
+                    return {
+                        status: 200,
+                        data: url.endsWith('/api/sessions')
+                            ? { sessions: [session] }
+                            : { session }
+                    }
+                }
+                throw new Error(`unexpected GET ${url}`)
+            }
+        })
+
+        const result = await pingPeer({
+            sessionIdPrefix: targetId,
+            message: 'mid-turn note',
+            deliveryMode: 'steer',
+            accessToken: 'tok',
+            authenticatedSourceSessionId: sourceId,
+            apiUrl: 'http://127.0.0.1:3006',
+            http: http as never
+        })
+        expect(result.delivery).toBe('steered')
+        expect(peerBody).toMatchObject({
+            targetSessionId: targetId,
+            text: 'mid-turn note'
+        })
+        expect((peerBody as { deliveryMode?: unknown }).deliveryMode).toBeUndefined()
+        expect(http.post.mock.calls.some(([url]) => String(url).endsWith('/steer'))).toBe(true)
+    })
+
+it('resolves by agentSessionId prefix and posts to the current hub id', async () => {
+        const hubId = 'cccccccc-3333-3333-3333-333333333333'
+        const agentSessionId = '05d9f0f2-durable-cursor-thread'
+        const http = createHttpMock({
+            post: (url, body, config) => {
+                if (url.endsWith('/api/auth')) {
+                    return { status: 200, data: { token: 'jwt' } }
+                }
+                if (url.endsWith(`/api/sessions/${hubId}/messages`)) {
+                    expect(body).toMatchObject({ text: 'via agentSessionId' })
+                    expect(typeof (body as { localId?: unknown }).localId).toBe('string')
+                    expect(config?.headers?.[HAPI_PEER_DELIVERY_HEADER])
+                        .toBe(HAPI_PEER_DELIVERY_HEADER_VALUE)
+                    return { status: 200, data: { ok: true } }
+                }
+                throw new Error(`unexpected POST ${url}`)
+            },
+            get: (url) => {
+                if (url.endsWith('/api/sessions') && !url.includes(hubId)) {
+                    return {
+                        status: 200,
+                        data: {
+                            sessions: [{
+                                id: hubId,
+                                active: true,
+                                metadata: {
+                                    name: 'Orchestrator',
+                                    flavor: 'cursor',
+                                    agentSessionId
+                                }
+                            }]
+                        }
+                    }
+                }
+                if (url.endsWith(`/api/sessions/${hubId}`)) {
+                    return {
+                        status: 200,
+                        data: {
+                            session: {
+                                id: hubId,
+                                active: true,
+                                metadata: {
+                                    name: 'Orchestrator',
+                                    flavor: 'cursor',
+                                    agentSessionId
+                                }
+                            }
+                        }
+                    }
+                }
+                throw new Error(`unexpected GET ${url}`)
+            }
+        })
+
+        const result = await pingPeer({
+            sessionIdPrefix: '05d9f0f2',
+            message: 'via agentSessionId',
+            accessToken: 'tok',
+            apiUrl: 'http://hub.test',
+            http: http as never
+        })
+
+        expect(result.sessionId).toBe(hubId)
+        expect(result.name).toBe('Orchestrator')
     })
 })
 

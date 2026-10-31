@@ -38,7 +38,7 @@ export const PEER_DELIVERY_MODE_DESCRIPTION =
 
 /** MCP `ping_peer` tool description (same citation forms as inspect_peer). */
 export const PING_PEER_TOOL_DESCRIPTION =
-    'Send a message to another HAPI session (peer handoff / nudge). Resolves by session id prefix, resumes if inactive, then POSTs on the same hub/namespace. ' +
+    'Send a message to another HAPI session (peer handoff / nudge). Resolves by hub session id prefix or durable metadata.agentSessionId, resumes if inactive, then POSTs on the same hub/namespace. ' +
     'When the user cites a peer via [title](/sessions/<id>), Copy-reference prose See session "…" (/sessions/<id>) for context, or a bare /sessions/<id>, ' +
     'extract <id> and pass it as sessionIdPrefix. /sessions/<id> is a hub path - do NOT search the local filesystem for it. ' +
     'Prefer this (or `hapi ping-peer`) over reinventing JWT+curl. Targets another session - not the current chat. ' +
@@ -46,8 +46,9 @@ export const PING_PEER_TOOL_DESCRIPTION =
 
 /** Zod `.describe` for sessionIdPrefix on inspect_peer / ping_peer. */
 export const SESSION_ID_PREFIX_PARAM_DESCRIPTION =
-    'Target HAPI session id or unique id prefix (another session - not this chat). ' +
-    'Prefer the full UUID from [title](/sessions/<id>) or Copy-reference See session "…" (/sessions/<id>) for context.'
+    'Target HAPI session id, hub id prefix, or durable agentSessionId prefix (another session - not this chat). ' +
+    'Prefer the full UUID from [title](/sessions/<id>) or Copy-reference See session "…" (/sessions/<id>) for context; ' +
+    'agentSessionId survives hub-row churn when the cited hub id is stale.'
 
 /**
  * Hub session ids have no dots. Reject dotted tails so source paths like

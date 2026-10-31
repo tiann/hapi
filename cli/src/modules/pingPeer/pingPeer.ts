@@ -14,7 +14,10 @@ import axios, { type AxiosInstance } from 'axios'
 import {
     extractAssistantPlainText,
     getPermissionModesForFlavor,
+    HAPI_PEER_DELIVERY_HEADER,
+    HAPI_PEER_DELIVERY_HEADER_VALUE,
     isObject,
+    isSessionId,
     isSteeringSupportedForSession,
     type MessageDeliveryMode,
 } from '@hapi/protocol'
@@ -69,11 +72,14 @@ export type PingPeerSessionSummary = {
     metadata?: {
         name?: string
         flavor?: string | null
+        machineId?: string
         path?: string | null
         lifecycleState?: string | null
         piSessionId?: string
         cursorSessionId?: string | null
         cursorSessionProtocol?: 'acp' | 'stream-json' | null
+        agentSessionId?: string
+        supersededBySessionId?: string
         summary?: { text?: string } | null
         capabilities?: { concurrentClients?: boolean } | null
     } | null
@@ -86,6 +92,13 @@ export type PingPeerOptions = {
     waitActiveSecs?: number
     apiUrl?: string
     accessToken?: string
+    /**
+     * Calling session id (MCP / HAPI_SESSION_ID). When set, uses
+     * `POST /cli/sessions/:source/peer-messages` for a soft nametag chip/From
+     * line (#1203). Same namespace-token trust as other CLI session routes —
+     * not a proof. Bare `hapi ping-peer` omits this → unattributed peer rows.
+     */
+    authenticatedSourceSessionId?: string
     http?: AxiosInstance
     sleep?: (ms: number) => Promise<void>
     now?: () => number
@@ -212,6 +225,105 @@ export function authHeaders(jwt: string): Record<string, string> {
     })
 }
 
+function readAgentSessionId(session: PingPeerSessionSummary): string {
+    const raw = session.metadata?.agentSessionId
+    return typeof raw === 'string' ? raw.trim() : ''
+}
+
+function readAgentSessionScope(session: PingPeerSessionSummary): string | null {
+    const agentSessionId = readAgentSessionId(session).toLowerCase()
+    const flavor = session.metadata?.flavor?.trim().toLowerCase() ?? ''
+    if (!agentSessionId || !flavor) {
+        return null
+    }
+    if (flavor !== 'pi') {
+        return `${flavor}:${agentSessionId}`
+    }
+    const machineId = session.metadata?.machineId?.trim().toLowerCase() ?? ''
+    return machineId ? `${flavor}:${machineId}:${agentSessionId}` : null
+}
+
+function sortPeersActiveThenUpdated(sessions: PingPeerSessionSummary[]): PingPeerSessionSummary[] {
+    return [...sessions].sort((a, b) => {
+        const aActive = a.active ? 0 : 1
+        const bActive = b.active ? 0 : 1
+        if (aActive !== bActive) {
+            return aActive - bActive
+        }
+        return (b.updatedAt ?? 0) - (a.updatedAt ?? 0)
+    })
+}
+
+function formatPeerResolveHint(session: PingPeerSessionSummary): string {
+    const name = session.metadata?.name?.trim() || resolvePeerSessionLabel(session)
+    const agentSessionId = readAgentSessionId(session)
+    const hubShort = session.id.slice(0, 8)
+    const agentPart = agentSessionId
+        ? ` agentSessionId=${agentSessionId.length > 12 ? `${agentSessionId.slice(0, 12)}…` : agentSessionId}`
+        : ''
+    const flavorPart = session.metadata?.flavor
+        ? ` flavor=${session.metadata.flavor}`
+        : ''
+    const machinePart = session.metadata?.machineId
+        ? ` machineId=${session.metadata.machineId}`
+        : ''
+    return `name="${name}" hubId=${hubShort}…${flavorPart}${machinePart}${agentPart}`
+}
+
+function throwPeerResolveNotFound(trimmed: string, sessions: PingPeerSessionSummary[]): never {
+    const sample = sessions.slice(0, 3).map(formatPeerResolveHint).join('; ')
+    const hint = sample ? ` Sample: ${sample}.` : ''
+    throw new PingPeerError(
+        'not_found',
+        `no session matching '${trimmed}'. Try a longer hub id prefix or agentSessionId prefix.${hint}`
+    )
+}
+
+function throwPeerResolveAmbiguous(
+    trimmed: string,
+    matches: PingPeerSessionSummary[],
+    kind: string
+): never {
+    const sample = matches.slice(0, 5).map(formatPeerResolveHint).join('; ')
+    throw new PingPeerError(
+        'ambiguous',
+        `'${trimmed}' matches ${matches.length} sessions by ${kind} (${sample}${matches.length > 5 ? '; …' : ''}); use a longer prefix`
+    )
+}
+
+function pickAgentSessionMatch(
+    matches: PingPeerSessionSummary[],
+    trimmed: string,
+    kind: string
+): PingPeerSessionSummary {
+    if (matches.length === 0) {
+        throw new PingPeerError('not_found', `no session matching '${trimmed}'`)
+    }
+    if (matches.length === 1) {
+        return matches[0]!
+    }
+    const scopes = matches.map(readAgentSessionScope)
+    if (scopes.some((scope) => scope === null) || new Set(scopes).size > 1) {
+        throwPeerResolveAmbiguous(trimmed, matches, kind)
+    }
+    const sorted = sortPeersActiveThenUpdated(matches)
+    const top = sorted[0]!
+    const tied = sorted.filter(
+        (session) =>
+            session.active === top.active
+            && (session.updatedAt ?? 0) === (top.updatedAt ?? 0)
+    )
+    if (tied.length > 1) {
+        throwPeerResolveAmbiguous(trimmed, tied, kind)
+    }
+    return top
+}
+
+/**
+ * Resolve a peer session by hub id prefix or durable `metadata.agentSessionId`.
+ * Hub ids are ephemeral; agentSessionId survives hub-row churn (#1203).
+ * POST/resume always use the resolved hub `id` (current row).
+ */
 export function resolveSessionByPrefix(
     sessions: PingPeerSessionSummary[],
     prefix: string
@@ -221,23 +333,127 @@ export function resolveSessionByPrefix(
         throw new PingPeerError('bad_args', 'session id prefix is required')
     }
 
-    const exact = sessions.filter((session) => session.id === trimmed)
-    if (exact.length === 1) {
-        return exact[0]!
+    const exactHub = sessions.filter((session) => session.id === trimmed)
+    if (exactHub.length === 1) {
+        return exactHub[0]!
     }
 
-    const matches = sessions.filter((session) => session.id.startsWith(trimmed))
-    if (matches.length === 0) {
-        throw new PingPeerError('not_found', `no session matching prefix '${trimmed}'`)
+    const hubPrefixMatches = sessions.filter((session) => session.id.startsWith(trimmed))
+    if (hubPrefixMatches.length === 1) {
+        return hubPrefixMatches[0]!
     }
-    if (matches.length > 1) {
-        const sample = matches.slice(0, 5).map((session) => session.id.slice(0, 8)).join(', ')
-        throw new PingPeerError(
-            'ambiguous',
-            `prefix '${trimmed}' matches ${matches.length} sessions (${sample}${matches.length > 5 ? ', ...' : ''}); use a longer prefix`
-        )
+    if (hubPrefixMatches.length > 1) {
+        throwPeerResolveAmbiguous(trimmed, hubPrefixMatches, 'hub id prefix')
     }
-    return matches[0]!
+
+    const needleLower = trimmed.toLowerCase()
+    const agentExact = sessions.filter(
+        (session) => readAgentSessionId(session).toLowerCase() === needleLower
+    )
+    if (agentExact.length > 0) {
+        return pickAgentSessionMatch(agentExact, trimmed, 'agentSessionId')
+    }
+
+    const agentPrefixMatches = sessions.filter((session) =>
+        readAgentSessionId(session).toLowerCase().startsWith(needleLower)
+    )
+    if (agentPrefixMatches.length > 0) {
+        return pickAgentSessionMatch(agentPrefixMatches, trimmed, 'agentSessionId prefix')
+    }
+
+    throwPeerResolveNotFound(trimmed, sessions)
+}
+
+function buildPeerSessionNotFoundError(prefix: string): PingPeerError {
+    return new PingPeerError(
+        'not_found',
+        `no session matching prefix '${prefix}'. The id may have been merged or superseded — try list_peers.`
+    )
+}
+
+async function followSupersessionChain(
+    session: PingPeerSessionSummary,
+    sessions: PingPeerSessionSummary[],
+    fetchSession?: (sessionId: string) => Promise<PingPeerSessionSummary | null>
+): Promise<PingPeerSessionSummary> {
+    let current = session
+    for (let depth = 0; depth < 10; depth += 1) {
+        const replacement = current.metadata?.supersededBySessionId?.trim()
+        if (!replacement || replacement === current.id) {
+            return current
+        }
+        const inList = sessions.find((row) => row.id === replacement)
+        if (inList) {
+            current = inList
+            continue
+        }
+        if (fetchSession) {
+            const fetched = await fetchSession(replacement)
+            if (fetched) {
+                current = fetched
+                continue
+            }
+        }
+        return current
+    }
+    return current
+}
+
+export type ResolvePeerSessionTargetOptions = {
+    fetchSession?: (sessionId: string) => Promise<PingPeerSessionSummary | null>
+}
+
+/**
+ * Resolve a peer session for inspect_peer / ping_peer: list prefix, direct GET
+ * for exact UUIDs, then supersession chain. Name/title matching is intentionally
+ * not used — labels are not stable identities.
+ */
+export async function resolvePeerSessionTarget(
+    sessions: PingPeerSessionSummary[],
+    prefix: string,
+    options: ResolvePeerSessionTargetOptions = {}
+): Promise<PingPeerSessionSummary> {
+    let matched: PingPeerSessionSummary | null = null
+
+    try {
+        matched = resolveSessionByPrefix(sessions, prefix)
+    } catch (error) {
+        if (!(error instanceof PingPeerError)) {
+            throw error
+        }
+        if (error.code === 'ambiguous') {
+            throw error
+        }
+        if (error.code !== 'not_found') {
+            throw error
+        }
+    }
+
+    if (!matched && isSessionId(prefix) && options.fetchSession) {
+        matched = await options.fetchSession(prefix)
+    }
+
+    if (!matched) {
+        throw buildPeerSessionNotFoundError(prefix)
+    }
+
+    return followSupersessionChain(matched, sessions, options.fetchSession)
+}
+
+async function tryGetSession(
+    apiUrl: string,
+    jwt: string,
+    sessionId: string,
+    http: AxiosInstance
+): Promise<PingPeerSessionSummary | null> {
+    try {
+        return await getSession(apiUrl, jwt, sessionId, http)
+    } catch (error) {
+        if (error instanceof PingPeerError && error.code === 'not_found') {
+            return null
+        }
+        throw error
+    }
 }
 
 async function listSessions(
@@ -408,11 +624,15 @@ async function sendMessage(
 ): Promise<PingPeerResult['delivery']> {
     // The existing queued-message steer action accepts localId as well as id.
     // Both modes retain the peer identity so only runtime ACKs prove delivery.
+    // Unattributed peer send: web JWT + peer header (no body source claim).
     const response = await http.post(
         `${apiUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages`,
         { text: message, localId },
         {
-            headers: authHeaders(jwt),
+            headers: {
+                ...authHeaders(jwt),
+                [HAPI_PEER_DELIVERY_HEADER]: HAPI_PEER_DELIVERY_HEADER_VALUE
+            },
             timeout: 30_000,
             validateStatus: () => true
         }
@@ -435,6 +655,74 @@ async function sendMessage(
                 if (steer.data?.status === 'steered') return 'steered'
                 // The target consumed the message before the steer request.
                 // Do not claim it was inserted into the active turn.
+                if (steer.data?.status === 'invoked') return 'invoked'
+            }
+            throw new Error(typeof steer.data?.error === 'string' ? steer.data.error : `HTTP ${steer.status}`)
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error)
+            throw new PingPeerError(
+                'send_failed',
+                `Message accepted (localId=${localId}), but steer was not confirmed: ${detail}. ` +
+                'It may remain queued or already be consumed; inspect the target before retrying. Do not resend automatically.'
+            )
+        }
+    }
+    const detail = typeof response.data?.error === 'string'
+        ? response.data.error
+        : typeof response.data?.code === 'string'
+            ? response.data.code
+            : `HTTP ${response.status}`
+    if (deliveryMode === 'steer') {
+        throw unconfirmedSendError(localId, detail)
+    }
+    throw new PingPeerError('send_failed', `send failed: ${detail}`)
+}
+
+/**
+ * Attributed peer send: CLI token + path source id. Hub ignores any body
+ * sourceSessionId and fills sourceName from the store. localId + deliveryMode
+ * match the unattributed JWT path so steer confirmation stays available.
+ */
+async function sendAttributedPeerMessage(
+    apiUrl: string,
+    cliToken: string,
+    sourceSessionId: string,
+    targetSessionId: string,
+    message: string,
+    localId: string,
+    http: AxiosInstance,
+    jwt: string,
+    deliveryMode: MessageDeliveryMode
+): Promise<PingPeerResult['delivery']> {
+    const response = await http.post(
+        `${apiUrl}/cli/sessions/${encodeURIComponent(sourceSessionId)}/peer-messages`,
+        // Omit deliveryMode: Pi hub-native-steers body deliveryMode=steer on
+        // emit, which races the follow-up /steer confirmation (false send_failed).
+        // Match unattributed JWT sends: queue row + optional /steer ACK.
+        { targetSessionId, text: message, localId },
+        {
+            headers: buildHubRequestHeaders({
+                Authorization: `Bearer ${cliToken}`,
+                'Content-Type': 'application/json'
+            }),
+            timeout: 30_000,
+            validateStatus: () => true
+        }
+    ).catch((error: unknown) => {
+        if (deliveryMode !== 'steer') throw error
+        const detail = error instanceof Error ? error.message : String(error)
+        throw unconfirmedSendError(localId, detail)
+    })
+    if (response.status >= 200 && response.status < 300 && response.data?.ok === true) {
+        if (deliveryMode === 'queue') return 'accepted'
+        try {
+            const steer = await http.post(
+                `${apiUrl}/api/sessions/${encodeURIComponent(targetSessionId)}/messages/${encodeURIComponent(localId)}/steer`,
+                {},
+                { headers: authHeaders(jwt), timeout: 30_000, validateStatus: () => true }
+            )
+            if (steer.status >= 200 && steer.status < 300) {
+                if (steer.data?.status === 'steered') return 'steered'
                 if (steer.data?.status === 'invoked') return 'invoked'
             }
             throw new Error(typeof steer.data?.error === 'string' ? steer.data.error : `HTTP ${steer.status}`)
@@ -568,7 +856,8 @@ function getSteeringUnavailableReason(session: PingPeerSessionSummary): string |
 
 export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult> {
     assertPeerToolsEnabled()
-    const prefix = normalizeSessionIdPrefix(options.sessionIdPrefix ?? '')
+    const rawCitation = options.sessionIdPrefix ?? ''
+    const prefix = normalizeSessionIdPrefix(rawCitation)
     const message = options.message ?? ''
     if (!prefix) {
         throw new PingPeerError('bad_args', 'session id prefix is required')
@@ -596,9 +885,14 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
 
     const jwt = await exchangeJwt(apiUrl, accessToken, http)
     const sessions = await listSessions(apiUrl, jwt, http)
-    const matched = resolveSessionByPrefix(sessions, prefix)
+    const fetchSession = (sessionId: string) => tryGetSession(apiUrl, jwt, sessionId, http)
+    const matched = await resolvePeerSessionTarget(sessions, prefix, { fetchSession })
     const name = resolvePeerSessionLabel(matched)
-    onProgress?.(`resolved ${matched.id}  active=${matched.active}  name="${name}"`)
+    onProgress?.(
+        matched.id === prefix
+            ? `resolved ${matched.id}  active=${matched.active}  name="${name}"`
+            : `resolved ${matched.id} (from cited ${prefix})  active=${matched.active}  name="${name}"`
+    )
 
     let resumed = false
     const ensureActive = async (progressMessage: string): Promise<PingPeerSessionSummary> => {
@@ -645,9 +939,26 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
         throw new PingPeerError('bad_args', steeringError)
     }
 
-    onProgress?.(`sending message (${message.length} chars, ${deliveryMode}${requestedDeliveryMode === 'auto' ? ' via auto' : ''})...`)
+    const sourceId = options.authenticatedSourceSessionId?.trim() ?? ''
+    const attributed = Boolean(sourceId && isSessionId(sourceId))
+    const attributionTag = attributed ? ', attributed' : ', unattributed'
+    onProgress?.(
+        `sending message (${message.length} chars, ${deliveryMode}${requestedDeliveryMode === 'auto' ? ' via auto' : ''}${attributionTag})...`
+    )
     const localId = createPeerMessageLocalId()
-    const delivery = await sendMessage(apiUrl, jwt, matched.id, message, localId, http, deliveryMode)
+    const delivery = attributed
+        ? await sendAttributedPeerMessage(
+            apiUrl,
+            accessToken,
+            sourceId,
+            matched.id,
+            message,
+            localId,
+            http,
+            jwt,
+            deliveryMode
+        )
+        : await sendMessage(apiUrl, jwt, matched.id, message, localId, http, deliveryMode)
 
     return {
         sessionId: matched.id,
@@ -798,7 +1109,8 @@ async function fetchSessionMessages(
  */
 export async function inspectPeer(options: InspectPeerOptions): Promise<InspectPeerResult> {
     assertPeerToolsEnabled()
-    const prefix = normalizeSessionIdPrefix(options.sessionIdPrefix ?? '')
+    const rawCitation = options.sessionIdPrefix ?? ''
+    const prefix = normalizeSessionIdPrefix(rawCitation)
     if (!prefix) {
         throw new PingPeerError('bad_args', 'session id prefix is required')
     }
@@ -810,7 +1122,8 @@ export async function inspectPeer(options: InspectPeerOptions): Promise<InspectP
 
     const jwt = await exchangeJwt(apiUrl, accessToken, http)
     const sessions = await listSessions(apiUrl, jwt, http)
-    const matched = resolveSessionByPrefix(sessions, prefix)
+    const fetchSession = (sessionId: string) => tryGetSession(apiUrl, jwt, sessionId, http)
+    const matched = await resolvePeerSessionTarget(sessions, prefix, { fetchSession })
     const live = await getSession(apiUrl, jwt, matched.id, http)
     const meta = live.metadata ?? matched.metadata ?? null
     const messages = await fetchSessionMessages(apiUrl, jwt, matched.id, messageLimit, http)

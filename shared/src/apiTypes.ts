@@ -585,6 +585,49 @@ export type MessagesQuery = z.infer<typeof MessagesQuerySchema>
 export const MessageDeliveryModeSchema = z.enum(['queue', 'steer'])
 export type MessageDeliveryMode = z.infer<typeof MessageDeliveryModeSchema>
 
+/**
+ * Soft peer nametag on user-message meta (#1203 / peer soft nametag).
+ *
+ * Not a security / anti-impersonation boundary. Shared `CLI_API_TOKEN` already
+ * lets a holder act as any session in the namespace (same as every other
+ * `/cli/sessions/:id/*` route). The nametag is a UX routing hint for chips and
+ * agent `From:` lines — spoof-within-token is accepted by design.
+ *
+ * Web JWT bodies must not invent `sourceSessionId` (that path is unattributed
+ * peer delivery via {@link HAPI_PEER_DELIVERY_HEADER}). Named-source sends use
+ * {@link CliPeerDeliverRequestSchema} on
+ * `POST /cli/sessions/:sourceSessionId/peer-messages` (path id + session row
+ * lookup for an optional display name snapshot).
+ */
+export const PeerDeliveryMetaSchema = z.object({
+    sourceSessionId: z.string().trim().min(1).max(128).optional(),
+    sourceName: z.string().trim().min(1).max(255).optional()
+})
+export type PeerDeliveryMeta = z.infer<typeof PeerDeliveryMetaSchema>
+
+/** Lower-case header name; HTTP headers are case-insensitive. */
+export const HAPI_PEER_DELIVERY_HEADER = 'x-hapi-peer-delivery'
+export const HAPI_PEER_DELIVERY_HEADER_VALUE = '1'
+
+/**
+ * Soft-nametag peer deliver: path `:id` is the claimed source session for the
+ * chip / From line. Same namespace-token trust as other `/cli/sessions/:id`
+ * routes — not HMAC/not a crypto identity proof.
+ */
+export const CliPeerDeliverRequestSchema = z.object({
+    targetSessionId: z.string().trim().min(1).max(128),
+    text: z.string().min(1),
+    localId: z.string().min(1).optional(),
+    // deliveryMode is intentionally absent: peer-messages + /steer ACK need a
+    // normal queue row. Pi native-steers body deliveryMode=steer on emit.
+}).strict()
+export type CliPeerDeliverRequest = z.infer<typeof CliPeerDeliverRequestSchema>
+
+/** Hub session ids are UUIDs today; shared validator for CLI session-id checks. */
+export function isSessionId(value: string): boolean {
+    return z.string().uuid().safeParse(value).success
+}
+
 export const SendMessageRequestSchema = z.object({
     text: z.string(),
     localId: z.string().min(1).optional(),

@@ -333,6 +333,8 @@ function createHapiMcpServer(
                     sessionIdPrefix: args.sessionIdPrefix,
                     message: args.message,
                     deliveryMode: args.deliveryMode,
+                    // Soft nametag via /cli/.../peer-messages using this session id (#1203).
+                    authenticatedSourceSessionId: client.sessionId,
                 });
                 return {
                     content: [
