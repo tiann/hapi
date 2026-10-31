@@ -46,7 +46,8 @@ final class AppModel {
     var infoNotice: String?
     /// Session targeted by a notification tap (Android
     /// `pendingOpenSessionId`): the home screen consumes it into its
-    /// navigation path against the active hub.
+    /// navigation path against the active hub (switched to the owner first,
+    /// see ``openNotificationTarget(sessionId:hubUrl:)``).
     var pendingOpenSessionId: String?
 
     // `let` storage is inert under @Observable (no annotation needed).
@@ -78,7 +79,12 @@ final class AppModel {
             credentialStore: credentialStore,
             performer: performer,
             openChatSessionId: { [weak self] in self?.session?.openChatSessionId },
-            openSession: { [weak self] sessionId in self?.pendingOpenSessionId = sessionId }
+            activeHubKnowsSession: { [weak self] sessionId in
+                self?.session?.sessionStore.sessions.contains { $0.id == sessionId } ?? false
+            },
+            openSession: { [weak self] sessionId, hubUrl in
+                self?.openNotificationTarget(sessionId: sessionId, hubUrl: hubUrl)
+            }
         ))
     }
 
@@ -149,6 +155,15 @@ final class AppModel {
         } else {
             state = .unpaired
         }
+    }
+
+    /// Notification tap: a located owning hub becomes active first, so the
+    /// new home screen consumes the target (`HomeView` is keyed by hub).
+    func openNotificationTarget(sessionId: String, hubUrl: String?) {
+        if let hubUrl, registry.hubs.contains(hubUrl), hasCredentials(for: hubUrl) {
+            switchHub(to: hubUrl)
+        }
+        pendingOpenSessionId = sessionId
     }
 
     // MARK: - Deep links (hapicompanion://bind)

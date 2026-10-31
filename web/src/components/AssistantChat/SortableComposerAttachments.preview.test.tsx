@@ -7,11 +7,12 @@ import { reconcileAttachmentOrder } from '@/lib/attachmentOrder'
 const previewUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jP1sAAAAASUVORK5CYII='
 const model: ChatModelAdapter = { async *run() {} }
 const attachmentAdapter: AttachmentAdapter = {
-    accept: 'image/*',
+    accept: 'image/*,text/plain',
     async add({ file }) {
         return {
-            id: file.name, name: file.name, type: 'image', contentType: file.type, file,
-            status: { type: 'requires-action', reason: 'composer-send' }, previewUrl,
+            id: file.name, name: file.name, type: file.type.startsWith('image/') ? 'image' : 'file', contentType: file.type, file,
+            status: { type: 'requires-action', reason: 'composer-send' },
+            ...(file.type.startsWith('image/') ? { previewUrl } : {}),
         }
     },
     async remove() {},
@@ -54,6 +55,52 @@ async function setup() {
 }
 
 describe('sortable composer image preview with the real attachment runtime', () => {
+    it.each([
+        ['only.png', 'image/png'],
+        ['only.txt', 'text/plain'],
+    ])('shows drag handles only while %s has another attachment to reorder', async (name, type) => {
+        const runtimeRef: HarnessProps['runtimeRef'] = {}
+        const { container } = render(<Harness runtimeRef={runtimeRef} />)
+        const composer = runtimeRef.current!.thread.composer
+        await act(async () => {
+            await composer.addAttachment(new File(['attachment'], name, { type }))
+        })
+        expect(screen.queryByTestId('attachment-drag-handle')).not.toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Remove attachment' })).toBeInTheDocument()
+
+        await act(async () => {
+            await composer.addAttachment(new File(['second'], 'second.txt', { type: 'text/plain' }))
+        })
+        expect(screen.getAllByTestId('attachment-drag-handle')).toHaveLength(2)
+        expect(screen.getAllByRole('button', { name: 'Remove attachment' })).toHaveLength(2)
+
+        const second = container.querySelector('[data-hapi-composer-attachment-id="second.txt"]')!
+        await act(async () => fireEvent.click(within(second as HTMLElement).getByRole('button', { name: 'Remove attachment' })))
+        expect(screen.queryByTestId('attachment-drag-handle')).not.toBeInTheDocument()
+        expect(composer.getState().attachments.map((attachment) => attachment.name)).toEqual([name])
+        await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Remove attachment' })))
+        expect(composer.getState().attachments).toHaveLength(0)
+    })
+
+    it('keeps an open single-image viewer and its zoom as the attachment count changes', async () => {
+        const runtimeRef: HarnessProps['runtimeRef'] = {}
+        const { container } = render(<Harness runtimeRef={runtimeRef} />)
+        const composer = runtimeRef.current!.thread.composer
+        await act(async () => composer.addAttachment(new File(['image'], 'first.png', { type: 'image/png' })))
+        fireEvent.click(screen.getByTitle('Click to zoom'))
+        fireEvent.click(within(screen.getByRole('dialog')).getByTitle('Zoom in'))
+        const dialog = screen.getByRole('dialog', { name: 'first.png' })
+
+        await act(async () => composer.addAttachment(new File(['second'], 'second.txt', { type: 'text/plain' })))
+        expect(screen.getByRole('dialog', { name: 'first.png' })).toBe(dialog)
+        expect(within(dialog).getByTitle('Reset zoom')).toHaveTextContent('125%')
+        const second = container.querySelector('[data-hapi-composer-attachment-id="second.txt"]')!
+        await act(async () => fireEvent.click(within(second as HTMLElement).getByRole('button', { name: 'Remove attachment' })))
+        expect(screen.getByRole('dialog', { name: 'first.png' })).toBe(dialog)
+        expect(within(dialog).getByTitle('Reset zoom')).toHaveTextContent('125%')
+        expect(screen.queryByTestId('attachment-drag-handle')).not.toBeInTheDocument()
+    })
+
     it('keeps the active image and zoom across draft and parent updates', async () => {
         const { rerender, runtimeRef } = await setup()
         fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Next image' }))

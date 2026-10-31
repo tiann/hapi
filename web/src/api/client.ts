@@ -14,6 +14,8 @@ import type {
     FileSearchResponse,
     MachinesResponse,
     MessagesResponse,
+    OpencodeImportSessionsResponse,
+    OpencodeLocalSessionsResponse,
     PermissionMode,
     PiImportSessionsResponse,
     PiLocalSessionsResponse,
@@ -53,6 +55,7 @@ import type {
     OpencodeModelVariantsResponse,
     OpencodeReasoningEffortResponse,
     PiModelsResponse,
+    ClaudeModelsResponse,
     QueuedStateResponse,
     ReopenSessionResponse,
     SqliteStorageUsageResponse,
@@ -315,6 +318,21 @@ export class ApiClient {
         })
     }
 
+    async getOpencodeSessions(cwd?: string | null, machineId?: string | null): Promise<OpencodeLocalSessionsResponse> {
+        const params = new URLSearchParams()
+        if (cwd?.trim()) params.set('cwd', cwd.trim())
+        if (machineId?.trim()) params.set('machineId', machineId.trim())
+        const query = params.size ? `?${params.toString()}` : ''
+        return await this.request<OpencodeLocalSessionsResponse>(`/api/opencode/sessions${query}`)
+    }
+
+    async importOpencodeSessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null; model?: string | null; modelReasoningEffort?: string | null; permissionMode?: PermissionMode }): Promise<OpencodeImportSessionsResponse> {
+        return await this.request<OpencodeImportSessionsResponse>('/api/opencode/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        })
+    }
+
     async archiveCodexSession(sessionId: string, machineId?: string | null): Promise<CodexArchiveSessionResponse> {
         return await this.request<CodexArchiveSessionResponse>('/api/codex/archive-session', {
             method: 'POST',
@@ -440,7 +458,7 @@ export class ApiClient {
         return await this.request<GitCommandResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/git-diff-file?${params.toString()}`)
     }
 
-    async searchSessionFiles(sessionId: string, query: string, limit?: number): Promise<FileSearchResponse> {
+    async searchSessionFiles(sessionId: string, query: string, limit?: number, signal?: AbortSignal): Promise<FileSearchResponse> {
         const params = new URLSearchParams()
         if (query) {
             params.set('query', query)
@@ -449,7 +467,7 @@ export class ApiClient {
             params.set('limit', `${limit}`)
         }
         const qs = params.toString()
-        return await this.request<FileSearchResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/files${qs ? `?${qs}` : ''}`)
+        return await this.request<FileSearchResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/files${qs ? `?${qs}` : ''}`, { signal })
     }
 
     async getGeneratedImageBlob(sessionId: string, imageId: string, attempt: number = 0, overrideToken?: string | null): Promise<Blob> {
@@ -481,9 +499,10 @@ export class ApiClient {
         return await res.blob()
     }
 
-    async readSessionFile(sessionId: string, path: string): Promise<FileReadResponse> {
+    async readSessionFile(sessionId: string, path: string, maxBytes?: number): Promise<FileReadResponse> {
         const params = new URLSearchParams()
         params.set('path', path)
+        if (maxBytes !== undefined) params.set('maxBytes', String(maxBytes))
         return await this.request<FileReadResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/file?${params.toString()}`)
     }
 
@@ -705,10 +724,14 @@ export class ApiClient {
         })
     }
 
-    async setModel(sessionId: string, model: { provider: string; modelId: string } | string | null): Promise<void> {
+    async setModel(
+        sessionId: string,
+        model: { provider: string; modelId: string } | string | null,
+        options?: { effort: string | null }
+    ): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/model`, {
             method: 'POST',
-            body: JSON.stringify({ model })
+            body: JSON.stringify(options ? { model, effort: options.effort } : { model })
         })
     }
 
@@ -890,6 +913,12 @@ export class ApiClient {
         )
     }
 
+    async getMachineClaudeModels(machineId: string): Promise<ClaudeModelsResponse> {
+        return await this.request<ClaudeModelsResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/claude-models`
+        )
+    }
+
     async getMachineDshModels(machineId: string): Promise<DshModelsResponse> {
         return await this.request<DshModelsResponse>(
             `/api/machines/${encodeURIComponent(machineId)}/dsh-models`
@@ -1025,10 +1054,10 @@ export class ApiClient {
         )
     }
 
-    async renameSession(sessionId: string, name: string): Promise<void> {
+    async renameSession(sessionId: string, name: string | undefined, titleLocked?: boolean): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`, {
             method: 'PATCH',
-            body: JSON.stringify({ name })
+            body: JSON.stringify({ name, titleLocked })
         })
     }
 
@@ -1039,10 +1068,10 @@ export class ApiClient {
         )
     }
 
-    async updateSessionSummary(sessionId: string, text: string): Promise<void> {
+    async updateSessionSummary(sessionId: string, text: string, titleLocked?: boolean): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/summary`, {
             method: 'PATCH',
-            body: JSON.stringify({ text })
+            body: JSON.stringify({ text, titleLocked })
         })
     }
 

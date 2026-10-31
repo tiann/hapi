@@ -6,12 +6,17 @@ export type SessionAttention =
     | { kind: 'background' }
     | { kind: 'unread' }
 
+function hasManualUnreadMarker(value: number | null | undefined): value is number {
+    return typeof value === 'number' && Number.isFinite(value)
+}
+
 /** True when the session has activity newer than the operator's last-seen watermark. */
 export function sessionIsUnread(
     summary: SessionSummary,
-    options: { lastSeenAt: number }
+    options: { lastSeenAt: number; manualUnreadAt?: number | null }
 ): boolean {
-    return summary.updatedAt > options.lastSeenAt
+    return hasManualUnreadMarker(options.manualUnreadAt)
+        || (!(summary.active && summary.thinking) && summary.updatedAt > options.lastSeenAt)
 }
 
 export function classifySessionAttention(
@@ -19,12 +24,12 @@ export function classifySessionAttention(
     options: { selected: boolean; lastSeenAt: number; manualUnreadAt?: number | null }
 ): SessionAttention | null {
     if (options.selected) {
-        return options.manualUnreadAt === summary.updatedAt
+        return hasManualUnreadMarker(options.manualUnreadAt)
             ? { kind: 'unread' }
             : null
     }
 
-    if (summary.thinking) {
+    if (summary.active && summary.thinking && !hasManualUnreadMarker(options.manualUnreadAt)) {
         return null
     }
 
@@ -45,7 +50,10 @@ export function classifySessionAttention(
         return { kind: 'background' }
     }
 
-    if (sessionIsUnread(summary, { lastSeenAt: options.lastSeenAt })) {
+    if (sessionIsUnread(summary, {
+        lastSeenAt: options.lastSeenAt,
+        manualUnreadAt: options.manualUnreadAt
+    })) {
         return { kind: 'unread' }
     }
 

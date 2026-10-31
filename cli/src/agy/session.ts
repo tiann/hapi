@@ -11,9 +11,9 @@ type LocalLaunchFailure = {
 };
 
 /**
- * Headless (print-mode) agy session. agy is spawned per user turn with
- * `-p <msg> --conversation <uuid> --output-format stream-json`; the driver
- * maps NDJSON events onto the existing transcript-entry channel
+ * Headless agy session using a persistent stream-json stdin/stdout process.
+ * The driver reuses matching launch settings and resumes the conversation
+ * when the process restarts, mapping NDJSON onto the transcript-entry channel
  * (sendAgySessionMessage), so hub/web rendering is unchanged.
  */
 export class AgySession extends AgentSessionBase<AgyMode> {

@@ -14,18 +14,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -44,30 +41,55 @@ import app.hapi.companion.R
 import app.hapi.protocol.wire.SUPPORTED_PROTOCOL_VERSION
 
 /**
- * Settings home (B-M4e scaffold): Appearance (theme mode + Material You),
- * Language (persist-only until M5), the owner-only Usage/Storage entries, and
- * About (app/protocol versions + hub health).
+ * General subpage of the settings hub (P2 IA): the catch-all category for
+ * everything without a dedicated category on this branch — Appearance (theme
+ * mode + Material You), Language, and About (app/protocol versions + hub
+ * health). The former owner-only Usage/Storage rows moved hub-level (see
+ * [SettingsHubCatalog]); their owner gate is unchanged.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(
+fun SettingsGeneralScreen(
     viewModel: SettingsViewModel,
-    onOpenUsage: () -> Unit,
-    onOpenStorage: () -> Unit,
     onBack: () -> Unit,
 ) {
     val theme by viewModel.themeSettings.collectAsState()
     val language by viewModel.language.collectAsState()
-    val isOwner by viewModel.isOwner.collectAsState()
     val hubInfo by viewModel.hubInfo.collectAsState()
 
+    SettingsGeneralContent(
+        theme = theme,
+        language = language,
+        hubUrl = viewModel.hubUrl,
+        hubInfo = hubInfo,
+        onSetThemeMode = viewModel::setThemeMode,
+        onSetDynamicColor = viewModel::setDynamicColor,
+        onSetLanguage = viewModel::setLanguage,
+        onRetryHubInfo = viewModel::retryHubInfo,
+        onBack = onBack,
+    )
+}
+
+/** State-injected body of [SettingsGeneralScreen] — previewable without a VM. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun SettingsGeneralContent(
+    theme: ThemeSettings,
+    language: AppLanguage,
+    hubUrl: String,
+    hubInfo: HubInfoState,
+    onSetThemeMode: (ThemeMode) -> Unit,
+    onSetDynamicColor: (Boolean) -> Unit,
+    onSetLanguage: (AppLanguage) -> Unit,
+    onRetryHubInfo: () -> Unit,
+    onBack: () -> Unit,
+) {
     var showThemeDialog by rememberSaveable { mutableStateOf(false) }
     var showLanguageDialog by rememberSaveable { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.settings_title)) },
+                title = { Text(stringResource(R.string.settings_category_general)) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
@@ -103,7 +125,7 @@ fun SettingsScreen(
                         ),
                         checked = theme.dynamicColor && theme.mode != ThemeMode.OLED,
                         enabled = theme.mode != ThemeMode.OLED,
-                        onCheckedChange = viewModel::setDynamicColor,
+                        onCheckedChange = onSetDynamicColor,
                     )
                 }
             }
@@ -114,22 +136,6 @@ fun SettingsScreen(
                     value = languageLabel(language),
                     onClick = { showLanguageDialog = true },
                 )
-            }
-
-            if (isOwner) {
-                SettingsSection(title = stringResource(R.string.settings_section_insights)) {
-                    SettingsRow(
-                        label = stringResource(R.string.settings_usage),
-                        description = stringResource(R.string.settings_usage_summary),
-                        onClick = onOpenUsage,
-                    )
-                    SettingsDivider()
-                    SettingsRow(
-                        label = stringResource(R.string.settings_storage),
-                        description = stringResource(R.string.settings_storage_summary),
-                        onClick = onOpenStorage,
-                    )
-                }
             }
 
             SettingsSection(title = stringResource(R.string.settings_section_about)) {
@@ -145,7 +151,7 @@ fun SettingsScreen(
                 SettingsDivider()
                 SettingsRow(
                     label = stringResource(R.string.settings_hub),
-                    value = viewModel.hubUrl,
+                    value = hubUrl,
                     description = when (val info = hubInfo) {
                         is HubInfoState.Loading -> stringResource(R.string.settings_hub_checking)
                         is HubInfoState.Loaded -> stringResource(
@@ -155,7 +161,7 @@ fun SettingsScreen(
                         )
                         is HubInfoState.Failed -> stringResource(R.string.settings_hub_unreachable)
                     },
-                    onClick = if (hubInfo is HubInfoState.Failed) viewModel::retryHubInfo else null,
+                    onClick = if (hubInfo is HubInfoState.Failed) onRetryHubInfo else null,
                 )
                 SettingsDivider()
                 app.hapi.companion.ui.components.PrivacyPolicyLink()
@@ -168,7 +174,7 @@ fun SettingsScreen(
             selected = theme.mode,
             onSelect = { mode ->
                 showThemeDialog = false
-                viewModel.setThemeMode(mode)
+                onSetThemeMode(mode)
             },
             onDismiss = { showThemeDialog = false },
         )
@@ -179,7 +185,7 @@ fun SettingsScreen(
             selected = language,
             onSelect = { choice ->
                 showLanguageDialog = false
-                viewModel.setLanguage(choice)
+                onSetLanguage(choice)
                 // Apply immediately (B-M5a): appcompat recreates the activity
                 // with the new locale and, thanks to autoStoreLocales in the
                 // manifest, re-applies it on every cold start. The DataStore
@@ -290,74 +296,49 @@ private fun SwitchRow(
 
 // ---------------------------------------------------------------- dialogs --
 
+/** Expressive theme picker: choice cards with fixed light/dark preview swatches. */
 @Composable
 private fun ThemeModeDialog(
     selected: ThemeMode,
     onSelect: (ThemeMode) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.settings_theme)) },
-        text = {
-            Column {
-                ThemeMode.entries.forEach { mode ->
-                    RadioRow(
-                        label = stringResource(themeModeLabelRes(mode)),
-                        selected = mode == selected,
-                        onClick = { onSelect(mode) },
-                    )
-                }
-            }
+    ChoiceDialog(
+        title = stringResource(R.string.settings_theme),
+        options = ThemeMode.entries.map { mode ->
+            ChoiceOption(
+                value = mode,
+                label = stringResource(themeModeLabelRes(mode)),
+                swatch = themeModeSwatch(mode),
+            )
         },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text(stringResource(R.string.settings_cancel)) }
-        },
+        selected = selected,
+        onSelect = onSelect,
+        onDismiss = onDismiss,
+        dismissLabel = stringResource(R.string.settings_cancel),
     )
 }
 
+/** Expressive language picker: choice cards; names render in their own language. */
 @Composable
 private fun LanguageDialog(
     selected: AppLanguage,
     onSelect: (AppLanguage) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.settings_language)) },
-        text = {
-            Column {
-                AppLanguage.entries.forEach { language ->
-                    RadioRow(
-                        label = languageLabel(language),
-                        selected = language == selected,
-                        onClick = { onSelect(language) },
-                    )
-                }
-            }
+    ChoiceDialog(
+        title = stringResource(R.string.settings_language),
+        options = AppLanguage.entries.map { language ->
+            ChoiceOption(
+                value = language,
+                label = languageLabel(language),
+            )
         },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text(stringResource(R.string.settings_cancel)) }
-        },
+        selected = selected,
+        onSelect = onSelect,
+        onDismiss = onDismiss,
+        dismissLabel = stringResource(R.string.settings_cancel),
     )
-}
-
-@Composable
-private fun RadioRow(label: String, selected: Boolean, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        RadioButton(selected = selected, onClick = onClick)
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(start = 4.dp),
-        )
-    }
 }
 
 private fun themeModeLabelRes(mode: ThemeMode): Int = when (mode) {

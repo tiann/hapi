@@ -121,7 +121,7 @@ struct BlockBuilder: MarkupVisitor {
         markup.children.flatMap { visit($0) }
     }
 
-    mutating func visitDocument(_ document: Document) -> [MarkdownBlockNode] {
+    mutating func visitDocument(_ document: Markdown.Document) -> [MarkdownBlockNode] {
         document.children.flatMap { visit($0) }
     }
 

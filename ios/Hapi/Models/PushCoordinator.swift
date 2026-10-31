@@ -68,9 +68,12 @@ final class PushCoordinator: NSObject {
         /// Session id of the chat currently on screen, for the one
         /// suppression rule (`shouldSuppressPush` on Android).
         let openChatSessionId: @MainActor () -> String?
-        /// Tap-through navigation: stash the target session for the home
-        /// screen's navigation path (Android `pendingOpenSessionId`).
-        let openSession: @MainActor (String) -> Void
+        /// The active hub's session list already has this id (no lookup).
+        let activeHubKnowsSession: @MainActor (String) -> Bool
+        /// Tap-through navigation: switch to the owning hub when one was
+        /// located (nil = stay on the active hub), then stash the target
+        /// session for the home screen (Android `pendingOpenSessionId`).
+        let openSession: @MainActor (_ sessionId: String, _ hubUrl: String?) -> Void
     }
 
     // MARK: - Observable state (Settings row)
@@ -356,7 +359,7 @@ extension PushCoordinator: UNUserNotificationCenterDelegate {
         }
         switch response.actionIdentifier {
         case UNNotificationDefaultActionIdentifier:
-            environment?.openSession(payload.sessionId)
+            await openSession(payload.sessionId)
         case ActionID.allow:
             guard payload.type == .permissionRequest, payload.supportsActions,
                   let requestId = payload.requestId else { return }
@@ -388,6 +391,20 @@ extension PushCoordinator: UNUserNotificationCenterDelegate {
         default:
             break // dismiss
         }
+    }
+
+    /// Tap-through. The payload carries no hub, so with several paired hubs
+    /// a session the active list does not know is located first (active hub
+    /// first, like the actions). A miss or an unreachable owner falls back
+    /// to the active hub.
+    private func openSession(_ sessionId: String) async {
+        guard let environment else { return }
+        var owner: String?
+        if hubsActiveFirst().count > 1, !environment.activeHubKnowsSession(sessionId),
+           case .success(let hubUrl) = await actionRunner().locate(sessionId: sessionId) {
+            owner = hubUrl
+        }
+        environment.openSession(sessionId, owner)
     }
 
     private func actionRunner() -> PushActionRunner {
@@ -487,6 +504,14 @@ struct PushActionRunner {
     func sendMessage(sessionId: String, text: String, localId: String) async -> PushActionOutcome {
         await resolveAcrossHubs { api in
             try await api.sendMessage(sessionId: sessionId, text: text, localId: localId)
+        }
+    }
+
+    /// `GET /sessions/:id` — `.success` names the hub that owns the session
+    /// (notification tap-through).
+    func locate(sessionId: String) async -> PushActionOutcome {
+        await resolveAcrossHubs { api in
+            _ = try await api.session(id: sessionId)
         }
     }
 

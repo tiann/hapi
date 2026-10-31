@@ -42,6 +42,9 @@ describe('peer-tools citation steer across flavors', () => {
 
             expect(opencode.OPENCODE_NATIVE_TOOL_INSTRUCTION).toContain('are disabled on this machine')
             expect(opencode.OPENCODE_NATIVE_TOOL_INSTRUCTION).not.toContain('Call "hapi_inspect_peer"')
+            for (const prompt of [claudePrompt, codex.TITLE_INSTRUCTION, opencode.TITLE_INSTRUCTION, opencode.OPENCODE_NATIVE_TOOL_INSTRUCTION]) {
+                expect(prompt).not.toContain('auto (default)')
+            }
         } finally {
             restore()
         }
@@ -54,6 +57,13 @@ describe('peer-tools citation steer across flavors', () => {
             expect(codex.TITLE_INSTRUCTION).toContain('Call "functions.hapi__inspect_peer"')
             expect(opencode.TITLE_INSTRUCTION).toContain('Call "hapi_inspect_peer"')
             expect(opencode.OPENCODE_NATIVE_TOOL_INSTRUCTION).toContain('Call "hapi_inspect_peer"')
+            for (const prompt of [claude.getSystemPrompt(), codex.TITLE_INSTRUCTION, opencode.TITLE_INSTRUCTION, opencode.OPENCODE_NATIVE_TOOL_INSTRUCTION]) {
+                expect(prompt).toContain('auto (default)')
+                expect(prompt).toContain('Prefer auto for routine collaboration')
+                expect(prompt).toContain('steer: use for important, time-sensitive findings the peer needs to know now')
+                expect(prompt).toContain('does not abort the current turn or guarantee an immediate response')
+                expect(prompt).toContain('do not resend automatically')
+            }
         } finally {
             restore()
         }

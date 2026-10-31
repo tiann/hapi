@@ -12,6 +12,9 @@
     "subtitle": "去远足、喝杯咖啡，或者放松一下。你的 AI 代理在后台工作，需要你输入时，通过原生 App 或消息应用通知你。",
     "startBtn": "开启自由之旅",
     "githubBtn": "查看 GitHub",
+    "appStore": "App Store",
+    "googlePlay": "Google Play",
+    "appsNote": "iOS/Android 原生 App 为付费应用，Web/PWA 免费使用。",
     "notification": {
       "title": "即时通知",
       "content": "\"任务完成！更新了 3 个文件。<br/>准备好审查了吗？\""
@@ -101,7 +104,7 @@
     },
     "step2": {
       "title": "2. 移动连接",
-      "desc": "将 iOS/Android 原生 App 与 Hub 配对，或打开 PWA、小程序来控制会话。"
+      "desc": "打开免费的 Web/PWA 或小程序，或将 iOS/Android 原生 App 与 Hub 配对，来控制会话。"
     },
     "step3": {
       "title": "3. Vibe Code",

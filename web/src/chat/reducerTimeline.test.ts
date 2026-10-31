@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { reduceTimeline } from './reducerTimeline'
+import { buildMessageMetadataLabels } from '@/components/AssistantChat/messages/MessageMetadata'
 import { normalizeAgentRecord } from './normalizeAgent'
 import { aggregateResponseGroups } from '@/lib/assistant-runtime'
 import { buildVisibleChatBlocks } from './toolGroups'
@@ -1753,5 +1754,32 @@ describe('reduceTimeline', () => {
             summary: 'Inspect README',
             activity: 'Completed: ok'
         })
+    })
+})
+
+
+describe('Codex cache metadata through the chat pipeline', () => {
+    it.each([undefined, 'gpt-5.4'])('preserves latest-request cache through replay and reload (model: %s)', (model) => {
+        const wire = (id: string, data: Record<string, unknown>) => normalizeAgentRecord(id, id, 1000, {
+            type: 'codex', data: { ...data, turn_id: 'cache-turn' }
+        })!
+        const answer = wire('cache-answer', { type: 'message', message: 'Cached answer' })
+        const usage = (cached: number, id: string) => wire(id, {
+            type: 'token_count', flavor: 'codex', model,
+            info: {
+                total_token_usage: { input_tokens: 10000, cached_input_tokens: 1000, output_tokens: 500 },
+                last_token_usage: { input_tokens: 100, cached_input_tokens: cached, output_tokens: 10 }
+            }
+        })
+        const latest = usage(80, 'cache-latest')
+        const messages = [answer, usage(20, 'cache-earlier'), latest, latest]
+        for (const records of [messages, JSON.parse(JSON.stringify(messages)) as TracedMessage[]]) {
+            const { blocks } = reduceTimeline(records, makeContext())
+            const visible = buildVisibleChatBlocks(blocks, { hasMoreMessages: false })
+            const metadata = aggregateResponseGroups(visible).get('cache-answer:0')!
+            expect(metadata.roundSummary?.usage?.cache_read_input_tokens).toBe(80)
+            expect(buildMessageMetadataLabels(metadata)).toContain('Cached input: 80%')
+            expect(buildMessageMetadataLabels(metadata)).toContain('Tokens: 110 (100 in · 10 out)')
+        }
     })
 })

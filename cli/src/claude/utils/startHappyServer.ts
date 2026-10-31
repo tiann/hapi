@@ -8,6 +8,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { AddressInfo } from "node:net";
 import { z } from "zod";
+import { PeerDeliveryModeSchema, type PeerDeliveryMode } from '@/modules/pingPeer/deliveryMode';
 import { logger } from "@/ui/logger";
 import { ApiSessionClient } from "@/api/apiSession";
 import { randomUUID } from "node:crypto";
@@ -24,6 +25,7 @@ import { resolveSkill } from "@/modules/common/skills";
 import { isPeerToolsDisabled } from "@/modules/common/peerTools";
 import {
     INSPECT_PEER_TOOL_DESCRIPTION,
+    PEER_DELIVERY_MODE_DESCRIPTION,
     PING_PEER_TOOL_DESCRIPTION,
     SESSION_ID_PREFIX_PARAM_DESCRIPTION,
 } from '@hapi/protocol/sessionCitation'
@@ -73,6 +75,13 @@ function createHapiMcpServer(
     const handler = async (title: string) => {
         logger.debug('[hapiMCP] Changing title to:', title);
         try {
+            if (!normalizeSessionDisplayTitle(title)) return { success: false, error: 'Title must not be empty' };
+            if (!await client.refreshMetadata()) {
+                return { success: false, error: 'Could not read the current title lock from the Hub.' };
+            }
+            if (client.getMetadata()?.titleLocked) {
+                return { success: false, error: 'Session title is locked by the user. Only the user can unlock it.' };
+            }
             if (!emitTitleSummary) {
                 // Codex collab: acknowledge the tool call without writing.
                 // Parent-thread mcp_tool_call_end applies the rename later.
@@ -80,6 +89,14 @@ function createHapiMcpServer(
             }
             if (!applySessionDisplayRename(client, title)) {
                 return { success: false, error: 'Title must not be empty' };
+            }
+            if (!await client.flushMetadata()) {
+                return { success: false, error: 'Title update could not be confirmed by the Hub.' };
+            }
+            // The user may lock the title while this write is in flight.
+            // The ACK carries the Hub's preserved title and lock.
+            if (client.getMetadata()?.titleLocked) {
+                return { success: false, error: 'Session title is locked by the user. Only the user can unlock it.' };
             }
             return { success: true };
         } catch (error) {
@@ -118,6 +135,7 @@ function createHapiMcpServer(
     const pingPeerInputSchema: z.ZodTypeAny = z.object({
         sessionIdPrefix: z.string().trim().min(1).describe(SESSION_ID_PREFIX_PARAM_DESCRIPTION),
         message: z.string().min(1).describe('Message text to deliver to the target session'),
+        deliveryMode: PeerDeliveryModeSchema.optional().describe(PEER_DELIVERY_MODE_DESCRIPTION),
     });
 
     const maxInlineMediaBytes = 25 * 1024 * 1024;
@@ -308,18 +326,21 @@ function createHapiMcpServer(
             description: PING_PEER_TOOL_DESCRIPTION,
             title: 'Ping Peer Session',
             inputSchema: pingPeerInputSchema,
-        }, async (args: { sessionIdPrefix: string; message: string }) => {
+        }, async (args: { sessionIdPrefix: string; message: string; deliveryMode?: PeerDeliveryMode }) => {
             logger.debug('[hapiMCP] ping_peer:', args.sessionIdPrefix);
             try {
                 const result = await pingPeer({
                     sessionIdPrefix: args.sessionIdPrefix,
                     message: args.message,
+                    deliveryMode: args.deliveryMode,
                 });
                 return {
                     content: [
                         {
                             type: 'text' as const,
-                            text: `Delivered to ${result.sessionId}${result.resumed ? ' (resumed)' : ''} (${result.name})`,
+                            text: result.delivery === 'accepted'
+                                ? `Accepted for ${result.sessionId}${result.resumed ? ' (resumed)' : ''} (${result.name}) localId=${result.localId} — delivery shows in the recipient chat when its runtime consumes it`
+                                : `${result.delivery} to ${result.sessionId}${result.resumed ? ' (resumed)' : ''} (${result.name}) localId=${result.localId}`,
                         },
                     ],
                     isError: false,

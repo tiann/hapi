@@ -41,7 +41,7 @@ describe('schema migration v25 to v26', () => {
             ORDER BY seq ASC
         `).all('session-id') as Array<{ detail: string }>
 
-        expect(version.user_version).toBe(26)
+        expect(version.user_version).toBe(29)
         expect(plan.some((row) => row.detail.includes('idx_messages_immediate_queued'))).toBe(true)
         migrated.close()
     })

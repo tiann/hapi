@@ -113,11 +113,11 @@ final class HomeFilterPresentationTests: XCTestCase {
         sessions.sessions.removeAll { $0.id == "a" }
         try await settle()
         XCTAssertFalse(model.filters.isActive, "The view must reconcile session-store changes")
-        XCTAssertFalse(model.showsFilterMenu)
+        XCTAssertFalse(model.showsMachineFilter)
         sessions.sessions.append(mac)
         try await settle()
         XCTAssertNil(model.activeMachineFilter)
-        XCTAssertTrue(model.showsFilterMenu)
+        XCTAssertTrue(model.showsMachineFilter)
     }
 
     func testNativeListRowsKeepOnlyTitleAndProjectStatus() async throws {
