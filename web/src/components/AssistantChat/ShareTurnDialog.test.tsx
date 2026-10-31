@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ShareTurnDialog } from './ShareTurnDialog'
@@ -41,7 +41,32 @@ function renderDialog(getGeneratedMediaBlob: (imageId: string) => Promise<Blob>,
 }
 
 afterEach(() => {
+    cleanup()
     vi.restoreAllMocks()
+})
+
+describe('ShareTurnDialog', () => {
+    it('gives the icon-only Agent metadata an accessible name', () => {
+        render(
+            <I18nProvider>
+                <ShareTurnDialog
+                    isOpen={true}
+                    title="Shared turn"
+                    metadataItems={[{
+                        key: 'agent',
+                        text: 'codex',
+                        flavor: 'codex',
+                        showIcon: true,
+                        showText: false,
+                    }]}
+                    sourceSnapshots={[]}
+                    onClose={vi.fn()}
+                />
+            </I18nProvider>
+        )
+
+        expect(screen.getByRole('img', { name: 'codex' })).toBeInTheDocument()
+    })
 })
 
 describe('ShareTurnDialog generated-file lifecycle', () => {

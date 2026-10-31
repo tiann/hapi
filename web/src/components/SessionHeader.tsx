@@ -173,6 +173,9 @@ export function SessionHeader(props: {
     }) > 0
     const agentFlavor = session.metadata?.flavor ?? null
     const agentLabel = agentFlavor?.trim() || null
+    const showAgentLabel = headerMetadata.agent && agentLabel !== null
+    const showAgentIcon = headerMetadata.agentIcon && agentLabel !== null
+    const agentIconOnly = showAgentIcon && !showAgentLabel
     const reasoningEffort = getReasoningEffortForFlavor(
         agentFlavor,
         session.modelReasoningEffort,
@@ -217,7 +220,7 @@ export function SessionHeader(props: {
         worktree: headerMetadata.worktree && Boolean(worktreeBranch),
         fastMode: headerMetadata.fastMode && showFastBadge,
     })
-    const showMobileMetadata = (headerMetadata.agent && agentLabel !== null) || mobileSecondary !== null
+    const showMobileMetadata = showAgentLabel || showAgentIcon || mobileSecondary !== null
 
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -407,10 +410,20 @@ export function SessionHeader(props: {
                         </div>
                         {showMobileMetadata ? (
                             <div className="flex min-w-0 flex-nowrap items-center gap-2 overflow-hidden text-xs text-[var(--app-hint)] sm:hidden">
-                                {headerMetadata.agent && agentLabel ? (
-                                    <span className="inline-flex shrink-0 items-center gap-1">
-                                        <AgentFlavorIcon flavor={session.metadata?.flavor} className="h-3.5 w-3.5 shrink-0 -translate-y-px" />
-                                        {agentLabel}
+                                {showAgentLabel || showAgentIcon ? (
+                                    <span
+                                        role={agentIconOnly ? 'img' : undefined}
+                                        aria-label={agentIconOnly ? agentLabel ?? undefined : undefined}
+                                        className={`inline-flex shrink-0 items-center gap-1 ${agentIconOnly ? '-mr-1' : ''}`}
+                                    >
+                                        {showAgentIcon ? (
+                                            <AgentFlavorIcon
+                                                flavor={session.metadata?.flavor}
+                                                className="h-3.5 w-3.5 shrink-0 -translate-y-px"
+                                                data-testid="session-header-agent-icon"
+                                            />
+                                        ) : null}
+                                        {showAgentLabel ? agentLabel : null}
                                     </span>
                                 ) : null}
                                 {mobileSecondary === 'project' && projectLabel ? <span className="truncate" title={projectPath ?? undefined}>{headerMetadata.showLabels ? `${t('session.item.project')}: ` : ''}{projectLabel}</span> : null}
@@ -425,10 +438,20 @@ export function SessionHeader(props: {
                             </div>
                         ) : null}
                         <div className="hidden flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-[var(--app-hint)] sm:flex">
-                            {headerMetadata.agent && agentLabel ? (
-                                <span className="inline-flex items-center gap-1">
-                                    <AgentFlavorIcon flavor={session.metadata?.flavor} className="h-3.5 w-3.5 shrink-0 -translate-y-px" />
-                                    {agentLabel}
+                            {showAgentLabel || showAgentIcon ? (
+                                <span
+                                    role={agentIconOnly ? 'img' : undefined}
+                                    aria-label={agentIconOnly ? agentLabel ?? undefined : undefined}
+                                    className={`inline-flex items-center gap-1 ${agentIconOnly ? '-mr-2' : ''}`}
+                                >
+                                    {showAgentIcon ? (
+                                        <AgentFlavorIcon
+                                            flavor={session.metadata?.flavor}
+                                            className="h-3.5 w-3.5 shrink-0 -translate-y-px"
+                                            data-testid="session-header-agent-icon"
+                                        />
+                                    ) : null}
+                                    {showAgentLabel ? agentLabel : null}
                                 </span>
                             ) : null}
                             {headerMetadata.project && projectLabel ? (

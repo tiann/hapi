@@ -11,7 +11,7 @@ import SettingsVoicePage from './voice'
 import SettingsVoiceVoicesPage from './voice-voices'
 import SettingsVoiceAdvancedPage from './voice-advanced'
 
-const { context, navigate, setAppearance, setColorTheme, setFontScale, setTerminalFontSize, setComposerEnterBehavior, setCodexExplorationCollapsed, setVoice, setAppBadgeEnabled } = vi.hoisted(() => ({
+const { context, navigate, setAppearance, setColorTheme, setFontScale, setTerminalFontSize, setComposerEnterBehavior, setCodexExplorationCollapsed, setVoice, setSessionHeaderMetadata, setAppBadgeEnabled } = vi.hoisted(() => ({
     context: { token: '' },
     navigate: vi.fn(),
     setAppearance: vi.fn(),
@@ -21,6 +21,7 @@ const { context, navigate, setAppearance, setColorTheme, setFontScale, setTermin
     setComposerEnterBehavior: vi.fn(),
     setCodexExplorationCollapsed: vi.fn(),
     setVoice: vi.fn(),
+    setSessionHeaderMetadata: vi.fn(),
     setAppBadgeEnabled: vi.fn(),
 }))
 
@@ -98,6 +99,7 @@ vi.mock('@/hooks/useSessionHeaderMetadata', () => ({
         preferences: {
             showLabels: true,
             agent: true,
+            agentIcon: true,
             project: true,
             model: true,
             reasoning: true,
@@ -108,7 +110,7 @@ vi.mock('@/hooks/useSessionHeaderMetadata', () => ({
             updatedAt: false,
             worktree: true,
         },
-        setPreference: vi.fn(),
+        setPreference: setSessionHeaderMetadata,
     }),
 }))
 
@@ -292,12 +294,15 @@ describe('responsive settings pages', () => {
         fireEvent.click(appBadgeToggle)
         expect(setAppBadgeEnabled).toHaveBeenCalledWith(true)
         expect(screen.getByRole('checkbox', { name: 'Show field labels' })).toBeChecked()
+        expect(screen.getByRole('checkbox', { name: 'Agent icon' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Project' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Reasoning effort' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Machine' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Active time' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Created time' })).not.toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Updated time' })).not.toBeChecked()
+        fireEvent.click(screen.getByRole('checkbox', { name: 'Agent icon' }))
+        expect(setSessionHeaderMetadata).toHaveBeenCalledWith('agentIcon', false)
         expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
         expect(screen.queryByRole('checkbox', { name: 'Fixed session order' })).not.toBeInTheDocument()
     })
