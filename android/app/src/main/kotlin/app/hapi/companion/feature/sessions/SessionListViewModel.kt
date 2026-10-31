@@ -77,6 +77,13 @@ data class SessionSectionUi(
     val rows: List<SessionRowUi>,
     /** [SessionSectionKind.DIRECTORY] header — the group display name. */
     val title: String? = null,
+    /**
+     * [SessionSectionKind.DIRECTORY] only — the stable `machineId::directory`
+     * group key ([SessionDirectoryGroups.GroupUi.key]). LazyColumn header keys
+     * derive from this, not the display title, so identical paths on different
+     * machines (same title) cannot collide.
+     */
+    val key: String? = null,
 )
 
 data class SessionListUiState(
@@ -854,7 +861,7 @@ class SessionListViewModel(
                 if (floated.active.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.ACTIVE, floated.active))
                 if (floated.idle.isNotEmpty()) add(SessionSectionUi(SessionSectionKind.IDLE, floated.idle))
             }
-            groups.forEach { group -> add(SessionSectionUi(SessionSectionKind.DIRECTORY, group.rows, group.title)) }
+            groups.forEach { group -> add(SessionSectionUi(SessionSectionKind.DIRECTORY, group.rows, group.title, group.key)) }
         }
     }
 

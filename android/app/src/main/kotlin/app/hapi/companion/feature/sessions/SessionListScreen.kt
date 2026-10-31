@@ -402,8 +402,11 @@ private fun SessionRows(
                 }
                 // Directory group (grouped layout): header = the group's
                 // display name (last two path segments, web
-                // `getPathDisplayName`); never rendered unlabeled.
-                SessionSectionKind.DIRECTORY -> item(key = "header-dir-${section.title}") {
+                // `getPathDisplayName`); never rendered unlabeled. Keyed by
+                // the stable machine+directory group key — identical paths on
+                // different machines share the display title but never the
+                // LazyColumn key.
+                SessionSectionKind.DIRECTORY -> item(key = "header-dir-${section.key ?: section.title}") {
                     SectionHeader(section.title.orEmpty())
                 }
             }

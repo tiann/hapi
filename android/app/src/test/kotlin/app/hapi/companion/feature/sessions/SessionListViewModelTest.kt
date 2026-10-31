@@ -1144,6 +1144,33 @@ class SessionListViewModelTest {
     }
 
     @Test
+    fun `directory sections carry the stable group key so shared titles cannot collide`() = runTest {
+        val sessions = FakeSessionStore().apply {
+            set(
+                summary("laptop-row", updatedAt = 900, machineId = "laptop", path = "/repo/app"),
+                summary("desktop-row", updatedAt = 800, machineId = "desktop", path = "/repo/app"),
+            )
+        }
+        val (viewModel) = buildViewModel(sessions)
+
+        val state = viewModel.uiState.first { it.rows.size == 2 }
+        assertTrue(state.grouped)
+        // Two machines, one display title: two DIRECTORY sections whose keys
+        // (machine+directory) differ — the LazyColumn header keys stay unique.
+        assertEquals(listOf(SessionSectionKind.DIRECTORY, SessionSectionKind.DIRECTORY), state.sections.map { it.kind })
+        assertEquals(listOf("repo/app", "repo/app"), state.sections.map { it.title })
+        assertEquals(setOf("laptop::/repo/app", "desktop::/repo/app"), state.sections.map { it.key }.toSet())
+        assertEquals(
+            listOf("laptop-row"),
+            state.sections.first { it.key == "laptop::/repo/app" }.rows.map { it.id },
+        )
+        assertEquals(
+            listOf("desktop-row"),
+            state.sections.first { it.key == "desktop::/repo/app" }.rows.map { it.id },
+        )
+    }
+
+    @Test
     fun `global pins form the top section and local pins stay inside their directory`() = runTest {
         val sessions = FakeSessionStore().apply {
             set(

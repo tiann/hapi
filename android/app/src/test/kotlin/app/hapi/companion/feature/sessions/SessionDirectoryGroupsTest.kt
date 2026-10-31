@@ -66,6 +66,21 @@ class SessionDirectoryGroupsTest {
         assertEquals("__unknown__::/repo/app", SessionDirectoryGroups.keyOf(summary("c", machineId = null)))
     }
 
+    @Test
+    fun `identical paths on different machines stay two groups sharing one display title`() {
+        val rows = listOf(
+            row(summary("laptop-row", updatedAt = 900, machineId = "laptop", path = "/repo/app")),
+            row(summary("desktop-row", updatedAt = 800, machineId = "desktop", path = "/repo/app")),
+        )
+        val groups = SessionDirectoryGroups.groupRows(rows)
+        // One display title, two stable machine+directory keys — LazyColumn
+        // header keys derive from the group key, so nothing collides.
+        assertEquals(listOf("repo/app", "repo/app"), groups.map { it.title })
+        assertEquals(setOf("laptop::/repo/app", "desktop::/repo/app"), groups.map { it.key }.toSet())
+        assertEquals(listOf("laptop-row"), groups.first { it.key == "laptop::/repo/app" }.rows.map { it.id })
+        assertEquals(listOf("desktop-row"), groups.first { it.key == "desktop::/repo/app" }.rows.map { it.id })
+    }
+
     // ------------------------------------------------------- display names --
 
     @Test
