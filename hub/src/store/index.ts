@@ -1085,22 +1085,22 @@ export class Store {
         if (columns.length === 0) return
         if (!columns.some((column) => column.name === 'position')) {
             this.db.exec('ALTER TABLE session_scratchlist ADD COLUMN position INTEGER NOT NULL DEFAULT 0')
-        }
 
-        const sessionRows = this.db.prepare(
-            'SELECT DISTINCT session_id FROM session_scratchlist'
-        ).all() as Array<{ session_id: string }>
-        const rowsForSession = this.db.prepare(
-            `SELECT entry_id FROM session_scratchlist
-             WHERE session_id = ?
-             ORDER BY created_at DESC, entry_id DESC`
-        )
-        const updatePosition = this.db.prepare(
-            'UPDATE session_scratchlist SET position = ? WHERE session_id = ? AND entry_id = ?'
-        )
-        for (const { session_id } of sessionRows) {
-            const rows = rowsForSession.all(session_id) as Array<{ entry_id: string }>
-            rows.forEach((row, index) => updatePosition.run(index, session_id, row.entry_id))
+            const sessionRows = this.db.prepare(
+                'SELECT DISTINCT session_id FROM session_scratchlist'
+            ).all() as Array<{ session_id: string }>
+            const rowsForSession = this.db.prepare(
+                `SELECT entry_id FROM session_scratchlist
+                 WHERE session_id = ?
+                 ORDER BY created_at DESC, entry_id DESC`
+            )
+            const updatePosition = this.db.prepare(
+                'UPDATE session_scratchlist SET position = ? WHERE session_id = ? AND entry_id = ?'
+            )
+            for (const { session_id } of sessionRows) {
+                const rows = rowsForSession.all(session_id) as Array<{ entry_id: string }>
+                rows.forEach((row, index) => updatePosition.run(index, session_id, row.entry_id))
+            }
         }
 
         this.db.exec(`

@@ -981,7 +981,7 @@ describe('ScratchlistDrawer disabled operations', () => {
             </I18nProvider>,
         )
 
-        expect(screen.getByTestId('scratchlist-attachment-files')).toBeInTheDocument()
+        expect(screen.getByTestId('scratchlist-attachments')).toBeInTheDocument()
         expect(screen.getByText('brief.pdf')).toBeInTheDocument()
         fireEvent.click(screen.getByRole('button', { name: 'Remove attachment brief.pdf' }))
         fireEvent.click(within(screen.getByRole('dialog', { name: 'Delete attachment?' })).getByRole('button', { name: 'Delete' }))
@@ -1030,7 +1030,7 @@ describe('ScratchlistDrawer disabled operations', () => {
             const thumb = screen.getByTestId('scratchlist-attachment-thumb')
             expect(thumb.className).toContain('h-16')
             expect(thumb.className).toContain('w-24')
-            const thumbnails = screen.getByTestId('scratchlist-attachment-thumbs')
+            const thumbnails = screen.getByTestId('scratchlist-attachments')
             expect(thumbnails.className).toContain('mt-0.5')
             expect(thumbnails.className).toContain('mb-1')
             expect(thumbnails.className).not.toContain('my-1')

@@ -1,5 +1,6 @@
 import {
     type FormEvent as ReactFormEvent,
+    type ChangeEvent as ReactChangeEvent,
     type KeyboardEvent as ReactKeyboardEvent,
     type MouseEvent as ReactMouseEvent,
     type PointerEvent as ReactPointerEvent,
@@ -27,21 +28,18 @@ import {
 import { createPortal } from 'react-dom'
 import type { ApiClient } from '@/api/client'
 import type { ScratchlistAttachmentMetadata } from '@hapi/protocol'
-import { isImageMimeType } from '@/lib/fileAttachments'
 import { safeCopyToClipboard } from '@/lib/clipboard'
 import { useTranslation } from '@/lib/use-translation'
 import { HoverTooltip } from '@/components/HoverTooltip'
-import { ImagePreview } from '@/components/ImagePreview'
-import { CheckIcon } from '@/components/icons'
+import { CheckIcon, CopyIcon, ScheduleIcon } from '@/components/icons'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ScheduleTimePicker, type PendingSchedule } from './ScheduleTimePicker'
 import {
-    getScratchlistAttachmentPreview,
-    retainScratchlistAttachmentPreview,
     releaseScratchlistAttachmentPreview,
-    rememberScratchlistAttachmentObjectUrl,
-    rememberScratchlistAttachmentPreview,
 } from '@/lib/scratchlistAttachmentPreview'
+import { orderItemsById } from '@/lib/attachmentOrder'
+import { ScratchlistAttachments } from './ScratchlistAttachments'
+import { prepareScratchlistParkAttachments } from '@/lib/scratchlistAttachmentFlow'
 
 const STORAGE_KEY_PREFIX = 'hapi.scratchlist-collapsed.v1.'
 
@@ -137,24 +135,6 @@ function ScratchlistQuestionIcon() {
     )
 }
 
-function ScratchlistRemoveIcon() {
-    return (
-        <svg
-            viewBox="0 0 12 12"
-            fill="none"
-            className="h-3 w-3"
-            aria-hidden="true"
-        >
-            <path
-                d="m3 3 6 6M9 3 3 9"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-            />
-        </svg>
-    )
-}
-
 function ScratchlistHelpHint() {
     const { t } = useTranslation()
     const tooltipId = useId()
@@ -218,168 +198,6 @@ function ScratchlistHelpHint() {
  * entries + callbacks. Used by both the always-visible ScratchlistPanel
  * and the composer-controlled drawer below.
  */
-function ScratchlistAttachmentThumbnails(props: {
-    sessionId: string
-    api: ApiClient
-    attachments: Array<ScratchlistAttachmentMetadata & { previewUrl?: string }>
-    onRemove: (attachmentId: string) => void
-}) {
-    type Thumbnail = { id: string; url: string; filename: string }
-    const imageAttachments = useMemo(
-        () => props.attachments.filter((attachment) => isImageMimeType(attachment.mimeType)),
-        [props.attachments],
-    )
-    const imageAttachmentKey = useMemo(
-        () => imageAttachments
-            .map((attachment) => [
-                attachment.id,
-                attachment.filename,
-                attachment.mimeType,
-                attachment.size,
-                attachment.path,
-                attachment.previewUrl ?? '',
-            ].join('\u001f'))
-            .join('\u001e'),
-        [imageAttachments],
-    )
-    const resolveCachedThumbnails = useCallback((
-        attachments: Array<ScratchlistAttachmentMetadata & { previewUrl?: string }>,
-    ): Thumbnail[] => attachments.flatMap((attachment) => {
-        const url = getScratchlistAttachmentPreview(attachment)
-        return url ? [{ id: attachment.id, url, filename: attachment.filename }] : []
-    }), [])
-    const initialUrls = useMemo(
-        () => resolveCachedThumbnails(imageAttachments),
-        [imageAttachments, resolveCachedThumbnails],
-    )
-    const [urls, setUrls] = useState<Thumbnail[]>(initialUrls)
-    const imageAttachmentsRef = useRef(imageAttachments)
-    imageAttachmentsRef.current = imageAttachments
-
-    useEffect(() => {
-        const releaseRefs = imageAttachmentsRef.current.map((attachment) =>
-            retainScratchlistAttachmentPreview(attachment.id)
-        )
-        return () => releaseRefs.forEach((release) => release())
-    }, [imageAttachmentKey])
-
-    useEffect(() => {
-        let cancelled = false
-        const attachments = imageAttachmentsRef.current
-        for (const attachment of attachments) {
-            rememberScratchlistAttachmentPreview(attachment, attachment.previewUrl)
-        }
-        setUrls(resolveCachedThumbnails(attachments))
-        void (async () => {
-            const missing = attachments.filter((attachment) => !getScratchlistAttachmentPreview(attachment))
-            await Promise.all(missing.map(async (attachment) => {
-                try {
-                    const blob = await props.api.fetchScratchlistAttachmentBlob(props.sessionId, attachment.id)
-                    const objectUrl = URL.createObjectURL(blob)
-                    rememberScratchlistAttachmentObjectUrl(attachment, objectUrl)
-                } catch {
-                    // Non-fatal: entry still shows text/actions.
-                }
-            }))
-            if (!cancelled) {
-                setUrls(resolveCachedThumbnails(attachments))
-            }
-        })()
-        return () => {
-            cancelled = true
-        }
-    }, [imageAttachmentKey, props.api, props.sessionId, resolveCachedThumbnails])
-
-    if (urls.length === 0) return null
-
-    return (
-        <div
-            className="mt-0.5 mb-1 flex flex-wrap gap-1.5"
-            data-testid="scratchlist-attachment-thumbs"
-        >
-            {urls.map((item) => (
-                <div
-                    key={item.id}
-                    className="group relative h-16 w-24 overflow-hidden rounded-lg bg-[var(--app-subtle-bg)]"
-                    data-testid="scratchlist-attachment-thumb"
-                >
-                    <ImagePreview
-                        src={item.url}
-                        fileName={item.filename}
-                        label={item.filename}
-                        galleryId={`scratchlist-attachments-${props.sessionId}`}
-                        buttonClassName="group h-full w-full cursor-zoom-in overflow-hidden rounded-lg text-left"
-                        imageClassName="h-full w-full object-cover transition-opacity group-hover:opacity-85"
-                        caption={(
-                            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-1.5 pb-1 pt-3">
-                                <span className="block truncate text-[10px] leading-tight text-white">{item.filename}</span>
-                            </div>
-                        )}
-                    />
-                    <button
-                        type="button"
-                        data-scratchlist-action="remove-attachment"
-                        aria-label={`Remove attachment ${item.filename}`}
-                        title={`Remove attachment ${item.filename}`}
-                        onClick={(event) => {
-                            event.preventDefault()
-                            event.stopPropagation()
-                            props.onRemove(item.id)
-                        }}
-                        className="absolute right-1 top-1 z-10 flex h-6 w-6 items-center justify-center rounded-full bg-black/65 text-white transition-colors hover:bg-black/85 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-white"
-                    >
-                        <ScratchlistRemoveIcon />
-                    </button>
-                </div>
-            ))}
-        </div>
-    )
-}
-
-function ScratchlistFileAttachments(props: {
-    attachments: Array<ScratchlistAttachmentMetadata & { previewUrl?: string }>
-    onRemove: (attachmentId: string) => void
-}) {
-    const fileAttachments = props.attachments.filter((attachment) => !isImageMimeType(attachment.mimeType))
-    if (fileAttachments.length === 0) return null
-
-    return (
-        <div
-            className="mt-0.5 mb-1 flex min-w-0 flex-col gap-1"
-            data-testid="scratchlist-attachment-files"
-        >
-            {fileAttachments.map((attachment) => (
-                <div
-                    key={attachment.id}
-                    className="flex min-w-0 items-center gap-1.5 rounded-md bg-[var(--app-subtle-bg)] px-2 py-1"
-                    data-testid="scratchlist-attachment-file"
-                >
-                    <span
-                        className="min-w-0 flex-1 truncate text-xs text-[var(--app-hint)]"
-                        title={attachment.filename}
-                    >
-                        {attachment.filename}
-                    </span>
-                    <button
-                        type="button"
-                        data-scratchlist-action="remove-attachment"
-                        aria-label={`Remove attachment ${attachment.filename}`}
-                        title={`Remove attachment ${attachment.filename}`}
-                        onClick={(event) => {
-                            event.preventDefault()
-                            event.stopPropagation()
-                            props.onRemove(attachment.id)
-                        }}
-                        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[var(--app-hint)] transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[var(--app-link)]"
-                    >
-                        <ScratchlistRemoveIcon />
-                    </button>
-                </div>
-            ))}
-        </div>
-    )
-}
-
 const LONG_PRESS_TO_DRAG_MS = 450
 const DRAG_CANCEL_DISTANCE_PX = 8
 const COPY_SUCCESS_FEEDBACK_MS = 1000
@@ -455,6 +273,7 @@ type ScratchlistMenuState = {
     entryId: string
     left: number
     top: number
+    align: 'start' | 'end'
 }
 
 type ScratchlistDeleteRequest =
@@ -466,14 +285,19 @@ type ScratchlistDeleteRequest =
         attachmentFilename: string
     }
 
-function clampScratchlistMenuPosition(left: number, top: number): { left: number; top: number } {
-    if (typeof window === 'undefined') return { left, top }
-    const menuWidth = 224
-    const menuHeight = 220
-    return {
-        left: Math.min(Math.max(8, left), Math.max(8, window.innerWidth - menuWidth - 8)),
-        top: Math.min(Math.max(8, top), Math.max(8, window.innerHeight - menuHeight - 8)),
-    }
+function ScratchlistActionIcon({ action }: { action: 'attachment' | 'send' | 'delete' }) {
+    const isSend = action === 'send'
+    return (
+        <span aria-hidden="true" className={`inline-flex h-5 w-5 shrink-0 items-center justify-center ${action === 'delete' ? '' : 'text-[var(--app-hint)]'}`}>
+            <svg width={isSend ? 20 : 18} height={isSend ? 20 : 18} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                strokeWidth={isSend ? 2.25 : 2} strokeLinecap="round" strokeLinejoin="round"
+                className={`shrink-0 ${isSend ? 'translate-y-[0.5px]' : ''}`}>
+                {action === 'attachment' ? <path d="m21.4 11.6-9.2 9.2a6 6 0 0 1-8.5-8.5l10-10a4 4 0 0 1 5.7 5.7l-10 10a2 2 0 0 1-2.8-2.8l9.2-9.2" /> : null}
+                {isSend ? <path d="M12 20V4m-8 8 8-8 8 8" /> : null}
+                {action === 'delete' ? <path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6" /> : null}
+            </svg>
+        </span>
+    )
 }
 
 function ScratchlistActionMenu({
@@ -486,6 +310,7 @@ function ScratchlistActionMenu({
     onCopy,
     onDelete,
     onSend,
+    onInsertAttachments,
     onOpenSchedule,
     onSchedule,
     disabled,
@@ -500,20 +325,39 @@ function ScratchlistActionMenu({
     onCopy: () => void
     onDelete: () => void
     onSend?: () => void
+    onInsertAttachments?: () => void
     onOpenSchedule: () => void
     onSchedule?: (pending: PendingSchedule) => void
     disabled: boolean
     actionPending: boolean
 }) {
     const { t } = useTranslation()
+    const [menuPosition, setMenuPosition] = useState({ left: position.left, top: position.top })
+    useLayoutEffect(() => {
+        const menu = menuRef.current
+        if (!menu) return
+        const { width, height } = menu.getBoundingClientRect()
+        const left = position.align === 'end' ? position.left - width : position.left
+        const spaceBelow = window.innerHeight - position.top
+        const top = spaceBelow < height + 8 && position.top > spaceBelow
+            ? position.top - height - 8
+            : position.top + 8
+        setMenuPosition({
+            left: Math.max(8, Math.min(left, window.innerWidth - width - 8)),
+            top: Math.max(8, Math.min(top, window.innerHeight - height - 8)),
+        })
+    }, [menuRef, position, t])
+    // Match the session action menu's content width and symmetric text insets.
+    const baseItemClassName = 'flex w-full items-center gap-3 rounded-md py-2 pl-3 pr-[44px] text-left text-base transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] disabled:cursor-not-allowed disabled:opacity-40'
+    const itemClassName = `${baseItemClassName} hover:bg-[var(--app-subtle-bg)]`
     const menu = (
         <div
             ref={menuRef}
             role="menu"
             aria-label={t('scratchlist.action.menuAriaLabel')}
             data-testid="scratchlist-action-menu"
-            className="z-[60] min-w-56 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-1 text-sm text-[var(--app-fg)] shadow-xl"
-            style={{ position: 'fixed', left: position.left, top: position.top }}
+            className="z-[60] box-border w-max max-w-[calc(100vw-16px)] max-h-[calc(100dvh-16px)] overflow-y-auto rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-1 text-[var(--app-fg)] shadow-lg"
+            style={{ position: 'fixed', left: menuPosition.left, top: `max(${menuPosition.top}px, calc(env(safe-area-inset-top) + 8px))` }}
             onPointerDown={(event) => event.stopPropagation()}
         >
             <button
@@ -521,25 +365,40 @@ function ScratchlistActionMenu({
                 role="menuitem"
                 data-scratchlist-action="copy"
                 aria-label={t('scratchlist.action.copy')}
-                className="flex w-full items-center rounded-md px-3 py-2 text-left hover:bg-[var(--app-subtle-bg)] disabled:cursor-not-allowed disabled:opacity-40"
+                className={itemClassName}
                 onClick={() => {
                     onCopy()
                     onClose()
                 }}
                 disabled={actionPending}
             >
-                {t('scratchlist.action.copy')}
+                <span aria-hidden="true" className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-[var(--app-hint)]"><CopyIcon className="h-[18px] w-[18px]" /></span>
+                <span>{t('scratchlist.action.copy')}</span>
             </button>
+            {onInsertAttachments ? (
+                <button
+                    type="button"
+                    role="menuitem"
+                    data-scratchlist-action="insert-attachments"
+                    className={itemClassName}
+                    onClick={onInsertAttachments}
+                    disabled={disabled || actionPending}
+                >
+                    <ScratchlistActionIcon action="attachment" />
+                    <span>{t('scratchlist.action.insertAttachments')}</span>
+                </button>
+            ) : null}
             {onSend ? (
                 <button
                     type="button"
                     role="menuitem"
                     data-scratchlist-action="send-now"
-                    className="flex w-full items-center rounded-md px-3 py-2 text-left hover:bg-[var(--app-subtle-bg)] disabled:cursor-not-allowed disabled:opacity-40"
+                    className={itemClassName}
                     onClick={onSend}
                     disabled={disabled || actionPending}
                 >
-                    {t('scratchlist.action.sendNow')}
+                    <ScratchlistActionIcon action="send" />
+                    <span className="font-medium">{t('scratchlist.action.sendNow')}</span>
                 </button>
             ) : null}
             {onSend && onSchedule ? (
@@ -549,11 +408,12 @@ function ScratchlistActionMenu({
                     role="menuitem"
                     data-scratchlist-action="schedule"
                     aria-expanded={scheduleOpen}
-                    className="flex w-full items-center rounded-md px-3 py-2 text-left hover:bg-[var(--app-subtle-bg)] disabled:cursor-not-allowed disabled:opacity-40"
+                    className={itemClassName}
                     onClick={onOpenSchedule}
                     disabled={disabled || actionPending}
                 >
-                    {t('scratchlist.action.scheduleSend')}
+                    <span aria-hidden="true" className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-[var(--app-hint)]"><ScheduleIcon className="h-5 w-5 shrink-0 translate-y-[0.5px]" /></span>
+                    <span>{t('scratchlist.action.scheduleSend')}</span>
                 </button>
             ) : null}
             <div className="my-1 border-t border-[var(--app-border)]" role="separator" />
@@ -561,14 +421,15 @@ function ScratchlistActionMenu({
                 type="button"
                 role="menuitem"
                 data-scratchlist-action="delete"
-                className="flex w-full items-center rounded-md px-3 py-2 text-left text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 disabled:cursor-not-allowed disabled:opacity-40"
+                className={`${baseItemClassName} text-red-500 hover:bg-red-500/10`}
                 onClick={() => {
                     onDelete()
                     onClose()
                 }}
                 disabled={disabled || actionPending}
             >
-                {t('scratchlist.action.delete')}
+                <ScratchlistActionIcon action="delete" />
+                <span>{t('scratchlist.action.delete')}</span>
             </button>
             {scheduleOpen && onSchedule ? (
                 <div data-scratchlist-schedule-picker="" onPointerDown={(event) => event.stopPropagation()}>
@@ -625,6 +486,11 @@ function ScratchlistInventory({
     const [actionPendingEntryId, setActionPendingEntryId] = useState<string | null>(null)
     const [deleteRequest, setDeleteRequest] = useState<ScratchlistDeleteRequest | null>(null)
     const [deletePending, setDeletePending] = useState(false)
+    const [attachmentUploadEntryId, setAttachmentUploadEntryId] = useState<string | null>(null)
+    const [attachmentError, setAttachmentError] = useState<{ entryId: string; message: string } | null>(null)
+    const fileInputRef = useRef<HTMLInputElement | null>(null)
+    const attachmentTargetRef = useRef<string | null>(null)
+    const attachmentUploadPendingRef = useRef(false)
     const pointerDragRef = useRef<PointerDragState | null>(null)
     const touchDragRef = useRef<TouchDragState | null>(null)
     const touchContextMenuRef = useRef(false)
@@ -660,9 +526,43 @@ function ScratchlistInventory({
         setScheduleEntryId(null)
     }, [])
 
-    const openMenu = useCallback((entry: ScratchlistEntry, left: number, top: number) => {
-        const position = clampScratchlistMenuPosition(left, top)
-        setMenuState({ entryId: entry.id, ...position })
+    const selectAttachments = useCallback((entry: ScratchlistEntry) => {
+        if (!api || !sessionId || disabled || attachmentUploadPendingRef.current) return
+        attachmentTargetRef.current = entry.id
+        setAttachmentError(null)
+        closeMenu()
+        fileInputRef.current?.click()
+    }, [api, sessionId, disabled, closeMenu])
+
+    const insertAttachments = useCallback(async (event: ReactChangeEvent<HTMLInputElement>) => {
+        const files = Array.from(event.currentTarget.files ?? [])
+        event.currentTarget.value = ''
+        const entryId = attachmentTargetRef.current
+        attachmentTargetRef.current = null
+        if (!api || !sessionId || !entryId || files.length === 0 || disabled || attachmentUploadPendingRef.current) return
+        attachmentUploadPendingRef.current = true
+        setAttachmentUploadEntryId(entryId)
+        setAttachmentError(null)
+        let uploaded: ScratchlistAttachmentMetadata[] = []
+        try {
+            uploaded = await prepareScratchlistParkAttachments(api, sessionId, files.map((file) => ({
+                id: crypto.randomUUID(), name: file.name, contentType: file.type, file,
+            })))
+            // Re-read after upload: preserve edits and ordering made while the picker was open.
+            const current = entriesRef.current.find((entry) => entry.id === entryId)
+            if (!current) throw new Error(t('scratchlist.attachmentDraftMissing'))
+            await onUpdate(current, current.text, [...(current.attachments ?? []), ...uploaded])
+        } catch (cause) {
+            await Promise.allSettled(uploaded.map((attachment) => api.deleteScratchlistAttachment(sessionId, attachment.id)))
+            setAttachmentError({ entryId, message: cause instanceof Error ? cause.message : String(cause) })
+        } finally {
+            attachmentUploadPendingRef.current = false
+            setAttachmentUploadEntryId(null)
+        }
+    }, [api, sessionId, disabled, onUpdate, t])
+
+    const openMenu = useCallback((entry: ScratchlistEntry, left: number, top: number, align: 'start' | 'end' = 'start') => {
+        setMenuState({ entryId: entry.id, left, top, align })
         setScheduleEntryId(null)
     }, [])
 
@@ -699,7 +599,7 @@ function ScratchlistInventory({
         entry: ScratchlistEntry,
         action: ScratchlistEntryAction | undefined,
     ) => {
-        if (!action || disabled || actionPendingEntryId) return
+        if (!action || disabled || actionPendingEntryId || attachmentUploadPendingRef.current) return
         setActionPendingEntryId(entry.id)
         try {
             await action(entry)
@@ -1132,6 +1032,9 @@ function ScratchlistInventory({
             className={`${listMarginClassName} scratchlist-scroll-y max-h-64`}
             data-testid="scratchlist-scroll-viewport"
         >
+            <input ref={fileInputRef} type="file" multiple className="hidden"
+                data-testid="scratchlist-insert-attachments" aria-label={t('scratchlist.action.insertAttachments')}
+                onChange={(event) => { void insertAttachments(event) }} />
             <ul
                 aria-label={t('scratchlist.listAriaLabel')}
                 className="scratchlist-scroll-content flex min-h-0 flex-col gap-1.5"
@@ -1167,19 +1070,25 @@ function ScratchlistInventory({
                                 className="min-w-0 flex-1"
                                 data-testid="scratchlist-entry-content"
                             >
-                                {sessionId && api && entry.attachments && entry.attachments.length > 0 ? (
-                                    <ScratchlistAttachmentThumbnails
+                                {entry.attachments && entry.attachments.length > 0 ? (
+                                    <ScratchlistAttachments
                                         sessionId={sessionId}
                                         api={api}
                                         attachments={entry.attachments}
+                                        disabled={disabled || actionPendingEntryId === entry.id || attachmentUploadEntryId !== null}
                                         onRemove={(attachmentId) => removeAttachment(entry, attachmentId)}
+                                        onReorder={async (ids) => {
+                                            const current = entriesRef.current.find((item) => item.id === entry.id)
+                                            if (!current || disabled) return
+                                            await onUpdate(current, current.text, orderItemsById(current.attachments ?? [], ids))
+                                        }}
                                     />
                                 ) : null}
-                                {entry.attachments && entry.attachments.length > 0 ? (
-                                    <ScratchlistFileAttachments
-                                        attachments={entry.attachments}
-                                        onRemove={(attachmentId) => removeAttachment(entry, attachmentId)}
-                                    />
+                                {attachmentUploadEntryId === entry.id ? (
+                                    <p role="status" className="text-xs text-[var(--app-hint)]">{t('scratchlist.uploadingAttachments')}</p>
+                                ) : null}
+                                {attachmentError?.entryId === entry.id ? (
+                                    <p role="alert" className="text-xs text-red-500">{attachmentError.message}</p>
                                 ) : null}
                                 {isEditing ? (
                                     <textarea
@@ -1244,7 +1153,7 @@ function ScratchlistInventory({
                                     event.preventDefault()
                                     event.stopPropagation()
                                     const rect = event.currentTarget.getBoundingClientRect()
-                                    openMenu(entry, rect.right - 224, rect.bottom + 4)
+                                    openMenu(entry, rect.right, rect.bottom, 'end')
                                 }}
                                 className={`flex h-6 w-6 shrink-0 items-center justify-center rounded transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 sm:focus-visible:opacity-100 ${copySuccessEntryId === entry.id ? 'text-[var(--app-badge-success-text)]' : ''}`}
                             >
@@ -1262,12 +1171,13 @@ function ScratchlistInventory({
                                 scheduleOpen={scheduleEntryId === entry.id}
                                 onClose={closeMenu}
                                 onCopy={() => { void handleCopy(entry) }}
+                                onInsertAttachments={api && sessionId ? () => selectAttachments(entry) : undefined}
                                 onDelete={() => requestDeleteEntry(entry)}
                                 onSend={onSend ? () => handleSend(entry) : undefined}
                                 onOpenSchedule={() => setScheduleEntryId(entry.id)}
                                 onSchedule={(pending) => handleSchedule(entry, pending)}
                                 disabled={disabled}
-                                actionPending={actionPendingEntryId === entry.id}
+                                actionPending={actionPendingEntryId === entry.id || attachmentUploadEntryId !== null}
                             />
                         ) : null}
                     </li>

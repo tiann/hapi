@@ -95,6 +95,7 @@ import {
     finalizeMigratedScratchlistParkCleanup,
     prepareScratchlistParkAttachments,
     stageScratchlistAttachmentsForComposeSend,
+    prepareScratchlistAttachmentsForSend,
     type PendingParkAttachment,
     type ScratchlistParkResult,
 } from '@/lib/scratchlistAttachmentFlow'
@@ -1154,21 +1155,16 @@ function SessionChatInner(props: SessionChatProps) {
         scheduledAt: number | null,
     ): Promise<boolean> => {
         const attachments = stripPreviewUrls(entry.attachments ?? [])
-        const hubItems = attachments.filter((attachment) => isHubScratchlistAttachmentPath(attachment.path))
-        let sendAttachments = attachments
-        let staged: AttachmentMetadata[] = []
-        if (hubItems.length > 0 && scheduledAt == null) {
-            const normalItems = attachments.filter((attachment) => !isHubScratchlistAttachmentPath(attachment.path))
-            try {
-                staged = await stageScratchlistAttachmentsForComposeSend(
-                    props.api,
-                    props.session.id,
-                    hubItems,
-                )
-            } catch {
-                return false
-            }
-            sendAttachments = [...normalItems, ...staged]
+        let sendAttachments: AttachmentMetadata[]
+        let staged: AttachmentMetadata[]
+        try {
+            const prepared = await prepareScratchlistAttachmentsForSend(
+                props.api, props.session.id, attachments, scheduledAt,
+            )
+            sendAttachments = prepared.attachments
+            staged = prepared.staged
+        } catch {
+            return false
         }
 
         const accepted = await props.onSend(

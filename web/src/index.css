@@ -868,3 +868,19 @@ html[data-theme="oled"] .shiki span:not([data-line-number]) {
     transition: none;
   }
 }
+
+@media (hover: hover) and (pointer: fine) {
+  .hapi-scratchlist-attachment-control {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 150ms ease;
+  }
+
+  [data-scratchlist-attachment-id]:hover .hapi-scratchlist-attachment-control,
+  [data-scratchlist-attachment-id]:focus-within .hapi-scratchlist-attachment-control,
+  [data-scratchlist-attachment-dragging] .hapi-scratchlist-attachment-control,
+  .hapi-scratchlist-attachment-file-control {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}

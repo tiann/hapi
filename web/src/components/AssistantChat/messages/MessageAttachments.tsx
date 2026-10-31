@@ -51,28 +51,25 @@ export function MessageAttachments(props: { attachments: AttachmentMetadata[] })
     const { attachments } = props
     if (!attachments || attachments.length === 0) return null
 
-    const images = attachments.filter(a => isImageMimeType(a.mimeType) && a.previewUrl)
-    const files = attachments.filter(a => !isImageMimeType(a.mimeType) || !a.previewUrl)
+    const groups: { images: boolean; attachments: AttachmentMetadata[] }[] = []
+    for (const attachment of attachments) {
+        const images = Boolean(isImageMimeType(attachment.mimeType) && attachment.previewUrl)
+        const previous = groups.at(-1)
+        if (previous?.images === images) previous.attachments.push(attachment)
+        else groups.push({ images, attachments: [attachment] })
+    }
 
     return (
         <div className="mt-2 flex flex-col gap-2">
-            {images.length > 0 && (
-                <div
-                    className="hapi-share-media-grid flex flex-wrap gap-2"
-                    data-hapi-image-count={images.length}
-                >
-                    {images.map(attachment => (
-                        <ImageAttachment key={attachment.id} attachment={attachment} />
-                    ))}
+            {groups.map((group) => (
+                <div key={group.attachments[0]!.id}
+                    className={group.images ? 'hapi-share-media-grid flex flex-wrap gap-2' : 'flex flex-col gap-1.5'}
+                    data-hapi-image-count={group.images ? group.attachments.length : undefined}>
+                    {group.attachments.map(attachment => group.images
+                        ? <ImageAttachment key={attachment.id} attachment={attachment} />
+                        : <FileAttachment key={attachment.id} attachment={attachment} />)}
                 </div>
-            )}
-            {files.length > 0 && (
-                <div className="flex flex-col gap-1.5">
-                    {files.map(attachment => (
-                        <FileAttachment key={attachment.id} attachment={attachment} />
-                    ))}
-                </div>
-            )}
+            ))}
         </div>
     )
 }
