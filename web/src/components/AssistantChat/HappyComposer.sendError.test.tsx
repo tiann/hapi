@@ -163,11 +163,8 @@ type HarnessControls = {
     acceptAndClearSchedule: () => void
     remount: () => void
     programmaticSetText: (text: string) => void
-    acceptSend: () => void
     setSending: (sending: boolean) => void
     setThreadDisabled: (disabled: boolean) => void
-    settleSend: (error?: ComposerSendError) => void
-    settleAttachmentSendFailure: () => void
     getClearErrorCalls: () => number
 }
 
@@ -185,11 +182,6 @@ function ComposerHarness(props: {
     const [sendError, setSendError] = useState<ComposerSendError | null>(null)
     const [isSending, setIsSending] = useState(false)
     const [composerKey, setComposerKey] = useState('composer-a')
-    const [sendAcceptance, setSendAcceptance] = useState<{ attemptId: string | null } | null>(null)
-    const [sendSettlement, setSendSettlement] = useState<{
-        attemptId: string
-        status: 'success' | 'error'
-    } | null>(null)
     const clearErrorCallsRef = useRef(0)
     const pendingSendIntentRef = useRef<ComposerSendIntent>('default')
 
@@ -215,25 +207,11 @@ function ComposerHarness(props: {
             ...current,
             composer: { ...current.composer, text },
         })),
-        acceptSend: () => {
-            setIsSending(true)
-            setSendSettlement(null)
-            setSendAcceptance({ attemptId: 'attempt-1' })
-        },
         setSending: setIsSending,
         setThreadDisabled: (disabled) => setSnapshot((current) => ({
             ...current,
             thread: { ...current.thread, isDisabled: disabled },
         })),
-        settleSend: (error) => {
-            if (error) setSendError(error)
-            setSendSettlement({ attemptId: 'attempt-1', status: error ? 'error' : 'success' })
-            setIsSending(false)
-        },
-        settleAttachmentSendFailure: () => {
-            setSendSettlement({ attemptId: 'attempt-1', status: 'error' })
-            setIsSending(false)
-        },
         getClearErrorCalls: () => clearErrorCallsRef.current,
     }
 
@@ -244,8 +222,6 @@ function ComposerHarness(props: {
                 sessionId={composerKey}
                 disabled={isSending}
                 pendingSchedule={schedule}
-                sendAcceptance={sendAcceptance}
-                sendSettlement={sendSettlement}
                 onSchedule={setSchedule}
                 onClearSchedule={() => setSchedule(null)}
                 sendError={sendError}
@@ -329,43 +305,33 @@ describe('HappyComposer send-error atomic restore', () => {
         runtime.setSnapshot = null
     })
 
-    it('collapses an expanded composer only after an accepted send succeeds', async () => {
-        const controls = renderComposer('message', null)
+    it('collapses an expanded composer immediately when a send is submitted', () => {
+        renderComposer('message', null)
         fireEvent.click(screen.getByRole('button', { name: 'expand' }))
         expect(screen.getByTestId('composer-shell')).toHaveAttribute('data-expanded', 'true')
 
         send()
-        expect(screen.getByTestId('composer-shell')).toHaveAttribute('data-expanded', 'true')
-
-        act(() => controls.current!.acceptSend())
-        expect(screen.getByTestId('composer-shell')).toHaveAttribute('data-expanded', 'true')
-
-        act(() => controls.current!.settleSend())
-        await waitFor(() => expect(screen.getByTestId('composer-shell')).not.toHaveAttribute('data-expanded'))
+        expect(screen.getByTestId('composer-shell')).not.toHaveAttribute('data-expanded')
     })
 
-    it('keeps the composer expanded when an accepted send later fails', async () => {
+    it('keeps the composer collapsed when a submitted send later fails', async () => {
         const controls = renderComposer('message', null)
         fireEvent.click(screen.getByRole('button', { name: 'expand' }))
         send()
 
-        act(() => controls.current!.acceptSend())
-        act(() => controls.current!.settleSend(fail(1, 'message', null)))
+        setError(controls, fail(1, 'message', null))
 
         await waitFor(() => expect(input()).toHaveValue('message'))
-        expect(screen.getByTestId('composer-shell')).toHaveAttribute('data-expanded', 'true')
+        expect(screen.getByTestId('composer-shell')).not.toHaveAttribute('data-expanded')
     })
 
-    it('keeps the composer expanded when an attachment send later fails', () => {
+    it('keeps the composer collapsed when an attachment send later fails', () => {
         const controls = renderComposer('', null)
         act(() => controls.current!.addAttachment())
         fireEvent.click(screen.getByRole('button', { name: 'expand' }))
         send()
 
-        act(() => controls.current!.acceptSend())
-        act(() => controls.current!.settleAttachmentSendFailure())
-
-        expect(screen.getByTestId('composer-shell')).toHaveAttribute('data-expanded', 'true')
+        expect(screen.getByTestId('composer-shell')).not.toHaveAttribute('data-expanded')
         expect(screen.queryByTestId('composer-send-error')).toBeNull()
     })
 
