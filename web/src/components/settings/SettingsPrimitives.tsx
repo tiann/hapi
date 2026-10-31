@@ -50,13 +50,13 @@ export function SettingsSection(props: { title?: string; description?: string; c
     )
 }
 
-export function SettingsRow(props: { label: string; description?: string; trailing?: ReactNode; children?: ReactNode; disabled?: boolean }) {
+export function SettingsRow(props: { label: string; description?: string; trailing?: ReactNode; children?: ReactNode; disabled?: boolean; contentClassName?: string }) {
     return (
         <div
             aria-disabled={props.disabled || undefined}
             className={`flex min-h-12 items-center justify-between gap-3 px-3 py-3 ${props.disabled ? 'cursor-not-allowed opacity-50' : ''}`}
         >
-            <div className="min-w-0">
+            <div className={`min-w-0 ${props.contentClassName ?? ''}`}>
                 <div className="text-sm font-medium text-[var(--app-fg)]">{props.label}</div>
                 {props.description ? <div className="mt-0.5 text-xs leading-snug text-[var(--app-hint)]">{props.description}</div> : null}
                 {props.children}
