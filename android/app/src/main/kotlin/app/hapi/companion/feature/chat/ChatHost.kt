@@ -48,6 +48,7 @@ internal fun ChatHost(
     onOpenFiles: () -> Unit,
     onOpenFile: (String, Int?) -> Unit,
     onOpenScratchlist: (() -> Unit)?,
+    onOpenTerminal: (() -> Unit)?,
 ) {
     val navigation = rememberNavController()
     val entry by navigation.currentBackStackEntryAsState()
@@ -132,6 +133,7 @@ internal fun ChatHost(
                         viewModel, media, onBack, snackbarHostState = snackbar,
                         dictation = dictation, onOpenFiles = { pauseReading(); onOpenFiles() }, onOpenFile = openFile,
                         onOpenScratchlist = onOpenScratchlist?.let { open -> { pauseReading(); open() } },
+                        onOpenTerminal = onOpenTerminal?.let { open -> { pauseReading(); open() } },
                         transcriptList = transcriptList, readingState = reading,
                     )
                 }

@@ -118,6 +118,13 @@ data class ChatHeaderUi(
     val name: String? = null,
     val active: Boolean,
     val thinking: Boolean,
+    /**
+     * `detail.metadata.capabilities.terminal ?? true` — gates the overflow-menu
+     * terminal entry. Detail-only: the list summary metadata carries no
+     * capabilities field, so an unloaded detail optimistically allows it (the
+     * terminal screen re-checks and shows unsupported state).
+     */
+    val terminalSupported: Boolean = true,
 )
 
 /** Optimistic-permission UI state layered over the reduced blocks (M3b). */
@@ -1954,6 +1961,7 @@ class ChatViewModel(
             name = detail?.metadata?.name ?: summary?.metadata?.name,
             active = detail?.active ?: summary?.active ?: false,
             thinking = detail?.thinking ?: summary?.thinking ?: false,
+            terminalSupported = detail?.metadata?.capabilities?.terminal ?: true,
         )
     }
 

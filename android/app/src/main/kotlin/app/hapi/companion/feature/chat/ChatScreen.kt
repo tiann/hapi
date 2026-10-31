@@ -108,6 +108,8 @@ internal fun ChatScreen(
     onOpenFile: (path: String, line: Int?) -> Unit = { _, _ -> },
     /** null ⇒ no scratchlist top-bar entry (tests / previews). */
     onOpenScratchlist: (() -> Unit)? = null,
+    /** null ⇒ no terminal overflow entry (tests / previews). */
+    onOpenTerminal: (() -> Unit)? = null,
     transcriptList: androidx.compose.foundation.lazy.LazyListState = androidx.compose.foundation.lazy.rememberLazyListState(),
     readingState: TranscriptReadingState = rememberTranscriptReadingState(viewModel.sessionId),
 ) {
@@ -294,6 +296,9 @@ internal fun ChatScreen(
                         onOpenFiles = onOpenFiles,
                         scratchlistCount = scratchlistCount,
                         onOpenScratchlist = if (viewModel.scratchlistEnabled) onOpenScratchlist else null,
+                        // Web terminalSupport gating: entry needs an active
+                        // session AND a host that reports the capability.
+                        onOpenTerminal = if (state.header.active && state.header.terminalSupported) onOpenTerminal else null,
                         onRename = { renameDialogOpen = true },
                         onReopen = viewModel::reopenSession,
                         onDelete = { deleteDialogOpen = true },
@@ -454,6 +459,8 @@ private fun SessionOverflowMenu(
     scratchlistCount: Int = 0,
     /** null ⇒ scratchlist row hidden (feature off / tests). */
     onOpenScratchlist: (() -> Unit)? = null,
+    /** null ⇒ terminal row hidden (inactive/unsupported session / tests). */
+    onOpenTerminal: (() -> Unit)? = null,
     /** null ⇒ hidden (scratchlist off or empty composer). */
     onParkDraft: (() -> Unit)? = null,
 ) {
@@ -470,6 +477,15 @@ private fun SessionOverflowMenu(
                 onOpenFiles()
             },
         )
+        if (onOpenTerminal != null) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.chat_open_terminal)) },
+                onClick = {
+                    open = false
+                    onOpenTerminal()
+                },
+            )
+        }
         if (onOpenScratchlist != null) {
             DropdownMenuItem(
                 text = {
