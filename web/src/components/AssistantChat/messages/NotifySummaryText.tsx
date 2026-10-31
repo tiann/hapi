@@ -1,5 +1,6 @@
 import { useRef } from 'react'
-import type { TextMessagePartComponent } from '@assistant-ui/react'
+import type { TextMessagePartComponent, TextMessagePartProps } from '@assistant-ui/react'
+import type { ReactNode } from 'react'
 import { splitNotifySummary, stripNotifySummaryFooter, type NotifySummary } from '@hapi/protocol/messages'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { MarkdownText } from '@/components/assistant-ui/markdown-text'
@@ -101,8 +102,36 @@ export function NotifySummaryFooter({ summary }: { summary: NotifySummary }) {
     )
 }
 
+type SourceAwareTextMessagePartProps = TextMessagePartProps & {
+    sourceMessageId?: string
+    sourceMessageIds?: string[]
+}
+
+type SearchSourceMarker = { id?: string; ids?: string[] }
+
+function withSearchSourceMarker(source: SearchSourceMarker, content: ReactNode): ReactNode {
+    if (!source.id || content === null || content === undefined) return content
+    return (
+        <div
+            data-hapi-source-message-id={source.id}
+            // Every id this part was built from, so a hit on a later row (for
+            // example the terminal snapshot of a stream that kept both rows)
+            // anchors to this part instead of the group-wide marker.
+            data-hapi-source-part-message-ids={
+                source.ids && source.ids.length > 0 ? source.ids.join(' ') : undefined
+            }
+        >
+            {content}
+        </div>
+    )
+}
+
 /** Render the machine footer as a compact row when display is on; otherwise strip it. */
-export const NotifySummaryText: TextMessagePartComponent = ({ text, status }) => {
+export const NotifySummaryText: TextMessagePartComponent = (props) => {
+    const { text, status } = props
+    const sourceMessageId = (props as SourceAwareTextMessagePartProps).sourceMessageId
+    const sourceMessageIds = (props as SourceAwareTextMessagePartProps).sourceMessageIds
+    const searchSource: SearchSourceMarker = { id: sourceMessageId, ids: sourceMessageIds }
     const showInChat = useSessionSummaryInChat()
     const completedTextRef = useRef<string | null>(null)
     const previousTextRef = useRef(text)
@@ -139,16 +168,16 @@ export const NotifySummaryText: TextMessagePartComponent = ({ text, status }) =>
     if (!showInChat) {
         const stripped = stripNotifySummaryFooter(text)
         if (!stripped) return null
-        if (stripped === text) return <MarkdownText smooth={smooth} />
-        return <MarkdownRenderer content={stripped} />
+        if (stripped === text) return withSearchSourceMarker(searchSource, <MarkdownText smooth={smooth} />)
+        return withSearchSourceMarker(searchSource, <MarkdownRenderer content={stripped} />)
     }
 
     if (status.type !== 'complete' && !(status.type === 'running' && completedTextRef.current === text)) {
-        return <MarkdownText smooth={smooth} />
+        return withSearchSourceMarker(searchSource, <MarkdownText smooth={smooth} />)
     }
 
     const display = splitNotifySummary(text)
-    if (!display) return <MarkdownText smooth={smooth} />
+    if (!display) return withSearchSourceMarker(searchSource, <MarkdownText smooth={smooth} />)
 
     const hasDisplayableSummary = Boolean(
         display.summary.summary?.trim()
@@ -157,13 +186,13 @@ export const NotifySummaryText: TextMessagePartComponent = ({ text, status }) =>
     )
     if (!hasDisplayableSummary) {
         if (!display.visibleText) return null
-        return <MarkdownRenderer content={display.visibleText} />
+        return withSearchSourceMarker(searchSource, <MarkdownRenderer content={display.visibleText} />)
     }
 
-    return (
+    return withSearchSourceMarker(searchSource, (
         <>
             {display.visibleText ? <MarkdownRenderer content={display.visibleText} /> : null}
             <NotifySummaryFooter summary={display.summary} />
         </>
-    )
+    ))
 }

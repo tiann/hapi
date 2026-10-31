@@ -128,7 +128,6 @@ enum class PermissionRowOverride {
     /** The hub said the request is no longer pending (404/409) — benign. */
     AlreadyHandled,
 }
-
 /** What [ChatScreen] renders. */
 data class ChatUiState(
     val sessionId: String,

@@ -2461,7 +2461,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
 
         // The idle snapshot must reach the hub (web reducer keeps one block per
         // stream id) but must not duplicate the answer in the local terminal log.
-        expect(agentMessages).toContainEqual({ type: 'message', message: 'partial', id: 'stream-1', streamSnapshot: true });
+        expect(agentMessages).toContainEqual({ type: 'message', message: 'partial', id: 'stream-1', streamSnapshot: true, live: true });
         expect(agentMessages).toContainEqual({ type: 'message', message: 'partial settled', id: 'stream-1', streamSnapshot: true });
         expect(addMessage).not.toHaveBeenCalledWith('partial', 'assistant');
         expect(addMessage).toHaveBeenCalledWith('partial settled', 'assistant');

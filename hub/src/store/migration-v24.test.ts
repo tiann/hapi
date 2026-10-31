@@ -13,7 +13,7 @@ afterEach(() => {
     }
 })
 
-describe('schema migration v23 to v26', () => {
+describe('schema migrations through v30', () => {
     it('adds fcm_devices.push_key to a V23 database and keeps existing rows', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v24-'))
         tempDirs.push(dir)
@@ -41,7 +41,7 @@ describe('schema migration v23 to v26', () => {
             expect(columns.some((col) => col.name === 'push_key')).toBe(true)
             const messageColumns = messageColumnsStatement.all() as Array<{ name: string }>
             expect(messageColumns.some((col) => col.name === 'delivery_state')).toBe(true)
-            expect(version.user_version).toBe(29)
+            expect(version.user_version).toBe(30)
 
             // Existing Android rows survive with a NULL push key.
             const devices = migrated.fcm.getDevicesByNamespace('default')
@@ -91,7 +91,7 @@ describe('schema migration v23 to v26', () => {
             const version = versionStatement.get() as { user_version: number }
             const indexes = indexesStatement.all() as Array<{ name: string }>
             expect(columns.some((col) => col.name === 'delivery_state')).toBe(true)
-            expect(version.user_version).toBe(29)
+            expect(version.user_version).toBe(30)
             expect(indexes.map((index) => index.name)).toEqual(expect.arrayContaining([
                 'idx_messages_immediate_queued',
                 'idx_messages_future_scheduled_queued'

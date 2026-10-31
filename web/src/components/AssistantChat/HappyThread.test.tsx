@@ -4,6 +4,7 @@ import { useState, type ComponentProps } from 'react'
 import { I18nProvider } from '@/lib/i18n-context'
 import {
     ConversationOutlinePanel,
+    anchorMessageIdFromAnchor,
     captureScrollAnchor,
     getHistoryCoverageRetryDelay,
     getPullToLoadState,
@@ -433,6 +434,24 @@ describe('scroll anchor helpers', () => {
             isScrollingUp: false
         })
         expect(shouldCancelInitialScrollSettling(intent, false)).toBe(false)
+    })
+
+    it('resolves a streamed card anchor to its raw message id, not the stream id', () => {
+        // A Pi assistant card renders with its stream id in the DOM id, while
+        // the store protects rows by canonical message id.
+        const group = document.createElement('div')
+        group.id = 'hapi-message-agent-text:stream-abc:0'
+        group.setAttribute('data-hapi-source-message-ids', 'raw-msg-1 raw-msg-2')
+        document.body.append(group)
+
+        expect(anchorMessageIdFromAnchor({ id: group.id, topOffset: 0 })).toBe('raw-msg-1')
+
+        group.remove()
+    })
+
+    it('falls back to the DOM id for kinds that embed a raw message id', () => {
+        expect(anchorMessageIdFromAnchor({ id: 'hapi-message-user-text:raw-msg-9', topOffset: 0 }))
+            .toBe('raw-msg-9')
     })
 
     it('restores the captured message to the same viewport offset', () => {
