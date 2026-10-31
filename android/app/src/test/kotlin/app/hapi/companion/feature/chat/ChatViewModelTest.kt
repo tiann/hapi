@@ -687,6 +687,30 @@ class ChatViewModelTest {
         harness.viewModel.stop()
     }
 
+    @Test
+    fun `covered chat stops marking itself seen until it is on screen again`() = runTest {
+        // Review repro: while a cited chat is pushed above this one, the
+        // covered chat must not keep stamping its own read watermark — only
+        // the chat actually on screen does. Back on screen, the stamp catches
+        // up to the current tail.
+        val harness = Harness(this, ScriptedTransport(listOf("ok")))
+        harness.sessionStore.summaries.value = listOf(summary(updatedAt = 500))
+
+        harness.viewModel.start()
+        harness.lastSeenStore.state.first { it.lastSeen[SESSION_ID] == 500L }
+
+        // Cited chat pushed above: the transcript leaves composition.
+        harness.viewModel.setTranscriptVisible(false)
+        harness.sessionStore.summaries.value = listOf(summary(updatedAt = 900))
+        runCurrent()
+        assertEquals(500L, harness.lastSeenStore.lastSeenAt(SESSION_ID))
+
+        // Back on screen (Back from the cited chat): catch-up stamp.
+        harness.viewModel.setTranscriptVisible(true)
+        harness.lastSeenStore.state.first { it.lastSeen[SESSION_ID] == 900L }
+        harness.viewModel.stop()
+    }
+
     /** Pipeline smoke over real golden fixtures: wire JSON → visible blocks. */
     @Test
     fun `fixture transcripts render to visible blocks`() = runTest {

@@ -17,8 +17,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -36,12 +38,23 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.graphics.SolidColor
@@ -89,6 +102,10 @@ fun ChatComposer(
     onAddAttachment: (() -> Unit)? = null,
     onAttachmentRetry: (String) -> Unit = {},
     onAttachmentRemove: (String) -> Unit = {},
+    /** Drag-to-reorder (web `SortableComposerAttachments`): from → to index. */
+    onAttachmentMove: (Int, Int) -> Unit = { _, _ -> },
+    /** null ⇒ no clipboard paste interception (previews); true ⇒ chips added. */
+    onPasteFromClipboard: (() -> Boolean)? = null,
     slashSuggestions: List<SlashCommand> = emptyList(),
     onSlashCommandSelected: (SlashCommand) -> Unit = {},
     /** null ⇒ dictation unavailable (no controller wired) — mic button hidden. */
@@ -130,15 +147,74 @@ fun ChatComposer(
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
                     }
                     if (attachments.isNotEmpty()) {
+                        // Long-press-drag reorders chips live (web twin:
+                        // SortableComposerAttachments.tsx). pointerInput sits
+                        // AFTER padding in the chain so pointer positions share
+                        // the content-origin coordinate space with
+                        // visibleItemsInfo offsets; keyed on Unit + updated
+                        // callbacks so upload-status list churn never cancels
+                        // a drag mid-gesture. The dragged chip's slot is the
+                        // issue-time anchor (ReorderDragAnchor), never re-read
+                        // from layoutInfo: the layout lags a just-issued move
+                        // by a frame, and reading the stale order made the
+                        // next event over the same slot fire the move again —
+                        // swapping the pair straight back.
+                        val listState = rememberLazyListState()
+                        var draggingId by remember { mutableStateOf<String?>(null) }
+                        val dragAnchor = remember { ReorderDragAnchor() }
+                        val currentOnMove by rememberUpdatedState(onAttachmentMove)
+                        val haptics = LocalHapticFeedback.current
+
+                        fun itemUnder(x: Float) =
+                            listState.layoutInfo.visibleItemsInfo.firstOrNull {
+                                x >= it.offset && x < it.offset + it.size
+                            }
+
                         LazyRow(
+                            state = listState,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 2.dp),
+                                .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 2.dp)
+                                .pointerInput(Unit) {
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart = { offset ->
+                                            val picked = itemUnder(offset.x)
+                                            val pickedId = picked?.key as? String
+                                            if (picked != null && pickedId != null) {
+                                                draggingId = pickedId
+                                                dragAnchor.start(picked.index)
+                                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            }
+                                        },
+                                        onDrag = { change, _ ->
+                                            change.consume()
+                                            if (!dragAnchor.active) {
+                                                return@detectDragGesturesAfterLongPress
+                                            }
+                                            val target = itemUnder(change.position.x)
+                                                ?: return@detectDragGesturesAfterLongPress
+                                            // Swap on crossing; keyed items keep
+                                            // identity across swaps (no animateItem).
+                                            dragAnchor.enterSlot(target.index)?.let { (from, to) ->
+                                                currentOnMove(from, to)
+                                            }
+                                        },
+                                        onDragEnd = {
+                                            draggingId = null
+                                            dragAnchor.reset()
+                                        },
+                                        onDragCancel = {
+                                            draggingId = null
+                                            dragAnchor.reset()
+                                        },
+                                    )
+                                },
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
                             items(attachments, key = { it.id }) { attachment ->
                                 ComposerAttachmentChip(
                                     attachment = attachment,
+                                    dragging = attachment.id == draggingId,
                                     onRetry = { onAttachmentRetry(attachment.id) },
                                     onRemove = { onAttachmentRemove(attachment.id) },
                                 )
@@ -165,6 +241,20 @@ fun ChatComposer(
                         modifier = Modifier
                             .focusRequester(focusRequester)
                             .testTag("chat-composer-input")
+                            // Hardware-keyboard paste-to-attach (web
+                            // handlePaste): consume Ctrl/Cmd+V only when the
+                            // clipboard carried attachable files, otherwise
+                            // return false so the default text paste runs.
+                            .onPreviewKeyEvent { event ->
+                                val paste = onPasteFromClipboard
+                                    ?: return@onPreviewKeyEvent false
+                                if (event.type != KeyEventType.KeyDown) {
+                                    return@onPreviewKeyEvent false
+                                }
+                                val isPasteKey =
+                                    (event.isCtrlPressed || event.isMetaPressed) && event.key == Key.V
+                                if (isPasteKey) paste() else false
+                            }
                             .fillMaxWidth()
                             .padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 4.dp),
                         decorationBox = { inner ->
@@ -221,11 +311,13 @@ fun ChatComposer(
 /**
  * One tray chip: 36 dp thumb (image preview / MIME glyph, spinner while
  * uploading), filename + status line, ✕ to remove. A failed chip tints error
- * and taps to retry.
+ * and taps to retry. [dragging] lifts + dims the chip under a reorder drag
+ * (web dims the dragged chip, SortableComposerAttachments.tsx).
  */
 @Composable
 private fun ComposerAttachmentChip(
     attachment: ComposerAttachmentUi,
+    dragging: Boolean = false,
     onRetry: () -> Unit,
     onRemove: () -> Unit,
 ) {
@@ -242,12 +334,15 @@ private fun ComposerAttachmentChip(
             MaterialTheme.colorScheme.onSurface
         },
         shape = RoundedCornerShape(10.dp),
+        shadowElevation = if (dragging) 6.dp else 0.dp,
         onClick = { if (failed) onRetry() },
         enabled = failed,
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(start = 6.dp, top = 6.dp, bottom = 6.dp),
+            modifier = Modifier
+                .graphicsLayer { alpha = if (dragging) 0.65f else 1f }
+                .padding(start = 6.dp, top = 6.dp, bottom = 6.dp),
         ) {
             ChipThumb(attachment)
             Column(modifier = Modifier.padding(start = 8.dp).widthIn(max = 132.dp)) {

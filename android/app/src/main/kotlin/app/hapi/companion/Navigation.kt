@@ -91,15 +91,48 @@ object Routes {
     const val SHARE = "share/{requestId}"
     fun share(requestId: String) = "share/$requestId"
 
-    /** Read-only chat (B-M2d2). */
+    /** Hex digits for [encodeRouteArg] (uppercase, like JS encodeURIComponent). */
+    private val HEX = "0123456789ABCDEF".toCharArray()
+
+    /**
+     * Percent-encode a single path-segment route argument: every byte outside
+     * the RFC 3986 unreserved set (`A-Za-z0-9-._~`) becomes `%XX`.
+     *
+     * Navigation matches deep-link routes against the *encoded* URI string and
+     * a `{arg}` group cannot span a literal `/`, so a decoded session id like
+     * `a/b` interpolated raw (`chat/a/b`) fails to match `chat/{sessionId}`.
+     * The library percent-decodes the matched group once when handing it to
+     * `entry.arguments` (its `NavUriUtils.decode` == `Uri.decode`, same
+     * `%XX`-UTF-8 semantics as the web router), so encoding at interpolation
+     * is the whole round trip — consumers keep reading plain decoded ids.
+     * Unreserved ids (hub UUIDs) encode to themselves, so existing route
+     * strings are unchanged. ChatHost's inspector routes use `Uri.encode`
+     * for the same reason.
+     */
+    fun encodeRouteArg(value: String): String = buildString(value.length) {
+        for (byte in value.toByteArray(Charsets.UTF_8)) {
+            val c = byte.toInt() and 0xFF
+            when {
+                c in 'A'.code..'Z'.code || c in 'a'.code..'z'.code || c in '0'.code..'9'.code ||
+                    c == '-'.code || c == '.'.code || c == '_'.code || c == '~'.code -> append(c.toChar())
+                else -> {
+                    append('%')
+                    append(HEX[c ushr 4])
+                    append(HEX[c and 0xF])
+                }
+            }
+        }
+    }
+
+    /** Read-only chat (B-M2d2); `sessionId` is [encodeRouteArg]-encoded in the route. */
     const val CHAT = "chat/{sessionId}"
 
-    fun chat(sessionId: String) = "chat/$sessionId"
+    fun chat(sessionId: String) = "chat/${encodeRouteArg(sessionId)}"
 
     /** Session files browser (B-M4c): Changes / Browse / Search tabs. */
     const val FILES = "chat/{sessionId}/files"
 
-    fun files(sessionId: String) = "chat/$sessionId/files"
+    fun files(sessionId: String) = "chat/${encodeRouteArg(sessionId)}/files"
 
     /**
      * File viewer (B-M4c). `path` is base64url (no padding) so slashes and
@@ -116,7 +149,7 @@ object Routes {
         mode: String? = null,
         line: Int? = null,
     ): String = buildString {
-        append("chat/").append(sessionId).append("/file?path=").append(encodeFilePath(path))
+        append("chat/").append(encodeRouteArg(sessionId)).append("/file?path=").append(encodeFilePath(path))
         staged?.let { append("&staged=").append(it) }
         mode?.let { append("&mode=").append(it) }
         line?.let { append("&line=").append(it) }
@@ -134,7 +167,7 @@ object Routes {
     /** Per-session scratchlist workbench (B-M4d), pushed above its chat. */
     const val SCRATCHLIST = "chat/{sessionId}/scratchlist"
 
-    fun scratchlist(sessionId: String) = "chat/$sessionId/scratchlist"
+    fun scratchlist(sessionId: String) = "chat/${encodeRouteArg(sessionId)}/scratchlist"
 
     /** New-session form (B-M3d); optional machine preselect. */
     const val NEW_SESSION = "newSession?machineId={machineId}"
@@ -494,6 +527,12 @@ fun HapiNavigation() {
                     // Chat citations open full mode; the cited line renders as
                     // a hint chip (no per-line highlight — B-M4c trade-off).
                     navController.navigate(Routes.fileViewer(sessionId, path, mode = "file", line = line))
+                },
+                onOpenSession = { targetId ->
+                    // Session citations PUSH the cited chat: back returns to
+                    // the citing conversation (web SPA history parity), unlike
+                    // the supersede callback above which replaces this entry.
+                    navController.navigate(Routes.chat(targetId)) { launchSingleTop = true }
                 },
                 onOpenScratchlist = { navController.navigate(Routes.scratchlist(sessionId)) },
             )

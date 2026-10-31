@@ -3,6 +3,7 @@ package app.hapi.protocol.window
 import app.hapi.protocol.wire.AttachmentMetadata
 import app.hapi.protocol.wire.DecryptedMessage
 import app.hapi.protocol.wire.OptionalField
+import app.hapi.protocol.wire.boolOrNull
 import app.hapi.protocol.wire.hasExplicitNullInvokedAt
 import app.hapi.protocol.wire.isUserMessage
 import app.hapi.protocol.wire.stringOrNull
@@ -51,6 +52,12 @@ enum class MessageStatus(val wire: String) {
 data class WindowMessage(
     val wire: DecryptedMessage,
     val status: MessageStatus? = null,
+    /**
+     * Live-only `↳ Steered` marker: set by a steered `messages-consumed`
+     * (or carried across merges); the hub never persists it, so snapshots
+     * re-hydrate it like the web's window persistence does.
+     */
+    val steered: Boolean = false,
 ) {
     val id: String get() = wire.id
     val seq: Long? get() = wire.seq
@@ -86,8 +93,10 @@ fun DecryptedMessage.asWindowMessage(status: MessageStatus? = null): WindowMessa
     )
 
 /**
- * Serializes as the wire object plus an optional `status` key — the same
- * shape the web persists (and the pagination fixtures use for op inputs).
+ * Serializes as the wire object plus optional `status` / `steered` keys —
+ * the same shape the web persists (and the pagination fixtures use for op
+ * inputs). `steered` is written only when true, mirroring the status pattern,
+ * so old snapshots without the key decode with the default.
  */
 internal object WindowMessageSerializer : KSerializer<WindowMessage> {
     override val descriptor: SerialDescriptor =
@@ -101,6 +110,7 @@ internal object WindowMessageSerializer : KSerializer<WindowMessage> {
         return WindowMessage(
             wire = input.json.decodeFromJsonElement(DecryptedMessage.serializer(), obj),
             status = MessageStatus.fromWire(obj["status"].stringOrNull),
+            steered = obj["steered"].boolOrNull ?: false,
         )
     }
 
@@ -111,6 +121,7 @@ internal object WindowMessageSerializer : KSerializer<WindowMessage> {
         output.encodeJsonElement(buildJsonObject {
             wireObject.forEach { (key, element) -> put(key, element) }
             value.status?.let { put("status", JsonPrimitive(it.wire)) }
+            if (value.steered) put("steered", true)
         })
     }
 }

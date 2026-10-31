@@ -321,6 +321,8 @@ sealed class NormalizedMessage {
         override val invokedAt: Long? = null,
         override val model: String? = null,
         override val agentTimestamp: Long? = null,
+        /** Live-only `↳ Steered` marker (user rows only, web `normalize.ts`). */
+        val steered: Boolean = false,
     ) : NormalizedMessage()
 
     data class Agent(
@@ -465,6 +467,8 @@ class UserTextBlock(
     var status: String?,
     var originalText: String?,
     override var meta: JsonElement?,
+    /** Live-only `↳ Steered` badge flag (web user block `custom.steered`). */
+    var steered: Boolean = false,
 ) : ChatBlock() {
     override val kind: String get() = "user-text"
 }

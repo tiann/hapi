@@ -88,6 +88,24 @@ class SyncEventDecodingTest {
     }
 
     @Test
+    fun `decodes messages-consumed steered flag and defaults it to false`() {
+        val steered = assertIs<SyncEvent.MessagesConsumed>(
+            SyncEvents.parse(
+                """{"type":"messages-consumed","sessionId":"s-1","localIds":["a"],"invokedAt":2000,"steered":true}"""
+            )
+        )
+        assertTrue(steered.steered)
+
+        // No-flag payload (the hub omits the key unless true): default false.
+        val drained = assertIs<SyncEvent.MessagesConsumed>(
+            SyncEvents.parse(
+                """{"type":"messages-consumed","sessionId":"s-1","localIds":["a","b"],"invokedAt":2000}"""
+            )
+        )
+        assertEquals(false, drained.steered)
+    }
+
+    @Test
     fun `decodes the remaining session and machine lifecycle events`() {
         assertEquals(
             SyncEvent.SessionAdded(namespace = "default", sessionId = "s-2"),

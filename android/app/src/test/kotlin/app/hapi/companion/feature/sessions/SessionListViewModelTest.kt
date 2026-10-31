@@ -775,4 +775,45 @@ class SessionListViewModelTest {
         val state = viewModel.uiState.first { it.rows.size == 3 }
         assertEquals(setOf("named-stub", "content", "agent-stub"), state.rows.map { it.id }.toSet())
     }
+
+    @Test
+    fun `returning home ends the selected-session exception in dedup`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("older-view", updatedAt = 100, agentSessionId = "agent-1", name = "Older"),
+            summary("newer-view", updatedAt = 900, agentSessionId = "agent-1", name = "Newer"),
+        )
+        // One dedup row: recency picks the newer view.
+        assertEquals("newer-view", viewModel.uiState.first { it.rows.size == 1 }.rows.single().id)
+
+        viewModel.onSessionOpened("older-view") // the open row wins dedup while selected
+        viewModel.uiState.first { it.rows.single().id == "older-view" }
+
+        // Returning home closes the chat and the list screen returns: the
+        // closed session must stop winning dedup as "still selected".
+        viewModel.onChatClosed()
+        val closed = viewModel.uiState.first { it.rows.single().id == "newer-view" }
+        assertEquals("newer-view", closed.rows.single().id)
+    }
+
+    @Test
+    fun `returning home hides the selected empty stub again`() = runTest {
+        val (viewModel, sessions, _) = buildViewModel()
+        sessions.set(
+            summary("stub", hasConversationContent = false),
+            summary("content", hasConversationContent = true),
+        )
+        // The stub hides before anything is open.
+        assertEquals(setOf("content"), viewModel.uiState.first { it.rows.size == 1 }.rows.map { it.id }.toSet())
+
+        viewModel.onSessionOpened("stub") // the open stub stays visible as the open session
+        val open = viewModel.uiState.first { it.rows.size == 2 }
+        assertEquals(setOf("stub", "content"), open.rows.map { it.id }.toSet())
+
+        // Back to the list: the closed stub hides again instead of lingering
+        // as "still selected".
+        viewModel.onChatClosed()
+        val closed = viewModel.uiState.first { it.rows.size == 1 }
+        assertEquals(setOf("content"), closed.rows.map { it.id }.toSet())
+    }
 }

@@ -13,6 +13,8 @@
     <string name="code_copy">复制</string>
     <string name="code_copied">已复制</string>
     <string name="code_plain_fallback">文本</string>
+    <string name="code_wrap_enable">开启自动换行</string>
+    <string name="code_wrap_disable">关闭自动换行</string>
     <string name="diff_binary_file">二进制文件不显示</string>
     <string name="diff_show_more">显示另外 %1$d 行</string>
     <string name="diff_collapse">收起</string>
@@ -316,6 +318,7 @@
     <string name="chat_picker_photos">相册</string>
     <string name="chat_picker_camera">相机</string>
     <string name="chat_picker_files">文件</string>
+    <string name="chat_picker_clipboard">从剪贴板粘贴</string>
 
     <!-- Dictation errors (B-M3ce) -->
     <string name="chat_dictation_start_failed">无法开始录音</string>
@@ -359,6 +362,9 @@
     <string name="chat_reasoning_collapsed">💭 思考 ▸</string>
     <string name="chat_not_delivered_retry">未送达 — 点按重试</string>
     <string name="chat_not_delivered">未送达</string>
+    <string name="chat_steered_badge">↳ 已介入</string>
+    <string name="chat_steered_badge_hint">已介入当前进行中的回合</string>
+    <string name="chat_send_error_session_inactive">此会话已归档。请先重新打开再发送消息。</string>
     <string name="chat_review_title">Code review</string>
     <string name="chat_review_findings_one">1 条发现</string>
     <string name="chat_review_findings_many">%1$d 条发现</string>

@@ -14,6 +14,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.lifecycle.lifecycleScope
 import app.hapi.companion.di.AppGraph
 import app.hapi.companion.di.LocalAppGraph
@@ -22,6 +23,8 @@ import app.hapi.companion.feature.settings.ThemeMode
 import app.hapi.companion.feature.settings.ThemeSettings
 import app.hapi.companion.feature.share.parseSharedIntent
 import app.hapi.companion.push.PushBinding
+import app.hapi.companion.ui.markdown.CodeWrapState
+import app.hapi.companion.ui.markdown.LocalCodeWrap
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.protocol.pairing.BindLink
 import kotlinx.coroutines.flow.first
@@ -79,6 +82,8 @@ class MainActivity : AppCompatActivity() {
             // Follow-system default renders for the first frames while the
             // DataStore read completes; the persisted choice then applies.
             val theme by appGraph.themePrefs.settings.collectAsState(initial = ThemeSettings())
+            val codeWrap by appGraph.codeWrapPrefs.wrap.collectAsState(initial = false)
+            val scope = rememberCoroutineScope()
             HapiTheme(
                 darkTheme = when (theme.mode) {
                     ThemeMode.SYSTEM -> isSystemInDarkTheme()
@@ -88,7 +93,14 @@ class MainActivity : AppCompatActivity() {
                 dynamicColor = theme.dynamicColor,
                 oled = theme.mode == ThemeMode.OLED,
             ) {
-                CompositionLocalProvider(LocalAppGraph provides appGraph) {
+                CompositionLocalProvider(
+                    LocalAppGraph provides appGraph,
+                    // The DataStore flow re-emits after every write, so all
+                    // code blocks recompose together (web same-tab broadcast).
+                    LocalCodeWrap provides CodeWrapState(codeWrap) { enabled ->
+                        scope.launch { appGraph.codeWrapPrefs.setWrap(enabled) }
+                    },
+                ) {
                     HapiNavigation()
                 }
             }

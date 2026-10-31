@@ -24,6 +24,7 @@ class MessageMergeTest {
         seq: Long? = null,
         invokedAt: OptionalField<Long?> = OptionalField.Present(null),
         status: MessageStatus? = null,
+        steered: Boolean = false,
     ): WindowMessage = WindowMessage(
         wire = DecryptedMessage(
             id = id,
@@ -40,6 +41,7 @@ class MessageMergeTest {
             },
         ),
         status = status,
+        steered = steered,
     )
 
     @Test
@@ -79,6 +81,47 @@ class MessageMergeTest {
         val stale = userRow("srv-1", createdAt = 1000, seq = 1, invokedAt = OptionalField.Present(null))
         val merged = MessageMerge.mergeMessages(listOf(stamped), listOf(stale))
         assertEquals(5000L, merged.single().invokedAtOrNull)
+    }
+
+    @Test
+    fun `merge preserves the steered marker when the incoming by-id copy lacks it`() {
+        // Steered is live-only: a later server copy of the same row must not
+        // wipe the badge marker (web messages.ts steered preservation).
+        val steered = userRow("srv-1", createdAt = 1000, seq = 1, steered = true)
+        val echo = userRow("srv-1", createdAt = 1000, seq = 1, invokedAt = OptionalField.Present(5000))
+        val merged = MessageMerge.mergeMessages(listOf(steered), listOf(echo))
+        assertTrue(merged.single().steered)
+
+        // And never fabricates one on a plain re-fetch of an unsteered row.
+        val plain = MessageMerge.mergeMessages(
+            listOf(userRow("srv-2", createdAt = 1000, seq = 2)),
+            listOf(userRow("srv-2", createdAt = 1000, seq = 2, invokedAt = OptionalField.Present(5000))),
+        )
+        assertTrue(!plain.single().steered)
+    }
+
+    @Test
+    fun `merge carries steered from the optimistic row onto the replacing server echo`() {
+        // The steered optimistic bubble (id == localId) is replaced by the
+        // stored echo carrying the same localId but a server id.
+        val steeredOptimistic = userRow(
+            "local-1", createdAt = 1000, localId = "local-1",
+            status = MessageStatus.Sent, steered = true,
+        )
+        val steeredEcho = userRow("srv-1", createdAt = 1000, localId = "local-1", seq = 1)
+        val steeredResult = MessageMerge.mergeMessages(listOf(steeredOptimistic), listOf(steeredEcho))
+        assertEquals(listOf("srv-1"), steeredResult.map { it.id })
+        assertTrue(steeredResult.single().steered)
+
+        // Control: a non-steered optimistic row's echo stays non-steered.
+        val plainOptimistic = userRow(
+            "local-2", createdAt = 2000, localId = "local-2",
+            status = MessageStatus.Sent,
+        )
+        val plainEcho = userRow("srv-2", createdAt = 2000, localId = "local-2", seq = 2)
+        val plainResult = MessageMerge.mergeMessages(listOf(plainOptimistic), listOf(plainEcho))
+        assertEquals(listOf("srv-2"), plainResult.map { it.id })
+        assertTrue(!plainResult.single().steered)
     }
 
     @Test

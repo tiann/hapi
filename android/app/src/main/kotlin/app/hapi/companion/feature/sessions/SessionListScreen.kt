@@ -126,6 +126,11 @@ fun SessionListScreen(
         ContextCompat.registerReceiver(
             context, receiver, IntentFilter(Intent.ACTION_TIMEZONE_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED,
         )
+        // Re-entering composition means no chat is open anymore: end the
+        // selected-session exception so the closed session stops winning dedup
+        // (and a selected empty stub hides again) — the screen re-composes for
+        // every return to the list.
+        viewModel.onChatClosed()
         viewModel.start()
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)

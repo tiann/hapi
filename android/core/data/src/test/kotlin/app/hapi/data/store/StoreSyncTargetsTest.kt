@@ -225,6 +225,24 @@ class StoreSyncTargetsTest {
     }
 
     @Test
+    fun `global messages-consumed forwards the steered flag`() = runTest {
+        val (windows, store) = openWindow(backgroundScope)
+        store.appendOptimistic(localId = "l1", text = "steered text", createdAt = 5)
+        store.updateStatus("l1", app.hapi.protocol.window.MessageStatus.Queued)
+        val router = SyncEventRouter(
+            StoreSyncTargets(FakeSessionListStore(), FakeMachineListStore(), backgroundScope, windows),
+        )
+
+        router.route(
+            global,
+            sync("""{"type":"messages-consumed","sessionId":"s1","localIds":["l1"],"invokedAt":42,"steered":true}"""),
+        )
+        val row = store.state.first { it.messages.singleOrNull()?.steered == true }.messages.single()
+        assertEquals(42L, row.invokedAtOrNull)
+        assertEquals(app.hapi.protocol.window.MessageStatus.Sent, row.status)
+    }
+
+    @Test
     fun `session-removed clears the open window`() = runTest {
         val (windows, store) = openWindow(backgroundScope)
         store.appendOptimistic(localId = "l1", text = "row", createdAt = 5)
