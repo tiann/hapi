@@ -1,0 +1,159 @@
+{
+    "description": "Exact compaction identity merges token-only enrichment in either order, preserves explicit zero and readable content, and leaves other namespaces/final answers unchanged.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "event": {
+                    "compactionId": "codex:thread:turn:item:context_compacted",
+                    "estimatedTokensAfter": 0,
+                    "summary": "",
+                    "type": "compact-summary"
+                },
+                "id": "first",
+                "kind": "agent-event"
+            },
+            {
+                "createdAt": 1755000000100,
+                "id": "answer:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Normal final answer is preserved."
+            },
+            {
+                "createdAt": 1755000000400,
+                "event": {
+                    "compactionId": "codex:other:turn:item:context_compacted",
+                    "summary": "",
+                    "type": "compact-summary"
+                },
+                "id": "other",
+                "kind": "agent-event"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "event": {
+                    "compactionId": "codex:thread:turn:item:context_compacted",
+                    "estimatedTokensAfter": 0,
+                    "summary": "",
+                    "type": "compact-summary"
+                },
+                "id": "first",
+                "kind": "agent-event"
+            },
+            {
+                "createdAt": 1755000000100,
+                "id": "answer:0",
+                "kind": "agent-text",
+                "localId": null,
+                "text": "Normal final answer is preserved."
+            },
+            {
+                "createdAt": 1755000000400,
+                "event": {
+                    "compactionId": "codex:other:turn:item:context_compacted",
+                    "summary": "",
+                    "type": "compact-summary"
+                },
+                "id": "other",
+                "kind": "agent-event"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "compactionId": "codex:thread:turn:item:context_compacted",
+                            "estimatedTokensAfter": 0,
+                            "summary": "",
+                            "type": "compact-summary"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "first",
+                "localId": null,
+                "seq": 1
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "message": "Normal final answer is preserved.",
+                            "type": "message"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000100,
+                "id": "answer",
+                "localId": null,
+                "seq": 2
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "id": "codex:thread:turn:item:context_compacted",
+                            "type": "context_compacted"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000200,
+                "id": "second",
+                "localId": null,
+                "seq": 3
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "id": "codex:thread:turn:item:context_compacted",
+                            "type": "context_compacted"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000300,
+                "id": "replay",
+                "localId": null,
+                "seq": 4
+            },
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "id": "codex:other:turn:item:context_compacted",
+                            "type": "context_compacted"
+                        },
+                        "type": "codex"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000400,
+                "id": "other",
+                "localId": null,
+                "seq": 5
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "codex-compaction-boundary-metrics-first"
+}

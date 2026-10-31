@@ -34,6 +34,8 @@ import {
     triggerOpencodeCompact,
     triggerOpencodeCompactV2
 } from './utils/opencodeCompactBridge';
+import { OpencodeNativeTranscript } from './utils/opencodeNativeTranscript';
+import { opencodeCompactionEventId } from './utils/opencodeCompactionProjector';
 import { formatOpencodePromptError } from './utils/opencodeErrorText';
 import {
     formatOpencodeRetryStatus,
@@ -154,6 +156,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private activeAcpSessionId: string | null = null;
     /** Subscription to the agent's own server event stream; null until the ACP session id is known, closed in cleanup(). */
     private eventStream: OpencodeEventSubscription | null = null;
+    private nativeTranscript: OpencodeNativeTranscript | null = null;
     private stallErrorReportedForPrompt = false;
     /** opencode major version detected once per session; v2 changes spawn args and baseUrl discovery. */
     private majorVersion: OpencodeFlavorVersion | null = null;
@@ -320,6 +323,40 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // subscription then only degrades upstream-retry visibility.
         const restBaseUrl = this.v2RestInfo?.baseUrl ?? this.baseUrl;
         if (restBaseUrl) {
+        const nativeHeaders = this.v2RestInfo ? {
+            authorization: 'Basic ' + Buffer.from(`opencode:${this.v2RestInfo.password}`).toString('base64')
+        } : undefined;
+        this.nativeTranscript = new OpencodeNativeTranscript({
+            baseUrl: restBaseUrl, sessionId: acpSessionId, directory: session.path,
+            mode: this.majorVersion ?? 'v1', headers: nativeHeaders,
+            onSummary: (id, summary, trigger) => {
+                // Only the verified manual bridge owns remote manual outcomes,
+                // including cancellation. Hub history restores published cards.
+                if (trigger !== 'auto') return;
+                session.client.sendAgentMessage({ type: 'compact-summary', summary }, opencodeCompactionEventId(acpSessionId, id));
+            },
+            onStart: (id, trigger) => {
+                if (trigger !== 'auto') return;
+                const localId = `${opencodeCompactionEventId(acpSessionId, id)}:started`;
+                session.client.sendSessionEvent({ type: 'message', message: '📦 Compaction started' }, localId, { localId });
+            },
+            onFailure: (id, trigger) => {
+                if (trigger === 'auto') session.client.sendAgentMessage({ type: 'error', message: 'OpenCode compaction failed or was interrupted.' }, `${opencodeCompactionEventId(acpSessionId, id)}:failed`);
+            },
+            onReadFailure: () => session.sendSessionEvent({ type: 'message', message: 'OpenCode native transcript is temporarily unavailable. Retrying on reconnect or at the end of the turn.' }),
+            onText: (part) => {
+                if (this.majorVersion !== 'v1' || part.role !== 'assistant') return;
+                const converted = convertAgentMessage(part.type === 'reasoning'
+                    ? { type: 'reasoning', id: part.id, text: part.text, live: !part.complete }
+                    : { type: 'text', id: part.id, text: part.text, streamSnapshot: true, live: !part.complete });
+                if (converted) session.sendAgentMessage(converted);
+                if (part.complete) this.messageBuffer.addMessage(
+                    part.type === 'reasoning' ? `[Thinking] ${part.text.substring(0, 100)}...` : part.text,
+                    part.type === 'reasoning' ? 'system' : 'assistant'
+                );
+            }
+        });
+        await this.nativeTranscript.refresh();
         this.eventStream = subscribeToOpencodeEvents({
             baseUrl: restBaseUrl,
             // Required. Omitting it yields heartbeats and no session events
@@ -332,7 +369,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 authorization: 'Basic ' + Buffer.from(`opencode:${this.v2RestInfo.password}`).toString('base64')
             } : undefined,
             mode: this.majorVersion ?? 'v1',
-            onRetry: (retry) => this.surfaceUpstreamRetry(retry)
+            onRetry: (retry) => this.surfaceUpstreamRetry(retry),
+            onConnected: () => { void this.nativeTranscript?.refresh(); },
+            onEvent: (type, properties, eventId) => this.nativeTranscript?.event(type, properties, eventId)
         });
         }
 
@@ -760,6 +799,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
                     this.handleAgentMessage(message);
                 });
+                await this.nativeTranscript?.refresh();
                 void backend.refreshSessionInfo(acpSessionId, session.path);
             } catch (error) {
                 logger.warn('[opencode-remote] prompt failed', error);
@@ -795,6 +835,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     protected async cleanup(): Promise<void> {
         // Before anything that can fail: a stream left open would keep
         // reconnecting to a subprocess that is on its way out.
+        this.nativeTranscript?.close();
+        this.nativeTranscript = null;
         this.eventStream?.close();
         this.eventStream = null;
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
@@ -1166,18 +1208,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 }
                 switch (v2Outcome.result.status) {
                     case 'success': {
-                        session.sendSessionEvent({ type: 'message', message: '📦 Compaction completed' });
-                        // Native provider compaction completes with an empty
-                        // summary (the context checkpoint lives in
-                        // providerContext on 2.0.x and native.messages on 2.1
-                        // on the server) — skip the synthetic summary message
-                        // in that case.
-                        if (v2Outcome.result.text.trim().length > 0) {
-                            const converted = convertAgentMessage({ type: 'reasoning', text: v2Outcome.result.text, id: randomUUID() });
-                            if (converted) {
-                                session.sendAgentMessage(converted);
-                            }
-                        }
+                        session.client.sendAgentMessage({ type: 'compact-summary', summary: v2Outcome.result.text },
+                            v2Outcome.result.compactionId ? opencodeCompactionEventId(acpSessionId, v2Outcome.result.compactionId) : undefined);
                         return;
                     }
                     case 'failed':
@@ -1259,11 +1291,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
 
             switch (result.status) {
                 case 'success': {
-                    session.sendSessionEvent({ type: 'message', message: '📦 Compaction completed' });
-                    const converted = convertAgentMessage({ type: 'reasoning', text: result.text, id: randomUUID() });
-                    if (converted) {
-                        session.sendAgentMessage(converted);
-                    }
+                    session.client.sendAgentMessage({ type: 'compact-summary', summary: result.text },
+                        result.compactionId ? opencodeCompactionEventId(acpSessionId, result.compactionId) : undefined);
                     return;
                 }
                 case 'failed':
@@ -1288,6 +1317,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     }
 
     private handleAgentMessage(message: AgentMessage): void {
+        // v1 ACP strips the native summary/parent metadata (and old versions
+        // strip message IDs too). The native transcript owns these text streams.
+        if (this.nativeTranscript && this.majorVersion === 'v1' && (message.type === 'text' || message.type === 'reasoning')) return;
         const converted = convertAgentMessage(message, this.currentBackendModel);
         if (converted) {
             this.session.sendAgentMessage(converted);

@@ -40,6 +40,7 @@ export function parseMessageAsEvent(msg: NormalizedMessage): AgentEvent | null {
 
 export function dedupeAgentEvents(blocks: ChatBlock[]): ChatBlock[] {
     const result: ChatBlock[] = []
+    const compactions = new Map<string, number>()
     let prevEventKey: string | null = null
     let prevTitleChangedTo: string | null = null
 
@@ -52,6 +53,24 @@ export function dedupeAgentEvents(blocks: ChatBlock[]): ChatBlock[] {
         }
 
         const event = block.event as { type: string; [key: string]: unknown }
+        if (event.type === 'compact-summary' && typeof event.compactionId === 'string' && event.compactionId) {
+            const index = compactions.get(event.compactionId)
+            if (index !== undefined) {
+                const previous = result[index]
+                if (previous.kind === 'agent-event') {
+                    const merged: { type: string; [key: string]: unknown } = { ...previous.event }
+                    if (typeof event.summary === 'string' && event.summary.trim()) merged.summary = event.summary
+                    for (const field of ['tokensBefore', 'tokensAfter', 'estimatedTokensAfter']) {
+                        const value = event[field]
+                        if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) merged[field] = value
+                    }
+                    result[index] = { ...previous, event: merged as AgentEvent }
+                }
+                continue
+            }
+            compactions.set(event.compactionId, result.length)
+        }
+
         if (event.type === 'title-changed' && typeof event.title === 'string') {
             const title = event.title.trim()
             const key = `title-changed:${title}`

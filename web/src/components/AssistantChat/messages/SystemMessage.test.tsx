@@ -74,3 +74,35 @@ describe('slash-command goal status messages', () => {
         expect(container).toBeEmptyDOMElement()
     })
 })
+
+describe('common compaction information presentation', () => {
+    function compact(summary: string, facts: Record<string, number> = {}) {
+        message.content = [{ type: 'text', text: summary }]
+        message.metadata.custom = { kind: 'compact-summary', event: { type: 'compact-summary', summary, ...facts } }
+        return render(<I18nProvider><HappySystemMessage /></I18nProvider>)
+    }
+    it('uses the same ordinary status-line component for start and no-info completion', () => {
+        const started = show('Compaction started')
+        const style = started.container.querySelector('.opacity-80')?.className
+        started.unmount()
+        const completed = compact('')
+        expect(completed.container.querySelector('.opacity-80')?.className).toBe(style)
+        expect(completed.container.querySelector('.border')).toBeNull()
+        expect(screen.queryByRole('button')).toBeNull()
+    })
+    it('shows an after-only estimate without a before value or disclosure', () => {
+        compact('', { estimatedTokensAfter: 18335 })
+        expect(screen.getByText('· ~18,335 tokens after (estimated)')).toBeInTheDocument()
+        expect(screen.queryByRole('button')).toBeNull()
+        expect(screen.queryByText(/→/)).toBeNull()
+    })
+    it('discloses a genuine summary while labeling exact facts without an estimate marker', () => {
+        compact('Checkpoint body', { tokensAfter: 18396 })
+        expect(screen.getByText('· 18,396 tokens after')).toBeInTheDocument()
+        const toggle = screen.getByRole('button')
+        expect(toggle).toHaveAttribute('aria-expanded', 'false')
+        fireEvent.click(toggle)
+        expect(toggle).toHaveAttribute('aria-expanded', 'true')
+        expect(screen.getByText('Checkpoint body')).toBeInTheDocument()
+    })
+})

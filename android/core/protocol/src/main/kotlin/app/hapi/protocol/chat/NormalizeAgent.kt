@@ -891,9 +891,10 @@ fun normalizeAgentRecord(
 
         if (dataType == "context_compacted") {
             return eventMessage(messageId, localId, createdAt, buildJsonObject {
-                put("type", "compact")
-                put("trigger", asString(data["trigger"]) ?: "auto")
-                put("preTokens", jsNumber(asNumber(data["preTokens"].orNull() ?: data["pre_tokens"]) ?: 0.0))
+                put("type", "compact-summary")
+                put("summary", "")
+                asString(data["id"])?.let { put("compactionId", it) }
+                asNumber(data["preTokens"].orNull() ?: data["pre_tokens"])?.let { put("tokensBefore", jsNumber(it)) }
             }, meta)
         }
 
@@ -903,7 +904,9 @@ fun normalizeAgentRecord(
                 return eventMessage(messageId, localId, createdAt, buildJsonObject {
                     put("type", "compact-summary")
                     put("summary", summary)
+                    asString(data["compactionId"])?.let { put("compactionId", it) }
                     asNumber(data["tokensBefore"])?.let { put("tokensBefore", jsNumber(it)) }
+                    asNumber(data["tokensAfter"])?.let { put("tokensAfter", jsNumber(it)) }
                     asNumber(data["estimatedTokensAfter"])?.let { put("estimatedTokensAfter", jsNumber(it)) }
                 }, meta)
             }

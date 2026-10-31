@@ -11,13 +11,31 @@ import { parseGoalStatusMessage } from '@/components/ToolCard/goalTools'
 import { GoalSummary } from '@/components/ToolCard/views/GoalView'
 import { useTranslation } from '@/lib/use-translation'
 
-function formatTokenDelta(event: AgentEvent | undefined): string | null {
+export function formatTokenDelta(event: AgentEvent | undefined): string | null {
     if (!event || event.type !== 'compact-summary') return null
-    const parts: string[] = []
-    if (typeof event.tokensBefore === 'number') parts.push(event.tokensBefore.toLocaleString())
-    if (typeof event.estimatedTokensAfter === 'number') parts.push(event.estimatedTokensAfter.toLocaleString())
-    if (parts.length === 0) return null
-    return parts.length === 2 ? `${parts[0]} → ${parts[1]} tokens` : `${parts[0]} tokens`
+    const token = (value: unknown): number | undefined =>
+        typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+    const before = token(event.tokensBefore)
+    const after = token(event.tokensAfter)
+    const estimatedAfter = after === undefined ? token(event.estimatedTokensAfter) : undefined
+    if (before !== undefined && after !== undefined) return `${before.toLocaleString()} → ${after.toLocaleString()} tokens`
+    if (before !== undefined && estimatedAfter !== undefined) return `${before.toLocaleString()} → ~${estimatedAfter.toLocaleString()} tokens (estimated after)`
+    if (before !== undefined) return `${before.toLocaleString()} tokens before`
+    if (after !== undefined) return `${after.toLocaleString()} tokens after`
+    if (estimatedAfter !== undefined) return `~${estimatedAfter.toLocaleString()} tokens after (estimated)`
+    return null
+}
+
+function SystemStatusLine({ icon, text }: { icon: string | null; text: string }) {
+    return (
+        <div className="mx-auto w-fit max-w-[92%] px-2 text-center text-xs text-[var(--app-hint)] opacity-80">
+            <span className="inline-flex items-center gap-1">
+                {icon ? <span aria-hidden="true">{icon}</span> : null}
+                <span>{text}</span>
+                <MessageTimestamp className="text-[10px]" />
+            </span>
+        </div>
+    )
 }
 
 // Compaction summaries are long; keep them collapsed by default and let the
@@ -25,28 +43,31 @@ function formatTokenDelta(event: AgentEvent | undefined): string | null {
 // non-persistent — revisiting a session collapses the card again.
 export function CompactSummaryCard({ delta, text }: { delta: string | null; text: string }) {
     const [expanded, setExpanded] = useState(false)
+    const hasSummary = text.trim().length > 0
+    const Header = hasSummary ? 'button' : 'div'
+    if (!hasSummary && !delta) return <SystemStatusLine icon="📦" text="Context compacted" />
     return (
         <div className="mx-auto max-w-[92%] rounded-lg border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-3 py-2">
-            <button
-                type="button"
-                aria-expanded={expanded}
-                onClick={() => setExpanded((v) => !v)}
+            <Header
+                type={hasSummary ? 'button' : undefined}
+                aria-expanded={hasSummary ? expanded : undefined}
+                onClick={hasSummary ? () => setExpanded((v) => !v) : undefined}
                 className="flex w-full items-center gap-1.5 text-left text-xs text-[var(--app-hint)]"
             >
                 <span aria-hidden="true">📦</span>
                 <span className="font-medium">Context compacted</span>
                 {delta ? <span className="font-normal">· {delta}</span> : null}
                 <MessageTimestamp className="text-[10px]" />
-                <svg
+                {hasSummary ? <svg
                     aria-hidden="true"
                     viewBox="0 0 16 16"
                     fill="none"
                     className={`ml-auto h-3.5 w-3.5 shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`}
                 >
                     <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-            </button>
-            {expanded && text ? (
+                </svg> : null}
+            </Header>
+            {hasSummary && expanded ? (
                 <div className="max-h-96 overflow-y-auto pr-1">
                     <MarkdownRenderer standalone content={text} />
                 </div>
@@ -97,9 +118,8 @@ export function HappySystemMessage() {
         )
     }
 
-    // Pi compaction summaries are real content, not status: render them as an
-    // independent block (header with token delta + the summary markdown)
-    // instead of the tiny centered status line used for other events.
+    // Available summary/token facts determine the presentation. A boundary
+    // without either remains an ordinary status line.
     if (compactSummary && compactSummary.type === 'compact-summary') {
         const delta = formatTokenDelta(compactSummary)
         return (
@@ -111,13 +131,7 @@ export function HappySystemMessage() {
 
     return (
         <MessagePrimitive.Root id={getConversationMessageAnchorId(messageId)} className="scroll-mt-4 py-1">
-            <div className="mx-auto w-fit max-w-[92%] px-2 text-center text-xs text-[var(--app-hint)] opacity-80">
-                <span className="inline-flex items-center gap-1">
-                    {icon ? <span aria-hidden="true">{icon}</span> : null}
-                    <span>{text}</span>
-                    <MessageTimestamp className="text-[10px]" />
-                </span>
-            </div>
+            <SystemStatusLine icon={icon} text={text} />
         </MessagePrimitive.Root>
     )
 }

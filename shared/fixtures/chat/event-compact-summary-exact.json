@@ -1,0 +1,61 @@
+{
+    "description": "Compaction summary facts preserve exact and estimated counts independently across event envelopes.",
+    "expected": {
+        "blocks": [
+            {
+                "createdAt": 1755000000000,
+                "event": {
+                    "summary": "A native checkpoint.",
+                    "tokensAfter": 2082,
+                    "tokensBefore": 34492,
+                    "type": "compact-summary"
+                },
+                "id": "event-compact-summary-exact",
+                "kind": "agent-event"
+            }
+        ],
+        "hasReadyEvent": false,
+        "latestUsage": null,
+        "visibleBlocks": [
+            {
+                "createdAt": 1755000000000,
+                "event": {
+                    "summary": "A native checkpoint.",
+                    "tokensAfter": 2082,
+                    "tokensBefore": 34492,
+                    "type": "compact-summary"
+                },
+                "id": "event-compact-summary-exact",
+                "kind": "agent-event"
+            }
+        ]
+    },
+    "fixtureVersion": 1,
+    "input": {
+        "agentState": null,
+        "messages": [
+            {
+                "content": {
+                    "content": {
+                        "data": {
+                            "summary": "A native checkpoint.",
+                            "tokensAfter": 2082,
+                            "tokensBefore": 34492,
+                            "type": "compact-summary"
+                        },
+                        "type": "event"
+                    },
+                    "role": "agent"
+                },
+                "createdAt": 1755000000000,
+                "id": "event-compact-summary-exact",
+                "localId": null,
+                "seq": 1
+            }
+        ],
+        "options": {
+            "hasMoreMessages": false
+        }
+    },
+    "name": "event-compact-summary-exact"
+}

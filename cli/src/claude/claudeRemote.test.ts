@@ -406,10 +406,12 @@ describe('claudeRemote /compact result reporting', () => {
     } as unknown as SDKMessage;
 
     let lastForwarded: SDKMessage[] = [];
+    let lastCompactSummary: { summary: string; tokensBefore?: number; tokensAfter?: number } | undefined;
     async function runCompact(sdkMessages: SDKMessage[]): Promise<string[]> {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
         const completionEvents: string[] = [];
+        lastCompactSummary = undefined;
         const forwarded: SDKMessage[] = [];
 
         queryMock.mockReturnValueOnce(createAsyncStream(sdkMessages));
@@ -432,7 +434,8 @@ describe('claudeRemote /compact result reporting', () => {
                     }
                     return null;
                 },
-                onReady: (completionEvent) => {
+                onReady: (completionEvent, compactSummary) => {
+                    lastCompactSummary = compactSummary;
                     if (completionEvent) completionEvents.push(completionEvent);
                 },
                 isAborted: () => false,
@@ -539,7 +542,8 @@ describe('claudeRemote /compact result reporting', () => {
             resultMessage
         ]);
 
-        expect(completionEvents).toEqual(['📦 Compaction started', '📦 Compacted (34492 → 2082 tokens)']);
+        expect(completionEvents).toEqual(['📦 Compaction started']);
+        expect(lastCompactSummary).toEqual({ summary: '', tokensBefore: 34492, tokensAfter: 2082 });
     }, 15_000);
 
     it('ignores an autonomous result until the compact stream signal arrives', async () => {
@@ -562,7 +566,8 @@ describe('claudeRemote /compact result reporting', () => {
             resultMessage
         ]);
 
-        expect(completionEvents).toEqual(['📦 Compaction started', '📦 Compacted (100 → 10 tokens)']);
+        expect(completionEvents).toEqual(['📦 Compaction started']);
+        expect(lastCompactSummary).toEqual({ summary: '', tokensBefore: 100, tokensAfter: 10 });
     }, 15_000);
 
     it('does not relay the compact_boundary system message during a manual /compact', async () => {
@@ -779,8 +784,9 @@ describe('claudeRemote /compact result reporting', () => {
                     if (nextCallCount === 2) return { message: '/compact', mode: { permissionMode: 'default' } };
                     return null;
                 },
-                onReady: (completionEvent) => {
+                onReady: (completionEvent, compactSummary) => {
                     if (completionEvent) completionEvents.push(completionEvent);
+                    if (compactSummary) completionEvents.push('structured compact');
                 },
                 isAborted: () => false,
                 onSessionFound: () => {},
@@ -796,7 +802,7 @@ describe('claudeRemote /compact result reporting', () => {
         }
 
         expect(completionEvents).toContain('📦 Compaction started');
-        expect(completionEvents).toContain('📦 Compacted (100 → 10 tokens)');
+        expect(completionEvents).toContain('structured compact');
     }, 15_000);
 
     it('flushes the result carrier before publishing compact completion', async () => {
@@ -1225,7 +1231,7 @@ describe('claudeRemote compact summary promotion', () => {
         expect(nextCallCount).toBe(1);
         expect(readyCount).toBe(1);
         expect(acceptedCount).toBe(1);
-        expect(readyEvents).toEqual(['📦 Compacted (100 → 10 tokens)']);
+        expect(readyEvents).toEqual([undefined]);
         expect(completionEvents).toEqual(['📦 Compaction started']);
     }, 15_000);
 
@@ -1279,7 +1285,7 @@ describe('claudeRemote compact summary promotion', () => {
             querySpy.mockRestore();
         }
 
-        expect(readyEvents).toEqual(['📦 Compacted (100 → 10 tokens)']);
+        expect(readyEvents).toEqual([undefined]);
         expect(nextCallCount).toBe(1);
     }, 15_000);
 
@@ -1514,12 +1520,12 @@ describe('claudeRemote compact summary promotion', () => {
         }
     }, 15_000);
 
-    it('keeps the token delta fallback line when the transcript never yields a summary', async () => {
+    it('preserves exact token facts for a static header when the transcript has no summary', async () => {
         const { completionEvents, compactSummaries, contextTokens } = await runCompactWithSummary(null);
 
-        expect(compactSummaries).toEqual([]);
+        expect(compactSummaries).toEqual([{ summary: '', tokensBefore: 34492, tokensAfter: 2082 }]);
         expect(contextTokens).toEqual([2082]);
-        expect(completionEvents).toEqual(['📦 Compaction started', '📦 Compacted (34492 → 2082 tokens)']);
+        expect(completionEvents).toEqual(['📦 Compaction started']);
     }, 15_000);
 });
 

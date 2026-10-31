@@ -549,7 +549,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                     type: 'compact-summary',
                                     summary: compactSummary.summary,
                                     tokensBefore: compactSummary.tokensBefore,
-                                    estimatedTokensAfter: compactSummary.tokensAfter
+                                    tokensAfter: compactSummary.tokensAfter
                                 });
                             }
                             if (compactContextTokens !== undefined) {

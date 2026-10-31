@@ -11,6 +11,37 @@ struct EventPresentation: Equatable {
     var text: String
 }
 
+/// The same available-facts rules as web SystemMessage.formatTokenDelta.
+struct CompactionPresentation: Equatable {
+    var summary: String
+    var tokenDelta: String?
+    var hasSummary: Bool { !summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var title: String { tokenDelta.map { "Context compacted · \($0)" } ?? "Context compacted" }
+}
+
+func compactionPresentation(_ event: AgentEvent) -> CompactionPresentation? {
+    guard event.type == "compact-summary" else { return nil }
+    func token(_ key: String) -> Double? {
+        guard let value = event[key]?.chatNumber, value.isFinite, value >= 0,
+              value <= 9_007_199_254_740_991, value.rounded(.towardZero) == value else { return nil }
+        return value
+    }
+    func count(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(0)))
+    }
+    let before = token("tokensBefore")
+    let after = token("tokensAfter")
+    let estimated = after == nil ? token("estimatedTokensAfter") : nil
+    let delta: String?
+    if let before, let after { delta = "\(count(before)) → \(count(after)) tokens" }
+    else if let before, let estimated { delta = "\(count(before)) → ~\(count(estimated)) tokens (estimated after)" }
+    else if let before { delta = "\(count(before)) tokens before" }
+    else if let after { delta = "\(count(after)) tokens after" }
+    else if let estimated { delta = "~\(count(estimated)) tokens after (estimated)" }
+    else { delta = nil }
+    return CompactionPresentation(summary: event["summary"]?.chatString ?? "", tokenDelta: delta)
+}
+
 // MARK: - Formatting helpers
 
 private func normalizedTimestampMs(_ value: Double) -> Double {

@@ -37,6 +37,9 @@ export type OpencodeEventStreamOptions = {
      * web timeline folds), not as a failure — see its call site.
      */
     onRetry: (retry: OpencodeRetryStatus) => void;
+    /** Native transcript consumer; receives normalized, session-scoped events. */
+    onEvent?: (type: string, properties: Record<string, unknown>, eventId?: string) => void;
+    onConnected?: () => void;
     /**
      * Extra request headers merged into every (re)connect attempt. Required
      * for opencode v2: the internal server is Basic-auth protected, and a
@@ -286,8 +289,12 @@ export function subscribeToOpencodeEvents(options: OpencodeEventStreamOptions): 
 
     const handleEvent = (event: unknown): void => {
         if (!isObject(event)) return;
-        if (event.type !== 'session.status') return;
         const properties = isObject(event.properties) ? event.properties : null;
+        if (properties && typeof event.type === 'string') {
+            const record = isObject(properties.info) ? properties.info : isObject(properties.part) ? properties.part : properties;
+            if (record.sessionID === sessionId) options.onEvent?.(event.type, properties, typeof event.id === 'string' ? event.id : undefined);
+        }
+        if (event.type !== 'session.status') return;
         if (!properties) return;
         // Status is per-session bookkeeping and drives the dedupe state
         // below, so an event that cannot be attributed must not touch it.
@@ -373,7 +380,7 @@ export function subscribeToOpencodeEvents(options: OpencodeEventStreamOptions): 
         // carries its fields directly (no v1 `properties` wrapper), so the
         // body becomes `properties`.
         if (mode === 'v2' && isObject(payload) && isObject(payload.data)) {
-            payload = { type: payload.type, properties: payload.data };
+            payload = { id: payload.id, type: payload.type, properties: payload.data };
         }
         // Dispatched outside the parse guard on purpose: everything
         // downstream of handleEvent is HAPI's own code (the launcher's
@@ -489,6 +496,7 @@ export function subscribeToOpencodeEvents(options: OpencodeEventStreamOptions): 
                 continue;
             }
 
+            options.onConnected?.();
             framesThisConnection = 0;
             try {
                 await consumeStream(response.body);

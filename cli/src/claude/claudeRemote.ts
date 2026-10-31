@@ -647,8 +647,10 @@ export async function claudeRemote(opts: {
                     const sessionId = currentSessionId;
                     const baseline = compact.baseline;
                     const failure = compact.failure;
-                    const tokensBefore = compact.tokensBefore;
-                    const tokensAfter = compact.tokensAfter;
+                    const tokenCount = (value: number | undefined): number | undefined =>
+                        value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+                    const tokensBefore = tokenCount(compact.tokensBefore);
+                    const tokensAfter = tokenCount(compact.tokensAfter);
                     // Preserve the post-compaction context size even when no
                     // summary was found: the launcher refreshes the context
                     // bar with it, since the next real usage only arrives
@@ -657,7 +659,7 @@ export async function claudeRemote(opts: {
                     opts.onCompactResultAccepted?.();
 
                     compactCompletion = (async () => {
-                        const compactSummary = await lookupCompactSummary(
+                        let compactSummary = await lookupCompactSummary(
                             failure,
                             sessionId,
                             baseline,
@@ -667,6 +669,9 @@ export async function claudeRemote(opts: {
                         );
                         if (compactCompletionAbort.signal.aborted) {
                             throw new AbortError('Compaction completion aborted');
+                        }
+                        if (!compactSummary && failure === null && (tokensBefore !== undefined || tokensAfter !== undefined)) {
+                            compactSummary = { summary: '', tokensBefore, tokensAfter };
                         }
                         const completionEvent = compactSummary
                             ? undefined

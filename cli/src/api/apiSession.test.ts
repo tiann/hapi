@@ -1068,3 +1068,15 @@ describe('ApiSessionClient runtime heartbeat', () => {
         client.close()
     })
 })
+
+
+describe('ApiSessionClient durable status identity', () => {
+    it('preserves an explicit Hub localId independently of the inner event ID', () => {
+        socketHarness.sockets.length = 0;
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }));
+        client.sendSessionEvent({ type: 'message', message: 'Compaction started' }, 'event-id', { localId: 'native-apply:started' });
+        const sent = socketHarness.sockets[0]!.emitted.find(entry => entry.event === 'message');
+        expect(sent?.args[0]).toMatchObject({ localId: 'native-apply:started', message: { content: { id: 'event-id', type: 'event', data: { type: 'message', message: 'Compaction started' } } } });
+        client.close();
+    });
+});

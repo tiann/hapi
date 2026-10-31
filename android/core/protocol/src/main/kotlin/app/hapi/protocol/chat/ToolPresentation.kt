@@ -22,6 +22,32 @@ data class EventPresentation(
     val text: String,
 )
 
+/** Available-facts compaction presentation, matching web SystemMessage.formatTokenDelta. */
+data class CompactionPresentation(val summary: String, val tokenDelta: String?) {
+    val hasSummary: Boolean get() = summary.isNotBlank()
+    val title: String get() = tokenDelta?.let { "Context compacted · $it" } ?: "Context compacted"
+}
+
+fun getCompactionPresentation(event: AgentEvent): CompactionPresentation? {
+    if (event.type != "compact-summary") return null
+    fun token(key: String): Double? = asNumber(event.raw[key])?.takeIf {
+        it.isFinite() && it >= 0 && it <= 9_007_199_254_740_991.0 && floor(it) == it
+    }
+    fun count(value: Double): String = java.text.NumberFormat.getIntegerInstance().format(value.toLong())
+    val before = token("tokensBefore")
+    val after = token("tokensAfter")
+    val estimated = if (after == null) token("estimatedTokensAfter") else null
+    val delta = when {
+        before != null && after != null -> "${count(before)} → ${count(after)} tokens"
+        before != null && estimated != null -> "${count(before)} → ~${count(estimated)} tokens (estimated after)"
+        before != null -> "${count(before)} tokens before"
+        after != null -> "${count(after)} tokens after"
+        estimated != null -> "~${count(estimated)} tokens after (estimated)"
+        else -> null
+    }
+    return CompactionPresentation(asString(event.raw["summary"]) ?: "", delta)
+}
+
 private fun normalizeTimestamp(value: Double): Instant {
     val ms = if (value < 1_000_000_000_000.0) value * 1000 else value
     return Instant.ofEpochMilli(ms.toLong())

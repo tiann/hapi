@@ -1092,9 +1092,11 @@ func normalizeAgentRecord(
                 id: messageId,
                 localId: localId,
                 createdAt: createdAt,
-                content: .event(.compact(
-                    trigger: asString(data["trigger"]) ?? "auto",
-                    preTokens: asNumber(jsCoalesce(data["preTokens"], data["pre_tokens"])) ?? 0
+                content: .event(.compactSummary(
+                    summary: "",
+                    tokensBefore: asNumber(jsCoalesce(data["preTokens"], data["pre_tokens"])),
+                    estimatedTokensAfter: nil,
+                    compactionId: asString(data["id"])
                 )),
                 isSidechain: false,
                 meta: meta
@@ -1109,7 +1111,9 @@ func normalizeAgentRecord(
                 content: .event(.compactSummary(
                     summary: summary,
                     tokensBefore: asNumber(data["tokensBefore"]),
-                    estimatedTokensAfter: asNumber(data["estimatedTokensAfter"])
+                    estimatedTokensAfter: asNumber(data["estimatedTokensAfter"]),
+                    tokensAfter: asNumber(data["tokensAfter"]),
+                    compactionId: asString(data["compactionId"])
                 )),
                 isSidechain: false,
                 meta: meta

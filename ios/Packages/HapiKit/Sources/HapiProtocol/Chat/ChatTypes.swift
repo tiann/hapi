@@ -206,12 +206,14 @@ public struct AgentEvent: Equatable, Sendable {
         ])
     }
 
-    public static func compactSummary(summary: String, tokensBefore: Double?, estimatedTokensAfter: Double?) -> AgentEvent {
+    public static func compactSummary(summary: String, tokensBefore: Double?, estimatedTokensAfter: Double?, tokensAfter: Double? = nil, compactionId: String? = nil) -> AgentEvent {
         var object: [String: JSONValue] = [
             "type": .string("compact-summary"),
             "summary": .string(summary),
         ]
         if let tokensBefore { object["tokensBefore"] = .number(tokensBefore) }
+        if let tokensAfter { object["tokensAfter"] = .number(tokensAfter) }
+        if let compactionId { object["compactionId"] = .string(compactionId) }
         if let estimatedTokensAfter { object["estimatedTokensAfter"] = .number(estimatedTokensAfter) }
         return AgentEvent(object: object)
     }

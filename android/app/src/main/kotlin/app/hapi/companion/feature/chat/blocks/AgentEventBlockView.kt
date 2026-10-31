@@ -1,5 +1,21 @@
 package app.hapi.companion.feature.chat.blocks
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import app.hapi.companion.ui.markdown.Markdown
+import app.hapi.protocol.chat.getCompactionPresentation
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -33,6 +49,46 @@ import kotlinx.serialization.json.JsonPrimitive
  */
 @Composable
 fun AgentEventBlockView(block: AgentEventBlock, modifier: Modifier = Modifier) {
+    val compact = remember(block) { getCompactionPresentation(block.event) }
+    if (compact != null && (compact.hasSummary || compact.tokenDelta != null)) {
+        var expanded by rememberSaveable(block.id) { mutableStateOf(false) }
+        Surface(
+            modifier = modifier.fillMaxWidth().testTag("compaction-card-${block.id}"),
+            shape = RoundedCornerShape(10.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        ) {
+            Column(Modifier.padding(12.dp)) {
+                val toggle = if (compact.hasSummary) Modifier
+                    .heightIn(min = 48.dp)
+                    .clickable(role = Role.Button) { expanded = !expanded }
+                    .semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" }
+                else Modifier
+                Row(
+                    modifier = Modifier.fillMaxWidth().then(toggle)
+                        .testTag("compaction-header-${block.id}").padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "📦 ${compact.title}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.hapi.hint,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (compact.hasSummary) Text(
+                        text = if (expanded) "⌄" else "›",
+                        color = MaterialTheme.hapi.hint,
+                        modifier = Modifier.clearAndSetSemantics {},
+                    )
+                }
+                if (compact.hasSummary && expanded) Markdown(
+                    text = compact.summary,
+                    modifier = Modifier.testTag("compaction-summary-${block.id}").padding(top = 4.dp),
+                )
+            }
+        }
+        return
+    }
     val presentation = remember(block) { getEventPresentation(block.event) }
     Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Text(
