@@ -75,6 +75,68 @@ function reasoningTextOf(message: { content: unknown }): string {
 }
 
 describe('cli session handlers', () => {
+    it('applies background snapshots as state before ordinary message ingest and replay deduplication', () => {
+        const store = new Store(':memory:')
+        try {
+            const session = store.sessions.getOrCreateSession('background-snapshot', { flavor: 'claude' }, null, 'default')
+            const socket = new FakeSocket()
+            const background = mock(), progress = mock(), publish = mock()
+            registerSessionHandlers(socket as unknown as CliSocketWithData, {
+                store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
+                onBackgroundTasks: background, onAgentProgress: progress, onWebappEvent: publish
+            })
+            const snapshot = (tasks: unknown[]) => socket.trigger('message', {
+                sid: session.id, localId: 'background-snapshot', message: { role: 'agent',
+                    content: { type: 'output', data: { type: 'system', subtype: 'background_tasks_changed', tasks } } }
+            })
+            const task = { task_id: 'task', task_type: 'shell', description: 'work' }
+            snapshot([task])
+            snapshot([task])
+            snapshot([])
+            expect(background.mock.calls).toEqual([
+                [session.id, [{ id: 'task', type: 'shell', description: 'work' }]],
+                [session.id, [{ id: 'task', type: 'shell', description: 'work' }]],
+                [session.id, []]
+            ])
+            expect(store.messages.getAllMessages(session.id)).toEqual([])
+            expect(progress).not.toHaveBeenCalled()
+            expect(publish).not.toHaveBeenCalled()
+            expect(socket.roomEvents).toEqual([])
+            const frame = { sid: session.id, localId: 'reply', message: { role: 'agent',
+                content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: 'done' } } } }
+            socket.trigger('message', frame)
+            socket.trigger('message', frame)
+            expect(store.messages.getAllMessages(session.id)).toHaveLength(1)
+            expect(progress).toHaveBeenCalledTimes(1)
+            expect(publish).toHaveBeenCalledTimes(1)
+        } finally { store.close() }
+    })
+    it('does not repeat message side effects when native history replays a stored localId', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('history-replay', { flavor: 'codex' }, null, 'default')
+        const socket = new FakeSocket()
+        const progress = mock(), activity = mock(), publish = mock()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
+            onAgentProgress: progress, onSessionActivity: activity, onWebappEvent: publish
+        })
+        const message = { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE,
+            data: { type: 'message', message: 'Done.\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"finished"}' } } }
+        const frame = { sid: session.id, localId: 'codex:thread:historical-item', message }
+        socket.trigger('message', frame)
+        const stored = store.messages.getAllMessages(session.id)
+        expect(stored).toHaveLength(1)
+        const counts = [progress.mock.calls.length, activity.mock.calls.length, publish.mock.calls.length, socket.roomEvents.length]
+        expect(counts[0]).toBe(1)
+        expect(counts[2]).toBe(1)
+        socket.trigger('message', frame)
+        expect([progress.mock.calls.length, activity.mock.calls.length, publish.mock.calls.length, socket.roomEvents.length]).toEqual(counts)
+        expect(store.messages.getAllMessages(session.id)).toEqual(stored)
+        socket.trigger('message', { ...frame, localId: 'codex:thread:next-item' })
+        expect(store.messages.getAllMessages(session.id)).toHaveLength(2)
+        expect(publish.mock.calls.length).toBe(2)
+        store.close()
+    })
     it.each([undefined, 'terminated', 'error'] as const)('preserves shared Codex pending input on execution exit (%s)', reason => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('shared-end', { flavor: 'codex', capabilities: { concurrentClients: true } }, null, 'default')

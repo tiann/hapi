@@ -11,6 +11,25 @@ function makeSession(store: Store, tag: string) {
     return store.sessions.getOrCreateSession(tag, { path: `/tmp/${tag}` }, null, 'default')
 }
 
+describe('addMessageWithStatus', () => {
+    it('reports only new rows as inserted and scopes deduplication to a session', () => {
+        const store = makeStore();
+        const first = makeSession(store, 'status-first');
+        const other = makeSession(store, 'status-other');
+        const content = { role: 'user', content: { type: 'text', text: 'original' } };
+        const inserted = store.messages.addMessageWithStatus(first.id, content, 'same-id');
+        expect(inserted.inserted).toBe(true);
+        store.messages.markMessagesInvoked(first.id, ['same-id'], 123);
+        const replay = store.messages.addMessageWithStatus(first.id, { changed: true }, 'same-id');
+        expect(replay.inserted).toBe(false);
+        expect(replay.message).toMatchObject({ id: inserted.message.id, content, invokedAt: 123 });
+        expect(store.messages.addMessageWithStatus(other.id, content, 'same-id').inserted).toBe(true);
+        expect(store.messages.addMessageWithStatus(first.id, content).inserted).toBe(true);
+        expect(store.messages.addMessageWithStatus(first.id, content).inserted).toBe(true);
+        store.close();
+    });
+});
+
 describe('cancelQueuedMessage', () => {
     it('happy path: deletes queued message, returns status=cancelled with localId', () => {
         const store = makeStore()

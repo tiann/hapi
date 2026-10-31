@@ -67,10 +67,12 @@ export class SharedCodexRoot {
     private settingsRevision = 0;
     private refreshing?: Promise<void>;
     private interrupted = false;
+    private unmaterializedFreshHistory = false;
     private closed = false;
     private stopping = false;
     private closing?: Promise<void>;
     private readonly controls = new Set<Promise<unknown>>();
+    private controlsRegistered = false;
     private reconnecting = false;
     private settings: RuntimeSettings = {};
     private settingsNative: Record<string, unknown> = {};
@@ -89,6 +91,7 @@ export class SharedCodexRoot {
             if (method === 'thread/settings/updated' && record(params).threadId === this.threadId) this.acceptSettings(record(record(params).threadSettings));
             if (record(params).threadId === this.threadId) {
                 if (method === 'turn/started') {
+                    this.unmaterializedFreshHistory = false;
                     this.turnRevision++; this.currentTurn = string(record(record(params).turn).id); this.interrupted = false;
                     if (this.currentTurn) this.latestTurn = { id: this.currentTurn, status: 'inProgress' };
                     this.publishSteering();
@@ -189,9 +192,10 @@ export class SharedCodexRoot {
             'shell_environment_policy.set.HAPI_SESSION_ID': this.session.sessionId
         } };
     }
-    async bind(threadId: string, response: Record<string, unknown>, subscribe: boolean): Promise<void> {
+    async bind(threadId: string, response: Record<string, unknown>, subscribe: boolean, fresh = false): Promise<void> {
         if (this.threadId && this.threadId !== threadId) throw new Error('Cannot retarget a shared HAPI session');
         this.threadId = threadId;
+        this.unmaterializedFreshHistory = fresh;
         this.queue = new SharedCodexQueue(this.client, threadId, join(this.host.directory, `${this.session.sessionId}.queue.json`),
             (ids, steered) => {
                 this.session.emitMessagesConsumed(ids, { steered });
@@ -201,7 +205,8 @@ export class SharedCodexRoot {
             (id, input) => this.session.syncNativeQueuedMessage(id, input === null ? null : inputText(input)),
             ids => this.session.setSteerDeliveryState(ids, 'queued'));
         await this.queue.load();
-        this.projection = new SharedCodexProjection(this.session, threadId, id => this.queue.committed(id));
+        this.projection = new SharedCodexProjection(this.session, threadId, id => this.queue.committed(id, false), undefined,
+            ids => this.queue.committedHistory(ids, false));
         this.session.updateMetadata(metadata => ({ ...metadata, codexSessionId: threadId, capabilities: {
             ...metadata.capabilities, concurrentClients: true, terminal: true,
             // In-place rewind needs a native + hub commit barrier. Do not
@@ -212,16 +217,25 @@ export class SharedCodexRoot {
             completedRequests: { ...state.completedRequests, ...Object.fromEntries(Object.entries(state.requests ?? {}).map(([id, request]) =>
                 [id, { ...request, completedAt: Date.now(), status: 'canceled' as const }])) }
         }));
+        // Register control traffic before bulk history enters the same Hub
+        // socket. Mutations wait for bound, while KillSession can still cancel
+        // a startup in progress.
+        this.registerControls();
+        await this.session.rpcHandlerManager.waitForRegistration(RPC_METHODS.SetSessionConfig);
         // 空会话的首次订阅保留完整响应，以兼容原生历史源文件的初始化。
         if (subscribe) response = record(await this.client.request('thread/resume', { threadId }));
         this.acceptSettings(response); this.acceptSettings(this.host.settingsFor(threadId) ?? {});
-        await this.projection.history(response.thread); await this.refresh(); await this.refreshChildren(true);
+        await this.projection.history(response.thread);
+        await this.refresh();
+        await this.refreshChildren(true);
     }
-    async activate(options: SharedLaunchOptions = {}): Promise<void> {
+    async activate(options: SharedLaunchOptions = {}, beforeReady?: () => Promise<void>): Promise<void> {
         // Restored input cannot run before the cold-resume settings are applied.
         await this.initialSettings(options);
         if (this.stopping) throw new Error('Codex execution is stopping');
-        this.registerControls(); this.ready();
+        await beforeReady?.();
+        if (this.stopping) throw new Error('Codex execution is stopping');
+        this.ready();
         this.heartbeat = setInterval(() => this.alive(), 2_000); this.alive(); this.session.emitSessionReady();
     }
     private publishSteering(): void {
@@ -275,6 +289,12 @@ export class SharedCodexRoot {
         this.publishPlan();
     }
     private async notification(method: string, params: unknown, modelAtReceipt?: string, receivedAt = Date.now()): Promise<void> {
+        // Cold resume also streams historical item notifications. Their
+        // projection must not compete with history hydration and the Hub RPC
+        // registration barrier. The snapshot restores history before ready;
+        // buffered live events resume afterwards with stable message IDs.
+        await this.bound;
+        if (this.stopping) return;
         if (!this.threadId || this.closed) return;
         const p = record(params);
         if (method === 'thread/started') {
@@ -321,26 +341,34 @@ export class SharedCodexRoot {
             .split(',').map(id => id.trim()).includes(this.threadId);
     }
     async readThread(threadId = this.threadId, fullHistory = false): Promise<Record<string, unknown>> {
-        let thread = record(record(await this.client.request('thread/read', { threadId, includeTurns: false })).thread);
-        if (thread.historyMode === 'paginated') {
-            // 显式选择快速恢复时只回放最近一轮，原生上下文仍由 Codex 自己恢复。
-            if (this.lazyHistory() && !fullHistory && threadId === this.threadId) {
-                const page = record(await this.client.request('thread/turns/list', {
-                    threadId, sortDirection: 'desc', itemsView: 'full', limit: 1
-                }));
-                if (!Array.isArray(page.data)) throw new Error('Invalid Codex history');
-                thread.turns = [...page.data].reverse();
-                return thread;
-            }
-            const turns: unknown[] = []; let cursor: string | undefined;
-            do {
-                const page = record(await this.client.request('thread/turns/list', { threadId, cursor, sortDirection: 'asc', itemsView: 'full' }));
-                if (!Array.isArray(page.data)) throw new Error('Invalid Codex history');
-                turns.push(...page.data); cursor = string(page.nextCursor);
-            } while (cursor);
-            thread.turns = turns;
-        } else thread = record(record(await this.client.request('thread/read', { threadId, includeTurns: true })).thread);
-        return thread;
+        try {
+            let thread = record(record(await this.client.request('thread/read', { threadId, includeTurns: false })).thread);
+            if (thread.historyMode === 'paginated') {
+                // 正式选择快速恢复时只回放最近一轮，原长历史继续由 Codex 自己恢复。
+                if (this.lazyHistory() && !fullHistory && threadId === this.threadId) {
+                    const page = record(await this.client.request('thread/turns/list', {
+                        threadId, sortDirection: 'desc', itemsView: 'full', limit: 1
+                    }));
+                    if (!Array.isArray(page.data)) throw new Error('Invalid Codex history');
+                    thread.turns = [...page.data].reverse();
+                    return thread;
+                }
+                const turns: unknown[] = []; let cursor: string | undefined;
+                do {
+                    const page = record(await this.client.request('thread/turns/list', { threadId, cursor, sortDirection: 'asc', itemsView: 'full' }));
+                    if (!Array.isArray(page.data)) throw new Error('Invalid Codex history');
+                    turns.push(...page.data); cursor = string(page.nextCursor);
+                } while (cursor);
+                thread.turns = turns;
+            } else thread = record(record(await this.client.request('thread/read', { threadId, includeTurns: true })).thread);
+            return thread;
+        } catch (error) {
+            // Only thread/start proves that no earlier conversation can exist.
+            // Never turn missing lineage on an existing thread into empty history.
+            if (this.unmaterializedFreshHistory && threadId === this.threadId && error instanceof Error
+                && /not materialized yet|missing source rollout/i.test(error.message)) return { id: threadId, turns: [] };
+            throw error;
+        }
     }
     refresh(): Promise<void> {
         return this.refreshing ??= this.refreshNow().finally(() => { this.refreshing = undefined; });
@@ -357,7 +385,8 @@ export class SharedCodexRoot {
             const id = string(last?.id);
             this.latestTurn = id && last ? { id, status: string(last.status) ?? 'unknown', planId: planProposalForTurn(this.threadId, last) } : undefined;
         }
-        await this.projection.history(thread); await this.queue.reconcile(); this.alive();
+        await this.projection.history(thread);
+        await this.queue.reconcile(); this.alive();
     }
     private async refreshChildren(subscribe: boolean): Promise<void> {
         // 历史回放可省略，子代理发现与实时订阅仍需在重连后恢复。
@@ -501,8 +530,11 @@ export class SharedCodexRoot {
         } finally { this.submittingPlan = false; this.publishPlan(); }
     }
     private registerControls(): void {
+        if (this.controlsRegistered) return;
+        this.controlsRegistered = true;
         const rpc = { registerHandler: (method: string, handler: (raw: unknown) => Promise<unknown>) => {
             this.session.rpcHandlerManager.registerHandler(method, async (raw: unknown) => {
+                if (method !== RPC_METHODS.KillSession) await this.bound;
                 if (this.stopping) throw new Error('Codex execution is stopping; resume when inactive');
                 const pending = handler(raw); this.controls.add(pending);
                 try { return await pending; } finally { this.controls.delete(pending); }
