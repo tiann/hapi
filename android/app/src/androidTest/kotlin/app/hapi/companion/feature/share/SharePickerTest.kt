@@ -50,6 +50,9 @@ private class PickerSessions : SessionListStore {
     override suspend fun renameSession(sessionId: String, name: String): Unit = error("not a picker action")
     override suspend fun deleteSession(sessionId: String): Unit = error("not a picker action")
     override suspend fun reopenSession(sessionId: String): ReopenSessionResponse = error("use the gateway")
+    override suspend fun updateSessionSummary(sessionId: String, text: String): Unit = error("not a picker action")
+    override suspend fun suggestSessionTitle(sessionId: String): String = error("not a picker action")
+    override suspend fun titleSuggestionAvailable(): Boolean = false
 }
 
 private class PickerMachines : MachineListStore {

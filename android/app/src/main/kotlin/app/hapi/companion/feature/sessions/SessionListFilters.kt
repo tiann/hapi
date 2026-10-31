@@ -1,5 +1,6 @@
 package app.hapi.companion.feature.sessions
 
+import app.hapi.data.store.LastSeenStore
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SessionSummaryMetadata
 
@@ -89,4 +90,32 @@ object SessionListFilters {
     ): List<SessionSummary> =
         deduplicateSessionsByAgentId(sessions, selectedSessionId)
             .filter { shouldShowSessionInSidebar(it, selectedSessionId) }
+
+    /**
+     * Active-only lens (`filterActiveSessionsOnly`): hide inactive sessions;
+     * the open session stays visible. Applied to the prepared list BEFORE
+     * search, like the reference — the search box narrows further and never
+     * resurrects a hidden row.
+     */
+    fun filterActiveSessionsOnly(
+        sessions: List<SessionSummary>,
+        selectedSessionId: String?,
+    ): List<SessionSummary> = sessions.filter { session ->
+        session.active || session.id == selectedSessionId
+    }
+
+    /**
+     * Transient unread lens (`filterUnreadSessionsOnly`): hide sessions the
+     * operator has already seen. The open session stays visible. Not "needs
+     * attention" — just unread. Plain watermark comparison, exactly like the
+     * reference: an explicit mark-unread parks the watermark one tick behind
+     * the activity, so manually-marked rows pass this filter too.
+     */
+    fun filterUnreadSessionsOnly(
+        sessions: List<SessionSummary>,
+        selectedSessionId: String?,
+        lastSeen: Map<String, Long>,
+    ): List<SessionSummary> = sessions.filter { session ->
+        session.id == selectedSessionId || LastSeenStore.isUnread(session, lastSeen[session.id] ?: 0)
+    }
 }

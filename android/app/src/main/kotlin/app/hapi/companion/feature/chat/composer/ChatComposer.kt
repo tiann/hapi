@@ -65,6 +65,7 @@ import app.hapi.companion.feature.chat.attachments.ComposerAttachmentUi
 import app.hapi.companion.feature.chat.attachments.rememberChipThumbnail
 import app.hapi.companion.ui.theme.HapiTheme
 import app.hapi.companion.ui.theme.hapi
+import app.hapi.protocol.wire.SkillSummary
 import app.hapi.protocol.wire.SlashCommand
 import kotlinx.coroutines.delay
 
@@ -91,6 +92,9 @@ fun ChatComposer(
     onAttachmentRemove: (String) -> Unit = {},
     slashSuggestions: List<SlashCommand> = emptyList(),
     onSlashCommandSelected: (SlashCommand) -> Unit = {},
+    /** `$` skills menu (web `getSkillSuggestions`); empty hides it. */
+    skillSuggestions: List<SkillSummary> = emptyList(),
+    onSkillSelected: (SkillSummary) -> Unit = {},
     /** null ⇒ dictation unavailable (no controller wired) — mic button hidden. */
     dictation: DictationState? = null,
     onDictationToggle: () -> Unit = {},
@@ -109,10 +113,17 @@ fun ChatComposer(
     }
     Surface(color = MaterialTheme.colorScheme.surface, modifier = modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(vertical = 8.dp)) {
+            // One trigger at a time: the text cannot start with both `/` and `$`.
             if (slashSuggestions.isNotEmpty()) {
                 SlashCommandDropdown(
                     suggestions = slashSuggestions,
                     onSelect = onSlashCommandSelected,
+                    modifier = Modifier.padding(bottom = 6.dp),
+                )
+            } else if (skillSuggestions.isNotEmpty()) {
+                SkillSuggestionDropdown(
+                    suggestions = skillSuggestions,
+                    onSelect = onSkillSelected,
                     modifier = Modifier.padding(bottom = 6.dp),
                 )
             }
@@ -371,41 +382,89 @@ private fun SlashCommandDropdown(
     onSelect: (SlashCommand) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    AutocompleteSurface(modifier) {
+        LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
+            items(suggestions, key = { "${it.source}:${it.name}" }) { command ->
+                AutocompleteRow(
+                    leading = "/",
+                    name = command.name,
+                    description = command.description,
+                    onClick = { onSelect(command) },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Skills list above the input — same dropdown shell with the `$` glyph
+ * (web renders `$name` labels in `Autocomplete`).
+ */
+@Composable
+private fun SkillSuggestionDropdown(
+    suggestions: List<SkillSummary>,
+    onSelect: (SkillSummary) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    AutocompleteSurface(modifier) {
+        LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
+            items(suggestions, key = { it.name }) { skill ->
+                AutocompleteRow(
+                    leading = "$",
+                    name = skill.name,
+                    description = skill.description,
+                    onClick = { onSelect(skill) },
+                )
+            }
+        }
+    }
+}
+
+/** Shared dropdown chrome (web `Autocomplete` container). */
+@Composable
+private fun AutocompleteSurface(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         shape = RoundedCornerShape(12.dp),
         tonalElevation = 2.dp,
         modifier = modifier.fillMaxWidth(),
     ) {
-        LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
-            items(suggestions, key = { "${it.source}:${it.name}" }) { command ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .combinedClickable(onClick = { onSelect(command) })
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                ) {
-                    Text(
-                        text = "/${command.name}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    command.description?.takeIf { it.isNotBlank() }?.let { description ->
-                        Text(
-                            text = description,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.hapi.hint,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHighest)
-            }
+        content()
+    }
+}
+
+/** One suggestion row: `leading + name` and an optional 2-line description. */
+@Composable
+private fun AutocompleteRow(
+    leading: String,
+    name: String,
+    description: String?,
+    onClick: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Text(
+            text = "$leading$name",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        description?.takeIf { it.isNotBlank() }?.let { text ->
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.hapi.hint,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
+    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHighest)
 }
 
 // ------------------------------------------------------------- dictation --
