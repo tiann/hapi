@@ -8,7 +8,7 @@ import { listSlashCommands } from '@/modules/common/slashCommands';
 import { normalizeCodexModel } from '@/modules/common/codexModels';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
-import { ImplementCodexPlanRequestSchema, type ImplementCodexPlanResult } from '@hapi/protocol/apiTypes';
+import { ImplementCodexPlanRequestSchema, type ImplementCodexPlanResult, type RewindConversationRpcResult } from '@hapi/protocol/apiTypes';
 import { CodexAppServerClient, isIndeterminateError } from '../codexAppServerClient';
 import { buildHapiMcpBridge, type HapiMcpBridge } from '../utils/buildHapiMcpBridge';
 import { buildUserInputFromMessage } from '../utils/appServerConfig';
@@ -23,8 +23,10 @@ import { record, string } from './gateway';
 import { initializeSharedClient, type SharedLaunchOptions } from './launch';
 import { inheritedSandbox, settingsMatch } from './settings';
 import { planImplementationMessageId, planProposalForItem, planProposalForTurn } from './plan';
+import { SharedRewindBarrier, isNativeHistoryRead } from './rewind';
 
 type RuntimeSettings = NonNullable<Parameters<ApiSessionClient['keepAlive']>[2]>;
+type NativeServerRequest = { id: string | number; method: string; params: unknown };
 export type RootHost = {
     directory: string; generation: string; endpoint: string; token?: string;
     settingsFor(threadId: string): Record<string, unknown> | undefined;
@@ -78,14 +80,21 @@ export class SharedCodexRoot {
     private readonly settingsListeners = new Set<() => void>();
     private ready!: () => void;
     private readonly bound = new Promise<void>(resolve => { this.ready = resolve; });
+    private readonly rewindBarrier: SharedRewindBarrier;
+    private supportsRevert?: boolean;
+    private retainedTurnIds?: string[];
+    private deferredRequests: NativeServerRequest[] = [];
 
     constructor(readonly bootstrap: SessionBootstrapResult, private readonly host: RootHost) {
         this.session = bootstrap.session;
+        this.rewindBarrier = new SharedRewindBarrier(join(host.directory, `${this.session.sessionId}.rewind.json`));
         this.client = new CodexAppServerClient({ endpoint: host.endpoint, token: host.token, cwd: bootstrap.workingDirectory });
         this.client.setNotificationHandler((method, params) => {
             if (method === 'serverRequest/resolved') {
                 this.permissions?.resolved(string(record(params).threadId) ?? '', record(params).requestId); return;
             }
+            const eventThread = string(record(params).threadId);
+            if (this.rewindBarrier.blocked && (eventThread === this.threadId || this.children.has(eventThread ?? ''))) return;
             if (method === 'thread/settings/updated' && record(params).threadId === this.threadId) this.acceptSettings(record(record(params).threadSettings));
             if (record(params).threadId === this.threadId) {
                 if (method === 'turn/started') {
@@ -118,6 +127,9 @@ export class SharedCodexRoot {
         });
         this.client.setTransportAbandonedHandler(() => { void this.reconnect(); });
         this.session.onUserMessage((message, localId) => {
+            let release: () => void;
+            try { release = this.rewindBarrier.enter(); }
+            catch { if (localId) this.session.emitSteerIndeterminate([localId]); return; }
             this.work = this.work.catch(() => {}).then(async () => {
                 await this.bound;
                 if (this.closed || this.stopping) return;
@@ -126,18 +138,23 @@ export class SharedCodexRoot {
                 const resolved = text.trim().startsWith('/') ? await this.queue.command(id, () => this.command(text)) : text;
                 if (resolved === null) { this.session.emitMessagesConsumed([id], { clearQueuedThinkingGrace: true }); return; }
                 await this.queue.enqueue(id, buildUserInputFromMessage(resolved), this.interrupted);
-            }).catch(error => this.notice(`Message not confirmed: ${error instanceof Error ? error.message : error}. Inspect the queue before retrying.`));
+            }).catch(error => this.notice(`Message not confirmed: ${error instanceof Error ? error.message : error}. Inspect the queue before retrying.`)).finally(release);
         });
-        this.session.onCancelQueuedMessage(async id => { await this.bound; return this.stopping ? 'indeterminate' : this.queue.cancel(id); });
+        this.session.onCancelQueuedMessage(async id => {
+            await this.bound;
+            if (this.stopping || this.rewindBarrier.blocked) return 'indeterminate';
+            const release = this.rewindBarrier.enter();
+            try { return await this.queue.cancel(id); } finally { release(); }
+        });
         // Absence from history is NOT proof an uncertain mutation failed.
         this.session.onRetryQueuedMessage(async id => {
             await this.bound;
-            if (this.stopping) return false;
+            if (this.stopping || this.rewindBarrier.blocked) return false;
             await this.refresh();
             return ['rejected', 'canceled', 'released'].includes(this.queue.state(id) ?? '');
         });
         this.session.onReconnect(() => {
-            if (!this.threadId || this.closed || this.stopping) return;
+            if (!this.threadId || this.closed || this.stopping || this.rewindBarrier.blocked) return;
             // An emitted socket packet is not a durable hub acknowledgement.
             // Replay final native history with stable IDs after every reconnect.
             this.projection?.reset();
@@ -150,6 +167,9 @@ export class SharedCodexRoot {
     }
 
     async prepare(): Promise<void> {
+        await this.rewindBarrier.load();
+        this.rewindBarrier.assertOpen();
+        if (this.session.getMetadata()?.conversationHistoryDiverged) throw new Error('Conversation history requires reconciliation before resume');
         // Descendants share this bridge. The projection applies successful
         // root title calls so a child cannot rename the parent session.
         this.bridge = await buildHapiMcpBridge(this.session, { exportSessionEnv: false, emitTitleSummary: false,
@@ -158,13 +178,24 @@ export class SharedCodexRoot {
         this.permissions = new SharedCodexPermissions(this.session, this.client, this.host.generation);
         this.client.setServerRequestHandler(request => { void this.receiveRequest(request); });
     }
-    private async receiveRequest(request: { id: string | number; method: string; params: unknown }): Promise<void> {
+    private async receiveRequest(request: NativeServerRequest): Promise<void> {
         await this.bound;
         if (this.closed || this.stopping) return;
+        if (this.rewindBarrier.blocked) { this.deferredRequests.push(request); return; }
         const threadId = string(record(request.params).threadId);
         // App-server automatically subscribes every initialized connection to
         // newly created threads, including siblings. Never answer their calls.
-        if (threadId && await this.ownsThread(threadId)) this.permissions.receive(request);
+        if (threadId && await this.ownsThread(threadId)) {
+            // Ownership lookup can await native ancestry while admission closes.
+            if (this.rewindBarrier.blocked) this.deferredRequests.push(request);
+            else this.permissions.receive(request);
+        }
+    }
+    private async replayDeferredRequests(): Promise<void> {
+        const requests = this.deferredRequests.splice(0);
+        // Native resolutions are tracked even while admission is closed, so
+        // permissions.receive ignores any buffered request already retired.
+        for (const request of requests) await this.receiveRequest(request);
     }
     private async ownsThread(threadId: string): Promise<boolean> {
         const visited = new Set<string>();
@@ -192,6 +223,7 @@ export class SharedCodexRoot {
     async bind(threadId: string, response: Record<string, unknown>, subscribe: boolean): Promise<void> {
         if (this.threadId && this.threadId !== threadId) throw new Error('Cannot retarget a shared HAPI session');
         this.threadId = threadId;
+        await this.rewindBarrier.load();
         this.queue = new SharedCodexQueue(this.client, threadId, join(this.host.directory, `${this.session.sessionId}.queue.json`),
             (ids, steered) => {
                 this.session.emitMessagesConsumed(ids, { steered });
@@ -204,8 +236,6 @@ export class SharedCodexRoot {
         this.projection = new SharedCodexProjection(this.session, threadId, id => this.queue.committed(id));
         this.session.updateMetadata(metadata => ({ ...metadata, codexSessionId: threadId, capabilities: {
             ...metadata.capabilities, concurrentClients: true, terminal: true,
-            // In-place rewind needs a native + hub commit barrier. Do not
-            // advertise a destructive operation we cannot make atomic yet.
             conversationHistory: { forkCurrent: true, forkAtMessage: true, rewindToMessage: false }
         } }));
         this.session.updateAgentState(state => ({ ...state, controlledByUser: false, startingMode: undefined, codexPlanProposalId: null, codexCompactionPendingMessageIds: [], requests: {},
@@ -215,11 +245,13 @@ export class SharedCodexRoot {
         // 空会话的首次订阅保留完整响应，以兼容原生历史源文件的初始化。
         if (subscribe) response = record(await this.client.request('thread/resume', { threadId }));
         this.acceptSettings(response); this.acceptSettings(this.host.settingsFor(threadId) ?? {});
-        await this.projection.history(response.thread); await this.refresh(); await this.refreshChildren(true);
+        if (!this.rewindBarrier.blocked && this.session.getMetadata()?.conversationHistoryDiverged !== true) {
+            await this.projection.history(response.thread); await this.refresh(); await this.refreshChildren(true);
+        }
     }
     async activate(options: SharedLaunchOptions = {}): Promise<void> {
         // Restored input cannot run before the cold-resume settings are applied.
-        await this.initialSettings(options);
+        if (!this.rewindBarrier.blocked) await this.initialSettings(options);
         if (this.stopping) throw new Error('Codex execution is stopping');
         this.registerControls(); this.ready();
         this.heartbeat = setInterval(() => this.alive(), 2_000); this.alive(); this.session.emitSessionReady();
@@ -247,10 +279,11 @@ export class SharedCodexRoot {
     }
     private availablePlanId(): string | null {
         if (this.currentTurn || this.latestTurn?.status !== 'completed' || this.settings.collaborationMode !== 'plan'
-            || this.stopping || this.closed || this.reconnecting || this.submittingPlan || !this.client.isInitialized()) return null;
+            || this.stopping || this.closed || this.reconnecting || this.submittingPlan || this.rewindBarrier.blocked || !this.client.isInitialized()) return null;
         const id = this.latestTurn.planId;
         // An uncertain/accepted submission must never become a fresh Execute button after reconnect.
-        return id && !this.queue?.owns(planImplementationMessageId(id)) ? id : null;
+        const implementation = id ? this.queue?.planImplementation(id) : undefined;
+        return id && (!implementation || implementation.state === 'rewound') ? id : null;
     }
     private publishPlan(): void {
         const id = this.availablePlanId();
@@ -282,6 +315,7 @@ export class SharedCodexRoot {
             if (id) this.ancestry.set(id, string(thread.parentThreadId) ?? null);
         }
         const eventThread = string(p.threadId) ?? string(record(p.thread).id);
+        if (this.rewindBarrier.blocked && (eventThread === this.threadId || this.children.has(eventThread ?? ''))) return;
         if (eventThread && eventThread !== this.threadId) {
             if (!await this.ownsThread(eventThread)) return;
             let projection = this.children.get(eventThread);
@@ -343,12 +377,23 @@ export class SharedCodexRoot {
         return thread;
     }
     refresh(): Promise<void> {
-        return this.refreshing ??= this.refreshNow().finally(() => { this.refreshing = undefined; });
+        if (this.rewindBarrier.blocked) return Promise.resolve();
+        if (this.refreshing) return this.refreshing;
+        const release = this.rewindBarrier.enter();
+        return this.refreshing = this.refreshNow().finally(() => { this.refreshing = undefined; release(); });
     }
     private async refreshNow(): Promise<void> {
         if (!this.threadId || this.closed || !this.client.isInitialized()) return;
         const revision = this.turnRevision;
         const thread = await this.readThread();
+        if (thread.historyMode === 'paginated' && this.supportsRevert === undefined) {
+            this.supportsRevert = await this.client.supportsMethod('thread/revert');
+        }
+        const rewindToMessage = thread.historyMode === 'paginated' && this.supportsRevert === true;
+        if (this.session.getMetadata()?.capabilities?.conversationHistory?.rewindToMessage !== rewindToMessage) {
+            this.session.updateMetadata(metadata => ({ ...metadata, capabilities: { ...metadata.capabilities,
+                conversationHistory: { ...metadata.capabilities?.conversationHistory, rewindToMessage } } }));
+        }
         const turns = Array.isArray(thread.turns) ? thread.turns.map(record) : [];
         if (revision === this.turnRevision) {
             this.currentTurn = string(turns.find(turn => turn.status === 'inProgress')?.id);
@@ -360,6 +405,11 @@ export class SharedCodexRoot {
         await this.projection.history(thread); await this.queue.reconcile(); this.alive();
     }
     private async refreshChildren(subscribe: boolean): Promise<void> {
+        if (this.rewindBarrier.blocked) return;
+        const release = this.rewindBarrier.enter();
+        try { await this.refreshChildrenNow(subscribe); } finally { release(); }
+    }
+    private async refreshChildrenNow(subscribe: boolean): Promise<void> {
         // 历史回放可省略，子代理发现与实时订阅仍需在重连后恢复。
         const replayHistory = !this.lazyHistory();
         let cursor: string | undefined;
@@ -392,13 +442,20 @@ export class SharedCodexRoot {
         }
     }
     nativeQueueDeleted(nativeId: string): Promise<void> { return this.queue.deleted(nativeId); }
+    /** Native terminal operations participate in the same root barrier as Web RPCs. */
+    nativeAdmission(method: string): () => void {
+        return isNativeHistoryRead(method) ? () => {} : this.rewindBarrier.enter();
+    }
+    containsThread(threadId: string): Promise<boolean> { return this.ownsThread(threadId); }
     replaySettings(): Array<{ method: string; params: unknown }> {
         return this.settingsNotification ? [{ method: 'thread/settings/updated', params: {
             threadId: this.threadId, threadSettings: this.settingsNotification
         } }] : [];
     }
     private async reconnect(): Promise<void> {
-        if (this.closed || this.stopping || this.reconnecting || !this.threadId) return;
+        if (this.closed || this.stopping || this.reconnecting || !this.threadId || this.rewindBarrier.blocked) return;
+        // The new connection replays authoritative pending native requests.
+        this.deferredRequests = [];
         this.reconnecting = true;
         this.dequeuedInputs.clear(); this.deliveryTurn = undefined; this.compactingTurn = undefined;
         this.publishSteering(); this.publishPlan(); this.permissions.close();
@@ -474,15 +531,15 @@ export class SharedCodexRoot {
     private async implementPlan(planId: string): Promise<ImplementCodexPlanResult> {
         const unavailable = (): ImplementCodexPlanResult => ({ ok: false, code: 'unavailable', error: 'Codex is disconnected or stopping. Reconnect before implementing the plan.' });
         const stale = (): ImplementCodexPlanResult => ({ ok: false, code: 'stale_plan', error: 'This plan is no longer actionable. Refresh the conversation.' });
-        const localId = planImplementationMessageId(planId);
+        let localId: string | undefined;
         if (this.closed || this.stopping || this.reconnecting || !this.client.isInitialized()) return unavailable();
         try {
             // A reconnect snapshot may have started before this action arrived.
             await this.refreshing;
             await this.refresh();
-            const prior = this.queue.state(localId);
-            if (prior === 'queued' || prior === 'consumed') return { ok: true };
-            if (prior) return { ok: false, code: 'indeterminate', error: 'This implementation was already submitted. Check the queue and conversation before sending again.' };
+            const prior = this.queue.planImplementation(planId);
+            if (prior?.state === 'queued' || prior?.state === 'consumed') return { ok: true };
+            if (prior && prior.state !== 'rewound') return { ok: false, code: 'indeterminate', error: 'This implementation was already submitted. Check the queue and conversation before sending again.' };
             const before = await this.queue.list();
             if (this.availablePlanId() !== planId || before.length) return stale();
             const revision = this.turnRevision;
@@ -492,11 +549,12 @@ export class SharedCodexRoot {
             if (this.closed || this.stopping || this.reconnecting || !this.client.isInitialized()) return unavailable();
             if (this.turnRevision !== revision || this.currentTurn || this.latestTurn?.planId !== planId
                 || this.settings.collaborationMode !== 'default' || queued.length) return stale();
+            localId = this.queue.nextPlanImplementationId(planId);
             await this.queue.enqueue(localId, buildUserInputFromMessage('Implement the plan.'));
             return { ok: true };
         } catch (error) {
             const detail = error instanceof Error ? error.message : String(error);
-            return { ok: false, code: isIndeterminateError(error) || this.queue.state(localId) === 'unknown' ? 'indeterminate' : 'failed',
+            return { ok: false, code: isIndeterminateError(error) || (localId !== undefined && this.queue.state(localId) === 'unknown') ? 'indeterminate' : 'failed',
                 error: `Plan implementation was not confirmed: ${detail}. Check the mode, queue and conversation before retrying.` };
         } finally { this.submittingPlan = false; this.publishPlan(); }
     }
@@ -504,8 +562,12 @@ export class SharedCodexRoot {
         const rpc = { registerHandler: (method: string, handler: (raw: unknown) => Promise<unknown>) => {
             this.session.rpcHandlerManager.registerHandler(method, async (raw: unknown) => {
                 if (this.stopping) throw new Error('Codex execution is stopping; resume when inactive');
-                const pending = handler(raw); this.controls.add(pending);
-                try { return await pending; } finally { this.controls.delete(pending); }
+                const transaction = method === RPC_METHODS.RewindConversation || method === RPC_METHODS.CompleteConversationRewind;
+                const release = transaction ? () => {} : this.rewindBarrier.enter();
+                try {
+                    const pending = handler(raw); this.controls.add(pending);
+                    try { return await pending; } finally { this.controls.delete(pending); }
+                } finally { release(); }
             });
         } };
         rpc.registerHandler(RPC_METHODS.ListCodexModels, async raw => {
@@ -570,9 +632,112 @@ export class SharedCodexRoot {
             await child.initialSettings({ collaborationMode: this.settings.collaborationMode });
             return { nativeSessionId: child.threadId, sessionId: child.session.sessionId };
         });
-        rpc.registerHandler(RPC_METHODS.RewindConversation, async () => {
-            throw new Error('In-place rewind is not supported for concurrent Codex clients; fork at the message instead');
+        rpc.registerHandler(RPC_METHODS.RewindConversation, raw => this.rewind(
+            z.object({ messageLocalId: z.string().min(1) }).parse(raw).messageLocalId));
+        rpc.registerHandler(RPC_METHODS.CompleteConversationRewind, raw => this.completeRewind(
+            z.object({ rewindToken: z.string().min(1) }).parse(raw).rewindToken));
+    }
+    private async rewind(messageLocalId: string): Promise<RewindConversationRpcResult> {
+        const rejected = (error: unknown): RewindConversationRpcResult => ({ success: false, outcome: 'rejected',
+            error: error instanceof Error ? error.message : String(error) });
+        let token: string;
+        try { token = await this.rewindBarrier.begin(); } catch (error) { return rejected(error); }
+        let dispatched = false;
+        this.publishPlan();
+        try {
+            if (this.currentTurn || this.reconnecting || this.permissions.hasPending() || !this.client.isInitialized()
+                || this.session.getMetadata()?.conversationHistoryDiverged) throw new Error('Session is not ready for rewind');
+            await this.notifications;
+            await this.queue.flush();
+            if ((await this.queue.list()).length || this.queue.hasUncertainInput()) throw new Error('Session has queued or uncertain input');
+            const goal = record(record(await this.client.request('thread/goal/get', { threadId: this.threadId })).goal);
+            if (goal.status === 'active') throw new Error('Pause the native goal before rewinding');
+            const thread = await this.readThread(this.threadId, true);
+            if (thread.historyMode !== 'paginated' || this.supportsRevert !== true) throw new Error('Rewind requires native thread/revert and paginated history');
+            const turns = this.checkedRewindTurns(thread);
+            const turnId = this.projection.turnFor(messageLocalId) ?? turns.find(turn =>
+                turn.items.map(record).some(item => {
+                    if (item.type !== 'userMessage') return false;
+                    const id = string(item.clientId ?? item.clientUserMessageId)
+                        ?? (item.id ? `codex:${this.threadId}:user:${item.id}` : undefined);
+                    return id === messageLocalId;
+                })
+            )?.id;
+            const index = turns.findIndex(turn => turn.id === turnId);
+            const selected = turns[index];
+            const first = selected?.items.map(record).find(item => item.type === 'userMessage');
+            const firstId = first && (string(first.clientId ?? first.clientUserMessageId)
+                ?? (first.id ? `codex:${this.threadId}:user:${first.id}` : undefined));
+            if (index < 0 || firstId !== messageLocalId) throw new Error('Select the first user message of a complete native turn');
+            // Child histories have independent lifetimes and traces. Until a
+            // subtree reconciliation protocol exists, preserve them via Fork.
+            if (this.children.size) throw new Error('Rewind with child-agent history is unavailable; fork at the message instead');
+            if (await this.session.flush() === false) throw new Error('Hub transcript acknowledgement is unavailable');
+            if (this.deferredRequests.length) throw new Error('Native input arrived during rewind preflight');
+            this.retainedTurnIds = turns.slice(0, index).map(turn => turn.id);
+            dispatched = true;
+            await this.client.request('thread/revert', { threadId: this.threadId, beforeTurnId: turnId });
+            await this.notifications;
+            await this.verifyRewind();
+            return { success: true, truncateFromLocalId: messageLocalId, messages: [], rewindToken: token };
+        } catch (error) {
+            if (!dispatched) {
+                await this.rewindBarrier.cancel();
+                // Native activity admitted before the barrier can finish while
+                // preflight is checking it. Restore notifications suppressed
+                // during that check before exposing controls again.
+                this.acceptSettings(this.host.settingsFor(this.threadId) ?? {});
+                if (!this.client.isInitialized()) {
+                    // Transport loss while the barrier was closed deferred its
+                    // callback. Pre-dispatch rejection is safe to reconnect;
+                    // never take this path after native mutation was dispatched.
+                    void this.reconnect().catch(reconnectError => logger.debug('[Codex shared] rejected rewind reconnect', reconnectError));
+                } else {
+                    await this.replayDeferredRequests();
+                    await this.refresh().catch(refreshError => logger.debug('[Codex shared] rejected rewind refresh', refreshError));
+                }
+                this.publishPlan(); return rejected(error);
+            }
+            this.session.updateMetadata(metadata => ({ ...metadata, conversationHistoryDiverged: true }));
+            throw error; // The hub quarantines unknown outcomes; the durable barrier stays closed.
+        }
+    }
+    private checkedRewindTurns(thread: Record<string, unknown>): Array<{ id: string; items: unknown[] }> {
+        if (!Array.isArray(thread.turns)) throw new Error('Incomplete native history');
+        const ids = new Set<string>();
+        return thread.turns.map(value => {
+            const turn = record(value); const id = string(turn.id);
+            if (!id || ids.has(id) || !Array.isArray(turn.items) || !['completed', 'interrupted', 'failed'].includes(String(turn.status))) {
+                throw new Error('Native history is incomplete or busy');
+            }
+            ids.add(id); return { id, items: turn.items };
         });
+    }
+    private async verifyRewind(): Promise<Record<string, unknown>> {
+        const thread = await this.readThread(this.threadId, true);
+        const ids = this.checkedRewindTurns(thread).map(turn => turn.id);
+        if (!this.retainedTurnIds || JSON.stringify(ids) !== JSON.stringify(this.retainedTurnIds)
+            || (await this.queue.list()).length) throw new Error('Native rewind requires reconciliation');
+        return thread;
+    }
+    private async completeRewind(token: string): Promise<{ success: true }> {
+        await this.rewindBarrier.complete(token, async () => {
+            const thread = await this.verifyRewind();
+            await this.notifications;
+            const response = record(await this.client.request('thread/read', { threadId: this.threadId, includeTurns: false }));
+            this.acceptSettings(response);
+            this.projection = new SharedCodexProjection(this.session, this.threadId, id => this.queue.committed(id), undefined, false);
+            const last = Array.isArray(thread.turns) ? record(thread.turns.at(-1)) : {};
+            const lastId = string(last.id);
+            this.currentTurn = undefined;
+            this.latestTurn = lastId ? { id: lastId, status: string(last.status) ?? 'unknown', planId: planProposalForTurn(this.threadId, last) } : undefined;
+            this.interrupted = last.status === 'interrupted';
+            await this.projection.history(thread, { replayTranscript: false });
+            if (await this.session.flush() === false) throw new Error('Hub history reconciliation acknowledgement is unavailable');
+            if (this.latestTurn?.planId) await this.queue.rewindPlanImplementation(this.latestTurn.planId);
+        });
+        this.deferredRequests = [];
+        this.publishPlan(); return { success: true };
     }
     private async assertBoundary(localId: string, turnId: string): Promise<Record<string, unknown>> {
         const thread = await this.readThread(this.threadId, true);

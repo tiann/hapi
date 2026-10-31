@@ -17,6 +17,15 @@ export function planProposalForTurn(threadId: string, turn: Record<string, unkno
     return turn.items.map(item => planProposalForItem(threadId, turnId, item)).filter(Boolean).at(-1);
 }
 
-export function planImplementationMessageId(planId: string): string {
-    return `${planId}:implement`;
+export function planImplementationMessageId(planId: string, attempt = 1): string {
+    const base = `${planId}:implement`;
+    return attempt === 1 ? base : `${base}:${attempt}`;
+}
+
+export function planImplementationAttempt(planId: string, messageId: string): number | undefined {
+    const base = `${planId}:implement`;
+    if (messageId === base) return 1;
+    if (!messageId.startsWith(`${base}:`)) return undefined;
+    const attempt = Number(messageId.slice(base.length + 1));
+    return Number.isSafeInteger(attempt) && attempt > 1 ? attempt : undefined;
 }

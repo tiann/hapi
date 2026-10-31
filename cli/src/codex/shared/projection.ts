@@ -45,8 +45,9 @@ export class SharedCodexProjection {
     private readonly completedTitles = new Set<string>();
     private titleRevision = 0;
     constructor(private readonly session: ApiSessionClient, readonly threadId: string,
-        private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string) {
-        if (!parentThreadId) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
+        private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string, restoreLocators = true) {
+        if (!parentThreadId && restoreLocators) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
+        if (!restoreLocators) session.updateMetadata(metadata => ({ ...metadata, conversationHistoryTurns: {}, conversationHistoryPoints: {} }));
     }
 
     turnFor(id: string): string | undefined { return this.turns.get(id); }
@@ -101,14 +102,18 @@ export class SharedCodexProjection {
         }
     }
 
-    private async project(method: string, params: unknown, modelAtReceipt?: string, fromHistory = false): Promise<void> {
+    private async project(method: string, params: unknown, modelAtReceipt?: string, fromHistory = false, replayTranscript = true): Promise<void> {
         if (method.startsWith('codex/event/')) return;
         const p = record(params);
         const item = record(p.item);
         const turnId = string(p.turnId) ?? string(record(p.turn).id);
-        const send = (body: Record<string, unknown>, key: string) => this.send({
-            ...body, ...(turnId ? { turn_id: turnId } : {})
-        }, key);
+        const send = (body: Record<string, unknown>, key: string) => {
+            if (replayTranscript) {
+                this.send({ ...body, ...(turnId ? { turn_id: turnId } : {}) }, key);
+            } else {
+                this.emitted.add(key);
+            }
+        };
         // Settings may already describe the next turn by the time queued
         // notifications are projected. Never attribute usage to that model.
         if (turnId && method === 'turn/started' && modelAtReceipt && !this.turnModels.has(turnId)) {
@@ -125,7 +130,7 @@ export class SharedCodexProjection {
                 if (turnId) this.turns.set(id, turnId);
                 await this.committed(id);
                 const text = inputText(item.content);
-                if (text) this.session.sendUserMessage(text, undefined, id);
+                if (text && replayTranscript) this.session.sendUserMessage(text, undefined, id);
                 this.session.updateMetadata(metadata => ({ ...metadata, conversationHistoryTurns: Object.fromEntries(this.turns),
                     ...(turnId && (!firstInTurn || firstInTurn === id) ? { conversationHistoryPoints: { ...metadata.conversationHistoryPoints, [id]: true } } : {})
                 }));
@@ -208,7 +213,8 @@ export class SharedCodexProjection {
         }
     }
 
-    async history(thread: unknown): Promise<void> {
+    async history(thread: unknown, options?: { replayTranscript?: boolean }): Promise<void> {
+        const replayTranscript = options?.replayTranscript ?? true;
         const turns = record(thread).turns;
         if (!Array.isArray(turns)) return;
         const titleRevision = this.titleRevision;
@@ -223,7 +229,7 @@ export class SharedCodexProjection {
                 if (!this.parentThreadId && string(record(item).id) && pendingTitle && !this.completedTitles.has(titleKey)) {
                     this.pendingTitles.set(titleKey, pendingTitle);
                 }
-                await this.project('item/started', params, undefined, true);
+                await this.project('item/started', params, undefined, true, replayTranscript);
                 // Active snapshots can contain partial assistant text. Do not
                 // settle it under the final stable id and suppress completion.
                 if (turn.status !== 'inProgress' || record(item).status === 'completed' || record(item).type === 'userMessage') {
@@ -235,7 +241,7 @@ export class SharedCodexProjection {
                         }
                         this.pendingTitles.delete(titleKey);
                     }
-                    await this.project('item/completed', params, undefined, true);
+                    await this.project('item/completed', params, undefined, true, replayTranscript);
                 }
             }
         }
