@@ -33,7 +33,10 @@ object SkillSuggestions {
      * an empty [query] ranks by recency desc then name; otherwise
      * exact = 0, prefix = 1, contains = 2, and a levenshtein within
      * `max(2, query length / 2)` scores `3 + distance` — everything else
-     * drops. Ties break recency desc, then name.
+     * drops. Ties break recency desc, then name. Recency lookups key on
+     * the lowercased skill name — the same normalization
+     * [RecentSkillsLogic.advance] writes — so case differences cannot
+     * lose ranking history.
      */
     fun filter(
         skills: List<SkillSummary>,

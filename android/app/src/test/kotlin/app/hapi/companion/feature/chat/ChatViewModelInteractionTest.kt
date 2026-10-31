@@ -1919,6 +1919,30 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun `mixed-case skill names keep their recency ranking`() = runTest {
+        val recent = InMemoryRecentSkills()
+        val harness = InteractionHarness(this, recentSkills = recent)
+        harness.api.skillsResult = SkillsResponse(
+            success = true,
+            skills = listOf(
+                SkillSummary(name = "alpha", description = null),
+                SkillSummary(name = "Code-Review", description = null),
+            ),
+        )
+        harness.viewModel.start()
+
+        // The stored recency key must match the lowercased lookup key, or
+        // the pick silently loses its ranking history.
+        harness.viewModel.selectSkill(SkillSummary(name = "Code-Review", description = null))
+        harness.viewModel.composer.first { it.text == "\$Code-Review " }
+        recent.timestamps.first { it.containsKey("code-review") }
+
+        harness.viewModel.setComposerText("$")
+        val ranked = harness.viewModel.skillSuggestions.first { it.size == 2 }
+        assertEquals(listOf("Code-Review", "alpha"), ranked.map { it.name })
+    }
+
+    @Test
     fun `RPC failure still serves the metadata names`() = runTest {
         val metadata = SessionMetadata(
             path = "/repo/app",

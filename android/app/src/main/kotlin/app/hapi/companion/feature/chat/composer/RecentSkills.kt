@@ -8,13 +8,16 @@ import kotlinx.coroutines.flow.asStateFlow
 /**
  * Web `recent-skills.ts` twin: last-used epoch per skill name, capped at
  * 200 entries, ranking the `$` menu's empty-query order (and tie-breaking
- * the scored order). Names absent from the map are "never used" — rank last,
- * then name order. Production persists over the app-wide prefs DataStore
- * (`di/DataStoreRecentSkills`); tests use [InMemoryRecentSkills].
+ * the scored order). Names are stored lowercased — the same normalization
+ * [SkillSuggestions.filter] keys its recency lookups on — so case
+ * differences cannot split or lose ranking history. Names absent from the
+ * map are "never used" — rank last, then name order. Production persists
+ * over the app-wide prefs DataStore (`di/DataStoreRecentSkills`); tests use
+ * [InMemoryRecentSkills].
  */
 interface RecentSkills {
 
-    /** Latest-use timestamps by skill name; empty until something is used. */
+    /** Latest-use timestamps by skill name (lowercase key); empty until something is used. */
     val timestamps: Flow<Map<String, Long>>
 
     /** Record a use at [at]; the newest [RecentSkillsLogic.MAX_ENTRIES] survive. */
@@ -26,10 +29,15 @@ object RecentSkillsLogic {
     /** Web keeps the 200 most recent entries. */
     const val MAX_ENTRIES = 200
 
-    /** Pure step behind [RecentSkills.markUsed] — newest-first cap at 200. */
+    /**
+     * Pure step behind [RecentSkills.markUsed] — newest-first cap at 200.
+     * The key is [String.lowercase]-normalized to match the lookup side
+     * ([SkillSuggestions.filter]), so `Zeta` and `zeta` share one entry.
+     */
     fun advance(current: Map<String, Long>, name: String, at: Long): Map<String, Long> {
-        if (name.isEmpty()) return current
-        return (current + (name to at)).entries
+        val key = name.lowercase()
+        if (key.isEmpty()) return current
+        return (current + (key to at)).entries
             .sortedByDescending { it.value }
             .take(MAX_ENTRIES)
             .associate { it.toPair() }
