@@ -7,5 +7,6 @@
     <priority>1.0</priority>
     <xhtml:link rel="alternate" hreflang="en" href="https://hapi.manus.space/?lng=en"/>
     <xhtml:link rel="alternate" hreflang="zh" href="https://hapi.manus.space/?lng=zh"/>
+    <xhtml:link rel="alternate" hreflang="ru" href="https://hapi.manus.space/?lng=ru"/>
   </url>
 </urlset>
