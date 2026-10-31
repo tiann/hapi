@@ -204,6 +204,38 @@ describe('useSSE cancelled delivery reconciliation', () => {
                 ])
             } finally { unmount() }
         })
+        it(`handles a late-consumed abandoned row after cancellation in ${scope} scope`, () => {
+            const message: DecryptedMessage = {
+                id: 'late-abandoned-server', localId: 'late-abandoned-local', seq: 1, createdAt: 1000, invokedAt: null,
+                status: 'queued', deliveryState: 'indeterminate',
+                content: { role: 'user', content: { type: 'text', text: 'late native proof' } },
+            }
+            appendOptimisticMessage('cancelled-session', message)
+            const { unmount } = renderUseSSE({ scope })
+            try {
+                act(() => {
+                    const source = FakeEventSource.instances[0]!
+                    source.simulateOpen()
+                    // Abandonment removes the chip before the native proof arrives.
+                    source.simulateMessage({ type: 'message-cancelled', sessionId: 'cancelled-session', messageId: message.id, localId: message.localId })
+                    source.simulateMessage({ type: 'messages-consumed', sessionId: 'cancelled-session', localIds: [message.localId!], invokedAt: 2000 })
+                    // The Hub replays the full row because the CLI's normal echo
+                    // is suppressed against the retained correlation row.
+                    source.simulateMessage({ type: 'message-received', sessionId: 'cancelled-session', message: { ...message, status: undefined, deliveryState: undefined, invokedAt: 2000 } })
+                })
+                const restored = getMessageWindowState('cancelled-session').messages
+                if (scope === 'global') {
+                    // Message stream events belong to the full session stream.
+                    expect(restored).toEqual([])
+                } else {
+                    expect(restored).toEqual([
+                        expect.objectContaining({ id: message.id, localId: message.localId, invokedAt: 2000 }),
+                    ])
+                }
+            } finally {
+                unmount()
+            }
+        })
         it.each([
             { name: 'optimistic attachment retry with a missed server echo', id: 'cancelled-local', localId: 'cancelled-local', eventLocalId: 'cancelled-local' },
             { name: 'server-echoed message', id: 'cancelled-server', localId: 'cancelled-local', eventLocalId: 'cancelled-local' },
