@@ -1539,6 +1539,45 @@ class NewSessionViewModelTest {
     }
 
     @Test
+    fun `bulk import failure stays observable on the inline section after the sheet closes`() = runTest {
+        val gateway = FakeGateway().apply {
+            codexSessionsResult = CodexLocalSessionsResponse(
+                success = true,
+                sessions = listOf(codexSession("thread-1"), codexSession("thread-2")),
+            )
+            syncResult = CodexDesktopScriptResponse(success = false, error = "disk full")
+        }
+        val vm = buildViewModel(gateway, FakeMachineStore(listOf(machine("m1"))), FakePrefs())
+        advanceUntilIdle()
+
+        vm.setAgent("codex")
+        vm.setDirectory("/data/work")
+        vm.openCodexImportDialog()
+        advanceUntilIdle()
+        vm.codexImport.toggleSession("thread-1")
+        vm.codexImport.toggleSession("thread-2")
+        vm.codexImport.confirm() // two rows → bulk import, which fails
+        advanceUntilIdle()
+        // The failed import keeps the sheet open with the in-dialog error…
+        assertTrue(vm.codexImport.state.value.open)
+        assertEquals("Import failed: disk full", vm.codexImport.state.value.importError)
+
+        // …and dismissing the sheet must not swallow the failure (review:
+        // errors stay observable outside the dialog, like the web toast).
+        vm.codexImport.close()
+        advanceUntilIdle()
+        assertFalse(vm.codexImport.state.value.open)
+        assertEquals("Import failed: disk full", vm.uiState.value.codexImport.error,
+            "retained failure renders on the inline section")
+
+        // Reopening the dialog clears the stale failure (fresh attempt).
+        vm.openCodexImportDialog()
+        advanceUntilIdle()
+        assertNull(vm.codexImport.state.value.importError)
+        assertNull(vm.uiState.value.codexImport.error)
+    }
+
+    @Test
     fun `switching away from codex clears import state`() = runTest {
         val gateway = FakeGateway().apply {
             codexSessionsResult = CodexLocalSessionsResponse(

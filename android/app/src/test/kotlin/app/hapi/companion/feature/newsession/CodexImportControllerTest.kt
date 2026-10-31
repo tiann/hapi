@@ -21,11 +21,13 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 
 /**
@@ -57,6 +59,8 @@ class CodexImportControllerTest {
         var codexSessionsThrows: Exception? = null
         var syncResult: CodexDesktopScriptResponse = CodexDesktopScriptResponse(success = true)
         var syncThrows: Exception? = null
+        /** Suspends the sync call until completed — pins the in-flight window. */
+        var syncGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
         var resumeResult: ResumeSessionResponse = ResumeSessionResponse(sessionId = "s-resumed")
         var resumeThrows: Exception? = null
 
@@ -89,6 +93,7 @@ class CodexImportControllerTest {
 
         override suspend fun syncCodexSession(sync: CodexDesktopSyncRequest): CodexDesktopScriptResponse {
             syncCalls.add(sync)
+            syncGate?.await()
             syncThrows?.let { throw it }
             return syncResult
         }
@@ -424,6 +429,131 @@ class CodexImportControllerTest {
 
         assertTrue(controller.state.value.open)
         assertEquals("Import failed: socket reset", controller.state.value.importError)
+    }
+
+    // --------------------------------------------------- dismissal feedback --
+
+    @Test
+    fun `dismissing the sheet mid bulk import keeps the failure observable`() = runTest {
+        val gateway = FakeGateway().apply {
+            codexSessionsResult = CodexLocalSessionsResponse(
+                success = true,
+                sessions = listOf(session("a"), session("b")),
+            )
+            syncGate = CompletableDeferred()
+            syncResult = CodexDesktopScriptResponse(success = false, error = "disk full")
+        }
+        val store = RecordingStore()
+        val controller = buildController(gateway, store)
+        controller.openDialog("/repo", "m1")
+        advanceUntilIdle()
+        controller.toggleSession("a")
+        controller.toggleSession("b")
+
+        controller.confirm()
+        runCurrent() // coroutine reaches the gated sync call
+        assertTrue(controller.state.value.importing)
+        controller.close() // Back/scrim/swipe while in flight
+        assertFalse(controller.state.value.open)
+
+        gateway.syncGate?.complete(Unit)
+        advanceUntilIdle()
+
+        val state = controller.state.value
+        assertFalse(state.open)
+        assertFalse(state.importing)
+        assertEquals("Import failed: disk full", state.importError, "failure survives the dismissal")
+        assertTrue(store.markers.value.isEmpty(), "failed import marks nothing")
+    }
+
+    @Test
+    fun `import finishing after a mid-flight dismissal succeeds without leftovers`() = runTest {
+        val gateway = FakeGateway().apply {
+            codexSessionsResult = CodexLocalSessionsResponse(
+                success = true,
+                sessions = listOf(session("a"), session("b")),
+            )
+            syncGate = CompletableDeferred()
+            syncResult = CodexDesktopScriptResponse(success = true, syncedCount = 2)
+        }
+        val store = RecordingStore()
+        val controller = buildController(gateway, store)
+        controller.openDialog("/repo", "m1")
+        advanceUntilIdle()
+        controller.toggleSession("a")
+        controller.toggleSession("b")
+
+        controller.confirm()
+        runCurrent()
+        assertTrue(controller.state.value.importing)
+        controller.close()
+
+        gateway.syncGate?.complete(Unit)
+        advanceUntilIdle()
+
+        val state = controller.state.value
+        assertFalse(state.open)
+        assertFalse(state.importing)
+        assertNull(state.importError, "success clears any stale error")
+        assertTrue(store.markers.value.containsKey("a"))
+        assertTrue(store.markers.value.containsKey("b"))
+    }
+
+    @Test
+    fun `closing after a failed import retains the error until the dialog reopens`() = runTest {
+        val gateway = FakeGateway().apply {
+            codexSessionsResult = CodexLocalSessionsResponse(
+                success = true,
+                sessions = listOf(session("a"), session("b")),
+            )
+            syncResult = CodexDesktopScriptResponse(success = false, error = "disk full")
+        }
+        val controller = buildController(gateway)
+        controller.openDialog("/repo", "m1")
+        advanceUntilIdle()
+        controller.toggleSession("a")
+        controller.toggleSession("b")
+        controller.confirm()
+        advanceUntilIdle()
+        assertTrue(controller.state.value.open)
+        assertEquals("Import failed: disk full", controller.state.value.importError)
+
+        controller.close()
+        assertFalse(controller.state.value.open)
+        assertEquals("Import failed: disk full", controller.state.value.importError, "retained for the inline section")
+
+        controller.openDialog("/repo", "m1")
+        advanceUntilIdle()
+        assertNull(controller.state.value.importError, "reopening starts clean")
+    }
+
+    @Test
+    fun `single row confirm drops any stale import error`() = runTest {
+        val gateway = FakeGateway().apply {
+            codexSessionsResult = CodexLocalSessionsResponse(
+                success = true,
+                sessions = listOf(session("a"), session("b")),
+            )
+            syncResult = CodexDesktopScriptResponse(success = false, error = "disk full")
+        }
+        val controller = buildController(gateway)
+        controller.openDialog("/repo", "m1")
+        advanceUntilIdle()
+        controller.toggleSession("a")
+        controller.toggleSession("b")
+        controller.confirm()
+        advanceUntilIdle()
+        assertEquals("Import failed: disk full", controller.state.value.importError)
+
+        // User resolves the situation with an inline pick instead.
+        controller.toggleSession("b")
+        controller.confirm()
+        advanceUntilIdle()
+
+        val state = controller.state.value
+        assertFalse(state.open)
+        assertEquals("a", state.selectedSessionId)
+        assertNull(state.importError, "a clean inline pick clears the stale failure")
     }
 
     @Test

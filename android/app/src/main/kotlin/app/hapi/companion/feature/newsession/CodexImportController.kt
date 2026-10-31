@@ -38,7 +38,8 @@ class CodexImportStrings(
  * Dialog + inline-section state for the codex import (slice A). `error` is
  * the load error shown on the inline section (web `codexImportError`);
  * `importError` is a failed bulk import shown inside the still-open dialog
- * (web surfaces it as a toast — divergence, see controller docs).
+ * and — after Back/scrim/swipe dismissal — retained on the inline section
+ * (web surfaces it as a toast, which survives the dialog by nature).
  */
 data class CodexImportUiState(
     val open: Boolean = false,
@@ -108,6 +109,8 @@ sealed interface CodexImportAtCreateResult {
  *   still-open dialog (web toasts; Android's create form has no toast host),
  *   and the normalize fallback for an exception with no message reuses
  *   [CodexImportStrings.loadFailed] (web uses `dialog.error.default`).
+ *   Dismissing the sheet mid-import or after a failure keeps the error on
+ *   the inline section (web's toast equally survives the dialog).
  * - the import-at-create error is raw, exactly like web's `setError` (no
  *   timeout/active classification there either).
  * - duplicate-detection/merge and the restart/archive affordances are
@@ -154,9 +157,16 @@ class CodexImportController(
         load(directory, machineId)
     }
 
-    /** Close edge: dialog-local state resets (web `wasOpenRef` block). */
+    /**
+     * Close edge (Back/scrim/swipe/Cancel): dialog-local state resets (web
+     * `wasOpenRef` block) — except a failed bulk import's
+     * [CodexImportUiState.importError], which **survives** the close so the
+     * inline section keeps showing it. The web twin toasts the failure
+     * outside the dialog; Android's toast host is the section's error line
+     * (web parity via a different surface).
+     */
     fun close() {
-        resetDialogFields()
+        resetDialogFields(retainImportError = true)
         update { it.copy(open = false) }
     }
 
@@ -248,7 +258,10 @@ class CodexImportController(
         val checked = current.dialogSelection.toList()
         if (checked.size == 1) {
             current.sessions.firstOrNull { it.id == checked[0] }?.let(::selectInline)
-            close()
+            // An inline pick is a clean exit — drop any stale failure left by
+            // an earlier bulk attempt in the same dialog session.
+            resetDialogFields()
+            update { it.copy(open = false) }
             return
         }
         bulkImport(checked)
@@ -432,7 +445,7 @@ class CodexImportController(
         }
     }
 
-    private fun resetDialogFields() {
+    private fun resetDialogFields(retainImportError: Boolean = false) {
         hasInitializedSelection = false
         hasInitializedWorkdirFilter = false
         update {
@@ -440,7 +453,7 @@ class CodexImportController(
                 dialogSelection = emptySet(),
                 workdirFilter = CodexImportLogic.ALL_WORKDIR_FILTER,
                 searchQuery = "",
-                importError = null,
+                importError = if (retainImportError) it.importError else null,
             )
         }
     }

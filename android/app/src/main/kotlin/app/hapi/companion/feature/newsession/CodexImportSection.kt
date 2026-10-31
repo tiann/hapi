@@ -63,10 +63,12 @@ fun CodexImportSection(
                 enabled = !isDisabled && !state.loading,
             ) {
                 Text(
-                    if (state.loading) {
-                        stringResource(R.string.codex_sync_loading)
-                    } else {
-                        stringResource(R.string.codex_sync_inline_choose)
+                    when {
+                        state.loading -> stringResource(R.string.codex_sync_loading)
+                        // Keeps an in-flight bulk import observable here too —
+                        // the sheet may have been dismissed mid-import.
+                        state.busy -> stringResource(R.string.codex_sync_importing)
+                        else -> stringResource(R.string.codex_sync_inline_choose)
                     },
                 )
             }

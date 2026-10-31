@@ -160,6 +160,7 @@ data class CodexImportSectionUi(
     /** Selected session's title; null shows the description instead. */
     val selectedTitle: String? = null,
     val loading: Boolean = false,
+    /** Load error, or the bulk-import failure retained after a sheet dismissal. */
     val error: String? = null,
     /** Bulk import or import-at-create in flight. */
     val busy: Boolean = false,
@@ -1062,7 +1063,9 @@ class NewSessionViewModel(
         val codexSection = CodexImportSectionUi(
             selectedTitle = codexImportState.selectedSession?.title,
             loading = codexImportState.loading,
-            error = codexImportState.error,
+            // A retained bulk-import failure (sheet dismissed mid-import or
+            // after failing) renders here — the web twin toasts it instead.
+            error = codexImportState.error ?: codexImportState.importError,
             busy = codexImportBusy,
         )
 
