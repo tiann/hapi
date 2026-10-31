@@ -38,6 +38,9 @@ import Observation
 ///   ``setEffort(_:)``/``setCollaborationMode(_:)``/``loadModelOptions()``): catalog pickers with
 ///   optimistic detail updates, rolled forward to server truth on error;
 ///   codex model catalog fetched per session.
+/// - **Lifecycle** (``renameSession(_:)``/``deleteSession()``/
+///   ``reopenSession()``): store-side optimistic rename/delete; a
+///   superseding reopen follows the send-resume hand-off.
 ///
 /// `@Observable` computed surfaces (``composer``, ``queuedRows``, ``config``,
 /// ``permissionOverrides``) read the observable `SessionListStore` and this
@@ -64,9 +67,27 @@ public final class ChatInteractor {
     public private(set) var windowState: MessageWindowState?
     /// Codex model catalog load state (feeds ``config``).
     public private(set) var codexModels: CodexModelsState = .idle
+    /// Discovered-agent model catalog (feeds ``config``).
+    public private(set) var agentModels: AgentCatalogLoadState = .idle
+    /// Grok/opencode in-session effort options (feeds ``config``).
+    public private(set) var agentEfforts: ReasoningEffortOptionsResponse?
+    /// `GET /slash-commands` result: nil until loaded; a failure retries on
+    /// the next `/`.
+    private var slashCommandsFetched: [SlashCommand]?
+    private var slashCommandsLoading = false
     /// One config POST at a time (compare-and-set, like the Android
     /// `configOpPending`); exposed so the sheet can render a busy state.
     public private(set) var configOpPending = false
+    /// One delete/reopen at a time (the Android `sessionOpPending`).
+    public private(set) var sessionOpPending = false
+    /// One fork/rewind at a time (web `historyActionPending`).
+    public private(set) var historyActionPending = false
+    /// A rewind the hub refused as an ambiguous native boundary; the
+    /// screen offers a fork from the same point instead.
+    public private(set) var rewindForkFallbackLocalId: String?
+
+    /// Send time for the next chat send; cleared once that send dispatches.
+    public private(set) var pendingSchedule: PendingSchedule?
 
     /// Local focus intent, observed by the composer without changing its draft.
     public private(set) var composerFocusRequest = 0
@@ -184,7 +205,77 @@ public final class ChatInteractor {
         )
     }
 
+    public func setPendingSchedule(_ schedule: PendingSchedule?) {
+        pendingSchedule = schedule
+    }
+
+    /// A scheduled send is text-only and queued (the hub rejects
+    /// attachments and steer with `scheduledAt`); the time resolves and is
+    /// validated at Send, and the schedule clears once dispatched.
+    private func sendScheduled(_ schedule: PendingSchedule) {
+        guard attachments.items.isEmpty else {
+            emit(.notice("Scheduled messages can't include attachments — remove them or send now"))
+            return
+        }
+        let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        let createdAt = now()
+        let scheduledAt = schedule.resolve(now: createdAt)
+        switch PendingSchedule.validate(scheduledAt, now: createdAt) {
+        case .past:
+            emit(.notice("Scheduled time must be in the future"))
+            return
+        case .tooFar:
+            emit(.notice("Scheduled sends can be at most 7 days ahead"))
+            return
+        case nil:
+            break
+        }
+        composerText = ""
+        draftTask?.cancel()
+        draftTask = nil
+        pendingSchedule = nil
+        isSending = true
+        let localId = makeLocalId()
+        Task { [weak self] in
+            guard let self else { return }
+            self.drafts?.clear(sessionId: self.sessionId)
+            await self.performSend(
+                text: text,
+                localId: localId,
+                createdAt: createdAt,
+                deliveryMode: .queue,
+                attachments: nil,
+                scheduledAt: scheduledAt,
+                isRetry: false
+            )
+        }
+    }
+
+    /// Slash-command dropdown rows: non-empty only while the composer is a
+    /// lone `/token`; metadata names merged with the RPC list (RPC wins).
+    public var slashSuggestions: [SlashCommand] {
+        guard composerDestination == .chat,
+              let query = SlashCommandSuggestions.query(of: composerText) else { return [] }
+        let names = sessionStore.detail(for: sessionId)?.metadata?.slashCommands
+        return SlashCommandSuggestions.filter(
+            SlashCommandSuggestions.merge(metadataNames: names, fetched: slashCommandsFetched),
+            query: query
+        )
+    }
+
+    /// Dropdown tap: replace the token with `/name ` ready for arguments.
+    public func selectSlashCommand(_ command: SlashCommand) {
+        setComposerText("/\(command.name) ")
+    }
+
     public func setComposerText(_ text: String) {
+        // Fetch on the transition INTO slash mode (web refetches when the
+        // menu opens) — never per keystroke, so a wedged CLI is not hammered.
+        if SlashCommandSuggestions.query(of: text) != nil,
+           SlashCommandSuggestions.query(of: composerText) == nil {
+            loadSlashCommands()
+        }
         composerText = text
         draftTask?.cancel()
         guard let drafts else { return }
@@ -210,6 +301,10 @@ public final class ChatInteractor {
         guard !isSending, !scratchlistBusy else { return }
         if composerDestination == .scratchlist {
             parkComposerDraft()
+            return
+        }
+        if let schedule = pendingSchedule {
+            sendScheduled(schedule)
             return
         }
         if attachments.hasUnsettled {
@@ -714,7 +809,9 @@ public final class ChatInteractor {
         buildSessionConfigState(
             detail: sessionStore.detail(for: sessionId),
             summary: sessionStore.sessions.first { $0.id == sessionId },
-            codexModels: codexModels
+            codexModels: codexModels,
+            agentModels: agentModels,
+            agentEfforts: agentEfforts
         )
     }
 
@@ -741,13 +838,35 @@ public final class ChatInteractor {
         )
     }
 
-    /// `POST /model` — nil clears back to the agent default.
+    /// `POST /model` — nil clears back to the agent default. Pi switches
+    /// with a `{provider, modelId}` reference; grok/opencode efforts are
+    /// per model, so their options reload afterwards.
     public func setModel(_ model: String?) {
         let api = api
         let sessionId = sessionId
+        let agent = currentFlavor().map(AgentFlavor.init(rawValue:))
+        var selection = model.map(ModelSelection.id)
+        var reference: PiModelReference?
+        if agent == .pi, let model, case .loaded(let response) = agentModels,
+           let row = AgentModelCatalog.selectedModel(response, flavor: .pi, value: model),
+           let provider = row.provider {
+            reference = PiModelReference(provider: provider, modelId: row.modelId)
+            selection = .catalogReference(provider: provider, modelId: row.modelId)
+        }
+        let wireSelection = selection
         runConfigChange(
-            optimistic: { $0.model = model },
-            call: { try await api.setModel(sessionId: sessionId, model: model.map(ModelSelection.id)) }
+            optimistic: { session in
+                if let reference {
+                    session.model = reference.modelId
+                    session.metadata?.piSelectedModel = reference
+                } else {
+                    session.model = model
+                }
+            },
+            call: { try await api.setModel(sessionId: sessionId, model: wireSelection) },
+            onSuccess: { [weak self] in
+                if agent == .grok || agent == .opencode { self?.loadEffortOptions(force: true) }
+            }
         )
     }
 
@@ -779,8 +898,15 @@ public final class ChatInteractor {
         )
     }
 
-    /// Fetch the codex model catalog for the picker (no-op for other flavors).
+    /// Fetch the model catalog for the picker: codex per session, the
+    /// discovered agents per session (agy per machine), plus grok/opencode
+    /// effort options. Live sessions only for discovered agents; grok and
+    /// copilot also skip terminal-controlled ones (web query gates).
     public func loadModelOptions() {
+        if let flavor = currentFlavor(), flavor != "codex" {
+            loadAgentModels(AgentFlavor(rawValue: flavor))
+            return
+        }
         guard currentFlavor() == "codex" else { return }
         switch codexModels {
         case .loading, .loaded:
@@ -806,9 +932,68 @@ public final class ChatInteractor {
         }
     }
 
+    private func loadAgentModels(_ agent: AgentFlavor) {
+        guard AgentModelCatalog.scope(for: agent) != nil, catalogQueriesAllowed(agent) else { return }
+        loadEffortOptions(force: false)
+        switch agentModels {
+        case .loading, .loaded:
+            return
+        case .idle, .failed:
+            break
+        }
+        let machineId = sessionStore.detail(for: sessionId)?.metadata?.machineId
+            ?? sessionStore.sessions.first { $0.id == sessionId }?.metadata?.machineId
+        // agy has no session route; its catalog is the machine's.
+        if agent == .agy, machineId == nil { return }
+        agentModels = .loading
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let response = if agent == .agy, let machineId {
+                    try await self.api.machineAgentModels(machineId: machineId, flavor: .agy)
+                } else {
+                    try await self.api.sessionAgentModels(sessionId: self.sessionId, flavor: agent)
+                }
+                if response.success {
+                    self.agentModels = .loaded(response)
+                } else {
+                    self.emit(.notice(response.error ?? "Failed to load models"))
+                    self.agentModels = .failed
+                }
+            } catch {
+                self.emit(.notice(Self.errorMessage(error, fallback: "Failed to load models")))
+                self.agentModels = .failed
+            }
+        }
+    }
+
+    /// Grok/opencode effort options; best effort (a failure hides the field).
+    private func loadEffortOptions(force: Bool) {
+        guard let agent = currentFlavor().map(AgentFlavor.init(rawValue:)),
+              agent == .grok || agent == .opencode,
+              catalogQueriesAllowed(agent),
+              force || agentEfforts == nil else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            self.agentEfforts = try? await self.api.sessionReasoningEffortOptions(
+                sessionId: self.sessionId,
+                flavor: agent
+            )
+        }
+    }
+
+    private func catalogQueriesAllowed(_ agent: AgentFlavor) -> Bool {
+        let detail = sessionStore.detail(for: sessionId)
+        guard currentSessionState().active else { return false }
+        let controlledByUser = detail?.agentState?.controlledByUser == true
+            && detail?.metadata?.capabilities?.concurrentClients != true
+        return !(controlledByUser && (agent == .grok || agent == .copilot))
+    }
+
     private func runConfigChange(
         optimistic: (inout Session) -> Void,
-        call: @escaping @Sendable () async throws -> Void
+        call: @escaping @Sendable () async throws -> Void,
+        onSuccess: (@MainActor () -> Void)? = nil
     ) {
         guard !configOpPending else { return }
         configOpPending = true
@@ -818,11 +1003,157 @@ public final class ChatInteractor {
             defer { self.configOpPending = false }
             do {
                 try await call()
+                onSuccess?()
             } catch {
                 // Roll back by rolling forward to server truth (an SSE patch
                 // may have moved other fields since the optimistic write).
                 _ = try? await self.sessionStore.loadSessionDetail(self.sessionId)
                 self.emit(.notice(Self.errorMessage(error, fallback: "Failed to update session")))
+            }
+        }
+    }
+
+    // MARK: - Slash commands
+
+    /// Once per screen (near-static list); RPC failure is silent — the
+    /// metadata names still populate the menu.
+    private func loadSlashCommands() {
+        guard slashCommandsFetched == nil, !slashCommandsLoading else { return }
+        slashCommandsLoading = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.slashCommandsLoading = false }
+            guard let response = try? await self.api.slashCommands(sessionId: self.sessionId),
+                  response.success, let commands = response.commands else { return }
+            self.slashCommandsFetched = commands
+        }
+    }
+
+    // MARK: - Conversation history
+
+    private var historyCapabilities: ConversationHistoryCapabilities? {
+        sessionStore.detail(for: sessionId)?.metadata?.capabilities?.conversationHistory
+    }
+
+    /// Fork from the current conversation: the agent advertises
+    /// `forkCurrent`, the session is live, and no Codex turn is running
+    /// (web fork-current gate).
+    public var canForkCurrentConversation: Bool {
+        let live = currentSessionState()
+        return historyCapabilities?.forkCurrent == true && live.active
+            && !(live.thinking && currentFlavor() == "codex")
+    }
+
+    /// Message-level history actions for a user message with a native
+    /// history point (`metadata.conversationHistoryPoints`).
+    public func historyActions(forMessageLocalId localId: String?) -> (fork: Bool, rewind: Bool) {
+        guard let localId, !localId.isEmpty,
+              let detail = sessionStore.detail(for: sessionId), detail.active,
+              detail.metadata?.conversationHistoryPoints?[localId] == true else { return (false, false) }
+        let running = detail.thinking
+        let fork = historyCapabilities?.forkAtMessage == true && (!running || currentFlavor() == "codex")
+        let rewind = historyCapabilities?.rewindToMessage == true && !running
+        return (fork, rewind)
+    }
+
+    /// `POST /fork` (from `messageLocalId`, else the current conversation);
+    /// the new session opens in place of this one.
+    public func forkConversation(fromMessageLocalId localId: String? = nil) {
+        guard !historyActionPending else { return }
+        historyActionPending = true
+        rewindForkFallbackLocalId = nil
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.historyActionPending = false }
+            do {
+                let forked = try await self.api.forkConversation(sessionId: self.sessionId, messageLocalId: localId)
+                self.sessionStore.scheduleRefresh()
+                self.emit(.sessionSuperseded(sessionId: forked))
+            } catch {
+                self.emit(.notice(hubErrorMessage(error) ?? "Failed to fork conversation"))
+            }
+        }
+    }
+
+    /// `POST /rewind`. The hub's history event resets the message window;
+    /// an ambiguous Codex boundary arms ``rewindForkFallbackLocalId``.
+    public func rewindConversation(toMessageLocalId localId: String) {
+        guard !historyActionPending else { return }
+        historyActionPending = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.historyActionPending = false }
+            do {
+                try await self.api.rewindConversation(sessionId: self.sessionId, messageLocalId: localId)
+                if let controller = self.controller {
+                    await controller.syncTail(ensureAfterCurrent: true, allowingHistoryReset: true)
+                }
+            } catch let error as APIError where error.code == "ambiguous_native_boundary_fork_safe" {
+                self.rewindForkFallbackLocalId = localId
+            } catch {
+                self.emit(.notice(hubErrorMessage(error) ?? "Failed to rewind conversation"))
+            }
+        }
+    }
+
+    public func dismissRewindForkFallback() {
+        rewindForkFallbackLocalId = nil
+    }
+
+    // MARK: - Session lifecycle
+
+    /// `PATCH /sessions/:id` rename — the store applies the name
+    /// optimistically and rolls forward to server truth on failure.
+    public func renameSession(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.sessionStore.renameSession(sessionId: self.sessionId, name: trimmed)
+            } catch {
+                self.emit(.notice("Failed to rename session"))
+            }
+        }
+    }
+
+    /// `DELETE /sessions/:id` for an inactive session. Success removes the
+    /// row and fires the store's removal callback, which closes this chat;
+    /// a 409 means the session became active again.
+    public func deleteSession() {
+        guard !sessionOpPending else { return }
+        sessionOpPending = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.sessionOpPending = false }
+            do {
+                try await self.sessionStore.deleteSession(sessionId: self.sessionId)
+            } catch {
+                self.emit(.notice(isActiveSessionConflict(error)
+                    ? "Active sessions can't be deleted — archive first"
+                    : "Failed to delete session"))
+            }
+        }
+    }
+
+    /// `POST /sessions/:id/reopen` for an inactive session. A superseding id
+    /// gets the send-resume treatment: window seed + draft move +
+    /// ``ChatInteractionEvent/sessionSuperseded(sessionId:)``.
+    public func reopenSession() {
+        guard !sessionOpPending else { return }
+        sessionOpPending = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.sessionOpPending = false }
+            do {
+                let response = try await self.sessionStore.reopenSession(sessionId: self.sessionId)
+                guard response.sessionId != self.sessionId else { return }
+                await self.windows.seed(fromSessionId: self.sessionId, toSessionId: response.sessionId)
+                self.flushPendingDraft()
+                self.drafts?.move(fromSessionId: self.sessionId, toSessionId: response.sessionId)
+                self.emit(.sessionSuperseded(sessionId: response.sessionId))
+            } catch {
+                self.emit(.notice(formatReopenError(error) ?? "Failed to reopen session"))
             }
         }
     }

@@ -77,7 +77,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
     const pendingExecWrappers = new Map<string, PendingExecWrapper>();
     const toolHookBridge = new CodexToolHookBridge();
     const permissionMode = session.getPermissionMode();
-    const managedPermissionMode = permissionMode === 'read-only' || permissionMode === 'safe-yolo' || permissionMode === 'yolo'
+    const managedPermissionMode = permissionMode === 'read-only' || permissionMode === 'yolo'
         ? permissionMode
         : null;
     const codexArgs = managedPermissionMode

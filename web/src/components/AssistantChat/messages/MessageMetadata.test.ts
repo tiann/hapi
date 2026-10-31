@@ -216,3 +216,58 @@ describe('buildMessageMetadataLabels', () => {
         ])
     })
 })
+
+
+describe('Codex cached input metadata', () => {
+    const labels = (input: number, cached?: number) => buildMessageMetadataLabels({
+        roundSummary: {
+            provider: 'codex',
+            usage: { input_tokens: input, output_tokens: 10, cache_read_input_tokens: cached },
+            modelUsage: { 'gpt-5.4': { inputTokens: input, outputTokens: 10 } },
+            numTurns: 1
+        }
+    })
+
+    it('uses cache-inclusive input without adding cached tokens again', () => {
+        expect(labels(100, 80)).toEqual([
+            'Model: gpt-5.4',
+            'Tokens: 110 (100 in · 10 out)',
+            'Cached input: 80%',
+            'Round: 1 turn'
+        ])
+    })
+
+    it('uses token totals rather than averaging cache percentages', () => {
+        expect(buildMessageMetadataLabels({
+            roundSummary: {
+                provider: 'codex',
+                modelUsage: {
+                    'model-a': { inputTokens: 100, cacheReadInputTokens: 80, outputTokens: 5 },
+                    'model-b': { inputTokens: 900, cacheReadInputTokens: 90, outputTokens: 5 }
+                }
+            }
+        })).toContain('Cached input: 17%')
+    })
+
+    it('distinguishes missing cache usage from an explicit zero', () => {
+        expect(labels(100).some(label => label.startsWith('Cached input:'))).toBe(false)
+        expect(labels(100, 0)).toContain('Cached input: 0%')
+        expect(labels(100, 100)).toContain('Cached input: 100%')
+    })
+
+    it.each([-1, NaN, Infinity, 1.5])('omits invalid Codex output counts (%s)', output => {
+        expect(buildMessageMetadataLabels({ roundSummary: {
+            provider: 'codex', modelUsage: {},
+            usage: { input_tokens: 100, output_tokens: output, cache_read_input_tokens: 80 }
+        } }).some(label => label.startsWith('Tokens:') || label.startsWith('Cached input:'))).toBe(false)
+    })
+
+    it.each([
+        [0, 0], [-1, 0], [100, -1], [100, 101], [100, NaN],
+        [100, Infinity], [Infinity, 80], [NaN, 80], [100.5, 80],
+        [100, 1.5], [Number.MAX_SAFE_INTEGER + 1, 80]
+    ])('omits an invalid cache ratio for input=%s cached=%s', (input, cached) => {
+        expect(labels(input, cached).some(label => label.startsWith('Cached input:'))).toBe(false)
+        expect(labels(input, cached).join(' ')).not.toMatch(/NaN|Infinity/)
+    })
+})

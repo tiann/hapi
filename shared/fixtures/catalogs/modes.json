@@ -61,11 +61,6 @@
                 "tone": "warning"
             },
             {
-                "label": "Safe Yolo",
-                "mode": "safe-yolo",
-                "tone": "warning"
-            },
-            {
                 "label": "Auto",
                 "mode": "autoReview",
                 "tone": "warning"

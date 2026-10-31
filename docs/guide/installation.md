@@ -1,8 +1,8 @@
 # Installation
 
-Install the HAPI CLI and set up the hub. For phone client builds and pairing,
-see [Native apps (iOS / Android)](./native-apps.md); for browser installation,
-see [PWA](./pwa.md).
+Install the HAPI CLI and set up the hub. To install the paid phone apps and
+pair them, see [Native apps (iOS / Android)](./native-apps.md); for the free
+browser client, see [PWA](./pwa.md).
 
 ## Prerequisites
 
@@ -69,6 +69,31 @@ Or with Homebrew:
 brew install tiann/tap/hapi
 ```
 
+### Upgrades that still run an older version
+
+The `@twsxtd/hapi` package is a launcher. Its platform binary (for example,
+`@twsxtd/hapi-darwin-arm64`) is an optional dependency pinned to the same version.
+If a mirror has the new launcher but not the matching platform package, the
+package manager can finish upgrading the launcher while skipping the binary.
+A previous binary may remain installed. Older launchers can silently run it;
+launchers with version validation instead report a version mismatch.
+
+Retry against the official registry using your existing package manager. For Bun:
+
+```bash
+bun remove -g @twsxtd/hapi && bun add -g @twsxtd/hapi@latest --registry=https://registry.npmjs.org
+hapi --version
+```
+
+Removing the launcher first clears its dependency resolution; `--force` alone
+can leave a previously skipped platform package out of Bun's lockfile. This does
+not remove your HAPI settings or sessions. To stay on a specific release, replace
+`latest` with that version. For npm, use
+`npm install -g @twsxtd/hapi@latest --registry=https://registry.npmjs.org`.
+If the command still reports an old version, check for another HAPI installation
+earlier on `PATH`. Restart an already-running hub or runner after upgrading;
+installing a new binary does not replace running processes.
+
 ## Other install options
 
 <details>
@@ -94,7 +119,7 @@ sudo mv ./hapi /usr/local/bin/
 <details>
 <summary>Build from source</summary>
 
-Requires Bun 1.4.0.
+Requires Bun 1.4.4.
 
 ```bash
 git clone https://github.com/tiann/hapi.git
@@ -211,9 +236,19 @@ On first run, HAPI:
 
 The session rename dialog's **Generate** action is unavailable until all three
 `HAPI_TITLE_PROVIDER_*` variables are configured on the Hub. The provider is
-called only on demand; the existing manual rename flow does not require these
-variables. Each request sends recent visible user/assistant conversation text
+used by the automatic fallback below and the manual **Generate** action. The
+existing manual rename flow does not require these variables. Each request
+sends recent visible user/assistant conversation text
 (up to 200 stored messages and a bounded prompt) to that configured provider.
+
+When a provider is configured, the Hub also makes one best-effort automatic
+request after the first completed turn if the session has no manual name or
+existing summary. Automatic failures are ignored and do not affect the primary
+conversation. The manual **Generate** action remains available for retrying
+after an automatic failure. An attempt is remembered across Hub restarts, so
+later turns do not silently retry it. A manual or Agent title arriving during
+generation takes precedence. Without a configured provider, existing title
+behavior is unchanged.
 
 <details>
 <summary>settings.json example</summary>

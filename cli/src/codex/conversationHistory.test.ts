@@ -24,6 +24,61 @@ function createClient(overrides?: {
 }
 
 describe('CodexConversationHistory', () => {
+    it.each([
+        { name: 'steered message', localId: 'steer', turns: [
+            { id: 'a', status: 'completed', items: [{ type: 'userMessage', clientId: 'first' }, { type: 'userMessage', clientId: 'steer' }] }
+        ] },
+        { name: 'unknown turn status', localId: 'first', turns: [
+            { id: 'a', items: [{ type: 'userMessage', clientId: 'first' }] }
+        ] },
+        { name: 'incomplete prefix', localId: 'second', turns: [
+            { id: 'a', status: 'inProgress', items: [{ type: 'userMessage', clientId: 'first' }] },
+            { id: 'b', status: 'completed', items: [{ type: 'userMessage', clientId: 'second' }] }
+        ] },
+        { name: 'duplicate client id', localId: 'first', turns: [
+            { id: 'a', status: 'completed', items: [{ type: 'userMessage', clientId: 'first' }] },
+            { id: 'b', status: 'completed', items: [{ type: 'userMessage', clientId: 'first' }] }
+        ] }
+    ])('rejects $name before native mutation while busy', async ({ localId, turns }) => {
+        const fork = vi.fn(async () => ({ thread: { id: 'child' } }))
+        const history = new CodexConversationHistory(() => createClient({ fork,
+            read: async () => ({ thread: { id: 'thread-1', turns } }) }) as never)
+        history.setThreadId('thread-1')
+        history.setBusy(true)
+        await expect(history.fork(localId)).rejects.toThrow()
+        expect(fork).not.toHaveBeenCalled()
+    })
+
+    it('uses an exclusive boundary for the first completed turn while busy', async () => {
+        const fork = vi.fn(async () => ({ thread: { id: 'child' } }))
+        const history = new CodexConversationHistory(() => createClient({ fork,
+            read: async () => ({ thread: { id: 'thread-1', turns: [
+                { id: 'first', status: 'completed', items: [{ type: 'userMessage', clientId: 'first' }] }
+            ] } }) }) as never)
+        history.setThreadId('thread-1')
+        history.setBusy(true)
+        await history.fork('first')
+        expect(fork).toHaveBeenCalledWith({ threadId: 'thread-1', beforeTurnId: 'first' })
+    })
+    it('forks completed history while a later native turn is running', async () => {
+        const fork = vi.fn(async () => ({ thread: { id: 'child' } }))
+        const history = new CodexConversationHistory(() => createClient({ fork, read: async () => ({ thread: {
+            id: 'thread-1', turns: [
+                { id: 'turn-a', status: 'completed', items: [{ type: 'userMessage', clientId: 'local-a' }] },
+                { id: 'turn-b', status: 'completed', items: [{ type: 'userMessage', clientId: 'local-b' }] },
+                { id: 'turn-c', status: 'inProgress', items: [{ type: 'userMessage', clientId: 'local-c' }] }
+            ]
+        } }) }) as never)
+        history.setThreadId('thread-1')
+        history.setBusy(true)
+        await expect(history.fork('local-b')).resolves.toEqual({ nativeSessionId: 'child' })
+        expect(fork).toHaveBeenCalledWith({ threadId: 'thread-1', lastTurnId: 'turn-a' })
+        await expect(history.fork()).rejects.toThrow('busy')
+        await expect(history.rewind('local-b')).rejects.toThrow('busy')
+        await expect(history.fork('local-c')).rejects.toThrow('completed')
+        expect(fork).toHaveBeenCalledTimes(1)
+    })
+
     it('only publishes methods confirmed by the app server', async () => {
         const supportsMethod = vi.fn(async (method: string) => method === 'thread/fork')
         const history = new CodexConversationHistory(() => ({

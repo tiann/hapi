@@ -5,6 +5,9 @@ independent from the web app; shares the
 [client contract](../docs/api/client-contract/index.md) and the web-generated
 golden fixtures (`shared/fixtures/`).
 
+End users: install HAPI from [Google Play](https://play.google.com/store/apps/details?id=run.hapi.companion).
+This README covers development builds.
+
 - **applicationId**: `run.hapi.companion` · **minSdk** 26 · **target/compileSdk** 36
 - **Toolchain**: Gradle 8.14.2 (wrapper) · AGP 8.11.1 · Kotlin 2.1.21 · Compose BOM 2025.05.00 · JDK 17+ (CI uses 21)
 
@@ -24,6 +27,13 @@ differences, pairing and features currently available through the web.
 - **Composer:** optimistic send, queue/steer where supported, drafts and
   attachments uploaded on selection. Slash suggestions combine session
   metadata and the slash-command RPC; the skills `$` picker has no UI.
+- **Incoming shares:** Android Share → HAPI accepts single/multiple files,
+  captions, text and links. Choose a session on the current or another paired
+  hub; stopped sessions require explicit restore before upload. Content is
+  added to the existing composer for manual sending. Private, no-backup
+  staging survives pairing and process recreation until handoff, with a
+  24-hour pending-content lifetime. Once imported, attachments follow the
+  ordinary composer lifecycle (they are not persisted as attachment drafts).
 - **Dictation:** provider discovery on chat entry picks the first
   `standard`-capable provider. The microphone stays hidden until one is
   available. First use requests `RECORD_AUDIO`; `MediaRecorder` records
@@ -175,7 +185,8 @@ for wire details and [relay deployment](../relay/README.md) for maintainer setup
 
 The [Android Official Build workflow](../.github/workflows/android-release.yml)
 is manually dispatched on `main`.
-It tests and uploads signed APK/AAB artifacts; it does not publish to Play.
+It tests and uploads signed APK/AAB workflow artifacts. It does not publish to
+Google Play itself; the maintainer uploads the AAB to the Play Console.
 Provide a new positive `version_code` and the desired `version_name`.
 
 Repository configuration, set once by the maintainer:

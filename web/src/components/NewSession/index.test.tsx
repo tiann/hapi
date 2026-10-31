@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ApiClient } from '@/api/client'
-import type { Machine, PiModelSummary } from '@/types/api'
+import type { ClaudeModelSummary, Machine, PiModelSummary } from '@/types/api'
 import { saveNewSessionFormDraft } from './newSessionFormDraft'
 import {
     loadPreferredLaunchSettings,
@@ -39,6 +39,7 @@ const mocks = vi.hoisted(() => ({
     piModels: [] as PiModelSummary[],
     piModelsLoading: false,
     piModelsError: null as string | null,
+    claudeModels: [] as ClaudeModelSummary[],
     nextModelValue: 'gpt-5.6-terra',
     refetchSessions: vi.fn(),
     addToast: vi.fn()
@@ -79,8 +80,9 @@ vi.mock('@/hooks/useMachinePathsExists', () => ({
     })
 }))
 vi.mock('@/hooks/queries/useAgentAvailability', () => ({
-    useAgentAvailability: () => ({
-        agents: mocks.availableAgents,
+    // Mirror the real hook: no machineId → query disabled → empty agents, not loading.
+    useAgentAvailability: (args: { machineId: string | null }) => ({
+        agents: args.machineId ? mocks.availableAgents : [],
         isLoading: false,
         error: null,
         upgradeRequired: false,
@@ -121,6 +123,9 @@ vi.mock('@/hooks/queries/useAgyModels', () => ({
         error: null,
         refetch: vi.fn()
     })
+}))
+vi.mock('@/hooks/queries/useClaudeModels', () => ({
+    useClaudeModels: () => ({ availableModels: mocks.claudeModels })
 }))
 vi.mock('@/hooks/queries/useDshModels', () => ({
     useDshModelsForMachine: () => ({
@@ -259,16 +264,26 @@ vi.mock('./OpencodeModelSelector', () => ({
     )
 }))
 vi.mock('./AgyModelSelector', () => ({
-    AgyModelSelector: (props: { selectedModel: string | null; onModelChange: (model: string | null) => void }) => (
+    AgyModelSelector: (props: { selectedModel: string | null; availableModels: Array<{ modelId: string; name?: string }>; onModelChange: (model: string | null) => void }) => (
+        <>
+        <select data-testid="agy-model-select" value={props.selectedModel ?? ''} onChange={(event) => props.onModelChange(event.target.value || null)}>
+            <option value="">Default</option>
+            {props.availableModels.map((model) => <option key={model.modelId} value={model.modelId}>{model.name}</option>)}
+        </select>
         <button type="button" data-testid="agy-model" onClick={() => props.onModelChange('gemini-3.6-flash-low')}>
             {props.selectedModel ?? 'auto'}
         </button>
+        </>
     )
 }))
 vi.mock('./EffortField', () => ({
-    EffortField: (props: { effort: string; reasoningEffort: string; opencodeVariantOptions?: string[] | null; onReasoningEffortChange: (v: string) => void }) => (
+    EffortField: (props: { effort: string; reasoningEffort: string; agyOptions?: Array<{ value: string; label: string }>; onEffortChange: (value: string) => void; opencodeVariantOptions?: string[] | null; onReasoningEffortChange: (v: string) => void }) => (
         <>
             <div data-testid="launch-effort">{props.effort}</div>
+            {props.agyOptions?.length ? <select data-testid="agy-effort-options" value={props.effort} onChange={(event) => props.onEffortChange(event.target.value)}>
+                <option value="auto">Default</option>
+                {props.agyOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select> : null}
             <div data-testid="opencode-variants">{props.opencodeVariantOptions?.join(',') ?? 'static'}</div>
             <button type="button" data-testid="reasoning" onClick={() => props.onReasoningEffortChange('max')}>
                 {props.reasoningEffort}
@@ -340,6 +355,7 @@ describe('NewSession launch preferences', () => {
         mocks.piModels = []
         mocks.piModelsLoading = false
         mocks.piModelsError = null
+        mocks.claudeModels = []
         mocks.nextModelValue = 'gpt-5.6-terra'
         mocks.refetchSessions.mockReset()
         mocks.refetchSessions.mockResolvedValue(undefined)
@@ -368,6 +384,36 @@ describe('NewSession launch preferences', () => {
 
         await waitFor(() => expect(screen.getByDisplayValue('codex')).toBeChecked())
         expect(screen.queryByDisplayValue('claude')).not.toBeInTheDocument()
+    })
+
+    it('does not claim Agents are missing when no machine is connected', () => {
+        render(
+            <NewSession
+                api={api}
+                machines={[]}
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        expect(screen.queryByText('newSession.noAvailableAgents')).not.toBeInTheDocument()
+    })
+
+    it('claims Agents are missing only after inspecting a connected machine', () => {
+        mocks.availableAgents.splice(0, mocks.availableAgents.length)
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        expect(screen.getByText('newSession.noAvailableAgents')).toBeInTheDocument()
     })
 
     it('refuses a directory rejected by workspace-root validation', async () => {
@@ -537,6 +583,107 @@ describe('NewSession launch preferences', () => {
             expect(screen.getByTestId('model-options')).toHaveTextContent(
                 'Default,thehive — thehive / GLM-5.3-flash,thehive — thehive / hive-deepseek,charm-hyper — charm-hyper / Hyper · GLM-5.3-Flash,openrouter — openrouter-union-alpha'
             )
+        })
+    })
+
+    it('offers the machine Claude catalog and keeps a remembered model it no longer lists', async () => {
+        mocks.claudeModels = [
+            { value: 'default', displayName: 'Default (recommended)' },
+            { value: 'opus', displayName: 'Opus 5.5' },
+            { value: 'claude-opus-4-7', displayName: 'Opus 4.7' },
+        ]
+        savePreferredAgent('claude')
+        savePreferredLaunchSettings('machine-1', 'claude', {
+            model: 'claude-opus-4-1',
+            cursorSelectedBase: 'auto',
+            effort: 'auto',
+            modelReasoningEffort: 'default'
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory={'C:\\repo'}
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('claude-opus-4-1')
+        })
+        expect(screen.getByTestId('model-options').textContent?.split(',').slice(0, 4)).toEqual([
+            'Default',
+            'claude-opus-4-1 (newSession.claudeModel.notListed)',
+            'Opus 5.5',
+            'Opus 4.7',
+        ])
+    })
+
+    it('drops a launch effort the newly picked Claude model does not offer', async () => {
+        mocks.claudeModels = [
+            { value: 'opus', displayName: 'Opus 5.5', effortLevels: ['high', 'xhigh'] },
+            { value: 'haiku', displayName: 'Haiku 4.5', effortLevels: [] },
+        ]
+        mocks.nextModelValue = 'haiku'
+        savePreferredAgent('claude')
+        savePreferredLaunchSettings('machine-1', 'claude', {
+            model: 'opus',
+            cursorSelectedBase: 'auto',
+            effort: 'xhigh',
+            modelReasoningEffort: 'default'
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory={'C:\\repo'}
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('launch-effort')).toHaveTextContent('xhigh')
+        })
+        fireEvent.click(screen.getByTestId('model'))
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('haiku')
+            expect(screen.getByTestId('launch-effort')).toHaveTextContent('auto')
+        })
+    })
+
+    it('drops a remembered launch effort the remembered Claude model does not offer', async () => {
+        mocks.claudeModels = [
+            { value: 'haiku', displayName: 'Haiku 4.5', effortLevels: [] },
+        ]
+        savePreferredAgent('claude')
+        savePreferredLaunchSettings('machine-1', 'claude', {
+            model: 'haiku',
+            cursorSelectedBase: 'auto',
+            effort: 'high',
+            modelReasoningEffort: 'default'
+        })
+
+        render(
+            <NewSession
+                api={api}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory={'C:\\repo'}
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        await waitFor(() => {
+            expect(screen.getByTestId('model')).toHaveTextContent('haiku')
+            expect(screen.getByTestId('launch-effort')).toHaveTextContent('auto')
         })
     })
 
@@ -971,6 +1118,49 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('agy-session'))
         expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ agent: 'agy', model: 'gemini-3.6-flash-low' }))
         expect(loadPreferredLaunchSettings('machine-1', 'agy')?.model).toBe('gemini-3.6-flash-low')
+    })
+
+    it('launches and persists an AGY model family and effort independently', async () => {
+        savePreferredAgent('agy')
+        mocks.agyModels = [
+            { modelId: 'gemini-4-argon-medium', name: 'Gemini 4 Argon (Medium)' },
+            { modelId: 'gemini-4-argon-high', name: 'Gemini 4 Argon (High)' },
+            { modelId: 'gpt-oss-120b-medium', name: 'GPT-OSS 120B (Medium)' },
+        ]
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'agy-session' })
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        fireEvent.change(screen.getByTestId('agy-model-select'), { target: { value: 'gemini-4-argon' } })
+        expect(screen.getByRole('option', { name: 'Gemini 4 Argon' })).toBeTruthy()
+        expect(screen.queryByRole('option', { name: 'Gemini 4 Argon (High)' })).toBeNull()
+        fireEvent.change(screen.getByTestId('agy-effort-options'), { target: { value: 'high' } })
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('agy-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ model: 'gemini-4-argon', effort: 'high' }))
+        expect(loadPreferredLaunchSettings('machine-1', 'agy')).toMatchObject({ model: 'gemini-4-argon', effort: 'high' })
+    })
+
+    it.each([
+        ['gemini-4-argon-medium', 'auto', 'medium'],
+        ['gemini-4-argon-medium', 'high', 'high'],
+        ['gemini-4-argon', 'high', 'high'],
+    ])('restores AGY %s with saved effort %s as %s and clears it for a fixed model', async (savedModel, savedEffort, expectedEffort) => {
+        savePreferredAgent('agy')
+        savePreferredLaunchSettings('machine-1', 'agy', { model: savedModel, cursorSelectedBase: 'auto', effort: savedEffort, modelReasoningEffort: 'default' })
+        mocks.agyModels = [
+            { modelId: 'gemini-4-argon-medium', name: 'Gemini 4 Argon (Medium)' },
+            { modelId: 'gemini-4-argon-high', name: 'Gemini 4 Argon (High)' },
+            { modelId: 'gpt-oss-120b-medium', name: 'GPT-OSS 120B (Medium)' },
+        ]
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'agy-session' })
+        render(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByTestId('agy-model-select')).toHaveValue('gemini-4-argon'))
+        expect(screen.getByTestId('agy-effort-options')).toHaveValue(expectedEffort)
+        fireEvent.change(screen.getByTestId('agy-model-select'), { target: { value: 'gpt-oss-120b-medium' } })
+        expect(screen.queryByTestId('agy-effort-options')).toBeNull()
+        expect(screen.getByTestId('launch-effort')).toHaveTextContent('auto')
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('agy-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-oss-120b-medium', effort: undefined }))
     })
 
     it('does not overwrite AGY model preference after a failed launch', async () => {

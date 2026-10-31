@@ -45,7 +45,7 @@ function validateFilePath(filePath: string, workingDirectory: string): string | 
     return null
 }
 
-async function runGitCommand(
+export async function runGitCommand(
     args: string[],
     cwd: string,
     timeout?: number

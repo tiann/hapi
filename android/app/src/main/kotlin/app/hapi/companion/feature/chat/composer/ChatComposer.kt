@@ -125,6 +125,10 @@ fun ChatComposer(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column {
+                    if (state.isImportingShare) {
+                        Text(stringResource(R.string.share_importing), style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+                    }
                     if (attachments.isNotEmpty()) {
                         LazyRow(
                             modifier = Modifier
@@ -151,6 +155,7 @@ fun ChatComposer(
                     }
                     BasicTextField(
                         value = state.text,
+                        enabled = !state.isImportingShare,
                         onValueChange = onTextChange,
                         textStyle = app.hapi.companion.ui.theme.HapiTypography.body.copy(
                             color = MaterialTheme.colorScheme.onSurface,
@@ -505,9 +510,9 @@ private fun PrimaryActionButton(
     // allows an attachments-only send (wire: text or attachments required).
     val attachmentsBusy = attachments.any { it.status != ComposerAttachmentStatus.Ready }
     val attachmentsReady = attachments.isNotEmpty() && !attachmentsBusy
-    val canSubmit = (hasText || attachmentsReady) && !attachmentsBusy && !state.isSending
+    val canSubmit = (hasText || attachmentsReady) && !attachmentsBusy && !state.isSending && !state.isImportingShare
     val action = when {
-        state.isSending -> ComposerPrimaryAction.Sending
+        state.isSending || state.isImportingShare -> ComposerPrimaryAction.Sending
         state.canSteer && !hasDraft -> ComposerPrimaryAction.Stop
         else -> ComposerPrimaryAction.Send
     }

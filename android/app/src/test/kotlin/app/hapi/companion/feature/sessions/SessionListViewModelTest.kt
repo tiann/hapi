@@ -179,6 +179,28 @@ private fun TestScope.buildViewModel(
 // ------------------------------------------------------------------ tests --
 
 class SessionListViewModelTest {
+    @Test
+    fun `reset clears machine and date filters while preserving search`() = runTest {
+        val (viewModel, sessions) = buildViewModel()
+        sessions.set(
+            summary("one", name = "Matching session", machineId = "m1"),
+            summary("two", name = "Matching session", machineId = "m2"),
+            summary("three", name = "Other", machineId = "m2"),
+        )
+        viewModel.uiState.first { it.rows.size == 3 }
+        viewModel.setMachineFilter("m1")
+        viewModel.setDateRange(0, 0)
+        viewModel.setSearchQuery("Matching")
+        val filtered = viewModel.uiState.first { it.activeMachineFilter == "m1" && it.dateRange != null && it.isSearching }
+        assertTrue(filtered.hasActiveFilters)
+        assertEquals(listOf("one"), filtered.rows.map { it.id })
+
+        viewModel.clearFilters()
+        val reset = viewModel.uiState.first { !it.hasActiveFilters }
+        assertEquals("Matching", reset.searchQuery)
+        assertEquals(setOf("one", "two"), reset.rows.map { it.id }.toSet())
+    }
+
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     @Test
     fun `vanished filter stays cleared when sessions return and is isolated per home`() = runTest {

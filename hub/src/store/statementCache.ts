@@ -37,3 +37,15 @@ export function prepareCached(db: Database, sql: string): Statement {
     }
     return statement
 }
+
+/** Finalize cached statements before closing a file-backed database. */
+export function clearCachedStatements(db: Database): void {
+    const bySql = statementsByDb.get(db)
+    if (!bySql) return
+
+    statementsByDb.delete(db)
+    for (const statement of bySql.values()) {
+        statement.finalize()
+    }
+    bySql.clear()
+}
