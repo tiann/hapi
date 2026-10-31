@@ -262,6 +262,32 @@ class ComposerAttachmentsTest {
     }
 
     @Test
+    fun `multi-file paste attaches picks in clipboard order and sends in that order`() = runTest {
+        // Review item: "Verify multi-file paste." The paste path is
+        // attachableUris (clipboard order, text-only/duplicate clips
+        // skipped) -> ingestUris -> one tray.add per pick, so tray order —
+        // and therefore the wire consume() order — is clipboard order.
+        val picks = ClipboardAttachments.attachableUris(
+            listOf(
+                ClipboardClipItem(uri = "content://media/1"),
+                ClipboardClipItem(), // text-only clip interleaved
+                ClipboardClipItem(uri = "content://downloads/2"),
+                ClipboardClipItem(uri = "content://media/1"), // duplicate clip
+            ),
+        )
+        assertEquals(listOf("content://media/1", "content://downloads/2"), picks)
+
+        val api = FakeUploadApi()
+        val tray = harness(backgroundScope, api)
+        picks.forEachIndexed { index, uri -> tray.add(prepared(id = uri, filename = "paste-$index.jpg")) }
+        tray.items.first { list -> list.size == 2 && list.all { it.status == ComposerAttachmentStatus.Ready } }
+
+        val metadata = tray.consume()!!
+        assertEquals(listOf("content://media/1", "content://downloads/2"), metadata.map { it.id })
+        assertEquals(listOf("/uploads/paste-0.jpg", "/uploads/paste-1.jpg"), metadata.map { it.path })
+    }
+
+    @Test
     fun `move with equal or out-of-bounds indices is a no-op`() = runTest {
         val api = FakeUploadApi()
         val tray = harness(backgroundScope, api)
