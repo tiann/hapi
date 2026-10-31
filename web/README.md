@@ -77,6 +77,7 @@ The Hub persists and enforces the lock across clients, restarts, and resume.
 
 - Message thread with infinite scroll.
 - Composer for sending messages.
+- Composer send shortcut: Alt+S (independent of the Enter behavior setting).
 - Permission mode and model selection for supported agents.
   Cursor Auto uses CLI Auto for new/resumed sessions configured with Auto. Switching a live session to Auto when ACP does not advertise a literal Auto option relaunches the Cursor ACP process in place under `--model auto` while preserving the hub session id.
 - Session abort and handoff controls.
