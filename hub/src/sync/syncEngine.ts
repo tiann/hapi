@@ -31,6 +31,7 @@ import { EventPublisher, type SyncEventListener } from './eventPublisher'
 import { MachineCache, type Machine } from './machineCache'
 import { MessageService, type RetryIndeterminateMessageResult } from './messageService'
 import { createTitleSuggestionService, type TitleSuggestionService } from './titleSuggestion'
+import { createPromptTitle } from './promptTitle'
 import { selectForkTranscriptPrefix } from './forkTranscript'
 import { buildForkSessionSummary } from './forkSessionSummary'
 import { isMachineSpawnPreallocatedStub } from '../store/sessions'
@@ -260,6 +261,7 @@ export class SyncEngine {
             if (event.type === 'message-received') {
                 if (isUserInputMessage(event.message.content)) {
                     this.sessionCache.refreshLastUserMessageAt(event.sessionId)
+                    this.recordPromptTitle(event.sessionId, event.message.content)
                 }
                 if (!this.sessionCache.getSession(event.sessionId)?.hasConversationContent
                     && hasConversationMessageContent(event.message.content)) {
@@ -4324,6 +4326,18 @@ export class SyncEngine {
         this.piResumeQuarantinedIds.delete(session.id)
         this.piUnexpectedTempOriginalIds.delete(childSessionId)
         return true
+    }
+
+    private recordPromptTitle(sessionId: string, content: unknown): void {
+        const metadata = this.sessionCache.getSession(sessionId)?.metadata
+        if (!metadata || metadata.name?.trim() || metadata.summary?.text?.trim() || metadata.promptTitle) return
+        const title = createPromptTitle(content)
+        if (!title) return
+        try {
+            this.sessionCache.updatePromptTitle(sessionId, title)
+        } catch {
+            // A display-only title must never interrupt message delivery.
+        }
     }
 
     private triggerDedupIfNeeded(sessionId: string): void {

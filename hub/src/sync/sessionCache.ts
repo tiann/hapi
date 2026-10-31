@@ -1270,6 +1270,54 @@ export class SessionCache {
     }
 
     /**
+     * Persist the first prompt as a display-only title while the session is
+     * untitled. It lives outside `summary`, so later title sources still apply.
+     */
+    updatePromptTitle(sessionId: string, text: string): boolean {
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+            if (!session?.metadata) return false
+
+            const metadata = session.metadata
+            if (metadata.name?.trim() || metadata.summary?.text?.trim() || metadata.promptTitle) {
+                return false
+            }
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                { ...metadata, promptTitle: text },
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false }
+            )
+
+            if (result.result === 'error') return false
+            if (result.result === 'success') {
+                const parsed = MetadataSchema.safeParse(result.value)
+                if (!parsed.success) {
+                    this.refreshSession(sessionId)
+                    return true
+                }
+                // A metadata-only patch: this runs while a prompt is being
+                // accepted, so a full snapshot would race the thinking patch.
+                session.metadata = parsed.data
+                session.metadataVersion = result.version
+                this.publisher.emit({
+                    type: 'session-updated',
+                    sessionId,
+                    namespace: session.namespace,
+                    data: { metadata: { version: result.version, value: parsed.data } } satisfies SessionPatch
+                })
+                return true
+            }
+
+            this.refreshSession(sessionId)
+        }
+
+        return false
+    }
+
+    /**
      * Clear archive-related metadata on an archived session so it can be resumed.
      * - Removes `lifecycleState`, `archivedBy`, `archiveReason`, and stamps
      *   `lifecycleStateSince` so subsequent CLI lifecycle writes still win on time.
@@ -1731,6 +1779,11 @@ export class SessionCache {
 
         if (oldObj.titleSuggestionTurn && !newObj.titleSuggestionTurn) {
             merged.titleSuggestionTurn = oldObj.titleSuggestionTurn
+            changed = true
+        }
+
+        if (typeof oldObj.promptTitle === 'string' && typeof newObj.promptTitle !== 'string') {
+            merged.promptTitle = oldObj.promptTitle
             changed = true
         }
 

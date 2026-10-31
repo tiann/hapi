@@ -65,6 +65,9 @@ export const MetadataSchema = z.object({
     titleSuggestionAutoAttemptedAt: z.number().int().positive().optional(),
     // Hub-owned lifecycle snapshot used to recognize a first turn after restart.
     titleSuggestionTurn: z.object({ first: z.boolean(), completed: z.boolean() }).optional(),
+    // Hub-owned provisional title from the first user prompt. Shown only until
+    // `name` or `summary` exists; it never blocks generated/native titles.
+    promptTitle: z.string().optional(),
     machineId: z.string().optional(),
     claudeSessionId: z.string().optional(),
     // Parent HAPI session id when this session was created by message-level fork

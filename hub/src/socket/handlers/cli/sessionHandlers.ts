@@ -72,7 +72,8 @@ const HUB_OWNED_METADATA_KEYS = [
     'supersededBySessionId',
     'opencodeClearOperation',
     'titleSuggestionAutoAttemptedAt',
-    'titleSuggestionTurn'
+    'titleSuggestionTurn',
+    'promptTitle'
 ] as const
 
 function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown {
