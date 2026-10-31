@@ -913,4 +913,25 @@ class SessionListViewModelTest {
         assertEquals(2, state.unreadCount) // count ignores the machine scope, like the toolbar action
         assertFalse(state.showUnreadOnly) // transient default off
     }
+
+    @Test
+    fun `back from the chat ends the selected-session exception in the unread lens`() = runTest {
+        val sessions = FakeSessionStore().apply {
+            set(summary("a", updatedAt = 100).copy(contentRevision = 1), summary("b", updatedAt = 100).copy(contentRevision = 1))
+        }
+        val (viewModel) = buildViewModel(sessions)
+        viewModel.setUnreadOnly(true)
+        assertEquals(setOf("a", "b"), viewModel.uiState.first { it.rows.size == 2 }.rows.map { it.id }.toSet())
+
+        viewModel.onSessionOpened("a") // stays visible as the open session
+        viewModel.markRead("a") // the chat's acknowledge stamps the read state
+        val open = viewModel.uiState.first { it.unreadCount == 1 }
+        assertEquals(setOf("a", "b"), open.rows.map { it.id }.toSet()) // a kept by selection, b by unread
+
+        // Back closes the chat and the list screen returns: the read session
+        // must leave the lens instead of lingering as "still selected".
+        viewModel.onChatClosed()
+        val closed = viewModel.uiState.first { it.rows.map { it.id } == listOf("b") }
+        assertEquals(1, closed.unreadCount) // only b is genuinely unread now
+    }
 }
