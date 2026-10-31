@@ -510,6 +510,68 @@ class TerminalEmulatorTest {
         assertEquals("hello", snapshot.screenRow(0).trimEnd())
     }
 
+    @Test
+    fun `resize on the main screen keeps the alt buffer in sync for a later alt entry`() {
+        // Regression: reflowMainLocked resized only the main buffer, so
+        // growing rows on the main screen left the alt deque at the old count
+        // — entering the alt screen then indexed past it.
+        val term = emulator(cols = 10, rows = 5)
+        term.resize(10, 8)
+        term.write("\u001B[?1049h")
+        term.write("alt-line")
+        val snapshot = term.snapshot()
+        assertEquals(8, snapshot.rows)
+        assertEquals(0, snapshot.scrollbackCount)
+        assertEquals("alt-line", snapshot.screenRow(0).trimEnd())
+    }
+
+    @Test
+    fun `alt screen resize keeps content clamped to the new width`() {
+        val term = emulator(cols = 10, rows = 5)
+        term.write("\u001B[?1049h")
+        term.write("0123456789")
+        term.resize(4, 5)
+        val snapshot = term.snapshot()
+        assertEquals("0123", snapshot.screenRow(0).trimEnd())
+        // Cursor column clamped into the narrower grid; the next write lands
+        // inside it (wrapPending was reset by the resize).
+        term.write("X")
+        assertEquals("012X", term.snapshot().screenRow(0).trimEnd())
+    }
+
+    @Test
+    fun `alt screen resize taller pads rows and keeps the cursor on its row`() {
+        val term = emulator(cols = 10, rows = 5)
+        term.write("\u001B[?1049h")
+        term.write("a\nb\nc\nd\ne") // cursor lands on row 4
+        assertEquals(4, term.snapshot().cursorLine)
+        term.resize(10, 8)
+        val snapshot = term.snapshot()
+        assertEquals(8, snapshot.rows)
+        assertEquals("a", snapshot.screenRow(0).trimEnd())
+        assertEquals("e", snapshot.screenRow(4).trimEnd())
+        assertEquals("", snapshot.screenRow(7).trimEnd())
+        assertEquals(4, snapshot.cursorLine)
+    }
+
+    @Test
+    fun `alt screen resize with margins keeps them inside the new geometry`() {
+        val term = emulator(cols = 10, rows = 8)
+        term.write("\u001B[?1049h")
+        // DECSTBM 2..6 while 8 rows tall, then shrink to 4: margins must
+        // re-clamp instead of pointing past the screen.
+        term.write("\u001B[2;6r")
+        term.write("\u001B[2;3H") // cursor to row 2 col 3 (1-based), inside the region
+        term.resize(10, 4)
+        term.write("z")
+        val snapshot = term.snapshot()
+        assertEquals(4, snapshot.rows)
+        // Row 2 (1-based) is still writable after the shrink: no crash, and
+        // the cursor was not pushed outside the re-clamped margins ("z" at
+        // col 3, after the two blanks CUP skipped over).
+        assertEquals("z", snapshot.screenRow(1).trim())
+    }
+
     // ------------------------------------------------- parsing robustness --
 
     @Test

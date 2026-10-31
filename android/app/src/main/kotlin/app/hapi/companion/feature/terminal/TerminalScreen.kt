@@ -66,6 +66,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.hapi.companion.R
@@ -314,17 +315,28 @@ private fun TerminalGrid(
     // 8dp horizontal line padding (TerminalLineText) is subtracted from the
     // measured width before the char-count floor division.
     val horizontalChromePx = with(LocalDensity.current) { 8.dp.toPx() }
+
+    fun reportGrid(sizePx: IntSize) {
+        if (cellSize.width <= 0 || cellSize.height <= 0) return
+        val cols = ((sizePx.width - horizontalChromePx) / cellSize.width)
+            .toInt().coerceAtLeast(1)
+        val rows = (sizePx.height / cellSize.height).toInt().coerceAtLeast(1)
+        if (cols > 0 && rows > 0) onGridMeasured(cols, rows)
+    }
+
+    // A font-size step keeps the box size unchanged, so onSizeChanged alone
+    // never fires — re-derive cols/rows from the last measured size whenever
+    // the cell metrics change (that re-derive is the user-facing resize path).
+    var lastSizePx by remember { mutableStateOf<IntSize?>(null) }
     Box(
         modifier = modifier
             .fillMaxSize()
             .onSizeChanged { size ->
-                if (cellSize.width <= 0 || cellSize.height <= 0) return@onSizeChanged
-                val cols = ((size.width - horizontalChromePx) / cellSize.width)
-                    .toInt().coerceAtLeast(1)
-                val rows = (size.height / cellSize.height).toInt().coerceAtLeast(1)
-                if (cols > 0 && rows > 0) onGridMeasured(cols, rows)
+                lastSizePx = size
+                reportGrid(size)
             },
     ) {
+        LaunchedEffect(cellSize) { lastSizePx?.let(::reportGrid) }
         LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
             items(count = snapshot.lines.size, key = { index -> index }) { index ->
                 TerminalLineText(

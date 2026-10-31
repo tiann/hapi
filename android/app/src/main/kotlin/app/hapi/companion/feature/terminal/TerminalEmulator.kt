@@ -122,11 +122,14 @@ class TerminalEmulator(
     /**
      * Resize with line-preserving reflow of the main buffer: wrapped lines are
      * un-joined (via their [TerminalLine.isWrapped] flags) and re-wrapped at
-     * the new width, exactly like xterm.js's reflow. The alternate screen has
-     * no scrollback, so it only pads/truncates. The cursor stays on the same
-     * logical line, clamped to its last visual row (xterm additionally
-     * preserves the column offset; that nuance is skipped — a resize is rare
-     * and the next output repaints interactive TUIs anyway).
+     * the new width, exactly like xterm.js's reflow. Both buffers always end
+     * up at the new geometry — whichever screen is active — because entering
+     * the alt screen later iterates `0 until rows` over it. On the alternate
+     * screen there is no scrollback and no rewrap (xterm semantics): content
+     * is kept, clamped to the new width. The cursor stays on its row, clamped
+     * to the (re-clamped) margins (xterm additionally preserves the column
+     * offset; that nuance is skipped — a resize is rare and the next output
+     * repaints interactive TUIs anyway).
      */
     fun resize(newCols: Int, newRows: Int) {
         val safeCols = newCols.coerceIn(MIN_COLS, MAX_COLS)
@@ -134,18 +137,13 @@ class TerminalEmulator(
         synchronized(lock) {
             if (safeCols == cols && safeRows == rows) return
             if (altScreenActive) {
-                cols = safeCols
-                rows = safeRows
-                altBuffer.setRows(safeRows)
-                altBuffer.screen.forEach { it.clear() }
-                // Alt content is a transient full-screen repaint in practice;
-                // clearing matches how TUIs redraw after SIGWINCH. The main
-                // buffer's row count must follow too (no rewrap of content the
-                // user cannot see): exiting the alt screen must not resurrect
-                // stale geometry.
-                mainBuffer.setRows(safeRows)
+                resizeAltLocked(safeCols, safeRows)
             } else {
                 reflowMainLocked(safeCols, safeRows)
+                // No reflow of main content the user cannot see, but the alt
+                // buffer's row count must follow: a later 1049 enters it with
+                // `0 until rows` and would run past a stale deque.
+                altBuffer.setRows(safeRows)
             }
             clampMarginsLocked()
             cursorX = cursorX.coerceIn(0, cols - 1)
@@ -153,6 +151,23 @@ class TerminalEmulator(
             wrapPending = false
             revisionField++
         }
+    }
+
+    /**
+     * Alt-screen resize: keep the painted content (a TUI repaints after
+     * SIGWINCH, but blanking first loses less-frequent full redraws), clamp
+     * every line to the new width, drop continuation flags, pad/trim rows at
+     * the bottom. The main buffer follows without reflow.
+     */
+    private fun resizeAltLocked(newCols: Int, newRows: Int) {
+        cols = newCols
+        rows = newRows
+        altBuffer.screen.forEach { line ->
+            if (line.cellCount > newCols) line.truncateFrom(newCols)
+            line.isWrapped = false
+        }
+        altBuffer.setRows(newRows)
+        mainBuffer.setRows(newRows)
     }
 
     /**
