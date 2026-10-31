@@ -18,7 +18,8 @@ import { SKILL_LOOKUP_INSTRUCTION } from '@/modules/common/skillLookupInstructio
 import { withSessionSummaryInstruction } from '@/modules/common/sessionSummaryInstruction';
 
 /**
- * Title and display_image / display_video / display_media instructions for OpenCode to call the hapi MCP tools.
+ * Title and display_image / display_video / display_media instructions for OpenCode to call the hapi MCP tools
+ * (per-turn mode off — default keeps off-mode prompts byte-identical).
  */
 export const TITLE_INSTRUCTION = trimIdent(`
     ${HAPI_MCP_BRIDGE_PROMPT}
@@ -31,7 +32,16 @@ export const TITLE_INSTRUCTION = trimIdent(`
 `);
 
 export function getTitleInstruction(env: NodeJS.ProcessEnv = process.env): string {
-    return withSessionSummaryInstruction(TITLE_INSTRUCTION, env)
+    const base = trimIdent(`
+    ${HAPI_MCP_BRIDGE_PROMPT}
+    ${isPeerToolsDisabled() ? SESSION_CITATION_DISABLED_STEER : buildSessionCitationSteerInstruction({
+        inspectTool: 'hapi_inspect_peer',
+        pingTool: 'hapi_ping_peer',
+        listPeersTool: 'hapi_list_peers',
+    })}
+    ${SKILL_LOOKUP_INSTRUCTION}
+`);
+    return withSessionSummaryInstruction(base, env)
 }
 
 /**

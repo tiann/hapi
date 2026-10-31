@@ -1345,3 +1345,137 @@ describe('updateSessionAgentState: updated_at (#1855)', () => {
         expect(update({}, 3).result).toBe('version-mismatch')
     })
 })
+
+describe('clearSessionNameLocks', () => {
+    it('removes nameLocked while keeping the pinned name and ordering columns', () => {
+        const store = makeStore()
+        const locked = store.sessions.getOrCreateSession(
+            'locked-one',
+            { path: '/tmp/a', host: 'h', name: 'Manual A', nameLocked: true },
+            null,
+            'default'
+        )
+        const alsoLocked = store.sessions.getOrCreateSession(
+            'locked-two',
+            { path: '/tmp/b', host: 'h', name: 'Manual B', nameLocked: true },
+            null,
+            'tenant'
+        )
+        const untouched = store.sessions.getOrCreateSession(
+            'unlocked-three',
+            { path: '/tmp/c', host: 'h', name: 'Agent C' },
+            null,
+            'default'
+        )
+        const before = store.sessions.getSession(locked.id)!
+
+        const cleared = store.sessions.clearSessionNameLocks()
+
+        expect(cleared).toBe(2)
+        expect(getMetadata(store, locked.id)).toMatchObject({ name: 'Manual A' })
+        expect(getMetadata(store, locked.id)).not.toHaveProperty('nameLocked')
+        expect(getMetadata(store, alsoLocked.id)).not.toHaveProperty('nameLocked')
+        expect(getMetadata(store, untouched.id)).toMatchObject({ name: 'Agent C' })
+        // Lock clearing must not reshuffle the session list.
+        const after = store.sessions.getSession(locked.id)!
+        expect(after.updatedAt).toBe(before.updatedAt)
+
+        store.close()
+    })
+
+    it('is a no-op when nothing is locked', () => {
+        const store = makeStore()
+        store.sessions.getOrCreateSession(
+            'no-locks',
+            { path: '/tmp/a', host: 'h' },
+            null,
+            'default'
+        )
+
+        expect(store.sessions.clearSessionNameLocks()).toBe(0)
+
+        store.close()
+    })
+})
+
+describe('updateSessionMetadata: nameLocked preservation', () => {
+    it('re-pins nameLocked when a full snapshot from a sanitized view drops it', () => {
+        const store = makeStore()
+        const created = store.sessions.getOrCreateSession(
+            'preserve-lock',
+            { path: '/tmp/a', host: 'h', name: 'Manual A', nameLocked: true },
+            null,
+            'default'
+        )
+
+        // Simulate a hub-side writer that rebuilt its snapshot from the
+        // sanitized cache/wire view (MetadataSchema strips nameLocked).
+        const row = store.sessions.getSession(created.id)!
+        const sanitized = { ...(row.metadata as Record<string, unknown>) }
+        delete sanitized.nameLocked
+        const result = store.sessions.updateSessionMetadata(
+            created.id,
+            sanitized,
+            row.metadataVersion,
+            'default',
+            { touchUpdatedAt: false }
+        )
+
+        expect(result.result).toBe('success')
+        expect(getMetadata(store, created.id)).toMatchObject({ name: 'Manual A' })
+        expect(getMetadata(store, created.id)).toHaveProperty('nameLocked', true)
+
+        store.close()
+    })
+
+    it('lets preserveNameLock: false drop the lock (unlock path)', () => {
+        const store = makeStore()
+        const created = store.sessions.getOrCreateSession(
+            'unlock-lock',
+            { path: '/tmp/a', host: 'h', name: 'Manual B', nameLocked: true },
+            null,
+            'default'
+        )
+
+        const row = store.sessions.getSession(created.id)!
+        const withoutLock = { ...(row.metadata as Record<string, unknown>) }
+        delete withoutLock.nameLocked
+        const result = store.sessions.updateSessionMetadata(
+            created.id,
+            withoutLock,
+            row.metadataVersion,
+            'default',
+            { touchUpdatedAt: false, preserveNameLock: false }
+        )
+
+        expect(result.result).toBe('success')
+        expect(getMetadata(store, created.id)).toMatchObject({ name: 'Manual B' })
+        expect(getMetadata(store, created.id)).not.toHaveProperty('nameLocked')
+
+        store.close()
+    })
+
+    it('does not invent a lock when the raw row never had one', () => {
+        const store = makeStore()
+        const created = store.sessions.getOrCreateSession(
+            'never-locked',
+            { path: '/tmp/a', host: 'h', name: 'Agent C' },
+            null,
+            'default'
+        )
+
+        const row = store.sessions.getSession(created.id)!
+        const result = store.sessions.updateSessionMetadata(
+            created.id,
+            { ...(row.metadata as Record<string, unknown>), summary: { text: 's', updatedAt: 1 } },
+            row.metadataVersion,
+            'default',
+            { touchUpdatedAt: false }
+        )
+
+        expect(result.result).toBe('success')
+        expect(getMetadata(store, created.id)).not.toHaveProperty('nameLocked')
+
+        store.close()
+    })
+})

@@ -47,6 +47,12 @@ export interface Settings {
      */
     sessionSummaryInChat?: boolean
     /**
+     * When true, CLI swaps the injected change_title steer from
+     * "use sparingly" to "rewrite the session title at the end of every
+     * user turn". Default off.
+     */
+    autoTitlePerTurn?: boolean
+    /**
      * Hub-side provider API keys / endpoints managed from Settings.
      * Env vars still win when set at process start (ops override).
      */

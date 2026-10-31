@@ -424,11 +424,12 @@ export function updateSessionMetadata(
     metadata: unknown,
     expectedVersion: number,
     namespace: string,
-    options?: { touchUpdatedAt?: boolean; allowUnarchive?: boolean; allowTitleUpdate?: boolean; titleLocked?: boolean; inheritTitleLockFrom?: string }
+    options?: { touchUpdatedAt?: boolean; allowUnarchive?: boolean; allowTitleUpdate?: boolean; titleLocked?: boolean; inheritTitleLockFrom?: string; preserveNameLock?: boolean }
 ): VersionedUpdateResult<unknown | null> {
     const now = Date.now()
     const touchUpdatedAt = options?.touchUpdatedAt !== false
     const allowUnarchive = options?.allowUnarchive === true
+    const preserveNameLock = options?.preserveNameLock !== false
 
     try {
         return db.transaction((): VersionedUpdateResult<unknown | null> => {
@@ -443,6 +444,23 @@ export function updateSessionMetadata(
             const titleOwner = isPlainObject(prior) && prior.titleLocked === true ? prior
                 : isPlainObject(sourceTitle) && sourceTitle.titleLocked === true ? sourceTitle : prior
             let merged = preserveSessionTitle(titleOwner, mergeSessionMetadata(prior, metadata), options)
+
+            // nameLocked is hub-owned and stripped from sanitized cache/wire
+            // views (MetadataSchema). Writers that rebuild a full snapshot
+            // from such a view (summary updates, lifecycle ticks, archive
+            // bookkeeping, preferred-mode persists, syncEngine sweeps) would
+            // otherwise silently drop the lock at the DB level. Re-pin it from
+            // the raw row unless the caller explicitly opts out — only
+            // clearSessionNameLocks may remove it.
+            if (
+                preserveNameLock
+                && isPlainObject(prior)
+                && prior.nameLocked === true
+                && isPlainObject(merged)
+                && merged.nameLocked !== true
+            ) {
+                merged = { ...merged, nameLocked: true }
+            }
 
             // #1911 M1: unauthorized un-archive of hub-archived rows.
             // Return success + merge-preserved archive fields — NOT version-mismatch
@@ -905,6 +923,38 @@ export function getSessionsByNamespace(db: Database, namespace: string): StoredS
         'SELECT * FROM sessions WHERE namespace = ? ORDER BY updated_at DESC'
     ).all(namespace) as DbSessionRow[]
     return rows.map(toStoredSession)
+}
+
+/**
+ * Remove the manual-rename lock (`metadata.nameLocked`) from every session.
+ * Invoked when the owner re-enables per-turn title updates: locks captured
+ * under "manual rename wins" semantics must not pin titles once the agent is
+ * asked to rewrite them each turn. Each row goes through the normal
+ * metadata-version CAS (merge is a no-op passthrough for full snapshots) and
+ * is written without touching updated_at so session list ordering is stable.
+ */
+export function clearSessionNameLocks(db: Database): number {
+    const locked = getSessions(db).filter(
+        (session) => isPlainObject(session.metadata) && session.metadata.nameLocked === true
+    )
+    let cleared = 0
+    for (const session of locked) {
+        if (!isPlainObject(session.metadata)) continue
+        const metadata: Record<string, unknown> = { ...session.metadata }
+        delete metadata.nameLocked
+        const result = updateSessionMetadata(
+            db,
+            session.id,
+            metadata,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false, preserveNameLock: false }
+        )
+        if (result.result === 'success') {
+            cleared += 1
+        }
+    }
+    return cleared
 }
 
 export function deleteSession(db: Database, id: string, namespace: string): boolean {
