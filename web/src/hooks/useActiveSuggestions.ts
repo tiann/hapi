@@ -11,7 +11,13 @@ export interface Suggestion {
     sessionMention?: { id: string; title: string }
 }
 
-type SuggestionHandler = (query: string) => Promise<Suggestion[]>
+export interface SuggestionRequestContext {
+    /** Replace the results for this query; stale requests are ignored. */
+    publish: (suggestions: Suggestion[]) => void
+    signal: AbortSignal
+}
+
+export type SuggestionHandler = (query: string, context: SuggestionRequestContext) => Promise<Suggestion[]>
 
 interface SuggestionInput {
     query: string | null
@@ -176,19 +182,23 @@ export function useActiveSuggestions(
         })
     }, [wrapAround])
 
+    const generationRef = useRef(0)
+    const abortRef = useRef<AbortController | null>(null)
+
     const clear = useCallback(() => {
+        generationRef.current += 1
+        abortRef.current?.abort()
         setState({ suggestions: [], selected: -1, input: null })
     }, [])
 
     const syncRef = useRef<ValueSync<SuggestionRequest> | null>(null)
-    const generationRef = useRef(0)
-
     useEffect(() => {
         const sync = new ValueSync<SuggestionRequest>(async ({ input, generation }) => {
             const { query: nextQuery, handler: requestHandler } = input
             if (nextQuery === null || (!allowEmptyQuery && nextQuery === '')) return
 
-            const suggestions = await requestHandler(nextQuery)
+            const controller = new AbortController()
+            abortRef.current = controller
 
             const isCurrentRequest = () => {
                 const latest = latestInputRef.current
@@ -199,36 +209,40 @@ export function useActiveSuggestions(
 
             // ValueSync serializes work, but a previous request can still finish after a
             // newer query has been queued. Only the current query generation may publish.
-            if (!isCurrentRequest()) return
+            const publish = (suggestions: Suggestion[]) => {
+                if (!isCurrentRequest() || controller.signal.aborted) return
 
-            setState((prev) => {
-                // React may defer this updater until another query is current.
-                if (!isCurrentRequest()) return prev
+                setState((prev) => {
+                    // React may defer this updater until another query is current.
+                    if (!isCurrentRequest()) return prev
 
-                if (prev.selected >= 0 && prev.selected < prev.suggestions.length) {
-                    const previousKey = prev.suggestions[prev.selected].key
-                    const newIndex = suggestions.findIndex(s => s.key === previousKey)
-                    if (newIndex !== -1) {
-                        // Preserve the user's logical selection across a refreshed or reordered list.
-                        return { suggestions, selected: newIndex, input }
+                    if (prev.selected >= 0 && prev.selected < prev.suggestions.length) {
+                        const previousKey = prev.suggestions[prev.selected].key
+                        const newIndex = suggestions.findIndex(s => s.key === previousKey)
+                        if (newIndex !== -1) {
+                            // Preserve the user's logical selection across a refreshed or reordered list.
+                            return { suggestions, selected: newIndex, input }
+                        }
                     }
-                }
 
-                // The selected key disappeared (or there was no selection): retain the
-                // existing fallback semantics and clamp the index to the new list.
-                const clampedSelection = Math.min(prev.selected, suggestions.length - 1)
-                return {
-                    suggestions,
-                    selected: clampedSelection < 0 && suggestions.length > 0 && autoSelectFirst ? 0 : clampedSelection,
-                    input
-                }
-            })
+                    // The selected key disappeared (or there was no selection): retain the
+                    // existing fallback semantics and clamp the index to the new list.
+                    const clampedSelection = Math.min(prev.selected, suggestions.length - 1)
+                    return {
+                        suggestions,
+                        selected: clampedSelection < 0 && suggestions.length > 0 && autoSelectFirst ? 0 : clampedSelection,
+                        input
+                    }
+                })
+            }
+            publish(await requestHandler(nextQuery, { publish, signal: controller.signal }))
         })
 
         syncRef.current = sync
 
         return () => {
             sync.stop()
+            abortRef.current?.abort()
             generationRef.current += 1
             if (syncRef.current === sync) {
                 syncRef.current = null
@@ -237,6 +251,7 @@ export function useActiveSuggestions(
     }, [clampSelection, autoSelectFirst, allowEmptyQuery])
 
     useEffect(() => {
+        abortRef.current?.abort()
         const generation = ++generationRef.current
         const latestInput = latestInputRef.current
         syncRef.current?.setValue({

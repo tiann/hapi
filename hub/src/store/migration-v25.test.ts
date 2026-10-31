@@ -13,7 +13,7 @@ afterEach(() => {
     }
 })
 
-describe('schema migration v25 to v29', () => {
+describe('schema migration v25 to v31', () => {
     it('adds an index used by immediate queued-message replay', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v25-'))
         tempDirs.push(dir)
@@ -41,7 +41,7 @@ describe('schema migration v25 to v29', () => {
             ORDER BY seq ASC
         `).all('session-id') as Array<{ detail: string }>
 
-        expect(version.user_version).toBe(29)
+        expect(version.user_version).toBe(31)
         expect(plan.some((row) => row.detail.includes('idx_messages_immediate_queued'))).toBe(true)
         migrated.close()
     })

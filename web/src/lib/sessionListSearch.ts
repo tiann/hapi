@@ -1,5 +1,5 @@
 import type { SessionSummary } from '@/types/api'
-import { isWildcardSearch, matchesSearchQuery } from '@hapi/protocol'
+import { compareSessionsByOrderKeyDesc, isWildcardSearch, matchesSearchQuery } from '@hapi/protocol'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
 
@@ -216,7 +216,7 @@ export function compareSessionsBySearchRelevance(
     const scoreA = index.scores.get(a.id) ?? 0
     const scoreB = index.scores.get(b.id) ?? 0
     if (scoreB !== scoreA) return scoreB - scoreA
-    return b.updatedAt - a.updatedAt
+    return compareSessionsByOrderKeyDesc(a, b)
 }
 
 export function sortSessionsBySearchRelevance<T extends SessionSummary>(
@@ -258,9 +258,6 @@ function maxSessionScore(sessions: readonly SessionSummary[], index: SessionSear
 
 export function rankSessionGroupsBySearchRelevance<T extends {
     sessions: SessionSummary[]
-    hasPinnedSession: boolean
-    hasActiveSession: boolean
-    latestUpdatedAt: number
 }>(groups: readonly T[], index: SessionSearchScoreIndex): T[] {
     const ranked = groups.map((group) => ({
         ...group,
@@ -270,14 +267,8 @@ export function rankSessionGroupsBySearchRelevance<T extends {
         const scoreA = maxSessionScore(a.sessions, index)
         const scoreB = maxSessionScore(b.sessions, index)
         if (scoreB !== scoreA) return scoreB - scoreA
-        // When scores tie, keep the list's usual pinned/active/recency order.
-        if (a.hasPinnedSession !== b.hasPinnedSession) {
-            return a.hasPinnedSession ? -1 : 1
-        }
-        if (a.hasActiveSession !== b.hasActiveSession) {
-            return a.hasActiveSession ? -1 : 1
-        }
-        return b.latestUpdatedAt - a.latestUpdatedAt
+        // `groups` is already in stable list order; stable sort preserves it.
+        return 0
     })
 }
 

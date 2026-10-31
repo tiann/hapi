@@ -7,6 +7,7 @@ import {
     commandMatchesRunnerSpawnedSession,
     findRunnerSpawnedOrphanTargets,
     findStopSessionOrphanTargets,
+    parseWindowsProcessSnapshot,
     reapRunnerSpawnedOrphans,
     selectOrphanPidsForSession,
     selectOrphanTargetsForSession,
@@ -16,6 +17,17 @@ import {
     windowsProcessListCimCommand,
     windowsProcessMarkerCimCommand,
 } from '@/utils/process'
+
+describe('complete Windows process snapshots', () => {
+    it.each(['', '[]', '{}', 'null', '[{"ProcessId":1},{}]', '[{"ProcessId":0}]'])('rejects unverifiable listing %s', raw => {
+        expect(() => parseWindowsProcessSnapshot(raw)).toThrow();
+    });
+    it('retains missing creation times as unknown rather than treating the PID as absent', () => {
+        expect(parseWindowsProcessSnapshot('[{"ProcessId":0},{"ProcessId":42,"CreationDate":null}]')).toEqual([
+            { pid: 42, name: '', cmd: '', startMarker: null }
+        ]);
+    });
+});
 
 describe('orphanReap argv matching', () => {
     const sessionId = 'sess-abc-123'
@@ -430,7 +442,8 @@ describe('Windows orphan startMarker format agreement', () => {
                     startMarker: iso, // as listWindowsProcessesWithCommandLine would set
                 },
             ],
-            sessionId
+            sessionId,
+            1 // Synthetic self PID: never collide with the fixture PID (4242).
         )
         expect(targets).toEqual([{ pid: 4242, startMarker: iso }])
     })

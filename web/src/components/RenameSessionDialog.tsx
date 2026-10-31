@@ -12,23 +12,28 @@ type RenameSessionDialogProps = {
     isOpen: boolean
     onClose: () => void
     currentName: string
-    onRename: (newName: string) => Promise<void>
+    currentTitleLocked?: boolean
+    sessionId?: string
+    onRename: (newName: string | undefined, titleLocked?: boolean) => Promise<void>
     onSuggestTitle?: () => Promise<string>
-    onUpdateSummary?: (text: string) => Promise<void>
+    onUpdateSummary?: (text: string, titleLocked?: boolean) => Promise<void>
     isPending: boolean
 }
 
 export function RenameSessionDialog(props: RenameSessionDialogProps) {
     const { t } = useTranslation()
-    const { isOpen, onClose, currentName, onRename, onSuggestTitle, onUpdateSummary, isPending } = props
+    const { isOpen, onClose, currentName, currentTitleLocked = false, sessionId, onRename, onSuggestTitle, onUpdateSummary, isPending } = props
     const [name, setName] = useState(currentName)
+    const [titleLocked, setTitleLocked] = useState(currentTitleLocked)
     const [error, setError] = useState<string | null>(null)
     const [draftSource, setDraftSource] = useState<'manual' | 'generated'>('manual')
     const [draftEdited, setDraftEdited] = useState(false)
     const [isGenerating, setIsGenerating] = useState(false)
-    const inputRef = useRef<HTMLInputElement>(null)
+    const [isSaving, setIsSaving] = useState(false)
     const generationRef = useRef(0)
-    const busy = isPending || isGenerating
+    const busy = isPending || isGenerating || isSaving
+    const openedRef = useRef(false)
+    const sessionRef = useRef(sessionId)
 
     const handleClose = () => {
         generationRef.current += 1
@@ -37,24 +42,25 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
     }
 
     useEffect(() => {
-        generationRef.current += 1
         if (!isOpen) {
+            generationRef.current += 1
+            openedRef.current = false
             setIsGenerating(false)
             return
         }
-
-        if (isOpen) {
+        // Incoming agent/SSE changes must not reset an open user draft.
+        if (!openedRef.current || sessionRef.current !== sessionId) {
+            generationRef.current += 1
+            openedRef.current = true
+            sessionRef.current = sessionId
             setName(currentName)
+            setTitleLocked(currentTitleLocked)
             setError(null)
             setDraftSource('manual')
             setDraftEdited(false)
             setIsGenerating(false)
-            setTimeout(() => {
-                inputRef.current?.focus()
-                inputRef.current?.select()
-            }, 100)
         }
-    }, [isOpen, currentName])
+    }, [isOpen, currentName, currentTitleLocked, sessionId])
 
     const handleGenerate = async () => {
         if (!onSuggestTitle) return
@@ -81,21 +87,31 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault()
+        if (busy) return
         const trimmed = name.trim()
-        if (!trimmed || (!draftEdited && draftSource === 'manual' && trimmed === currentName)) {
+        const lockChanged = titleLocked !== currentTitleLocked
+        const untouchedTitle = !draftEdited && draftSource === 'manual'
+        if (!trimmed || (untouchedTitle && !lockChanged)) {
             handleClose()
             return
         }
         setError(null)
+        setIsSaving(true)
+        const saveGeneration = generationRef.current
         try {
-            if (draftSource === 'generated' && onUpdateSummary) {
-                await onUpdateSummary(trimmed)
+            if (untouchedTitle && lockChanged) {
+                // Preserve summary/name ownership when only the lock changes.
+                await onRename(undefined, titleLocked)
+            } else if (draftSource === 'generated' && onUpdateSummary) {
+                await onUpdateSummary(trimmed, titleLocked)
             } else {
-                await onRename(trimmed)
+                await onRename(trimmed, titleLocked)
             }
-            handleClose()
+            if (saveGeneration === generationRef.current) handleClose()
         } catch {
-            setError(t('dialog.rename.error'))
+            if (saveGeneration === generationRef.current) setError(t('dialog.rename.error'))
+        } finally {
+            setIsSaving(false)
         }
     }
 
@@ -114,21 +130,36 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
                     </DialogTitle>
                 </DialogHeader>
                 <form onSubmit={handleSubmit} className="mt-4 flex flex-col gap-4">
-                    <input
-                        ref={inputRef}
-                        type="text"
-                        value={name}
-                        onChange={(e) => {
-                            setName(e.target.value)
-                            setDraftSource('manual')
-                            setDraftEdited(true)
-                        }}
-                        onKeyDown={handleKeyDown}
-                        placeholder={t('dialog.rename.placeholder')}
-                        className="w-full px-3 py-2.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none focus:ring-2 focus:ring-[var(--app-button)] focus:border-transparent"
-                        disabled={busy}
-                        maxLength={255}
-                    />
+                    <div className="relative">
+                        <input
+                            type="text"
+                            value={name}
+                            onChange={(e) => {
+                                setName(e.target.value)
+                                setDraftSource('manual')
+                                setDraftEdited(true)
+                            }}
+                            onKeyDown={handleKeyDown}
+                            placeholder={t('dialog.rename.placeholder')}
+                            className="w-full pl-3 pr-12 py-2.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none focus:ring-2 focus:ring-[var(--app-button)] focus:border-transparent"
+                            disabled={busy}
+                            maxLength={255}
+                        />
+                        <button
+                            type="button"
+                            aria-label={t('dialog.rename.titleLock')}
+                            aria-pressed={titleLocked}
+                            title={t(titleLocked ? 'dialog.rename.unlockTitle' : 'dialog.rename.lockTitle')}
+                            onClick={() => setTitleLocked(!titleLocked)}
+                            disabled={busy}
+                            className="absolute right-0 top-0 flex h-full w-11 items-center justify-center rounded-r-lg text-[var(--app-hint)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-button)] disabled:opacity-50"
+                        >
+                            <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <rect x="4" y="11" width="16" height="10" rx="2" />
+                                {titleLocked ? <path d="M8 11V7a4 4 0 0 1 8 0v4" /> : <path d="M8 11V7a4 4 0 0 1 7.8-1" />}
+                            </svg>
+                        </button>
+                    </div>
 
                     {error ? (
                         <div className="rounded-md bg-red-50 p-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-400">

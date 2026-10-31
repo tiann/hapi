@@ -13,7 +13,7 @@ afterEach(() => {
     }
 })
 
-describe('schema migration v22 to v29', () => {
+describe('schema migration v22 to v31', () => {
     it('adds events and event_links tables to a V22 database', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v23-'))
         tempDirs.push(dir)
@@ -46,7 +46,7 @@ describe('schema migration v22 to v29', () => {
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'attachments'"
         ).get() as { name: string } | null
         expect(attachments?.name).toBe('attachments')
-        expect(version.user_version).toBe(29)
+        expect(version.user_version).toBe(31)
         migrated.close()
     })
 })

@@ -12,6 +12,9 @@
     "subtitle": "Go for a hike, grab a coffee, or just relax. Your AI agents work in the background. Get native app or messaging app notifications when they need your input.",
     "startBtn": "Start Your Freedom",
     "githubBtn": "View on GitHub",
+    "appStore": "App Store",
+    "googlePlay": "Google Play",
+    "appsNote": "Native iOS/Android apps are paid. The web app/PWA is free.",
     "notification": {
       "title": "Instant Notification",
       "content": "\"Task completed! 3 files updated.<br/>Ready for review?\""
@@ -101,7 +104,7 @@
     },
     "step2": {
       "title": "2. Connect Mobile",
-      "desc": "Pair a native iOS/Android app with your hub, or open the PWA or Mini App to control your sessions."
+      "desc": "Open the free web app/PWA or Mini App, or pair the native iOS/Android app with your hub to control your sessions."
     },
     "step3": {
       "title": "3. Vibe Code",

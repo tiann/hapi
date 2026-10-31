@@ -1182,6 +1182,23 @@
         }
       }
     },
+    "Active sessions can't be deleted — archive first" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Активную сессию нельзя удалить — сначала архивируйте её"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "活跃会话无法删除 — 请先归档"
+          }
+        }
+      }
+    },
     "Add Hub" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -2389,6 +2406,23 @@
         }
       }
     },
+    "Clear the filters to see every session." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сбросьте фильтры, чтобы увидеть все сессии."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清除筛选条件即可查看全部会话。"
+          }
+        }
+      }
+    },
     "Close" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -2606,6 +2640,40 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "继续规划"
+          }
+        }
+      }
+    },
+    "Conversation exported" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "对话已导出"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Разговор экспортирован"
+          }
+        }
+      }
+    },
+    "Conversation History" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "对话历史"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "История разговора"
           }
         }
       }
@@ -3103,6 +3171,23 @@
         }
       }
     },
+    "Create a new session from this point? The current session will not be changed." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从此处创建新会话？当前会话不会被修改。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Создать новую сессию с этого места? Текущая сессия не изменится."
+          }
+        }
+      }
+    },
     "Create Team" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -3290,6 +3375,40 @@
         }
       }
     },
+    "Delete failed: %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось удалить: %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除失败：%@"
+          }
+        }
+      }
+    },
+    "Delete Session" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Удалить сессию"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除会话"
+          }
+        }
+      }
+    },
     "Delete Team" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -3320,6 +3439,40 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "删除这条草稿？"
+          }
+        }
+      }
+    },
+    "Delete “%@”? This can't be undone." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Удалить «%@»? Это действие необратимо."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "确定删除“%@”吗？此操作无法撤销。"
+          }
+        }
+      }
+    },
+    "Delete…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Удалить…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除…"
           }
         }
       }
@@ -3592,6 +3745,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "域名或 IP 地址"
+          }
+        }
+      }
+    },
+    "Don't Schedule" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не откладывать"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取消定时"
           }
         }
       }
@@ -4021,6 +4191,57 @@
         }
       }
     },
+    "Export Anyway" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仍然导出"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Всё равно экспортировать"
+          }
+        }
+      }
+    },
+    "Export Conversation…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "导出对话…"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Экспортировать разговор…"
+          }
+        }
+      }
+    },
+    "Export Too Large" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "导出内容过大"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Экспорт слишком велик"
+          }
+        }
+      }
+    },
     "Failed to abort" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -4119,6 +4340,57 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "创建会话失败"
+          }
+        }
+      }
+    },
+    "Failed to delete session" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось удалить сессию"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除会话失败"
+          }
+        }
+      }
+    },
+    "Failed to export conversation" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "导出对话失败"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось экспортировать разговор"
+          }
+        }
+      }
+    },
+    "Failed to fork conversation" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分叉对话失败"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось ответвить разговор"
           }
         }
       }
@@ -4238,6 +4510,57 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "读取文件失败"
+          }
+        }
+      }
+    },
+    "Failed to rename session" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось переименовать сессию"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重命名会话失败"
+          }
+        }
+      }
+    },
+    "Failed to reopen session" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось открыть сессию заново"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重新打开会话失败"
+          }
+        }
+      }
+    },
+    "Failed to rewind conversation" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "回退对话失败"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось откатить разговор"
           }
         }
       }
@@ -4463,6 +4786,74 @@
         }
       }
     },
+    "Fork" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分叉"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ответвить"
+          }
+        }
+      }
+    },
+    "Fork Conversation" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ответвить разговор"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分叉对话"
+          }
+        }
+      }
+    },
+    "Fork from Here" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从此处分叉"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ответвить отсюда"
+          }
+        }
+      }
+    },
+    "Fork Here" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在此处分叉"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ответвить здесь"
+          }
+        }
+      }
+    },
     "Full message" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -4514,6 +4905,23 @@
         }
       }
     },
+    "HAPI did not change this session because its native Codex boundary is ambiguous. Create a new session before this point instead? The current session will not be changed." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "由于 Codex 原生对话边界存在歧义，HAPI 没有修改当前会话。是否改为在此处创建新会话？当前会话不会被修改。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "HAPI не изменил эту сессию: нативная граница Codex неоднозначна. Создать вместо этого новую сессию до этого места? Текущая сессия не изменится."
+          }
+        }
+      }
+    },
     "HAPI is self-hosted: your agent sessions run on your own machine, served by a hub you operate. Start the hub on your computer, then pair this app with the QR code it prints — or enter the hub URL and access token by hand." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -4527,6 +4935,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "HAPI 是自托管的：你的智能体会话运行在你自己的机器上，由你自己运营的 Hub 提供服务。先在电脑上启动 Hub，然后用它打印的二维码配对本应用 — 也可以手动输入 Hub 地址和访问令牌。"
+          }
+        }
+      }
+    },
+    "History actions" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "历史操作"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Действия с историей"
           }
         }
       }
@@ -4769,6 +5194,57 @@
         }
       }
     },
+    "In %lld hours" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Через %lld ч"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 小时后"
+          }
+        }
+      }
+    },
+    "In %lld minutes" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Через %lld мин"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%lld 分钟后"
+          }
+        }
+      }
+    },
+    "In 1 hour" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Через 1 час"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "1 小时后"
+          }
+        }
+      }
+    },
     "Inactive" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -4918,6 +5394,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "语言"
+          }
+        }
+      }
+    },
+    "Large Export" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "导出内容较大"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Большой экспорт"
           }
         }
       }
@@ -5258,6 +5751,91 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "由代理管理"
+          }
+        }
+      }
+    },
+    "Mark All as Read" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отметить все как прочитанные"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "全部标为已读"
+          }
+        }
+      }
+    },
+    "Mark All as Read?" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отметить все как прочитанные?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "全部标为已读？"
+          }
+        }
+      }
+    },
+    "Mark as Read" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отметить прочитанными"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "标为已读"
+          }
+        }
+      }
+    },
+    "Marks %lld unread sessions as read on this device." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Непрочитанные сессии на этом устройстве будут отмечены как прочитанные: %lld."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这会将当前设备上的 %lld 个未读会话标记为已读。"
+          }
+        }
+      }
+    },
+    "Max 7 days. Requires the hub running; the CLI catches up the next time it connects after that time." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Максимум 7 дней. Требуется работающий хаб; CLI наверстает отправку при следующем подключении после этого времени."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最多 7 天。需 Hub 运行；CLI 下次连接时会接收消息。"
           }
         }
       }
@@ -5738,6 +6316,23 @@
         }
       }
     },
+    "No History Points" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有历史点"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нет точек истории"
+          }
+        }
+      }
+    },
     "No machines online" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -5768,6 +6363,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "没有匹配的目录"
+          }
+        }
+      }
+    },
+    "No matching sessions" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нет подходящих сессий"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有匹配的会话"
           }
         }
       }
@@ -6159,6 +6771,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "离线 — 显示缓存的会话"
+          }
+        }
+      }
+    },
+    "Only messages with a native history point are listed. Load older messages in the conversation to reach earlier ones." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅列出带原生历史点的消息。在对话中加载更早的消息可看到更早的历史点。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показаны только сообщения с нативной точкой истории. Загрузите более ранние сообщения в разговоре, чтобы увидеть предыдущие."
           }
         }
       }
@@ -6618,6 +7247,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "照片图库"
+          }
+        }
+      }
+    },
+    "Pick a Time…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выбрать время…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择时间…"
           }
         }
       }
@@ -7319,6 +7965,74 @@
         }
       }
     },
+    "Rename failed: %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Не удалось переименовать: %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重命名失败：%@"
+          }
+        }
+      }
+    },
+    "Rename Session" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Переименовать сессию"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重命名会话"
+          }
+        }
+      }
+    },
+    "Rename…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Переименовать…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重命名…"
+          }
+        }
+      }
+    },
+    "Reopen" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Открыть заново"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重新打开"
+          }
+        }
+      }
+    },
     "Reply" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -7472,6 +8186,108 @@
         }
       }
     },
+    "Rewind" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "回退"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Откатить"
+          }
+        }
+      }
+    },
+    "Rewind Conversation" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "回退对话"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Откатить разговор"
+          }
+        }
+      }
+    },
+    "Rewind or Fork…" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "回退或分叉…"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Откатить или ответвить…"
+          }
+        }
+      }
+    },
+    "Rewind this session to this point? Later conversation history will be permanently removed. Files will not be changed." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将此会话回退到此处？之后的对话历史将永久移除。文件不会被修改。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Откатить сессию к этому месту? Последующая история разговора будет удалена навсегда. Файлы не изменятся."
+          }
+        }
+      }
+    },
+    "Rewind to Here" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "回退到此处"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Откатить сюда"
+          }
+        }
+      }
+    },
+    "Rewind Unavailable" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "暂时无法回退"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Откат недоступен"
+          }
+        }
+      }
+    },
     "Run script" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -7536,6 +8352,142 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "运行中"
+          }
+        }
+      }
+    },
+    "Schedule" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Запланировать"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "定时"
+          }
+        }
+      }
+    },
+    "Schedule send" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отложенная отправка"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "定时发送"
+          }
+        }
+      }
+    },
+    "Scheduled messages can't include attachments — remove them or send now" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отложенные сообщения не могут содержать вложения — удалите их или отправьте сейчас"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "定时消息不能包含附件 — 请移除附件或立即发送"
+          }
+        }
+      }
+    },
+    "Scheduled sends can be at most 7 days ahead" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Отправку можно запланировать не более чем на 7 дней вперёд"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最多只能定时 7 天"
+          }
+        }
+      }
+    },
+    "Scheduled time must be in the future" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Время отправки должно быть в будущем"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发送时间必须在未来"
+          }
+        }
+      }
+    },
+    "Search sessions" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Поиск сессий"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "搜索会话"
+          }
+        }
+      }
+    },
+    "Send at" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Время отправки"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发送时间"
+          }
+        }
+      }
+    },
+    "Session name" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Название сессии"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "会话名称"
           }
         }
       }
@@ -9155,6 +10107,40 @@
         }
       }
     },
+    "This export contains %lld messages (about %@), above the recommended %lld." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此导出包含 %1$lld 条消息（约 %2$@），超过建议的 %3$lld 条。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Экспорт содержит сообщений: %1$lld (около %2$@), больше рекомендуемых %3$lld."
+          }
+        }
+      }
+    },
+    "This export is too large to prepare safely (%lld messages, %@; maximum %@)." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "导出内容过大，无法安全准备（%1$lld 条消息，%2$@；上限 %3$@）。"
+          }
+        },
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Экспорт слишком велик для безопасной подготовки (сообщений: %1$lld, %2$@; максимум %3$@)."
+          }
+        }
+      }
+    },
     "This file is empty" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -9525,6 +10511,40 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "未读"
+          }
+        }
+      }
+    },
+    "Unread Only" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Только непрочитанные"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅未读"
+          }
+        }
+      }
+    },
+    "Unread only" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Только непрочитанные"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅未读"
           }
         }
       }

@@ -13,6 +13,7 @@ export default defineConfig({
             // vitest.integration.config.ts), not inside the parallel
             // unit-test suite.
             '**/runner.integration.test.ts',
+            '**/lateRunnerWebhook.integration.test.ts',
         ],
         globalSetup: './src/test/globalSetup.ts',
         setupFiles: './src/test/setup.ts',

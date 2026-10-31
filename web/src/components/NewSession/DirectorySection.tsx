@@ -1,9 +1,10 @@
-import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import { Autocomplete } from '@/components/ChatInput/Autocomplete'
 import { FloatingOverlay } from '@/components/ChatInput/FloatingOverlay'
 import { useTranslation } from '@/lib/use-translation'
 import { getPathDisplayName } from '@/utils/path'
+import { DirectoryInput } from './DirectoryInput'
 
 
 function CodexImportIcon(props: { className?: string }) {
@@ -55,6 +56,7 @@ export function DirectorySection(props: {
     isImportingCodexHistory?: boolean
 }) {
     const { t } = useTranslation()
+    const [pathSelection, setPathSelection] = useState(0)
 
     return (
         <div className="flex flex-col gap-1.5 px-3 py-3">
@@ -63,8 +65,10 @@ export function DirectorySection(props: {
             </label>
             <div className="flex items-start gap-2">
                 <div className="relative flex-1 min-w-0">
-                    <input
+                    <DirectoryInput
                         type="text"
+                        revealTailKey={pathSelection}
+                        aria-label={t('newSession.directory')}
                         placeholder={t('newSession.placeholder')}
                         value={props.directory}
                         onChange={(event) => props.onDirectoryChange(event.target.value)}
@@ -123,7 +127,10 @@ export function DirectorySection(props: {
                             <button
                                 key={path}
                                 type="button"
-                                onClick={() => props.onPathClick(path)}
+                                onClick={() => {
+                                    setPathSelection(value => value + 1)
+                                    props.onPathClick(path)
+                                }}
                                 disabled={props.isDisabled}
                                 className="rounded bg-[var(--app-subtle-bg)] px-2 py-1 text-xs text-[var(--app-fg)] hover:bg-[var(--app-secondary-bg)] transition-colors truncate max-w-[200px] disabled:opacity-50"
                                 title={path}

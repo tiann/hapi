@@ -13,7 +13,35 @@ afterEach(() => {
     }
 })
 
-describe('schema migration v28 to v29', () => {
+describe('schema migration v27 to v28', () => {
+    it('adds session_turns, allowing one open turn per session', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v27-'))
+        tempDirs.push(dir)
+        const dbPath = join(dir, 'hapi.db')
+
+        const original = new Store(dbPath)
+        const session = original.sessions.getOrCreateSession('tag', { path: '/tmp', host: 'mac' }, null, 'default')
+        original.close()
+        const legacy = new Database(dbPath)
+        legacy.exec(`
+            DROP TABLE session_turns;
+            PRAGMA user_version = 27;
+        `)
+        legacy.close()
+
+        const migrated = new Store(dbPath)
+        const internalDb = (migrated as unknown as { db: Database }).db
+        const version = internalDb.prepare('PRAGMA user_version').get() as { user_version: number }
+        expect(version.user_version).toBe(31)
+
+        expect(migrated.turns.open(session.id, 'default', 1_000, 'agent')).toBe(true)
+        expect(migrated.turns.open(session.id, 'default', 2_000, 'agent')).toBe(false)
+        expect(migrated.turns.list('default', 0, 10_000)).toHaveLength(1)
+        migrated.close()
+    })
+})
+
+describe('schema migration v30 to v31', () => {
     it('adds the attachment creation journal table', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v28-'))
         tempDirs.push(dir)
@@ -24,7 +52,7 @@ describe('schema migration v28 to v29', () => {
         const legacy = new Database(dbPath)
         legacy.exec(`
             ALTER TABLE attachment_creations RENAME TO attachment_creations_legacy;
-            PRAGMA user_version = 28;
+            PRAGMA user_version = 30;
         `)
         legacy.close()
 
@@ -37,7 +65,7 @@ describe('schema migration v28 to v29', () => {
             'id', 'namespace', 'session_id', 'original_path', 'temp_path',
             'state', 'created_at', 'resolved_at'
         ])
-        expect(version.user_version).toBe(29)
+        expect(version.user_version).toBe(31)
         migrated.close()
     })
 })

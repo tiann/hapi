@@ -5,12 +5,15 @@ import { dirname } from 'node:path'
 import { MachineStore } from './machineStore'
 import { MessageStore } from './messageStore'
 import { addMessage, mergeSessionMessagesInTransaction } from './messages'
+import { clearCachedStatements } from './statementCache'
+import { backfillLastUserMessageAt } from './sessionUserActivity'
 import type { StoredMessage } from './types'
 import { PushStore } from './pushStore'
 import { FcmStore } from './fcmStore'
 import { ScratchlistStore } from './scratchlistStore'
 import { SessionStore } from './sessionStore'
 import { UserStore } from './userStore'
+import { TurnStore } from './turnStore'
 import { UsageStore } from './usageStore'
 import { WorkGraphStore } from './workGraphStore'
 import { AttachmentStore, type StoredAttachment } from './attachments'
@@ -42,6 +45,8 @@ export { FcmStore } from './fcmStore'
 export { ScratchlistStore } from './scratchlistStore'
 export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
+export { TurnStore } from './turnStore'
+export type { SessionTurn, SessionTurnEndReason, SessionTurnTrigger } from './turns'
 export { UsageStore } from './usageStore'
 export { WorkGraphStore } from './workGraphStore'
 export {
@@ -77,7 +82,7 @@ function sameMessageIds(left: Set<string>, right: Set<string>): boolean {
     }
     return true
 }
-const SCHEMA_VERSION: number = 29
+const SCHEMA_VERSION: number = 31
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -93,7 +98,8 @@ const REQUIRED_TABLES = [
     'event_links',
     'attachments',
     'attachment_deletions',
-    'attachment_creations'
+    'attachment_creations',
+    'session_turns'
 ] as const
 
 export class Store {
@@ -109,6 +115,7 @@ export class Store {
     readonly fcm: FcmStore
     readonly scratchlist: ScratchlistStore
     readonly usage: UsageStore
+    readonly turns: TurnStore
     readonly workGraph: WorkGraphStore
     readonly attachments: AttachmentStore
 
@@ -164,6 +171,7 @@ export class Store {
         this.fcm = new FcmStore(this.db)
         this.scratchlist = new ScratchlistStore(this.db)
         this.usage = new UsageStore(this.db)
+        this.turns = new TurnStore(this.db)
         this.workGraph = new WorkGraphStore(this.db)
         this.attachments = new AttachmentStore(this.db, options?.attachmentsRoot)
     }
@@ -256,6 +264,10 @@ export class Store {
 
             return copiedMessages
         })()
+    }
+
+    runInTransaction<T>(work: () => T): T {
+        return this.db.transaction(work)()
     }
 
     /**
@@ -593,6 +605,7 @@ export class Store {
 
     close(): void {
         if (this.closed) return
+        clearCachedStatements(this.db)
         this.db.close()
         this.closed = true
 
@@ -640,6 +653,8 @@ export class Store {
             26: () => this.migrateFromV26ToV27(),
             27: () => this.migrateFromV27ToV28(),
             28: () => this.migrateFromV28ToV29(),
+            29: () => this.migrateFromV29ToV30(),
+            30: () => this.migrateFromV30ToV31(),
         })
 
         if (currentVersion === 0) {
@@ -694,6 +709,7 @@ export class Store {
                 machine_id TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
+                last_user_message_at INTEGER,
                 metadata TEXT,
                 metadata_version INTEGER DEFAULT 1,
                 agent_state TEXT,
@@ -754,6 +770,12 @@ export class Store {
                 WHERE invoked_at IS NULL
                   AND local_id IS NOT NULL
                   AND scheduled_at IS NULL
+                  AND delivery_state = 'queued';
+            CREATE INDEX IF NOT EXISTS idx_messages_future_scheduled_queued
+                ON messages(session_id, scheduled_at)
+                WHERE invoked_at IS NULL
+                  AND local_id IS NOT NULL
+                  AND scheduled_at IS NOT NULL
                   AND delivery_state = 'queued';
 
             CREATE TABLE IF NOT EXISTS message_epochs (
@@ -920,6 +942,24 @@ export class Store {
             );
             CREATE INDEX IF NOT EXISTS idx_attachment_creations_state
                 ON attachment_creations(state, created_at);
+            CREATE TABLE IF NOT EXISTS session_turns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                namespace TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                ended_at INTEGER,
+                end_reason TEXT,
+                started_by TEXT NOT NULL,
+                recover_until INTEGER,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_turns_namespace_started
+                ON session_turns(namespace, started_at);
+            CREATE INDEX IF NOT EXISTS idx_session_turns_session_started
+                ON session_turns(session_id, started_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_session_turns_one_open
+                ON session_turns(session_id)
+                WHERE ended_at IS NULL;
         `)
     }
 
@@ -1307,6 +1347,75 @@ export class Store {
     }
 
     /**
+     * v26→v27: make the session-list future-scheduled lookups indexed.
+     * GET /api/sessions runs countFutureScheduledBySessionIds and
+     * minFutureScheduledAtBySessionIds over every session id in the namespace.
+     * Neither the (session_id, seq) indexes nor idx_messages_scheduled_pending
+     * match the full predicate set, so SQLite falls back to probing
+     * idx_messages_local_id — one pass over every local message per call
+     * (O(all local messages), twice per session-list refresh) even though the
+     * matching set is almost always empty. This partial index covers every
+     * constant predicate and exposes (session_id, scheduled_at), so both
+     * queries become a near-empty index range scan.
+     */
+    private migrateFromV26ToV27(): void {
+        this.db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_messages_future_scheduled_queued
+                ON messages(session_id, scheduled_at)
+                WHERE invoked_at IS NULL
+                  AND local_id IS NOT NULL
+                  AND scheduled_at IS NOT NULL
+                  AND delivery_state = 'queued';
+        `)
+    }
+
+    /** v28→v29: persist a stable, user-input-only list ordering clock. */
+    private migrateFromV28ToV29(): void {
+        const columns = this.getSessionColumnNames()
+        if (columns.size === 0 || columns.has('last_user_message_at')) return
+        this.db.transaction(() => {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN last_user_message_at INTEGER')
+            if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'").get()) {
+                backfillLastUserMessageAt(this.db)
+            }
+        })()
+    }
+
+    /**
+     * v27→v28: persist when agents were working. `thinking` used to live only
+     * in the session cache, so a hub restart forgot it and nothing could say
+     * afterwards how long an agent worked. Each false→true→false stretch is
+     * now a row; at most one per session is open (ended_at IS NULL).
+     * recover_until marks a turn a restart interrupted, which the agent can
+     * still continue until then.
+     */
+    private migrateFromV27ToV28(): void {
+        // In the legacy branch sessions may not exist yet; createSchema adds
+        // the table once it does.
+        if (this.getSessionColumnNames().size === 0) return
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS session_turns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                namespace TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                ended_at INTEGER,
+                end_reason TEXT,
+                started_by TEXT NOT NULL,
+                recover_until INTEGER,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_turns_namespace_started
+                ON session_turns(namespace, started_at);
+            CREATE INDEX IF NOT EXISTS idx_session_turns_session_started
+                ON session_turns(session_id, started_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_session_turns_one_open
+                ON session_turns(session_id)
+                WHERE ended_at IS NULL;
+        `)
+    }
+
+    /**
      * A2A Layer 1 / P1 (#1374) + P3 substrate: hub work-graph ledger tables.
      * Namespace + principal_json required on every events row.
      * Bumped as v22→v23 because upstream main already ships schema 22.
@@ -1376,8 +1485,8 @@ export class Store {
         `)
     }
 
-    /** v26→v27: add Hub-resident durable attachment metadata. */
-    private migrateFromV26ToV27(): void {
+    /** v29→v30: add Hub-resident durable attachment metadata and cleanup journal. */
+    private migrateFromV29ToV30(): void {
         this.db.exec(`
             CREATE TABLE IF NOT EXISTS attachments (
                 id TEXT PRIMARY KEY,
@@ -1392,12 +1501,6 @@ export class Store {
             );
             CREATE INDEX IF NOT EXISTS idx_attachments_namespace_session
                 ON attachments(namespace, session_id, created_at);
-        `)
-    }
-
-    /** v27→v28: journal attachment files awaiting filesystem cleanup. */
-    private migrateFromV27ToV28(): void {
-        this.db.exec(`
             CREATE TABLE IF NOT EXISTS attachment_deletions (
                 original_path TEXT PRIMARY KEY
             );
@@ -1496,6 +1599,7 @@ export class Store {
                     throw new Error(`Failed to update merged scratchlist entry: ${entryId}`)
                 }
             }
+            this.turns.transferSession(fromSessionId, toSessionId)
             this.usage.transferSessionInTransaction(fromSessionId, toSessionId)
             this.workGraph.reassignNotifySession(namespace, fromSessionId, toSessionId)
             if (!this.sessions.deleteSession(fromSessionId, namespace)) {
@@ -1522,6 +1626,7 @@ export class Store {
                 SET session_id = ?
                 WHERE namespace = ? AND session_id = ?
             `).run(toSessionId, namespace, fromSessionId)
+            this.turns.transferSession(fromSessionId, toSessionId)
             if (!this.sessions.deleteSession(fromSessionId, namespace)) {
                 throw new Error('Failed to delete old session during merge')
             }
@@ -1529,8 +1634,8 @@ export class Store {
         })()
     }
 
-    /** v28→v29: journal attachment creation before filesystem writes. */
-    private migrateFromV28ToV29(): void {
+    /** v30→v31: journal attachment creation before filesystem writes. */
+    private migrateFromV30ToV31(): void {
         this.db.exec(`
             CREATE TABLE IF NOT EXISTS attachment_creations (
                 id TEXT PRIMARY KEY,

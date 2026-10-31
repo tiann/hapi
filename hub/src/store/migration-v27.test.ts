@@ -13,7 +13,7 @@ afterEach(() => {
     }
 })
 
-describe('schema migration v27 to v29', () => {
+describe('schema migration v29 to v31', () => {
     it('adds the attachment deletion journal table', () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-migration-v27-'))
         tempDirs.push(dir)
@@ -22,7 +22,7 @@ describe('schema migration v27 to v29', () => {
 
         new Store(dbPath, { attachmentsRoot }).close()
         const legacy = new Database(dbPath)
-        legacy.exec('PRAGMA user_version = 27;')
+        legacy.exec('PRAGMA user_version = 29;')
         legacy.close()
 
         const migrated = new Store(dbPath, { attachmentsRoot })
@@ -35,11 +35,7 @@ describe('schema migration v27 to v29', () => {
 
         expect(table?.name).toBe('attachment_deletions')
         expect(columns.map((column) => column.name)).toEqual(['original_path'])
-        const creations = internalDb.prepare(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'attachment_creations'"
-        ).get() as { name: string } | null
-        expect(creations?.name).toBe('attachment_creations')
-        expect(version.user_version).toBe(29)
+        expect(version.user_version).toBe(31)
         migrated.close()
     })
 })

@@ -14,6 +14,7 @@ import {
     type ControlResponseHandler,
     type SDKControlRequest,
     type ControlRequest,
+    type SetPermissionModeRequest,
     type SDKControlResponse,
     type CanCallToolCallback,
     type CanUseToolControlRequest,
@@ -28,6 +29,7 @@ import { killProcessByChildProcess } from '@/utils/process'
 import { stripNewlinesForWindowsShellArg } from '@/utils/shellEscape'
 import type { Writable } from 'node:stream'
 import { logger } from '@/ui/logger'
+import type { ClaudePermissionMode } from '@hapi/protocol/types'
 import { appendMcpConfigArg } from '../utils/mcpConfig'
 
 const DEFAULT_PROMPT_FAILURE_CLEANUP_TIMEOUT_MS = 3_000
@@ -179,6 +181,35 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
     }
 
     /**
+     * Ask Claude for the active model's effective context window (what /context shows:
+     * honors CLAUDE_CODE_DISABLE_1M_CONTEXT and settings autoCompactWindow).
+     */
+    async getContextUsage(): Promise<{ model?: string, maxTokens?: number }> {
+        if (!this.childStdin) {
+            throw new Error('getContextUsage requires --input-format stream-json')
+        }
+
+        const response = await this.request({
+            subtype: 'get_context_usage'
+        }, this.childStdin) as { response?: { model?: string, maxTokens?: number } }
+        return response.response ?? {}
+    }
+
+    /**
+     * Change Claude's native permission mode without restarting the process
+     */
+    async setPermissionMode(mode: ClaudePermissionMode): Promise<void> {
+        if (!this.childStdin) {
+            throw new Error('setPermissionMode requires --input-format stream-json')
+        }
+
+        await this.request({
+            subtype: 'set_permission_mode',
+            mode
+        } as SetPermissionModeRequest, this.childStdin)
+    }
+
+    /**
      * Send control request to Claude process
      */
     private request(request: ControlRequest, childStdin: Writable): Promise<SDKControlResponse['response']> {
@@ -191,6 +222,7 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
 
         return new Promise((resolve, reject) => {
             this.pendingControlResponses.set(requestId, (response) => {
+                this.pendingControlResponses.delete(requestId)
                 if (response.subtype === 'success') {
                     resolve(response)
                 } else {

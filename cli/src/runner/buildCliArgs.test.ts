@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildCliArgs, classifyRecoveredProcessGeneration, createSpawnDeduplicator, releaseRecoveredSpawnDedupe } from './run'
+import { buildCliArgs, classifyRecoveredProcessGeneration, createSpawnDeduplicator, probeRecoveredProcessGeneration, releaseRecoveredSpawnDedupe } from './run'
 
 describe('buildCliArgs', () => {
     it('adds --permission-mode for valid permission mode', () => {
@@ -554,6 +554,28 @@ describe('createSpawnDeduplicator', () => {
 })
 
 describe('classifyRecoveredProcessGeneration', () => {
+    it('releases a recovered record from a different boot even when its PID is alive and its marker is unavailable', () => {
+        expect(classifyRecoveredProcessGeneration(true, null, 'old-marker', {
+            pid: 123, threadGroupId: 123,
+            currentBootId: 'new-boot', persistedBootId: 'old-boot'
+        })).toBe('exited')
+    })
+
+    it('releases a legacy process ID now occupied by a non-leader thread', () => {
+        expect(classifyRecoveredProcessGeneration(true, null, 'old-marker', {
+            pid: 123, threadGroupId: 456, currentBootId: null
+        })).toBe('exited')
+    })
+
+    it('does not treat missing boot or thread information as proof of exit', () => {
+        expect(classifyRecoveredProcessGeneration(true, null, 'old-marker', {
+            pid: 123, threadGroupId: null, currentBootId: null, persistedBootId: 'old-boot'
+        })).toBe('quarantined')
+        expect(classifyRecoveredProcessGeneration(true, 'old-marker', 'old-marker', {
+            pid: 123, threadGroupId: 123, currentBootId: 'new-boot'
+        })).toBe('verified')
+    })
+
     it('quarantines a live recovered child while its generation marker is unavailable', () => {
         expect(classifyRecoveredProcessGeneration(true, null, 'persisted-marker')).toBe('quarantined')
     })
@@ -580,5 +602,18 @@ describe('releaseRecoveredSpawnDedupe', () => {
 
         expect(calls).toBe(1)
         expect(recovered.has(123)).toBe(false)
+    })
+})
+
+
+describe.skipIf(process.platform !== 'linux')('Linux recovered process generation', () => {
+    it('releases a legacy PID actually occupied by a live non-leader thread', () => {
+        const tid = readdirSync(`/proc/${process.pid}/task`).map(Number).find(id => id !== process.pid)
+        expect(tid).toBeDefined()
+        // Use a real, still-live thread: signal 0 succeeds but ps -p cannot
+        // provide a process start marker, exactly as after the reported reboot.
+        expect(process.kill(tid!, 0)).toBe(true)
+        expect(probeRecoveredProcessGeneration(tid!, { processStartMarker: 'Sun Oct 25 04:46:27 2026' })).toBe('exited')
+        expect(process.kill(tid!, 0)).toBe(true)
     })
 })

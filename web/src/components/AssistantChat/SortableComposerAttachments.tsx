@@ -272,7 +272,7 @@ export function SortableComposerAttachments(props: {
                         attachment={attachment}
                         index={index}
                         isDragging={draggingId === id}
-                        disabled={disabled}
+                        disabled={disabled || attachments.length < 2}
                         onPointerDown={handlePointerDown}
                         onKeyDown={handleKeyDown}
                         onContextMenu={handleContextMenu}

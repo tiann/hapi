@@ -24,12 +24,25 @@ export const INSPECT_PEER_TOOL_DESCRIPTION =
     'Extract <id> and pass it as sessionIdPrefix. /sessions/<id> is a hub path - do NOT Grep, Glob, or Read it as a local filesystem path. ' +
     'Read-only: does not resume. Prefer this (or `hapi inspect-peer`) over JWT+curl.'
 
+/** Shared delivery guidance for the peer MCP schemas, descriptions, and prompts. */
+export const PEER_DELIVERY_MODE_DESCRIPTION =
+    'auto (default): steer an active Codex turn when steering is available; otherwise queue, resuming inactive peers. ' +
+    'Auto currently queues for other agent flavors. Prefer auto for routine collaboration when queueing is an acceptable fallback. ' +
+    'queue: explicitly defer non-urgent updates that can wait instead of steering. ' +
+    'steer: use for important, time-sensitive findings the peer needs to know now, not after finishing its current turn ' +
+    '(e.g. a correction that invalidates its assumptions, a blocker, or a result that changes its next action). ' +
+    'State why the finding matters now and what the peer should adjust. ' +
+    'Steer requires insertion into an active Pi, Codex, or Cursor ACP turn; unsupported, idle, or inactive targets are rejected before sending. ' +
+    'Steering does not abort the current turn or guarantee an immediate response. ' +
+    'If send or steer is unconfirmed after submission, inspect the target before retrying; do not resend automatically.'
+
 /** MCP `ping_peer` tool description (same citation forms as inspect_peer). */
 export const PING_PEER_TOOL_DESCRIPTION =
     'Send a message to another HAPI session (peer handoff / nudge). Resolves by session id prefix, resumes if inactive, then POSTs on the same hub/namespace. ' +
     'When the user cites a peer via [title](/sessions/<id>), Copy-reference prose See session "…" (/sessions/<id>) for context, or a bare /sessions/<id>, ' +
     'extract <id> and pass it as sessionIdPrefix. /sessions/<id> is a hub path - do NOT search the local filesystem for it. ' +
-    'Prefer this (or `hapi ping-peer`) over reinventing JWT+curl. Targets another session - not the current chat.'
+    'Prefer this (or `hapi ping-peer`) over reinventing JWT+curl. Targets another session - not the current chat. ' +
+    `Select deliveryMode: ${PEER_DELIVERY_MODE_DESCRIPTION}`
 
 /** Zod `.describe` for sessionIdPrefix on inspect_peer / ping_peer. */
 export const SESSION_ID_PREFIX_PARAM_DESCRIPTION =
@@ -158,7 +171,8 @@ export function buildSessionCitationSteerInstruction(tools: SessionCitationSteer
         `/sessions/<id> is a HAPI hub path, not a local filesystem path - do not Grep, Glob, or Read it as a file. ` +
         `Call "${tools.inspectTool}" with sessionIdPrefix=<id> to read metadata and recent messages; ` +
         `call "${tools.pingTool}" with sessionIdPrefix=<id> and a message to nudge or hand off. ` +
-        `Prefer these over JWT+curl. Shell fallbacks: hapi inspect-peer <id> / hapi ping-peer <id> <message>.`
+        `Select deliveryMode: ${PEER_DELIVERY_MODE_DESCRIPTION} ` +
+        `Prefer these over JWT+curl. Shell fallbacks: hapi inspect-peer <id> / hapi ping-peer <id> <message> --delivery-mode auto.`
     if (tools.listPeersTool) {
         text +=
             ` To discover peers without a citation, call "${tools.listPeersTool}" ` +
