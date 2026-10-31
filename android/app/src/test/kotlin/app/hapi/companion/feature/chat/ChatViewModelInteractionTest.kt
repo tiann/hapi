@@ -1943,6 +1943,46 @@ class ChatViewModelInteractionTest {
     }
 
     @Test
+    fun `restored dollar draft reopens the skills menu`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.api.skillsResult = SkillsResponse(
+            success = true,
+            skills = listOf(SkillSummary(name = "deploy", description = null)),
+        )
+        harness.drafts.map[IX_SESSION] = "\$dep"
+        harness.viewModel.start()
+
+        // The menu populates from the restored draft without a fresh
+        // keystroke — restoreDraft fetches like the typed-in "$" would.
+        val suggestions = harness.viewModel.skillSuggestions.first { it.isNotEmpty() }
+        assertEquals(listOf("deploy"), suggestions.map { it.name })
+        assertEquals(1, harness.api.skillsCalls.value)
+    }
+
+    @Test
+    fun `failed skills fetch retries on the next dollar entry`() = runTest {
+        val harness = InteractionHarness(this)
+        harness.api.skillsResult = SkillsResponse(success = false, error = "engine down")
+        harness.viewModel.start()
+
+        harness.viewModel.setComposerText("$")
+        harness.api.skillsCalls.first { it == 1 }
+        // The failed fetch leaves the menu empty; the `$` text stays as-is.
+        assertTrue(harness.viewModel.skillSuggestions.value.isEmpty())
+
+        // Leaving and re-entering `$` mode retries the fetch.
+        harness.viewModel.setComposerText("")
+        harness.api.skillsResult = SkillsResponse(
+            success = true,
+            skills = listOf(SkillSummary(name = "deploy", description = null)),
+        )
+        harness.viewModel.setComposerText("$")
+        val suggestions = harness.viewModel.skillSuggestions.first { it.isNotEmpty() }
+        assertEquals(listOf("deploy"), suggestions.map { it.name })
+        assertEquals(2, harness.api.skillsCalls.value)
+    }
+
+    @Test
     fun `RPC failure still serves the metadata names`() = runTest {
         val metadata = SessionMetadata(
             path = "/repo/app",

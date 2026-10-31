@@ -2177,7 +2177,13 @@ class ChatViewModel(
         if (draftReady.isCompleted) return
         try {
             val draft = drafts?.load(sessionId)
-            if (composerDraft.value.text.isEmpty() && draft != null) replaceComposerTextRaw(draft)
+            if (composerDraft.value.text.isEmpty() && draft != null) {
+                replaceComposerTextRaw(draft)
+                // A restored `$token` draft reopens the skills menu without a
+                // fresh keystroke — the raw assignment bypasses
+                // setComposerText's entered-skill-mode detection, so fetch here.
+                if (SkillSuggestions.queryOf(draft) != null) loadSkills()
+            }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
