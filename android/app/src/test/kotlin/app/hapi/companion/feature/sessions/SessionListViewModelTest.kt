@@ -934,4 +934,36 @@ class SessionListViewModelTest {
         val closed = viewModel.uiState.first { it.rows.map { it.id } == listOf("b") }
         assertEquals(1, closed.unreadCount) // only b is genuinely unread now
     }
+
+    @Test
+    fun `mark-all-read under a machine filter stamps the whole hub like its count`() = runTest {
+        val sessions = FakeSessionStore().apply {
+            set(
+                summary("a", updatedAt = 100, machineId = "m1").copy(contentRevision = 1),
+                summary("b", updatedAt = 100, machineId = "m2").copy(contentRevision = 1),
+            )
+        }
+        val (viewModel) = buildViewModel(sessions)
+        viewModel.uiState.first { it.rows.size == 2 }
+        viewModel.setMachineFilter("m1")
+        viewModel.setUnreadOnly(true)
+        val scoped = viewModel.uiState.first { it.activeMachineFilter == "m1" && it.showUnreadOnly }
+        assertEquals(listOf("a"), scoped.rows.map { it.id })
+        assertEquals(2, scoped.unreadCount) // the dialog's count is hub-wide
+
+        viewModel.markAllSessionsRead()
+        // The toolbar action stamps every session on the hub — the count it
+        // showed (2) is the set it cleared, and the filtered-out machine's
+        // rows lose their unread mark too, not just the visible subset.
+        val cleared = viewModel.uiState.first { it.unreadCount == 0 }
+        assertTrue(cleared.rows.isEmpty()) // nothing unread survives the lens
+
+        viewModel.setUnreadOnly(false)
+        val visible = viewModel.uiState.first { !it.showUnreadOnly && it.activeMachineFilter == "m1" }
+        assertEquals(listOf("a"), visible.rows.map { it.id })
+        assertFalse(visible.rows.single().unread)
+        viewModel.setMachineFilter(null)
+        val hub = viewModel.uiState.first { it.activeMachineFilter == null && it.rows.size == 2 }
+        assertFalse(hub.rows.first { it.id == "b" }.unread) // m2 stamped despite being out of scope
+    }
 }
