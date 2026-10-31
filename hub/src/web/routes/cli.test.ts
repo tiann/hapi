@@ -340,7 +340,6 @@ describe('POST /cli/sessions/:id/peer-messages', () => {
                 localId: undefined,
                 sentFrom: 'peer',
                 peer: { sourceSessionId: sourceId, sourceName: 'Orchestrator' },
-                deliveryMode: undefined
             }
         }])
     })

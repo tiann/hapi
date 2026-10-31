@@ -80,7 +80,7 @@ export const MessageMetaSchema = z.object({
     // explicitly request native steering while a turn is streaming.
     deliveryMode: z.enum(['queue', 'steer']).optional(),
     // Soft peer nametag (#1203). UX hint for chips / From: / ping_peer reply
-    // routing. Not a security boundary; not a Layer 1 work-contract.
+    // routing. Not a security boundary; not a durable agent identity.
     peer: z.object({
         sourceSessionId: z.string().optional(),
         sourceName: z.string().optional()

@@ -636,7 +636,7 @@ export const MessageDeliveryModeSchema = z.enum(['queue', 'steer'])
 export type MessageDeliveryMode = z.infer<typeof MessageDeliveryModeSchema>
 
 /**
- * Soft peer nametag on user-message meta (#1203 / A2A Layer 0.1).
+ * Soft peer nametag on user-message meta (#1203 / peer soft nametag).
  *
  * Not a security / anti-impersonation boundary. Shared `CLI_API_TOKEN` already
  * lets a holder act as any session in the namespace (same as every other
@@ -662,7 +662,7 @@ export const HAPI_PEER_DELIVERY_HEADER_VALUE = '1'
 /**
  * Soft-nametag peer deliver: path `:id` is the claimed source session for the
  * chip / From line. Same namespace-token trust as other `/cli/sessions/:id`
- * routes — not HMAC/session-proof theater.
+ * routes — not HMAC/not a crypto identity proof.
  */
 export const CliPeerDeliverRequestSchema = z.object({
     targetSessionId: z.string().trim().min(1).max(128),

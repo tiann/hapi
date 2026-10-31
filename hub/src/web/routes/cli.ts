@@ -334,12 +334,14 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         }
 
         const peer = resolvePeerMetaFromSourceSession(engine, namespace, source.sessionId)
+        // Do not forward deliveryMode: peer-messages + /steer confirmation
+        // (CLI ping_peer) expect a normal queue row. Pi native-steers body
+        // deliveryMode=steer on emit and breaks that ACK path (#1203).
         await engine.sendMessage(target.sessionId, {
             text: parsed.data.text,
             localId: parsed.data.localId,
             sentFrom: 'peer',
             peer,
-            deliveryMode: parsed.data.deliveryMode
         })
         return c.json({ ok: true })
     })
