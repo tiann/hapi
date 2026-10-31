@@ -1132,10 +1132,18 @@ export class SessionCache {
         throw new Error('Session was modified concurrently. Please try again.')
     }
 
-    async updateSessionSummary(sessionId: string, text: string, titleLocked?: boolean): Promise<void> {
-        // Keep the generated/native title separate from metadata.name. A
-        // manually chosen name must continue to win in the Web title helper,
-        // while the summary remains available as the agent-authored fallback.
+    async updateSessionSummary(
+        sessionId: string,
+        text: string,
+        options?: boolean | { clearName?: boolean; titleLocked?: boolean }
+    ): Promise<void> {
+        // Keep the generated/native title separate from metadata.name unless
+        // the user explicitly saved a generated title as the replacement for
+        // an existing manual name. A manually chosen name continues to win
+        // in the Web title helper, while the summary remains available as
+        // the agent-authored fallback.
+        const clearName = typeof options === 'object' && options !== null ? Boolean(options.clearName) : false
+        const titleLocked = typeof options === 'boolean' ? options : options?.titleLocked
         for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
             const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
             if (!session) {
@@ -1149,6 +1157,10 @@ export class SessionCache {
                     text,
                     updatedAt: Date.now()
                 }
+            }
+
+            if (clearName && Object.prototype.hasOwnProperty.call(newMetadata, 'name')) {
+                delete newMetadata.name
             }
 
             const result = this.store.sessions.updateSessionMetadata(

@@ -1068,10 +1068,30 @@ export class ApiClient {
         )
     }
 
-    async updateSessionSummary(sessionId: string, text: string, titleLocked?: boolean): Promise<void> {
+    async updateSessionSummary(
+        sessionId: string,
+        text: string,
+        options?: boolean | { clearName?: boolean; titleLocked?: boolean },
+        titleLockedLegacy?: boolean
+    ): Promise<void> {
+        let clearName = false
+        let titleLocked: boolean | undefined
+
+        if (typeof options === "object" && options !== null) {
+            clearName = Boolean(options.clearName)
+            titleLocked = options.titleLocked
+        } else if (typeof options === "boolean") {
+            clearName = options
+            titleLocked = titleLockedLegacy
+        }
+
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/summary`, {
             method: 'PATCH',
-            body: JSON.stringify({ text, titleLocked })
+            body: JSON.stringify({
+                text,
+                ...(clearName ? { clearName: true } : {}),
+                ...(titleLocked !== undefined ? { titleLocked } : {})
+            })
         })
     }
 

@@ -386,6 +386,7 @@ export type RenameSessionRequest = z.infer<typeof RenameSessionRequestSchema>
 
 export const UpdateSessionSummaryRequestSchema = z.object({
     text: z.string().trim().min(1).max(255),
+    clearName: z.boolean().optional(),
     titleLocked: z.boolean().optional()
 })
 

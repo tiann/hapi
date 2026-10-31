@@ -225,19 +225,20 @@ On first run, HAPI:
 | `TRANSCRIPTION_BASE_URL` | - | Settings / env | OpenAI-compatible/local transcription base URL |
 | `TRANSCRIPTION_MODEL` | - | Settings / env | Model for the OpenAI-compatible transcription endpoint |
 | `TRANSCRIPTION_API_KEY` | - | Settings / env | Optional bearer token for that endpoint |
-| `HAPI_TITLE_PROVIDER_BASE_URL` | - | - | Server-only OpenAI-compatible Chat Completions base URL for generated session titles |
-| `HAPI_TITLE_PROVIDER_API_KEY` | - | - | Server-only API key for generated session titles; never sent to the browser |
-| `HAPI_TITLE_PROVIDER_MODEL` | - | - | Server-only lightweight model used for generated session titles |
+| `HAPI_TITLE_PROVIDER_BASE_URL` | - | `titleProvider.baseUrl` | Server-only OpenAI-compatible Chat Completions base URL for generated session titles |
+| `HAPI_TITLE_PROVIDER_API_KEY` | - | `titleProvider.apiKey` | Server-only API key for generated session titles; never sent to the browser |
+| `HAPI_TITLE_PROVIDER_MODEL` | - | `titleProvider.model` | Server-only lightweight model used for generated session titles |
+| `HAPI_TITLE_PROVIDER_TIMEOUT_MS` | `10000` | `titleProvider.timeoutMs` | Provider request timeout in milliseconds |
 | `HAPI_TITLE_SUGGESTION_RATE_LIMIT` | `5` | - | Maximum title suggestions per session in the rate-limit window |
 | `HAPI_TITLE_SUGGESTION_RATE_WINDOW_MS` | `600000` | - | Title suggestion rate-limit window in milliseconds |
-| `HAPI_TITLE_PROVIDER_MAX_TOKENS` | `64` | - | Maximum completion-token budget per generated title; raise for reasoning-model providers |
-| `HAPI_TITLE_PROVIDER_TIMEOUT_MS` | `10000` | - | Title provider request timeout in milliseconds |
+| `HAPI_TITLE_PROVIDER_MAX_TOKENS` | `256` | - | Maximum completion-token budget per generated title; raise or lower for provider needs |
 </details>
 
-The session rename dialog's **Generate** action is unavailable until all three
-`HAPI_TITLE_PROVIDER_*` variables are configured on the Hub. The provider is
-used by the automatic fallback below and the manual **Generate** action. The
-existing manual rename flow does not require these variables. Each request
+The session rename dialog always shows **Generate** when a Hub connection is
+available, so the feature remains discoverable. If the provider is not
+configured, clicking **Generate** shows the configuration instructions and the
+existing manual rename flow remains available. The provider is used by the
+automatic fallback below and the manual **Generate** action. Each request
 sends recent visible user/assistant conversation text
 (up to 200 stored messages and a bounded prompt) to that configured provider.
 
@@ -255,7 +256,13 @@ behavior is unchanged.
 
 Configuration priority: **ENV > settings.json > default**
 
-When ENV values are set and not present in settings.json, they are automatically saved.
+For supported general settings, environment values that are not already present
+in `settings.json` are automatically saved.
+For title generation, each `HAPI_TITLE_PROVIDER_*` environment variable
+overrides its corresponding `titleProvider.*` field. Environment-only title
+provider values are not automatically saved to `settings.json`, so API keys
+are not persisted unexpectedly. Changes to title provider settings take effect
+after restarting the Hub.
 `HAPI_EXTRA_HEADERS_JSON` is not automatically saved, so access credentials are not persisted unexpectedly.
 
 ```json
@@ -264,6 +271,12 @@ When ENV values are set and not present in settings.json, they are automatically
   "listenHost": "0.0.0.0",
   "listenPort": 3006,
   "publicUrl": "https://your-domain.com",
+  "titleProvider": {
+    "baseUrl": "https://api.example.com/v1",
+    "apiKey": "your-api-key",
+    "model": "your-lightweight-model",
+    "timeoutMs": 10000
+  },
   "extraHeaders": {
     "Cookie": "CF_Authorization=..."
   }
