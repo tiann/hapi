@@ -139,12 +139,16 @@ private fun summary(
     pending: Int = 0,
     backgroundTasks: Int = 0,
     lifecycleState: String? = null,
+    lastUserMessageAt: Long? = null,
+    createdAt: Long? = null,
 ): SessionSummary = SessionSummary(
     id = id,
     active = active,
     thinking = thinking,
     activeAt = 0,
     updatedAt = updatedAt,
+    lastUserMessageAt = lastUserMessageAt,
+    createdAt = createdAt,
     hasConversationContent = hasConversationContent,
     pinned = pinned,
     globalPinned = globalPinned,
@@ -1127,16 +1131,17 @@ class SessionListViewModelTest {
     fun `grouped layout is the default with directory sections over the plain body`() = runTest {
         val sessions = FakeSessionStore().apply {
             set(
-                summary("app-a", updatedAt = 900, path = "/repo/app"),
-                summary("app-b", updatedAt = 500, path = "/repo/app"),
-                summary("lib-x", updatedAt = 700, path = "/repo/lib"),
+                summary("app-a", updatedAt = 900, lastUserMessageAt = 900, path = "/repo/app"),
+                summary("app-b", updatedAt = 500, lastUserMessageAt = 500, path = "/repo/app"),
+                summary("lib-x", updatedAt = 700, lastUserMessageAt = 700, path = "/repo/lib"),
             )
         }
         val (viewModel) = buildViewModel(sessions)
 
         val state = viewModel.uiState.first { it.rows.size == 3 }
         assertTrue(state.grouped)
-        // No pins anywhere: groups order by latest updatedAt — app(900) then lib(700).
+        // No pins anywhere: groups order by latest user activity — app(900)
+        // then lib(700); the landed order, not updatedAt/active priority.
         assertEquals(listOf(SessionSectionKind.DIRECTORY, SessionSectionKind.DIRECTORY), state.sections.map { it.kind })
         assertEquals(listOf("repo/app", "repo/lib"), state.sections.map { it.title })
         assertEquals(listOf("app-a", "app-b"), state.sections[0].rows.map { it.id })

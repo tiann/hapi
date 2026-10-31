@@ -794,7 +794,8 @@ class SessionListViewModel(
      * Grouped mode mirrors the web sidebar exactly: a global-pinned section
      * on top (local pins stay inside their directory group, sorted first),
      * running buckets when pin-in-progress is on, then directory groups —
-     * pinned-group → active-group → latest-updated, or search-relevance
+     * pinned-group first, then latest user activity
+     * (`lastUserMessageAt ?? createdAt`), or search-relevance
      * (first-encounter) order while searching.
      */
     private fun buildSessionSections(

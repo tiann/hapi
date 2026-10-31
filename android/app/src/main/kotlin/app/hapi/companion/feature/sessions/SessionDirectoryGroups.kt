@@ -50,10 +50,11 @@ object SessionDirectoryGroups {
 
     /**
      * Group rows by directory in the web's display order: groups holding a
-     * pinned session first, then groups with an active session, then latest
-     * `updatedAt` descending. In-group rows sort pinned first, then active
-     * (pending-requests ahead of plain active), then recency — matching the
-     * web comparator exactly.
+     * pinned session first, then latest user activity
+     * (`lastUserMessageAt ?? createdAt`, web `getSessionOrderKey`) descending —
+     * output and liveness (`updatedAt`, active, pending requests) never
+     * reorder anything. In-group rows sort pinned first, then the same
+     * user-activity order — matching the web comparator exactly.
      */
     fun groupRows(rows: List<SessionRowUi>): List<GroupUi> {
         // stdlib groupBy preserves encounter order; sorting happens below.
@@ -76,23 +77,28 @@ object SessionDirectoryGroups {
     private fun titleOf(rowsInGroup: List<SessionRowUi>): String =
         pathDisplayName(directoryOf(rowsInGroup.first().summary))
 
-    /** Web in-group sort: pinned → active-with-pendingRequests → active → recency. */
+    /** `getSessionOrderKey` (`shared/src/sessionOrder.ts`): last user input, creation before any, else 0. */
+    private fun orderKeyOf(summary: SessionSummary): Long =
+        summary.lastUserMessageAt ?: summary.createdAt ?: 0L
+
+    /**
+     * Web in-group sort: project pin first, then the landed user-activity
+     * order (order key desc → createdAt desc → id asc) — output and liveness
+     * (`updatedAt`, active, pending) never reorder rows.
+     */
     private fun inGroupComparator(): Comparator<SessionRowUi> =
-        compareBy<SessionRowUi>(
-            { it.summary.pinned != true },
-            { activityRank(it.summary) },
-        ).thenByDescending { it.summary.updatedAt }
+        compareBy<SessionRowUi> { it.summary.pinned != true }
+            .thenByDescending { orderKeyOf(it.summary) }
+            .thenByDescending { it.summary.createdAt ?: 0L }
+            .thenBy { it.id }
 
-    /** Web group sort: has-pinned → has-active → latest updatedAt desc. */
+    /**
+     * Web group sort: has-pinned → latest user activity desc → group key asc
+     * (`compareDescWithKeyTiebreak`: deterministic ties on refetch). No
+     * active-session priority — liveness is not a ranking signal.
+     */
     private fun groupComparator(): Comparator<GroupUi> =
-        compareBy<GroupUi>(
-            { group -> group.rows.none { it.summary.pinned == true } },
-            { group -> group.rows.none { it.summary.active } },
-        ).thenByDescending { group -> group.rows.maxOf { it.summary.updatedAt } }
-
-    private fun activityRank(summary: SessionSummary): Int = when {
-        summary.active && summary.pendingRequestsCount > 0 -> 0
-        summary.active -> 1
-        else -> 2
-    }
+        compareBy<GroupUi> { group -> group.rows.none { it.summary.pinned == true } }
+            .thenByDescending { group -> group.rows.maxOf { orderKeyOf(it.summary) } }
+            .thenBy { it.key }
 }

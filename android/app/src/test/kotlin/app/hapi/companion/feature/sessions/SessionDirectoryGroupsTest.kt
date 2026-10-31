@@ -23,6 +23,8 @@ class SessionDirectoryGroupsTest {
         machineId: String? = "m1",
         path: String? = "/repo/app",
         worktree: WorktreeMetadata? = null,
+        lastUserMessageAt: Long? = null,
+        createdAt: Long? = null,
     ): SessionSummary = SessionSummary(
         id = id,
         active = active,
@@ -30,6 +32,8 @@ class SessionDirectoryGroupsTest {
         pinned = pinned,
         globalPinned = globalPinned,
         updatedAt = updatedAt,
+        lastUserMessageAt = lastUserMessageAt,
+        createdAt = createdAt,
         metadata = if (path == null) {
             // "Other" arises when the session carries no metadata at all
             // (path itself is required whenever metadata exists).
@@ -97,35 +101,71 @@ class SessionDirectoryGroupsTest {
     // ---------------------------------------------------------- group order --
 
     @Test
-    fun `groups sort pinned first then active then latest updated`() {
+    fun `groups sort pinned first then latest user activity`() {
         val rows = listOf(
-            row(summary("cold", updatedAt = 900)),
-            row(summary("hot", updatedAt = 500, active = true)),
-            row(summary("oldpin", updatedAt = 100, pinned = true, path = "/repo/old")),
-            row(summary("newpin", updatedAt = 800, pinned = true, path = "/repo/new")),
+            row(summary("cold", lastUserMessageAt = 900)),
+            row(summary("hot", lastUserMessageAt = 500, active = true, updatedAt = 99_000)),
+            row(summary("oldpin", lastUserMessageAt = 100, pinned = true, path = "/repo/old")),
+            row(summary("newpin", lastUserMessageAt = 800, pinned = true, path = "/repo/new")),
         )
         val groups = SessionDirectoryGroups.groupRows(rows)
-        // Pinned groups first (latest-updated among them), then the plain
-        // groups by latest updatedAt. hot and cold share /repo/app — the
-        // active row leads inside the group.
+        // Pinned groups first (latest user activity among them), then the
+        // plain groups by latest user activity. hot and cold share /repo/app,
+        // but the active row's liveness and updatedAt noise never lift its
+        // group or lead it inside the group.
         assertEquals(listOf("repo/new", "repo/old", "repo/app"), groups.map { it.title })
         assertEquals(listOf("newpin"), groups[0].rows.map { it.id })
         assertEquals(listOf("oldpin"), groups[1].rows.map { it.id })
-        assertEquals(listOf("hot", "cold"), groups[2].rows.map { it.id })
+        assertEquals(listOf("cold", "hot"), groups[2].rows.map { it.id })
     }
 
     @Test
-    fun `in-group rows sort pinned then pending-active then active then recency`() {
+    fun `in-group rows sort pinned first then user-activity recency`() {
         val rows = listOf(
-            row(summary("plain-new", updatedAt = 900)),
-            row(summary("plain-old", updatedAt = 100)),
-            row(summary("active", updatedAt = 300, active = true)),
-            row(summary("blocked", updatedAt = 200, active = true, pending = 1)),
-            row(summary("pinned", updatedAt = 50, pinned = true)),
+            row(summary("plain-new", lastUserMessageAt = 900)),
+            row(summary("plain-old", lastUserMessageAt = 100, active = true, pending = 3, updatedAt = 99_000)),
+            row(summary("pinned", lastUserMessageAt = 50, pinned = true)),
         )
         val groups = SessionDirectoryGroups.groupRows(rows)
         assertEquals(1, groups.size)
-        assertEquals(listOf("pinned", "blocked", "active", "plain-new", "plain-old"), groups[0].rows.map { it.id })
+        // The pin leads despite the oldest activity; among plain rows user
+        // recency wins over liveness/output noise (active, pending,
+        // updatedAt) — no active-priority tier.
+        assertEquals(listOf("pinned", "plain-new", "plain-old"), groups[0].rows.map { it.id })
+    }
+
+    @Test
+    fun `output and liveness changes never reorder groups`() {
+        fun corpus() = listOf(
+            row(summary("a", lastUserMessageAt = 1_000, path = "/a")),
+            row(summary("b", lastUserMessageAt = 2_000, path = "/b")),
+            row(summary("c", lastUserMessageAt = 3_000, path = "/b")),
+        )
+        fun ids(rows: List<SessionRowUi>) =
+            SessionDirectoryGroups.groupRows(rows).flatMap { group -> group.rows.map { it.id } }
+
+        assertEquals(listOf("c", "b", "a"), ids(corpus()))
+        // Agent output / completion / permission noise must not move anything.
+        val noisy = corpus()
+            .map { row -> row.copy(summary = row.summary.copy(updatedAt = 99_000, active = true, thinking = true, pendingRequestsCount = 4)) }
+            .reversed()
+        assertEquals(listOf("c", "b", "a"), ids(noisy))
+        // A fresh user message is the only signal that reorders.
+        val bumped = corpus().map { row ->
+            if (row.id == "a") row.copy(summary = row.summary.copy(lastUserMessageAt = 100_000)) else row
+        }
+        assertEquals(listOf("a", "c", "b"), ids(bumped))
+    }
+
+    @Test
+    fun `creation time orders before any user input with deterministic refetch ties`() {
+        val rows = listOf(
+            row(summary("b", createdAt = 2_000, path = "/b")),
+            row(summary("a", createdAt = 2_000, path = "/a")),
+        )
+        val ids = SessionDirectoryGroups.groupRows(rows).flatMap { group -> group.rows.map { it.id } }
+        assertEquals(listOf("a", "b"), ids)
+        assertEquals(ids, SessionDirectoryGroups.groupRows(rows.reversed()).flatMap { group -> group.rows.map { it.id } })
     }
 
     @Test
