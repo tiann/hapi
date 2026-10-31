@@ -232,6 +232,8 @@ export class MessageService {
     private readonly cancellingScheduledMessageKeys = new Map<string, number>()
     /** Keep mature delivery FIFO per session without blocking unrelated sessions. */
     private readonly matureReleaseInFlightSessions = new Set<string>()
+    /** A clear-handoff drain failed after staging; retry the full deliverable sequence. */
+    private readonly pendingOrderedDeliverableReleaseSessions = new Set<string>()
 
     private beginScheduledMessageCancellation(key: string): void {
         this.cancellingScheduledMessageKeys.set(key, (this.cancellingScheduledMessageKeys.get(key) ?? 0) + 1)
@@ -1431,6 +1433,7 @@ export class MessageService {
         const queued = this.store.messages.getUninvokedLocalMessages(sessionId, { deliverableOnly: true })
             .filter((msg) => msg.scheduledAt === null || msg.scheduledAt <= now)
         let released = 0
+        let completed = true
         for (const msg of queued) {
             let deliveryContent: unknown = contentForDeferredDelivery(msg.content)
             const attachments = getUserMessageAttachments(msg.content)
@@ -1441,16 +1444,19 @@ export class MessageService {
                     try {
                         deliveryContent = await this.getScheduledDeliveryContent(msg)
                     } catch {
-                        // Leave the row queued for the mature scan to retry
-                        // after the replacement CLI has finished connecting.
+                        // Retry the complete sequence, not only scheduled rows:
+                        // immediate rows interleaved with A/B/C must stay behind
+                        // the failed attachment barrier.
+                        completed = false
                         break
                     }
-                    if (deliveryContent === null) break
+                    if (deliveryContent === null) { completed = false; break }
 
                     if (this.cancellingScheduledMessageKeys.has(materializingKey)) {
                         const staged = this.scheduledAttachmentDeliveryCache.get(materializingKey)
                         this.scheduledAttachmentDeliveryCache.delete(materializingKey)
                         if (staged) await this.cleanupMaterializedScheduledAttachments(sessionId, staged)
+                        completed = false
                         break
                     }
 
@@ -1465,7 +1471,7 @@ export class MessageService {
                     this.materializingScheduledMessageKeys.delete(materializingKey)
                 }
             }
-            if (this.store.isOpenCodeClearDeliveryGated(sessionId)) break
+            if (this.store.isOpenCodeClearDeliveryGated(sessionId)) { completed = false; break }
             if (this.store.messages.lookupQueuedMessage(sessionId, msg.id).status !== 'queued') continue
             const update = {
                 id: msg.id,
@@ -1486,6 +1492,8 @@ export class MessageService {
             this.io.of('/cli').to(`session:${sessionId}`).emit('update', update)
             released += 1
         }
+        if (completed) this.pendingOrderedDeliverableReleaseSessions.delete(sessionId)
+        else this.pendingOrderedDeliverableReleaseSessions.add(sessionId)
         return released
     }
 
@@ -1545,6 +1553,16 @@ export class MessageService {
 
         await Promise.all([...bySession].map(async ([sessionId, messages]) => {
             if (skipSessionIds?.has(sessionId)) {
+                return
+            }
+            if (this.pendingOrderedDeliverableReleaseSessions.has(sessionId)) {
+                if (this.matureReleaseInFlightSessions.has(sessionId)) return
+                this.matureReleaseInFlightSessions.add(sessionId)
+                try {
+                    await this.releaseDeliverableQueuedMessages(sessionId, now)
+                } finally {
+                    this.matureReleaseInFlightSessions.delete(sessionId)
+                }
                 return
             }
             // A text-only session has no asynchronous materialization work.

@@ -2914,6 +2914,73 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
         ])
     })
 
+    it('retries a failed handoff through the complete ordered deliverable drain', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'ordered-handoff-retry')
+        const cliEmitted: unknown[] = []
+        let materializeCalls = 0
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    },
+                    timeout: (_ms: number) => ({ emit: () => {} }),
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } },
+            }),
+        } as unknown as Server
+        const service = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => {
+                    materializeCalls += 1
+                    if (materializeCalls === 1) throw new Error('upload failed')
+                    return attachments.map((attachment) => ({ ...attachment, path: '/tmp/retry-ordered.png' }))
+                },
+            },
+        )
+        const scheduledAt = Date.now() - 1_000
+        store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'attachment A',
+                    attachments: [makeHubScratchlistAttachment(session.id, 'ordered-handoff-retry')],
+                },
+            },
+            'ordered-handoff-a',
+            scheduledAt,
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate B' } },
+            'ordered-handoff-b',
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'scheduled C' } },
+            'ordered-handoff-c',
+            scheduledAt,
+        )
+
+        await expect(service.releaseDeliverableQueuedMessages(session.id, Date.now())).resolves.toBe(0)
+        expect(cliEmitted).toHaveLength(0)
+
+        await service.releaseMatureScheduledMessages(Date.now())
+        expect(materializeCalls).toBe(2)
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual([
+            'ordered-handoff-a',
+            'ordered-handoff-b',
+            'ordered-handoff-c',
+        ])
+    })
+
     it('emits mature messages to /cli', async () => {
         const store = makeStore()
         const session = makeSession(store, 'release-emit')

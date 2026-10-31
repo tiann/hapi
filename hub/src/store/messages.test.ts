@@ -504,6 +504,42 @@ describe('getDeliverableMessagesAfter: CLI backfill excludes scheduled rows', ()
         expect(delivered.map((message) => message.id)).not.toContain(third.id)
     })
 
+    it('withholds backfill when the reconnect cursor already passed a pending mature row', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'backfill-barrier-below-cursor')
+        const beforeMaturity = Date.now()
+        const matureAt = beforeMaturity + 120_000
+
+        const scheduled = store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'future attachment',
+                    attachments: [{ path: 'hapi-hub:scratchlist/default/session/below-cursor.png' }],
+                },
+            },
+            'lid-below-cursor-attachment',
+            beforeMaturity + 60_000,
+        )
+        const cursor = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate at cursor' } },
+            'lid-below-cursor-immediate',
+        )
+        const later = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'later immediate' } },
+            'lid-below-cursor-later',
+        )
+
+        const delivered = store.messages.getDeliverableMessagesAfter(session.id, cursor.seq, matureAt)
+        expect(scheduled.seq).toBeLessThan(cursor.seq)
+        expect(later.seq).toBeGreaterThan(cursor.seq)
+        expect(delivered).toEqual([])
+    })
+
     it('respects afterSeq alongside the scheduled_at filter (2-axis interaction)', () => {
         // Verifies the seq cursor and the scheduled-at filter compose correctly:
         // a row that satisfies one axis but fails the other must be excluded.

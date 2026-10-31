@@ -496,45 +496,34 @@ export function getDeliverableMessagesAfter(
     const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 200
     const safeAfterSeq = Number.isFinite(afterSeq) ? afterSeq : 0
 
-    const deliverable: StoredMessage[] = []
-    let cursor = safeAfterSeq
-    const selectRows = prepareCached(db, `
+    // A reconnect cursor can already be beyond a scheduled row that has not
+    // reached the CLI yet. Bound the backfill by the earliest pending mature
+    // row across the whole session, independently of afterSeq.
+    const barrierRow = prepareCached(db, `
+        SELECT MIN(seq) AS seq FROM messages
+        WHERE session_id = ?
+          AND invoked_at IS NULL
+          AND scheduled_at IS NOT NULL
+          AND scheduled_at <= ?
+          AND delivery_state = 'queued'
+    `).get(sessionId, now) as { seq: number | null } | undefined
+    const barrierSeq = barrierRow?.seq ?? null
+    if (barrierSeq !== null && barrierSeq <= safeAfterSeq) return []
+
+    const rows = prepareCached(db, `
         SELECT * FROM messages
         WHERE session_id = ?
           AND seq > ?
+          AND seq < ?
           AND (scheduled_at IS NULL OR scheduled_at <= ?)
           AND delivery_state = 'queued'
         ORDER BY seq ASC
         LIMIT ?
-    `)
+    `).all(sessionId, safeAfterSeq, barrierSeq ?? Number.MAX_SAFE_INTEGER, now, safeLimit) as DbMessageRow[]
 
-    // Scheduled rows stay on the ordered mature-delivery path. Once one is
-    // encountered, stop: returning later immediate rows would let reconnect
-    // backfill overtake an attachment that is still awaiting CLI staging.
-    while (deliverable.length < safeLimit) {
-        const rows = selectRows.all(sessionId, cursor, now, safeLimit) as DbMessageRow[]
-
-        if (rows.length === 0) break
-        cursor = rows[rows.length - 1]!.seq
-
-        let blockedByEarlierScheduled = false
-        for (const row of rows) {
-            const message = toStoredMessage(row)
-            if (message.scheduledAt !== null) {
-                // A mature scheduled row is awaiting the ordered materialization
-                // drain. Do not let reconnect backfill pass it with later
-                // immediate text.
-                blockedByEarlierScheduled = true
-                break
-            }
-            deliverable.push(message)
-            if (deliverable.length >= safeLimit) break
-        }
-
-        if (blockedByEarlierScheduled || rows.length < safeLimit) break
-    }
-
-    return deliverable
+    return rows
+        .map(toStoredMessage)
+        .filter((message) => message.scheduledAt === null)
 }
 
 /** How far back to look for a stream's replaceable snapshots.
