@@ -187,9 +187,17 @@ export class MessageService {
         localId: string,
     ): CancelQueuedMessageResult {
         const invokedAt = Date.now()
+        // A pending cancel can return consumed after a concurrent request has
+        // abandoned the row. The later CLI messages-consumed event then sees an
+        // already-invoked row, so publish the full settled message here as well.
+        const wasAbandoned = this.store.messages.getLocalMessageStates(sessionId, [localId])
+            .some((state) => state.invokedAt === null && state.deliveryState === 'abandoned')
         this.store.messages.markMessagesInvoked(sessionId, [localId], invokedAt)
         this.publisher.emit({ type: 'messages-consumed', sessionId, localIds: [localId], invokedAt })
         const settled = this.store.messages.lookupQueuedMessage(sessionId, localId)
+        if (wasAbandoned && settled.status === 'invoked') {
+            this.publisher.emit({ type: 'message-received', sessionId, message: toDecryptedMessage(settled.message) })
+        }
         return settled.status === 'invoked'
             ? settled
             : { status: 'cancelled', localId }
