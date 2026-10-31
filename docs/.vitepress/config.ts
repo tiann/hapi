@@ -33,6 +33,7 @@ export default defineConfig({
           { text: 'How it Works', link: '/guide/how-it-works' },
           { text: 'Session List', link: '/guide/session-list' },
           { text: 'Voice Assistant', link: '/guide/voice-assistant' },
+          { text: 'Release Notes', link: '/guide/release-notes-authoring' },
           { text: 'Why HAPI', link: '/guide/why-hapi' },
           { text: 'FAQ', link: '/guide/faq' }
         ]

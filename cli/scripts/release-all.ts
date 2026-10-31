@@ -10,6 +10,7 @@
  */
 
 import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { updateReleaseVersions } from './release-version';
 
@@ -69,6 +70,17 @@ function main(version: string): void {
         fail(`Tag ${tag} already exists`);
     }
     console.log(`   ✓ Tag ${tag} is available`);
+
+    // Release notes must be present before the release is prepared.
+    const releaseNotesPath = join(repoRoot, 'web', 'src', 'lib', 'releaseNotes.ts');
+    const releaseNotes = readFileSync(releaseNotesPath, 'utf-8');
+    const latestReleaseVersion = releaseNotes.match(
+        /export const RELEASE_NOTES = \[\s*releaseNote\('([^']+)'/,
+    )?.[1];
+    if (latestReleaseVersion !== version) {
+        fail(`Put release notes for ${version} first in ${releaseNotesPath} before preparing the release`);
+    }
+    console.log(`   ✓ Release notes are first for ${version}`);
 
     console.log('\n📦 Step 1: Updating CLI, shared, iOS, and Android versions...');
     const oldVersion = updateReleaseVersions(repoRoot, version, dryRun);
