@@ -237,6 +237,20 @@ export async function stageScratchlistAttachmentsForComposeSend(
     }
 }
 
+/** Prepare a saved draft while retaining staged paths for failed-send cleanup. */
+export async function prepareScratchlistAttachmentsForSend(
+    api: ApiClient,
+    sessionId: string,
+    attachments: AttachmentMetadata[],
+    scheduledAt: number | null,
+): Promise<{ attachments: AttachmentMetadata[]; staged: AttachmentMetadata[] }> {
+    const hubItems = attachments.filter((attachment) => isHubScratchlistAttachmentPath(attachment.path))
+    if (scheduledAt != null || hubItems.length === 0) return { attachments, staged: [] }
+    const staged = await stageScratchlistAttachmentsForComposeSend(api, sessionId, hubItems)
+    const stagedById = new Map(staged.map((attachment) => [attachment.id, attachment]))
+    return { attachments: attachments.map((attachment) => stagedById.get(attachment.id) ?? attachment), staged }
+}
+
 export async function rehydrateScratchlistAttachmentsToComposer(
     api: ApiClient,
     sessionId: string,

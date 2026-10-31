@@ -5,8 +5,8 @@ import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 
+import type { AttachmentMetadata } from '@hapi/protocol/types'
 import { getLiveReasoningStreamId } from '@hapi/protocol/messages'
-
 import type { StoredMessage } from './types'
 import { decodeMessageContent, encodeMessageContent, truncateOversizedMessageContent } from './contentCodec'
 
@@ -44,7 +44,7 @@ export function addImportedMessage(
     localId: string,
     createdAt: number
 ): { message: StoredMessage; inserted: boolean } {
-    const existing = prepareCached(db, 
+    const existing = prepareCached(db,
         'SELECT * FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1'
     ).get(sessionId, localId) as DbMessageRow | undefined
     if (existing) {
@@ -58,7 +58,7 @@ export function addImportedMessage(
     const stampedAt = Number.isFinite(createdAt) ? Math.min(createdAt, now) : now
     return db.transaction(() => {
         const previousHead = getNewestMessagePosition(db, sessionId)
-        const msgSeqRow = prepareCached(db, 
+        const msgSeqRow = prepareCached(db,
             'SELECT COALESCE(MAX(seq), 0) + 1 AS nextSeq FROM messages WHERE session_id = ?'
         ).get(sessionId) as { nextSeq: number }
         const id = randomUUID()
@@ -99,6 +99,39 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
     }
 }
 
+function messageReferencesAttachment(content: unknown, path: string): boolean {
+    if (content === null || typeof content !== 'object' || Array.isArray(content)) return false
+    const record = content as { content?: unknown }
+    if (record.content === null || typeof record.content !== 'object' || Array.isArray(record.content)) {
+        return false
+    }
+    const messageContent = record.content as { attachments?: unknown }
+    if (!Array.isArray(messageContent.attachments)) return false
+    return messageContent.attachments.some((attachment) => {
+        if (attachment === null || typeof attachment !== 'object' || Array.isArray(attachment)) return false
+        return (attachment as { path?: unknown }).path === path
+    })
+}
+
+/**
+ * Scheduled scratchlist attachments outlive their draft row. Keep the hub
+ * blob while any uninvoked message still references it, even if the draft is
+ * deleted immediately after the schedule is accepted.
+ */
+export function hasUninvokedAttachmentReference(
+    db: Database,
+    sessionId: string,
+    path: string
+): boolean {
+    const rows = db.prepare(`
+        SELECT content
+        FROM messages
+        WHERE session_id = ?
+          AND invoked_at IS NULL
+    `).all(sessionId) as Array<{ content: string | Uint8Array }>
+    return rows.some((row) => messageReferencesAttachment(decodeMessageContent(row.content), path))
+}
+
 export type CopyStoredMessageInput = Pick<
     StoredMessage,
     'content' | 'createdAt' | 'localId' | 'invokedAt' | 'scheduledAt' | 'deliveryState'
@@ -130,7 +163,7 @@ export function addMessage(
     }
 
     if (localId) {
-        const existing = prepareCached(db, 
+        const existing = prepareCached(db,
             'SELECT * FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1'
         ).get(sessionId, localId) as DbMessageRow | undefined
         if (existing) {
@@ -138,7 +171,7 @@ export function addMessage(
         }
     }
 
-    const msgSeqRow = prepareCached(db, 
+    const msgSeqRow = prepareCached(db,
         'SELECT COALESCE(MAX(seq), 0) + 1 AS nextSeq FROM messages WHERE session_id = ?'
     ).get(sessionId) as { nextSeq: number }
     const msgSeq = msgSeqRow.nextSeq
@@ -208,7 +241,7 @@ export function copyMessageToSession(
 
     let localId = message.localId
     if (localId) {
-        const collision = prepareCached(db, 
+        const collision = prepareCached(db,
             'SELECT 1 FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1'
         ).get(sessionId, localId) as { 1: number } | undefined
         if (collision) {
@@ -277,7 +310,7 @@ export function copyMessagesToSession(
                 @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at, @scheduled_at, @delivery_state
             )
         `)
-        const collisionCheck = prepareCached(db, 
+        const collisionCheck = prepareCached(db,
             'SELECT 1 FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1'
         )
 
@@ -321,7 +354,7 @@ export function getMessages(
 ): StoredMessage[] {
     const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 200
 
-    const rows = prepareCached(db, 
+    const rows = prepareCached(db,
         'SELECT * FROM messages WHERE session_id = ? ORDER BY seq DESC LIMIT ?'
     ).all(sessionId, safeLimit) as DbMessageRow[]
 
@@ -332,11 +365,80 @@ export function getAllMessages(
     db: Database,
     sessionId: string
 ): StoredMessage[] {
-    const rows = prepareCached(db, 
+    const rows = prepareCached(db,
         'SELECT * FROM messages WHERE session_id = ? ORDER BY seq ASC'
     ).all(sessionId) as DbMessageRow[]
 
     return rows.map(toStoredMessage)
+}
+
+/** Return only consumed scheduled messages needed for attachment reconciliation. */
+export function getConsumedScheduledMessages(
+    db: Database,
+    sessionId: string,
+): StoredMessage[] {
+    const rows = db.prepare(`
+        SELECT * FROM messages
+        WHERE session_id = ?
+          AND scheduled_at IS NOT NULL
+          AND invoked_at IS NOT NULL
+        ORDER BY seq ASC
+    `).all(sessionId) as DbMessageRow[]
+
+    return rows.map(toStoredMessage)
+}
+
+export type MessageAttachmentRewrite = {
+    messageId: string
+    attachments: AttachmentMetadata[]
+}
+
+function replaceUserMessageAttachments(content: unknown, attachments: AttachmentMetadata[]): unknown {
+    if (content === null || typeof content !== 'object' || Array.isArray(content)) return content
+    const record = content as { content?: unknown }
+    if (record.content === null || typeof record.content !== 'object' || Array.isArray(record.content)) {
+        return content
+    }
+    return {
+        ...record,
+        content: {
+            ...(record.content as Record<string, unknown>),
+            attachments,
+        },
+    }
+}
+
+/** Rewrite attachment paths after a message row changes its session owner. */
+export function rewriteMessageAttachments(
+    db: Database,
+    sessionId: string,
+    rewrites: MessageAttachmentRewrite[],
+): number {
+    if (rewrites.length === 0) return 0
+    return db.transaction(() => {
+        let changed = 0
+        const select = db.prepare(
+            'SELECT content FROM messages WHERE session_id = ? AND id = ?'
+        )
+        const update = db.prepare(
+            'UPDATE messages SET content = ? WHERE session_id = ? AND id = ?'
+        )
+        for (const rewrite of rewrites) {
+            const row = select.get(sessionId, rewrite.messageId) as { content: string | Uint8Array } | undefined
+            if (!row) continue
+            const current = decodeMessageContent(row.content)
+            const next = replaceUserMessageAttachments(current, rewrite.attachments)
+            if (isDeepStrictEqual(current, next)) continue
+            update.run(
+                encodeMessageContent(truncateOversizedMessageContent(next)),
+                sessionId,
+                rewrite.messageId,
+            )
+            changed += 1
+        }
+        if (changed > 0) bumpMessageEpoch(db, sessionId)
+        return changed
+    })()
 }
 
 export function getMessagesAfterSeq(
@@ -344,7 +446,7 @@ export function getMessagesAfterSeq(
     sessionId: string,
     afterSeq: number
 ): StoredMessage[] {
-    const rows = prepareCached(db, 
+    const rows = prepareCached(db,
         'SELECT * FROM messages WHERE session_id = ? AND seq > ? ORDER BY seq ASC'
     ).all(sessionId, afterSeq) as DbMessageRow[]
 
@@ -357,7 +459,7 @@ export function getMessageSeqById(
     sessionId: string,
     messageId: string
 ): number | null {
-    const row = prepareCached(db, 
+    const row = prepareCached(db,
         'SELECT seq FROM messages WHERE id = ? AND session_id = ?'
     ).get(messageId, sessionId) as { seq: number } | undefined
     return row ? row.seq : null
@@ -370,7 +472,7 @@ export function getFirstMessages(
 ): StoredMessage[] {
     const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 50
 
-    const rows = prepareCached(db, 
+    const rows = prepareCached(db,
         'SELECT * FROM messages WHERE session_id = ? ORDER BY seq ASC LIMIT ?'
     ).all(sessionId, safeLimit) as DbMessageRow[]
 
@@ -378,10 +480,9 @@ export function getFirstMessages(
 }
 
 /** CLI reconnect backfill: returns messages above the seq cursor that are
- *  deliverable now, i.e. excludes future-scheduled rows (scheduled_at > now).
- *  Without this filter, a CLI reconnect between schedule time and release time
- *  would replay future-scheduled rows via the normal message stream and the
- *  runner would consume them immediately, bypassing the mature-scan path.
+ *  deliverable through the ordinary CLI backfill path. Scheduled rows (future
+ *  or mature) stay on the mature-scan path so scheduled attachments and their
+ *  following text keep the same FIFO delivery boundary.
  *  Only the CLI backfill route should use this; the Web thread API still calls
  *  byPosition / getMessages and needs the full set so scheduled rows surface in
  *  the queued floating bar. */
@@ -395,17 +496,34 @@ export function getDeliverableMessagesAfter(
     const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 200
     const safeAfterSeq = Number.isFinite(afterSeq) ? afterSeq : 0
 
+    // A reconnect cursor can already be beyond a scheduled row that has not
+    // reached the CLI yet. Bound the backfill by the earliest pending mature
+    // row across the whole session, independently of afterSeq.
+    const barrierRow = prepareCached(db, `
+        SELECT MIN(seq) AS seq FROM messages
+        WHERE session_id = ?
+          AND invoked_at IS NULL
+          AND scheduled_at IS NOT NULL
+          AND scheduled_at <= ?
+          AND delivery_state = 'queued'
+    `).get(sessionId, now) as { seq: number | null } | undefined
+    const barrierSeq = barrierRow?.seq ?? null
+    if (barrierSeq !== null && barrierSeq <= safeAfterSeq) return []
+
     const rows = prepareCached(db, `
         SELECT * FROM messages
         WHERE session_id = ?
           AND seq > ?
+          AND seq < ?
           AND (scheduled_at IS NULL OR scheduled_at <= ?)
           AND delivery_state = 'queued'
         ORDER BY seq ASC
         LIMIT ?
-    `).all(sessionId, safeAfterSeq, now, safeLimit) as DbMessageRow[]
+    `).all(sessionId, safeAfterSeq, barrierSeq ?? Number.MAX_SAFE_INTEGER, now, safeLimit) as DbMessageRow[]
 
-    return rows.map(toStoredMessage)
+    return rows
+        .map(toStoredMessage)
+        .filter((message) => message.scheduledAt === null)
 }
 
 /** How far back to look for a stream's replaceable snapshots.
@@ -445,7 +563,7 @@ export function deleteLiveReasoningSnapshots(
     if (staleIds.length === 0) return 0
 
     const placeholders = staleIds.map(() => '?').join(', ')
-    const result = prepareCached(db, 
+    const result = prepareCached(db,
         `DELETE FROM messages WHERE session_id = ? AND id IN (${placeholders})`
     ).run(sessionId, ...staleIds)
     return Number(result.changes)
@@ -531,7 +649,7 @@ export function getNewestMessagePosition(db: Database, sessionId: string): Messa
 }
 
 export function getMessageEpoch(db: Database, sessionId: string): number {
-    const row = prepareCached(db, 
+    const row = prepareCached(db,
         'SELECT epoch FROM message_epochs WHERE session_id = ?'
     ).get(sessionId) as { epoch: number } | undefined
     return row?.epoch ?? 0
@@ -555,7 +673,7 @@ export function getUninvokedLocalMessages(
     options?: { deliverableOnly?: boolean }
 ): StoredMessage[] {
     const deliverableClause = options?.deliverableOnly ? " AND delivery_state = 'queued'" : ''
-    const rows = prepareCached(db, 
+    const rows = prepareCached(db,
         `SELECT * FROM messages WHERE session_id = ? AND invoked_at IS NULL AND local_id IS NOT NULL${deliverableClause} ORDER BY seq ASC`
     ).all(sessionId) as DbMessageRow[]
     return rows.map(toStoredMessage)
@@ -595,6 +713,36 @@ export function getLocalMessageStates(
     }))
 }
 
+export function getMessagesByLocalIds(
+    db: Database,
+    sessionId: string,
+    localIds: string[],
+): StoredMessage[] {
+    if (localIds.length === 0) return []
+    const placeholders = localIds.map(() => '?').join(', ')
+    const rows = db.prepare(`
+        SELECT *
+        FROM messages
+        WHERE session_id = ? AND local_id IN (${placeholders})
+        ORDER BY seq ASC
+    `).all(sessionId, ...localIds) as DbMessageRow[]
+    return rows.map(toStoredMessage)
+}
+
+export function getMessageById(
+    db: Database,
+    sessionId: string,
+    messageId: string,
+): StoredMessage | null {
+    const row = db.prepare(`
+        SELECT *
+        FROM messages
+        WHERE session_id = ? AND id = ?
+        LIMIT 1
+    `).get(sessionId, messageId) as DbMessageRow | undefined
+    return row ? toStoredMessage(row) : null
+}
+
 /** Returns scheduled messages across all sessions whose scheduled_at <= beforeTime
  *  and have not yet been invoked.  Used by the hub tick to emit mature messages to CLI.
  *  Ordered by scheduled_at ASC (oldest first). */
@@ -602,7 +750,7 @@ export function getMatureScheduledMessages(
     db: Database,
     beforeTime: number
 ): StoredMessage[] {
-    const rows = prepareCached(db, 
+    const rows = prepareCached(db,
         "SELECT * FROM messages WHERE scheduled_at IS NOT NULL AND scheduled_at <= ? AND invoked_at IS NULL AND delivery_state = 'queued' ORDER BY scheduled_at ASC"
     ).all(beforeTime) as DbMessageRow[]
     return rows.map(toStoredMessage)
@@ -646,7 +794,7 @@ export function getImmediateQueuedLocalMessages(
  * tiann/hapi#872.
  */
 export function countMessages(db: Database, sessionId: string): number {
-    const row = prepareCached(db, 
+    const row = prepareCached(db,
         'SELECT COUNT(*) AS count FROM messages WHERE session_id = ?'
     ).get(sessionId) as { count: number } | undefined
     return row?.count ?? 0
@@ -732,7 +880,7 @@ export function minFutureScheduledAtBySessionIds(
 }
 
 export function getMaxSeq(db: Database, sessionId: string): number {
-    const row = prepareCached(db, 
+    const row = prepareCached(db,
         'SELECT COALESCE(MAX(seq), 0) AS maxSeq FROM messages WHERE session_id = ?'
     ).get(sessionId) as { maxSeq: number } | undefined
     return row?.maxSeq ?? 0
@@ -913,7 +1061,7 @@ export function markMessagesInvoked(
 ): number {
     if (localIds.length === 0) return 0
     const placeholders = localIds.map(() => '?').join(', ')
-    return prepareCached(db, 
+    return prepareCached(db,
         `UPDATE messages
          SET invoked_at = ?, delivery_state = 'queued'
          WHERE session_id = ?
@@ -936,7 +1084,7 @@ export function setMessagesDeliveryState(
         : state === 'dispatching'
             ? "'queued', 'indeterminate'"
             : "'queued', 'dispatching'"
-    return prepareCached(db, 
+    return prepareCached(db,
         `UPDATE messages
          SET delivery_state = ?
          WHERE session_id = ?
@@ -1089,7 +1237,7 @@ export function mergeSessionMessages(
         db.exec('BEGIN')
 
         if (newMaxSeq > 0 && oldMaxSeq > 0) {
-            prepareCached(db, 
+            prepareCached(db,
                 'UPDATE messages SET seq = seq + ? WHERE session_id = ?'
             ).run(oldMaxSeq, toSessionId)
         }
@@ -1109,7 +1257,7 @@ export function mergeSessionMessages(
             // (markMessagesInvoked matches by local_id), so leaving invoked_at
             // NULL would strand the row in the queued floating bar forever.
             // Use COALESCE so an already-invoked row keeps its server timestamp.
-            prepareCached(db, 
+            prepareCached(db,
                 `UPDATE messages
                  SET local_id = NULL,
                      invoked_at = COALESCE(invoked_at, created_at)
@@ -1117,7 +1265,7 @@ export function mergeSessionMessages(
             ).run(fromSessionId, ...localIds)
         }
 
-        const result = prepareCached(db, 
+        const result = prepareCached(db,
             'UPDATE messages SET session_id = ? WHERE session_id = ?'
         ).run(toSessionId, fromSessionId)
 
@@ -1179,7 +1327,7 @@ export function truncateMessagesFromLocalId(
         let inserted = 0
         for (const message of replacement) {
             const now = Date.now()
-            const msgSeqRow = prepareCached(db, 
+            const msgSeqRow = prepareCached(db,
                 'SELECT COALESCE(MAX(seq), 0) + 1 AS nextSeq FROM messages WHERE session_id = ?'
             ).get(sessionId) as { nextSeq: number }
             const id = randomUUID()

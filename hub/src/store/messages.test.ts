@@ -331,8 +331,8 @@ describe('addMessage: scheduledAt invariants', () => {
     })
 })
 
-describe('getDeliverableMessagesAfter: CLI backfill excludes future-scheduled rows', () => {
-    it('omits rows whose scheduled_at > now (would otherwise be replayed early on reconnect)', () => {
+describe('getDeliverableMessagesAfter: CLI backfill excludes scheduled rows', () => {
+    it('omits future and mature scheduled rows while allowing immediate rows', () => {
         const store = makeStore()
         const session = makeSession(store, 'backfill-future-sched')
         const now = Date.now()
@@ -360,13 +360,13 @@ describe('getDeliverableMessagesAfter: CLI backfill excludes future-scheduled ro
         const delivered = store.messages.getDeliverableMessagesAfter(session.id, 0, now)
         const ids = delivered.map((m) => m.id)
         expect(ids).toContain(immediate.id)
-        expect(ids).toContain(matureSched.id)
+        expect(ids).not.toContain(matureSched.id)
         expect(ids).not.toContain('lid-future')
         const localIds = delivered.map((m) => m.localId)
         expect(localIds).not.toContain('lid-future')
     })
 
-    it('returns the row once now advances past scheduled_at (release boundary)', () => {
+    it('keeps a scheduled row on the mature-scan path once its deadline has passed', () => {
         const store = makeStore()
         const session = makeSession(store, 'backfill-release-boundary')
         const fireAt = Date.now() - 60_000
@@ -382,7 +382,162 @@ describe('getDeliverableMessagesAfter: CLI backfill excludes future-scheduled ro
         expect(before.find((m) => m.localId === 'lid-bnd')).toBeUndefined()
 
         const exact = store.messages.getDeliverableMessagesAfter(session.id, 0, fireAt)
-        expect(exact.find((m) => m.localId === 'lid-bnd')).toBeDefined()
+        expect(exact.find((m) => m.localId === 'lid-bnd')).toBeUndefined()
+    })
+
+    it('keeps scheduled attachment rows on the mature-scan path', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'backfill-scheduled-attachment')
+        const scheduled = store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'attachment',
+                    attachments: [{ path: 'hapi-hub:scratchlist/default/session/image.png' }],
+                },
+            },
+            'lid-attachment',
+            Date.now() - 60_000,
+        )
+
+        expect(store.messages.getDeliverableMessagesAfter(session.id, 0, Date.now())).not.toContainEqual(scheduled)
+        expect(store.messages.getMatureScheduledMessages(Date.now())).toContainEqual(scheduled)
+    })
+
+    it('keeps an overdue scheduled image and following text together for mature delivery after reconnect', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'backfill-overdue-fifo')
+        const now = Date.now()
+        const overdue = now - 60_000
+        const image = store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'image first',
+                    attachments: [{ path: 'hapi-hub:scratchlist/default/session/image-first.png' }],
+                },
+            },
+            'lid-overdue-image',
+            overdue,
+        )
+        const text = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'text second' } },
+            'lid-overdue-text',
+            overdue,
+        )
+
+        const backfill = store.messages.getDeliverableMessagesAfter(session.id, 0, now)
+        expect(backfill.map((message) => message.id)).not.toContain(image.id)
+        expect(backfill.map((message) => message.id)).not.toContain(text.id)
+        expect(store.messages.getMatureScheduledMessages(now).map((message) => message.id))
+            .toEqual([image.id, text.id])
+    })
+
+    it('withholds later immediate rows behind a mature scheduled barrier', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'backfill-filtered-page')
+        const now = Date.now()
+
+        for (let index = 0; index < 200; index += 1) {
+            store.messages.addMessage(
+                session.id,
+                {
+                    role: 'user',
+                    content: {
+                        type: 'text',
+                        text: `scheduled attachment ${index}`,
+                        attachments: [{ path: `hapi-hub:scratchlist/default/session/file-${index}.png` }],
+                    },
+                },
+                `lid-filtered-${index}`,
+                now - 60_000,
+            )
+        }
+        const immediate = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'after filtered page' } },
+            'lid-after-filtered-page',
+        )
+
+        const delivered = store.messages.getDeliverableMessagesAfter(session.id, 0, now)
+
+        expect(delivered.map((message) => message.id)).not.toContain(immediate.id)
+    })
+
+    it('returns only the immediate prefix before an earlier mature attachment', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'backfill-interleaved-prefix')
+        const now = Date.now()
+
+        const first = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate first' } },
+            'lid-prefix-first',
+        )
+        const attachment = store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'attachment second',
+                    attachments: [{ path: 'hapi-hub:scratchlist/default/session/interleaved.png' }],
+                },
+            },
+            'lid-prefix-attachment',
+            now - 60_000,
+        )
+        const third = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate third' } },
+            'lid-prefix-third',
+        )
+
+        const delivered = store.messages.getDeliverableMessagesAfter(session.id, 0, now)
+        expect(delivered.map((message) => message.id)).toEqual([first.id])
+        expect(delivered.map((message) => message.id)).not.toContain(attachment.id)
+        expect(delivered.map((message) => message.id)).not.toContain(third.id)
+    })
+
+    it('withholds backfill when the reconnect cursor already passed a pending mature row', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'backfill-barrier-below-cursor')
+        const beforeMaturity = Date.now()
+        const matureAt = beforeMaturity + 120_000
+
+        const scheduled = store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'future attachment',
+                    attachments: [{ path: 'hapi-hub:scratchlist/default/session/below-cursor.png' }],
+                },
+            },
+            'lid-below-cursor-attachment',
+            beforeMaturity + 60_000,
+        )
+        const cursor = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate at cursor' } },
+            'lid-below-cursor-immediate',
+        )
+        const later = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'later immediate' } },
+            'lid-below-cursor-later',
+        )
+
+        const delivered = store.messages.getDeliverableMessagesAfter(session.id, cursor.seq, matureAt)
+        expect(scheduled.seq).toBeLessThan(cursor.seq)
+        expect(later.seq).toBeGreaterThan(cursor.seq)
+        expect(delivered).toEqual([])
     })
 
     it('respects afterSeq alongside the scheduled_at filter (2-axis interaction)', () => {

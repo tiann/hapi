@@ -7,7 +7,7 @@
  * Race-D (CLI offline): no CLI socket in room → immediate DELETE, message-cancelled emit, no ack call
  * Race-E (partial ack): broadcast ack receives err + [{ removed: true }] → DELETE + status='cancelled'
  */
-import { describe, expect, it } from 'bun:test'
+import { describe, expect, it, spyOn } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -16,7 +16,7 @@ import type { EventPublisher } from './eventPublisher'
 import { Store } from '../store'
 import type { Server } from 'socket.io'
 import { SESSION_EXPORT_MESSAGE_LIMIT } from '@hapi/protocol/sessionExport'
-import type { Session, SyncEvent } from '@hapi/protocol/types'
+import type { AttachmentMetadata, Session, SyncEvent } from '@hapi/protocol/types'
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -95,6 +95,16 @@ function makePublisher() {
     return {
         emit: (event: SyncEvent) => { events.push(event) },
         events
+    }
+}
+
+function makeHubScratchlistAttachment(sessionId: string, suffix: string): AttachmentMetadata {
+    return {
+        id: `11111111-1111-4111-8111-${suffix.padStart(12, '0')}`,
+        filename: `${suffix}.png`,
+        mimeType: 'image/png',
+        size: 3,
+        path: `hapi-hub:scratchlist/default/${sessionId}/${suffix}.png`,
     }
 }
 
@@ -273,6 +283,7 @@ describe('MessageService goal status filtering', () => {
                 text: 'Park this idea',
                 createdAt: 1_000,
                 updatedAt: expect.any(Number),
+                position: 1,
                 attachments: [{
                     id: 'att-1',
                     filename: 'note.png',
@@ -286,6 +297,7 @@ describe('MessageService goal status filtering', () => {
                 text: 'Follow up tomorrow',
                 createdAt: 2_000,
                 updatedAt: expect.any(Number),
+                position: 0,
                 attachments: []
             }
         ])
@@ -599,6 +611,52 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
             expect(store.messages.lookupQueuedMessage(session.id, msg.id)).toEqual({ status: 'absent' })
             expect(publisher.events.some((event) => event.type === 'message-cancelled')).toBe(true)
         })
+
+        it('releases durable and materialized attachments when discarding an indeterminate row', async () => {
+            const store = makeStore()
+            const session = makeSession(store, 'indeterminate-cancel-attachment')
+            const attachment = makeHubScratchlistAttachment(session.id, 'indeterminate-cancel-attachment')
+            const deletedHubPaths: string[] = []
+            const deletedMaterializedPaths: string[] = []
+            let ackCount = 0
+            const service = new MessageService(
+                store,
+                makeIo((callback) => {
+                    ackCount += 1
+                    callback(null, [{ removed: ackCount > 1 }])
+                }),
+                makePublisher() as any,
+                undefined,
+                {
+                    materializeScheduledAttachments: async (_sessionId, attachments) => attachments.map((candidate) => ({
+                        ...candidate,
+                        path: '/tmp/indeterminate-discard.png',
+                    })),
+                    deleteScheduledAttachments: async (_sessionId, attachments) => {
+                        deletedHubPaths.push(...attachments.map((candidate) => candidate.path))
+                    },
+                    deleteMaterializedScheduledAttachments: async (_sessionId, attachments) => {
+                        deletedMaterializedPaths.push(...attachments.map((candidate) => candidate.path))
+                    },
+                },
+            )
+            const message = store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: 'discard attachment', attachments: [attachment] } },
+                'local-indeterminate-attachment',
+                Date.now() - 1_000,
+            )
+
+            await service.releaseMatureScheduledMessages(Date.now())
+            await expect(service.cancelQueuedMessage(session.id, message.id)).resolves.toMatchObject({ status: 'busy' })
+            await expect(service.cancelQueuedMessage(session.id, message.id)).resolves.toEqual({
+                status: 'cancelled',
+                localId: 'local-indeterminate-attachment',
+            })
+
+            expect(deletedHubPaths).toEqual([attachment.path])
+            expect(deletedMaterializedPaths).toEqual(['/tmp/indeterminate-discard.png'])
+        })
     })
 
     describe('Race-A: CLI ack removed:true → DELETE + status=cancelled', () => {
@@ -640,10 +698,12 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
         it('does not claim delivery when the CLI cannot find the item', async () => {
             const store = makeStore()
             const session = makeSession(store, 'race-b')
+            const attachment = makeHubScratchlistAttachment(session.id, 'race-b')
             const msg = store.messages.addMessage(
                 session.id,
-                { role: 'user', content: { type: 'text', text: 'hello' } },
-                'local-b'
+                { role: 'user', content: { type: 'text', text: 'hello', attachments: [attachment] } },
+                'local-b',
+                Date.now() - 1000
             )
 
             const publisher = makePublisher()
@@ -652,7 +712,12 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
                 callback(null, [{ removed: false }])
             })
 
-            const service = new MessageService(store, io, publisher as any)
+            const deletedPaths: string[] = []
+            const service = new MessageService(store, io, publisher as any, undefined, {
+                deleteScheduledAttachments: async (_sessionId, attachments) => {
+                    deletedPaths.push(...attachments.map((candidate) => candidate.path))
+                },
+            })
             const result = await service.cancelQueuedMessage(session.id, msg.id)
 
             expect(result).toEqual({ status: 'busy', localId: 'local-b' })
@@ -679,10 +744,12 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
         it('does not claim delivery when the CLI does not respond', async () => {
             const store = makeStore()
             const session = makeSession(store, 'race-c')
+            const attachment = makeHubScratchlistAttachment(session.id, 'race-c')
             const msg = store.messages.addMessage(
                 session.id,
-                { role: 'user', content: { type: 'text', text: 'hello' } },
-                'local-c'
+                { role: 'user', content: { type: 'text', text: 'hello', attachments: [attachment] } },
+                'local-c',
+                Date.now() - 1000
             )
 
             const publisher = makePublisher()
@@ -691,7 +758,12 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
                 callback(new Error('operation has timed out'), [])
             })
 
-            const service = new MessageService(store, io, publisher as any)
+            const deletedPaths: string[] = []
+            const service = new MessageService(store, io, publisher as any, undefined, {
+                deleteScheduledAttachments: async (_sessionId, attachments) => {
+                    deletedPaths.push(...attachments.map((candidate) => candidate.path))
+                },
+            })
             const result = await service.cancelQueuedMessage(session.id, msg.id)
 
             expect(result).toEqual({ status: 'busy', localId: 'local-c' })
@@ -718,17 +790,22 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
         it('returns invoked only when the CLI explicitly confirms consumption', async () => {
             const store = makeStore()
             const session = makeSession(store, 'race-consumed')
+            const attachment = makeHubScratchlistAttachment(session.id, 'race-consumed')
+            const deletedPaths: string[] = []
             const msg = store.messages.addMessage(
                 session.id,
-                { role: 'user', content: { type: 'text', text: 'hello' } },
-                'local-consumed'
+                { role: 'user', content: { type: 'text', text: 'hello', attachments: [attachment] } },
+                'local-consumed',
+                Date.now() - 1_000,
             )
             const publisher = makePublisher()
-            const io = makeIo((callback) => {
-                callback(null, [{ removed: false, consumed: true }])
-            })
+            const io = makeIo((callback) => callback(null, [{ removed: false, consumed: true }]))
 
-            const service = new MessageService(store, io, publisher as any)
+            const service = new MessageService(store, io, publisher as any, undefined, {
+                deleteScheduledAttachments: async (_sessionId, attachments) => {
+                    deletedPaths.push(...attachments.map((candidate) => candidate.path))
+                },
+            })
             const result = await service.cancelQueuedMessage(session.id, msg.id)
 
             expect(result.status).toBe('invoked')
@@ -737,6 +814,196 @@ describe('MessageService.cancelQueuedMessage race scenarios', () => {
                 expect(result.message.invokedAt).not.toBeNull()
             }
             expect(publisher.events.filter(e => e.type === 'messages-consumed')).toHaveLength(1)
+            expect(deletedPaths).toEqual([attachment.path])
+        })
+    })
+
+    describe('indeterminate scheduled attachment retry', () => {
+        it('materializes Hub attachments before requeueing an indeterminate message', async () => {
+            const store = makeStore()
+            const session = makeSession(store, 'retry-scheduled-attachment')
+            const attachment = makeHubScratchlistAttachment(session.id, 'retry-scheduled-attachment')
+            const message = store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: 'retry attachment', attachments: [attachment] } },
+                'local-retry-scheduled-attachment',
+                Date.now() - 1_000,
+            )
+            store.messages.markMessagesIndeterminate(session.id, [message.localId!])
+
+            let ackCount = 0
+            let retriedUpdate: any
+            const io = {
+                of: () => ({
+                    to: () => ({
+                        timeout: () => ({
+                            emit: (_event: string, data: unknown, callback: AckCallback) => {
+                                ackCount += 1
+                                if (ackCount === 1) {
+                                    callback(null, [{ removed: true }])
+                                } else {
+                                    retriedUpdate = data
+                                    callback(null, [{ removed: false, accepted: true } as any])
+                                }
+                            },
+                        }),
+                        emit: () => {},
+                    }),
+                    adapter: { rooms: { get: () => new Set(['cli']) } },
+                }),
+            } as unknown as Server
+            const service = new MessageService(
+                store,
+                io,
+                makePublisher() as any,
+                undefined,
+                {
+                    materializeScheduledAttachments: async (_sessionId, attachments) => attachments.map((candidate) => ({
+                        ...candidate,
+                        path: '/tmp/retried-scheduled-attachment.png',
+                    })),
+                },
+            )
+
+            await expect(service.retryIndeterminateMessage(session.id, message.id)).resolves.toEqual({
+                status: 'retried',
+                localId: 'local-retry-scheduled-attachment',
+            })
+            expect(retriedUpdate.body.message.content.content.attachments[0].path)
+                .toBe('/tmp/retried-scheduled-attachment.png')
+        })
+
+        it('suppresses retry delivery when cancellation wins during materialization', async () => {
+            const store = makeStore()
+            const session = makeSession(store, 'retry-cancel-during-materialization')
+            const attachment = makeHubScratchlistAttachment(session.id, 'retry-cancel-during-materialization')
+            const message = store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: 'cancel this retry', attachments: [attachment] } },
+                'local-retry-cancel-during-materialization',
+                Date.now() - 1_000,
+            )
+            store.messages.markMessagesIndeterminate(session.id, [message.localId!])
+
+            let materializeStarted!: () => void
+            const started = new Promise<void>((resolve) => { materializeStarted = resolve })
+            let resolveMaterialization!: (attachments: AttachmentMetadata[]) => void
+            const materialized = new Promise<AttachmentMetadata[]>((resolve) => {
+                resolveMaterialization = resolve
+            })
+            let ackCount = 0
+            let cancelAckStarted!: () => void
+            const cancelStarted = new Promise<void>((resolve) => { cancelAckStarted = resolve })
+            let resolveCancelAck!: (removed: boolean) => void
+            const cancelAck = new Promise<boolean>((resolve) => { resolveCancelAck = resolve })
+            let retriedUpdate: unknown
+            const deletedMaterializedPaths: string[] = []
+            const io = {
+                of: () => ({
+                    to: () => ({
+                        timeout: () => ({
+                            emit: (_event: string, data: unknown, callback: AckCallback) => {
+                                ackCount += 1
+                                if (ackCount === 1) {
+                                    callback(null, [{ removed: true }])
+                                } else if (ackCount === 2) {
+                                    cancelAckStarted()
+                                    void cancelAck.then((removed) => callback(null, [{ removed }] ))
+                                } else {
+                                    retriedUpdate = data
+                                    callback(null, [{ removed: false, accepted: true } as any])
+                                }
+                            },
+                        }),
+                        emit: () => {},
+                    }),
+                    adapter: { rooms: { get: () => new Set(['cli']) } },
+                }),
+            } as unknown as Server
+            const service = new MessageService(
+                store,
+                io,
+                makePublisher() as any,
+                undefined,
+                {
+                    materializeScheduledAttachments: async (_sessionId, attachments) => {
+                        materializeStarted()
+                        await materialized
+                        return attachments.map((candidate) => ({
+                            ...candidate,
+                            path: '/tmp/cancelled-retry.png',
+                        }))
+                    },
+                    deleteMaterializedScheduledAttachments: async (_sessionId, attachments) => {
+                        deletedMaterializedPaths.push(...attachments.map((candidate) => candidate.path))
+                    },
+                },
+            )
+
+            const retry = service.retryIndeterminateMessage(session.id, message.id)
+            await started
+            const cancel = service.cancelQueuedMessage(session.id, message.id)
+            await cancelStarted
+            resolveMaterialization([])
+            await new Promise((resolve) => setTimeout(resolve, 0))
+            resolveCancelAck(false)
+            await expect(cancel).resolves.toMatchObject({
+                status: 'cancelled',
+                localId: message.localId,
+            })
+
+            await expect(retry).resolves.toEqual({ status: 'retry-unavailable', localId: message.localId! })
+            expect(retriedUpdate).toBeUndefined()
+            expect(deletedMaterializedPaths).toEqual(['/tmp/cancelled-retry.png'])
+            expect(store.messages.lookupQueuedMessage(session.id, message.id).status).toBe('absent')
+        })
+
+        it('preserves ordinary CLI attachment paths when retrying an unscheduled message', async () => {
+            const store = makeStore()
+            const session = makeSession(store, 'retry-cli-attachment')
+            const attachment: AttachmentMetadata = {
+                id: 'cli-upload-attachment',
+                filename: 'uploaded.png',
+                mimeType: 'image/png',
+                size: 3,
+                path: '/tmp/cli-uploaded.png',
+            }
+            const message = store.messages.addMessage(
+                session.id,
+                { role: 'user', content: { type: 'text', text: 'retry upload', attachments: [attachment] } },
+                'local-retry-cli-attachment',
+            )
+            store.messages.markMessagesIndeterminate(session.id, [message.localId!])
+
+            let ackCount = 0
+            let retriedUpdate: any
+            const io = {
+                of: () => ({
+                    to: () => ({
+                        timeout: () => ({
+                            emit: (_event: string, data: unknown, callback: AckCallback) => {
+                                ackCount += 1
+                                if (ackCount === 1) {
+                                    callback(null, [{ removed: true }])
+                                } else {
+                                    retriedUpdate = data
+                                    callback(null, [{ removed: false, accepted: true } as any])
+                                }
+                            },
+                        }),
+                        emit: () => {},
+                    }),
+                    adapter: { rooms: { get: () => new Set(['cli']) } },
+                }),
+            } as unknown as Server
+            const service = new MessageService(store, io, makePublisher() as any)
+
+            await expect(service.retryIndeterminateMessage(session.id, message.id)).resolves.toEqual({
+                status: 'retried',
+                localId: 'local-retry-cli-attachment',
+            })
+            expect(retriedUpdate.body.message.content.content.attachments[0].path)
+                .toBe('/tmp/cli-uploaded.png')
         })
     })
 
@@ -1139,13 +1406,10 @@ describe('MessageService.sendMessage with scheduledAt', () => {
             scheduledAt: pastMs
         })
 
-        // Past scheduled_at is already mature → emit to CLI immediately
         expect(cliEmitted).toHaveLength(1)
     })
 
-    // #11 TOCTOU: isFutureScheduled must use Date.now() at check time, not the
-    // pre-addMessage `now` capture, to avoid a double-emit race window.
-    it('#11 TOCTOU: scheduledAt exactly equal to Date.now() is treated as mature (not future)', async () => {
+    it('scheduledAt at the current time emits to /cli immediately', async () => {
         const store = makeStore()
         const session = makeSession(store, 'sched-toctou')
         const publisher = makePublisher()
@@ -1163,9 +1427,8 @@ describe('MessageService.sendMessage with scheduledAt', () => {
             })
         } as unknown as Server
 
-        // Use a scheduledAt in the past to simulate TOCTOU: addMessage inserts
-        // a row, then the post-insert check should use a fresh Date.now() which
-        // is >= scheduledAt, treating it as mature and emitting to CLI.
+        // Use a scheduledAt in the past to represent a row that is already
+        // mature at insertion time.
         const scheduledAt = Date.now() - 1
         const service = new MessageService(store, io, publisher as any)
         await service.sendMessage(session.id, {
@@ -1174,16 +1437,12 @@ describe('MessageService.sendMessage with scheduledAt', () => {
             scheduledAt
         })
 
-        // scheduledAt is in the past at emit-check time → must emit to CLI
         expect(cliEmitted).toHaveLength(1)
     })
 
-    // Defence-in-depth: REST already rejects scheduledAt + attachments at the
-    // Zod layer, but non-REST callers (Telegram bot, MCP, internal) reach
-    // sendMessage directly and must hit the same invariant — otherwise the CLI
-    // session's upload directory could be purged before the mature emit lands,
-    // leaving @path attachment references pointing at deleted files.
-    it('rejects sendMessage when scheduledAt is set and attachments are non-empty', async () => {
+    // Defence-in-depth: only durable hub scratchlist paths can survive until
+    // maturity; transient CLI upload paths may be purged before delivery.
+    it('rejects sendMessage when scheduledAt uses a transient attachment path', async () => {
         const store = makeStore()
         const session = makeSession(store, 'sched-with-attachments')
         const publisher = makePublisher()
@@ -1226,6 +1485,926 @@ describe('MessageService.sendMessage with scheduledAt', () => {
 
         const msgs = store.messages.getUninvokedLocalMessages(session.id)
         expect(msgs).toHaveLength(1)
+    })
+
+    it('skips attachment validation for a duplicate scheduled localId retry', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'sched-duplicate-attachment')
+        const scheduledAt = Date.now() + 60_000
+        const attachment: AttachmentMetadata = {
+            id: 'duplicate-att',
+            filename: 'image.png',
+            mimeType: 'image/png',
+            size: 10,
+            path: 'hapi-hub:scratchlist/default/session/duplicate-att-image.png',
+        }
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'first', attachments: [attachment] } },
+            'duplicate-scheduled',
+            scheduledAt,
+        )
+        let validationCalls = 0
+        const service = new MessageService(
+            store,
+            makeNoopIo(),
+            makePublisher() as any,
+            undefined,
+            {
+                validateScheduledAttachments: async () => { validationCalls += 1 },
+            },
+        )
+
+        await service.sendMessage(session.id, {
+            text: 'retry',
+            localId: 'duplicate-scheduled',
+            scheduledAt,
+            attachments: [attachment],
+        })
+
+        expect(validationCalls).toBe(0)
+        expect(store.messages.getUninvokedLocalMessages(session.id)).toHaveLength(1)
+    })
+
+    it('materializes a hub attachment only when a scheduled row matures', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'sched-hub-attachment')
+        const publisher = makePublisher()
+        const cliEmitted: unknown[] = []
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    }
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } }
+            })
+        } as unknown as Server
+        const service = new MessageService(
+            store,
+            io,
+            publisher as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) =>
+                    attachments.map((attachment) => ({ ...attachment, path: '/tmp/materialized.png' }))
+            }
+        )
+        const futureMs = Date.now() + 60_000
+        const message = store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'image later',
+                    attachments: [{
+                        id: 'att-hub',
+                        filename: 'image.png',
+                        mimeType: 'image/png',
+                        size: 10,
+                        path: 'hapi-hub:scratchlist/default/session/att-hub-image.png'
+                    }]
+                }
+            },
+            'local-hub-attachment',
+            futureMs
+        )
+
+        await service.releaseMatureScheduledMessages(futureMs)
+
+        expect(cliEmitted).toHaveLength(1)
+        expect((cliEmitted[0] as any).body.message.id).toBe(message.id)
+        expect((cliEmitted[0] as any).body.message.content.content.attachments[0].path)
+            .toBe('/tmp/materialized.png')
+    })
+
+    it('drops cached CLI attachment paths when the session reconnects', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'sched-reconnect-cache')
+        const cliEmitted: unknown[] = []
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    }
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } }
+            })
+        } as unknown as Server
+        let materializeCalls = 0
+        const service = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => {
+                    materializeCalls += 1
+                    return attachments.map((attachment) => ({
+                        ...attachment,
+                        path: `/tmp/materialized-${materializeCalls}.png`,
+                    }))
+                }
+            }
+        )
+        const matureAt = Date.now() - 1_000
+        store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'reconnect image',
+                    attachments: [{
+                        id: 'att-reconnect',
+                        filename: 'image.png',
+                        mimeType: 'image/png',
+                        size: 10,
+                        path: 'hapi-hub:scratchlist/default/sched-reconnect-cache/att.png'
+                    }]
+                }
+            },
+            'local-reconnect-cache',
+            matureAt,
+        )
+
+        await service.releaseMatureScheduledMessages(Date.now())
+        service.clearScheduledAttachmentDeliveryCache(session.id)
+        await service.releaseMatureScheduledMessages(Date.now())
+
+        expect(materializeCalls).toBe(2)
+        expect(cliEmitted.map((data: any) => data.body.message.content.content.attachments[0].path))
+            .toEqual(['/tmp/materialized-1.png', '/tmp/materialized-2.png'])
+    })
+
+    it('cleans invalidated CLI attachment uploads after RPC handlers become available', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'sched-reconnect-cleanup')
+        const deletedPaths: string[] = []
+        const service = new MessageService(
+            store,
+            makeIo(() => {}),
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => attachments.map((attachment) => ({
+                    ...attachment,
+                    path: '/tmp/materialized-before-reconnect.png',
+                })),
+                deleteMaterializedScheduledAttachments: async (_sessionId, attachments) => {
+                    deletedPaths.push(...attachments.map((attachment) => attachment.path))
+                },
+            },
+        )
+        store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'reconnect cleanup',
+                    attachments: [makeHubScratchlistAttachment(session.id, 'reconnect-cleanup')],
+                },
+            },
+            'local-reconnect-cleanup',
+            Date.now() - 1_000,
+        )
+
+        await service.releaseMatureScheduledMessages(Date.now())
+        service.clearScheduledAttachmentDeliveryCache(session.id)
+
+        expect(deletedPaths).toEqual([])
+        await service.flushScheduledAttachmentDeliveryCleanup(session.id)
+        expect(deletedPaths).toEqual(['/tmp/materialized-before-reconnect.png'])
+    })
+
+    it('discards materialization that completes after a reconnect generation reset', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'sched-reconnect-inflight')
+        const cliEmitted: unknown[] = []
+        const deletedPaths: string[] = []
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    }
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } }
+            })
+        } as unknown as Server
+        let materializeStarted!: () => void
+        const started = new Promise<void>((resolve) => { materializeStarted = resolve })
+        let resolveMaterialization!: (attachments: AttachmentMetadata[]) => void
+        const materialized = new Promise<AttachmentMetadata[]>((resolve) => {
+            resolveMaterialization = resolve
+        })
+        const service = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => {
+                    materializeStarted()
+                    await materialized
+                    return attachments.map((attachment) => ({
+                        ...attachment,
+                        path: '/tmp/stale-generation.png',
+                    }))
+                },
+                deleteMaterializedScheduledAttachments: async (_sessionId, attachments) => {
+                    deletedPaths.push(...attachments.map((attachment) => attachment.path))
+                },
+            },
+        )
+        store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'reconnect while uploading',
+                    attachments: [{
+                        id: 'att-reconnect-inflight',
+                        filename: 'image.png',
+                        mimeType: 'image/png',
+                        size: 10,
+                        path: 'hapi-hub:scratchlist/default/sched-reconnect-inflight/att.png'
+                    }]
+                }
+            },
+            'local-reconnect-inflight',
+            Date.now() - 1_000,
+        )
+
+        const release = service.releaseMatureScheduledMessages(Date.now())
+        await started
+        service.clearScheduledAttachmentDeliveryCache(session.id)
+        resolveMaterialization([])
+        await release
+
+        expect(cliEmitted).toHaveLength(0)
+        expect(deletedPaths).toEqual(['/tmp/stale-generation.png'])
+    })
+
+    it('reconciles consumed scheduled attachments without relying on a localId event', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'sched-reconcile-consumed')
+        const attachment = makeHubScratchlistAttachment(session.id, 'reconcile-consumed')
+        for (let index = 0; index < 25; index += 1) {
+            store.messages.addMessage(
+                session.id,
+                { role: 'assistant', content: { type: 'text', text: `history-${index}` } },
+                `history-${index}`,
+            )
+        }
+        const message = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'reconcile me', attachments: [attachment] } },
+            'local-reconcile-consumed',
+            Date.now() - 1_000,
+        )
+        store.messages.markMessagesInvoked(session.id, [message.localId!], Date.now())
+        const deletedPaths: string[] = []
+        const service = new MessageService(
+            store,
+            makeIo(() => {}),
+            makePublisher() as any,
+            undefined,
+            {
+                deleteScheduledAttachments: async (_sessionId, attachments) => {
+                    deletedPaths.push(...attachments.map((candidate) => candidate.path))
+                },
+            },
+        )
+        const getAllMessages = spyOn(store.messages, 'getAllMessages')
+        const getConsumedScheduledMessages = spyOn(store.messages, 'getConsumedScheduledMessages')
+
+        await service.reconcileConsumedScheduledAttachments(session.id)
+
+        expect(getAllMessages).not.toHaveBeenCalled()
+        expect(getConsumedScheduledMessages).toHaveBeenCalledWith(session.id)
+        expect(deletedPaths).toEqual([attachment.path])
+    })
+
+    it('keeps later mature messages behind a failed attachment materialization', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'sched-fifo-materialize')
+        const cliEmitted: unknown[] = []
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    }
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } }
+            })
+        } as unknown as Server
+        let shouldFail = true
+        const service = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => {
+                    if (shouldFail) throw new Error('temporary staging failure')
+                    return attachments.map((attachment) => ({ ...attachment, path: '/tmp/fifo.png' }))
+                }
+            }
+        )
+        const matureAt = Date.now() - 1_000
+        store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'first image',
+                    attachments: [{
+                        id: 'att-fifo',
+                        filename: 'image.png',
+                        mimeType: 'image/png',
+                        size: 10,
+                        path: 'hapi-hub:scratchlist/default/sched-fifo-materialize/att.png'
+                    }]
+                }
+            },
+            'local-fifo-image',
+            matureAt,
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'second text' } },
+            'local-fifo-text',
+            matureAt,
+        )
+
+        await service.releaseMatureScheduledMessages(Date.now())
+        expect(cliEmitted).toHaveLength(0)
+
+        shouldFail = false
+        await service.releaseMatureScheduledMessages(Date.now())
+        expect(cliEmitted.map((data: any) => data.body.message.localId))
+            .toEqual(['local-fifo-image', 'local-fifo-text'])
+    })
+
+    it('cancels a scheduled attachment while materialization is pending without invoking it', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'sched-cancel-during-materialize')
+        const publisher = makePublisher()
+        const cliEmitted: unknown[] = []
+        let ackCalls = 0
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    },
+                    timeout: (_ms: number) => ({
+                        emit: (
+                            _event: string,
+                            _data: unknown,
+                            callback: (err: Error | null, responses: Array<{ removed: boolean }>) => void,
+                        ) => {
+                            ackCalls += 1
+                            callback(null, [{ removed: false }])
+                        }
+                    })
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } }
+            })
+        } as unknown as Server
+
+        let materializeStarted!: () => void
+        const started = new Promise<void>((resolve) => { materializeStarted = resolve })
+        let resolveMaterialization!: (attachments: AttachmentMetadata[]) => void
+        const materialized = new Promise<AttachmentMetadata[]>((resolve) => { resolveMaterialization = resolve })
+        const deletedMaterializedPaths: string[] = []
+        const service = new MessageService(
+            store,
+            io,
+            publisher as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => {
+                    materializeStarted()
+                    return materialized.then(() => attachments.map((attachment) => ({
+                        ...attachment,
+                        path: '/tmp/materialized-after-cancel.png'
+                    })))
+                },
+                deleteMaterializedScheduledAttachments: async (_sessionId, attachments) => {
+                    deletedMaterializedPaths.push(...attachments.map((attachment) => attachment.path))
+                },
+            }
+        )
+        const message = store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'cancel while uploading',
+                    attachments: [{
+                        id: 'att-cancel-race',
+                        filename: 'image.png',
+                        mimeType: 'image/png',
+                        size: 10,
+                        path: 'hapi-hub:scratchlist/default/sched-cancel-during-materialize/att.png'
+                    }]
+                }
+            },
+            'local-cancel-race',
+            Date.now() - 1_000,
+        )
+
+        const release = service.releaseMatureScheduledMessages(Date.now())
+        await started
+        await expect(service.cancelQueuedMessage(session.id, message.id)).resolves.toMatchObject({
+            status: 'cancelled',
+            localId: 'local-cancel-race'
+        })
+        resolveMaterialization([])
+        await release
+
+        expect(ackCalls).toBe(1)
+        expect(cliEmitted).toHaveLength(0)
+        expect(deletedMaterializedPaths).toEqual(['/tmp/materialized-after-cancel.png'])
+        expect(store.messages.lookupQueuedMessage(session.id, message.id)).toEqual({ status: 'absent' })
+    })
+
+    it('holds scheduled delivery while the cancellation acknowledgement is pending', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'sched-cancel-ack-pending')
+        const cliEmitted: unknown[] = []
+        let materializeStarted!: () => void
+        const started = new Promise<void>((resolve) => { materializeStarted = resolve })
+        let resolveMaterialization!: (attachments: AttachmentMetadata[]) => void
+        const materialized = new Promise<AttachmentMetadata[]>((resolve) => { resolveMaterialization = resolve })
+        let resolveCancelAck!: (removed: boolean) => void
+        const cancelAck = new Promise<boolean>((resolve) => { resolveCancelAck = resolve })
+        let cancelAckStarted!: () => void
+        const cancelStarted = new Promise<void>((resolve) => { cancelAckStarted = resolve })
+        const deletedMaterializedPaths: string[] = []
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    },
+                    timeout: (_ms: number) => ({
+                        emit: (
+                            _event: string,
+                            _data: unknown,
+                            callback: (err: Error | null, responses: Array<{ removed: boolean }>) => void,
+                        ) => {
+                            cancelAckStarted()
+                            void cancelAck.then((removed) => callback(null, [{ removed }]))
+                        },
+                    }),
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } },
+            }),
+        } as unknown as Server
+        const attachment = makeHubScratchlistAttachment(session.id, 'cancel-ack-pending')
+        const service = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => {
+                    materializeStarted()
+                    await materialized
+                    return attachments.map((candidate) => ({
+                        ...candidate,
+                        path: '/tmp/cancel-ack-pending.png',
+                    }))
+                },
+                deleteMaterializedScheduledAttachments: async (_sessionId, attachments) => {
+                    deletedMaterializedPaths.push(...attachments.map((candidate) => candidate.path))
+                },
+            },
+        )
+        const message = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'cancel pending ack', attachments: [attachment] } },
+            'local-cancel-ack-pending',
+            Date.now() - 1_000,
+        )
+
+        const release = service.releaseMatureScheduledMessages(Date.now())
+        await materializeStarted
+        const cancel = service.cancelQueuedMessage(session.id, message.id)
+        await cancelStarted
+        resolveMaterialization([attachment])
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(cliEmitted).toHaveLength(0)
+        resolveCancelAck(false)
+
+        await expect(cancel).resolves.toMatchObject({ status: 'cancelled', localId: message.localId })
+        await release
+        expect(cliEmitted).toHaveLength(0)
+        expect(deletedMaterializedPaths).toEqual(['/tmp/cancel-ack-pending.png'])
+        expect(store.messages.lookupQueuedMessage(session.id, message.id).status).toBe('absent')
+    })
+
+    it('preserves FIFO when cancellation acknowledgement times out during materialization', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'sched-cancel-timeout-fifo')
+        const cliEmitted: unknown[] = []
+        let materializeStarted!: () => void
+        const started = new Promise<void>((resolve) => { materializeStarted = resolve })
+        let resolveMaterialization!: (attachments: AttachmentMetadata[]) => void
+        const materialized = new Promise<AttachmentMetadata[]>((resolve) => { resolveMaterialization = resolve })
+        let resolveCancelAck!: () => void
+        const cancelAck = new Promise<void>((resolve) => { resolveCancelAck = resolve })
+        let cancelAckStarted!: () => void
+        const cancelStarted = new Promise<void>((resolve) => { cancelAckStarted = resolve })
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    },
+                    timeout: (_ms: number) => ({
+                        emit: (
+                            _event: string,
+                            _data: unknown,
+                            callback: (err: Error | null, responses: Array<{ removed: boolean }>) => void,
+                        ) => {
+                            cancelAckStarted()
+                            void cancelAck.then(() => callback(new Error('timed out'), []))
+                        },
+                    }),
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } },
+            }),
+        } as unknown as Server
+        const attachment = makeHubScratchlistAttachment(session.id, 'cancel-timeout-fifo')
+        const service = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => {
+                    materializeStarted()
+                    await materialized
+                    return attachments.map((candidate) => ({ ...candidate, path: '/tmp/cancel-timeout-fifo.png' }))
+                },
+            },
+        )
+        const first = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'first', attachments: [attachment] } },
+            'local-cancel-timeout-first',
+            Date.now() - 1_000,
+        )
+        const second = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'second' } },
+            'local-cancel-timeout-second',
+            Date.now() - 1_000,
+        )
+
+        const release = service.releaseMatureScheduledMessages(Date.now())
+        await materializeStarted
+        const cancel = service.cancelQueuedMessage(session.id, first.id)
+        await cancelStarted
+        resolveMaterialization([attachment])
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(cliEmitted).toHaveLength(0)
+        resolveCancelAck()
+
+        await expect(cancel).resolves.toEqual({ status: 'busy', localId: first.localId! })
+        await release
+        expect(cliEmitted).toHaveLength(0)
+        expect(store.messages.lookupQueuedMessage(session.id, first.id).status).toBe('queued')
+        expect(store.messages.lookupQueuedMessage(session.id, second.id).status).toBe('queued')
+    })
+
+    it('cleans the CLI upload when cancelling after scheduled attachment materialization', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'sched-cancel-after-materialize')
+        const deletedHubPaths: string[] = []
+        const deletedMaterializedPaths: string[] = []
+        const service = new MessageService(
+            store,
+            makeIo((ack) => ack(null, [{ removed: true }])),
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => attachments.map((attachment) => ({
+                    ...attachment,
+                    path: '/tmp/materialized-before-cancel.png',
+                })),
+                deleteScheduledAttachments: async (_sessionId, attachments) => {
+                    deletedHubPaths.push(...attachments.map((attachment) => attachment.path))
+                },
+                deleteMaterializedScheduledAttachments: async (_sessionId, attachments) => {
+                    deletedMaterializedPaths.push(...attachments.map((attachment) => attachment.path))
+                },
+            },
+        )
+        const attachment = makeHubScratchlistAttachment(session.id, 'cancel-after-materialize')
+        const message = store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: { type: 'text', text: 'cancel after upload', attachments: [attachment] },
+            },
+            'local-cancel-after-materialize',
+            Date.now() - 1_000,
+        )
+
+        await service.releaseMatureScheduledMessages(Date.now())
+        await expect(service.cancelQueuedMessage(session.id, message.id)).resolves.toMatchObject({
+            status: 'cancelled',
+            localId: 'local-cancel-after-materialize',
+        })
+
+        expect(deletedHubPaths).toEqual([attachment.path])
+        expect(deletedMaterializedPaths).toEqual(['/tmp/materialized-before-cancel.png'])
+    })
+
+    it('keeps the CLI upload when cancellation is ambiguous after materialization', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'sched-cancel-after-ambiguous-ack')
+        const deletedHubPaths: string[] = []
+        const deletedMaterializedPaths: string[] = []
+        const service = new MessageService(
+            store,
+            makeIo((ack) => ack(null, [{ removed: false }])),
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => attachments.map((attachment) => ({
+                    ...attachment,
+                    path: '/tmp/materialized-ambiguous-cancel.png',
+                })),
+                deleteScheduledAttachments: async (_sessionId, attachments) => {
+                    deletedHubPaths.push(...attachments.map((attachment) => attachment.path))
+                },
+                deleteMaterializedScheduledAttachments: async (_sessionId, attachments) => {
+                    deletedMaterializedPaths.push(...attachments.map((attachment) => attachment.path))
+                },
+            },
+        )
+        const attachment = makeHubScratchlistAttachment(session.id, 'cancel-ambiguous-ack')
+        const message = store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: { type: 'text', text: 'ambiguous cancel', attachments: [attachment] },
+            },
+            'local-cancel-ambiguous-ack',
+            Date.now() - 1_000,
+        )
+
+        await service.releaseMatureScheduledMessages(Date.now())
+        await expect(service.cancelQueuedMessage(session.id, message.id)).resolves.toMatchObject({
+            status: 'busy',
+            localId: 'local-cancel-ambiguous-ack',
+        })
+
+        expect(deletedHubPaths).toEqual([])
+        expect(deletedMaterializedPaths).toEqual([])
+    })
+
+    it('does not let a slow scheduled attachment block mature delivery in another session', async () => {
+        const store = makeStore()
+        const sessionA = makeSession(store, 'sched-slow-session-a')
+        const sessionB = makeSession(store, 'sched-fast-session-b')
+        const publisher = makePublisher()
+        const cliEmitted: unknown[] = []
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    }
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } }
+            })
+        } as unknown as Server
+        let slowMaterializeStarted!: () => void
+        const slowStarted = new Promise<void>((resolve) => { slowMaterializeStarted = resolve })
+        let resolveSlowMaterialization!: () => void
+        const slowMaterialization = new Promise<void>((resolve) => { resolveSlowMaterialization = resolve })
+        const service = new MessageService(
+            store,
+            io,
+            publisher as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (sessionId, attachments) => {
+                    if (sessionId === sessionA.id) {
+                        slowMaterializeStarted()
+                        await slowMaterialization
+                    }
+                    return attachments.map((attachment) => ({ ...attachment, path: `/tmp/${sessionId}.png` }))
+                }
+            }
+        )
+        const matureAt = Date.now() - 1_000
+        store.messages.addMessage(
+            sessionA.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'slow image',
+                    attachments: [{
+                        id: 'att-slow',
+                        filename: 'slow.png',
+                        mimeType: 'image/png',
+                        size: 10,
+                        path: 'hapi-hub:scratchlist/default/sched-slow-session-a/att.png'
+                    }]
+                }
+            },
+            'local-slow',
+            matureAt,
+        )
+        store.messages.addMessage(
+            sessionB.id,
+            { role: 'user', content: { type: 'text', text: 'fast text' } },
+            'local-fast',
+            matureAt,
+        )
+
+        const release = service.releaseMatureScheduledMessages(Date.now())
+        await slowStarted
+        expect(cliEmitted).toHaveLength(1)
+        expect((cliEmitted[0] as any).body.message.localId).toBe('local-fast')
+
+        resolveSlowMaterialization()
+        await release
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual(['local-fast', 'local-slow'])
+    })
+
+    it('releases a hub attachment after the scheduled message is acknowledged', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'sched-cleanup')
+        const deleted: string[] = []
+        const service = new MessageService(
+            store,
+            makeIo(() => {}),
+            makePublisher() as any,
+            undefined,
+            {
+                deleteScheduledAttachments: async (_sessionId, attachments) => {
+                    deleted.push(...attachments.map((attachment) => attachment.path))
+                }
+            }
+        )
+        const path = `hapi-hub:scratchlist/default/${session.id}/att-image.png`
+        store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'clean me',
+                    attachments: [{
+                        id: 'att-cleanup',
+                        filename: 'image.png',
+                        mimeType: 'image/png',
+                        size: 10,
+                        path,
+                    }]
+                }
+            },
+            'local-cleanup',
+            Date.now() - 1_000,
+        )
+        store.messages.markMessagesInvoked(session.id, ['local-cleanup'], Date.now())
+
+        await service.releaseConsumedScheduledAttachments(session.id, ['local-cleanup'])
+
+        expect(deleted).toEqual([path])
+    })
+
+    it('does not release a source-owned attachment while reconciling a forked message in its child', async () => {
+        const store = makeStore()
+        const source = makeSession(store, 'sched-source-owner')
+        const child = makeSession(store, 'sched-fork-child')
+        const deleted: string[] = []
+        const service = new MessageService(
+            store,
+            makeIo(() => {}),
+            makePublisher() as any,
+            undefined,
+            {
+                deleteScheduledAttachments: async (_sessionId, attachments) => {
+                    deleted.push(...attachments.map((attachment) => attachment.path))
+                },
+            },
+        )
+        const attachment = makeHubScratchlistAttachment(source.id, 'fork-source-owner')
+        store.scratchlist.create(source.id, 'keep this source draft', {
+            entryId: 'source-draft',
+            attachments: [attachment],
+        })
+        const message = store.messages.addMessage(
+            child.id,
+            { role: 'user', content: { type: 'text', text: 'forked message', attachments: [attachment] } },
+            'forked-message',
+            Date.now() - 1_000,
+        )
+        store.messages.markMessagesInvoked(child.id, ['forked-message'], Date.now())
+
+        await service.releaseConsumedScheduledAttachments(child.id, [message.localId!])
+
+        expect(deleted).toEqual([])
+    })
+
+    it('releases a hub attachment when a future scheduled message is cancelled', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'sched-cancel-cleanup')
+        const deleted: string[] = []
+        const service = new MessageService(
+            store,
+            makeIo((ack) => ack(null, [{ removed: true }])),
+            makePublisher() as any,
+            undefined,
+            {
+                deleteScheduledAttachments: async (_sessionId, attachments) => {
+                    deleted.push(...attachments.map((attachment) => attachment.path))
+                }
+            }
+        )
+        const path = `hapi-hub:scratchlist/default/${session.id}/att-image.png`
+        const message = store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'cancel me',
+                    attachments: [{
+                        id: 'att-cancel',
+                        filename: 'image.png',
+                        mimeType: 'image/png',
+                        size: 10,
+                        path,
+                    }]
+                }
+            },
+            'local-cancel-cleanup',
+            Date.now() + 60_000,
+        )
+
+        const result = await service.cancelQueuedMessage(session.id, message.id)
+
+        expect(result).toMatchObject({ status: 'cancelled', localId: 'local-cancel-cleanup' })
+        expect(deleted).toEqual([path])
+    })
+
+    it('keeps a cancelled attachment that is still referenced by a scratchlist entry', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'sched-cancel-draft-ref')
+        const deleted: string[] = []
+        const service = new MessageService(
+            store,
+            makeIo((ack) => ack(null, [{ removed: true }])),
+            makePublisher() as any,
+            undefined,
+            {
+                deleteScheduledAttachments: async (_sessionId, attachments) => {
+                    deleted.push(...attachments.map((attachment) => attachment.path))
+                }
+            }
+        )
+        const path = 'hapi-hub:scratchlist/default/sched-cancel-draft-ref/att-image.png'
+        const attachment = {
+            id: 'att-draft-ref',
+            filename: 'image.png',
+            mimeType: 'image/png',
+            size: 10,
+            path,
+        }
+        store.scratchlist.create(session.id, 'keep this draft', {
+            entryId: 'draft-ref',
+            attachments: [attachment],
+        })
+        const message = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'cancel me', attachments: [attachment] } },
+            'local-cancel-draft-ref',
+            Date.now() + 60_000,
+        )
+
+        await service.cancelQueuedMessage(session.id, message.id)
+
+        expect(deleted).toEqual([])
     })
 })
 
@@ -1304,7 +2483,7 @@ describe('MessageService.sendMessage deliveryMode', () => {
         expect(backfill).toHaveLength(1)
         expect(backfill[0]?.content).toMatchObject({ meta: { deliveryMode: 'queue' } })
 
-        expect(service.releaseDeliverableQueuedMessages(session.id)).toBe(1)
+        await expect(service.releaseDeliverableQueuedMessages(session.id)).resolves.toBe(1)
         expect(cliEmitted).toHaveLength(3)
         expect(cliEmitted[2]).toMatchObject({
             body: { message: { content: { meta: { deliveryMode: 'queue' } } } }
@@ -1495,6 +2674,472 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
         return { io, cliEmitted }
     }
 
+    it.each(['mature', 'deliverable'] as const)('rechecks later rows after an attachment upload awaits in the %s release', async (releaseMode) => {
+        const store = makeStore()
+        const session = makeSession(store, `release-recheck-${releaseMode}`)
+        const cliEmitted: unknown[] = []
+        let materializeStarted!: () => void
+        const started = new Promise<void>((resolve) => { materializeStarted = resolve })
+        let resolveMaterialization!: () => void
+        const materialization = new Promise<void>((resolve) => { resolveMaterialization = resolve })
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    },
+                    timeout: (_ms: number) => ({
+                        emit: (_event: string, _data: unknown, callback: AckCallback) => {
+                            callback(null, [{ removed: true }])
+                        },
+                    }),
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } },
+            }),
+        } as unknown as Server
+        const service = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => {
+                    materializeStarted()
+                    await materialization
+                    return attachments.map((attachment) => ({ ...attachment, path: '/tmp/rechecked-release.png' }))
+                },
+            },
+        )
+        const scheduledAt = Date.now() - 1_000
+        const image = store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'upload first',
+                    attachments: [makeHubScratchlistAttachment(session.id, `recheck-${releaseMode}`)],
+                },
+            },
+            'release-image-first',
+            scheduledAt,
+        )
+        const text = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'cancel second' } },
+            'release-text-second',
+            scheduledAt,
+        )
+
+        const release = releaseMode === 'mature'
+            ? service.releaseMatureScheduledMessages(Date.now())
+            : service.releaseDeliverableQueuedMessages(session.id, Date.now())
+        await started
+        await expect(service.cancelQueuedMessage(session.id, text.id)).resolves.toMatchObject({
+            status: 'cancelled',
+            localId: 'release-text-second',
+        })
+        resolveMaterialization()
+        await release
+
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual(['release-image-first'])
+        expect(store.messages.lookupQueuedMessage(session.id, image.id).status).toBe('queued')
+        expect(store.messages.lookupQueuedMessage(session.id, text.id).status).toBe('absent')
+    })
+
+    it('keeps the cancellation hold until every overlapping cancellation settles', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'overlapping-materialization-cancels')
+        const cliEmitted: unknown[] = []
+        const deletedPaths: string[] = []
+        let materializeStarted!: () => void
+        const started = new Promise<void>((resolve) => { materializeStarted = resolve })
+        let resolveMaterialization!: (attachments: AttachmentMetadata[]) => void
+        const materialization = new Promise<AttachmentMetadata[]>((resolve) => {
+            resolveMaterialization = resolve
+        })
+        let ackCount = 0
+        let secondAck: AckCallback | undefined
+        let bothCancelsStarted!: () => void
+        const cancelsStarted = new Promise<void>((resolve) => { bothCancelsStarted = resolve })
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    },
+                    timeout: (_ms: number) => ({
+                        emit: (_event: string, _data: unknown, callback: AckCallback) => {
+                            if (namespace !== '/cli') return
+                            ackCount += 1
+                            if (ackCount === 1) {
+                                setTimeout(() => callback(new Error('timeout'), []), 10)
+                            } else if (ackCount === 2) {
+                                secondAck = callback
+                                bothCancelsStarted()
+                            }
+                        },
+                    }),
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } },
+            }),
+        } as unknown as Server
+        const service = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => {
+                    materializeStarted()
+                    return await materialization
+                },
+                deleteMaterializedScheduledAttachments: async (_sessionId, attachments) => {
+                    deletedPaths.push(...attachments.map((attachment) => attachment.path))
+                },
+            },
+        )
+        const message = store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'overlap',
+                    attachments: [makeHubScratchlistAttachment(session.id, 'overlap')],
+                },
+            },
+            'overlap-cancel',
+            Date.now() - 1_000,
+        )
+
+        const release = service.releaseMatureScheduledMessages(Date.now())
+        await started
+        const firstCancel = service.cancelQueuedMessage(session.id, message.id)
+        const secondCancel = service.cancelQueuedMessage(session.id, message.id)
+        await cancelsStarted
+
+        await expect(firstCancel).resolves.toEqual({ status: 'busy', localId: 'overlap-cancel' })
+        resolveMaterialization([{
+            id: 'overlap-attachment',
+            filename: 'overlap.png',
+            mimeType: 'image/png',
+            size: 10,
+            path: '/tmp/overlap-staged.png',
+        }])
+        await release
+
+        expect(cliEmitted).toHaveLength(0)
+        expect(deletedPaths).toEqual(['/tmp/overlap-staged.png'])
+        expect(store.messages.lookupQueuedMessage(session.id, message.id).status).toBe('queued')
+
+        secondAck!(null, [{ removed: false }])
+        await expect(secondCancel).resolves.toEqual({ status: 'cancelled', localId: 'overlap-cancel' })
+        expect(store.messages.lookupQueuedMessage(session.id, message.id).status).toBe('absent')
+    })
+
+    it('replays only the immediate prefix before an earlier mature attachment awaiting staging', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'ordered-replay-behind-staging')
+        const cliEmitted: unknown[] = []
+        let materializeStarted!: () => void
+        const started = new Promise<void>((resolve) => { materializeStarted = resolve })
+        let resolveMaterialization!: () => void
+        const materialization = new Promise<void>((resolve) => { resolveMaterialization = resolve })
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    },
+                    timeout: (_ms: number) => ({ emit: () => {} }),
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } },
+            }),
+        } as unknown as Server
+        const service = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => {
+                    materializeStarted()
+                    await materialization
+                    return attachments.map((attachment) => ({ ...attachment, path: '/tmp/ordered-staged.png' }))
+                },
+            },
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate first' } },
+            'ordered-immediate-first',
+        )
+        store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'attachment second',
+                    attachments: [makeHubScratchlistAttachment(session.id, 'ordered-replay')],
+                },
+            },
+            'ordered-attachment-second',
+            Date.now() - 1_000,
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate third' } },
+            'ordered-immediate-third',
+        )
+
+        const release = service.releaseDeliverableQueuedMessages(session.id, Date.now())
+        await started
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual(['ordered-immediate-first'])
+
+        expect(service.replayImmediateQueuedMessages(session.id)).toBe(1)
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual([
+            'ordered-immediate-first',
+            'ordered-immediate-first',
+        ])
+
+        resolveMaterialization()
+        await release
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual([
+            'ordered-immediate-first',
+            'ordered-immediate-first',
+            'ordered-attachment-second',
+            'ordered-immediate-third',
+        ])
+    })
+
+    it('retries a failed handoff through the complete ordered deliverable drain', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'ordered-handoff-retry')
+        const cliEmitted: unknown[] = []
+        let materializeCalls = 0
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    },
+                    timeout: (_ms: number) => ({ emit: () => {} }),
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } },
+            }),
+        } as unknown as Server
+        const service = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => {
+                    materializeCalls += 1
+                    if (materializeCalls === 1) throw new Error('upload failed')
+                    return attachments.map((attachment) => ({ ...attachment, path: '/tmp/retry-ordered.png' }))
+                },
+            },
+        )
+        const scheduledAt = Date.now() - 1_000
+        store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'attachment A',
+                    attachments: [makeHubScratchlistAttachment(session.id, 'ordered-handoff-retry')],
+                },
+            },
+            'ordered-handoff-a',
+            scheduledAt,
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate B' } },
+            'ordered-handoff-b',
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'scheduled C' } },
+            'ordered-handoff-c',
+            scheduledAt,
+        )
+
+        await expect(service.releaseDeliverableQueuedMessages(session.id, Date.now())).resolves.toBe(0)
+        expect(cliEmitted).toHaveLength(0)
+
+        await service.releaseMatureScheduledMessages(Date.now())
+        expect(materializeCalls).toBe(2)
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual([
+            'ordered-handoff-a',
+            'ordered-handoff-b',
+            'ordered-handoff-c',
+        ])
+    })
+
+    it('serializes an initial handoff drain with periodic mature delivery', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'serialized-initial-handoff')
+        const cliEmitted: unknown[] = []
+        let materializeCalls = 0
+        let materializeStarted!: () => void
+        const started = new Promise<void>((resolve) => { materializeStarted = resolve })
+        let resolveMaterialization!: () => void
+        const materialization = new Promise<void>((resolve) => { resolveMaterialization = resolve })
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    },
+                    timeout: (_ms: number) => ({ emit: () => {} }),
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } },
+            }),
+        } as unknown as Server
+        const service = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => {
+                    materializeCalls += 1
+                    materializeStarted()
+                    await materialization
+                    return attachments.map((attachment) => ({ ...attachment, path: '/tmp/serialized-handoff.png' }))
+                },
+            },
+        )
+        const scheduledAt = Date.now() - 1_000
+        store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'attachment A',
+                    attachments: [makeHubScratchlistAttachment(session.id, 'serialized-initial-handoff')],
+                },
+            },
+            'serialized-handoff-a',
+            scheduledAt,
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate B' } },
+            'serialized-handoff-b',
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'scheduled C' } },
+            'serialized-handoff-c',
+            scheduledAt,
+        )
+
+        const initial = service.releaseDeliverableHandoffMessages(session.id, Date.now())
+        await started
+        await service.releaseMatureScheduledMessages(Date.now())
+        expect(materializeCalls).toBe(1)
+        expect(cliEmitted).toHaveLength(0)
+
+        resolveMaterialization()
+        await initial
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual([
+            'serialized-handoff-a',
+            'serialized-handoff-b',
+            'serialized-handoff-c',
+        ])
+    })
+
+    it('keeps periodic text-only delivery behind a cancelled attachment handoff', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'cancelled-handoff-serialization')
+        const cliEmitted: unknown[] = []
+        const deletedPaths: string[] = []
+        let materializeStarted!: () => void
+        const started = new Promise<void>((resolve) => { materializeStarted = resolve })
+        let resolveMaterialization!: () => void
+        const materialization = new Promise<void>((resolve) => { resolveMaterialization = resolve })
+        const io = {
+            of: (namespace: string) => ({
+                to: (_room: string) => ({
+                    emit: (_event: string, data: unknown) => {
+                        if (namespace === '/cli') cliEmitted.push(data)
+                    },
+                    timeout: (_ms: number) => ({
+                        emit: (_event: string, _data: unknown, callback: AckCallback) => {
+                            if (namespace === '/cli') callback(null, [{ removed: true }])
+                        },
+                    }),
+                }),
+                adapter: { rooms: { get: () => new Set(['cli']) } },
+            }),
+        } as unknown as Server
+        const service = new MessageService(
+            store,
+            io,
+            makePublisher() as any,
+            undefined,
+            {
+                materializeScheduledAttachments: async (_sessionId, attachments) => {
+                    materializeStarted()
+                    await materialization
+                    return attachments.map((attachment) => ({ ...attachment, path: '/tmp/cancelled-handoff.png' }))
+                },
+                deleteMaterializedScheduledAttachments: async (_sessionId, attachments) => {
+                    deletedPaths.push(...attachments.map((attachment) => attachment.path))
+                },
+            },
+        )
+        const scheduledAt = Date.now() - 1_000
+        const first = store.messages.addMessage(
+            session.id,
+            {
+                role: 'user',
+                content: {
+                    type: 'text',
+                    text: 'attachment A',
+                    attachments: [makeHubScratchlistAttachment(session.id, 'cancelled-handoff-serialization')],
+                },
+            },
+            'cancelled-handoff-a',
+            scheduledAt,
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'immediate B' } },
+            'cancelled-handoff-b',
+        )
+        store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'scheduled C' } },
+            'cancelled-handoff-c',
+            scheduledAt,
+        )
+
+        const initial = service.releaseDeliverableHandoffMessages(session.id, Date.now())
+        await started
+        await expect(service.cancelQueuedMessage(session.id, first.id)).resolves.toMatchObject({
+            status: 'cancelled',
+            localId: 'cancelled-handoff-a',
+        })
+        await service.releaseMatureScheduledMessages(Date.now())
+        expect(cliEmitted).toHaveLength(0)
+
+        resolveMaterialization()
+        await initial
+        expect(deletedPaths).toEqual(['/tmp/cancelled-handoff.png'])
+        expect(cliEmitted.map((data: any) => data.body.message.localId)).toEqual([
+            'cancelled-handoff-b',
+            'cancelled-handoff-c',
+        ])
+    })
+
     it('emits mature messages to /cli', async () => {
         const store = makeStore()
         const session = makeSession(store, 'release-emit')
@@ -1626,7 +3271,7 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
 
     // #10: true cold-start restart simulation — new Store + new MessageService
     // share the same SQLite file, replicating what hub restart actually does.
-    it('#10 hub cold-start restart: mature message is re-emitted by new Store+Service (true restart sim)', () => {
+    it('#10 hub cold-start restart: mature message is re-emitted by new Store+Service (true restart sim)', async () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-restart-test-'))
         const dbPath = join(dir, 'test.db')
         let store1: Store | undefined
@@ -1662,7 +3307,7 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
 
             const service2 = new MessageService(store2, io2, publisher2 as any)
             // After cold start, first tick should discover and emit the mature message
-            service2.releaseMatureScheduledMessages(now + 5_000)
+            await service2.releaseMatureScheduledMessages(now + 5_000)
 
             expect(cliEmitted).toHaveLength(1)
 
@@ -1673,7 +3318,16 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
         } finally {
             store2?.close()
             store1?.close()
-            rmSync(dir, { recursive: true, force: true })
+            Bun.gc(true)
+            for (let attempt = 0; attempt < 5; attempt += 1) {
+                try {
+                    rmSync(dir, { recursive: true, force: true })
+                    break
+                } catch (error) {
+                    if (attempt === 4) throw error
+                    await Bun.sleep(25)
+                }
+            }
         }
     })
 })

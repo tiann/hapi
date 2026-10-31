@@ -185,6 +185,8 @@ data class QueuedRowUi(
     val canAct: Boolean,
     /** Steer offered: turn active, not future-scheduled, actionable. */
     val canSteer: Boolean,
+    /** Scheduled rows with attachments cannot be edited on native clients. */
+    val canEdit: Boolean = true,
     /** Native delivery outcome is unknown; show explicit retry instead of normal Steer. */
     val indeterminate: Boolean = false,
 )
@@ -1340,6 +1342,7 @@ class ChatViewModel(
         scope.launch {
             val store = awaitWindowStore()
             val row = store.state.value.messages.firstOrNull { it.id == messageId } ?: return@launch
+            if (!canEditQueuedRow(row)) return@launch
             val preview = queuedPreview(row)
             val editText = preview.text.ifEmpty { preview.attachmentNames.joinToString(", ") }
             val composerAtEdit = composerText.value
@@ -1399,6 +1402,14 @@ class ChatViewModel(
         return hasServerEcho && !queuedOpPending.value
     }
 
+    /**
+     * Native edit is cancel + text prefill. Cancelling a scheduled message
+     * with an attachment removes its durable attachment, so keep Edit off
+     * for that combination (matching the web guard).
+     */
+    private fun canEditQueuedRow(row: WindowMessage): Boolean =
+        row.wire.scheduledAt == null || queuedPreview(row).attachmentNames.isEmpty()
+
     private class QueuedPreview(val text: String, val attachmentNames: List<String>)
 
     private fun queuedPreview(row: WindowMessage): QueuedPreview {
@@ -1433,6 +1444,7 @@ class ChatViewModel(
                 attachmentNames = preview.attachmentNames,
                 scheduledAt = row.wire.scheduledAt,
                 canAct = canAct,
+                canEdit = canAct && canEditQueuedRow(row),
                 canSteer = canAct && thinking && row.wire.scheduledAt == null
                     && row.status != MessageStatus.Indeterminate,
                 indeterminate = row.status == MessageStatus.Indeterminate,

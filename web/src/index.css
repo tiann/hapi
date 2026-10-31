@@ -334,6 +334,34 @@ html:has(.chat-scroll-y) #root {
     touch-action: pan-y;
 }
 
+/* Keep the scratchlist rows at the same horizontal position when its
+ * scrollbar appears or disappears. Extend the scroll viewport into the
+ * drawer's right padding so the native scrollbar occupies that padding,
+ * leaving the rows at their original, symmetric drawer insets. */
+.scratchlist-scroll-y {
+    width: calc(100% + var(--scratchlist-scrollbar-width, 0px));
+    margin-right: calc(0px - var(--scratchlist-scrollbar-width, 0px));
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-gutter: stable;
+    touch-action: pan-y;
+}
+
+.scratchlist-scroll-content {
+    width: 100%;
+}
+
+/* Older WebViews without scrollbar-gutter need the same fixed-slot fallback.
+ * A permanently scrollable viewport is preferable to letting the first
+ * scrollbar appearance resize every row. */
+@supports not (scrollbar-gutter: stable) {
+    .scratchlist-scroll-y {
+        overflow-y: scroll;
+    }
+}
+
 /* Keep file-preview content aligned to the previous left edge while reserving
  * the scrollbar slot on the right on both touch and pointer devices. */
 .file-preview-scroll-y {
@@ -838,5 +866,21 @@ html[data-theme="oled"] .shiki span:not([data-line-number]) {
     opacity: 1;
     pointer-events: auto;
     transition: none;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .hapi-scratchlist-attachment-control {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 150ms ease;
+  }
+
+  [data-scratchlist-attachment-id]:hover .hapi-scratchlist-attachment-control,
+  [data-scratchlist-attachment-id]:focus-within .hapi-scratchlist-attachment-control,
+  [data-scratchlist-attachment-dragging] .hapi-scratchlist-attachment-control,
+  .hapi-scratchlist-attachment-file-control {
+    opacity: 1;
+    pointer-events: auto;
   }
 }

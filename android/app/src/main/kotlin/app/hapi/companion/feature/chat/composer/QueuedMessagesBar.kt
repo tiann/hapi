@@ -32,6 +32,8 @@ import java.util.Date
  * twin of `QueuedMessagesBar.tsx`. Per row: Steer (while a turn is active),
  * Edit (cancel + prefill composer) and Cancel. Rows without a server echo yet
  * (`id == localId`) keep their actions disabled until the SSE echo lands.
+ * Scheduled rows with attachments keep Edit disabled because native edit
+ * cannot restore the attachment.
  */
 @Composable
 fun QueuedMessagesBar(
@@ -119,7 +121,7 @@ private fun QueuedRow(
             } else if (row.canSteer) {
                 TextButton(onClick = { onSteer(row.id) }) { Text(stringResource(R.string.chat_queued_steer)) }
             }
-            TextButton(onClick = { onEdit(row.id) }, enabled = row.canAct) { Text(stringResource(R.string.chat_queued_edit)) }
+            TextButton(onClick = { onEdit(row.id) }, enabled = row.canEdit) { Text(stringResource(R.string.chat_queued_edit)) }
             TextButton(onClick = { onCancel(row.id) }, enabled = row.canAct) {
                 Text(stringResource(R.string.chat_cancel), color = MaterialTheme.colorScheme.error)
             }
