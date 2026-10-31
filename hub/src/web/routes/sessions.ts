@@ -31,7 +31,7 @@ import { RPC_METHODS, RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMe
 import type { SlashCommand } from '@hapi/protocol/apiTypes'
 import { Hono, type Context } from 'hono'
 import type { SyncEngine, Session } from '../../sync/syncEngine'
-import { RpcTargetMissingError } from '../../sync/rpcGateway'
+import { RpcTargetMissingError, RpcTimeoutError } from '../../sync/rpcGateway'
 import type { WebAppEnv } from '../middleware/auth'
 import { loadScratchlistAttachmentLimitsFromEnv } from '../../config/scratchlistAttachmentLimits'
 import { validateScratchlistAttachmentsForWrite, scratchlistSessionBytesBeforeForPut } from '../../scratchlistAttachments/validate'
@@ -344,7 +344,26 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return sessionResult
         }
 
-        await engine.abortSession(sessionResult.sessionId)
+        try {
+            await engine.abortSession(sessionResult.sessionId)
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                // The engine socket is gone: the abort can never be delivered.
+                // Fail in milliseconds instead of hanging into a 500, with the
+                // same status/code contract the other RPC routes already use.
+                return c.json({
+                    error: error.message,
+                    code: RPC_TARGET_MISSING_ERROR_CODE
+                }, 503)
+            }
+            if (error instanceof RpcTimeoutError) {
+                return c.json({
+                    error: `Session did not acknowledge the abort within ${Math.round(error.timeoutMs / 1000)}s; it may be unresponsive.`,
+                    code: 'engine_unresponsive'
+                }, 504)
+            }
+            throw error
+        }
         return c.json({ ok: true })
     })
 
