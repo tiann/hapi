@@ -9,7 +9,7 @@ import {
 import { Hono } from 'hono'
 import { RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMethods'
 import type { SyncEngine } from '../../sync/syncEngine'
-import { RpcTargetMissingError } from '../../sync/rpcGateway'
+import { RpcTargetMissingError, RpcTimeoutError } from '../../sync/rpcGateway'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireMachine } from './guards'
 
@@ -196,6 +196,18 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         try {
             return c.json(await engine.checkPathsExist(machineId, uniquePaths))
         } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({
+                    error: error.message,
+                    code: RPC_TARGET_MISSING_ERROR_CODE
+                }, 503)
+            }
+            if (error instanceof RpcTimeoutError) {
+                return c.json({
+                    error: error.message,
+                    code: 'engine_unresponsive'
+                }, 504)
+            }
             return c.json({ error: error instanceof Error ? error.message : 'Failed to check paths' }, 500)
         }
     })
@@ -270,6 +282,13 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
                     code: RPC_TARGET_MISSING_ERROR_CODE
                 }, 503)
             }
+            if (error instanceof RpcTimeoutError) {
+                return c.json({
+                    success: false,
+                    error: error.message,
+                    code: 'engine_unresponsive'
+                }, 504)
+            }
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list Pi models'
@@ -330,6 +349,13 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
                     code: RPC_TARGET_MISSING_ERROR_CODE
                 }, 503)
             }
+            if (error instanceof RpcTimeoutError) {
+                return c.json({
+                    success: false,
+                    error: error.message,
+                    code: 'engine_unresponsive'
+                }, 504)
+            }
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list Codex models'
@@ -387,6 +413,13 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
                     error: error.message,
                     code: RPC_TARGET_MISSING_ERROR_CODE
                 }, 503)
+            }
+            if (error instanceof RpcTimeoutError) {
+                return c.json({
+                    success: false,
+                    error: error.message,
+                    code: 'engine_unresponsive'
+                }, 504)
             }
             return c.json({
                 success: false,
