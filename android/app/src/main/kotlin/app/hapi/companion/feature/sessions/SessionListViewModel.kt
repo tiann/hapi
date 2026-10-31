@@ -781,12 +781,6 @@ class SessionListViewModel(
     }
 
     /**
-     * Group the rendered rows into screen sections. Off: the plain pinned
-     * prefix + rest (the sort contract puts pins on top). On: the reference's
-     * pin-in-progress view — connected unpinned rows float into the running
-     * buckets, disconnected rows stay in the plain body.
-
-    /**
      * Group the rendered rows into screen sections. Flat mode (grouped off):
      * the plain pinned prefix + rest (the sort contract puts pins on top);
      * pin-in-progress floats connected unpinned rows into running buckets.

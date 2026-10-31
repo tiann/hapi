@@ -1176,6 +1176,34 @@ class SessionListViewModelTest {
     }
 
     @Test
+    fun `two machines sharing a directory stay separate through grouped and flat search`() = runTest {
+        val sessions = FakeSessionStore().apply {
+            set(
+                summary("laptop-row", updatedAt = 900, lastUserMessageAt = 900, machineId = "laptop", path = "/repo/app", name = "Laptop build"),
+                summary("desktop-row", updatedAt = 800, lastUserMessageAt = 800, machineId = "desktop", path = "/repo/app", name = "Desktop build"),
+                summary("lib-row", updatedAt = 700, lastUserMessageAt = 700, machineId = "laptop", path = "/repo/lib", name = "Library chores"),
+            )
+        }
+        val (viewModel) = buildViewModel(sessions)
+        viewModel.uiState.first { it.rows.size == 3 }
+
+        // Grouped + search: both same-title groups survive, keyed apart, in
+        // relevance (first-encounter) order.
+        viewModel.setSearchQuery("build")
+        val groupedSearch = viewModel.uiState.first { it.isSearching && it.rows.size == 2 }
+        assertEquals(listOf(SessionSectionKind.DIRECTORY, SessionSectionKind.DIRECTORY), groupedSearch.sections.map { it.kind })
+        assertEquals(listOf("repo/app", "repo/app"), groupedSearch.sections.map { it.title })
+        assertEquals(setOf("laptop::/repo/app", "desktop::/repo/app"), groupedSearch.sections.map { it.key }.toSet())
+
+        // Flat + search: no directory headers — one plain body, both
+        // machines' rows still reachable.
+        viewModel.setGrouped(false)
+        val flatSearch = viewModel.uiState.first { !it.grouped && it.isSearching && it.rows.size == 2 }
+        assertEquals(listOf(SessionSectionKind.RECENT), flatSearch.sections.map { it.kind })
+        assertEquals(setOf("laptop-row", "desktop-row"), flatSearch.rows.map { it.id }.toSet())
+    }
+
+    @Test
     fun `global pins form the top section and local pins stay inside their directory`() = runTest {
         val sessions = FakeSessionStore().apply {
             set(
