@@ -1,0 +1,75 @@
+{
+    "description": "A newer metadata patch adds the native DSH session id; the applied session retains it so native summary projections keep the resume token.",
+    "expectedPatchResults": [
+        "applied"
+    ],
+    "expectedSession": {
+        "active": true,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": null,
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "metadata": {
+            "dshSessionId": "dsh-session-1",
+            "flavor": "dsh",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 4,
+        "model": null,
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 12,
+        "serviceTier": null,
+        "thinking": false,
+        "thinkingAt": 0,
+        "updatedAt": 1755000000000
+    },
+    "fixtureVersion": 1,
+    "initialSession": {
+        "active": true,
+        "activeAt": 1755000000000,
+        "activeTurnStartedAt": null,
+        "agentState": null,
+        "agentStateVersion": 5,
+        "createdAt": 1754996400000,
+        "effort": null,
+        "id": "sess-sse-fixture",
+        "metadata": {
+            "flavor": "dsh",
+            "host": "devbox",
+            "name": "project",
+            "path": "/home/dev/project"
+        },
+        "metadataVersion": 3,
+        "model": null,
+        "modelReasoningEffort": null,
+        "namespace": "default",
+        "permissionMode": "default",
+        "seq": 12,
+        "serviceTier": null,
+        "thinking": false,
+        "thinkingAt": 0,
+        "updatedAt": 1755000000000
+    },
+    "name": "metadata-dsh-session-id-applied",
+    "patches": [
+        {
+            "metadata": {
+                "value": {
+                    "dshSessionId": "dsh-session-1",
+                    "flavor": "dsh",
+                    "host": "devbox",
+                    "name": "project",
+                    "path": "/home/dev/project"
+                },
+                "version": 4
+            }
+        }
+    ]
+}

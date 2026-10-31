@@ -3297,7 +3297,7 @@ describe('session model', () => {
         }
     })
 
-    it('does not infer a DSH resume target from stale Claude metadata', () => {
+    it('uses the DSH native resume target instead of stale Claude metadata', () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(
             store,
@@ -3314,17 +3314,66 @@ describe('session model', () => {
                     host: 'localhost',
                     machineId: 'machine-1',
                     flavor: 'dsh',
-                    claudeSessionId: 'stale-claude-id'
+                    claudeSessionId: 'stale-claude-id',
+                    dshSessionId: 'dsh-session-1'
                 },
                 null,
                 'default'
             )
 
-            expect(engine.resolveLocalResumeTarget(session.id, 'default')).toEqual({
-                type: 'error',
-                message: 'Resume session ID unavailable. Start a new session in this directory, or retry after the agent has initialized.',
-                code: 'resume_unavailable'
+            expect(engine.resolveLocalResumeTarget(session.id, 'default')).toMatchObject({
+                type: 'success',
+                target: {
+                    flavor: 'dsh',
+                    agentSessionId: 'dsh-session-1'
+                }
             })
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('passes the DSH native session id to the runner on resume', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'session-dsh-resume',
+                {
+                    path: '/tmp/project',
+                    host: 'localhost',
+                    machineId: 'machine-1',
+                    flavor: 'dsh',
+                    dshSessionId: 'dsh-session-1'
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'machine-1',
+                { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+
+            let capturedResumeSessionId: string | undefined
+            ;(engine as any).rpcGateway.spawnSession = async (...args: Parameters<SyncEngine['spawnSession']>) => {
+                capturedResumeSessionId = args[8]
+                return { type: 'success', sessionId: session.id }
+            }
+            ;(engine as any).waitForSessionActive = async () => true
+
+            const result = await engine.resumeSession(session.id, 'default')
+
+            expect(result).toEqual({ type: 'success', sessionId: session.id })
+            expect(capturedResumeSessionId).toBe('dsh-session-1')
         } finally {
             engine.stop()
         }
@@ -3722,6 +3771,61 @@ describe('session model', () => {
                     machineId: 'recorded-machine-offline',
                     flavor: 'opencode',
                     opencodeSessionId: 'opencode-native-offline',
+                    lifecycleState: 'archived'
+                },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'recorded-machine-offline',
+                { host: 'shared-host-label', platform: 'linux', happyCliVersion: '0.1.0' },
+                null,
+                'default'
+            )
+            engine.getOrCreateMachine(
+                'wrong-same-host-machine',
+                { host: 'shared-host-label', platform: 'linux', happyCliVersion: '0.1.0' },
+                { status: 'running' },
+                'default'
+            )
+            engine.handleMachineAlive({ machineId: 'wrong-same-host-machine', time: Date.now() })
+
+            let spawnCalled = false
+            ;(engine as any).rpcGateway.spawnSession = async () => {
+                spawnCalled = true
+                return { type: 'success', sessionId: session.id }
+            }
+
+            expect(await engine.reopenSession(session.id, 'default')).toEqual({
+                type: 'error',
+                message: 'No machine online',
+                code: 'no_machine_online'
+            })
+            expect(spawnCalled).toBe(false)
+            expect(engine.getSession(session.id)?.metadata?.lifecycleState).toBe('archived')
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('does not resume a native DSH session on a same-host machine when its recorded machine is offline', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(
+            store,
+            {} as never,
+            new RpcRegistry(),
+            { broadcast() {} } as never
+        )
+
+        try {
+            const session = engine.getOrCreateSession(
+                'dsh-offline-recorded-machine-resume',
+                {
+                    path: '/remote/project',
+                    host: 'shared-host-label',
+                    machineId: 'recorded-machine-offline',
+                    flavor: 'dsh',
+                    dshSessionId: 'dsh-native-offline',
                     lifecycleState: 'archived'
                 },
                 null,

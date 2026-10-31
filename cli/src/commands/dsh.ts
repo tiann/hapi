@@ -10,9 +10,6 @@ export function parseDshCommandOptions(commandArgs: string[]) {
     if (commandArgs.includes('--yolo')) {
         throw new Error('DeepSeek Harness permission policy is configured by the ACP server')
     }
-    if (options.resumeSessionId) {
-        throw new Error('DeepSeek Harness ACP only supports fresh sessions; resume is unavailable')
-    }
     if (options.effort || options.modelReasoningEffort) {
         throw new Error('DeepSeek Harness effort is configured by the ACP server')
     }
