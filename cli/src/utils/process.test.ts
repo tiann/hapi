@@ -10,7 +10,8 @@ vi.mock('cross-spawn', () => ({
     }
 }))
 
-import { getHapiRunnerProcessIdentity, killProcess } from './process'
+import { getHapiRunnerProcessIdentity, killProcess, killProcessByChildProcessSync } from './process'
+import type { ChildProcess } from 'node:child_process'
 
 const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
 
@@ -226,6 +227,19 @@ describe('getHapiRunnerProcessIdentity on Windows', () => {
 })
 
 describe('killProcess on Windows (orphanReap / stopSession)', () => {
+    it('issues exit-hook taskkill synchronously before returning', () => {
+        spawnSyncMock.mockImplementation((command: string, args: string[] = []) => completed(command === 'tasklist' ? 'hapi.exe 9901 Console' : '', command === 'taskkill' && !args.includes('/F') ? 1 : 0))
+        killProcessByChildProcessSync({ pid: 9901, exitCode: null, signalCode: null } as ChildProcess)
+        const calls = spawnSyncMock.mock.calls.filter(call => call[0] === 'taskkill')
+        expect(calls).toHaveLength(2)
+        expect(calls[0][1]).toEqual(['/T', '/PID', '9901'])
+        expect(calls[1][1]).toEqual(['/F', '/T', '/PID', '9901'])
+    })
+    it('never signals an already-exited child from an exit hook', () => {
+        killProcessByChildProcessSync({ pid: 9901, exitCode: 0, signalCode: null } as ChildProcess)
+        killProcessByChildProcessSync({ pid: 9901, exitCode: null, signalCode: 'SIGTERM' } as ChildProcess)
+        expect(spawnSyncMock).not.toHaveBeenCalled()
+    })
     it('includes slow liveness probes in the graceful shutdown deadline', async () => {
         let graceStarted: number | undefined
         let alive = true
@@ -424,6 +438,82 @@ describe('killProcess on Windows (orphanReap / stopSession)', () => {
         const taskkills = spawnSyncMock.mock.calls.filter((call) => call[0] === 'taskkill')
         expect(taskkills).toHaveLength(1)
         expect(taskkills[0]![1]).toEqual(['/F', '/T', '/PID', '9901'])
+    })
+
+    it('aborts before signalling when a sibling webhook invalidates the binding during a marker yield', async () => {
+        vi.useRealTimers()
+        const { killProcessTreeByPid } = await import('./process')
+        let bindingValid = true
+        spawnSyncMock.mockImplementation((cmd: string, args: string[] = []) => {
+            if (cmd === 'powershell') return completed(args.at(-1)?.includes('ParentProcessId') ? 'OK:200,100' : 'generation')
+            if (cmd === 'tasklist') return completed('proc.exe 100 Console')
+            return completed('')
+        })
+        setImmediate(() => { bindingValid = false })
+        expect(await killProcessTreeByPid(100, true, undefined, () => bindingValid)).toBe(false)
+        expect(spawnSyncMock.mock.calls.filter(call => call[0] === 'taskkill')).toHaveLength(0)
+    })
+
+    it('reaps a captured surviving descendant after the wrapper exit handler clears its bindings', async () => {
+        vi.useRealTimers()
+        const { killProcessTreeByPid } = await import('./process')
+        const { captureStopSignalBinding } = await import('../runner/processBinding')
+        const alive = new Set([100, 200])
+        let binding: object | undefined = {}
+        const canSignal = captureStopSignalBinding(() => [binding], () => false)
+        const signalled: number[] = []
+        spawnSyncMock.mockImplementation((cmd: string, args: string[] = []) => {
+            if (cmd === 'powershell') return completed(args.at(-1)?.includes('ParentProcessId') ? 'OK:200,100' : 'generation')
+            if (cmd === 'tasklist') {
+                const pid = Number(args.find(arg => arg.startsWith('PID eq '))?.slice(7))
+                return completed(alive.has(pid) ? `proc.exe ${pid} Console` : 'INFO: No tasks')
+            }
+            if (cmd === 'taskkill') {
+                const pid = Number(args[args.indexOf('/PID') + 1]); signalled.push(pid); alive.delete(pid)
+                if (pid === 100) binding = undefined
+            }
+            return completed('')
+        })
+        expect(await killProcessTreeByPid(100, true, undefined, canSignal)).toBe(true)
+        expect(signalled).toEqual([100, 200])
+        expect(alive.size).toBe(0)
+    })
+
+    it.each(['marker yield', 'pre-signal timer', 'replacement binding', 'new sibling'])('handles pre-signal wrapper exit with %s while protecting replacements and siblings', async phase => {
+        vi.useRealTimers()
+        const { killProcessTreeByPid } = await import('./process')
+        const { captureStopSignalBinding } = await import('../runner/processBinding')
+        const alive = new Set([100, 200])
+        let binding: object | undefined = {}
+        let sibling = false
+        const canSignal = captureStopSignalBinding(() => [binding], () => sibling)
+        const signalled: number[] = []
+        const exit = () => {
+            alive.delete(100)
+            binding = phase === 'replacement binding' ? {} : undefined
+            sibling = phase === 'new sibling'
+        }
+        spawnSyncMock.mockImplementation((cmd: string, args: string[] = []) => {
+            if (cmd === 'powershell') {
+                const script = args.at(-1) ?? ''
+                if (script.includes('ParentProcessId')) return completed('OK:200,100')
+                if (phase === 'pre-signal timer' && script.includes('ProcessId = 100')) setTimeout(exit, 0)
+                return completed('generation')
+            }
+            if (cmd === 'tasklist') {
+                const pid = Number(args.find(arg => arg.startsWith('PID eq '))?.slice(7))
+                return completed(alive.has(pid) ? `proc.exe ${pid} Console` : 'INFO: No tasks')
+            }
+            if (cmd === 'taskkill') {
+                const pid = Number(args[args.indexOf('/PID') + 1]); signalled.push(pid); alive.delete(pid)
+            }
+            return completed('')
+        })
+        if (phase !== 'pre-signal timer') setImmediate(exit)
+        const protectedBinding = phase === 'replacement binding' || phase === 'new sibling'
+        expect(await killProcessTreeByPid(100, true, undefined, canSignal)).toBe(!protectedBinding)
+        expect(signalled).toEqual(protectedBinding ? [] : [200])
+        expect(alive.has(200)).toBe(protectedBinding)
     })
 
     it('services queued control work between Windows tree generation probes', async () => {
@@ -976,6 +1066,11 @@ describe('killProcess on Windows (orphanReap / stopSession)', () => {
 })
 
 describe('killProcessTreeByPid on POSIX (pgrep tree scan)', () => {
+    it('signals the owned child and descendants synchronously on exit', () => {
+        spawnSyncMock.mockImplementation((_command: string, args: string[]) => ({ ...completed(''), stdout: args[1] === '100' ? '200' : '' }))
+        killProcessByChildProcessSync({ pid: 100, exitCode: null, signalCode: null } as ChildProcess)
+        expect(vi.mocked(process.kill).mock.calls).toEqual([[200, 'SIGTERM'], [100, 'SIGTERM']])
+    })
     beforeEach(() => {
         setPlatform('linux')
         spawnSyncMock.mockReset()

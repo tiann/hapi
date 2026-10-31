@@ -15,6 +15,7 @@
  */
 
 import spawn from 'cross-spawn'
+import { execFile } from 'node:child_process'
 import { getProcessStartMarker, isProcessAlive, windowsProcessListCimCommand } from '@/utils/process'
 
 export type ProcessSnapshot = {
@@ -192,6 +193,16 @@ export function listWindowsProcessesWithCommandLine(): ProcessSnapshot[] {
         throw result.error ?? new Error(`powershell Win32_Process exit ${result.status}`)
     }
     return parseWindowsProcessSnapshot((result.stdout ?? '').toString())
+}
+
+/** Heartbeat queries must leave the control server responsive while CIM runs. */
+export async function listWindowsProcessesWithCommandLineAsync(): Promise<ProcessSnapshot[]> {
+    const stdout = await new Promise<string>((resolve, reject) => {
+        execFile('powershell', ['-NoProfile', '-NonInteractive', '-Command', windowsProcessListCimCommand()],
+            { encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024, timeout: 10_000 },
+            (error, output) => { if (error) reject(error); else resolve(output); });
+    });
+    return parseWindowsProcessSnapshot(stdout);
 }
 
 /** Reject incomplete/invalid listings before absence can prove a PID exited. */
