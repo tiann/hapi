@@ -1,4 +1,5 @@
 import { basename, extname } from 'node:path'
+import { constants } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { open } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
@@ -8,10 +9,17 @@ import { asString, isObject } from '@hapi/protocol'
  * Read a regular file through one open descriptor: size is taken from the fd
  * (not a separate pathname `lstat`), then the buffer is allocated to that size
  * only. Rejects if the file grows/shrinks while reading so a TOCTOU swap cannot
- * force an unbounded `readFile` allocation.
+ * force an unbounded `readFile` allocation. Non-blocking open prevents a FIFO
+ * or other special file from hanging the caller before its type can be checked.
  */
 export async function readBoundedRegularFile(path: string, maxBytes: number): Promise<Buffer> {
-    const handle = await open(path, 'r')
+    // O_NONBLOCK prevents opening a POSIX FIFO without a writer from hanging
+    // the session file RPC before the regular-file check can run. Windows does
+    // not expose the same FIFO open semantics, so retain its normal read flag.
+    const flags = process.platform === 'win32'
+        ? 'r'
+        : constants.O_RDONLY | (constants.O_NONBLOCK ?? 0)
+    const handle = await open(path, flags)
     try {
         const info = await handle.stat()
         if (!info.isFile()) {

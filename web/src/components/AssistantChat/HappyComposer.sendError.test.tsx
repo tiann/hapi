@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode, TextareaHTMLAttributes } from 'react'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
@@ -33,32 +33,37 @@ const runtime = vi.hoisted(() => ({
     pendingSendIntentRef: null as null | { current: ComposerSendIntent },
     sentIntents: [] as ComposerSendIntent[],
     modelChanges: [] as Array<{ provider: string; modelId: string } | string | null>,
+    pendingHydration: null as Promise<void> | null,
+    dictationEnabled: false,
+    dictation: { status: 'connected', supported: true, partialTranscript: '', error: null, toggle: vi.fn(), stopAndSend: vi.fn() },
 }))
 
 vi.mock('@assistant-ui/react', async () => {
     const React = await import('react')
-    return {
-        useAui: () => ({
-            composer: () => ({
-                setText: (text: string) => {
-                    runtime.setSnapshot!((current) => ({
-                        ...current,
-                        composer: { ...current.composer, text },
-                    }))
-                },
-                send: () => {
-                    const intent = runtime.pendingSendIntentRef?.current ?? 'default'
-                    runtime.sentIntents.push(intent)
-                    if (runtime.pendingSendIntentRef) runtime.pendingSendIntentRef.current = 'default'
-                    runtime.setSnapshot!((current) => ({
-                        ...current,
-                        composer: { text: '', attachments: [] },
-                    }))
-                },
-                addAttachment: async () => {},
-            }),
-            thread: () => ({ cancelRun: () => {} }),
+    const api = {
+        composer: () => ({
+            getState: () => runtime.snapshot.composer,
+            setText: (text: string) => {
+                runtime.setSnapshot!((current) => ({
+                    ...current,
+                    composer: { ...current.composer, text },
+                }))
+            },
+            send: () => {
+                const intent = runtime.pendingSendIntentRef?.current ?? 'default'
+                runtime.sentIntents.push(intent)
+                if (runtime.pendingSendIntentRef) runtime.pendingSendIntentRef.current = 'default'
+                runtime.setSnapshot!((current) => ({
+                    ...current,
+                    composer: { text: '', attachments: [] },
+                }))
+            },
+            addAttachment: async () => {},
         }),
+        thread: () => ({ cancelRun: () => {} }),
+    }
+    return {
+        useAui: () => api,
         useAuiState: (selector: (state: typeof runtime.snapshot) => unknown) => selector(runtime.snapshot),
         ComposerPrimitive: {
             Root: ({ children, onSubmit }: { children: ReactNode; onSubmit?: () => void }) => (
@@ -98,7 +103,15 @@ vi.mock('@/lib/composerSegments', () => ({
         showContinueHint ? 'misc.typeMessage' : 'misc.typeAMessage',
 }))
 vi.mock('@/hooks/useComposerDraft', () => ({
-    useComposerDraft: (sessionId: string | undefined) => ({ sessionId, complete: true, restoredAny: false, hasStoredAttachments: false }),
+    useComposerDraft: (sessionId: string | undefined) => {
+        const [complete, setComplete] = useState(runtime.pendingHydration === null)
+        useEffect(() => { void runtime.pendingHydration?.then(() => setComplete(true)) }, [])
+        return { sessionId, complete, restoredAny: false, hasStoredAttachments: false }
+    },
+}))
+vi.mock('@/hooks/useDictation', () => ({ useDictation: () => runtime.dictation }))
+vi.mock('@/hooks/useVoiceInputPreferences', () => ({
+    useVoiceInputPreferences: () => ({ voiceMode: runtime.dictationEnabled ? 'dictation' : 'conversation', provider: 'openai', transcriptionMode: 'standard' }),
 }))
 vi.mock('@/hooks/useComposerEnterBehavior', () => ({ useComposerEnterBehavior: () => ({ composerEnterBehavior: 'send' }) }))
 vi.mock('@/hooks/usePlatform', () => ({ usePlatform: () => ({ haptic: { impact: () => {}, notification: () => {} }, isTouch: false }) }))
@@ -136,8 +149,8 @@ vi.mock('@/components/AssistantChat/ComposerButtons', () => ({
         </div>
     ),
     // HappyComposer places UnifiedButton beside the card (omitPrimaryButton).
-    UnifiedButton: (props: { onSend: () => void }) => (
-        <button type="button" onClick={props.onSend}>send</button>
+    UnifiedButton: (props: { onSend: () => void; dictationCanDirectSend?: boolean }) => (
+        <button type="button" data-direct-send={props.dictationCanDirectSend} onClick={() => props.onSend()}>send</button>
     ),
     DictationButton: () => null,
     isComposerPrimaryFillHeight: () => true,
@@ -606,4 +619,32 @@ describe('HappyComposer send intent gestures', () => {
         expect(runtime.sentIntents).toEqual([])
         expect(runtime.pendingSendIntentRef?.current).toBe('default')
     })
+})
+
+it('refreshes voice Send after empty attachment hydration completes', async () => {
+    let hydrate: (() => void) | undefined
+    runtime.pendingHydration = new Promise<void>(resolve => { hydrate = resolve })
+    runtime.dictationEnabled = true
+    runtime.dictation.stopAndSend.mockClear()
+    runtime.dictation.toggle.mockClear()
+    const resolveSessionIdForVoice = vi.fn(async () => ({ sessionId: 'voice-resumed', resumed: true }))
+    try {
+        runtime.snapshot = { composer: { text: '', attachments: [] }, thread: { isRunning: false, isDisabled: false } }
+        runtime.setSnapshot = vi.fn()
+        render(<I18nProvider><HappyComposer sessionId="voice-inactive" active={false} resolveSessionIdForVoice={resolveSessionIdForVoice} /></I18nProvider>)
+        expect(screen.getByRole('button', { name: 'send' })).toHaveAttribute('data-direct-send', 'false')
+        await act(async () => { hydrate?.() })
+        expect(screen.getByRole('button', { name: 'send' })).toHaveAttribute('data-direct-send', 'true')
+        send()
+        await waitFor(() => expect(runtime.dictation.stopAndSend).toHaveBeenCalledWith('voice-inactive', '', 'queue', {
+            resolveSessionId: resolveSessionIdForVoice,
+            onSessionResolved: undefined,
+        }))
+        expect(runtime.dictation.toggle).not.toHaveBeenCalled()
+    } finally {
+        cleanup()
+        runtime.pendingHydration = null
+        runtime.dictationEnabled = false
+        runtime.setSnapshot = null
+    }
 })

@@ -108,6 +108,8 @@
 
     <!-- Settings scaffold (B-M4e) -->
     <string name="settings_title">Settings</string>
+    <string name="settings_category_general">General</string>
+    <string name="settings_category_general_summary">Appearance, language, and about</string>
     <string name="settings_back">Back</string>
     <string name="settings_cancel">Cancel</string>
     <string name="settings_retry">Retry</string>
@@ -208,7 +210,8 @@
     <string name="sessions_filter_unknown_machine">Unknown machine</string>
     <string name="sessions_offline_banner">Offline — showing cached sessions</string>
     <string name="sessions_search_hint">Search sessions</string>
-    <string name="sessions_search_clear">Clear search</string>
+    <string name="sessions_search_open">Search sessions</string>
+    <string name="sessions_search_close">Close search</string>
     <string name="sessions_search_no_results">No sessions matching “%1$s”</string>
     <string name="sessions_search_no_results_hint">Try another term, or clear the search.</string>
     <string name="sessions_empty_loading_title">Loading sessions…</string>
@@ -580,16 +583,48 @@
     <string name="chat_reconnecting_retry">Reconnecting… Tap to retry</string>
     <string name="sessions_filters">Filters</string>
     <string name="sessions_filters_active">Filters applied</string>
-    <string name="sessions_clear_filter">Clear filter</string>
+    <string name="sessions_filters_reset">Reset</string>
+    <string name="sessions_filters_done">Done</string>
+    <string name="sessions_filter_machines">Machines</string>
+    <string name="sessions_filter_dates">Activity dates</string>
+    <string name="sessions_filter_any_date">Any date</string>
+    <string name="sessions_filter_clear_dates">Clear date filter</string>
     <string name="sessions_machine_fallback">Machine · %1$s</string>
-    <string name="sessions_filter_summary">Filtered by: %1$s</string>
     <string name="sessions_time_filter_label">Filter sessions by last activity</string>
     <string name="sessions_time_filter_apply">Apply</string>
     <string name="sessions_time_filter_clear">Clear</string>
-    <string name="sessions_time_filter_summary">Activity: %1$s – %2$s</string>
+    <string name="sessions_time_filter_summary">%1$s – %2$s</string>
     <string name="sessions_time_filter_empty_title">No sessions in this date range</string>
     <string name="sessions_time_filter_empty_hint">Adjust or clear the date filter to see more sessions.</string>
     <string name="sessions_time_filter_recent_activity">Recent activity</string>
     <string name="privacy_policy">Privacy Policy</string>
     <string name="privacy_open_failed">No app can open this link.</string>
+    <!-- Incoming Android shares. -->
+    <string name="share_title">Share to session</string>
+    <string name="share_choose_session">Choose a session</string>
+    <string name="share_search_hint">Search sessions</string>
+    <string name="share_copying">Preparing shared file…</string>
+    <string name="share_importing">Adding shared content…</string>
+    <string name="share_unreadable">Cannot read this file. Retry or remove it.</string>
+    <string name="share_too_large">File exceeds the attachment size limit.</string>
+    <string name="share_interrupted">Preparation was interrupted. Retry or remove this file.</string>
+    <string name="share_retry">Retry</string>
+    <string name="share_remove">Remove</string>
+    <string name="share_cancel">Cancel</string>
+    <string name="share_receive_failed">Cannot receive this share. Please share the content again.</string>
+    <string name="share_restore_title">Restore session?</string>
+    <string name="share_restore_message">This session is stopped. Restore it before adding the shared content?</string>
+    <string name="share_restore_confirm">Restore and add</string>
+    <string name="share_restore_label">Stopped · restore before adding</string>
+    <string name="share_target_failed">Cannot open this session. Check the connection and try again.</string>
+    <string name="share_refresh">Refresh sessions</string>
+    <string name="share_no_sessions">No matching sessions</string>
+    <string name="share_offline">Cannot refresh sessions. Check the connection or switch hubs.</string>
+    <string name="share_replace_title">Another share received</string>
+    <string name="share_replace_message">There is already shared content waiting to be added. Keep it and discard the new share, or replace it with the new share?</string>
+    <string name="share_keep_current">Keep current</string>
+    <string name="share_replace_current">Use new share</string>
+    <string name="share_error_title">Share unavailable</string>
+    <string name="share_ok">OK</string>
+    <string name="share_pair_first">Pair a hub to choose a session for the shared content.</string>
 </resources>

@@ -81,6 +81,7 @@ data class SessionListUiState(
     val searchQuery: String = "",
 ) {
     val hasMachineFilters: Boolean get() = machineFilters.size >= 2
+    val hasActiveFilters: Boolean get() = activeMachineFilter != null || dateRange != null
     val isSearching: Boolean get() = searchQuery.isNotBlank()
 }
 
@@ -268,6 +269,12 @@ class SessionListViewModel(
 
     /** Clears the date-range lens (web: the picker footer `Clear` link). */
     fun clearDateRange() {
+        dateRange.value = null
+    }
+
+    /** Reset the consolidated sheet's conditions without changing the search. */
+    fun clearFilters() {
+        machineFilter.value = null
         dateRange.value = null
     }
 

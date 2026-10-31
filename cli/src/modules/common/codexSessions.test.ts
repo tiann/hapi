@@ -1,8 +1,13 @@
-import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, utimesSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { archiveLocalCodexSession, listLocalCodexSessionSummaries, listLocalCodexSessionsWithMessagesByIds } from './codexSessions'
+
+vi.mock('node:fs', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('node:fs')>()
+    return { ...actual, readFileSync: vi.fn(actual.readFileSync) }
+})
 
 describe('archiveLocalCodexSession', () => {
     const originalCodexHome = process.env.CODEX_HOME
@@ -179,5 +184,48 @@ describe('listLocalCodexSessionSummaries', () => {
         expect(sessions.map((session) => session.id)).toEqual(['wanted-session-id'])
         expect(sessions[0]?.messages).toHaveLength(1)
         rmSync(root, { recursive: true, force: true })
+    })
+
+    it('selects the latest matching session without mistaking child transcripts for it', () => {
+        const root = mkdtempSync(join(tmpdir(), 'codex-home-'))
+        process.env.CODEX_HOME = root
+        const dir = join(root, 'sessions')
+        mkdirSync(dir, { recursive: true })
+        const make = (name: string, source: unknown, text: string, seconds: number) => {
+            const path = join(dir, name)
+            writeFileSync(path, [
+                JSON.stringify({ type: 'session_meta', payload: { id: 'wanted', cwd: '/tmp/project', source } }),
+                JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } })
+            ].join('\n'))
+            utimesSync(path, seconds, seconds)
+        }
+        make('old.jsonl', 'cli', 'old', 100)
+        make('new.jsonl', 'cli', 'new', 200)
+        make('child.jsonl', { subagent: 'worker' }, 'child', 300)
+        const sessions = listLocalCodexSessionsWithMessagesByIds(new Set(['wanted']))
+        expect(sessions).toHaveLength(1)
+        expect(sessions[0]?.file).toBe(join(dir, 'new.jsonl'))
+        expect(JSON.stringify(sessions[0]?.messages)).toContain('new')
+        rmSync(root, { recursive: true, force: true })
+    })
+
+    it('does not fully read unrelated large session files', () => {
+        const root = mkdtempSync(join(tmpdir(), 'codex-home-'))
+        process.env.CODEX_HOME = root
+        const dir = join(root, 'sessions')
+        mkdirSync(dir, { recursive: true })
+        const wanted = join(dir, 'wanted.jsonl')
+        const unrelated = join(dir, 'unrelated.jsonl')
+        writeFileSync(wanted, JSON.stringify({ type: 'session_meta', payload: { id: 'wanted' } }) + '\n')
+        writeFileSync(unrelated, JSON.stringify({ type: 'session_meta', payload: { id: 'unrelated' } }) + '\n' + 'x'.repeat(2 * 1024 * 1024))
+        const spy = vi.mocked(readFileSync)
+        spy.mockClear()
+        try {
+            expect(listLocalCodexSessionsWithMessagesByIds(new Set(['wanted'])).map(session => session.id)).toEqual(['wanted'])
+            expect(spy.mock.calls.some(call => call[0] === unrelated)).toBe(false)
+        } finally {
+            spy.mockClear()
+            rmSync(root, { recursive: true, force: true })
+        }
     })
 })

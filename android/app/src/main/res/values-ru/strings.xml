@@ -108,6 +108,8 @@
 
     <!-- Settings scaffold (B-M4e) -->
     <string name="settings_title">Настройки</string>
+    <string name="settings_category_general">Основные</string>
+    <string name="settings_category_general_summary">Внешний вид, язык и о приложении</string>
     <string name="settings_back">Назад</string>
     <string name="settings_cancel">Отмена</string>
     <string name="settings_retry">Повторить</string>
@@ -208,7 +210,8 @@
     <string name="sessions_filter_unknown_machine">Неизвестная машина</string>
     <string name="sessions_offline_banner">Офлайн — показаны кешированные сессии</string>
     <string name="sessions_search_hint">Поиск сессий</string>
-    <string name="sessions_search_clear">Очистить поиск</string>
+    <string name="sessions_search_open">Поиск сессий</string>
+    <string name="sessions_search_close">Закрыть поиск</string>
     <string name="sessions_search_no_results">Нет сессий, подходящих под запрос «%1$s»</string>
     <string name="sessions_search_no_results_hint">Попробуйте другой запрос или очистите поиск.</string>
     <string name="sessions_empty_loading_title">Загрузка сессий…</string>
@@ -580,16 +583,48 @@
     <string name="chat_reconnecting_retry">Переподключение… Нажмите, чтобы повторить</string>
     <string name="sessions_filters">Фильтры</string>
     <string name="sessions_filters_active">Фильтры применены</string>
-    <string name="sessions_clear_filter">Сбросить фильтр</string>
+    <string name="sessions_filters_reset">Сбросить</string>
+    <string name="sessions_filters_done">Готово</string>
+    <string name="sessions_filter_machines">Машины</string>
+    <string name="sessions_filter_dates">Даты активности</string>
+    <string name="sessions_filter_any_date">Любая дата</string>
+    <string name="sessions_filter_clear_dates">Сбросить фильтр по дате</string>
     <string name="sessions_machine_fallback">Машина · %1$s</string>
-    <string name="sessions_filter_summary">Фильтр: %1$s</string>
     <string name="sessions_time_filter_label">Фильтр сессий по последней активности</string>
     <string name="sessions_time_filter_apply">Применить</string>
     <string name="sessions_time_filter_clear">Очистить</string>
-    <string name="sessions_time_filter_summary">Активность: %1$s – %2$s</string>
+    <string name="sessions_time_filter_summary">%1$s – %2$s</string>
     <string name="sessions_time_filter_empty_title">В этом диапазоне дат нет сессий</string>
     <string name="sessions_time_filter_empty_hint">Измените или сбросьте фильтр по дате, чтобы увидеть больше сессий.</string>
     <string name="sessions_time_filter_recent_activity">Недавняя активность</string>
     <string name="privacy_policy">Политика конфиденциальности</string>
     <string name="privacy_open_failed">Нет приложения, способного открыть эту ссылку.</string>
+    <!-- Incoming Android shares. -->
+    <string name="share_title">Поделиться с сессией</string>
+    <string name="share_choose_session">Выберите сессию</string>
+    <string name="share_search_hint">Поиск сессий</string>
+    <string name="share_copying">Подготовка файла…</string>
+    <string name="share_importing">Добавление содержимого…</string>
+    <string name="share_unreadable">Не удалось прочитать файл. Повторите или удалите его.</string>
+    <string name="share_too_large">Размер файла превышает лимит вложения.</string>
+    <string name="share_interrupted">Подготовка прервана. Повторите или удалите файл.</string>
+    <string name="share_retry">Повторить</string>
+    <string name="share_remove">Убрать</string>
+    <string name="share_cancel">Отмена</string>
+    <string name="share_receive_failed">Не удалось получить содержимое. Поделитесь им ещё раз.</string>
+    <string name="share_restore_title">Восстановить сессию?</string>
+    <string name="share_restore_message">Сессия остановлена. Восстановить её перед добавлением содержимого?</string>
+    <string name="share_restore_confirm">Восстановить и добавить</string>
+    <string name="share_restore_label">Остановлена · требуется восстановление</string>
+    <string name="share_target_failed">Не удалось открыть сессию. Проверьте подключение и повторите.</string>
+    <string name="share_refresh">Обновить сессии</string>
+    <string name="share_no_sessions">Подходящих сессий нет</string>
+    <string name="share_offline">Не удалось обновить сессии. Проверьте подключение или смените хаб.</string>
+    <string name="share_replace_title">Получена новая отправка</string>
+    <string name="share_replace_message">Содержимое предыдущей отправки ещё не добавлено. Продолжить с ним и отбросить новое или заменить его новым?</string>
+    <string name="share_keep_current">Оставить текущее</string>
+    <string name="share_replace_current">Использовать новое</string>
+    <string name="share_error_title">Не удалось поделиться</string>
+    <string name="share_ok">ОК</string>
+    <string name="share_pair_first">Подключите хаб, чтобы выбрать сессию для отправки.</string>
 </resources>

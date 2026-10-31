@@ -61,12 +61,12 @@ describe('classifySessionAttention', () => {
         expect(attention).toBeNull()
     })
 
-    it('does not carry an explicit unread dot across newer activity', () => {
+    it('carries an explicit unread dot across newer activity', () => {
         const attention = classifySessionAttention(
             makeSummary({ id: 'a', updatedAt: 6000 }),
             { selected: true, lastSeenAt: 5000, manualUnreadAt: 5000 }
         )
-        expect(attention).toBeNull()
+        expect(attention).toEqual({ kind: 'unread' })
     })
 
     it('prioritizes permission over unread activity', () => {
@@ -116,6 +116,27 @@ describe('classifySessionAttention', () => {
         expect(attention).toEqual({ kind: 'unread' })
     })
 
+    it('does not show ordinary unread activity while the session is thinking', () => {
+        expect(classifySessionAttention(
+            makeSummary({ id: 'generating', thinking: true, updatedAt: 5000 }),
+            { selected: false, lastSeenAt: 1000 }
+        )).toBeNull()
+    })
+
+    it('keeps an explicitly marked unread dot while a session is thinking', () => {
+        expect(classifySessionAttention(
+            makeSummary({ id: 'manual-thinking', thinking: true, updatedAt: 5000 }),
+            { selected: false, lastSeenAt: 5000, manualUnreadAt: 5000 }
+        )).toEqual({ kind: 'unread' })
+    })
+
+    it('treats inactive stale thinking as unread activity', () => {
+        expect(classifySessionAttention(
+            makeSummary({ id: 'expired-thinking', active: false, thinking: true, updatedAt: 5000 }),
+            { selected: false, lastSeenAt: 1000 }
+        )).toEqual({ kind: 'unread' })
+    })
+
     it('shows background work without treating it as unread', () => {
         const attention = classifySessionAttention(
             makeSummary({ id: 'a', backgroundTaskCount: 2, updatedAt: 5000 }),
@@ -159,6 +180,20 @@ describe('sessionIsUnread', () => {
             makeSummary({ id: 'seen', updatedAt: 1000 }),
             { lastSeenAt: 5000 }
         )).toBe(false)
+    })
+
+    it('is false for activity received while the session is thinking', () => {
+        expect(sessionIsUnread(
+            makeSummary({ id: 'generating', thinking: true, updatedAt: 5000 }),
+            { lastSeenAt: 1000 }
+        )).toBe(false)
+    })
+
+    it('allows unread activity from an inactive session with a stale thinking flag', () => {
+        expect(sessionIsUnread(
+            makeSummary({ id: 'expired-thinking', active: false, thinking: true, updatedAt: 5000 }),
+            { lastSeenAt: 1000 }
+        )).toBe(true)
     })
 
     it('does not care about permission / background fields — only the watermark', () => {

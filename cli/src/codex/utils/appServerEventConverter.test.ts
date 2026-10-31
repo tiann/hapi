@@ -215,6 +215,16 @@ describe('AppServerEventConverter', () => {
         }]);
     });
 
+    it('preserves command identity when completion arrives without a start', () => {
+        const converter = new AppServerEventConverter();
+        const events = converter.handleNotification('item/completed', {
+            item: { id: 'late-command', type: 'commandExecution', command: 'node server.js', cwd: '/repo',
+                status: 'failed', exitCode: -1, durationMs: 16_636_720 }
+        });
+        expect(events).toEqual([expect.objectContaining({ type: 'exec_command_end', call_id: 'late-command',
+            command: 'node server.js', cwd: '/repo', status: 'failed', exit_code: -1, duration_ms: 16_636_720 })]);
+    });
+
     it('maps MCP tool call items', () => {
         const converter = new AppServerEventConverter();
 

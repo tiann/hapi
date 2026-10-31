@@ -32,7 +32,7 @@ export type RootHost = {
     end(root: SharedCodexRoot, nativeArchive?: boolean): Promise<void>;
 };
 const SettingsSchema = z.object({
-    permissionMode: z.enum(['default', 'read-only', 'safe-yolo', 'autoReview', 'yolo']).optional(),
+    permissionMode: z.enum(['default', 'read-only', 'autoReview', 'yolo']).optional(),
     model: z.string().min(1).optional(), modelReasoningEffort: z.string().nullable().optional(),
     collaborationMode: z.enum(['default', 'plan']).optional(),
     serviceTier: z.enum(['fast', 'standard']).nullable().optional(),
@@ -222,7 +222,8 @@ export class SharedCodexRoot {
         // a startup in progress.
         this.registerControls();
         await this.session.rpcHandlerManager.waitForRegistration(RPC_METHODS.SetSessionConfig);
-        if (subscribe) response = record(await this.client.request('thread/resume', { threadId, excludeTurns: true }));
+        // 空会话的首次订阅保留完整响应，以兼容原生历史源文件的初始化。
+        if (subscribe) response = record(await this.client.request('thread/resume', { threadId }));
         this.acceptSettings(response); this.acceptSettings(this.host.settingsFor(threadId) ?? {});
         await this.projection.history(response.thread);
         await this.refresh();
@@ -335,10 +336,23 @@ export class SharedCodexRoot {
         }
         await this.projection.notification(method, params, modelAtReceipt, receivedAt); this.publishCompaction(); this.alive();
     }
-    async readThread(threadId = this.threadId): Promise<Record<string, unknown>> {
+    private lazyHistory(): boolean {
+        return !!this.threadId && (process.env.HAPI_CODEX_LAZY_HISTORY_IDS ?? '')
+            .split(',').map(id => id.trim()).includes(this.threadId);
+    }
+    async readThread(threadId = this.threadId, fullHistory = false): Promise<Record<string, unknown>> {
         try {
             let thread = record(record(await this.client.request('thread/read', { threadId, includeTurns: false })).thread);
             if (thread.historyMode === 'paginated') {
+                // 正式选择快速恢复时只回放最近一轮，原长历史继续由 Codex 自己恢复。
+                if (this.lazyHistory() && !fullHistory && threadId === this.threadId) {
+                    const page = record(await this.client.request('thread/turns/list', {
+                        threadId, sortDirection: 'desc', itemsView: 'full', limit: 1
+                    }));
+                    if (!Array.isArray(page.data)) throw new Error('Invalid Codex history');
+                    thread.turns = [...page.data].reverse();
+                    return thread;
+                }
                 const turns: unknown[] = []; let cursor: string | undefined;
                 do {
                     const page = record(await this.client.request('thread/turns/list', { threadId, cursor, sortDirection: 'asc', itemsView: 'full' }));
@@ -375,6 +389,8 @@ export class SharedCodexRoot {
         await this.queue.reconcile(); this.alive();
     }
     private async refreshChildren(subscribe: boolean): Promise<void> {
+        // 历史回放可省略，子代理发现与实时订阅仍需在重连后恢复。
+        const replayHistory = !this.lazyHistory();
         let cursor: string | undefined;
         do {
             const page = record(await this.client.request('thread/list', { ancestorThreadId: this.threadId, cursor,
@@ -398,7 +414,9 @@ export class SharedCodexRoot {
             // Replaying a completed/unloaded child must not start its engine.
             try {
                 if (subscribe && loaded.has(id)) await this.client.request('thread/resume', { threadId: id, excludeTurns: true });
-                projection.reset(); await projection.history(await this.readThread(id));
+                if (replayHistory) {
+                    projection.reset(); await projection.history(await this.readThread(id));
+                }
             } catch (error) { logger.debug('[Codex shared] child history unavailable', { id, error }); }
         }
     }
@@ -436,7 +454,6 @@ export class SharedCodexRoot {
     }
     async applySettings(raw: unknown): Promise<{ applied: RuntimeSettings }> {
         const config = SettingsSchema.parse(raw);
-        if (config.permissionMode === 'safe-yolo') throw new Error('safe-yolo is not a native shared permission mode; choose default, read-only, autoReview, or yolo');
         if (Object.keys(config).length === 0) return { applied: this.settings };
         if (typeof config.modelReasoningEffort === 'string') config.modelReasoningEffort = parseReasoningEffortValue(config.modelReasoningEffort);
         if (config.modelReasoningEffort === null) {
@@ -568,10 +585,18 @@ export class SharedCodexRoot {
         });
         rpc.registerHandler(RPC_METHODS.ForkConversation, async raw => {
             const { messageLocalId } = z.object({ messageLocalId: z.string().optional() }).parse(raw);
-            if (this.currentTurn) throw new Error('Session is busy');
+            if (this.currentTurn && !messageLocalId) throw new Error('Session is busy');
             const beforeTurnId = messageLocalId ? this.projection.turnFor(messageLocalId) : undefined;
             if (messageLocalId && !beforeTurnId) throw new Error('No native history point for this message');
-            if (messageLocalId) await this.assertBoundary(messageLocalId, beforeTurnId!);
+            if (messageLocalId) {
+                const thread = await this.assertBoundary(messageLocalId, beforeTurnId!);
+                const turns = (Array.isArray(thread.turns) ? thread.turns : []).map(record);
+                const index = turns.findIndex(turn => turn.id === beforeTurnId);
+                if (index < 0 || turns.slice(0, index + 1).some(turn =>
+                    !['completed', 'interrupted', 'failed'].includes(string(turn.status) ?? ''))) {
+                    throw new Error('Historical fork requires a completed turn and history prefix');
+                }
+            }
             const child = await this.host.create('thread/fork', { ...this.freshParams(), threadId: this.threadId,
                 ...(beforeTurnId ? { beforeTurnId } : {}) }, this);
             await child.initialSettings({ collaborationMode: this.settings.collaborationMode });
@@ -582,7 +607,7 @@ export class SharedCodexRoot {
         });
     }
     private async assertBoundary(localId: string, turnId: string): Promise<Record<string, unknown>> {
-        const thread = await this.readThread();
+        const thread = await this.readThread(this.threadId, true);
         const turn = (Array.isArray(thread.turns) ? thread.turns.map(record) : []).find(turn => turn.id === turnId);
         const first = (Array.isArray(turn?.items) ? turn.items.map(record) : []).find(item => item.type === 'userMessage');
         const firstId = string(first?.clientId ?? first?.clientUserMessageId) ?? (first?.id ? `codex:${this.threadId}:user:${first.id}` : undefined);

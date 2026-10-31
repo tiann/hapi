@@ -25,15 +25,6 @@ export function resolveCodexPermissionModeConfig(mode: CodexPermissionMode): Cod
                 sandbox: 'read-only',
                 sandboxPolicy: { type: 'readOnly' }
             };
-        case 'safe-yolo':
-            return {
-                // Current Codex versions reject the removed `on-failure` policy. Keep
-                // escalation available through `on-request`; HAPI auto-approves these
-                // requests in safe-yolo mode.
-                approvalPolicy: 'on-request',
-                sandbox: 'workspace-write',
-                sandboxPolicy: { type: 'workspaceWrite' }
-            };
         case 'yolo':
             return {
                 approvalPolicy: 'never',
