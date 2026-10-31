@@ -83,16 +83,21 @@ describe('cli session handlers', () => {
             const background = mock(), progress = mock(), publish = mock()
             registerSessionHandlers(socket as unknown as CliSocketWithData, {
                 store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
-                onBackgroundTaskCount: background, onAgentProgress: progress, onWebappEvent: publish
+                onBackgroundTasks: background, onAgentProgress: progress, onWebappEvent: publish
             })
             const snapshot = (tasks: unknown[]) => socket.trigger('message', {
                 sid: session.id, localId: 'background-snapshot', message: { role: 'agent',
                     content: { type: 'output', data: { type: 'system', subtype: 'background_tasks_changed', tasks } } }
             })
-            snapshot([{ id: 'task' }])
-            snapshot([{ id: 'task' }])
+            const task = { task_id: 'task', task_type: 'shell', description: 'work' }
+            snapshot([task])
+            snapshot([task])
             snapshot([])
-            expect(background.mock.calls).toEqual([[session.id, 1], [session.id, 1], [session.id, 0]])
+            expect(background.mock.calls).toEqual([
+                [session.id, [{ id: 'task', type: 'shell', description: 'work' }]],
+                [session.id, [{ id: 'task', type: 'shell', description: 'work' }]],
+                [session.id, []]
+            ])
             expect(store.messages.getAllMessages(session.id)).toEqual([])
             expect(progress).not.toHaveBeenCalled()
             expect(publish).not.toHaveBeenCalled()

@@ -220,7 +220,7 @@ describe('optional bounded history replay', () => {
             }));
             await vi.waitFor(() => expect(f.send).toHaveBeenCalledWith(expect.objectContaining({
                 type: 'agent-run-trace', agentId: 'child', message: expect.objectContaining({ type: 'message', message: 'Child still connected' })
-            }), expect.any(String)));
+            }), expect.any(String), { acknowledgeConsumption: false }));
             expect(request.mock.calls.some(([method, params]) => method === 'thread/resume'
                 && ['unloaded', 'unrelated'].includes(String((params as Record<string, unknown>)?.threadId)))).toBe(false);
             expect(request.mock.calls.some(([method, params]) => method === 'thread/read'
@@ -473,7 +473,7 @@ describe('shared plan actions', () => {
             return original(method, params);
         });
         await f.root.bind('thread', {}, true);
-        expect(spy).toHaveBeenCalledWith('thread/resume', { threadId: 'thread', excludeTurns: true });
+        expect(spy).toHaveBeenCalledWith('thread/resume', { threadId: 'thread' });
         expect(spy).toHaveBeenCalledWith('thread/turns/list', expect.objectContaining({ threadId: 'thread' }));
         expect(f.send).toHaveBeenCalledWith(expect.objectContaining({ message: 'Recovered paged reply' }), expect.any(String), { acknowledgeConsumption: false });
     });

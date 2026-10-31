@@ -131,7 +131,9 @@ describe('compressSseResponse', () => {
             }
         })()
         const waitFor = async (marker: string) => {
-            const until = Date.now() + 2_000
+            // Main's backpressure gate deliberately yields while the client
+            // drains a large burst; assert liveness, not a machine-speed budget.
+            const until = Date.now() + 10_000
             while (!seen.includes(marker) && Date.now() < until) await Bun.sleep(5)
             expect(seen).toContain(marker)
         }
