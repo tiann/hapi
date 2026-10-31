@@ -445,6 +445,48 @@ class MessageWindowStoreTest {
         assertTrue(!row.isQueuedForInvocation)
     }
 
+    @Test
+    fun `steered consumed-then-echo SSE ordering keeps one server row with the badge`() = runTest {
+        val api = GatedMessagesApi()
+        val store = MessageWindowStore("s", api, backgroundScope)
+        store.appendOptimistic(localId = "l1", text = "steer me", createdAt = 5)
+        store.updateStatus("l1", MessageStatus.Queued)
+
+        // Live SSE order: the steer verdict stamps the optimistic row first…
+        store.onMessageEvent(
+            SyncEvent.MessagesConsumed(sessionId = "s", localIds = listOf("l1"), invokedAt = 42, steered = true),
+        )
+        // …then the stored echo replaces it by localId through the same
+        // onMessageEvent -> ingestSseMessages -> merge path.
+        store.onMessageEvent(
+            SyncEvent.MessageReceived(
+                sessionId = "s",
+                message = DecryptedMessage(
+                    id = "srv-1",
+                    seq = 7,
+                    localId = "l1",
+                    createdAt = 5,
+                    invokedAt = OptionalField.Present(42),
+                    content = buildJsonObject {
+                        put("role", "user")
+                        put("content", buildJsonObject {
+                            put("type", "text")
+                            put("text", "steer me")
+                        })
+                    },
+                ),
+            ),
+        )
+
+        // Replaced, not duplicated — and the live-only badge survived the echo.
+        val rows = store.state.value.messages
+        assertEquals(listOf("srv-1"), rows.map { it.id })
+        val row = rows.single()
+        assertTrue(row.steered)
+        assertEquals(MessageStatus.Sent, row.status)
+        assertEquals(42L, row.invokedAtOrNull)
+    }
+
     // ----------------------------------------------------------------- seed --
 
     @Test
