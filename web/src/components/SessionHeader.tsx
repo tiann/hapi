@@ -13,8 +13,10 @@ import { DeleteSessionDialog } from '@/components/DeleteSessionDialog'
 import { useScratchlistCount } from '@/lib/use-scratchlist-count'
 import { formatReopenError } from '@/lib/reopenError'
 import { formatReasoningLabel, getReasoningEffortForFlavor } from '@/lib/codexStatusLabels'
+import { getSessionAgentLabel, getSessionModelLabel } from '@/lib/sessionModelLabel'
+import { resolveCodexModel } from '@/lib/codexModelCapabilities'
+import { useCodexModels } from '@/hooks/queries/useCodexModels'
 import { retargetSharePendingTransfer } from '@/lib/sharePendingState'
-import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { useTranslation } from '@/lib/use-translation'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
 import { isFastServiceTier } from '@/components/AssistantChat/codexFastMode'
@@ -166,13 +168,28 @@ export function SessionHeader(props: {
     const projectLabel = projectPath ? getSessionProjectLabel(projectPath) : null
     const worktreeBranch = session.metadata?.worktree?.branch?.trim() || null
     const { preferences: headerMetadata } = useSessionHeaderMetadata()
-    const modelLabel = getSessionModelLabel(session)
     const isModelChanging = useIsMutating({
         mutationKey: sessionModelMutationKey(session.id),
         exact: true,
     }) > 0
     const agentFlavor = session.metadata?.flavor ?? null
-    const agentLabel = agentFlavor?.trim() || null
+    const telegramApp = isTelegramApp()
+    const hasExplicitModel = typeof session.model === 'string' && session.model.trim() !== ''
+    const codexModelsState = useCodexModels({
+        api,
+        machineId: session.metadata?.machineId ?? null,
+        enabled: !telegramApp
+            && headerMetadata.model
+            && hasExplicitModel
+            && agentFlavor === 'codex'
+            && session.active
+            && session.agentState?.controlledByUser !== true
+    })
+    const codexModelDisplayName = agentFlavor === 'codex'
+        ? resolveCodexModel(codexModelsState.models, session.model)?.displayName
+        : null
+    const modelLabel = getSessionModelLabel(session, codexModelDisplayName)
+    const agentLabel = getSessionAgentLabel(session)
     const reasoningEffort = getReasoningEffortForFlavor(
         agentFlavor,
         session.modelReasoningEffort,
@@ -371,7 +388,7 @@ export function SessionHeader(props: {
     }
 
     // In Telegram, don't render header (Telegram provides its own)
-    if (isTelegramApp()) {
+    if (telegramApp) {
         return null
     }
 
