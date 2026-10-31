@@ -30,6 +30,7 @@ type SortableComposerAttachmentProps = {
     index: number
     isDragging: boolean
     disabled: boolean
+    onRemove: () => void
     onPointerDown: (event: ReactPointerEvent<Element>, id: string, surface: boolean) => void
     onKeyDown: (event: ReactKeyboardEvent<HTMLButtonElement>, id: string) => void
     onContextMenu: (event: ReactMouseEvent<Element>, id: string) => void
@@ -41,11 +42,14 @@ type AttachmentDropTarget = {
     position: AttachmentDropPosition
 }
 
-const AttachmentDragHandleContext = createContext<AttachmentDragHandleProps | undefined>(undefined)
+const AttachmentDragHandleContext = createContext<{
+    dragHandleProps?: AttachmentDragHandleProps
+    onRemove?: () => void
+} | undefined>(undefined)
 
 function SortableAttachmentItem() {
-    const dragHandleProps = useContext(AttachmentDragHandleContext)
-    return <AttachmentItem dragHandleProps={dragHandleProps} />
+    const context = useContext(AttachmentDragHandleContext)
+    return <AttachmentItem dragHandleProps={context?.dragHandleProps} onRemove={context?.onRemove} />
 }
 
 // Updating drag handlers must not replace the attachment component and reset its image viewer.
@@ -72,6 +76,7 @@ function SortableComposerAttachment(props: SortableComposerAttachmentProps) {
         index,
         isDragging,
         disabled,
+        onRemove,
         onPointerDown,
         onKeyDown,
         onContextMenu,
@@ -118,7 +123,7 @@ function SortableComposerAttachment(props: SortableComposerAttachmentProps) {
             data-hapi-composer-attachment-dragging={isDragging || undefined}
             className={isDragging ? 'opacity-60' : undefined}
         >
-            <AttachmentDragHandleContext.Provider value={dragHandleProps}>
+            <AttachmentDragHandleContext.Provider value={{ dragHandleProps, onRemove }}>
                 <ComposerPrimitive.AttachmentByIndex
                     index={index}
                     components={SORTABLE_ATTACHMENT_COMPONENTS}
@@ -132,9 +137,10 @@ export function SortableComposerAttachments(props: {
     attachments: readonly Attachment[]
     orderedAttachmentIds: readonly string[]
     disabled?: boolean
+    onRemove?: () => void
     onReorder: (activeId: string, targetId: string, position: AttachmentDropPosition) => void
 }) {
-    const { attachments, orderedAttachmentIds, onReorder, disabled = false } = props
+    const { attachments, orderedAttachmentIds, onReorder, onRemove = () => {}, disabled = false } = props
     const [draggingId, setDraggingId] = useState<string | null>(null)
     const dragRef = useRef<DragState | null>(null)
     const suppressClickIdRef = useRef<string | null>(null)
@@ -273,6 +279,7 @@ export function SortableComposerAttachments(props: {
                         index={index}
                         isDragging={draggingId === id}
                         disabled={disabled || attachments.length < 2}
+                        onRemove={onRemove}
                         onPointerDown={handlePointerDown}
                         onKeyDown={handleKeyDown}
                         onContextMenu={handleContextMenu}

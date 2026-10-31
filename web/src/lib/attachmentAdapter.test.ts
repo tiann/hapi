@@ -63,6 +63,21 @@ describe('attachmentAdapter', () => {
         })])
     })
 
+    it('releases sent attachments without deleting their upload files', async () => {
+        const { createAttachmentAdapter } = await import('./attachmentAdapter')
+        const deleteUploadFile = vi.fn(async () => {})
+        const adapter = createAttachmentAdapter({ deleteUploadFile } as never, 'session-1')
+
+        adapter.releaseWithoutDelete(['attachment-ready'])
+        await adapter.remove({
+            id: 'attachment-ready',
+            path: '/uploads/ready.png',
+            uploadSessionId: 'session-1',
+        } as never)
+
+        expect(deleteUploadFile).not.toHaveBeenCalled()
+    })
+
     it('uploads an image when the initial preview read fails', async () => {
         let readCount = 0
         class FileReaderMock {
