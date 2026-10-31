@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Debug overlay: loopback-only cleartext for instrumented tests that
+         run a local fake hub; see res/xml/network_security_config_debug.xml.
+         A network security config overrides the main manifest's
+         android:usesCleartextTraffic on API 24+, so no change is needed
+         there. -->
+    <application android:networkSecurityConfig="@xml/network_security_config_debug" />
+</manifest>

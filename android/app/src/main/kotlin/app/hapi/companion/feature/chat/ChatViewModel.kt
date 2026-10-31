@@ -118,6 +118,20 @@ data class ChatHeaderUi(
     val name: String? = null,
     val active: Boolean,
     val thinking: Boolean,
+    /**
+     * `detail.metadata.capabilities.terminal ?? true` — gates the overflow-menu
+     * terminal entry. Detail-only: the list summary metadata carries no
+     * capabilities field, so an unloaded detail optimistically allows it (the
+     * terminal screen re-checks and shows unsupported state).
+     */
+    val terminalSupported: Boolean = true,
+    /**
+     * `detail.metadata.startingMode === 'pty'` (web `canViewAgentTerminal`) —
+     * gates the agent-terminal panel entry. Detail-only like the web's full
+     * session object: the list summary carries no startingMode, so an unloaded
+     * detail hides the entry (the panel itself re-checks and shows a reason).
+     */
+    val agentPty: Boolean = false,
 )
 
 /** Optimistic-permission UI state layered over the reduced blocks (M3b). */
@@ -1954,6 +1968,8 @@ class ChatViewModel(
             name = detail?.metadata?.name ?: summary?.metadata?.name,
             active = detail?.active ?: summary?.active ?: false,
             thinking = detail?.thinking ?: summary?.thinking ?: false,
+            terminalSupported = detail?.metadata?.capabilities?.terminal ?: true,
+            agentPty = detail?.metadata?.startingMode == "pty",
         )
     }
 

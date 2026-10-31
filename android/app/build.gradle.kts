@@ -202,10 +202,17 @@ dependencies {
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.test.runner)
+    // Terminal device test drives the real socket.io client against a local
+    // loopback MockWebServer (127.0.0.1 ws://, cleartext allowed only in the
+    // debug network security config).
+    androidTestImplementation(libs.okhttp.mockwebserver)
 
     // JVM unit tests (ViewModel combine logic with fake stores).
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.turbine)
+    // Terminal socket client frame-layer tests drive a real OkHttp WebSocket
+    // against MockWebServer (same pattern as :core:data gateway tests).
+    testImplementation(libs.okhttp.mockwebserver)
 }

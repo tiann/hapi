@@ -62,6 +62,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import app.hapi.companion.R
+import app.hapi.companion.feature.agentterminal.AgentTerminalPanel
+import app.hapi.companion.feature.agentterminal.AgentTerminalViewModel
 import app.hapi.companion.feature.chat.composer.DictationErrorKind
 import app.hapi.companion.feature.chat.attachments.AttachmentPickerSheet
 import app.hapi.companion.feature.chat.attachments.AttachmentPreparer
@@ -108,6 +110,14 @@ internal fun ChatScreen(
     onOpenFile: (path: String, line: Int?) -> Unit = { _, _ -> },
     /** null ⇒ no scratchlist top-bar entry (tests / previews). */
     onOpenScratchlist: (() -> Unit)? = null,
+    /** null ⇒ no terminal overflow entry (tests / previews). */
+    onOpenTerminal: (() -> Unit)? = null,
+    /**
+     * Agent PTY panel: null ⇒ no entry and no panel (tests /
+     * previews). Entry additionally needs header.active + header.agentPty
+     * (web `canViewAgentTerminal`); the panel re-checks and shows reasons.
+     */
+    agentTerminal: AgentTerminalViewModel? = null,
     transcriptList: androidx.compose.foundation.lazy.LazyListState = androidx.compose.foundation.lazy.rememberLazyListState(),
     readingState: TranscriptReadingState = rememberTranscriptReadingState(viewModel.sessionId),
 ) {
@@ -124,6 +134,9 @@ internal fun ChatScreen(
     var configSheetOpen by remember { mutableStateOf(false) }
     var renameDialogOpen by remember { mutableStateOf(false) }
     var deleteDialogOpen by remember { mutableStateOf(false) }
+    // Web terminalVisible (SessionChat state): survives rotation, resets on a
+    // fresh app entry like the web's per-mount useState.
+    var agentTerminalVisible by rememberSaveable { mutableStateOf(false) }
 
     DisposableEffect(viewModel) {
         viewModel.setTranscriptVisible(true)
@@ -294,6 +307,18 @@ internal fun ChatScreen(
                         onOpenFiles = onOpenFiles,
                         scratchlistCount = scratchlistCount,
                         onOpenScratchlist = if (viewModel.scratchlistEnabled) onOpenScratchlist else null,
+                        // Web terminalSupport gating: entry needs an active
+                        // session AND a host that reports the capability.
+                        onOpenTerminal = if (state.header.active && state.header.terminalSupported) onOpenTerminal else null,
+                        // Web canViewAgentTerminal gating for the header toggle
+                        // (the PTY panel's own entry point).
+                        onToggleAgentTerminal = if (
+                            agentTerminal != null && state.header.active && state.header.agentPty
+                        ) {
+                            { agentTerminalVisible = !agentTerminalVisible }
+                        } else {
+                            null
+                        },
                         onRename = { renameDialogOpen = true },
                         onReopen = viewModel::reopenSession,
                         onDelete = { deleteDialogOpen = true },
@@ -373,6 +398,14 @@ internal fun ChatScreen(
                     when {
                         state.isInitialLoading -> InitialLoading()
                         state.loadFailed -> LoadFailed(onRetry = viewModel::retry)
+                        // Web parity: the visible agent terminal REPLACES the
+                        // transcript (web hides the thread with display:none);
+                        // the composer below stays for chat.
+                        agentTerminalVisible && agentTerminal != null -> AgentTerminalPanel(
+                            viewModel = agentTerminal,
+                            onHide = { agentTerminalVisible = false },
+                            modifier = Modifier.fillMaxSize(),
+                        )
                         state.blocks.isEmpty() && !state.hasMore -> EmptyChat()
                         else -> ChatTranscript(
                             state = state, paging = historyPaging, jumpToken = jumpToken,
@@ -454,6 +487,10 @@ private fun SessionOverflowMenu(
     scratchlistCount: Int = 0,
     /** null ⇒ scratchlist row hidden (feature off / tests). */
     onOpenScratchlist: (() -> Unit)? = null,
+    /** null ⇒ terminal row hidden (inactive/unsupported session / tests). */
+    onOpenTerminal: (() -> Unit)? = null,
+    /** null ⇒ agent-terminal toggle row hidden (non-PTY/inactive session / tests). */
+    onToggleAgentTerminal: (() -> Unit)? = null,
     /** null ⇒ hidden (scratchlist off or empty composer). */
     onParkDraft: (() -> Unit)? = null,
 ) {
@@ -470,6 +507,24 @@ private fun SessionOverflowMenu(
                 onOpenFiles()
             },
         )
+        if (onOpenTerminal != null) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.chat_open_terminal)) },
+                onClick = {
+                    open = false
+                    onOpenTerminal()
+                },
+            )
+        }
+        if (onToggleAgentTerminal != null) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.agent_terminal_menu)) },
+                onClick = {
+                    open = false
+                    onToggleAgentTerminal()
+                },
+            )
+        }
         if (onOpenScratchlist != null) {
             DropdownMenuItem(
                 text = {
