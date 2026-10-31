@@ -99,7 +99,8 @@ import {
     getUnreadSessionCount,
     markAllSessionsSeen,
     markSessionUnread,
-    useSessionLastSeenVersion
+    useSessionLastSeenVersion,
+    useSessionReadReady
 } from '@/lib/sessionLastSeen'
 import { useSessionRowTooltipIds } from '@/components/HoverTooltip'
 import { formatReopenError } from '@/lib/reopenError'
@@ -1141,6 +1142,7 @@ const SessionItem = memo(function SessionItem(props: {
         lastSeenVersion
     } = props
     const { haptic } = usePlatform()
+    const readReady = useSessionReadReady()
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
     const [renameOpen, setRenameOpen] = useState(false)
@@ -1285,7 +1287,7 @@ const SessionItem = memo(function SessionItem(props: {
                 onSetPinMode={(mode) => void handleSetPinMode(mode)}
                 onRename={() => setRenameOpen(true)}
                 onExport={() => setExportOpen(true)}
-                onMarkUnread={() => markSessionUnread(s.id, s.updatedAt)}
+                onMarkUnread={readReady ? () => markSessionUnread(s.id, s.updatedAt) : undefined}
                 onArchive={() => setArchiveOpen(true)}
                 onReopen={cursorReopenDisabledReason ? undefined : handleReopen}
                 reopenDisabledReason={cursorReopenDisabledReason}
@@ -1422,6 +1424,7 @@ export function SessionList(props: {
     const { sessionListStatusMode } = useSessionListStatusMode()
     const { showActiveSessionsOnly } = useShowActiveSessionsOnly()
     const lastSeenVersion = useSessionLastSeenVersion()
+    const readReady = useSessionReadReady()
     // Transient unread lens — not a Settings preference. Cleared on reload; rows drop as they're seen.
     const [showUnreadOnly, setShowUnreadOnly] = useState(false)
     const { pinInProgressSessions } = usePinInProgressSessions()
@@ -2297,7 +2300,7 @@ export function SessionList(props: {
                                     return measured > 0 ? measured : fallback
                                 }
                                 const definedSlots: Array<ToolbarShedSlot & { node: ReactNode }> = []
-                                if (unreadSessionCount > 0) {
+                                if (readReady && unreadSessionCount > 0) {
                                     definedSlots.push({
                                         id: 'mark-all',
                                         keep: 7,
@@ -2566,7 +2569,7 @@ export function SessionList(props: {
                 confirmLabel={t('sessions.markAllRead.confirm')}
                 confirmingLabel={t('sessions.markAllRead.confirming')}
                 onConfirm={async () => {
-                    markAllSessionsSeen(readableSessions)
+                    if (readReady) markAllSessionsSeen(readableSessions)
                 }}
                 isPending={false}
                 centerTitle

@@ -12,6 +12,7 @@ import { PushStore } from './pushStore'
 import { FcmStore } from './fcmStore'
 import { ScratchlistStore } from './scratchlistStore'
 import { SessionStore } from './sessionStore'
+import { SessionReadStore } from './sessionReadStore'
 import { UserStore } from './userStore'
 import { TurnStore } from './turnStore'
 import { UsageStore } from './usageStore'
@@ -47,9 +48,10 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 29
+const SCHEMA_VERSION: number = 30
 const REQUIRED_TABLES = [
     'sessions',
+    'session_read_states',
     'machines',
     'messages',
     'message_epochs',
@@ -70,6 +72,7 @@ export class Store {
     private closed: boolean = false
 
     readonly sessions: SessionStore
+    readonly sessionReads: SessionReadStore
     readonly machines: MachineStore
     readonly messages: MessageStore
     readonly users: UserStore
@@ -125,6 +128,7 @@ export class Store {
         }
 
         this.sessions = new SessionStore(this.db)
+        this.sessionReads = new SessionReadStore(this.db)
         this.machines = new MachineStore(this.db)
         this.messages = new MessageStore(this.db)
         this.users = new UserStore(this.db)
@@ -364,6 +368,7 @@ export class Store {
             26: () => this.migrateFromV26ToV27(),
             27: () => this.migrateFromV27ToV28(),
             28: () => this.migrateFromV28ToV29(),
+            29: () => this.createSessionReadSchema(),
         })
 
         if (currentVersion === 0) {
@@ -640,6 +645,19 @@ export class Store {
             CREATE UNIQUE INDEX IF NOT EXISTS idx_session_turns_one_open
                 ON session_turns(session_id)
                 WHERE ended_at IS NULL;
+        `)
+        this.createSessionReadSchema()
+    }
+
+    private createSessionReadSchema(): void {
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS session_read_states (
+                session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+                last_seen_at INTEGER NOT NULL DEFAULT 0,
+                manual_unread_at INTEGER,
+                last_mutation_id TEXT NOT NULL,
+                version INTEGER NOT NULL
+            );
         `)
     }
 

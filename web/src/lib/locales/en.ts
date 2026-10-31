@@ -82,7 +82,7 @@ export default {
   'sessions.toolbar.more': 'More session list actions',
   'sessions.markAllRead.button': 'Mark all as read ({count})',
   'sessions.markAllRead.title': 'Mark all as read?',
-  'sessions.markAllRead.description': 'This will mark {count} unread sessions as read on this device.',
+  'sessions.markAllRead.description': 'This will mark {count} unread sessions as read across your devices.',
   'sessions.markAllRead.confirm': 'Confirm',
   'sessions.markAllRead.confirming': 'Marking as read…',
   'sessions.timeFilter.label': 'Filter sessions by last activity',

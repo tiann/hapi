@@ -82,7 +82,7 @@ export default {
   'sessions.toolbar.more': 'Другие действия списка сессий',
   'sessions.markAllRead.button': 'Отметить все как прочитанные ({count})',
   'sessions.markAllRead.title': 'Отметить все как прочитанные?',
-  'sessions.markAllRead.description': 'Будут отмечены как прочитанные {count} непрочитанных сессий на этом устройстве.',
+  'sessions.markAllRead.description': 'Будут отмечены как прочитанные {count} непрочитанных сессий на всех ваших устройствах.',
   'sessions.markAllRead.confirm': 'Подтвердить',
   'sessions.markAllRead.confirming': 'Отмечаем как прочитанные…',
   'sessions.timeFilter.label': 'Фильтр сессий по последней активности',

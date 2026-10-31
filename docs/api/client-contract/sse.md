@@ -130,13 +130,14 @@ The two connections have **no ordering relationship with each other** — the sa
 
 ---
 
-## SyncEvent union (16 types)
+## SyncEvent union
 
 Schema: `SyncEventSchema` in `shared/src/schemas.ts` (discriminated on `type`). All events except `connection-changed` carry `namespace?: string`. Ignore unknown event types.
 
 | `type` | Payload (beyond `type`, `namespace?`) | Client handling |
 |---|---|---|
 | `session-added` | `sessionId`, `data?: unknown` | Handle exactly like `session-updated` (the reference client shares the branch): a full `Session` upserts; anything else falls back to refetching the session list. |
+| `session-read-state-updated` | `states: SessionReadState[]` | Sent to `all=true` subscribers in the authenticated namespace. Merge each session's read state only when its version increases; update unread UI without changing session activity. See the [REST read-state contract](./rest.md#sessions-shared-read-state). |
 | `session-updated` | `sessionId`, `data?: Session \| SessionPatch` | See [Versioned patch algorithm](#versioned-patch-algorithm). |
 | `session-removed` | `sessionId` | Drop the session from the list, drop its detail cache, clear its message window. |
 | `message-received` | `sessionId`, `message: DecryptedMessage` | Ingest into the message window; advance the tail cursor (see [pagination](./pagination.md)). Also fired for the caller's own send (the localId echo). |
