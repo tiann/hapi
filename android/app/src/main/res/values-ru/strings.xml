@@ -6,6 +6,8 @@
     <string name="code_copy">Копировать</string>
     <string name="code_copied">Скопировано</string>
     <string name="code_plain_fallback">текст</string>
+    <string name="code_wrap_enable">Включить перенос строк</string>
+    <string name="code_wrap_disable">Отключить перенос строк</string>
     <string name="diff_binary_file">Двоичный файл не показан</string>
     <string name="diff_show_more">Показать ещё строк: %1$d</string>
     <string name="diff_collapse">Свернуть</string>

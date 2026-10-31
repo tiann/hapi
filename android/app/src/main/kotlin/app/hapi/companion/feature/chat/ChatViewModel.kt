@@ -392,6 +392,13 @@ class ChatViewModel(
         if (!visible) {
             historyDemand = false
             cancelHistory()
+            // Covered (cited chat pushed above, inspector open): stop marking
+            // this chat read — only the chat actually on screen stamps its
+            // watermark (the web SPA has one session open at a time).
+            seenJob?.cancel()
+            seenJob = null
+        } else if (started && seenJob == null) {
+            launchSeenStamping()
         }
     }
 
@@ -633,9 +640,21 @@ class ChatViewModel(
         // Badge count + SSE-triggered refetches while this chat is on screen.
         scratchlist?.open(sessionId)
 
+        if (transcriptVisible) launchSeenStamping()
+    }
+
+    /**
+     * Read watermark = updatedAt currently on screen, from whichever cache is
+     * fresher (summary via global events, detail via this pipe). Runs ONLY
+     * while the transcript is on screen: a covered chat (cited chat pushed
+     * above it, inspector open) must not keep marking itself read. The
+     * collector is cancelled on hide and re-collected on return — the flows
+     * are cold StateFlows, so re-collecting re-emits the current tail and the
+     * stamp catches up.
+     */
+    private fun launchSeenStamping() {
+        seenJob?.cancel()
         seenJob = scope.launch {
-            // Watermark = updatedAt currently on screen, from whichever cache
-            // is fresher (summary via global events, detail via this pipe).
             merge(
                 sessionStore.sessions
                     .map { list -> list.firstOrNull { it.id == sessionId }?.updatedAt },
@@ -657,6 +676,7 @@ class ChatViewModel(
         sseJob = null
         initJob?.cancel()
         seenJob?.cancel()
+        seenJob = null
         cancelHistory()
         jumpJob?.cancel()
         jumpJob = null
