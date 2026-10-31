@@ -12,7 +12,7 @@ import {
     unwrapRoleWrappedRecordEnvelope
 } from '@hapi/protocol/messages'
 import { isObject } from '@hapi/protocol'
-import type { MessageDeliveryMode, MessagesResponse, QueuedStateResponse } from '@hapi/protocol/apiTypes'
+import type { AbandonMessageResponse, MessageDeliveryMode, MessagesResponse, QueuedStateResponse } from '@hapi/protocol/apiTypes'
 import type { Server } from 'socket.io'
 import { randomUUID } from 'node:crypto'
 import type { Store, CancelQueuedMessageResult } from '../store'
@@ -41,7 +41,7 @@ function comparePosition(a: MessagePosition, b: MessagePosition): number {
 }
 
 function isWebVisibleStoredMessage(message: StoredMessageForDelivery): boolean {
-    return !isRedundantGoalStatusEventContent(message.content)
+    return message.deliveryState !== 'abandoned' && !isRedundantGoalStatusEventContent(message.content)
 }
 
 function toDecryptedMessage(message: StoredMessageForDelivery): DecryptedMessage {
@@ -187,9 +187,17 @@ export class MessageService {
         localId: string,
     ): CancelQueuedMessageResult {
         const invokedAt = Date.now()
+        // A pending cancel can return consumed after a concurrent request has
+        // abandoned the row. The later CLI messages-consumed event then sees an
+        // already-invoked row, so publish the full settled message here as well.
+        const wasAbandoned = this.store.messages.getLocalMessageStates(sessionId, [localId])
+            .some((state) => state.invokedAt === null && state.deliveryState === 'abandoned')
         this.store.messages.markMessagesInvoked(sessionId, [localId], invokedAt)
         this.publisher.emit({ type: 'messages-consumed', sessionId, localIds: [localId], invokedAt })
         const settled = this.store.messages.lookupQueuedMessage(sessionId, localId)
+        if (wasAbandoned && settled.status === 'invoked') {
+            this.publisher.emit({ type: 'message-received', sessionId, message: toDecryptedMessage(settled.message) })
+        }
         return settled.status === 'invoked'
             ? settled
             : { status: 'cancelled', localId }
@@ -204,7 +212,7 @@ export class MessageService {
         const states = this.store.messages.getLocalMessageStates(sessionId, localIds)
         return {
             queuedLocalIds: states
-                .filter((state) => state.invokedAt === null && state.deliveryState !== 'indeterminate' && state.deliveryState !== 'dispatching')
+                .filter((state) => state.invokedAt === null && state.deliveryState !== 'indeterminate' && state.deliveryState !== 'dispatching' && state.deliveryState !== 'abandoned')
                 .map((state) => state.localId),
             indeterminateLocalIds: states
                 .filter((state) => state.invokedAt === null && (state.deliveryState === 'indeterminate' || state.deliveryState === 'dispatching'))
@@ -479,6 +487,34 @@ export class MessageService {
             scheduledAt: message.scheduledAt,
             ...(message.deliveryState ? { deliveryState: message.deliveryState } : {})
         }))
+    }
+
+    async abandonIndeterminateMessage(sessionId: string, messageId: string): Promise<AbandonMessageResponse> {
+        const lookup = this.store.messages.lookupQueuedMessage(sessionId, messageId)
+        if (lookup.status === 'absent') return { status: 'not-found' }
+        if (lookup.status === 'invoked') return { status: 'invoked', message: toDecryptedMessage(lookup.message) }
+        const session = this.store.sessions.getSession(sessionId)
+        const connected = this.io.of('/cli').adapter.rooms.get(`session:${sessionId}`)?.size ?? 0
+        if (lookup.status !== 'indeterminate' || !lookup.localId || connected !== 1
+            || !(session?.metadata as Metadata | null)?.capabilities?.concurrentClients) {
+            return { status: 'unavailable', localId: lookup.localId }
+        }
+        // A durable native tombstone must be acknowledged before removing the Hub blocker.
+        const ack = await this.requestCliCancelAck(sessionId, lookup.localId, messageId, 30_000, true)
+        if (ack === 'consumed') {
+            const settled = this.recordConsumedAcknowledgement(sessionId, lookup.localId)
+            return settled.status === 'invoked' ? { status: 'invoked', message: toDecryptedMessage(settled.message) } : { status: 'not-found' }
+        }
+        if (ack !== 'abandoned') return { status: 'unavailable', localId: lookup.localId }
+        const abandoned = this.store.messages.abandonIndeterminateMessage(sessionId, lookup.resolvedId)
+        if (!abandoned) {
+            const settled = this.store.messages.lookupQueuedMessage(sessionId, messageId)
+            return settled.status === 'invoked' ? { status: 'invoked', message: toDecryptedMessage(settled.message) }
+                : settled.status === 'absent' ? { status: 'abandoned', localId: lookup.localId }
+                : { status: 'unavailable', localId: lookup.localId }
+        }
+        this.publisher.emit({ type: 'message-cancelled', sessionId, messageId: lookup.resolvedId, localId: lookup.localId })
+        return { status: 'abandoned', localId: lookup.localId }
     }
 
     async cancelQueuedMessage(
@@ -793,8 +829,9 @@ export class MessageService {
         sessionId: string,
         localId: string,
         messageId: string,
-        timeoutMs: number
-    ): Promise<'removed' | 'in-flight' | 'indeterminate' | 'consumed' | 'not-found' | 'timeout'> {
+        timeoutMs: number,
+        abandon = false
+    ): Promise<'removed' | 'in-flight' | 'indeterminate' | 'consumed' | 'not-found' | 'timeout' | 'abandoned'> {
         return new Promise((resolve) => {
             const room = this.io.of('/cli').to(`session:${sessionId}`)
             // socket.io v4 BroadcastOperator: .timeout(ms).emit(event, data, ackCb)
@@ -809,10 +846,11 @@ export class MessageService {
                         t: 'cancel-queued-message' as const,
                         sid: sessionId,
                         messageId,
-                        localId
+                        localId,
+                        ...(abandon ? { abandon: true as const } : {})
                     }
                 },
-                (err: Error | null, responses: Array<{ removed: boolean; inFlight?: boolean; indeterminate?: boolean; consumed?: boolean }>) => {
+                (err: Error | null, responses: Array<{ removed: boolean; inFlight?: boolean; indeterminate?: boolean; consumed?: boolean; abandoned?: boolean }>) => {
                     // Check responses before err: in a reconnect overlap or any room with
                     // multiple CLI sockets, Socket.IO may set err (one socket timed out)
                     // while still delivering successful responses from the sockets that did
@@ -829,6 +867,10 @@ export class MessageService {
                     }
                     if (responses?.some((r) => r.inFlight === true)) {
                         resolve('in-flight')
+                        return
+                    }
+                    if (abandon && !err && responses?.length === 1 && responses[0]?.abandoned === true) {
+                        resolve('abandoned')
                         return
                     }
                     const removed = responses?.some((r) => r.removed === true) ?? false
@@ -900,6 +942,15 @@ export class MessageService {
         )
         const actualSessionId = inserted.sessionId
         const msg = inserted.message
+        if (msg.deliveryState === 'abandoned') {
+            // Idempotent retries must reconcile the pending chip without
+            // exposing the retained, uninvoked correlation row as new input.
+            this.publisher.emit({
+                type: 'message-cancelled', sessionId: actualSessionId,
+                messageId: msg.id, ...(msg.localId ? { localId: msg.localId } : {})
+            })
+            return { actualSessionId, createdAt: msg.createdAt }
+        }
         // A duplicate localId is an idempotent retry, not proof that the
         // original Pi turn still exists. Its stored row may retain steer
         // provenance from a POST whose response was lost, so deliver the

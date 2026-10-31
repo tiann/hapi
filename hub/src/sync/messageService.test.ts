@@ -102,6 +102,43 @@ function makePublisher() {
 // Tests
 // ---------------------------------------------------------------------------
 
+describe('MessageService late consumption reconciliation', () => {
+    it('republishes an abandoned row when a pending cancel returns consumed first', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'consumed-ack-after-abandon')
+        const msg = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'late native proof' } },
+            'late-consumed-ack'
+        )
+        store.messages.setMessagesDeliveryState(session.id, ['late-consumed-ack'], 'indeterminate')
+        let reply!: AckCallback
+        const publisher = makePublisher()
+        const service = new MessageService(store, makeIo((callback) => { reply = callback }), publisher as unknown as EventPublisher)
+
+        const pending = service.cancelQueuedMessage(session.id, msg.id)
+        expect(reply).toBeDefined()
+        // Another request wins the abandonment while this cancellation ACK is
+        // still in flight.
+        expect(store.messages.abandonIndeterminateMessage(session.id, msg.id)).toBe(true)
+        reply(null, [{ removed: false, consumed: true }])
+
+        expect((await pending).status).toBe('invoked')
+        expect(publisher.events.filter((event) => event.type === 'messages-consumed')).toHaveLength(1)
+        const restored = publisher.events.find((event) => event.type === 'message-received')
+        expect(restored).toMatchObject({
+            type: 'message-received',
+            sessionId: session.id,
+            message: {
+                id: msg.id,
+                localId: 'late-consumed-ack',
+                invokedAt: expect.any(Number),
+                content: { role: 'user', content: { type: 'text', text: 'late native proof' } }
+            }
+        })
+    })
+})
+
 describe('MessageService goal status filtering', () => {
     it('does not discard or replay an uncertain shared input on a not-found cancellation ACK', async () => {
         const store = makeStore()

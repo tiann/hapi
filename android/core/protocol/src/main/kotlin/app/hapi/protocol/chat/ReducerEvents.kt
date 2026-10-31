@@ -2,6 +2,8 @@ package app.hapi.protocol.chat
 
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /** Port of `web/src/chat/reducerEvents.ts`. */
 
@@ -88,7 +90,9 @@ fun dedupeAgentEvents(blocks: List<ChatBlock>): List<ChatBlock> {
 
         if (event is AgentEvent.Message && event.message != null) {
             val message = event.message!!.trim()
-            val key = "message:$message"
+            val resolution = (block.meta as? JsonObject)?.get("abandonedDelivery") as? JsonObject
+            val localId = (resolution?.get("localId") as? JsonPrimitive)?.takeIf { it.isString }?.content
+            val key = if (localId != null) "abandoned-delivery:$localId:$message" else "message:$message"
             if (key == prevEventKey) {
                 continue
             }

@@ -77,7 +77,17 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         return c.json(result)
     })
 
-    app.post('/sessions/:id/messages/:messageId/retry', async (c) => {
+    app.post('/sessions/:id/messages/:messageId/abandon', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) return engine
+        const session = requireSessionFromParam(c, engine, { requireActive: true })
+        if (session instanceof Response) return session
+        const body = await c.req.json().catch(() => null)
+        if (!body || body.confirm !== true) return c.json({ error: 'Explicit confirmation is required' }, 400)
+        return c.json(await engine.abandonIndeterminateMessage(session.sessionId, c.req.param('messageId')))
+    })
+
+    app.post('/sessions/:id/messages/:messageId/retry' , async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
             return engine

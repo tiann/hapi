@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import type { CopilotAgentMode } from '@hapi/protocol'
 import type { AgentState, BackgroundTask, CodexCollaborationMode, Metadata, PermissionMode } from '@hapi/protocol/types'
 import { getReasoningStreamId, isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
-import type { Store, StoredSession } from '../../../store'
+import type { Store, StoredMessage, StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import { extractTodoWriteTodosFromMessageContent } from '../../../sync/todos'
 import { extractTeamStateFromMessageContent, applyTeamStateDelta } from '../../../sync/teams'
@@ -55,6 +55,18 @@ const messageSchema = z.object({
     // see addMessage in messages.ts.
     createdAt: z.number().optional()
 })
+
+function toWebappMessage(message: StoredMessage) {
+    return {
+        id: message.id,
+        seq: message.seq,
+        localId: message.localId,
+        content: message.content,
+        createdAt: message.createdAt,
+        invokedAt: message.invokedAt,
+        scheduledAt: message.scheduledAt
+    }
+}
 
 const updateMetadataSchema = z.object({
     sid: z.string(),
@@ -438,6 +450,15 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
         const invokedAt = Date.now()
+        // Abandoned rows stay in storage for late native proof but are absent
+        // from client windows. A later consumption acknowledgement is that
+        // proof; replay the full invoked row so clients can restore it even
+        // though the subsequent CLI echo is deduplicated against the row.
+        const abandonedLocalIds = new Set(
+            store.messages.getLocalMessageStates(data.sid, localIds)
+                .filter((state) => state.invokedAt === null && state.deliveryState === 'abandoned')
+                .map((state) => state.localId)
+        )
         let sessionUpdatedAt: number
         try {
             sessionUpdatedAt = store.recordMessagesConsumed(
@@ -470,6 +491,12 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // heterogeneous, replayed, or unknown. `steered` is a live-only signal
         // (never persisted) that marks mid-turn delivery for the web badge.
         onWebappEvent?.({ type: 'messages-consumed', sessionId: data.sid, localIds, invokedAt, ...(data.steered === true ? { steered: true } : {}) })
+        for (const localId of abandonedLocalIds) {
+            const settled = store.messages.lookupQueuedMessage(data.sid, localId)
+            if (settled.status === 'invoked') {
+                onWebappEvent?.({ type: 'message-received', sessionId: data.sid, message: toWebappMessage(settled.message) })
+            }
+        }
     })
 
     socket.on('messages-indeterminate', (data: { sid: string; localIds: string[] }) => {

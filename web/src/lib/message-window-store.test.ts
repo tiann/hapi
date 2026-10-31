@@ -21,6 +21,7 @@ import {
     markMessagesConsumed,
     reconcileQueuedLocalIds,
     removeOptimisticMessage,
+    removeUninvokedMessage,
     rewindMessageWindow,
     setMessageViewMode,
     syncTailMessages,
@@ -1811,6 +1812,29 @@ describe('optimistic and queued-message operations', () => {
         )
 
         expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(['queued'])
+    })
+
+    it('removes only an uninvoked row during delayed reconciliation', () => {
+        const id = sessionId('remove-uninvoked')
+        appendOptimisticMessage(id, makeUserMessage({
+            id: 'authoritative',
+            localId: 'local-authoritative',
+            invokedAt: 2_000,
+            status: 'sent'
+        }))
+        appendOptimisticMessage(id, makeUserMessage({
+            id: 'pending',
+            localId: 'local-pending',
+            invokedAt: null,
+            status: 'queued'
+        }))
+
+        removeUninvokedMessage(id, 'local-authoritative')
+        removeUninvokedMessage(id, 'local-pending')
+
+        expect(getMessageWindowState(id).messages).toEqual([
+            expect.objectContaining({ id: 'authoritative', invokedAt: 2_000 }),
+        ])
     })
 
     it('removes a queued or optimistic row by localId idempotently', () => {

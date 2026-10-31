@@ -75,7 +75,8 @@ public func dedupeAgentEvents(_ blocks: [ChatBlock]) -> [ChatBlock] {
 
         if event.type == "message", let message = event["message"]?.stringValue {
             let trimmed = message.jsTrimmed
-            let key = "message:\(trimmed)"
+            let localId = eventBlock.meta?["abandonedDelivery"]?["localId"]?.stringValue
+            let key = localId.map { "abandoned-delivery:\($0):\(trimmed)" } ?? "message:\(trimmed)"
             if key == prevEventKey {
                 continue
             }
